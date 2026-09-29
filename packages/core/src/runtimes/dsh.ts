@@ -1,38 +1,14 @@
-// DSH runtime adapter — attach mode: drive an already running `dsh web` through its public
-// Remote API (the same API its own web UI uses). Deeper controls (loop gate, context
-// sections, tool projection, approval answerer) arrive with the in-process DSH binding;
-// this adapter declares them unsupported until then.
-//
-// DSH facts this relies on (0.1.7):
-//   POST /api/<namespace>/<method>  {"type":"client-request","rpcId","method","payload":{"args":{<wire>:…}}}
-//   auth: GET /?token=<process token printed on startup> → authority-bound session cookie (reusable)
-//   session/prompt's requestId comes back as the user message's source.rpcId
+// DSH runtime: an ash agent backed by one DSH agent living in the in-process DSH world
+// (see dsh/host.ts). Everything is a direct call — no HTTP, no polling:
+//   deliver → agent.followup / agent.steer      cancel → agent.cancel
+//   who is speaking → agent.inject (lands in the same model step, model-visible and logged)
+//   what happens → the `session/event` feed (assistant messages, tool calls, turn ends)
 
-import { existsSync, readFileSync, writeFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { type DshAgent, type DshHost, userMessage } from "../dsh/host";
 import type { AgentRuntime, InboundMessage, RuntimeContext, RuntimeEvent, TurnResult } from "../runtime";
-
-export interface DshOptions {
-  /** Engine origin, e.g. http://127.0.0.1:3090 */
-  url: string;
-  /** Engine log that contains the "dsh web: <url>/?token=…" line. */
-  log: string;
-  /** Adopt an existing session instead of creating one. */
-  sessionId?: string;
-  title?: string;
-  /** DSH user patch document; when set, ash registers its MCP server there (managed block). */
-  patchFile?: string;
-  /** Give up on a turn after this long (default 15 min). */
-  turnTimeoutMs?: number;
-}
-
-type Rec = { seq: number; type: string; data: Record<string, any> };
-
-const sleep = (ms: number, signal?: AbortSignal) =>
-  new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
-  });
 
 export class DshRuntime implements AgentRuntime {
   readonly kind = "dsh";
@@ -43,199 +19,106 @@ export class DshRuntime implements AgentRuntime {
     events_stream: true,
     resume: true,
     mcp_client: true,
-    loop_gate: false, // → in-process binding (agent/pre-step)
-    context_sections: false, // → in-process binding (dsh-system-prompt)
-    tool_projection: false, // → in-process binding (ctx.tools)
-    approval_answerer: false, // → in-process binding (dsh-user-approval)
+    loop_gate: true, // agent/pre-step
+    context_sections: true, // agent.inject (per step); system-prompt sections next
+    tool_projection: true, // ash system services are native DSH tools (ash_*)
+    approval_answerer: false, // next: answer dsh-user-approval requests from ash
   };
-  private ctx!: RuntimeContext;
+  private agent!: DshAgent;
   private sessionId = "";
-  private cookie: string | null = null;
-  private cookieFor: string | null = null;
-  private rpcSeq = 0;
-  private readonly origin: string;
 
-  constructor(private readonly opts: DshOptions) {
-    this.origin = new URL(opts.url).origin;
-  }
+  constructor(private readonly host: DshHost) {}
 
   handle(): string | undefined {
     return this.sessionId || undefined;
   }
 
   async start(ctx: RuntimeContext): Promise<void> {
-    this.ctx = ctx;
-    const saved = join(ctx.stateDir, "dsh-session.json");
-    this.sessionId = this.opts.sessionId ?? (existsSync(saved) ? JSON.parse(readFileSync(saved, "utf8")).sessionId : "");
-    if (!this.sessionId) {
-      const v = await this.rpc<{ sessionId: string }>("session/create", { request: { cwd: ctx.workspaceDir } });
-      this.sessionId = v.sessionId;
-      await this.rpc("session/rename", { request: { sessionId: this.sessionId, title: this.opts.title ?? `Ash · ${ctx.agentId.slice(6)}` } }).catch(() => {});
-    }
-    writeFileSync(saved, JSON.stringify({ sessionId: this.sessionId }));
-    if (this.opts.patchFile && this.ensureMcpEntry(this.opts.patchFile)) {
-      ctx.log(`registered ash system services in ${this.opts.patchFile}; DSH picks them up on its next start`);
-    }
+    const file = join(ctx.stateDir, "dsh-session.json");
+    const saved = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).sessionId as string) : undefined;
+    const { agent, sessionId } = await this.host.agent(ctx.agentId, ctx.workspaceDir, saved);
+    this.agent = agent;
+    this.sessionId = sessionId;
+    writeFileSync(file, JSON.stringify({ sessionId }));
+    ctx.log(`DSH session ${sessionId}${saved === sessionId ? " (resumed)" : " (new)"}`);
   }
 
-  async runTurn(msg: InboundMessage, emit: (e: RuntimeEvent) => void, signal: AbortSignal): Promise<TurnResult> {
-    let seen = await this.cursor();
-    await this.rpc("session/prompt", {
-      request: { requestId: msg.message_id, sessionId: this.sessionId, mode: "queue", content: [{ type: "text", text: this.format(msg) }] },
-    });
-    const deadline = Date.now() + (this.opts.turnTimeoutMs ?? 15 * 60_000);
-    let mine = false;
-    const toolNames = new Map<string, string>();
-    while (!signal.aborted && Date.now() < deadline) {
-      await sleep(700, signal);
-      const cur = await this.cursor();
-      if (cur <= seen) continue;
-      for (const r of await this.page(cur)) {
-        if (r.seq <= seen) continue;
+  runTurn(msg: InboundMessage, emit: (e: RuntimeEvent) => void, signal: AbortSignal): Promise<TurnResult> {
+    return new Promise<TurnResult>((resolve) => {
+      const dshId = randomUUID();
+      const tools = new Map<string, string>();
+      let mine = false;
+      let done = false;
+      const finish = (r: TurnResult) => {
+        if (done) return;
+        done = true;
+        off();
+        clearTimeout(timer);
+        resolve(r);
+      };
+      const off = this.host.onSessionEvent((sid, e) => {
+        if (sid !== this.sessionId || done) return;
         if (!mine) {
-          if (r.type === "user/message" && r.data?.source?.rpcId === msg.message_id) mine = true;
-          continue;
+          if (e.type === "user/message" && e.data?.id === dshId) mine = true;
+          return;
         }
-        switch (r.type) {
+        switch (e.type) {
           case "assistant/message": {
-            const text = (r.data?.message?.content ?? [])
+            const text = (e.data?.message?.content ?? [])
               .filter((c: { type: string }) => c.type === "text")
               .map((c: { text: string }) => c.text)
               .join("");
             if (text.trim()) emit({ type: "text", text });
-            break;
+            return;
           }
           case "tool/call":
-            toolNames.set(r.data.callId, r.data.name);
-            emit({ type: "tool.call", name: r.data.name, args: safeJson(r.data.arguments) });
-            break;
+            tools.set(e.data.callId, e.data.name);
+            emit({ type: "tool.call", name: e.data.name, args: parse(e.data.arguments) });
+            return;
           case "tool/result": {
-            const m = r.data?.message ?? {};
+            const m = e.data?.message ?? {};
             const preview = (m.content ?? []).map((c: { text?: string }) => c.text ?? "").join("").slice(0, 300);
-            emit({ type: "tool.result", name: toolNames.get(m.toolCallId) ?? "?", ok: !m.isError && !r.data?.error, preview });
-            break;
+            emit({ type: "tool.result", name: tools.get(m.toolCallId) ?? "?", ok: !m.isError && !e.data?.error, preview });
+            return;
           }
           case "turn/end": {
-            const kind = r.data?.reason?.kind;
-            if (kind === "completed") return { reason: "completed" };
-            if (kind === "interrupted" || kind === "cancelled") return { reason: "cancelled" };
-            return { reason: "error", error: r.data?.reason?.error?.message ?? String(kind) };
+            const kind = e.data?.reason?.kind;
+            if (kind === "completed") return finish({ reason: "completed" });
+            if (kind === "interrupted" || kind === "cancelled") return finish({ reason: "cancelled" });
+            return finish({ reason: "error", error: e.data?.reason?.error?.message ?? String(kind) });
           }
         }
-      }
-      seen = cur;
-    }
-    return signal.aborted ? { reason: "cancelled" } : { reason: "error", error: "turn timed out" };
+      });
+      const timer = setTimeout(() => finish({ reason: "error", error: "turn timed out" }), 15 * 60_000);
+      signal.addEventListener("abort", () => this.agent.cancel("cancelled by ash"), { once: true });
+      // Who is speaking is model-visible context for this step, not part of the user's words.
+      const origin = describe(msg.from);
+      if (origin) this.agent.inject(userMessage(`[ash] ${origin}`));
+      this.agent.followup(userMessage(msg.text, dshId));
+    });
   }
 
   async steer(msg: InboundMessage): Promise<void> {
-    await this.rpc("session/prompt", {
-      request: { requestId: msg.message_id, sessionId: this.sessionId, mode: "steer", content: [{ type: "text", text: this.format(msg) }] },
-    });
+    const origin = describe(msg.from);
+    this.agent.steer(userMessage(origin ? `[ash] ${origin}\n${msg.text}` : msg.text));
   }
 
   async cancel(): Promise<void> {
-    await this.rpc("session/cancel", { request: { sessionId: this.sessionId } });
+    this.agent.cancel("cancelled by ash");
   }
 
   async stop(): Promise<void> {}
-
-  // ---------------------------------------------------------------- helpers
-
-  /** Until the binding injects context sections, the sender is stated in the message itself. */
-  private format(msg: InboundMessage): string {
-    if (msg.from === "person:owner") return msg.text;
-    if (msg.from.startsWith("timer:")) return `[提醒 ${msg.from.slice(6)}] ${msg.text}`;
-    return `[来自 ${msg.from}] ${msg.text}`;
-  }
-
-  private async cursor(): Promise<number> {
-    const v = await this.rpc<{ items: { sessionId: string; projections?: { asOfSeq?: number } }[] }>("session/list", { _request: {} });
-    return v.items.find((i) => i.sessionId === this.sessionId)?.projections?.asOfSeq ?? 0;
-  }
-
-  private async page(through: number): Promise<Rec[]> {
-    const v = await this.rpc<{ records: { event: Rec }[] }>("session/page", {
-      request: { address: { kind: "session", sessionId: this.sessionId }, throughSeq: through, maxMessages: 500 },
-    });
-    return v.records.map((r) => r.event).sort((a, b) => a.seq - b.seq);
-  }
-
-  private async rpc<T = unknown>(endpoint: string, args: Record<string, unknown>): Promise<T> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const cookie = await this.auth(attempt > 0);
-      const res = await fetch(`${this.origin}/api/${endpoint}`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
-        body: JSON.stringify({ type: "client-request", rpcId: `ash-${++this.rpcSeq}`, method: endpoint, payload: { args } }),
-      });
-      if (res.status === 401 || res.status === 403) continue;
-      const body = (await res.json().catch(() => ({}))) as { result?: { ok: boolean; value?: T; error?: { message?: string; code?: string } } };
-      if (!res.ok || !body.result) throw new Error(`dsh ${endpoint}: HTTP ${res.status}`);
-      if (!body.result.ok) throw new Error(`dsh ${endpoint}: ${body.result.error?.code ?? ""} ${body.result.error?.message ?? ""}`.trim());
-      return body.result.value as T;
-    }
-    throw new Error(`dsh ${endpoint}: not authenticated (no usable token in ${this.opts.log})`);
-  }
-
-  private tokenUrl(): string | null {
-    try {
-      const size = statSync(this.opts.log).size;
-      const n = Math.min(size, 256 * 1024);
-      const buf = Buffer.alloc(n);
-      const fd = openSync(this.opts.log, "r");
-      readSync(fd, buf, 0, n, size - n);
-      closeSync(fd);
-      const esc = this.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const all = [...buf.toString("utf8").matchAll(new RegExp(`${esc}/\\?token=[A-Za-z0-9_-]+`, "g"))];
-      return all.length ? all[all.length - 1][0] : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async auth(force: boolean): Promise<string | null> {
-    const url = this.tokenUrl();
-    if (!url) return null;
-    if (!force && this.cookie && this.cookieFor === url) return this.cookie;
-    const r = await fetch(url, { redirect: "manual" });
-    const set = r.headers.getSetCookie();
-    if (!set.length) return null;
-    this.cookie = set.map((c) => c.split(";")[0]).join("; ");
-    this.cookieFor = url;
-    return this.cookie;
-  }
-
-  /** Keep one managed block in DSH's user patch that mounts ash's MCP server. Returns true if changed. */
-  private ensureMcpEntry(file: string): boolean {
-    const begin = "# >>> ash-core (managed; do not edit)";
-    const end = "# <<< ash-core";
-    const headers = Object.entries(this.ctx.mcp.headers)
-      .map(([k, v]) => `          ${k}: ${v}`)
-      .join("\n");
-    const block = [
-      begin,
-      "- insert:",
-      "    - id: mcp-ash",
-      "      name: '@deepseek-ai/dsh-mcp-client'",
-      "      config:",
-      "        serverName: ash",
-      "        transport: streamable-http",
-      `        url: ${this.ctx.mcp.url}`,
-      "        headers:",
-      headers,
-      end,
-    ].join("\n");
-    const cur = existsSync(file) ? readFileSync(file, "utf8") : "";
-    const re = new RegExp(`${begin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${end}`);
-    const next = re.test(cur) ? cur.replace(re, block) : `${cur.replace(/\n*$/, "\n")}${block}\n`;
-    if (next === cur) return false;
-    writeFileSync(file, next);
-    return true;
-  }
 }
 
-function safeJson(s: unknown): unknown {
+function describe(from: string): string | null {
+  if (from === "person:owner") return null;
+  if (from.startsWith("timer:")) return `这是你之前用 ash_timer_set 设的提醒（${from}）到点了，下面是提醒内容。`;
+  if (from.startsWith("agent:")) return `下面这条消息来自同一空间里的另一个 Agent：${from}（用 ash_send 回复它）。`;
+  if (from.startsWith("device:")) return `下面这条消息来自设备 ${from}。`;
+  return `下面这条消息来自 ${from}。`;
+}
+
+function parse(s: unknown): unknown {
   if (typeof s !== "string") return s;
   try {
     return JSON.parse(s);

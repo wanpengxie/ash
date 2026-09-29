@@ -7,6 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import { API_VERSION, AshApiError, type AshEvent } from "../../sdk/src/api";
 import type { Core } from "./core";
 import { handleMcp } from "./mcp";
+import { UI_HTML } from "./ui";
 
 export interface Tokens {
   /** API token → member id it speaks for. */
@@ -24,12 +25,15 @@ function same(a: string, b: string): boolean {
 }
 
 export function startServer(core: Core, tokens: Tokens, host: string, port: number): Promise<Server> {
-  const who = (req: IncomingMessage): string | null => {
-    const auth = req.headers.authorization ?? "";
-    if (!auth.startsWith("Bearer ")) return null;
-    const t = auth.slice(7).trim();
+  const memberFor = (t: string): string | null => {
     for (const [token, member] of Object.entries(tokens.api)) if (same(t, token)) return member;
     return null;
+  };
+  const who = (req: IncomingMessage): string | null => {
+    const auth = req.headers.authorization ?? "";
+    if (auth.startsWith("Bearer ")) return memberFor(auth.slice(7).trim());
+    const m = /(?:^|;\s*)ash_ui=([A-Za-z0-9_-]+)/.exec(req.headers.cookie ?? "");
+    return m ? memberFor(m[1]) : null;
   };
   const json = (res: ServerResponse, status: number, body: unknown) => {
     res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -77,6 +81,22 @@ export function startServer(core: Core, tokens: Tokens, host: string, port: numb
           return res.end();
         }
         return json(res, status, body);
+      }
+
+      // ---- UI: /?token=… trades the token for an HttpOnly cookie, then the page uses the SDK.
+      if (req.method === "GET" && path === "/") {
+        const t = url.searchParams.get("token");
+        if (t) {
+          if (!memberFor(t)) return json(res, 401, { error: "unauthorized" });
+          res.writeHead(303, { location: "./", "set-cookie": `ash_ui=${t}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`, "cache-control": "no-store" });
+          return res.end();
+        }
+        if (!who(req)) {
+          res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
+          return res.end("ash: open the URL printed at startup (… /?token=…)");
+        }
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'" });
+        return res.end(UI_HTML);
       }
 
       // ---- SDK

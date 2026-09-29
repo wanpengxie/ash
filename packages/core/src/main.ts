@@ -5,13 +5,11 @@
 //   "listen": "127.0.0.1:4700",
 //   "stateDir": "/…/ash-core/state",
 //   "workspaces": { "home": "/…/ash-home" },
-//   "agents": [
-//     { "id": "agent:main", "runtime": "dsh", "workspace": "home",
-//       "dsh": { "url": "http://127.0.0.1:3090", "log": "/…/dsh-web.log", "patchFile": "/…/profiles/web/cordis.patch.yml" } }
-//   ],
+//   "dsh": { "root": "/…/node_modules/@deepseek-ai/dsh", "home": "/…/ash-core/dsh-home", "seedFrom": "/…/dshhome" },
+//   "agents": [ { "id": "agent:main", "runtime": "dsh", "workspace": "home" } ],
 //   "notify": [ { "type": "http", "url": "http://127.0.0.1:3091/notify" } ]
 // }
-// Tokens live in <stateDir>/tokens.json (created on first start, mode 0600).
+// Tokens live in <stateDir>/tokens.json (created on first start, mode 0600); the UI URL in <stateDir>/ui-url.
 
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -19,7 +17,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Core, type Notifier } from "./core";
 import type { AgentRuntime } from "./runtime";
-import { DshRuntime, type DshOptions } from "./runtimes/dsh";
+import { DshHost, type DshHostOptions } from "./dsh/host";
+import { DshRuntime } from "./runtimes/dsh";
 import { EchoRuntime } from "./runtimes/echo";
 import { startServer, type Tokens } from "./server";
 import { Store } from "./store";
@@ -29,7 +28,9 @@ export interface Config {
   listen?: string;
   stateDir: string;
   workspaces?: Record<string, string>;
-  agents: { id: string; runtime: string; workspace?: string; dsh?: DshOptions }[];
+  /** The DSH world ash hosts in-process (core only). Needed by agents with runtime "dsh". */
+  dsh?: DshHostOptions;
+  agents: { id: string; runtime: string; workspace?: string; instructions?: string }[];
   notify?: ({ type: "http"; url: string } | { type: "command"; argv: string[] })[];
 }
 
@@ -57,10 +58,10 @@ function notifiers(cfg: Config): Notifier[] {
   );
 }
 
-function runtimeFor(def: Config["agents"][number]): AgentRuntime {
+function runtimeFor(def: Config["agents"][number], dsh: DshHost | null): AgentRuntime {
   if (def.runtime === "dsh") {
-    if (!def.dsh) throw new Error(`${def.id}: runtime dsh needs a "dsh" section`);
-    return new DshRuntime(def.dsh);
+    if (!dsh) throw new Error(`${def.id}: runtime dsh needs a top-level "dsh" section`);
+    return new DshRuntime(dsh);
   }
   if (def.runtime === "echo") return new EchoRuntime();
   throw new Error(`${def.id}: unknown runtime ${def.runtime} (this build has: dsh, echo)`);
@@ -75,14 +76,25 @@ export async function startCore(cfg: Config): Promise<{ core: Core; url: string;
   const addr = server.address();
   const url = `http://${host}:${typeof addr === "object" && addr ? addr.port : portText}`;
   log(`ash core (${cfg.space ?? "me"}) listening on ${url}`);
+  // The UI entry carries the owner token: it goes to a 0600 file, never to the log.
+  const ownerToken = Object.entries(tokens.api).find(([, m]) => m === "person:owner")![0];
+  writeFileSync(join(cfg.stateDir, "ui-url"), `${url}/?token=${ownerToken}\n`, { mode: 0o600 });
+  log(`ash web: open the URL in ${join(cfg.stateDir, "ui-url")}`);
+  let dsh: DshHost | null = null;
+  if (cfg.dsh) {
+    dsh = new DshHost(cfg.dsh);
+    await dsh.boot(core.world(), log);
+    dsh.onPreStep(() => undefined); // loop gate: every step passes ash first; policies plug in here
+  }
   for (const def of cfg.agents) {
     const ws = def.workspace ?? "home";
     const dir = cfg.workspaces?.[ws] ?? join(cfg.stateDir, "workspaces", ws);
     const agentState = join(cfg.stateDir, "agents", def.id.replace(":", "_"));
     mkdirSync(dir, { recursive: true });
     mkdirSync(agentState, { recursive: true });
+    if (def.instructions && !existsSync(join(dir, "AGENTS.md"))) writeFileSync(join(dir, "AGENTS.md"), def.instructions);
     await core
-      .addAgent(def.id, ws, runtimeFor(def), {
+      .addAgent(def.id, ws, runtimeFor(def, dsh), {
         agentId: def.id,
         workspaceDir: dir,
         stateDir: agentState,
@@ -99,6 +111,7 @@ export async function startCore(cfg: Config): Promise<{ core: Core; url: string;
     tokens,
     close: async () => {
       await core.stop();
+      await dsh?.stop().catch(() => {});
       await new Promise<void>((r) => server.close(() => r()));
     },
   };

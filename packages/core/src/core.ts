@@ -3,7 +3,8 @@
 
 import { randomBytes } from "node:crypto";
 import type { AgentInfo, AgentStatus, AshEvent, DeliverRequest, DeliverResult, EventType, Member, NotifyRequest, Timer, TimerRequest } from "../../sdk/src/api";
-import { AshApiError } from "../../sdk/src/api";
+import { API_VERSION, AshApiError } from "../../sdk/src/api";
+import type { AshWorld } from "./dsh/door";
 import type { AgentRuntime, InboundMessage, RuntimeContext } from "./runtime";
 import type { Store } from "./store";
 
@@ -229,6 +230,21 @@ export class Core {
 
   private workspaceOf(member: string): string {
     return this.agents.get(member)?.info.workspace ?? "home";
+  }
+
+  /** Handle ② — what an agent world (e.g. DSH) may do with ash, always on behalf of a named member. */
+  world(): AshWorld {
+    return {
+      api: API_VERSION,
+      members: () => this.listMembers().map(({ id, kind, name, online }) => ({ id, kind, name, online })),
+      agents: () => this.listAgents().map(({ id, runtime, status, queued }) => ({ id, runtime, status, queued })),
+      send: (from, to, text) => ({ message_id: this.deliver(to, { text }, from).message_id }),
+      setTimer: (owner, req) => this.setTimer({ ...req, owner }, owner),
+      listTimers: (owner) => this.listTimers(owner),
+      cancelTimer: (owner, id) => this.cancelTimer(id, owner, owner),
+      notify: (from, title, text, urgency) => this.notify({ title, text, urgency }, from),
+      log: (n) => this.recent(n),
+    };
   }
 
   async stop(): Promise<void> {
