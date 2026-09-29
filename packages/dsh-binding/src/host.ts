@@ -15,7 +15,7 @@
 //   settings      credentials / agentDefaultModel → the ash settings page
 
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -90,7 +90,13 @@ export class DshHost {
     mkdirSync(prof, { recursive: true });
     // The profile is core only. ash owns every surface (UI, channels); DSH brings the agent.
     // Its cordis.patch.yml belongs to DSH's own settings (they persist there); ash never rewrites it.
-    writeFileSync(join(prof, "package.json"), JSON.stringify({ name: "dsh-profile-ash", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base"] } } }, null, 1));
+    // DSH's plugin manager records installed plugins in this same package.json: merge, never overwrite.
+    const pkgFile = join(prof, "package.json");
+    const pkg = existsSync(pkgFile) ? JSON.parse(readFileSync(pkgFile, "utf8")) : { name: "dsh-profile-ash", private: true };
+    pkg.dsh ??= {};
+    pkg.dsh.profile ??= {};
+    pkg.dsh.profile.bundles = ["@deepseek-ai/dsh-base", ...((pkg.dsh.profile.bundles as string[] | undefined) ?? []).filter((b) => b !== "@deepseek-ai/dsh-base")];
+    writeFileSync(pkgFile, JSON.stringify(pkg, null, 1));
     if (!existsSync(join(prof, "cordis.yml"))) writeFileSync(join(prof, "cordis.yml"), "[]\n");
     if (!existsSync(join(prof, "cordis.patch.yml"))) writeFileSync(join(prof, "cordis.patch.yml"), "[]\n");
 
@@ -103,7 +109,10 @@ export class DshHost {
     const scope = await this.imp("@deepseek-ai/dsh-scope").catch(() => null);
     if (scope?.scopeChainOf) this.scopeChainOf = scope.scopeChainOf;
     const t0 = Date.now();
+    // First boots after an update or a plugin install compile a lot; say so instead of going quiet.
+    const progress = setInterval(() => this.log(`DSH still booting (${Math.round((Date.now() - t0) / 1000)} s)…`), 30_000);
     const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash", patchFiles: this.opts.patchFiles ?? [], args: [] });
+    clearInterval(progress);
     this.ctx = ctx;
     this.shutdownHandle = shutdown;
     this.log(`DSH ${this.version} core booted in ${Date.now() - t0} ms (profile ash, home ${home})`);
@@ -153,6 +162,16 @@ export class DshHost {
     return undefined;
   }
 
+  /** Plugin packages installed into ash's DSH profile (by DSH's own plugin manager). */
+  plugins(): string[] {
+    try {
+      const pkg = JSON.parse(readFileSync(join(this.opts.home, "profiles", "ash", "package.json"), "utf8"));
+      return Object.keys(pkg.dependencies ?? {});
+    } catch {
+      return [];
+    }
+  }
+
   /** Called once per ash agent attached to a DSH agent (the door projects its devices). */
   onAgent(fn: (port: AgentPort) => void): void {
     this.agentHooks.push(fn);
@@ -192,7 +211,8 @@ export class DshHost {
   }
 
   async stop(): Promise<void> {
-    await this.shutdownHandle?.shutdown?.("ash stopping");
+    // DSH's process shutdown takes an exit code; it only records it once teardown completes.
+    await this.shutdownHandle?.shutdown?.(0);
   }
 }
 

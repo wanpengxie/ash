@@ -1,8 +1,6 @@
 package ai.ash.host.system
 
 import ai.ash.host.shizuku.PrivShell
-import ai.ash.host.shizuku.RootShell
-import ai.ash.host.shizuku.ShizukuState
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
@@ -59,6 +57,7 @@ object Launcher {
     } catch (e: Throwable) { false }
 
     /** The same intent as an `am start` command line (action, data, type, categories, component/package, string extras). */
+    @Suppress("DEPRECATION")
     fun amStart(intent: Intent): String {
         val q = PrivShell::quote
         val sb = StringBuilder("am start")
@@ -80,7 +79,4 @@ object Launcher {
         sb.append(" -f ").append(intent.flags)
         return sb.toString()
     }
-
-    /** True when some privileged channel is known to work without prompting. */
-    fun privileged(ctx: Context) = ShizukuState.ready() || RootShell.known() == true
 }

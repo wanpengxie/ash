@@ -125,6 +125,8 @@ class CoreProcess(private val ctx: Context) {
         pb.environment().clear()
         pb.environment().putAll(environment())
         pb.redirectErrorStream(true)
+        // A daemon: no stdin (an open pipe nobody writes could stall anything that reads it).
+        pb.redirectInput(File("/dev/null"))
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(p.coreLog))
         val proc = pb.start()
         val pid = pidOf(proc)
@@ -145,6 +147,13 @@ class CoreProcess(private val ctx: Context) {
 
     fun stop() {
         pid()?.let { kill(it) }
+    }
+
+    /** Supervisor decisions go into core.log too, so one file tells the whole story. */
+    fun note(msg: String) {
+        Log.i(TAG, msg)
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date())
+        try { p.coreLog.appendText("$now [host] $msg\n") } catch (_: Exception) {}
     }
 
     fun portOpen(timeoutMs: Int = 3000): Boolean = try {

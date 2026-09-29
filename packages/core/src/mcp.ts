@@ -11,7 +11,11 @@ const PROTOCOL = "2025-06-18";
 
 /** Device tools are named `<device slug>__<capability>` (slug from the device name, ASCII). */
 export function deviceToolName(deviceName: string, deviceId: string, capability: string): string {
-  const slug = (deviceName.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase() || deviceId.replace(/^device:/, "").slice(0, 8)).slice(0, 20);
+  // The phone is simply "phone"; other devices by their (ASCII-folded) name, e.g. macbook_pro.
+  const slug =
+    deviceId === "device:phone"
+      ? "phone"
+      : (deviceName.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase() || deviceId.replace(/^device:/, "").slice(0, 8)).slice(0, 20).replace(/_+$/, "");
   return `${slug}__${capability.replace(/[^A-Za-z0-9_-]+/g, "_")}`.slice(0, 64);
 }
 

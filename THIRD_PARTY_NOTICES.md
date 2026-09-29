@@ -22,20 +22,20 @@
 虚拟屏功能的实现**移植/对齐自 Operit 的 shower（虚拟屏）模块**。其中两个文件在源码里**已经带有原始许可声明**：
 
 ```java
-// android-app/src/com/deepseek/harness/vscreen/FakeContext.java
-// android-app/src/com/deepseek/harness/vscreen/Workarounds.java
+// android/app/src/main/java/ai/ash/vscreen/FakeContext.java
+// android/app/src/main/java/ai/ash/vscreen/Workarounds.java
 // 第 1 行： Licensed under LGPL-3.0; source: https://github.com/AAswordman/Operit (shower shell)
 ```
 
 | 文件 | 与本项目的关系 |
 |---|---|
-| `android-app/src/com/deepseek/harness/vscreen/FakeContext.java` | **取自 Operit**（shower shell）；最小 `Context` 实现，供 app_process 环境下构造 `DisplayManager` 使用 |
-| `android-app/src/com/deepseek/harness/vscreen/Workarounds.java` | **取自 Operit**（shower shell）；隐藏 API / 反射规避处理 |
-| `android-app/src/com/deepseek/harness/vscreen/Main.java` | 虚拟屏服务端。其**核心机制移植/对齐 Operit**：`MediaCodec` H.264 编码器 Surface + `setVideoSink` 推流、SPS/PPS（csd-0/csd-1）缓存重放、`DisplayManager.createVirtualDisplay()` 建屏、`InputManager` 反射定向注入、`ActivityOptions.setLaunchDisplayId` 启动到指定虚拟屏、idleWatcher 保活 |
+| `android/app/src/main/java/ai/ash/vscreen/FakeContext.java` | **取自 Operit**（shower shell）；最小 `Context` 实现，供 app_process 环境下构造 `DisplayManager` 使用 |
+| `android/app/src/main/java/ai/ash/vscreen/Workarounds.java` | **取自 Operit**（shower shell）；隐藏 API / 反射规避处理 |
+| `android/app/src/main/java/ai/ash/vscreen/Main.java` | 虚拟屏服务端。其**核心机制移植/对齐 Operit**：`MediaCodec` H.264 编码器 Surface + `setVideoSink` 推流、SPS/PPS（csd-0/csd-1）缓存重放、`DisplayManager.createVirtualDisplay()` 建屏、`InputManager` 反射定向注入、`ActivityOptions.setLaunchDisplayId` 启动到指定虚拟屏、idleWatcher 保活 |
 | `plugins/dsh-tool-vscreen/` | 本项目自研的 DSH 插件封装（通过 HTTP 调用上述服务端；接口与工具 schema 为本项目设计） |
 
 > **保险起见的口径**：尽管只有上表前两个文件带显式 LGPL 头，本声明**按最保守方式把整个虚拟屏模块
-> （`android-app/src/com/deepseek/harness/vscreen/`）视为 LGPL-3.0 覆盖范围**。
+> （`android/app/src/main/java/ai/ash/vscreen/`）视为 LGPL-3.0 覆盖范围**。
 > 这样无论后续维护者把哪些文件判定为"衍生作品"，都不会出现许可缺口。
 
 ### 1.2 如果你要继续修改这些文件
@@ -65,21 +65,18 @@
 | 仓库 | <https://github.com/RikkaApps/Shizuku> |
 | 许可证 | Apache License 2.0 |
 
-**使用方式**：本项目的特权通道通过 Shizuku 提供的 SDK 与 `rish`（Shizuku shell loader）实现。
-
-- `android-app/libs/shizuku-api.aar`、`shizuku-aidl.aar`、`shizuku-provider.aar`
-- APK 内置 `assets/rish_shizuku.dex`（运行时由 App 释放，用于在 shell 身份下执行特权命令）
+**使用方式**：特权通道（`shell.*`、虚拟屏）通过 Shizuku 的 SDK 实现：`android/app/libs/shizuku-api.aar`、`shizuku-aidl.aar`、`shizuku-provider.aar`。
 
 **未做修改**，按原样分发。
 
 ---
 
-## 3. Node.js 运行时与 npm 依赖
+## 3. payload：运行时与 npm 依赖
 
 | 项 | 说明 |
 |---|---|
-| `runtime/`（APK 内置） | **Node.js** 运行时（MIT 许可），随包分发 |
-| dshroot 内的依赖闭包 | 来自 npm 的 `@deepseek-ai/*` 及其他第三方包，**版权与许可归各自作者所有**，随包原样分发；本仓库不重新授权它们 |
+| `runtime/` | Termux 的 aarch64 软件包（Node.js、Python、Git、ripgrep、Bash、curl、pnpm、OpenSSL、ICU 等），版本与哈希锁定在 `payload/manifest.json`，只做了可重定位处理（RUNPATH、shebang），各自原许可 |
+| `dsh/` | 来自 npm 的 `@deepseek-ai/dsh` 及其依赖闭包，**原样分发**，版权与许可归各自作者所有；本仓库不重新授权它们 |
 
 ---
 
@@ -87,7 +84,8 @@
 
 | 范围 | 许可证 |
 |---|---|
-| 本仓库其余全部内容（App 外壳、4 个自研插件、补丁面、构建脚本、文档） | **MIT** |
-| `android-app/src/com/deepseek/harness/vscreen/`（虚拟屏） | **LGPL-3.0**（源自 Operit） |
-| `android-app/libs/*.aar`、`assets/rish_shizuku.dex`（Shizuku） | **Apache-2.0** |
-| APK 内置 Node 运行时、npm 依赖 | 各自原许可 |
+| 本仓库其余全部内容（ash core、SDK、DSH 绑定、Android 宿主、构建脚本、文档） | **MIT** |
+| `android/app/src/main/java/ai/ash/vscreen/`（虚拟屏） | **LGPL-3.0**（源自 Operit） |
+| `android/app/libs/*.aar`（Shizuku API） | **Apache-2.0** |
+| payload：DSH（`@deepseek-ai/*`）及其 npm 依赖 | 各自原许可，原样分发，本仓库不重新授权 |
+| payload：Termux 软件包（node、python、git、ripgrep、bash、curl、pnpm、openssl 等） | 各自原许可（见 payload 内 `runtime/share/LICENSES` 与各包说明）；版本与哈希锁定在 `payload/manifest.json` |

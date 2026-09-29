@@ -87,7 +87,7 @@ object VScreenClient {
                 throw IllegalStateException("virtual screens need Shizuku: ${ShizukuState.whyNot(ctx)}")
             }
             val apk = ctx.applicationInfo.sourceDir
-            val cmd = "CLASSPATH=${PrivShell.quote(apk)} exec /system/bin/app_process /system/bin $MAIN"
+            val cmd = "CLASSPATH=${PrivShell.quote(apk)} exec /system/bin/app_process /system/bin --nice-name=ash_vscreen $MAIN"
             proc?.destroy()
             synchronized(errTail) { errTail.setLength(0) }
             val p = PrivShell.spawn("shizuku", cmd)

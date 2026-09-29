@@ -85,7 +85,10 @@ class CoreService : Service() {
 
                 val pid = core.pid()
                 if (secrets.stopped) {
-                    if (pid != null) core.stop()
+                    if (pid != null) {
+                        core.note("stopping ash core (stop requested)")
+                        core.stop()
+                    }
                     state = "stopped"
                     Notifications.updateService(this, "已停止（在诊断页启动）")
                 } else if (pid == null) {
@@ -95,6 +98,7 @@ class CoreService : Service() {
                     if (!running || secrets.stopped) continue
                     state = "starting"
                     Notifications.updateService(this, if (failures > 2) "Ash 反复退出，正在重试（看诊断页的日志）" else "启动中…")
+                    if (startedAt > 0) core.note(if (failures > 0) "ash core exited; restarting (attempt ${failures + 1})" else "ash core is not running; starting it")
                     core.start(hostPort)
                     startedAt = System.currentTimeMillis()
                     unhealthySince = 0L
@@ -106,7 +110,7 @@ class CoreService : Service() {
                     if (unhealthySince == 0L) unhealthySince = System.currentTimeMillis()
                     // Booting DSH takes ~30 s on a phone; only a core that stays deaf is restarted.
                     if (System.currentTimeMillis() - unhealthySince > 180_000) {
-                        Log.w(TAG, "ash core $pid does not answer; restarting it")
+                        core.note("ash core $pid does not answer for 3 minutes; restarting it")
                         core.stop()
                     }
                 }

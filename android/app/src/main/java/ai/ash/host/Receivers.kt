@@ -50,3 +50,15 @@ class ConfirmReceiver : BroadcastReceiver() {
         }.start()
     }
 }
+
+/**
+ * Start/stop/restart from tooling: `adb shell am broadcast -n ai.ash.agent/ai.ash.host.ControlReceiver -a ai.ash.STOP`.
+ * Guarded by android.permission.DUMP, which only the shell and the system hold — other apps cannot use it.
+ */
+class ControlReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        when (intent.action) {
+            CoreService.ACTION_START, CoreService.ACTION_STOP, CoreService.ACTION_RESTART -> CoreService.start(ctx, intent.action)
+        }
+    }
+}

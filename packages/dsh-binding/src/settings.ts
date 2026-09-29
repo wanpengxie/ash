@@ -34,7 +34,9 @@ export function dshSettings(host: DshHost) {
           credentials[k] = false;
         }
       }
-      return { dsh: host.version, model: selection ?? null, models, credentials };
+      // What this DSH world has loaded: installed plugin packages and the tools they registered.
+      const tools = ((c.get("tools")?.schemas?.() ?? []) as { name: string }[]).map((t) => t.name).sort();
+      return { dsh: host.version, model: selection ?? null, models, credentials, plugins: host.plugins(), tools };
     },
     async set(body: Record<string, unknown>): Promise<unknown> {
       const c = ctx();

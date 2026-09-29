@@ -156,7 +156,8 @@ function render(e, live) {
     case "timer.fired": add(node("chip", "⏰ 提醒到点 · " + esc(d.timer.text.slice(0, 40)))); break;
     case "timer.cancelled": add(node("chip", "⏰ 提醒已取消")); break;
     case "notify": add(node("card", "<b>🔔 " + esc(d.title) + "</b>" + md(d.text) + "<small>" + esc(nameOf(e.member)) + " · " + time(e.ts) + (d.quiet ? " · 静默时段" : "") + "</small>")); break;
-    case "call.started": { const c = add(node("tool", "📱 " + esc(nameOf(d.device)) + " · " + esc(d.capability) + ' <span class="st">…</span>')); c.id = "call_" + d.id; break; }
+    // An agent's device calls already show as its tool rows; list only calls made directly (e.g. by the owner).
+    case "call.started": { if (String(d.caller || "").startsWith("agent:")) break; const c = add(node("tool", "🔌 " + esc(nameOf(d.device)) + " · " + esc(d.capability) + ' <span class="st">…</span>')); c.id = "call_" + d.id; break; }
     case "call.ended": { const c = document.getElementById("call_" + d.id); if (c) c.querySelector(".st").innerHTML = d.ok ? "✓" : '<span class="x">✗ ' + esc(d.error || "") + "</span>"; break; }
   }
   if (typingWas && status[AGENT] === "running") setTyping(true);
