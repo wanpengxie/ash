@@ -126,6 +126,19 @@ object PayloadInstaller {
         }
     }
 
+    /**
+     * Once everything was carried over, the 0.1.x leftovers go: the gateway link (its identity now
+     * lives in the Keystore), the experimental core, rish/vscreen drops, the old engine's files.
+     * Each is removed only when what it held has a new home.
+     */
+    fun cleanupLegacy(p: Paths, identityImported: Boolean) {
+        val f = p.files
+        // The key file is deleted by a successful import; while it exists (import failed), keep it.
+        if (identityImported && !File(p.legacyLink, "state/device.jwk").exists()) File(f, "ash-link").deleteRecursively()
+        if (File(p.state, "ash.db").exists()) File(f, "ash-core").deleteRecursively()
+        for (name in listOf("rish", "vscreen", "ash-launch.json", "dsh-web.log", "payload.old")) File(f, name).deleteRecursively()
+    }
+
     private fun copyTree(from: File, to: File) {
         from.walkTopDown().forEach { f ->
             val rel = f.relativeTo(from)

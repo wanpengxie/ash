@@ -36,6 +36,9 @@ object Keys {
 
     private fun store(): KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
+    /** Whether the phone's identity is in the Keystore (after which the old key file is not needed). */
+    fun present(): Boolean = try { store().containsAlias(ALIAS) } catch (e: Exception) { false }
+
     @Synchronized
     fun ensure(p: Paths) {
         val ks = store()

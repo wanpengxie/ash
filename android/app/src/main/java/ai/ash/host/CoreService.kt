@@ -82,6 +82,7 @@ class CoreService : Service() {
                     installProgress = 100
                 } else PayloadInstaller.migrate(paths)
                 if (paths.legacyLink.exists()) Keys.ensure(paths)
+                PayloadInstaller.cleanupLegacy(paths, Keys.present())
 
                 val pid = core.pid()
                 if (secrets.stopped) {
