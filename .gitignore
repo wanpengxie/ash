@@ -17,3 +17,7 @@ payload.zip
 
 # ash 构建产物
 android-app/out-ash/
+
+# ash packages
+node_modules/
+packages/*/dist/
