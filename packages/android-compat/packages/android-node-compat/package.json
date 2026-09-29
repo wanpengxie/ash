@@ -1,0 +1,20 @@
+{
+  "name": "android-node-compat",
+  "version": "0.1.0",
+  "description": "Host-side runtime preload that adapts Node on Android (bionic, f2fs + SELinux app sandbox) for unmodified DeepSeek Harness installs.",
+  "type": "commonjs",
+  "main": "./index.cjs",
+  "exports": {
+    ".": "./index.cjs",
+    "./flock": "./flock.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.cjs",
+    "flock.mjs"
+  ],
+  "engines": {
+    "node": ">=22.15"
+  },
+  "license": "MIT"
+}

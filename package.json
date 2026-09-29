@@ -2,12 +2,14 @@
   "name": "ash",
   "private": true,
   "type": "module",
-  "description": "ash — the personal-agent layer on top of DeepSeek Harness (DSH)",
+  "description": "ash \u2014 the personal-agent layer on top of DeepSeek Harness (DSH)",
   "license": "MIT",
   "scripts": {
-    "typecheck": "tsc --noEmit -p .",
-    "test": "node --import tsx --test packages/core/test/*.test.ts",
-    "build:core": "esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs"
+    "gen:ui": "node tools/gen-ui.mjs",
+    "typecheck": "npm run -s gen:ui && tsc --noEmit -p .",
+    "test": "npm run -s gen:ui && node --expose-internals --import tsx --test --test-force-exit packages/*/test/*.test.ts",
+    "build:core": "npm run -s gen:ui && esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
@@ -15,5 +17,10 @@
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   },
-  "engines": { "node": ">=22.5" }
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "ash-gateway": "github:wanpengxie/ash-gateway#f11ce74"
+  }
 }

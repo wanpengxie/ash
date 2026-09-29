@@ -1,135 +1,53 @@
-// ash system services for agents, as an MCP server (Streamable HTTP, JSON responses).
-//
-// This is the "runtime → ash" direction that needs no plugin at all: any runtime with an
-// MCP client (DSH, Claude Code, Codex, Pi …) mounts `/mcp/<agent>` and gets these tools.
-// Every call speaks for exactly one agent (the token decides which).
+// MCP projection: ash system services and the agent's granted device capabilities as one
+// Streamable-HTTP MCP server per agent (JSON responses, no server-initiated streams). This is
+// how out-of-process runtimes (Codex, Claude Code, …) reach ash; DSH uses the in-process door.
 
 import type { Core } from "./core";
+import { SYSTEM_TOOL_DEFS, runSystemTool } from "./tools";
 
-interface Tool {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  run: (args: Record<string, unknown>, agent: string) => Promise<unknown> | unknown;
+type Rpc = { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
+
+const PROTOCOL = "2025-06-18";
+
+/** Device tools are named `<device slug>__<capability>` (slug from the device name, ASCII). */
+export function deviceToolName(deviceName: string, deviceId: string, capability: string): string {
+  const slug = (deviceName.normalize("NFKD").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase() || deviceId.replace(/^device:/, "").slice(0, 8)).slice(0, 20);
+  return `${slug}__${capability.replace(/[^A-Za-z0-9_-]+/g, "_")}`.slice(0, 64);
 }
 
-const fmtTime = (ms: number) => new Date(ms).toISOString();
-
-export function systemTools(core: Core): Tool[] {
-  return [
-    {
-      name: "members",
-      description:
-        "List who is in this personal-agent space: the owner, agents (with status and queue), and devices. Use it to find an agent id before `send`.",
-      inputSchema: { type: "object", properties: {} },
-      run: () => ({ members: core.listMembers().map(({ id, kind, name, online }) => ({ id, kind, name, online })), agents: core.listAgents().map(({ id, runtime, status, queued }) => ({ id, runtime, status, queued })) }),
-    },
-    {
-      name: "send",
-      description:
-        "Send a message to another agent in this space (it is queued and handled after its current turn). You will not get its reply here; replies arrive as later messages or in the log.",
-      inputSchema: { type: "object", properties: { to: { type: "string", description: "agent id, e.g. agent:main" }, text: { type: "string" } }, required: ["to", "text"] },
-      run: (a, agent) => core.deliver(String(a.to), { text: String(a.text) }, agent),
-    },
-    {
-      name: "timer_set",
-      description:
-        "Set a reminder for yourself. When it fires, `text` is delivered back to you as a new message (from timer:<id>), even after restarts. Use it for 'remind me', follow-ups and periodic checks. Give in_seconds, or at_iso (ISO 8601 with timezone). repeat_seconds (>= 60) makes it recurring.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "what you want to be told when it fires" },
-          in_seconds: { type: "number" },
-          at_iso: { type: "string", description: "e.g. 2026-09-30T21:00:00+08:00" },
-          repeat_seconds: { type: "number" },
-        },
-        required: ["text"],
-      },
-      run: (a, agent) => {
-        const at = typeof a.at_iso === "string" ? Date.parse(a.at_iso) : undefined;
-        if (a.at_iso !== undefined && Number.isNaN(at)) throw new Error("at_iso is not a valid ISO 8601 time");
-        const t = core.setTimer({ text: String(a.text), in_seconds: a.in_seconds as number | undefined, at, repeat_seconds: a.repeat_seconds as number | undefined }, agent);
-        return { id: t.id, fires_at: fmtTime(t.fire_at), repeat_seconds: t.repeat_seconds, now: fmtTime(Date.now()) };
-      },
-    },
-    {
-      name: "timer_list",
-      description: "List your pending reminders.",
-      inputSchema: { type: "object", properties: {} },
-      run: (_a, agent) => core.listTimers(agent).map((t) => ({ id: t.id, text: t.text, fires_at: fmtTime(t.fire_at), repeat_seconds: t.repeat_seconds })),
-    },
-    {
-      name: "timer_cancel",
-      description: "Cancel one of your reminders by id.",
-      inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
-      run: (a, agent) => core.cancelTimer(String(a.id), agent, agent),
-    },
-    {
-      name: "notify",
-      description:
-        "Notify the owner (e.g. a phone notification). Keep it short. Use for results they asked to be told about, or something time-sensitive — not for chatter.",
-      inputSchema: {
-        type: "object",
-        properties: { title: { type: "string" }, text: { type: "string" }, urgency: { type: "string", enum: ["low", "normal", "high"] } },
-        required: ["title", "text"],
-      },
-      run: (a, agent) => core.notify({ title: String(a.title), text: String(a.text), urgency: a.urgency as "low" | "normal" | "high" | undefined }, agent),
-    },
-    {
-      name: "log",
-      description: "Read the recent shared event log of this space (messages, turns, timers, notifications), newest last.",
-      inputSchema: { type: "object", properties: { limit: { type: "number", description: "default 20, max 100" } } },
-      run: (a) =>
-        core.recent(Math.min(Number(a.limit ?? 20) || 20, 100)).map((e) => ({
-          seq: e.seq,
-          at: fmtTime(e.ts),
-          member: e.member,
-          type: e.type,
-          data: JSON.stringify(e.data).slice(0, 300),
-        })),
-    },
-  ];
-}
-
-/** Handle one MCP JSON-RPC POST body for `agent`; returns [status, body|null]. */
 export async function handleMcp(core: Core, agent: string, body: unknown): Promise<[number, unknown]> {
-  const tools = systemTools(core);
-  const one = async (m: Record<string, unknown>): Promise<unknown> => {
-    const id = m.id;
-    const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
-    const fail = (code: number, message: string) => ({ jsonrpc: "2.0", id, error: { code, message } });
+  const port = core.portOf(agent);
+  const one = async (m: Rpc): Promise<unknown | null> => {
+    const reply = (result: unknown) => ({ jsonrpc: "2.0", id: m.id ?? null, result });
+    const error = (code: number, message: string) => ({ jsonrpc: "2.0", id: m.id ?? null, error: { code, message } });
+    if (m.id === undefined || m.id === null) return null; // notification
     switch (m.method) {
-      case "initialize": {
-        const p = (m.params ?? {}) as { protocolVersion?: string };
-        return reply({
-          protocolVersion: p.protocolVersion ?? "2025-06-18",
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "ash", version: "1.0.0" },
-          instructions: `You are ${agent} in the owner's personal-agent space (ash). These tools reach the space: reminders that come back to you, messages to other agents, notifications to the owner, and the shared log.`,
-        });
-      }
+      case "initialize":
+        return reply({ protocolVersion: PROTOCOL, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "ash", version: "1" }, instructions: port.contextSections().identity });
       case "ping":
         return reply({});
-      case "tools/list":
-        return reply({ tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
-      case "tools/call": {
-        const p = (m.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
-        const tool = tools.find((t) => t.name === p.name);
-        if (!tool) return fail(-32602, `unknown tool ${p.name}`);
-        try {
-          const out = await tool.run(p.arguments ?? {}, agent);
-          return reply({ content: [{ type: "text", text: JSON.stringify(out, null, 1) }] });
-        } catch (e) {
-          return reply({ content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }], isError: true });
+      case "tools/list": {
+        const tools = SYSTEM_TOOL_DEFS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.input_schema }));
+        for (const { device, capability } of port.projectedCapabilities()) {
+          tools.push({ name: deviceToolName(device.name, device.id, capability.name), description: `[${device.name}] ${capability.description}`, inputSchema: capability.input_schema as never });
         }
+        return reply({ tools });
+      }
+      case "tools/call": {
+        const name = String(m.params?.name ?? "");
+        const args = (m.params?.arguments as Record<string, unknown>) ?? {};
+        const proj = port.projectedCapabilities().find(({ device, capability }) => deviceToolName(device.name, device.id, capability.name) === name);
+        const r = proj ? await port.call(proj.device.id, proj.capability.name, args) : await runSystemTool(port, name, args);
+        return reply({ content: r.content, isError: !r.ok, ...(r.data !== undefined && typeof r.data === "object" && !Array.isArray(r.data) ? { structuredContent: r.data } : {}) });
       }
       default:
-        if (typeof m.method === "string" && m.method.startsWith("notifications/")) return undefined;
-        return fail(-32601, `method not found: ${String(m.method)}`);
+        return error(-32601, `method not found: ${m.method}`);
     }
   };
-  const msgs = (Array.isArray(body) ? body : [body]) as Record<string, unknown>[];
-  const out = (await Promise.all(msgs.map(one))).filter((x) => x !== undefined);
-  if (out.length === 0) return [202, null];
-  return [200, Array.isArray(body) ? out : out[0]];
+  if (Array.isArray(body)) {
+    const out = (await Promise.all(body.map((m) => one(m as Rpc)))).filter((x) => x !== null);
+    return out.length ? [200, out] : [202, null];
+  }
+  const r = await one(body as Rpc);
+  return r === null ? [202, null] : [200, r];
 }

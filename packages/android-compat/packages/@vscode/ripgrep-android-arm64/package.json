@@ -1,0 +1,16 @@
+{
+  "name": "@vscode/ripgrep-android-arm64",
+  "version": "1.18.0",
+  "description": "android-arm64 platform package for @vscode/ripgrep: bin/rg is the Termux-built ripgrep shipped in the payload runtime.",
+  "os": [
+    "android"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/rg",
+    "README.md"
+  ],
+  "license": "MIT"
+}
