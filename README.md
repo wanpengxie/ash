@@ -1,3 +1,27 @@
+# ash
+
+**ash** 是一个常驻在安卓手机上的个人 Agent，以 [DeepSeek Harness（DSH）](https://www.npmjs.com/package/@deepseek-ai/dsh) 为底座。
+
+- **常驻**：前台服务守护 DSH 引擎，开机或升级后自动拉起，引擎挂了自动恢复；有一个固定的"主 Agent"会话，定时任务也投递到它。
+- **在任何地方连上它**：配合自部署的 Cloudflare 网关 [ash-gateway](https://github.com/wanpengxie/ash-gateway)：
+  - 已配对的浏览器可以远程打开完整界面；
+  - 已配对的笔记本可以把本机的 MCP 工具借给手机上的主 Agent。
+
+本仓库分叉自 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app)（MIT），以它的 v1.16.1 为基线。原项目的说明保留在下方。许可证与第三方声明见 [LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，其中虚拟屏模块按 LGPL-3.0 分发。
+
+> 状态：早期原型，源码结构正在重构中。
+
+## 构建（当前）
+
+```bash
+# 在装有 Android SDK 的 macOS/Linux 上；复用 DSH 官方 APK 里的 payload，只重新编译原生壳
+BASE_APK=DeepSeekHarness-official-v1.16.1.apk bash android-app/ash-build.sh   # → android-app/Ash.apk（应用 ID ai.ash.agent）
+```
+
+---
+
+以下是上游项目的原始说明。
+
 # DeepSeek Harness 手机版（Android）
 
 > 把 DeepSeek Harness（DSH）打包成**可直接安装的 Android APK** —— 装上就能用，还能让 AI **免 Root 真正操作手机**。
