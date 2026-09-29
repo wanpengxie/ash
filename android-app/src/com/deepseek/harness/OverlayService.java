@@ -64,6 +64,7 @@ public class OverlayService extends Service {
      */
     private static int defaultEnginePort(Context ctx) {
         String p = ctx != null ? ctx.getPackageName() : "";
+        if (Ash.is(p)) return Ash.ENGINE_PORT;
         if (p.contains("beta")) return 3082;
         if (p.contains("compat")) return 3084;
         return 3080;

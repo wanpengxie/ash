@@ -82,7 +82,11 @@ public class MainActivity extends Activity {
     private volatile String engineTokenUrl = null;
     /** WebView 与健康探测应使用的地址：拿到 token 就用带 token 的，否则退回普通地址。 */
     private String webHomeUrl() {
+        // ash：主 Agent 通道（AshAgent）可能已用掉这一代 token 并把 cookie 写进了 WebView 的罐，
+        // 此时再带 token 加载会 401 —— 直接进首页。
+        if (AshAgent.webHomeReady(this)) return homeUrl();
         String u = engineTokenUrl;
+        if (u == null || u.isEmpty()) u = AshAgent.tokenUrl(this);   // 引擎可能是前台服务拉起的
         return (u != null && !u.isEmpty()) ? u : homeUrl();
     }
     static {
@@ -416,6 +420,7 @@ public class MainActivity extends Activity {
             // v1.12：冷启动先停在控制台；切屏回来/任务恢复（savedInstanceState != null）直接进主界面。
             if (savedInstanceState == null) {
                 showConsole();
+                ashAutoStart();
             } else {
                 startEngine();
             }
@@ -426,6 +431,29 @@ public class MainActivity extends Activity {
 
     // 定时任务自动执行：闹钟到点带来的任务文本（引擎就绪后自动 prompt 执行）
     private String pendingScheduledTask = null;
+
+    /**
+     * ash：冷启动不再停在控制台等用户点「启动引擎」—— 文件已解压就直接拉起（或接上
+     * 前台服务已拉起的）引擎，就绪后自动进入主界面。首次安装仍由控制台引导解压。
+     */
+    private void ashAutoStart() {
+        if (!conFilesReady()) return;
+        if (getSharedPreferences("dsh_prefs", MODE_PRIVATE).getBoolean(EngineService.KEY_STOPPED, false)) return;
+        conEngineClick();
+        final long deadline = System.currentTimeMillis() + 180000L;
+        new Thread(new Runnable() { @Override public void run() {
+            while (System.currentTimeMillis() < deadline) {
+                if (engineStoppedByUser || engineStartAborted) return;
+                if (healthOk()) {
+                    ui.post(new Runnable() { @Override public void run() {
+                        try { if (consoleVisible) enterMainUi(); } catch (Throwable ignored) {}
+                    }});
+                    return;
+                }
+                try { Thread.sleep(1500); } catch (InterruptedException e) { return; }
+            }
+        }}, "ash-auto-enter").start();
+    }
 
     // ============ WebView 兼容检测（老安卓 WebView 缺失/过旧） ============
     /** DSH 前端是 Vite 构建的现代应用（<script type="module"> + 可选链/nullish），
@@ -1818,7 +1846,7 @@ public class MainActivity extends Activity {
 
     private String pkgRoot() {
         String p = getPackageName();
-        return p.contains("beta") ? "DeepSeekHarnessLite"
+        return Ash.is(p) ? Ash.EXT_DIR : p.contains("beta") ? "DeepSeekHarnessLite"
                 : p.contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness";
     }
 
@@ -1973,6 +2001,7 @@ public class MainActivity extends Activity {
     private void startEngine() {
         engineStartAborted = false;    // v1.13：重新启动 → 清掉「停止」留下的中止/抑制标记
         engineStoppedByUser = false;
+        EngineService.setStopped(this, false);
         startKeepAliveService();   // 前台保活：挂后台不被杀（引擎持续运行）
         // 引擎端口持久化（供 OverlayService/其他组件读取）；已授权悬浮窗时自动拉起小鲸鱼
         try {
@@ -2120,7 +2149,7 @@ public class MainActivity extends Activity {
     /** v1.7：启动失败时把引擎日志尾部与状态写进外部目录，用户无需 adb 即可反馈排查。 */
     private void writeStartupDiag(String errorMsg) {
         try {
-            String sub = getPackageName().contains("beta") ? "DeepSeekHarnessLite"
+            String sub = Ash.is(getPackageName()) ? Ash.EXT_DIR : getPackageName().contains("beta") ? "DeepSeekHarnessLite"
                     : getPackageName().contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness";
             File dir = new File(android.os.Environment.getExternalStorageDirectory(), sub);
             if (!dir.exists()) dir.mkdirs();
@@ -2273,6 +2302,7 @@ public class MainActivity extends Activity {
      */
     private static int defaultEnginePort(Context ctx) {
         String p = ctx != null ? ctx.getPackageName() : "";
+        if (Ash.is(p)) return Ash.ENGINE_PORT;
         if (p.contains("beta")) return 3082;
         if (p.contains("compat")) return 3084;
         return 3080;
@@ -3879,14 +3909,17 @@ public class MainActivity extends Activity {
         String ws = workspacePath();
         if (ws != null && !ws.isEmpty()) env.put("DSH_WORKSPACE", ws);
         pb.redirectErrorStream(true);
+        // ash：记下这次的启动参数，供前台服务在 Activity 不在时按原样重拉引擎（常驻）
+        EngineService.saveLaunchSpec(this, pb.command(), env);
 
         final Process proc = pb.start();
+        EngineService.markSpawn();
         nodeProcess = proc;
         final File logFile = new File(getFilesDir(), "dsh-web.log");
         // v1.7.1：同时镜像一份引擎日志到外部目录（无需 root/adb 可读），
         // 覆盖「node 反复崩溃但 waitForServer 未抛异常」时不产生 startup-diag.txt 的场景。
         final File extLogFile = new File(android.os.Environment.getExternalStorageDirectory(),
-                (getPackageName().contains("beta") ? "DeepSeekHarnessLite"
+                (Ash.is(getPackageName()) ? Ash.EXT_DIR : getPackageName().contains("beta") ? "DeepSeekHarnessLite"
                         : getPackageName().contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness")
                         + "/dsh-web.log");
         new Thread(new Runnable() {
@@ -5041,6 +5074,7 @@ public class MainActivity extends Activity {
         // 同样不能只 destroy 句柄 —— 句柄丢了就什么都停不掉，改用 killEngineNow（按 PID）。
         engineStoppedByUser = true;
         engineStartAborted = true;
+        EngineService.setStopped(this, true);   // ash：常驻巡检也不再拉起
         conToast("正在停止引擎…");
         // v1.13.12：停引擎 = 虚拟屏一起销毁（用户确认的行为）。虚拟屏由 AI 经引擎驱动，
         // 引擎停了虚拟屏就是一块没人管的孤儿屏；不一起收掉的话它还挂在屏幕上。

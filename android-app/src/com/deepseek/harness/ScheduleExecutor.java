@@ -35,6 +35,7 @@ public final class ScheduleExecutor {
         try {
             String p = ctx.getPackageName();
             if (p != null) {
+                if (Ash.is(p)) return Ash.ENGINE_PORT;
                 if (p.endsWith(".beta")) return 3082;
                 if (p.endsWith(".compat")) return 3084;
             }
@@ -49,35 +50,25 @@ public final class ScheduleExecutor {
         try {
             if (!engineReady(ctx)) {
                 log(ctx, "引擎未运行，尝试启动…");
-                if (!startEngine(ctx)) {
+                // ash：优先按 Activity 记下的启动参数拉起（环境变量完整），没有记录再走简化版
+                if (!EngineService.spawnFromSpec(ctx) && !startEngine(ctx)) {
                     log(ctx, "引擎启动失败，无法自动执行任务");
                     return;
                 }
             }
-            // 等引擎完全就绪
-            for (int i = 0; i < 30; i++) {
+            // 等引擎完全就绪（冷启动可能要一分多钟）
+            for (int i = 0; i < 120; i++) {
                 if (engineReady(ctx)) break;
                 Thread.sleep(1000);
             }
             if (!engineReady(ctx)) {
-                log(ctx, "引擎 30 秒未就绪，放弃");
+                log(ctx, "引擎 120 秒未就绪，放弃");
                 return;
             }
-            String sessionId = createSession(ctx);
-            if (sessionId == null) {
-                log(ctx, "创建会话失败（可能未配置 API Key）");
-                return;
-            }
-            String promptResp = sendPromptRaw(ctx, sessionId, task);
-            boolean ok = promptResp != null && promptResp.contains("\"ok\":true");
-            String summary;
-            if (promptResp == null) {
-                summary = "任务发送失败（无响应）: " + task;
-            } else if (ok) {
-                summary = "任务已发送给 AI: " + task;
-            } else {
-                summary = "任务发送失败，响应: " + promptResp.replace("\n", " ").substring(0, Math.min(300, promptResp.length()));
-            }
+            // ash：定时任务投递到常驻主会话（带认证 cookie），不再每次新建会话
+            boolean ok = AshAgent.prompt(ctx, task);
+            String summary = ok ? "任务已发送给主 Agent: " + task
+                    : "任务发送失败（主会话不可用，可能未配置模型或 API Key）: " + task;
             log(ctx, summary);
             notifyResult(ctx, ok, ok ? "✅ 定时任务已执行：\n" + task : summary);
         } catch (Throwable t) {
@@ -181,8 +172,8 @@ public final class ScheduleExecutor {
             if (new File(internal, REL_BINJS).exists()) {
                 dshroot = internal;
             } else {
-                String selfRoot = ctx.getPackageName().contains(".beta")
-                        ? "DeepSeekHarnessLite" : "DeepSeekHarness";
+                String selfRoot = Ash.is(ctx.getPackageName()) ? Ash.EXT_DIR
+                        : ctx.getPackageName().contains(".beta") ? "DeepSeekHarnessLite" : "DeepSeekHarness";
                 String otherRoot = selfRoot.equals("DeepSeekHarnessLite") ? "DeepSeekHarness" : "DeepSeekHarnessLite";
                 for (String root : new String[]{selfRoot, otherRoot}) {
                     File ext = new File(android.os.Environment.getExternalStorageDirectory(), root + "/dshroot");
@@ -243,74 +234,11 @@ public final class ScheduleExecutor {
         }
     }
 
-    /** 调 DSH API 创建会话。 */
-    private static String createSession(Context ctx) {
-        String json = rpc(ctx, "session.create", "{}");
-        if (json == null) return null;
-        // 解析 result.value.sessionId 或 result.sessionId
-        int i = json.indexOf("\"sessionId\":\"");
-        if (i >= 0) {
-            int q1 = i + "\"sessionId\":\"".length();
-            int q2 = json.indexOf('"', q1);
-            if (q2 > q1) return json.substring(q1, q2);
-        }
-        return null;
-    }
-
-    /** 调 DSH API 发送消息。 */
-    private static boolean sendPrompt(Context ctx, String sessionId, String text) {
-        String payload = "{\"sessionId\":\"" + sessionId + "\",\"mode\":\"queue\",\"content\":[{\"type\":\"text\",\"text\":\"" + escapeJson(text) + "\"}]}";
-        String json = rpc(ctx, "session.prompt", payload);
-        return json != null && json.contains("\"ok\":true");
-    }
-
-    /** 调 DSH API 发送消息，返回完整响应（诊断用）。 */
-    private static String sendPromptRaw(Context ctx, String sessionId, String text) {
-        String payload = "{\"sessionId\":\"" + sessionId + "\",\"mode\":\"queue\",\"content\":[{\"type\":\"text\",\"text\":\"" + escapeJson(text) + "\"}]}";
-        return rpc(ctx, "session.prompt", payload);
-    }
-
-    /** DSH RPC 调用：标准协议 {"type":"client-request","rpcId":"...","method":"...","payload":{...}} */
-    private static String rpc(Context ctx, String method, String payloadJson) {
-        try {
-            URL url = new URL("http://127.0.0.1:" + enginePort(ctx) + "/api/" + method);
-            HttpURLConnection c = (HttpURLConnection) url.openConnection();
-            c.setRequestMethod("POST");
-            c.setRequestProperty("Content-Type", "application/json");
-            c.setDoOutput(true);
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(5000);
-            String rpcId = "sched-" + System.currentTimeMillis();
-            String body = "{\"type\":\"client-request\",\"rpcId\":\"" + rpcId + "\",\"method\":\"" + method
-                    + "\",\"payload\":" + (payloadJson == null || payloadJson.isEmpty() ? "{}" : payloadJson) + "}";
-            c.getOutputStream().write(body.getBytes("UTF-8"));
-            int code = c.getResponseCode();
-            if (code >= 200 && code < 300) {
-                InputStream in = c.getInputStream();
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                byte[] b = new byte[4096];
-                int n;
-                while ((n = in.read(b)) > 0) out.write(b, 0, n);
-                in.close();
-                c.disconnect();
-                return new String(out.toByteArray(), "UTF-8");
-            }
-            c.disconnect();
-        } catch (Throwable t) {
-            Log.w(TAG, "rpc " + method + " error", t);
-        }
-        return null;
-    }
-
-    private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
-    }
-
     /** 追加执行记录到外部目录（Lite 版用 DeepSeekHarnessLite，正式版用 DeepSeekHarness，便于排查）。 */
     static void log(Context ctx, String msg) {
         try {
-            String rootName = ctx.getPackageName().contains(".beta")
-                    ? "DeepSeekHarnessLite" : "DeepSeekHarness";
+            String rootName = Ash.is(ctx.getPackageName()) ? Ash.EXT_DIR
+                    : ctx.getPackageName().contains(".beta") ? "DeepSeekHarnessLite" : "DeepSeekHarness";
             File root = new File(android.os.Environment.getExternalStorageDirectory(), rootName);
             if (!root.exists()) root.mkdirs();
             File f = new File(root, "scheduled-log.txt");

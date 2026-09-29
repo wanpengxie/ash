@@ -2,8 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="com.deepseek.harness"
-    android:versionCode="48"
-    android:versionName="1.16.1">
+    android:versionCode="1"
+    android:versionName="0.1.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28" />
 
@@ -20,6 +20,8 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- ash：开机自启常驻服务 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 定时任务：精确闹钟（Android 12+ 需要；setAlarmClock 不受此权限限制，双保险） -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
@@ -67,6 +69,16 @@
             android:name=".AlarmReceiver"
             android:exported="false" />
 
+        <!-- ash：开机 / 升级后拉起常驻服务，由它把主 Agent 引擎拉起来 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- 小鲸鱼悬浮窗（含引擎状态显示） -->
         <service
             android:name=".OverlayService"
@@ -81,7 +93,7 @@
         <service
             android:name=".AccessibilityService"
             android:exported="false"
-            android:label="DeepSeek Harness 屏幕助手"
+            android:label="Ash 屏幕助手"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -93,7 +105,7 @@
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
-            android:authorities="com.deepseek.harness.shizuku"
+            android:authorities="ai.ash.agent.shizuku"
             android:multiprocess="false"
             android:enabled="true"
             android:exported="true"
@@ -103,7 +115,7 @@
              本项目无 androidx，故自实现最小只读 ContentProvider，只暴露 cache/share 下的文件） -->
         <provider
             android:name=".LogShareProvider"
-            android:authorities="com.deepseek.harness.logshare"
+            android:authorities="ai.ash.agent.logshare"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>
