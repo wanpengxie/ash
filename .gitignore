@@ -21,3 +21,10 @@ android-app/out-ash/
 # ash packages
 node_modules/
 packages/*/dist/
+
+# build outputs (payload, android)
+build/
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties

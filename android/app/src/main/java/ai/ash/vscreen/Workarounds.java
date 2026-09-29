@@ -1,5 +1,5 @@
 // Licensed under LGPL-3.0; source: https://github.com/AAswordman/Operit (shower shell)
-package com.deepseek.harness.vscreen;
+package ai.ash.vscreen;
 
 import android.annotation.SuppressLint;
 import android.app.Application;

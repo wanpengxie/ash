@@ -2,7 +2,7 @@
   "name": "ash",
   "private": true,
   "type": "module",
-  "description": "ash \u2014 the personal-agent layer on top of DeepSeek Harness (DSH)",
+  "description": "ash — the personal-agent layer on top of DeepSeek Harness (DSH)",
   "license": "MIT",
   "scripts": {
     "gen:ui": "node tools/gen-ui.mjs",
@@ -21,6 +21,6 @@
     "node": ">=22.5"
   },
   "dependencies": {
-    "ash-gateway": "github:wanpengxie/ash-gateway#f11ce74"
+    "ash-gateway": "git+https://github.com/wanpengxie/ash-gateway.git#v0.4.0"
   }
 }

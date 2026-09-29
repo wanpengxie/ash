@@ -283,7 +283,8 @@ async function build() {
     fs.rmSync(path.join(tree, rel));
   }
   const inputs = createHash("sha256").update(JSON.stringify(manifest)).update(fs.readFileSync(core)).digest("hex").slice(0, 16);
-  const index = { schema: 1, build: `${manifest.dsh.version}-${inputs}`, dsh: manifest.dsh, links, exec: [...new Set(exec)].sort(), placeholders: [...new Set(placeholders)].sort(), placeholder: PLACEHOLDER, dshTree };
+  const entries = [...walk(tree)].length + 1;
+  const index = { schema: 1, build: `${manifest.dsh.version}-${inputs}`, entries, dsh: manifest.dsh, links, exec: [...new Set(exec)].sort(), placeholders: [...new Set(placeholders)].sort(), placeholder: PLACEHOLDER, dshTree };
   fs.writeFileSync(path.join(tree, "payload-index.json"), JSON.stringify(index));
   fs.rmSync(path.join(out, "payload.zip"), { force: true });
   sh("zip", ["-q", "-r", "-X", "-9", path.join(out, "payload.zip"), "."], { cwd: tree });

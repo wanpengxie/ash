@@ -347,6 +347,7 @@ async function settingsTab() {
   h += '<label>BOOTSTRAP_SECRET（只在第一次认领时需要）</label><input type="password" id="gws" autocomplete="off">';
   h += '<button class="btn" id="gwsave">连接</button><p class="muted">网关是你自己部署在 Cloudflare 上的中转站（开源：wanpengxie/ash-gateway）。手机认领后，你的浏览器和电脑配对即可远程使用 Ash。</p>';
   on("gwsave", async () => { await api("POST", "gateway/configure", { url: document.getElementById("gw").value.trim(), secret: document.getElementById("gws").value }); showTab("devices"); });
+  if (navigator.userAgent.includes("AshApp")) h += '<h2>手机</h2><p><a class="btn gray" href="ash://console">诊断、权限与日志</a></p>';
   h += '<h2>关于</h2><p class="muted">ash · DSH ' + esc(s.dsh || "") + " · 空间 " + esc(M.space) + "</p>";
   return h;
 }
