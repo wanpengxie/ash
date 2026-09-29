@@ -1,0 +1,23 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run typecheck
+      # Contract group 2 runs against the DSH version the payload pins (payload/manifest.json).
+      - name: Install DSH (as published)
+        run: |
+          V=$(node -p "require('./payload/manifest.json').dsh.version")
+          npm install -g --prefix "$RUNNER_TEMP/dsh" "@deepseek-ai/dsh@$V" --no-audit --no-fund
+          echo "ASH_TEST_DSH_ROOT=$RUNNER_TEMP/dsh/lib/node_modules/@deepseek-ai/dsh" >> "$GITHUB_ENV"
+      - run: npm test
+      - run: npm run build:core
