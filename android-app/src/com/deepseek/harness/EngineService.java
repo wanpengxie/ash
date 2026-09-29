@@ -92,18 +92,8 @@ public class EngineService extends Service {
         if (System.currentTimeMillis() - lastSpawnAt < SPAWN_GRACE_MS) return true;
         if (enginePid(ctx) > 0) return true;
         try {
-            File f = new File(ctx.getFilesDir(), SPEC_FILE);
-            if (!f.exists()) return false;
-            FileInputStream in = new FileInputStream(f);
-            byte[] buf = new byte[(int) f.length()];
-            int off = 0;
-            while (off < buf.length) {
-                int n = in.read(buf, off, buf.length - off);
-                if (n < 0) break;
-                off += n;
-            }
-            in.close();
-            JSONObject o = new JSONObject(new String(buf, 0, off, "UTF-8"));
+            JSONObject o = readSpec(ctx);
+            if (o == null) return false;
             JSONArray c = o.getJSONArray("cmd");
             List<String> cmd = new ArrayList<String>();
             for (int i = 0; i < c.length(); i++) cmd.add(c.getString(i));
@@ -133,8 +123,68 @@ public class EngineService extends Service {
         }
     }
 
+    private static JSONObject readSpec(Context ctx) throws Exception {
+        File f = new File(ctx.getFilesDir(), SPEC_FILE);
+        if (!f.exists()) return null;
+        FileInputStream in = new FileInputStream(f);
+        byte[] buf = new byte[(int) f.length()];
+        int off = 0;
+        while (off < buf.length) {
+            int n = in.read(buf, off, buf.length - off);
+            if (n < 0) break;
+            off += n;
+        }
+        in.close();
+        return new JSONObject(new String(buf, 0, off, "UTF-8"));
+    }
+
+    // ------------------------------------------------------------------ ash-link
+
+    private static volatile long lastLinkSpawnAt = 0L;
+
+    /**
+     * ash-link（网关客户端，见 ash-gateway 仓库）：files/ash-link/ 下有 ash-link.mjs 与 config.json
+     * 就用引擎同一个 Node（同一套环境变量）拉起并守护；没有配置就什么都不做。
+     */
+    static synchronized void ensureLink(Context ctx) {
+        File dir = new File(ctx.getFilesDir(), "ash-link");
+        File js = new File(dir, "ash-link.mjs");
+        File cfg = new File(dir, "config.json");
+        if (!js.exists() || !cfg.exists()) return;
+        if (pidMatching("ash-link.mjs") > 0) return;
+        if (System.currentTimeMillis() - lastLinkSpawnAt < 30000) return;
+        lastLinkSpawnAt = System.currentTimeMillis();
+        try {
+            JSONObject o = readSpec(ctx);
+            if (o == null) return;   // 引擎还没在 Activity 里成功启动过：拿不到 node 与环境
+            List<String> cmd = new ArrayList<String>();
+            cmd.add(o.getJSONArray("cmd").getString(0));   // node
+            cmd.add(js.getAbsolutePath());
+            cmd.add("--config");
+            cmd.add(cfg.getAbsolutePath());
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            JSONObject e = o.getJSONObject("env");
+            Map<String, String> env = pb.environment();
+            Iterator<String> keys = e.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                env.put(k, e.getString(k));
+            }
+            pb.directory(dir);
+            pb.redirectErrorStream(true);
+            Process proc = pb.start();
+            pumpLog(new File(dir, "link.log"), proc.getInputStream());
+            Log.i(TAG, "ash-link spawned");
+        } catch (Throwable t) {
+            Log.w(TAG, "ash-link spawn failed", t);
+        }
+    }
+
     private static void pumpLog(Context ctx, final InputStream is) {
-        final File logFile = new File(ctx.getFilesDir(), "dsh-web.log");
+        pumpLog(new File(ctx.getFilesDir(), "dsh-web.log"), is);
+    }
+
+    private static void pumpLog(final File logFile, final InputStream is) {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
@@ -153,7 +203,11 @@ public class EngineService extends Service {
      * 只看端口会把正在跑的引擎误判为挂了、再拉起第二个；进程还在就不能再拉。
      */
     static int enginePid(Context ctx) {
-        String port = String.valueOf(AshAgent.port(ctx));
+        return pidMatching("bin.js", " web ", "--port " + AshAgent.port(ctx));
+    }
+
+    /** 本 uid 下命令行同时包含所有 needles 的进程（找不到返回 -1）。 */
+    static int pidMatching(String... needles) {
         File[] kids = new File("/proc").listFiles();
         if (kids == null) return -1;
         int self = android.os.Process.myPid();
@@ -170,7 +224,9 @@ public class EngineService extends Service {
                 in.close();
                 if (n <= 0) continue;
                 String cmd = new String(buf, 0, n, "UTF-8").replace('\0', ' ');
-                if (cmd.contains("bin.js") && cmd.contains(" web ") && cmd.contains("--port " + port)) return pid;
+                boolean all = true;
+                for (String nd : needles) if (!cmd.contains(nd)) { all = false; break; }
+                if (all) return pid;
             } catch (Throwable ignored) {
                 // 别的 uid 的进程读不到，跳过
             }
@@ -269,6 +325,7 @@ public class EngineService extends Service {
             show("Ash 待初始化", "打开 App 完成首次解压");
             return;
         }
+        ensureLink(ctx);
         if (portListening(port)) {
             if (AshAgent.tokenUrl(ctx) == null) {
                 show("Ash 启动中", "引擎正在启动");
