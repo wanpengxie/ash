@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ash: an ember on a dark tile (same mark as the web UI's icon.svg). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="512" android:viewportHeight="512">
+    <path android:fillColor="#1C1C1E"
+        android:pathData="M112,0 L400,0 Q512,0 512,112 L512,400 Q512,512 400,512 L112,512 Q0,512 0,400 L0,112 Q0,0 112,0 Z" />
+    <path android:fillColor="#FF7A3D"
+        android:pathData="M256,96c34,70 118,118 118,206a118,118 0,0 1,-236 0c0,-52 30,-86 58,-112 6,34 22,58 46,70 -8,-66 2,-118 14,-164z" />
+    <path android:fillColor="#FFD166"
+        android:pathData="M256,284 m-46,0 a46,46 0,1 0,92 0 a46,46 0,1 0,-92 0" />
+</vector>

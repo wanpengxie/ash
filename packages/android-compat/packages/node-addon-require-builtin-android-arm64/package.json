@@ -1,0 +1,21 @@
+{
+  "name": "node-addon-require-builtin-android-arm64",
+  "version": "0.1.6",
+  "description": "Pure-JS android-arm64 platform binding for node-addon-require-builtin, backed by node --expose-internals.",
+  "main": "./index.js",
+  "type": "commonjs",
+  "os": [
+    "android"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "license": "MIT"
+}

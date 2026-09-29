@@ -1,0 +1,14 @@
+# Host-owned patch layer for the Android profile (dsh-base only). Rows are addressed
+# by dsh-base's ids; a patch replaces the row's whole `config`. @PAYLOAD@ is filled in
+# by the host at extraction time, like the payload wrappers.
+#
+# The sandbox/approval posture is NOT set here: the host exports
+# DSH_PERMISSION_MODE=danger-full-access before booting (dsh-base reads it for both
+# sandbox-policy and approval), because Android has no bwrap/Landlock/Seatbelt rung
+# and dsh-sandbox-local fails closed for workspace-write on unknown platforms.
+
+# ptc workers get an emptied environment; start them through the wrapper that restores
+# OPENSSL_CONF/TMPDIR (see payload bin/node-ptc).
+- id: ptc-runtime
+  config:
+    nodeExecutable: '@PAYLOAD@/bin/node-ptc'

@@ -1,0 +1,15 @@
+#!/system/bin/sh
+# node-ptc -- node launcher for @deepseek-ai/dsh-ptc-runtime-node workers on Android.
+#
+# Why: ptc-runtime-node starts its worker with an emptied environment (only PATH,
+# PATHEXT, SYSTEMROOT, WINDIR, TEMP, TMP survive). The Termux-built OpenSSL in the
+# payload has OPENSSLDIR compiled to /data/data/com.termux/files/usr/etc/tls; when
+# Termux is installed that directory exists but is unreadable to this app (EACCES)
+# and node aborts at startup. The Termux-built node also defaults os.tmpdir() to
+# Termux's prefix. This wrapper restores exactly those two facts and execs node.
+# Libraries need no LD_LIBRARY_PATH: every payload ELF carries RUNPATH $ORIGIN/../lib.
+#
+# Wired by config only (profile cordis.patch.yml, row `ptc-runtime`, key nodeExecutable).
+export OPENSSL_CONF="@PAYLOAD@/runtime/etc/tls/openssl.cnf"
+[ -n "$TMPDIR" ] || export TMPDIR="${TMP:-$TEMP}"
+exec "@PAYLOAD@/runtime/bin/node" "$@"

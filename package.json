@@ -1,0 +1,26 @@
+{
+  "name": "ash",
+  "private": true,
+  "type": "module",
+  "description": "ash — the personal-agent layer on top of DeepSeek Harness (DSH)",
+  "license": "MIT",
+  "scripts": {
+    "gen:ui": "node tools/gen-ui.mjs",
+    "typecheck": "npm run -s gen:ui && tsc --noEmit -p .",
+    "test": "npm run -s gen:ui && node --expose-internals --import tsx --test --test-force-exit packages/*/test/*.test.ts",
+    "build:core": "npm run -s gen:ui && esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "ash-gateway": "git+https://github.com/wanpengxie/ash-gateway.git#v0.4.0"
+  }
+}

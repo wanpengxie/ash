@@ -1,0 +1,148 @@
+package ai.ash.host
+
+import android.content.Context
+import android.util.Log
+import ai.ash.host.cap.Capabilities
+import ai.ash.host.cap.CapResult
+import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.security.MessageDigest
+import java.util.concurrent.Executors
+
+/**
+ * The host bridge: a loopback HTTP/1.1 service ash core talks to (see packages/core/src/host.ts).
+ *   GET  /manifest          the phone's capabilities       POST /call {capability, args, caller}
+ *   POST /notify            show a notification            POST /confirm {…}, /confirm/hide {id}
+ *   POST /alarm {at}        wake ash core at a time        GET /key, POST /sign {data}
+ * Every other app on the phone can reach loopback ports, so every request carries the bearer
+ * token that only ash core (started by us, with the token in its config) knows.
+ */
+class HostServer(private val ctx: Context, private val token: String) {
+    private val pool = Executors.newCachedThreadPool()
+    private var server: ServerSocket? = null
+    var port = 0
+        private set
+
+    fun start(preferred: Int): Int {
+        val s = try {
+            ServerSocket(preferred, 32, InetAddress.getByName("127.0.0.1"))
+        } catch (e: Exception) {
+            ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
+        }
+        server = s
+        port = s.localPort
+        pool.execute {
+            while (!s.isClosed) {
+                val c = try { s.accept() } catch (e: Exception) { break }
+                pool.execute { serve(c) }
+            }
+        }
+        Log.i(TAG, "host bridge on 127.0.0.1:$port")
+        return port
+    }
+
+    fun stop() {
+        try { server?.close() } catch (_: Exception) {}
+        pool.shutdownNow()
+    }
+
+    private fun serve(sock: Socket) {
+        sock.use { s ->
+            s.soTimeout = 200_000
+            val input = BufferedInputStream(s.getInputStream())
+            val requestLine = readLine(input) ?: return
+            val parts = requestLine.split(" ")
+            if (parts.size < 2) return
+            val method = parts[0]
+            val path = parts[1].substringBefore('?')
+            val headers = HashMap<String, String>()
+            while (true) {
+                val l = readLine(input) ?: return
+                if (l.isEmpty()) break
+                val i = l.indexOf(':')
+                if (i > 0) headers[l.substring(0, i).trim().lowercase()] = l.substring(i + 1).trim()
+            }
+            val len = headers["content-length"]?.toIntOrNull() ?: 0
+            if (len > 16 * 1024 * 1024) return respond(s, 413, JSONObject().put("error", "too_large"))
+            val body = if (len > 0) readN(input, len) else ByteArray(0)
+            val auth = headers["authorization"]?.removePrefix("Bearer ")?.trim() ?: ""
+            if (!MessageDigest.isEqual(auth.toByteArray(), token.toByteArray())) return respond(s, 401, JSONObject().put("error", "unauthorized"))
+            val json = if (body.isNotEmpty()) try { JSONObject(String(body, Charsets.UTF_8)) } catch (e: Exception) { JSONObject() } else JSONObject()
+            val out = try {
+                route(method, path, json)
+            } catch (e: Throwable) {
+                Log.w(TAG, "$method $path failed", e)
+                500 to JSONObject().put("error", "internal").put("message", e.message ?: e.javaClass.simpleName)
+            }
+            respond(s, out.first, out.second)
+        }
+    }
+
+    private fun route(method: String, path: String, b: JSONObject): Pair<Int, JSONObject> = when ("$method $path") {
+        "GET /manifest" -> 200 to Capabilities.manifest(ctx)
+        "POST /call" -> {
+            val r: CapResult = Capabilities.call(ctx, b.optString("capability"), b.optJSONObject("args") ?: JSONObject())
+            200 to r.toJson()
+        }
+        "POST /notify" -> {
+            Notifications.message(ctx, b.optString("title"), b.optString("text"), b.optString("urgency", "normal"))
+            200 to JSONObject().put("ok", true)
+        }
+        "POST /confirm" -> {
+            Notifications.confirm(ctx, b)
+            200 to JSONObject().put("ok", true)
+        }
+        "POST /confirm/hide" -> {
+            Notifications.hideConfirm(ctx, b.optString("id"))
+            200 to JSONObject().put("ok", true)
+        }
+        "POST /alarm" -> {
+            Wake.schedule(ctx, if (b.isNull("at")) null else b.optLong("at"))
+            200 to JSONObject().put("ok", true)
+        }
+        "GET /key" -> {
+            Keys.ensure(Paths(ctx))
+            200 to JSONObject().put("id", Keys.id()).put("publicKey", Keys.publicKey())
+        }
+        "POST /sign" -> 200 to JSONObject().put("sig", Keys.sign(Keys.unb64u(b.getString("data"))))
+        else -> 404 to JSONObject().put("error", "not_found")
+    }
+
+    private fun respond(s: Socket, status: Int, body: JSONObject) {
+        val bytes = body.toString().toByteArray(Charsets.UTF_8)
+        val head = "HTTP/1.1 $status ${if (status == 200) "OK" else "ERR"}\r\ncontent-type: application/json; charset=utf-8\r\ncontent-length: ${bytes.size}\r\nconnection: close\r\n\r\n"
+        s.getOutputStream().apply { write(head.toByteArray()); write(bytes); flush() }
+    }
+
+    private fun readLine(i: InputStream): String? {
+        val b = ByteArrayOutputStream()
+        while (true) {
+            val c = i.read()
+            if (c < 0) return if (b.size() == 0) null else b.toString("UTF-8")
+            if (c == '\n'.code) return b.toString("UTF-8").trimEnd('\r')
+            b.write(c)
+            if (b.size() > 16 * 1024) return null
+        }
+    }
+
+    private fun readN(i: InputStream, n: Int): ByteArray {
+        val out = ByteArray(n)
+        var off = 0
+        while (off < n) {
+            val r = i.read(out, off, n - off)
+            if (r < 0) break
+            off += r
+        }
+        return out
+    }
+
+    companion object {
+        private const val TAG = "ash.host"
+        const val PORT = 4710
+    }
+}

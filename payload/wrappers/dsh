@@ -1,0 +1,5 @@
+#!/system/bin/sh
+# The DSH CLI as published (plugin management, config inspection …). ash core hosts DSH in-process;
+# this is for people and agents who want the stock `dsh` command on the phone. Same node flags as
+# ash core: internals for DSH's module interception, the Android runtime preload (hard links, flock).
+exec "@PAYLOAD@/runtime/bin/node" --expose-internals --require "@PAYLOAD@/dsh/lib/node_modules/android-node-compat/index.cjs" "@PAYLOAD@/dsh/lib/node_modules/@deepseek-ai/dsh/lib/bin.js" "$@"
