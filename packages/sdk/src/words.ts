@@ -59,7 +59,7 @@ const guidance: Record<string, string> = {
   "service:work/runs": "Use to inspect recent background runs; this does not start a run.",
 };
 function add(member: string, word: string, kind: "request" | "event", input_schema: JsonSchema, result_schema?: JsonSchema, options: Partial<Pick<WordSpec, "risk" | "label" | "audience" | "timeout_ms">> & { direction?: "in" | "out"; description?: string } = {}) {
-  entries.push({ member, word, kind, description: options.description ?? guidance[`${member}/${word}`] ?? (kind === "event" ? `Status event ${word} from ${member}; observe rather than call it.` : `Use ${word} on ${member} for the declared input only; inspect the result before following up.`), input_schema, ...(result_schema ? { result_schema } : {}), risk: options.risk ?? "none", label: options.label ?? word, audience: options.audience ?? "all", ...(options.timeout_ms ? { timeout_ms: options.timeout_ms } : {}), direction: options.direction ?? "in" });
+  entries.push({ member, word, kind, description: options.description ?? guidance[`${member}/${word}`] ?? (kind === "event" ? `Status event ${word} from ${member}; observe rather than call it.` : `Use ${word} on ${member} for the declared input only; inspect the result before following up.`), input_schema, ...(result_schema ? { result_schema } : {}), risk: options.risk ?? "none", label: options.label ?? "Working", audience: options.audience ?? "all", ...(options.timeout_ms ? { timeout_ms: options.timeout_ms } : {}), direction: options.direction ?? "in" });
 }
 
 // Main agent: a queued conversation and a separately driven secondary session.
@@ -73,7 +73,7 @@ add("agent:main", "read", "event", obj({ ids: strings, turn: id }, ["ids", "turn
 add("agent:main", "turn.start", "event", obj({ turn: id, ids: strings }, ["turn", "ids"]), undefined, { direction: "out" });
 add("agent:main", "turn.end", "event", obj({ turn: id, reason: choice("completed", "cancelled", "error"), error: str }, ["turn", "reason"]), undefined, { direction: "out" });
 
-add("person:owner", "say", "request", obj({ text: nonempty, kind: choice("reply", "offer", "heads_up", "due"), facts: strings }, ["text", "kind"]), accepted, { label: "Replying", description: "Send a short message; it is acknowledged when recorded." });
+add("person:owner", "say", "request", obj({ text: nonempty, kind: choice("reply", "offer", "heads_up", "due"), facts: strings }, ["text", "kind"]), accepted, { label: "Replying", description: "Send a short message; it is acknowledged when recorded. facts are source message or fact IDs after the flow maps worker-local numeric indices, never those indices themselves." });
 add("person:owner", "react", "request", obj({ message_id: id, emoji: nonempty }, ["message_id", "emoji"]), accepted, { description: "React to one existing message; unknown ids fail." });
 add("person:owner", "show", "request", obj({ card: CARD_SCHEMA }, ["card"]), accepted, { description: "Show a result or choice card; it is acknowledged when recorded." });
 add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, options: { type: "array", items: askOption, minItems: 1 }, expires_at: num, source: obj({ word: nonempty, to: id, body_preview: str }, ["word", "to", "body_preview"]) }, ["title", "detail", "options", "expires_at", "source"]), obj({ choice: askChoice }, ["choice"]), { timeout_ms: 600_000, description: "Ask the owner; await the first valid answer or expiry." });

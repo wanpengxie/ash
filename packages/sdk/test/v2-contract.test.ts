@@ -46,6 +46,7 @@ test("every declared word has a usable positive and negative schema example", ()
     seen.add(key);
     assert.equal(wordContract(word.member, word.word), word);
     assert.ok(word.description && word.label && word.risk && word.audience, key);
+    assert.notEqual(word.label, word.word, `${key}: label must be readable, not an internal word`);
     assert.ok(word.input_schema, key);
     const valid = example(word.input_schema!);
     assert.ok(matchesSchema(word.input_schema!, valid), `${key}: generated positive ${JSON.stringify(valid)}`);
@@ -119,11 +120,26 @@ test("config fills defaults, preserves legacy root keys, and rejects invalid nes
     { heartbeat: { every_minutes: 0.5 } },
     { opener: { away_hours: 0 } },
   ]) assert.throws(() => resolveWorldConfigV2(bad), JSON.stringify(bad));
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    const bad = JSON.parse(`{"delivery":{"${key}":{"polluted":true}}}`);
+    assert.throws(() => resolveWorldConfigV2(bad), /unexpected/);
+  }
+  assert.equal(({} as { polluted?: boolean }).polluted, undefined);
 });
 
 test("internal schema subset fails closed and compares unique objects independent of key order", () => {
   assert.throws(() => matchesSchema({ allOf: [] } as JsonSchema, {}), /unsupported schema keyword/);
   assert.throws(() => matchesSchema({ type: "funky" } as unknown as JsonSchema, {}), /unsupported schema type/);
+  assert.throws(() => matchesSchema({ anyOf: [{ type: "string" }, { type: "string", format: "email" } as JsonSchema] }, "x"), /unsupported schema keyword format/);
+  assert.throws(() => matchesSchema({ type: "object", properties: { x: { type: "string", format: "email" } as JsonSchema } }, {}), /unsupported schema keyword format/);
+  assert.throws(() => matchesSchema({ minLength: 4 }, "x"), /requires string type/);
+  assert.throws(() => matchesSchema({ type: "number", minLength: 4 }, 10), /requires string type/);
+  assert.throws(() => matchesSchema({ properties: { x: { type: "string" } } }, {}), /requires object type/);
+  assert.throws(() => matchesSchema({ items: { type: "string" } }, []), /requires array type/);
+  assert.throws(() => matchesSchema({ minimum: 1 }, 2), /requires number type/);
+  assert.throws(() => matchesSchema({ type: "array", items: { anyOf: [{ type: "string" }, { format: "email" } as JsonSchema] } }, []), /unsupported schema keyword format/);
+  assert.ok(matchesSchema({}, "x"));
+  assert.ok(matchesSchema({ anyOf: [{ type: "string" }, { type: "number" }] }, "x"));
   assert.ok(!matchesSchema({ type: "array", uniqueItems: true }, [{ a: 1, b: 2 }, { b: 2, a: 1 }]));
 });
 

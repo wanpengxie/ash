@@ -43,11 +43,11 @@ export function resolveWorldConfigV2<T extends Record<string, unknown>>(input: T
     const value = input[key];
     if (value === undefined) continue;
     if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${key}: expected object`);
-    const section = merged[key] as Record<string, unknown>;
-    Object.assign(section, value);
+    const section = { ...(merged[key] as Record<string, unknown>), ...(value as Record<string, unknown>) };
     if (key === "reflex" && (value as Record<string, unknown>).jev && typeof (value as Record<string, unknown>).jev === "object") {
       section.jev = { ...DEFAULT_WORLD_CONFIG_V2.reflex.jev, ...((value as Record<string, unknown>).jev as object) };
     }
+    merged[key] = section;
   }
   const errors = schemaErrors(WORLD_CONFIG_SCHEMA_V2, merged);
   if (errors.length) throw new TypeError(errors.join("; "));

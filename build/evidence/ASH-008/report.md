@@ -20,6 +20,7 @@ The SDK now contains additive v2 message/member/card/worker/screen/auth types, w
 Important implementation boundaries for following cards:
 
 - Internal schema validation supports a deliberately small subset and throws on unsupported keywords/types. Do not use it to validate arbitrary device manifests; registration/router needs a standards-compliant JSON Schema validator.
+- Schema-tree preflight traverses every branch and optional property before checking a value, including absent fields. Type-specific keywords without the matching type fail; configuration merging and property lookup reject prototype-like unknown nested keys.
 - Screen registration is an unnumbered SSE control frame, not a ledger message. A future stream parser must handle it separately without advancing the ledger cursor. The screen token is never a body/URL/ledger field. The authenticated transport identity, not owner stamp or screen token, scopes persistent client-id deduplication.
 - Static card/option-reply checks exist; pending/expiry/first-answer checks need an atomic router transaction.
 - Static self write schemas require expected_hash, but hash comparison, path containment including symlinks, atomic append, guarded edits, and physical managed-file isolation remain implementation duties. A shell can bypass a native write hook; full isolation is not proved here.
