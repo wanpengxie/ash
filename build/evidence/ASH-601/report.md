@@ -11,7 +11,7 @@ npm test
 npm run -s test:arch:final
 ```
 
-Observed: 29 JSON fixture segments and 11 boundary test groups pass (40 test cases). Full suite: 82 passed, 57 intentionally skipped runtime word-routing skeletons, 0 failed. The final architecture gate remains not yet conformant with 26 findings in later member/router/worker work and the required private terminology input; this card does not claim that gate.
+Observed: 29 JSON fixture segments and 13 boundary test groups pass (42 test cases). Full suite: 84 passed, 57 intentionally skipped runtime word-routing skeletons, 0 failed. The final architecture gate remains not yet conformant with 26 findings in later member/router/worker work and the required private terminology input; this card does not claim that gate.
 
 The pure reducer consumes only numbered ledger messages. It normalizes display-safe fields and sorts them by sequence, making duplicate live delivery and older history pagination deterministic. Unnumbered screen registration frames, unknown words, and raw tool data do not enter the view. The seven public view fields match C11; non-enumerable internal records support replay without leaking into serialized snapshots.
 
@@ -19,4 +19,4 @@ Projection facts covered: presence and avatars from explicit status; owner-facin
 
 Scope boundary: this module does not open streams, send visible/typing, use wall-clock expiry guesses, or render the UI. The later client must send visible immediately after stream registration to obtain an authoritative initial held snapshot, then continue its heartbeat. Initial held=0 is a display default until that snapshot arrives, not a claim that the queue was queried.
 
-Migration provenance is produced only by the separate ledger migration work and rejected by normal send schemas. Valid historical inbound messages to the recorded agent remain visible even when the original sender was not the owner; they are marked read-only and keep their original from/to. The real private-database replay is an independent integration gate; synthetic fixtures here do not claim it passed. Live retired/helper messages without valid migration provenance remain excluded.
+Migration provenance is produced only by the separate ledger migration work and rejected by normal send schemas. A legacy bubble requires matching migration sequence, original source member, nonempty workspace, and a historical inbound-to-agent or assistant-to-owner route; legacy actor kinds may include older timer/device senders. It is marked read-only and keeps original from/to. The real private-database replay is an independent integration gate; synthetic fixtures here do not claim it passed. Live retired/helper messages without valid migration provenance remain excluded.

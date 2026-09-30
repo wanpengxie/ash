@@ -133,11 +133,30 @@ test("only allowlisted attachment references survive; inline bytes and unknown f
 test("valid migrated chat is read-only and cannot lock a current option card", () => {
   const state = replay([
     { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }] } } },
-    { id: "old-answer", from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "Yes", in_reply_to: "card", option_id: "yes", legacy: { seq: 13, workspace: "old-home", member: "agent:main" } } },
+    { id: "old-answer", from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "Yes", in_reply_to: "card", option_id: "yes", legacy: { seq: 2, workspace: "old-home", member: "person:owner" } } },
     { from: "agent:main", to: "person:owner", kind: "response", word: "say", reply_to: "old-answer", body: { ok: true, result: { accepted: true } } },
   ]);
   assert.equal(state.conversation[0].locked, false);
   assert.equal(state.conversation[1].readOnly, true);
-  assert.equal(state.conversation[1].legacy.member, "agent:main");
+  assert.equal(state.conversation[1].legacy.member, "person:owner");
   assert.equal(state.presence.state, "unknown");
+});
+
+test("migration stamp must match source row and historical conversation route", () => {
+  const row = { from: "timer:old", to: "agent:helper", kind: "request", word: "say", body: { text: "Wake", legacy: { seq: 1, workspace: "old", member: "timer:old" } } };
+  assert.equal(replay([row]).conversation[0].side, "inbound");
+  for (const bad of [
+    { ...row, body: { ...row.body, legacy: { ...row.body.legacy, seq: 99 } } },
+    { ...row, body: { ...row.body, legacy: { ...row.body.legacy, member: "person:owner" } } },
+    { ...row, to: "device:phone" },
+    { ...row, body: { text: "Wake" } },
+  ]) assert.equal(replay([bad]).conversation.length, 0);
+});
+
+test("four migrated owner attachment bubbles keep only safe references", () => {
+  const entries = Array.from({ length: 4 }, (_, i) => ({ from: "person:owner", to: "agent:helper", kind: "request", word: "say", body: { text: `File ${i}`, legacy: { seq: i + 1, workspace: "old", member: "person:owner" }, attachments: [{ workspace: "old", path: `inbox/${i}.png`, name: `${i}.png`, mime_type: "image/png", size: i + 1, data: "raw-should-not-project" }] } }));
+  const state = replay(entries);
+  assert.equal(state.conversation.length, 4);
+  assert.equal(state.conversation.filter((bubble) => bubble.attachments.length === 1).length, 4);
+  assert.equal(JSON.stringify(state).includes("raw-should-not-project"), false);
 });
