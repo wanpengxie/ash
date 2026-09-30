@@ -20,4 +20,6 @@ jobs:
           npm install -g --prefix "$RUNNER_TEMP/dsh" "@deepseek-ai/dsh@$V" --no-audit --no-fund
           echo "ASH_TEST_DSH_ROOT=$RUNNER_TEMP/dsh/lib/node_modules/@deepseek-ai/dsh" >> "$GITHUB_ENV"
       - run: npm test
+      # The final repository gate is run after the v2 route and UI migration.
+      # Detector self-tests run above on every change, including bad fixtures.
       - run: npm run build:core
