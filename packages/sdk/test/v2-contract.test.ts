@@ -91,6 +91,14 @@ test("delivery count event is an authoritative nonnegative integer snapshot", ()
   for (const body of [{}, { held: -1 }, { held: 1.5 }, { held: "2" }, { held: 2, delta: 1 }]) assert.ok(!matchesSchema(word.input_schema!, body));
 });
 
+test("normal say inputs reject migration-only legacy provenance", () => {
+  const oldMarker = { seq: 1, workspace: "home", member: "agent:helper" };
+  const inbound = wordContract("agent:main", "say")!.input_schema!;
+  const outbound = wordContract("person:owner", "say")!.input_schema!;
+  assert.ok(!matchesSchema(inbound, { text: "hello", legacy: oldMarker }));
+  assert.ok(!matchesSchema(outbound, { text: "hello", kind: "reply", legacy: oldMarker }));
+});
+
 test("card variants and dynamic device descriptions reject malformed contracts", () => {
   assert.ok(matchesSchema(CARD_SCHEMA, { type: "options", options: [{ id: "yes", text: "Yes" }] }));
   assert.ok(matchesSchema(CARD_SCHEMA, { type: "file", workspace: "w", path: "p", name: "n", mime_type: "text/plain", size: 0 }));
