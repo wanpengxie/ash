@@ -18,7 +18,7 @@ These are authored examples for review, not recorded model outputs. Review the t
 
 **You:** 你刚才说得太长了。以后先给结论。
 
-**Assistant:** 明白，这次先给结论：先备份，再改设置。接下来我会先说重点；如果要在下次谈话也保留这个偏好，我得先确认能否保存。
+**Assistant:** 明白，我刚才说得太长了。接下来我会先给结论，再按你的需要展开；如果希望下次谈话也保留这个偏好，我还得先确认能否保存。
 
 ## Review prompts
 
