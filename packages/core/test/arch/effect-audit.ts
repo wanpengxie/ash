@@ -1,0 +1,88 @@
+import type { Message } from "../../../sdk/src/api";
+
+export type EffectKind = "device_call" | "notification" | "intrinsic_write" | "gate_release";
+export interface ObservedEffect {
+  id: string;
+  kind: EffectKind;
+  ledger_id: string;
+  to: string | null;
+  word: string;
+  body: Record<string, unknown>;
+  result?: unknown;
+}
+
+const allKinds: readonly EffectKind[] = ["device_call", "notification", "intrinsic_write", "gate_release"];
+const intrinsicWrites = new Set(["write", "append", "apply_plan", "rollback"]);
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const fields = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    return `{${fields.map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** Detector only: effects must be an independently captured, chronological trace, not derived from the ledger. */
+export function auditEffectLedger(messages: readonly Message[], effects: readonly ObservedEffect[], requiredKinds: readonly EffectKind[] = allKinds): string[] {
+  const errors: string[] = [];
+  if (!messages.length) errors.push("ledger has no messages");
+  if (!effects.length) errors.push("no externally observed effects");
+  for (const kind of requiredKinds) if (!effects.some(effect => effect.kind === kind)) errors.push(`no observed ${kind}`);
+
+  const byId = new Map<string, Message>();
+  let previousSeq = -1;
+  for (const message of messages) {
+    if (byId.has(message.id)) errors.push(`duplicate ledger id ${message.id}`);
+    byId.set(message.id, message);
+    if (!Number.isSafeInteger(message.seq) || message.seq <= previousSeq) errors.push(`ledger sequence is not strictly increasing at ${message.id}`);
+    previousSeq = message.seq;
+  }
+
+  const seenEffects = new Set<string>();
+  const claimedMessages = new Set<string>();
+  for (const effect of effects) {
+    if (seenEffects.has(effect.id)) errors.push(`duplicate observed effect ${effect.id}`);
+    seenEffects.add(effect.id);
+    if (claimedMessages.has(effect.ledger_id)) errors.push(`multiple effects claim ledger id ${effect.ledger_id}`);
+    claimedMessages.add(effect.ledger_id);
+    const cause = byId.get(effect.ledger_id);
+    if (!cause) { errors.push(`effect ${effect.id} has no ledger cause`); continue; }
+    if (cause.to !== effect.to || cause.word !== effect.word || canonical(cause.body) !== canonical(effect.body)) errors.push(`effect ${effect.id} does not match ledger target, word, and body`);
+
+    if (effect.kind === "gate_release") {
+      if (cause.kind !== "event" || cause.from !== "service:gate" || cause.word !== "gate.passed") errors.push(`effect ${effect.id} lacks gate.passed event`);
+      const requestId = cause.body.request_id;
+      const protectedRequest = typeof requestId === "string" ? byId.get(requestId) : undefined;
+      if (!protectedRequest || protectedRequest.kind !== "request") errors.push(`effect ${effect.id} has no associated request`);
+      continue;
+    }
+    if (cause.kind !== "request") errors.push(`effect ${effect.id} cause is not a request`);
+    if (effect.kind === "device_call" && !cause.to?.startsWith("device:")) errors.push(`effect ${effect.id} is not a device request`);
+    if (effect.kind === "notification" && (cause.to !== "service:post" || cause.word !== "deliver")) errors.push(`effect ${effect.id} is not post delivery`);
+    if (effect.kind === "intrinsic_write" && (cause.to !== "service:self" || !intrinsicWrites.has(cause.word))) errors.push(`effect ${effect.id} is not an intrinsic write`);
+
+    const replies = messages.filter(message => message.kind === "response" && message.reply_to === cause.id);
+    if (replies.length !== 1 || replies[0].seq <= cause.seq) errors.push(`effect ${effect.id} has no unique later response`);
+    else {
+      if (replies[0].from !== cause.to || replies[0].to !== cause.from || replies[0].word !== cause.word) errors.push(`effect ${effect.id} response sender, recipient, or word differs from request`);
+      if (effect.result !== undefined && canonical(replies[0].body) !== canonical(effect.result)) errors.push(`effect ${effect.id} result differs from ledger response`);
+      if (effect.kind === "notification" && (replies[0].body as { result?: { channel?: string } }).result?.channel !== "notification") errors.push(`effect ${effect.id} was not recorded as notification delivery`);
+    }
+    if (effect.kind === "intrinsic_write") {
+      const version = (replies[0]?.body as { result?: { version?: unknown } } | undefined)?.result?.version;
+      const changed = messages.filter(message => message.kind === "event" && message.from === "service:self" && message.word === "self.changed" && message.seq > cause.seq && message.seq < (replies[0]?.seq ?? Infinity) && message.body.path === effect.body.path && message.body.by === cause.from && (version === undefined || message.body.version === version));
+      if (!changed.length) errors.push(`effect ${effect.id} has no self.changed event`);
+      else if (version === undefined) errors.push(`unverified: effect ${effect.id} self.changed has no response version for causal correlation`);
+    }
+  }
+  for (const [index, effect] of effects.entries()) {
+    if (effect.kind !== "gate_release") continue;
+    const gate = byId.get(effect.ledger_id);
+    const requestId = gate?.body.request_id;
+    for (const [otherIndex, other] of effects.entries()) {
+      if (other.kind === "device_call" && other.ledger_id === requestId && otherIndex <= index) errors.push(`effect ${other.id} executed before associated gate release`);
+    }
+  }
+  return errors;
+}
