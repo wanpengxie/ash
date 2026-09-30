@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
+import { hostPresentationErrors } from "../../../sdk/src/host";
 
 export type HostRecord = { method: string; path: string; body: unknown };
 export type Capability = { name: string; description: string; input_schema: Record<string, unknown>; risk: "none" | "outward" | "structure"; label: string; confirm?: boolean };
@@ -36,7 +37,11 @@ export class FakeHost {
         if (!next || next.capability !== call?.capability) return json(409, { error: "unexpected_call", expected: next?.capability, got: call?.capability });
         return json(200, next.result);
       }
-      if (req.method === "POST" && ["/present", "/present/hide", "/alarm"].includes(path)) return json(200, { ok: true });
+      if (req.method === "POST" && path === "/present") {
+        const errors = hostPresentationErrors(body);
+        return errors.length ? json(400, { error: "bad_presentation", details: errors }) : json(200, { ok: true });
+      }
+      if (req.method === "POST" && ["/present/hide", "/alarm"].includes(path)) return json(200, { ok: true });
       if (req.method === "POST" && path === "/sign") return json(200, this.signResponse);
       if (req.method === "POST" && path === "/restart") return json(200, { ok: true });
       return json(404, { error: "not_found" });

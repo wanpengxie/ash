@@ -16,7 +16,7 @@ test("host records manifest, scripted call and presentation lifecycle", async ()
   assert.equal((await get.json() as { capabilities: unknown[] }).capabilities.length, 1);
   const body = { capability: "calendar.search", args: { day: "today" }, caller: "agent:main" };
   assert.deepEqual(await (await fetch(`${url}/call`, { method: "POST", headers: auth, body: JSON.stringify(body) })).json(), { ok: true, content: [] });
-  for (const [path, input] of [["/present", { id: "p1", kind: "approval", title: "Approve", text: "?" }], ["/present/hide", { id: "p1" }], ["/alarm", { id: "a1" }]] as const) {
+  for (const [path, input] of [["/present", { id: "p1", kind: "approval", title: "Approve", text: "?", reply_to: "m_ask", reply_target: "service:gate", options: [{ id: "once", label: "Once" }, { id: "always", label: "Always" }, { id: "deny", label: "No" }], expires_at: Date.now() + 10000 }], ["/present/hide", { id: "p1" }], ["/alarm", { id: "a1" }]] as const) {
     assert.equal((await fetch(`${url}${path}`, { method: "POST", headers: auth, body: JSON.stringify(input) })).status, 200);
     host.assertCall(path, input);
   }
