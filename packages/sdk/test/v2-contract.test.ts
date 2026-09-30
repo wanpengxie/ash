@@ -82,6 +82,14 @@ test("managed writes require a valid base hash, while dated append has no base h
   assert.ok(!matchesSchema(append, { path: "memory/1999-12-31.md", text: "x", expected_hash: null }));
 });
 
+test("normal say inputs reject migration-only legacy provenance", () => {
+  const oldMarker = { seq: 1, workspace: "home", member: "agent:helper" };
+  const inbound = wordContract("agent:main", "say")!.input_schema!;
+  const outbound = wordContract("person:owner", "say")!.input_schema!;
+  assert.ok(!matchesSchema(inbound, { text: "hello", legacy: oldMarker }));
+  assert.ok(!matchesSchema(outbound, { text: "hello", kind: "reply", legacy: oldMarker }));
+});
+
 test("card variants and dynamic device descriptions reject malformed contracts", () => {
   assert.ok(matchesSchema(CARD_SCHEMA, { type: "options", options: [{ id: "yes", text: "Yes" }] }));
   assert.ok(matchesSchema(CARD_SCHEMA, { type: "file", workspace: "w", path: "p", name: "n", mime_type: "text/plain", size: 0 }));
