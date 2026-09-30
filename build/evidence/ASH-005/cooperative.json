@@ -1,25 +1,67 @@
 {
   "dsh_root": "/home/xiewanpeng/ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh",
   "fixture": "in-memory delayed device; resolves on abort",
-  "tool_entered_at_ms": 2047.634984,
+  "tool_entered_at_ms": 2233.424055,
   "signal_at_entry": false,
-  "cancel_at_ms": 2047.682047,
-  "signal_aborted_at_ms": 2050.651874,
-  "tool_returned_at_ms": 2051.515742,
+  "cancel_at_ms": 2233.465521,
+  "signal_aborted_at_ms": 2236.303842,
+  "tool_returned_at_ms": 2238.179617,
   "cancel_response": {
     "cancelled": true
   },
-  "turn_end_at_ms": 2071.166324,
+  "turn_end_at_ms": 2257.788005,
   "turn_end_reason": "error",
-  "cancel_to_turn_end_ms": 23.484276999999793,
+  "cancel_to_turn_end_ms": 24.322483999999804,
   "tool_still_in_flight_at_turn_end": false,
+  "events_at_deadline": [
+    {
+      "type": "call.started",
+      "data": {
+        "id": "call_tzzaNXE1AzKa",
+        "device": "device:lab",
+        "capability": "wait",
+        "caller": "agent:main"
+      }
+    },
+    {
+      "type": "call.ended",
+      "data": {
+        "id": "call_tzzaNXE1AzKa",
+        "ok": true
+      }
+    },
+    {
+      "type": "agent.turn.ended",
+      "data": {
+        "message_id": "msg_zOPjnAS6Yo4s",
+        "reason": "error",
+        "error": "undefined"
+      }
+    }
+  ],
   "events": [
     {
       "type": "agent.tool.call",
       "data": {
         "name": "lab__wait",
         "args": {},
-        "message_id": "msg_dGH1-zdvTpTq"
+        "message_id": "msg_zOPjnAS6Yo4s"
+      }
+    },
+    {
+      "type": "call.started",
+      "data": {
+        "id": "call_tzzaNXE1AzKa",
+        "device": "device:lab",
+        "capability": "wait",
+        "caller": "agent:main"
+      }
+    },
+    {
+      "type": "call.ended",
+      "data": {
+        "id": "call_tzzaNXE1AzKa",
+        "ok": true
       }
     },
     {
@@ -28,17 +70,18 @@
         "name": "lab__wait",
         "ok": false,
         "preview": "Error: tool call aborted",
-        "message_id": "msg_dGH1-zdvTpTq"
+        "message_id": "msg_zOPjnAS6Yo4s"
       }
     },
     {
       "type": "agent.turn.ended",
       "data": {
-        "message_id": "msg_dGH1-zdvTpTq",
+        "message_id": "msg_zOPjnAS6Yo4s",
         "reason": "error",
         "error": "undefined"
       }
     }
   ],
+  "late_successful_call_end": false,
   "pass": true
 }

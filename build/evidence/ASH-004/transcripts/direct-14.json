@@ -1,0 +1,22 @@
+{
+  "index": 14,
+  "instruction": "Copy “hello world” to my clipboard.",
+  "expected": {
+    "word": "clipboard.write",
+    "body": {
+      "text": "hello world"
+    }
+  },
+  "calls": [
+    {
+      "name": "clipboard_write",
+      "input": {
+        "text": "hello world"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

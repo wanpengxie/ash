@@ -1,0 +1,10 @@
+{
+  "model": "deepseek-flash",
+  "base": "https://api.deepseek.com/anthropic",
+  "case_count": 20,
+  "oracle": "correct target member/word/required body in first turn; no extra effectful calls",
+  "two_tool_score": 19,
+  "direct_tool_score": 20,
+  "direct_tool_count": 8,
+  "direct_run_kind": "supplemental existing transcripts"
+}

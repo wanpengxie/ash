@@ -83,11 +83,18 @@ try {
   record.turn_end_reason = ended?.data.reason ?? null;
   record.cancel_to_turn_end_ms = ended ? Number(record.turn_end_at_ms) - Number(record.cancel_at_ms) : null;
   record.tool_still_in_flight_at_turn_end = !!ended && record.tool_returned_at_ms === undefined;
+  const atDeadline = (await client.events({ after: before, limit: 1000 })).events;
+  record.events_at_deadline = atDeadline.filter(e => ['call.started', 'call.ended', 'agent.turn.ended'].includes(e.type)).map(e => ({ type: e.type, data: e.data }));
   release();
   await new Promise(resolve => setTimeout(resolve, 250));
   const after = (await client.events({ after: before, limit: 1000 })).events;
-  record.events = after.filter(e => ['agent.tool.call', 'agent.tool.result', 'agent.turn.ended', 'agent.text'].includes(e.type)).map(e => ({ type: e.type, data: e.data }));
-  record.pass = cooperative ? !!ended && Number(record.cancel_to_turn_end_ms) < 1000 && record.signal_aborted_at_ms !== undefined : !ended && record.signal_aborted_at_ms !== undefined;
+  record.events = after.filter(e => ['call.started', 'call.ended', 'agent.tool.call', 'agent.tool.result', 'agent.turn.ended', 'agent.text'].includes(e.type)).map(e => ({ type: e.type, data: e.data }));
+  const deadlineEvents = record.events_at_deadline as { type: string }[];
+  const lateEnd = after.find(e => e.type === 'call.ended' && e.data.ok === true);
+  record.late_successful_call_end = !!lateEnd && !deadlineEvents.some(e => e.type === 'call.ended');
+  record.pass = cooperative
+    ? !!ended && Number(record.cancel_to_turn_end_ms) < 1000 && record.signal_aborted_at_ms !== undefined
+    : !ended && record.signal_aborted_at_ms !== undefined && deadlineEvents.some(e => e.type === 'call.started') && !deadlineEvents.some(e => e.type === 'call.ended') && record.late_successful_call_end === true;
 } catch (error) {
   record.error = error instanceof Error ? error.stack : String(error);
   record.pass = false;

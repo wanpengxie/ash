@@ -1,0 +1,36 @@
+{
+  "index": 14,
+  "instruction": "Copy “hello world” to my clipboard.",
+  "expected": {
+    "word": "clipboard.write",
+    "body": {
+      "text": "hello world"
+    }
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "clipboard.write",
+        "body": {
+          "text": "hello world"
+        }
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

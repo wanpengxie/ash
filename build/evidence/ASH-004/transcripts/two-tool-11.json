@@ -1,0 +1,26 @@
+{
+  "index": 11,
+  "instruction": "What text is in my clipboard?",
+  "expected": {
+    "word": "clipboard.read",
+    "body": {}
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "clipboard.read",
+        "body": {}
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

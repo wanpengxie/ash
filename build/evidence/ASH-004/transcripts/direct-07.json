@@ -1,0 +1,18 @@
+{
+  "index": 7,
+  "instruction": "Read the current screen before telling me what button is available.",
+  "expected": {
+    "word": "screen.inspect",
+    "body": {}
+  },
+  "calls": [
+    {
+      "name": "screen_inspect",
+      "input": {}
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}
