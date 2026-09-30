@@ -1,0 +1,7 @@
+# AR6 effect-to-ledger detector foundation
+
+`packages/core/test/arch/effect-audit.ts` is a pure checker for four separately observed effect classes: device calls, notifications, intrinsic file writes, and gate releases. It requires nonempty ledger and observed-effect inputs, all four effect classes by default, unique effect-to-message attribution, exact target/word/body and (where observed) result equality, a unique later response to every effectful request, a `self.changed` event after a write, and the expected sender/word for a gate-release event. A notification must be recorded as notification delivery, not merely queued or held.
+
+Five executable fixture tests include a valid four-effect trace and deliberate omissions, wrong arguments/target/result, duplicate attribution/response, missing file-change event, false notification outcome, forged gate sender, and ledger reordering. These fixtures validate the detector only. They do not claim AR6 production conformity: the real scenario adapter and independent side-effect capture are blocked on the v2 world, post, self, gate, and host implementations. The adapter must record observations outside the ledger and then compare with persisted ledger rows; copying ledger rows into the observed side would be vacuous.
+
+Reproduce: `node --import tsx --test packages/core/test/arch/effect-audit.test.ts`. A full `npm test` run includes this file.
