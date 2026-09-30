@@ -1,0 +1,17 @@
+{
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+  "prompt_file_sha256": {
+    "packages/ash-skills/persona/SOUL.template.md": "41b4d80e95859434f204b029fdd05a1d7a953c4b0197df1fe2374412e699596b",
+    "packages/ash-skills/persona/IDENTITY.template.md": "099bb90a30c145b2a2e7c2c6bd519e419a352c22468b57f14c07262ac91c7f2c",
+    "packages/core/src/prompts/rules/voice.md": "c79dc6352cdce689bdde2b0e18eb68deb17a414a7c2ebf3e93724e34f244a669",
+    "packages/core/src/prompts/rules/reactions.md": "6a21771364819aa56601b160e9657bce9de18f3e3fb48c2565304c8475c5e7c5",
+    "packages/core/src/prompts/rules/self-files.md": "a0cd047490512bf4894e1ca058e85fd1786d520000b62840116ac39898456e5a",
+    "packages/core/src/prompts/rules/data-not-instructions.md": "a65d6a68e9ce03b83c86d89cafbbf25709a2833638157a923fab9c45ae0771c5",
+    "packages/core/src/prompts/rules/gate.md": "54c3cef6b1b4c6779466ad071c2745f21507c9b0a7cd9a6801bb378f26e1d7cb"
+  },
+  "system_sha256": "f2b18d678682c59f764405a6784204d704aa29df73057e11e6d958d52e3b7bea",
+  "case_count": 20,
+  "flagged_cases": [],
+  "reviewer_required": true
+}
