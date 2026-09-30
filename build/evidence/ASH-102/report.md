@@ -15,7 +15,7 @@ npm test
 
 The focused tests use temporary synthetic SQLite databases and fake members/devices; they make no real device calls or outward writes.
 
-On the current v2 base, `npm run -s typecheck` passed and the complete suite reported 123 passes, 57 intentional skips, and 0 failures after fixing a too-short test-only cancellation deadline that could expire under parallel test load. The skipped word-route skeletons are not runtime evidence.
+On the current v2 base, `npm run -s typecheck` passed. The focused router file is run without `--test-force-exit`; the full suite's pass/skip count should be taken from the command's current output because unrelated tests change on the shared integration branch. The skipped word-route skeletons are not runtime evidence.
 
 ## Claims covered by the focused tests
 
@@ -26,6 +26,8 @@ On the current v2 base, `npm run -s typecheck` passed and the complete suite rep
 - Every risky request, including one from the owner, persists before gate inspection. A gate decision event is recorded before device dispatch; denial never dispatches. This is a test hook, not the later gate implementation.
 - Recovery distinguishes accepted, gate-waiting, dispatching, and settled. Current authorization is rechecked. Uncertain dispatching effects and orphaned gate waits are not blindly replayed. Explicitly marked durable-inbox endpoints can redeliver the same message ID to a fake deduplicating inbox; the real inbox remains a later card.
 - Untrusted request fields cannot choose sender, origin, or turn. Outbound events bind to their declared source member and schema; remote screens cannot invoke local-only writes. The persisted caller snapshot contains only selected identity/permission facts and excludes synthetic transport tokens/cookies.
+- Each subscriber, gate hook, and handler receives a detached copy of the accepted message, so mutating an observer's copy cannot change the checked body or device effect. Recovery checks the currently registered request kind, direction, and input schema again before any effect; an incompatible accepted request settles with `bad_request`.
+- `service:work/run` is owner-only. Trusted local `service:work` may use only `service:self/append` and `apply_plan` as itself, matching the background-flow contract; other services, remote work, and its `write`/`rollback` attempts are denied before ledger acceptance.
 
 ## Boundaries and follow-up
 

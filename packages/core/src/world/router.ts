@@ -51,6 +51,7 @@ const plainObject = (value: unknown): value is Record<string, unknown> => value 
 const SCREEN = /^screen:[A-Za-z0-9_-]+$/;
 const LOCAL_SELF_MUTATIONS = new Set(["write", "append", "apply_plan", "rollback"]);
 const errors = (code: MessageErrorCode, message: string): ResponseBody => ({ ok: false, error: { code, message } });
+const detached = <T>(value: T): T => structuredClone(value);
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
@@ -86,16 +87,18 @@ export class WorldRouter {
 
   register(endpoint: RouteEndpoint): void {
     if (!endpoint.member || !endpoint.spec.word || !endpoint.spec.input_schema || this.endpoints.has(`${endpoint.member}/${endpoint.spec.word}`)) throw new TypeError("invalid or duplicate endpoint");
-    const validateInput = (value: unknown) => matchesSchema(endpoint.spec.input_schema!, value);
-    const validateResult = endpoint.spec.result_schema ? (value: unknown) => matchesSchema(endpoint.spec.result_schema!, value) : undefined;
-    if (endpoint.spec.timeout_ms !== undefined && (!Number.isSafeInteger(endpoint.spec.timeout_ms) || endpoint.spec.timeout_ms <= 0)) throw new TypeError("invalid endpoint timeout");
-    this.endpoints.set(`${endpoint.member}/${endpoint.spec.word}`, { ...endpoint, validateInput, validateResult });
+    const spec = detached(endpoint.spec);
+    const validateInput = (value: unknown) => matchesSchema(spec.input_schema!, value);
+    const validateResult = spec.result_schema ? (value: unknown) => matchesSchema(spec.result_schema!, value) : undefined;
+    if (spec.timeout_ms !== undefined && (!Number.isSafeInteger(spec.timeout_ms) || spec.timeout_ms <= 0)) throw new TypeError("invalid endpoint timeout");
+    this.endpoints.set(`${endpoint.member}/${spec.word}`, { ...endpoint, spec, validateInput, validateResult });
   }
 
   registerDevice(member: string, capability: { name: string; description: string; input_schema: unknown; result_schema?: unknown; risk: "none" | "outward" | "structure"; label: string }, handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): void {
     if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
-    const spec = deviceWordSpec(capability as Parameters<typeof deviceWordSpec>[0]);
-    const validateInput = ajvFor(capability.input_schema);
+    const safeCapability = detached(capability);
+    const spec = deviceWordSpec(safeCapability as Parameters<typeof deviceWordSpec>[0]);
+    const validateInput = ajvFor(safeCapability.input_schema);
     const validateResult = ajvFor(spec.result_schema);
     if (this.endpoints.has(`${member}/${spec.word}`)) throw new TypeError("duplicate endpoint");
     this.endpoints.set(`${member}/${spec.word}`, { member, spec, handle, ...options, validateInput, validateResult });
@@ -105,7 +108,7 @@ export class WorldRouter {
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
   private publish(message: Message): void {
     for (const listener of this.subscribers) {
-      try { listener(message); } catch { /* a broken stream cannot interrupt durable routing */ }
+      try { listener(detached(message)); } catch { /* a broken stream cannot interrupt durable routing */ }
     }
   }
   private endpoint(to: string, word: string): Registered | undefined {
@@ -143,7 +146,11 @@ export class WorldRouter {
 
   private authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): void {
     if (request.to === "service:admin" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "administration requires local owner");
-    if (request.to === "service:self" && LOCAL_SELF_MUTATIONS.has(request.word) && (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main"))) fail("forbidden", "managed writes require local authority");
+    if (request.to === "service:self" && LOCAL_SELF_MUTATIONS.has(request.word)) {
+      const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan");
+      if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
+    }
+    if (request.to === "service:work" && request.word === "run" && from !== "person:owner") fail("forbidden", "only owner may start a background run");
     if (request.to === "service:gate" && request.word === "rules.revoke" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "rule revocation requires local owner");
     if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
@@ -192,7 +199,7 @@ export class WorldRouter {
     }
     this.publish(message);
     if (request.kind === "event") {
-      if (endpoint) void Promise.resolve(endpoint.handle(message, { signal: new AbortController().signal, recovered: false })).catch(() => {});
+      if (endpoint) void Promise.resolve(endpoint.handle(detached(message), { signal: new AbortController().signal, recovered: false })).catch(() => {});
       return { id: message.id, seq: message.seq };
     }
     if (!endpoint) throw new RouterError("not_found", "recipient word not found");
@@ -253,7 +260,7 @@ export class WorldRouter {
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";
         this.gateEvent("gate.asked", { request_id: request.id, risk: endpoint.spec.risk });
-        const decision = await this.gate(request, endpoint.spec, pending.context, pending.controller.signal);
+        const decision = await this.gate(detached(request), detached(endpoint.spec), detached(pending.context), pending.controller.signal);
         if (pending.settled) return;
         const by = decision.allow ? (decision.by === "rule" ? "rule" : "answer") : (decision.by === "timeout" ? "timeout" : "answer");
         this.gateEvent(decision.allow ? "gate.passed" : "gate.denied", { request_id: request.id, by });
@@ -264,7 +271,7 @@ export class WorldRouter {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
         pending.phase = "dispatching";
       }
-      const result = await endpoint.handle(request, { signal: pending.controller.signal, recovered });
+      const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered });
       if (pending.settled || result === undefined) return;
       if (result.ok && endpoint.validateResult && !endpoint.validateResult(result.result)) { this.finish(pending, errors("failed", "handler returned invalid result"), request.to!, false); return; }
       this.finish(pending, result, request.to!, false);
@@ -291,6 +298,12 @@ export class WorldRouter {
       const { message, phase, context, deadlineAt } = tracked;
       if (this.pending.has(message.id)) continue;
       const endpoint = this.endpoint(message.to!, message.word);
+      let contractValid = false;
+      try { contractValid = Boolean(endpoint && endpoint.direction !== "out" && endpoint.spec.kind === "request" && endpoint.validateInput(message.body)); } catch { /* changed or invalid endpoint contract */ }
+      if (!contractValid) {
+        this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
+        continue;
+      }
       let authorized = false;
       try { authorized = Boolean(endpoint && await this.authorizeRecovery(message, context)); } catch { /* current permission cannot be verified */ }
       if (!endpoint || !authorized) {

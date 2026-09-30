@@ -265,3 +265,72 @@ test("durable caller snapshot stores minimal authorization facts, never a transp
     router.cancel([sent.id]);
   } finally { ledger.close(); }
 });
+
+test("observer and handler mutations cannot change the validated request or another observer's view", async () => {
+  const { ledger, router } = await setup();
+  try {
+    const seen: number[] = [];
+    router.subscribe((message) => { if (message.kind === "request") { message.body.n = 999; message.id = "forged"; } });
+    router.subscribe((message) => { if (message.kind === "request") seen.push(message.body.n as number); });
+    router.register({ member: "device:fake", spec: spec("run"), handle: (message) => {
+      assert.equal(message.body.n, 1);
+      message.body.n = 888;
+      message.id = "handler-forged";
+      return { ok: true, result: { value: 1 } };
+    } });
+    const sent = await router.send(owner, { ...request(), wait: true });
+    assert.deepEqual(seen, [1]);
+    assert.equal(ledger.byId(sent.id)?.body.n, 1);
+    assert.equal(sent.reply?.reply_to, sent.id);
+  } finally { ledger.close(); }
+});
+
+test("recovery rejects stale input schema, changed kind or outgoing direction before any effect", async () => {
+  for (const variant of ["schema", "kind", "direction"] as const) {
+    const { file, ledger } = await setup();
+    const saved = ledger.append({ from: "person:owner", to: "device:fake", kind: "request", word: "run", body: { n: 1 } }, undefined,
+      { deadlineAt: Date.now() + 5000, context: { member: "person:owner", local: true, remote: false, ownerProxy: false } }).message;
+    ledger.close();
+    const reopened = await Ledger.open(file);
+    try {
+      const router = new WorldRouter(reopened, async () => true);
+      let effects = 0;
+      const changed = spec("run");
+      if (variant === "schema") changed.input_schema = { type: "object", properties: { n: { type: "integer", minimum: 2 } }, required: ["n"], additionalProperties: false };
+      if (variant === "kind") changed.kind = "event";
+      router.register({ member: "device:fake", spec: changed, ...(variant === "direction" ? { direction: "out" as const } : {}), handle: () => { effects++; return { ok: true, result: { value: 1 } }; } });
+      await router.recover();
+      assert.equal(effects, 0, variant);
+      assert.equal((reopened.responseTo(saved.id)?.body.error as { code: string }).code, "bad_request", variant);
+      assert.equal(reopened.trackedRequests().length, 0);
+    } finally { reopened.close(); }
+  }
+});
+
+test("only owner starts work; only local work service gets its two declared self-writing words", async () => {
+  const { ledger, router } = await setup();
+  try {
+    const work: TrustedRouteContext = { transport: "service", transportPrincipal: "internal-work", member: "service:work", local: true, remote: false, ownerProxy: false };
+    const remoteWork: TrustedRouteContext = { ...work, local: false, remote: true };
+    const other: TrustedRouteContext = { ...work, transportPrincipal: "internal-clock", member: "service:clock" };
+    let runs = 0;
+    const writers: string[] = [];
+    router.register({ member: "service:work", spec: spec("run"), handle: () => { runs++; return { ok: true, result: { value: 1 } }; } });
+    for (const word of ["append", "apply_plan", "write", "rollback"]) router.register({ member: "service:self", spec: spec(word), handle: (message) => { writers.push(`${message.from}/${message.word}`); return { ok: true, result: { value: 1 } }; } });
+    await assert.rejects(router.send(agent, request("service:work", "run")), code("forbidden"));
+    await assert.rejects(router.send(other, request("service:work", "run")), code("forbidden"));
+    const ownerRun = await router.send(screen, { ...request("service:work", "run"), wait: true });
+    assert.equal(ownerRun.reply?.body.ok, true); assert.equal(runs, 1);
+    for (const word of ["append", "apply_plan"]) {
+      const result = await router.send(work, { ...request("service:self", word), wait: true });
+      assert.equal(result.reply?.body.ok, true);
+    }
+    await assert.rejects(router.send(work, request("service:self", "write")), code("forbidden"));
+    await assert.rejects(router.send(work, request("service:self", "rollback")), code("forbidden"));
+    await assert.rejects(router.send(remoteWork, request("service:self", "append")), code("forbidden"));
+    await assert.rejects(router.send(remoteWork, request("service:self", "apply_plan")), code("forbidden"));
+    await assert.rejects(router.send(other, request("service:self", "append")), code("forbidden"));
+    await assert.rejects(router.send(screen, request("service:self", "append")), code("forbidden"));
+    assert.deepEqual(writers, ["service:work/append", "service:work/apply_plan"]);
+  } finally { ledger.close(); }
+});
