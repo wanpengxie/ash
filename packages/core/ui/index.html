@@ -106,13 +106,19 @@ let AGENT = null;        // selected agent id
 let lastSeq = 0, typing = null, tab = "devices";
 const status = {};       // agent id → status
 const answered = new Set();
-const bottom = () => logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80;
-const add = (el) => { const b = bottom(); logEl.appendChild(el); if (b) logEl.scrollTop = logEl.scrollHeight; return el; };
+// The view sticks to the newest message unless the owner scrolled up to read; late-loading
+// images keep it stuck, sending always brings it back down.
+let stick = true;
+const toEnd = () => { if (stick) logEl.scrollTop = logEl.scrollHeight; };
+logEl.addEventListener("scroll", () => { stick = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 80; });
+logEl.addEventListener("load", toEnd, true); // images (load does not bubble; capture does)
+const add = (el) => { logEl.appendChild(el); toEnd(); return el; };
 const node = (cls, html) => { const d = document.createElement("div"); d.className = cls; d.innerHTML = html; return d; };
 const nameOf = (id) => (M?.members || []).find((m) => m.id === id)?.name || id;
 const isMine = (e) => {
   // Events belonging to the selected agent's conversation.
   const d = e.data || {};
+  if (!AGENT) return false;
   if (e.type === "message.delivered") return d.to === AGENT;
   if (e.type.startsWith("agent.")) return e.member === AGENT;
   if (e.type.startsWith("timer.")) return (d.timer?.owner || "") === AGENT || e.member === AGENT;
@@ -203,11 +209,14 @@ function head() {
   $("#send").className = s === "running" ? "stop" : "";
 }
 
+let loadedFor = null; // the agent whose history is on screen
 async function refresh() {
   M = await api("GET", "manifest");
   const sel = $("#agents");
   if (!AGENT || !M.agents.some((a) => a.id === AGENT)) AGENT = localStorage.getItem("ash.agent") || M.agents[0]?.id;
   if (!M.agents.some((a) => a.id === AGENT)) AGENT = M.agents[0]?.id;
+  // Opened while ash was still starting (no agent yet): show the conversation once the agent is there.
+  if (loadedFor !== null && AGENT && loadedFor !== AGENT) setTimeout(history, 0);
   for (const a of M.agents) status[a.id] ??= a.status;
   if (M.agents.length > 1) {
     sel.hidden = false; $("#title").hidden = true;
@@ -221,7 +230,9 @@ async function refresh() {
 
 let source = null;
 async function history() {
+  loadedFor = AGENT || "";
   logEl.innerHTML = ""; typing = null;
+  if (!AGENT) { logEl.appendChild(node("chip", "Ash 正在启动…")); follow(); return; }
   // The last 300 events are enough for the screen; older ones stay in the log.
   const start = Math.max(0, (M.lastSeq || 0) - 300);
   let after = start;
@@ -232,7 +243,7 @@ async function history() {
     after = page.next;
   }
   for (const c of await api("GET", "confirms").catch(() => [])) confirmCard(c, true);
-  logEl.scrollTop = logEl.scrollHeight;
+  stick = true; toEnd();
   follow();
 }
 function follow() {
@@ -290,6 +301,7 @@ $("#f").onsubmit = async (e) => {
   const text = t.value.trim();
   if (!text && !pending.length) { if (status[AGENT] === "running") await api("POST", "agents/" + encodeURIComponent(AGENT) + "/cancel", {}).catch((err) => alert(err.message)); return; }
   const files = pending; pending = []; renderPending();
+  stick = true; toEnd();
   t.value = ""; t.style.height = "auto";
   const attachments = files.map(({ name, mime_type, data }) => ({ name, mime_type, data }));
   const mode = status[AGENT] === "running" && !attachments.length ? "steer" : "queue";
