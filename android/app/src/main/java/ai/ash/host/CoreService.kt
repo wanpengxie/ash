@@ -7,6 +7,9 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import ai.ash.host.senses.CalendarSense
+import ai.ash.host.senses.DeviceSense
+import ai.ash.BuildConfig
 
 /**
  * The resident part of the app: a foreground service that
@@ -19,6 +22,8 @@ class CoreService : Service() {
     @Volatile private var running = false
     private var host: HostServer? = null
     private var supervisor: Thread? = null
+    private var calendarSense: CalendarSense? = null
+    private var deviceSense: DeviceSense? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -29,6 +34,8 @@ class CoreService : Service() {
         val h = HostServer(this, Secrets(this).hostToken)
         h.start(HostServer.PORT)
         host = h
+        calendarSense = CalendarSense(this, BuildConfig.SENSE_RESCAN_MS).also { it.start() }
+        deviceSense = DeviceSense(this).also { it.start() }
         supervisor = Thread({ supervise(h.port) }, "ash-supervisor").apply { start() }
         state = "starting"
     }
@@ -49,6 +56,12 @@ class CoreService : Service() {
                 val pm = getSystemService(PowerManager::class.java)
                 pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ash:timer").acquire(3 * 60_000L)
             }
+            ACTION_CALENDAR_ALARM, ACTION_CALENDAR_REFRESH -> calendarSense?.refresh()
+            ACTION_APP_OPEN -> {
+                deviceSense?.appOpen()
+                calendarSense?.refresh()
+            }
+            ACTION_APP_LEFT -> deviceSense?.appLeft()
         }
         supervisor?.interrupt()
         return START_STICKY
@@ -57,6 +70,8 @@ class CoreService : Service() {
     override fun onDestroy() {
         running = false
         supervisor?.interrupt()
+        calendarSense?.stop()
+        deviceSense?.stop()
         host?.stop()
         super.onDestroy()
     }
@@ -110,6 +125,10 @@ class CoreService : Service() {
                 } else if (core.portOpen()) {
                     unhealthySince = 0L
                     if (state != "running") Notifications.updateService(this, "在线")
+                    if (state != "running") {
+                        deviceSense?.retryBattery()
+                        calendarSense?.refresh()
+                    }
                     state = "running"
                 } else {
                     if (unhealthySince == 0L) unhealthySince = System.currentTimeMillis()
@@ -139,6 +158,10 @@ class CoreService : Service() {
         const val ACTION_STOP = "ai.ash.STOP"
         const val ACTION_RESTART = "ai.ash.RESTART"
         const val ACTION_WAKE = "ai.ash.WAKE"
+        const val ACTION_CALENDAR_ALARM = "ai.ash.CALENDAR_ALARM"
+        const val ACTION_CALENDAR_REFRESH = "ai.ash.CALENDAR_REFRESH"
+        const val ACTION_APP_OPEN = "ai.ash.APP_OPEN"
+        const val ACTION_APP_LEFT = "ai.ash.APP_LEFT"
 
         /** "starting" | "installing" | "running" | "stopped" | "error: …" — for the UI. */
         @Volatile var state: String = "stopped"
