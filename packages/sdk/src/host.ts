@@ -40,7 +40,7 @@ export function hostPresentationErrors(value: unknown): string[] {
   if (item.reply_to !== undefined && (typeof item.reply_to !== "string" || !item.reply_to.trim())) errors.push("invalid reply_to");
   if (item.kind === "approval") {
     if (typeof item.reply_to !== "string" || !item.reply_to.trim()) errors.push("approval needs reply_to");
-    if (typeof item.reply_target !== "string" || !item.reply_target.trim()) errors.push("approval needs reply_target");
+    if (typeof item.reply_target !== "string" || !/^(?:person|screen|agent|device|service|worker):[A-Za-z0-9_.-]+$/.test(item.reply_target)) errors.push("approval needs member reply_target");
     if (!Number.isSafeInteger(item.expires_at) || Number(item.expires_at) <= 0) errors.push("approval needs expires_at");
     if (!Array.isArray(item.options) || item.options.length === 0) errors.push("approval needs options");
     else {

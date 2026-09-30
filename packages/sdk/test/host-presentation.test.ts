@@ -21,7 +21,7 @@ test("approval has explicit original ask route and ordinary reply cannot route e
 test("missing or forged routing and invalid choices are rejected", () => {
   for (const mutation of [
     { reply_to: undefined }, { reply_target: undefined }, { options: undefined }, { expires_at: undefined },
-    { reply_target: "" }, { options: [{ id: "later", label: "Later" }] },
+    { reply_target: "" }, { reply_target: "https://example.invalid/redirect" }, { options: [{ id: "later", label: "Later" }] },
     { options: [{ id: "once", label: "Once" }, { id: "once", label: "Again" }] },
     { callback_url: "https://example.invalid/redirect" },
   ]) assert.notDeepEqual(hostPresentationErrors({ ...approval, ...mutation }), [], JSON.stringify(mutation));
