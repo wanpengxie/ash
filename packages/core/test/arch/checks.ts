@@ -59,7 +59,7 @@ export function checkTree(tree: Tree, terms: string[] = [primaryTerm]): Finding[
       const target = resolve("/repo", file, "..", spec).replace("/repo/", "");
       const ownPath = file.slice((core + "members/").length);
       const own = ownPath.split("/")[0].replace(/\.[jt]sx?$/, "").split("-")[0];
-      const sameMember = target.startsWith(core + `members/${own}/`) || new RegExp(`^${core}members/${own}(?:-|\\.[jt]sx?$)`).test(target);
+      const sameMember = target === core + `members/${own}` || target.startsWith(core + `members/${own}/`) || new RegExp(`^${core}members/${own}(?:-|\\.[jt]sx?$)`).test(target);
       if (target.startsWith(core + "members/") && !sameMember) add("AR1", file, `line ${lineOf(sf, n)}: cross-member import ${spec}`);
       else if (!target.startsWith(core + "world/") && !target.startsWith("packages/sdk/") && !sameMember) add("AR1", file, `line ${lineOf(sf, n)}: member import outside world/sdk/self ${spec}`);
     });

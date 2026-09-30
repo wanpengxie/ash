@@ -9,7 +9,7 @@ after(async () => { await host.close(); await model.close(); });
 
 test("host records manifest, scripted call and presentation lifecycle", async () => {
   const url = await host.start();
-  host.manifest.capabilities = [{ name: "calendar.search", description: "find events", input_schema: { type: "object" }, risk: "read", label: "Checking calendar" }];
+  host.manifest.capabilities = [{ name: "calendar.search", description: "find events", input_schema: { type: "object" }, risk: "none", label: "Checking calendar" }];
   host.queueCall("calendar.search", { ok: true, content: [] });
   const auth = { authorization: `Bearer ${host.token}`, "content-type": "application/json" };
   const get = await fetch(`${url}/manifest`, { headers: auth });

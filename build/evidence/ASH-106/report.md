@@ -17,4 +17,4 @@ Review follow-up: AR1 now allows standard-library imports and helpers grouped wi
 
 The strict gate exited 1 with 25 findings against the inherited v1 tree; see `log/ash-qa-gate.T6AHrA.log`. Missing v2 member/UI/worker paths and the v1 API routes account for the findings. This result must not be counted as AR conformity. The private terminology file stays outside the public repository; the gate requires its path in `ASH_ARCH_PRIVATE_TERMS_FILE`.
 
-The route check presently recognizes the switch-based server router. If the v2 router changes form, update the extractor and its negative fixture before treating a green result as accepted. Runtime AR4 must be hooked to a real self-member scenario after that member exists.
+The route check presently recognizes the switch-based server router. If the v2 router changes form, update the extractor and its negative fixture before treating a green result as accepted. The AR4 snapshot helper is not live runtime enforcement: it only compares filesystem states before and after a scenario and needs to be hooked to a real self-member scenario after that member exists. It does not count as final AR4 acceptance.

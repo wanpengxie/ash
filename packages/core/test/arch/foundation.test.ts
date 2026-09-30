@@ -21,7 +21,7 @@ test("architecture fixture: clean tree has no findings", () => assert.deepEqual(
 test("AR1 permits standard library imports and helpers of one logical member", () => {
   const tree = clean();
   tree["packages/core/src/members/main.ts"] = 'import { randomUUID } from "node:crypto"; import { status } from "./main-status"; export const main = [randomUUID, status];';
-  tree["packages/core/src/members/main-status.ts"] = 'export const status = true;';
+  tree["packages/core/src/members/main-status.ts"] = 'import { main } from "./main"; export const status = Boolean(main);';
   assert.equal(checkTree(tree).filter(f => f.rule === "AR1").length, 0);
   tree["packages/core/src/members/main-status.ts"] = 'import "./self";';
   assert.equal(checkTree(tree).filter(f => f.rule === "AR1").length, 1);

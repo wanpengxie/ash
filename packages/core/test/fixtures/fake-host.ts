@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 
 export type HostRecord = { method: string; path: string; body: unknown };
-export type Capability = { name: string; description: string; input_schema: Record<string, unknown>; risk: string; label: string; confirm?: boolean };
+export type Capability = { name: string; description: string; input_schema: Record<string, unknown>; risk: "none" | "outward" | "structure"; label: string; confirm?: boolean };
 export type HostScript = { capability: string; result: unknown };
 
 export class FakeHost {

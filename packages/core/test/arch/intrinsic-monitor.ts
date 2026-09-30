@@ -16,7 +16,10 @@ function snapshot(root: string): Map<string, string> {
   return out;
 }
 
-/** Scenario harness: authorize paths when the self member handles a write request. */
+/** Scenario snapshot helper. Authorize paths only from observed self-member write requests.
+ * This compares two snapshots; it is not a live filesystem watcher or a final AR4 gate.
+ * A write reverted before violations() runs will not be detected.
+ */
 export class IntrinsicMonitor {
   private before: Map<string, string>;
   private allowed = new Set<string>();
