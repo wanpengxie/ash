@@ -4,13 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import ai.ash.R
 import ai.ash.ui.HomeActivity
 import org.json.JSONObject
-import java.util.concurrent.atomic.AtomicInteger
 
 /** Everything ash shows in the notification shade: service status, agent notices, owner confirmations. */
 object Notifications {
@@ -19,7 +20,6 @@ object Notifications {
     const val CH_URGENT = "ash.urgent"
     const val CH_CONFIRM = "ash.confirm"
     const val ID_SERVICE = 1
-    private val next = AtomicInteger(1000)
 
     fun createChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < 26) return
@@ -50,49 +50,58 @@ object Notifications {
         ctx.getSystemService(NotificationManager::class.java).notify(ID_SERVICE, service(ctx, text))
     }
 
-    /** An agent (or ash itself) wants the owner's attention. */
-    fun message(ctx: Context, title: String, text: String, urgency: String) {
-        val ch = if (urgency == "high") CH_URGENT else CH_MESSAGES
-        val id = next.incrementAndGet()
-        val n = builder(ctx, ch)
+    private fun action(ctx: Context, id: String, choice: String, mutable: Boolean = false): PendingIntent {
+        val uri = Uri.Builder().scheme("ash").authority("present-action").appendPath(id).appendPath(choice).build()
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (mutable && Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getBroadcast(ctx, 0, Intent(ctx, PresentActionReceiver::class.java).setData(uri), flags)
+    }
+
+    /** Render only a persisted, validated presentation; action receivers never trust their extras for routing. */
+    fun present(ctx: Context, p: JSONObject) {
+        val id = p.getString("id")
+        val kind = p.getString("kind")
+        val text = p.optString("text")
+        val channel = when (kind) { "approval" -> CH_CONFIRM; "due" -> CH_URGENT; else -> CH_MESSAGES }
+        val b = builder(ctx, channel)
             .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle(title.ifBlank { "Ash" })
+            .setContentTitle(p.optString("title").ifBlank { "Ash" })
             .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
-            .setAutoCancel(true)
-            .setContentIntent(openApp(ctx, id))
-            .apply { if (Build.VERSION.SDK_INT < 26 && urgency == "high") setPriority(Notification.PRIORITY_HIGH) }
-            .build()
-        ctx.getSystemService(NotificationManager::class.java).notify(id, n)
+            .setContentIntent(openApp(ctx, id.hashCode()))
+            .setAutoCancel(kind != "approval")
+        if (kind == "reply") {
+            b.setStyle(Notification.MessagingStyle("Ash").addMessage(text, System.currentTimeMillis(), "Ash"))
+            val input = RemoteInput.Builder("reply").setLabel("回复").build()
+            b.addAction(Notification.Action.Builder(null, "回复", action(ctx, id, "reply", mutable = true)).addRemoteInput(input).build())
+        } else b.setStyle(Notification.BigTextStyle().bigText(text))
+        if (kind == "approval") {
+            val options = p.getJSONArray("options")
+            for (i in 0 until options.length()) {
+                val option = options.getJSONObject(i)
+                b.addAction(Notification.Action.Builder(null, option.getString("label"), action(ctx, id, option.getString("id"))).build())
+            }
+            b.setDeleteIntent(action(ctx, id, "deny"))
+        }
+        if (Build.VERSION.SDK_INT < 26 && (kind == "approval" || kind == "due")) b.setPriority(Notification.PRIORITY_HIGH)
+        ctx.getSystemService(NotificationManager::class.java).notify("present:$id", 0, b.build())
     }
 
-    /** A confirmation card: ✓ / ✗ right in the notification, answered through ash core. */
-    fun confirm(ctx: Context, c: JSONObject) {
-        val id = c.getString("id")
-        val code = id.hashCode()
-        fun action(approve: Boolean) = PendingIntent.getBroadcast(
-            ctx, code * 2 + (if (approve) 1 else 0),
-            Intent(ctx, ConfirmReceiver::class.java).putExtra("id", id).putExtra("approve", approve),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val detail = c.optString("detail")
-        @Suppress("DEPRECATION")
-        val n = builder(ctx, CH_CONFIRM)
-            .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("🛡️ " + c.optString("title"))
-            .setContentText(detail.ifBlank { "需要你确认" })
-            .setStyle(Notification.BigTextStyle().bigText(detail))
-            .setContentIntent(openApp(ctx, code))
-            .setAutoCancel(false)
-            .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "允许", action(true)).build())
-            .addAction(Notification.Action.Builder(null, "拒绝", action(false)).build())
-            .apply { if (Build.VERSION.SDK_INT < 26) setPriority(Notification.PRIORITY_HIGH) }
-            .build()
-        ctx.getSystemService(NotificationManager::class.java).notify("confirm", code, n)
+    fun hidePresent(ctx: Context, id: String) = ctx.getSystemService(NotificationManager::class.java).cancel("present:$id", 0)
+
+    fun presentFailure(ctx: Context, id: String) {
+        val n = builder(ctx, CH_URGENT).setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("操作未送达")
+            .setContentText("通知操作未被接受，请打开 Ash 检查。")
+            .setContentIntent(openApp(ctx, id.hashCode())).setAutoCancel(true).build()
+        ctx.getSystemService(NotificationManager::class.java).notify("present-failed:$id", 0, n)
     }
 
-    fun hideConfirm(ctx: Context, id: String) {
-        ctx.getSystemService(NotificationManager::class.java).cancel("confirm", id.hashCode())
+    /** On upgrade remove old untagged notices and two-button confirmations, retaining v2 records. */
+    fun clearLegacy(ctx: Context) {
+        val manager = ctx.getSystemService(NotificationManager::class.java)
+        for (notice in manager.activeNotifications) {
+            if (notice.id == ID_SERVICE && notice.tag == null) continue
+            if (notice.tag?.startsWith("present:") == true || notice.tag?.startsWith("present-failed:") == true) continue
+            manager.cancel(notice.tag, notice.id)
+        }
     }
 }
