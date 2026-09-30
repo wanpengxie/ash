@@ -1,0 +1,371 @@
+{
+  "kind": "DSH llm.stream real-model tool loop against in-memory fixture",
+  "model": {
+    "provider": "deepseek-official",
+    "model": "deepseek-flash"
+  },
+  "skill_sha256": {
+    "first": "9d520335d8452b37754b53bce34370695af2250e76405725e9abd4944156f054",
+    "forget": "f8346dd11b4fac0e2b82b173d9d4486b8cfda9f59edbf0c619efa58ea09a9f76"
+  },
+  "cases": [
+    {
+      "id": "options",
+      "steps": [
+        {
+          "reason": "tool-calls",
+          "text": "",
+          "calls": [
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "好，称呼就这么定了。下面三个随时可以直接开始：\n\n1. **帮我理清今天要做的事** —— 把手头事项说给我，我帮你排个先后。\n2. **到某个时间提醒我** —— 告诉我时间和要提醒的内容，我去交给定时功能；收到成功回执才算设好。\n3. **记下一项我希望你以后知道的偏好** —— 说一条具体偏好，我先试着存起来，存没存成我会照实告诉你。\n\n挑一个就行，直接说内容，我接着做。",
+          "calls": []
+        }
+      ],
+      "calls": [
+        {
+          "action": "show_options",
+          "input": {
+            "action": "show_options",
+            "options": [
+              "帮我理清今天要做的事",
+              "到某个时间提醒我",
+              "记下一项我希望你以后知道的偏好"
+            ]
+          },
+          "result": {
+            "shown": true,
+            "options": [
+              "帮我理清今天要做的事",
+              "到某个时间提醒我",
+              "记下一项我希望你以后知道的偏好"
+            ]
+          }
+        }
+      ],
+      "writes": 0,
+      "final_files": {
+        "USER.md": "用户资料：喜欢无糖茶。\n",
+        "memory/2026-10-01.md": "今天提到喜欢无糖茶。\n"
+      }
+    },
+    {
+      "id": "organize",
+      "steps": [
+        {
+          "reason": "tool-calls",
+          "text": "",
+          "calls": [
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "查到测试日历里今天只有一项：**团队会 10:00**。\n\n结合你要 17:00 去买菜，可以这样排：\n\n- **10:00 团队会**——按一小时算，会前 10 分钟留给自己过一遍要说的点。\n- **11:00 之后**——处理会议里冒出来的事，趁记忆还热。\n- **午饭前后**——安排今天最需要专注的那件事，放到整块时间里做。\n- **15:00–16:30**——留一段收尾时间，把零碎消息、待回的都清掉。\n- **16:30 出发前**——先列好买菜清单，避免到那儿再想。\n- **17:00 买菜**——顺手把晚饭要吃的一起买了。\n\n如果 17:00 不是硬时间（比如只是\"差不多那个点\"），告诉我，我可以把下午的收尾往后挪一点，让买菜前不那么赶。\n\n要不要把今天最想解决的那件事也说给我，我帮你拆成第一步？",
+          "calls": []
+        }
+      ],
+      "calls": [
+        {
+          "action": "calendar_search",
+          "input": {
+            "action": "calendar_search",
+            "query": "今天"
+          },
+          "result": {
+            "events": [
+              {
+                "title": "团队会",
+                "at": "10:00"
+              }
+            ]
+          }
+        }
+      ],
+      "writes": 0,
+      "final_files": {
+        "USER.md": "用户资料：喜欢无糖茶。\n",
+        "memory/2026-10-01.md": "今天提到喜欢无糖茶。\n"
+      }
+    },
+    {
+      "id": "reminder",
+      "steps": [
+        {
+          "reason": "tool-calls",
+          "text": "I'll set that reminder for you.",
+          "calls": [
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "设好了：明天 09:00，提醒你喝水。\n\n要不要顺手再确认两件事——需要提前几分钟先给个预备提示吗？还有，如果这个时间不合适，随时说一声，我改成别的时间。",
+          "calls": []
+        }
+      ],
+      "calls": [
+        {
+          "action": "clock_set",
+          "input": {
+            "action": "clock_set",
+            "at": "明天09:00",
+            "text": "喝水"
+          },
+          "result": {
+            "created": true,
+            "at": "明天09:00",
+            "text": "喝水"
+          }
+        }
+      ],
+      "writes": 0,
+      "final_files": {
+        "USER.md": "用户资料：喜欢无糖茶。\n",
+        "memory/2026-10-01.md": "今天提到喜欢无糖茶。\n"
+      }
+    },
+    {
+      "id": "preference",
+      "steps": [
+        {
+          "reason": "tool-calls",
+          "text": "我先读一下现有资料，再写入。",
+          "calls": [
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "tool-calls",
+          "text": "",
+          "calls": [
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "记好了：你的资料里现在写着“饮品偏好：喜欢无糖茶”，以后我会按这个来。\n\n接下来想试哪个？\n\n1. “帮我理清今天要做的事”——你说出手头事项，我帮你排优先顺序。\n2. “到某个时间提醒我”——告诉我时间和要提醒的内容，我来设。\n3. “再记一项偏好”——比如说话风格、常用时间安排，直接说就行。",
+          "calls": []
+        }
+      ],
+      "calls": [
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "USER.md"
+          },
+          "result": {
+            "content": "用户资料：尚无饮品偏好。\n",
+            "hash": "995a5f54e4be203b2d437ef1485050bb8da05ec3c6fbe680b2aa8454f6121ac0"
+          }
+        },
+        {
+          "action": "self_write",
+          "input": {
+            "action": "self_write",
+            "path": "USER.md",
+            "content": "用户资料：饮品偏好：喜欢无糖茶。\n",
+            "expected_hash": "995a5f54e4be203b2d437ef1485050bb8da05ec3c6fbe680b2aa8454f6121ac0"
+          },
+          "result": {
+            "saved": true,
+            "hash": "1412b59e6623000cd18ee7bb8299d6835f6b6f710418e914d25159911f831b78"
+          }
+        }
+      ],
+      "writes": 1,
+      "final_files": {
+        "USER.md": "用户资料：饮品偏好：喜欢无糖茶。\n",
+        "memory/2026-10-01.md": "今天提到喜欢无糖茶。\n"
+      }
+    },
+    {
+      "id": "forget-denied",
+      "plan": [
+        {
+          "reason": "tool-calls",
+          "text": "I'll start with the read-only look, one read each of the two allowed locations.",
+          "calls": [
+            "fixture_action",
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "我只读检查了这两处，各读一次，未做任何写入。结果：\n\n**1. `USER.md`**\n- 内容：`用户资料：喜欢无糖茶。`\n- 哈希：`becef279…f033070a`\n\n**2. `memory/2026-10-01.md`**\n- 内容：`今天提到喜欢无糖茶。`\n- 哈希：`e15ed1dd…0a56a69f`\n\n两处都命中“喜欢无糖茶”，且都是关于你的记录，不是那天无关的事。\n\n## 计划（尚未执行，等你决定）\n\n- **`USER.md`**：删掉“喜欢无糖茶”这条偏好。我可以整条移除，或按你要求改写成别的表述——你定。\n- **`memory/2026-10-01.md`**：这段日期记录里唯一的内容就是这件事。删掉后这个文件会变成空的；如果你希望保留当天的日期文件、只清掉内容，我也可以照办。请指明要哪种。\n- **范围限制**：这次只覆盖上面这两个文件。其他位置（版本历史、对话记录、外部邮件或日历等）我没有查，也未获授权处理；那里是否另有一份我无法确认，所以我不会说它们已经没有这条信息。日后如果别处的内容被重新读回，这件事可能再次出现。\n- **执行方式**：写入时会带上读取到的哈希，作为“内容未变动”的校验；如果执行时发现内容已被改过，我会停下重新跟你核对，而不是照旧计划动手。\n\n以上只是计划，我还没有改动或删除任何东西。请回复你要删哪些、以及 `memory/2026-10-01.md` 是清空还是留空文件；你同意之前我不会写入。",
+          "calls": []
+        }
+      ],
+      "decision": [
+        {
+          "reason": "stop",
+          "text": "明白，不删。我不做任何写入或删除。\n\n这轮结束时的情况：计划提出过，但从未执行——`USER.md` 和 `memory/2026-10-01.md` 都保持原样，没有改动、没有删除，也没有留下任何写入记录。两处的内容仍是原样（`用户资料：喜欢无糖茶。` / `今天提到喜欢无糖茶。`），因为我没有写入，两处哈希自然与读取时相同。\n\n以后你要是改主意，或想换个做法（比如只改 `USER.md`、或只清空日期文件而保留文件），再说一声就行。",
+          "calls": []
+        }
+      ],
+      "calls": [
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "USER.md"
+          },
+          "result": {
+            "content": "用户资料：喜欢无糖茶。\n",
+            "hash": "becef27999456b46c379ed928fa59e426d323c0315beabf8ed86df43f033070a"
+          }
+        },
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "memory/2026-10-01.md"
+          },
+          "result": {
+            "content": "今天提到喜欢无糖茶。\n",
+            "hash": "e15ed1ddb075d0d86e16fbae3a117a95386bd9fb780ce9f077c8218f0a56a69f"
+          }
+        }
+      ],
+      "writes_before_decision": 0,
+      "writes_after_decision": 0,
+      "final_files": {
+        "USER.md": "用户资料：喜欢无糖茶。\n",
+        "memory/2026-10-01.md": "今天提到喜欢无糖茶。\n"
+      }
+    },
+    {
+      "id": "forget-approved",
+      "plan": [
+        {
+          "reason": "tool-calls",
+          "text": "我先只读检查这两处。",
+          "calls": [
+            "fixture_action",
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "只读检查完成（各读一次，已停止搜索）——两处都命中：\n\n| 位置 | 内容 | 当前哈希（前 8 位） |\n|---|---|---|\n| `USER.md` | 用户资料：喜欢无糖茶。 | `becef279` |\n| `memory/2026-10-01.md` | 今天提到喜欢无糖茶。 | `e15ed1dd` |\n\n**计划（尚未执行，等你确认）**\n\n1. `USER.md`：删掉“喜欢无糖茶”这条资料；该文件只剩这一行，所以删后需要你定是留空文件还是写入别的占位内容。\n2. `memory/2026-10-01.md`：删掉“今天提到喜欢无糖茶”这句——**但这条属于日期记录，要不要一起去掉，请你明确一下**。如果去掉，同一天就没别的内容了，同样涉及留空还是删整个文件。\n\n**这次碰不到的地方（现在就要说清）**\n\n- 本次只检查了 `USER.md` 和 `memory/2026-10-01.md` 两处；其它任何文件、版本历史、对话记录、外部邮件或日历我都**没有**查过，里面可能有同一信息的副本。\n- 因此即便两处都改完，我也只能说“这两个当前可编辑记录里已移除”，不能说“彻底忘了”。日后从别处重新带回来是可能的。\n\n确认范围后我再动手（会先逐份重读最新内容与哈希，若已变动会停下重新核对）。要包含日期记录吗？",
+          "calls": []
+        }
+      ],
+      "decision": [
+        {
+          "reason": "tool-calls",
+          "text": "按确认范围执行：两处都写入空内容（`USER.md` 仅此一行，删后即空；日期文件保留但清空内容）。",
+          "calls": [
+            "fixture_action",
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "tool-calls",
+          "text": "两处写入均返回 `saved:true`。现在重新读取复查。",
+          "calls": [
+            "fixture_action",
+            "fixture_action"
+          ]
+        },
+        {
+          "reason": "stop",
+          "text": "复查完成，两处都已按约定清空。\n\n| 位置 | 写入结果 | 复查读取 | 复查哈希（前 8 位） |\n|---|---|---|---|\n| `USER.md` | saved:true | 内容为空 | `e3b0c442` |\n| `memory/2026-10-01.md` | saved:true | 内容为空（文件保留） | `e3b0c442` |\n\n- 目标内容“无糖茶”及明显同义残留在这两处均无残留，未改动约定范围之外的任何内容。\n- 写入前使用的哈希与你确认时的读取一致，中途没有变动，因此没有套用旧计划。\n\n**留下的限制**\n\n本次只处理并复查了 `USER.md` 和 `memory/2026-10-01.md`。其它文件、版本历史、对话记录、外部邮件或日历我都没有检查也无权处理，其中是否另有同一信息的副本我不知道。所以准确说法是：**在你同意的这两处当前可编辑记录里，这些内容已移除**——不能说“已经彻底忘掉”。日后若别处重新带回来，是可能的。",
+          "calls": []
+        }
+      ],
+      "calls": [
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "USER.md"
+          },
+          "result": {
+            "content": "用户资料：喜欢无糖茶。\n",
+            "hash": "becef27999456b46c379ed928fa59e426d323c0315beabf8ed86df43f033070a"
+          }
+        },
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "memory/2026-10-01.md"
+          },
+          "result": {
+            "content": "今天提到喜欢无糖茶。\n",
+            "hash": "e15ed1ddb075d0d86e16fbae3a117a95386bd9fb780ce9f077c8218f0a56a69f"
+          }
+        },
+        {
+          "action": "self_write",
+          "input": {
+            "action": "self_write",
+            "path": "USER.md",
+            "content": "",
+            "expected_hash": "becef27999456b46c379ed928fa59e426d323c0315beabf8ed86df43f033070a"
+          },
+          "result": {
+            "saved": true,
+            "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "action": "self_write",
+          "input": {
+            "action": "self_write",
+            "path": "memory/2026-10-01.md",
+            "content": "",
+            "expected_hash": "e15ed1ddb075d0d86e16fbae3a117a95386bd9fb780ce9f077c8218f0a56a69f"
+          },
+          "result": {
+            "saved": true,
+            "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "USER.md"
+          },
+          "result": {
+            "content": "",
+            "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "action": "self_read",
+          "input": {
+            "action": "self_read",
+            "path": "memory/2026-10-01.md"
+          },
+          "result": {
+            "content": "",
+            "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      ],
+      "writes_before_decision": 0,
+      "writes_after_decision": 2,
+      "final_files": {
+        "USER.md": "",
+        "memory/2026-10-01.md": ""
+      }
+    }
+  ],
+  "checks": {
+    "starter_options": true,
+    "organize_route": true,
+    "reminder_route": true,
+    "preference_read_then_write": true,
+    "denial_zero_writes": true,
+    "approval_two_writes_then_two_reads": true,
+    "no_complete_forgetting_claim": true
+  },
+  "limitations": "Not a production DSH agent session, not actual option-card click, and not real self or clock services."
+}
