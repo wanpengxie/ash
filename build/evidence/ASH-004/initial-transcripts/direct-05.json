@@ -1,0 +1,24 @@
+{
+  "index": 5,
+  "instruction": "Schedule a calendar event called “Call Maya” Friday at 15:00.",
+  "expected": {
+    "word": "calendar.create",
+    "body": {
+      "title": "Call Maya",
+      "start": "Friday 15:00"
+    }
+  },
+  "calls": [
+    {
+      "name": "calendar_create",
+      "input": {
+        "title": "Call Maya",
+        "start": "Friday 15:00"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

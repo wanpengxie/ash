@@ -1,13 +1,13 @@
 // Run with ASH_V4_API_KEY, ASH_V4_MODEL, and optionally ASH_V4_BASE_URL.
 // Only in-memory device fixtures are used. No call can reach a real device.
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { deviceCall, oracle } from './v4-oracle.mjs';
 
 const out = new URL('../../build/evidence/ASH-004/', import.meta.url);
 const key = process.env.ASH_V4_API_KEY || process.env.DEEPSEEK_API_KEY;
 const model = process.env.ASH_V4_MODEL;
 const base = process.env.ASH_V4_BASE_URL || 'https://api.deepseek.com/anthropic';
-const rescoreOnly = process.argv.includes('--rescore');
-if (!rescoreOnly && (!key || !model)) {
+if (!key || !model) {
   console.error('Set ASH_V4_API_KEY and ASH_V4_MODEL for a real-model run. No score was generated.');
   process.exit(2);
 }
@@ -71,69 +71,37 @@ async function complete(messages, tools) {
   if (!response.ok) throw new Error(`model HTTP ${response.status}: ${JSON.stringify(body).slice(0, 400)}`);
   return body;
 }
-function correct(call, target, direct) {
-  const [word, expected] = target;
-  const input = direct ? { to: member, word: call.name.replace('_', '.'), body: call.input } : call.input;
-  return input.to === member && input.word === word && Object.entries(expected).every(([k, v]) => String(input.body?.[k] ?? '').toLowerCase().includes(v.toLowerCase()));
-}
-function deviceCall(call, direct) {
-  return direct ? { to: member, word: call.name.replace('_', '.'), body: call.input } : call.input;
-}
-function oracle(calls, target, direct) {
-  const expected = [target[0], target[2]];
-  const deviceCalls = calls.filter(call => call.name !== 'ash_describe').map(call => deviceCall(call, direct));
-  const targetReached = calls.some(call => call.name !== 'ash_describe' && correct(call, expected, direct));
-  const extraEffects = deviceCalls.filter(call => {
-    if (!['calendar.create', 'screen.tap', 'clipboard.write', 'shell.run'].includes(call.word)) return false;
-    if (call.word === 'shell.run' && call.body?.command === 'date') return false;
-    return !(call.word === target[0] && Object.entries(target[2]).every(([k, v]) => String(call.body?.[k] ?? '').toLowerCase().includes(v.toLowerCase())));
-  });
-  return { targetReached, extraEffects, firstTurnCorrect: targetReached && extraEffects.length === 0 };
-}
 async function runOne(index, target, direct) {
   const tools = direct ? directTools : twoTools;
   const messages = [{ role: 'user', content: target[1] }];
   const calls = [];
-  let firstDeviceCall = null;
-  for (let step = 0; step < 5; step++) {
+  const modelSteps = [];
+  let completed = false;
+  for (let step = 0; step < 8; step++) {
     const response = await complete(messages, tools);
     messages.push({ role: 'assistant', content: response.content });
     const uses = response.content.filter(c => c.type === 'tool_use');
-    if (!uses.length) break;
+    const visible = { stop_reason: response.stop_reason, assistant_text: response.content.filter(c => c.type === 'text').map(c => c.text ?? '').join(''), tool_results: [] };
+    modelSteps.push(visible);
+    if (!uses.length) { completed = response.stop_reason === 'end_turn'; break; }
     const results = [];
     for (const call of uses) {
       calls.push({ name: call.name, input: call.input });
       let result;
       if (!direct && call.name === 'ash_describe') result = describe(call.input ?? {});
       else {
-        if (firstDeviceCall === null) firstDeviceCall = correct(call, [target[0], target[2]], direct);
-        const input = direct ? { to: member, word: call.name.replace('_', '.'), body: call.input } : call.input;
+        const input = deviceCall(call, direct);
         result = fixtureSend(input);
       }
+      visible.tool_results.push({ name: call.name, result });
       results.push({ type: 'tool_result', tool_use_id: call.id, content: JSON.stringify(result) });
     }
     messages.push({ role: 'user', content: results });
   }
-  const verdict = oracle(calls, target, direct);
-  return { index: index + 1, instruction: target[1], expected: { word: target[0], body: target[2] }, first_turn_correct: verdict.firstTurnCorrect, target_reached: verdict.targetReached, extra_effects: verdict.extraEffects, first_device_call_correct: firstDeviceCall === true, calls };
+  const verdict = oracle(calls, { word: target[0], body: target[2] }, direct, completed);
+  return { index: index + 1, instruction: target[1], expected: { word: target[0], body: target[2] }, ...verdict, calls, model_steps: modelSteps };
 }
 await mkdir(new URL('transcripts/', out), { recursive: true });
-async function rescoreSet(direct) {
-  const results = [];
-  for (let i = 0; i < cases.length; i++) {
-    const file = new URL(`transcripts/${direct ? 'direct' : 'two-tool'}-${String(i + 1).padStart(2, '0')}.json`, out);
-    const result = JSON.parse(await readFile(file, 'utf8'));
-    const verdict = oracle(result.calls, cases[i], direct);
-    delete result.first_attempt_correct;
-    result.first_turn_correct = verdict.firstTurnCorrect;
-    result.target_reached = verdict.targetReached;
-    result.extra_effects = verdict.extraEffects;
-    result.first_device_call_correct = result.calls.filter(c => c.name !== 'ash_describe').length > 0 && correct(result.calls.find(c => c.name !== 'ash_describe'), [cases[i][0], cases[i][2]], direct);
-    await writeFile(file, JSON.stringify(result, null, 2) + '\n');
-    results.push(result);
-  }
-  return results.filter(r => r.first_turn_correct).length;
-}
 async function runSet(direct) {
   const results = [];
   for (let i = 0; i < cases.length; i++) {
@@ -144,7 +112,7 @@ async function runSet(direct) {
   }
   return results.filter(r => r.first_turn_correct).length;
 }
-const twoToolScore = rescoreOnly ? await rescoreSet(false) : await runSet(false);
-const directScore = rescoreOnly ? await rescoreSet(true) : twoToolScore < 18 ? await runSet(true) : null;
-await writeFile(new URL('results.json', out), JSON.stringify({ model: rescoreOnly ? 'deepseek-flash' : model, base, case_count: cases.length, oracle: 'correct target member/word/required body in first turn; no extra effectful calls', two_tool_score: twoToolScore, direct_tool_score: directScore, direct_tool_count: directTools.length, direct_run_kind: rescoreOnly ? 'supplemental existing transcripts' : twoToolScore < 18 ? 'fallback' : 'not run' }, null, 2) + '\n');
+const twoToolScore = await runSet(false);
+const directScore = twoToolScore < 18 ? await runSet(true) : null;
+await writeFile(new URL('results.json', out), JSON.stringify({ model, base, case_count: cases.length, oracle: 'exact normalized target member/word/body in normally completed first turn; no extra or duplicate effects', two_tool_score: twoToolScore, direct_tool_score: directScore, direct_tool_count: directTools.length, direct_run_kind: twoToolScore < 18 ? 'fallback' : 'not run' }, null, 2) + '\n');
 console.log(JSON.stringify({ twoToolScore, directScore, directToolCount: directTools.length }));

@@ -1,0 +1,48 @@
+{
+  "index": 5,
+  "instruction": "Schedule a calendar event called “Call Maya” Friday at 15:00.",
+  "expected": {
+    "word": "calendar.create",
+    "body": {
+      "title": "Call Maya",
+      "start": "Friday 15:00"
+    }
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "calendar.search",
+        "body": {
+          "query": "Call Maya"
+        }
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "body": {
+          "title": "Call Maya",
+          "start": "Friday 15:00"
+        },
+        "to": "device:fixture",
+        "word": "calendar.create"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": false
+}

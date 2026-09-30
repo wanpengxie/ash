@@ -1,0 +1,26 @@
+{
+  "index": 9,
+  "instruction": "Tap the Save button on the current screen.",
+  "expected": {
+    "word": "screen.tap",
+    "body": {
+      "label": "Save"
+    }
+  },
+  "calls": [
+    {
+      "name": "screen_inspect",
+      "input": {}
+    },
+    {
+      "name": "screen_tap",
+      "input": {
+        "label": "Save"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": false
+}

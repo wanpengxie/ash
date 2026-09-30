@@ -1,0 +1,36 @@
+{
+  "index": 17,
+  "instruction": "What files are in /notes?",
+  "expected": {
+    "word": "shell.inspect",
+    "body": {
+      "path": "/notes"
+    }
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "shell.inspect",
+        "body": {
+          "path": "/notes"
+        }
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}
