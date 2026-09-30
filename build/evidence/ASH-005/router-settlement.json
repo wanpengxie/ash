@@ -1,0 +1,93 @@
+{
+  "dsh_root": "/home/xiewanpeng/ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh",
+  "fixture": "abort-ignoring device with spike-only router settlement",
+  "tool_entered_at_ms": 2377.941132,
+  "signal_at_entry": false,
+  "cancel_at_ms": 2378.034524,
+  "router_settled_at_ms": 2381.620157,
+  "signal_aborted_at_ms": 2384.183065,
+  "cancel_response": {
+    "cancelled": true
+  },
+  "turn_end_at_ms": 2414.021325,
+  "turn_end_reason": "error",
+  "cancel_to_turn_end_ms": 35.986801000000014,
+  "tool_still_in_flight_at_turn_end": true,
+  "events_at_deadline": [
+    {
+      "type": "call.started",
+      "data": {
+        "id": "call_probe_router",
+        "device": "device:lab",
+        "capability": "wait",
+        "caller": "agent:main"
+      }
+    },
+    {
+      "type": "call.ended",
+      "data": {
+        "id": "call_probe_router",
+        "ok": false,
+        "error": "cancelled"
+      }
+    },
+    {
+      "type": "agent.turn.ended",
+      "data": {
+        "message_id": "msg_nyOn7_taJ906",
+        "reason": "error",
+        "error": "undefined"
+      }
+    }
+  ],
+  "provider_still_in_flight_before_release": true,
+  "tool_returned_at_ms": 2568.935258,
+  "late_provider_result_suppressed": true,
+  "events": [
+    {
+      "type": "agent.tool.call",
+      "data": {
+        "name": "lab__wait",
+        "args": {},
+        "message_id": "msg_nyOn7_taJ906"
+      }
+    },
+    {
+      "type": "call.started",
+      "data": {
+        "id": "call_probe_router",
+        "device": "device:lab",
+        "capability": "wait",
+        "caller": "agent:main"
+      }
+    },
+    {
+      "type": "call.ended",
+      "data": {
+        "id": "call_probe_router",
+        "ok": false,
+        "error": "cancelled"
+      }
+    },
+    {
+      "type": "agent.tool.result",
+      "data": {
+        "name": "lab__wait",
+        "ok": false,
+        "preview": "Error: cancelled",
+        "message_id": "msg_nyOn7_taJ906"
+      }
+    },
+    {
+      "type": "agent.turn.ended",
+      "data": {
+        "message_id": "msg_nyOn7_taJ906",
+        "reason": "error",
+        "error": "undefined"
+      }
+    }
+  ],
+  "late_successful_call_end": false,
+  "terminal_call_events": 1,
+  "pass": true
+}
