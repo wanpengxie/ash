@@ -7,7 +7,7 @@
   "scripts": {
     "gen:ui": "node tools/gen-ui.mjs",
     "typecheck": "npm run -s gen:ui && tsc --noEmit -p .",
-    "test": "npm run -s gen:ui && node --expose-internals --import tsx --test --test-force-exit packages/*/test/*.test.ts packages/core/test/arch/*.test.ts packages/core/test/fixtures/*.test.ts",
+    "test": "npm run -s gen:ui && node --expose-internals --import tsx --test --test-force-exit packages/*/test/*.test.ts packages/core/test/arch/*.test.ts packages/core/test/contract/*.test.ts packages/core/test/fixtures/*.test.ts",
     "test:arch:final": "node --import tsx tools/arch-gate.ts",
     "test:originality": "node --test tools/originality.test.mjs",
     "test:public-terms": "node tools/originality.mjs --ci-terms",

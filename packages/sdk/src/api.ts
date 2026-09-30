@@ -297,3 +297,127 @@ export class AshApiError extends Error {
     super(`${status} ${code}: ${message}`);
   }
 }
+
+// The next protocol is additive until the edge client and server switch together.
+export const API_VERSION_V2 = "ash-api/2" as const;
+export type Kind = "request" | "response" | "event";
+export type MessageErrorCode = "bad_request" | "not_found" | "forbidden" | "denied" | "cancelled" | "timeout" | "offline" | "failed";
+export type ResponseBody = { ok: true; result?: unknown } | { ok: false; error: { code: MessageErrorCode; message: string } };
+export interface Message {
+  seq: number;
+  id: string;
+  ts: number;
+  from: string;
+  to: string | null;
+  kind: Kind;
+  word: string;
+  body: Record<string, unknown>;
+  reply_to?: string;
+  origin?: { screen: string; label: string };
+  turn?: string;
+}
+
+export interface JsonSchema {
+  type?: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
+  properties?: Record<string, JsonSchema>;
+  required?: readonly string[];
+  additionalProperties?: boolean | JsonSchema;
+  items?: JsonSchema;
+  enum?: readonly unknown[];
+  const?: unknown;
+  anyOf?: readonly JsonSchema[];
+  oneOf?: readonly JsonSchema[];
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
+}
+
+export interface WordSpec {
+  word: string;
+  kind: "request" | "event";
+  description: string;
+  input_schema?: JsonSchema;
+  result_schema?: JsonSchema;
+  risk?: "none" | "outward" | "structure";
+  label?: string;
+  timeout_ms?: number;
+  audience?: "agent" | "owner" | "all";
+}
+export interface MemberInfo { id: string; kind: "person" | "screen" | "agent" | "device" | "service" | "worker"; name: string; online?: boolean }
+export interface DescribeSummary { members: (MemberInfo & { words: string[] })[] }
+export interface DescribeDetail { members: (MemberInfo & { words: WordSpec[] })[] }
+export type Describe = DescribeSummary | DescribeDetail;
+
+export type Card =
+  | { type: "options"; prompt?: string; options: { id: string; text: string }[]; allow_custom?: boolean }
+  | { type: "file"; workspace: string; path: string; name: string; mime_type: string; size: number }
+  | { type: "image"; workspace: string; path: string; alt?: string }
+  | { type: "link"; url: string; title: string; summary?: string }
+  | { type: "permission"; permission: string; why: string };
+export type AskOption = { id: "once" | "always" | "deny"; label: string };
+export type EditReason = "promote" | "correct" | "complete" | "expire" | "dedupe" | "condense" | "demote";
+export interface Edit { op: "replace" | "delete" | "insert_after"; start: number; end: number; guard: string; text?: string; reason: EditReason; evidence: string[] }
+
+export interface Claim {
+  text: string;
+  type: "fact" | "preference" | "relationship" | "event" | "boundary" | "correction";
+  salience: "low" | "medium" | "high";
+  evidence: string[];
+  quote?: string;
+  supersedes?: string;
+  valid_until?: string;
+}
+export interface NoChange { no_change: { checked: string[]; details: string } }
+export type WorkerName = "extract" | "verify_claims" | "reconcile" | "verify_plan" | "proactive" | "opener";
+export interface WorkerInputMap {
+  extract: { chunk: Message[]; summary: string; known: string[] };
+  verify_claims: { claims: Claim[]; evidence: Message[] };
+  reconcile: { file: "MEMORY.md" | "USER.md"; numbered: string; claims: Claim[] };
+  verify_plan: { file: "MEMORY.md" | "USER.md"; before: string; edits: Edit[] };
+  proactive: { prefs: string; recent: Message[]; facts: { n: number; text: string }[]; upcoming: unknown[]; delivered: unknown[] };
+  opener: { away_ms: number; last_topic: string; pending: unknown[]; changes: unknown[] };
+}
+export interface WorkerOutputMap {
+  extract: { claims: Claim[] };
+  verify_claims: { verdicts: { i: number; lens: "refute" | "grounded"; pass: boolean; confidence: number; why: string }[] };
+  reconcile: { edits: Edit[] };
+  verify_plan: { verdicts: { i: number; lens: "evidence" | "temporal" | "preservation"; pass: boolean; why: string }[] };
+  proactive: { suggestion: { kind: "offer" | "heads_up"; title: string; text: string; urgency: "regular" | "high"; facts: number[] } };
+  opener: { speak: boolean; why: string; hint?: string };
+}
+export type WorkerRequest<N extends WorkerName = WorkerName> = { input: WorkerInputMap[N]; run: string };
+export type WorkerResult<N extends WorkerName = WorkerName> = WorkerOutputMap[N] | NoChange;
+
+export interface SendRequestV2 { to: string | null; kind: Kind; word: string; body: Record<string, unknown>; reply_to?: string; wait?: boolean; client_id?: string }
+export interface SendResultV2 { id: string; seq: number; reply?: Message }
+export interface StreamQueryV2 { after?: number; before?: number; limit?: number; follow?: boolean; screen?: string; label?: string }
+/** A live stream control frame, not a ledger message or cursor-bearing SSE event. */
+export interface ScreenRegistration { screen: string; token: string; label: string }
+export const SCREEN_REGISTRATION_EVENT = "screen.registered" as const;
+export const SCREEN_TOKEN_HEADER = "X-Ash-Screen" as const;
+export const SCREEN_REGISTRATION_TTL_MS = 24 * 60 * 60 * 1000;
+/** Server-owned authentication facts; never accepted from a request body. */
+export interface AuthenticatedCallerContext {
+  /** Stable authenticated identity used for persisted client_id deduplication. */
+  transportPrincipal: string;
+  pairedDeviceId?: string;
+  local: boolean;
+  remote: boolean;
+  ownerProxy: boolean;
+  member: string;
+  /** Only populated after validating a server-minted registration for this transport. */
+  screenId?: string;
+}
+export const ROUTES_V2 = {
+  send: "POST /api/send",
+  stream: "GET /api/stream",
+  describe: "GET /api/describe",
+  filesRead: "GET /api/workspaces/:ws/files",
+  filesWrite: "PUT /api/workspaces/:ws/files",
+  mcp: "POST /mcp/:agent",
+} as const;
