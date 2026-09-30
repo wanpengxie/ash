@@ -10,3 +10,5 @@ Run from the repository root:
     TYPESAFE_API_KEY=… node tools/spikes/v7-jev-latency.mjs --count=30
 
 The stub checks invocation and response shape only. The real run is required to decide whether p95 is below 300 ms. A 300 ms production deadline and keyword fallback remain required regardless of this spike's result.
+
+On 2026-10-01, `node tools/spikes/v7-jev-latency.mjs --stub --count=3` completed with three validated stub responses. Their measured 0 ms is local function overhead and is not model latency. Neither `TYPESAFE_API_KEY` nor `JEV_API_KEY` was present in the process environment, so no real request was sent.

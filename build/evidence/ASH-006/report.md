@@ -1,6 +1,6 @@
 # ASH-006 · Android permission flow spike
 
-Status: fixture built; device flow and video pending an Android 13+ emulator or isolated device.
+Status: blocked during device flow. Fixture built and installed on an Android API 36 ARM64 emulator. Full grant → revoke → regrant evidence and video are still pending.
 
 ## Fixture
 
@@ -36,4 +36,8 @@ References: [calendar permission](https://developer.android.com/reference/androi
 
 ## Result
 
-No device was attached to local adb when this report was written. Build success proves only that the fixture compiles. Authorization, revocation, reauthorization, and video acceptance remain unverified.
+The fixture built successfully offline and was installed on `emulator-5554`. On 2026-10-01 the emulator reported API 36 and displayed the calendar permission prompt for the fixture. The Allow control was tapped. A subsequent `appops get ai.ash.permissionprobe READ_CALENDAR` returned `Default mode: allow`, but this alone does not prove the permission state shown by the app.
+
+Opening the fixture's App info screen stalled at a Settings splash screen. The emulator remained listed as `device` by adb, while `dumpsys package` timed out after 10 seconds, then basic `adb shell uptime`, screenshots, and pulling the partial recording timed out. The recording process was stopped to reduce load. No calendar revocation or regrant, and no notification-listener toggle, was observed. A partial Android-only recording remains at `/sdcard/v2-permission-probe.mp4` on the emulator but could not yet be retrieved or inspected. Therefore V6 has not passed and the fallback decision is deferred.
+
+The host app still targets API 28. This fixture targets API 33, so it cannot by itself settle every host-specific behavior; integration must check the target-28 flow separately. The emulator or an isolated device must become responsive before the remaining transitions can be recorded.
