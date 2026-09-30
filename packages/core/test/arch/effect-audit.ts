@@ -52,6 +52,9 @@ export function auditEffectLedger(messages: readonly Message[], effects: readonl
 
     if (effect.kind === "gate_release") {
       if (cause.kind !== "event" || cause.from !== "service:gate" || cause.word !== "gate.passed") errors.push(`effect ${effect.id} lacks gate.passed event`);
+      const requestId = cause.body.request_id;
+      const protectedRequest = typeof requestId === "string" ? byId.get(requestId) : undefined;
+      if (!protectedRequest || protectedRequest.kind !== "request" || protectedRequest.seq <= cause.seq) errors.push(`effect ${effect.id} has no later associated request`);
       continue;
     }
     if (cause.kind !== "request") errors.push(`effect ${effect.id} cause is not a request`);
@@ -62,11 +65,13 @@ export function auditEffectLedger(messages: readonly Message[], effects: readonl
     const replies = messages.filter(message => message.kind === "response" && message.reply_to === cause.id);
     if (replies.length !== 1 || replies[0].seq <= cause.seq) errors.push(`effect ${effect.id} has no unique later response`);
     else {
+      if (replies[0].from !== cause.to || replies[0].to !== cause.from || replies[0].word !== cause.word) errors.push(`effect ${effect.id} response sender, recipient, or word differs from request`);
       if (effect.result !== undefined && canonical(replies[0].body) !== canonical(effect.result)) errors.push(`effect ${effect.id} result differs from ledger response`);
       if (effect.kind === "notification" && (replies[0].body as { result?: { channel?: string } }).result?.channel !== "notification") errors.push(`effect ${effect.id} was not recorded as notification delivery`);
     }
     if (effect.kind === "intrinsic_write") {
-      const changed = messages.filter(message => message.kind === "event" && message.from === "service:self" && message.word === "self.changed" && message.seq > cause.seq && message.body.path === effect.body.path);
+      const version = (replies[0]?.body as { result?: { version?: unknown } } | undefined)?.result?.version;
+      const changed = messages.filter(message => message.kind === "event" && message.from === "service:self" && message.word === "self.changed" && message.seq > cause.seq && message.seq < (replies[0]?.seq ?? Infinity) && message.body.path === effect.body.path && message.body.by === cause.from && version !== undefined && message.body.version === version);
       if (!changed.length) errors.push(`effect ${effect.id} has no self.changed event`);
     }
   }
