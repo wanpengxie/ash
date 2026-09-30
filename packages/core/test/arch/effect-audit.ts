@@ -23,7 +23,7 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 
-/** Detector only: callers must independently observe effects, not derive them from the ledger. */
+/** Detector only: effects must be an independently captured, chronological trace, not derived from the ledger. */
 export function auditEffectLedger(messages: readonly Message[], effects: readonly ObservedEffect[], requiredKinds: readonly EffectKind[] = allKinds): string[] {
   const errors: string[] = [];
   if (!messages.length) errors.push("ledger has no messages");
@@ -54,7 +54,7 @@ export function auditEffectLedger(messages: readonly Message[], effects: readonl
       if (cause.kind !== "event" || cause.from !== "service:gate" || cause.word !== "gate.passed") errors.push(`effect ${effect.id} lacks gate.passed event`);
       const requestId = cause.body.request_id;
       const protectedRequest = typeof requestId === "string" ? byId.get(requestId) : undefined;
-      if (!protectedRequest || protectedRequest.kind !== "request" || protectedRequest.seq <= cause.seq) errors.push(`effect ${effect.id} has no later associated request`);
+      if (!protectedRequest || protectedRequest.kind !== "request") errors.push(`effect ${effect.id} has no associated request`);
       continue;
     }
     if (cause.kind !== "request") errors.push(`effect ${effect.id} cause is not a request`);
@@ -71,8 +71,17 @@ export function auditEffectLedger(messages: readonly Message[], effects: readonl
     }
     if (effect.kind === "intrinsic_write") {
       const version = (replies[0]?.body as { result?: { version?: unknown } } | undefined)?.result?.version;
-      const changed = messages.filter(message => message.kind === "event" && message.from === "service:self" && message.word === "self.changed" && message.seq > cause.seq && message.seq < (replies[0]?.seq ?? Infinity) && message.body.path === effect.body.path && message.body.by === cause.from && version !== undefined && message.body.version === version);
+      const changed = messages.filter(message => message.kind === "event" && message.from === "service:self" && message.word === "self.changed" && message.seq > cause.seq && message.seq < (replies[0]?.seq ?? Infinity) && message.body.path === effect.body.path && message.body.by === cause.from && (version === undefined || message.body.version === version));
       if (!changed.length) errors.push(`effect ${effect.id} has no self.changed event`);
+      else if (version === undefined) errors.push(`unverified: effect ${effect.id} self.changed has no response version for causal correlation`);
+    }
+  }
+  for (const [index, effect] of effects.entries()) {
+    if (effect.kind !== "gate_release") continue;
+    const gate = byId.get(effect.ledger_id);
+    const requestId = gate?.body.request_id;
+    for (const [otherIndex, other] of effects.entries()) {
+      if (other.kind === "device_call" && other.ledger_id === requestId && otherIndex <= index) errors.push(`effect ${other.id} executed before associated gate release`);
     }
   }
   return errors;

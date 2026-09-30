@@ -14,8 +14,8 @@ function sample(): { messages: Message[]; effects: ObservedEffect[] } {
   const gateBody = { request_id: "m-device", rule_id: "rule-1" };
   return {
     messages: [
-      message(1, "e-gate", "event", "service:gate", null, "gate.passed", gateBody),
-      message(2, "m-device", "request", "agent:main", "device:phone", "calendar.create", deviceBody),
+      message(1, "m-device", "request", "agent:main", "device:phone", "calendar.create", deviceBody),
+      message(2, "e-gate", "event", "service:gate", null, "gate.passed", gateBody),
       message(3, "r-device", "response", "device:phone", "agent:main", "calendar.create", { ok: true, result: { id: "event-1" } }, "m-device"),
       message(4, "m-post", "request", "service:work", "service:post", "deliver", notificationBody),
       message(5, "r-post", "response", "service:post", "service:work", "deliver", { ok: true, result: { channel: "notification" } }, "m-post"),
@@ -24,10 +24,10 @@ function sample(): { messages: Message[]; effects: ObservedEffect[] } {
       message(8, "r-self", "response", "service:self", "service:work", "write", { ok: true, result: { hash: "h1", version: 2 } }, "m-self"),
     ],
     effects: [
+      { id: "external-gate-1", kind: "gate_release", ledger_id: "e-gate", to: null, word: "gate.passed", body: gateBody },
       { id: "external-device-1", kind: "device_call", ledger_id: "m-device", to: "device:phone", word: "calendar.create", body: deviceBody, result: { ok: true, result: { id: "event-1" } } },
       { id: "external-notification-1", kind: "notification", ledger_id: "m-post", to: "service:post", word: "deliver", body: notificationBody, result: { ok: true, result: { channel: "notification" } } },
       { id: "external-write-1", kind: "intrinsic_write", ledger_id: "m-self", to: "service:self", word: "write", body: writeBody, result: { ok: true, result: { hash: "h1", version: 2 } } },
-      { id: "external-gate-1", kind: "gate_release", ledger_id: "e-gate", to: null, word: "gate.passed", body: gateBody },
     ],
   };
 }
@@ -40,7 +40,7 @@ test("AR6 detector accepts four independently witnessed effects with exact ledge
 test("AR6 detector refuses empty or incomplete observations", () => {
   const { messages, effects } = sample();
   assert.match(auditEffectLedger(messages, []).join(" "), /no externally observed effects/);
-  assert.match(auditEffectLedger(messages, effects.slice(0, 3)).join(" "), /no observed gate_release/);
+  assert.match(auditEffectLedger(messages, effects.slice(0, 3)).join(" "), /no observed intrinsic_write/);
 });
 
 test("AR6 detector catches missing cause, wrong arguments, and duplicate effect attribution", () => {
@@ -70,17 +70,32 @@ test("AR6 detector requires self change by caller and matching result version be
   for (const altered of [
     messages.map(m => m.id === "e-self" ? { ...m, body: { ...m.body, by: "agent:other" } } : m),
     messages.map(m => m.id === "e-self" ? { ...m, body: { ...m.body, version: 3 } } : m),
-    messages.map(m => m.id === "r-self" ? { ...m, body: { ok: true, result: { hash: "h1" } } } : m),
     messages.map(m => m.id === "r-self" ? { ...m, seq: 6.5 } : m),
   ]) assert.match(auditEffectLedger(altered, effects).join(" "), /no self.changed event/);
 });
 
-test("AR6 detector requires gate release to precede its associated request", () => {
+test("AR6 detector marks valid append without a version as unverified, not a missing event", () => {
+  const { messages, effects } = sample();
+  const appendBody = { path: "memory/2026-10-01.md", text: "note" };
+  const appendResult = { ok: true, result: { hash: "h1" } };
+  const appendMessages = messages.map(m => m.id === "m-self" ? { ...m, word: "append", body: appendBody }
+    : m.id === "e-self" ? { ...m, body: { path: appendBody.path, by: "service:work", version: 2 } }
+    : m.id === "r-self" ? { ...m, word: "append", body: appendResult } : m);
+  const appendEffects = effects.map(e => e.id === "external-write-1" ? { ...e, word: "append", body: appendBody, result: appendResult } : e);
+  const findings = auditEffectLedger(appendMessages, appendEffects).join(" ");
+  assert.match(findings, /unverified:.*no response version/);
+  assert.doesNotMatch(findings, /no self.changed event/);
+});
+
+test("AR6 detector allows request logging before gate but requires release before observed execution", () => {
   const { messages, effects } = sample();
   const wrongId = messages.map(m => m.id === "e-gate" ? { ...m, body: { request_id: "missing", rule_id: "rule-1" } } : m);
-  assert.match(auditEffectLedger(wrongId, effects).join(" "), /no later associated request/);
-  const lateGate = messages.map(m => m.id === "e-gate" ? { ...m, seq: 9 } : m);
-  assert.match(auditEffectLedger(lateGate, effects).join(" "), /no later associated request/);
+  assert.match(auditEffectLedger(wrongId, effects).join(" "), /no associated request/);
+  assert.ok(messages.find(m => m.id === "m-device")!.seq < messages.find(m => m.id === "e-gate")!.seq);
+  const lateObservedGate = [effects[1], effects[0], ...effects.slice(2)];
+  assert.match(auditEffectLedger(messages, lateObservedGate).join(" "), /executed before associated gate release/);
+  const direct = [messages[0], messages[2]];
+  assert.deepEqual(auditEffectLedger(direct, [effects[1]], ["device_call"]), []);
 });
 
 test("AR6 detector catches fake notification result, forged gate event, and ledger reordering", () => {
