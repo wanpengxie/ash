@@ -142,6 +142,12 @@ async function build() {
   const out = path.resolve(opt("--out", path.join(ROOT, "build/payload")));
   const cache = path.resolve(opt("--cache", path.join(os.homedir(), ".cache/ash-payload")));
   const patchelf = process.env.PATCHELF ?? "patchelf";
+  // Without patchelf every binary would keep Termux's RUNPATH and nothing would start on the phone.
+  try {
+    sh(patchelf, ["--version"]);
+  } catch {
+    throw new Error(`patchelf not found (${patchelf}); install it or set PATCHELF=…`);
+  }
   fs.mkdirSync(cache, { recursive: true });
   fs.rmSync(out, { recursive: true, force: true });
   const tree = path.join(out, "tree");
@@ -309,9 +315,13 @@ async function build() {
     if (!links.some(([from]) => from === rel)) links.push([rel, fs.readlinkSync(path.join(tree, rel))]);
     fs.rmSync(path.join(tree, rel));
   }
-  // Everything that shapes the tree: locked inputs, ash core, and the DSH tree as resolved today.
-  const inputs = createHash("sha256").update(JSON.stringify(manifest)).update(fs.readFileSync(core)).update(ours).digest("hex").slice(0, 16);
-  const entries = [...walk(tree)].length + 1;
+  // The build id is the tree itself (every path and byte, links, modes), so the phone reinstalls
+  // whenever anything in it differs — also a fix in how the tree is made, not only new inputs.
+  const all = [...walk(tree)].sort(([a], [b]) => (a < b ? -1 : 1));
+  const h = createHash("sha256").update(JSON.stringify({ links, exec: [...new Set(exec)].sort(), placeholders: [...new Set(placeholders)].sort() }));
+  for (const [rel, e] of all) h.update(rel + "\0").update(e.isFile() ? fs.readFileSync(path.join(tree, rel)) : "dir").update("\0");
+  const inputs = h.digest("hex").slice(0, 16);
+  const entries = all.length + 1;
   const index = { schema: 1, build: `${manifest.dsh.version}-${inputs}`, entries, dsh: manifest.dsh, dshVerify: ours, links, exec: [...new Set(exec)].sort(), placeholders: [...new Set(placeholders)].sort(), placeholder: PLACEHOLDER, dshTree };
   fs.writeFileSync(path.join(tree, "payload-index.json"), JSON.stringify(index));
   fs.rmSync(path.join(out, "payload.zip"), { force: true });
