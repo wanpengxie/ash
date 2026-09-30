@@ -1,0 +1,10 @@
+{
+  "threshold": 12,
+  "counting": "NFKC lowercase Unicode letters and numbers; whitespace and punctuation omitted; no cross-paragraph matches",
+  "target_files": 7,
+  "reference_files": 465,
+  "target_paragraphs": 22,
+  "reference_paragraphs": 8706,
+  "match_count": 0,
+  "matches": []
+}

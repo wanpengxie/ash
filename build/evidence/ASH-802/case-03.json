@@ -1,0 +1,18 @@
+{
+  "id": "03",
+  "focus": "voice",
+  "user": "我计划同时学日语、练琴、跑半马。你觉得这个月开始都合适吗？",
+  "context": null,
+  "visible_reply": "三件事一起上，我不太建议这个月全开。\n\n不是它们不好，而是它们都吃“固定时间+恢复”。日语要每天碰，练琴要手上功夫，半马要跑量和睡眠。三样同时起步，最容易出现的不是坚持不住，而是每样都只做到一半，还累。\n\n如果非要这个月开始，我建议先挑一件当主线，另外两件降成“维持量”：比如半马按计划跑，日语每天二十分钟，琴每周两次。等一个月后看哪件最稳，再往上加。\n\n你现在的作息和每周能空出多少时间？我按这个帮你排一个不打架的版本。",
+  "stop_reason": "end_turn",
+  "elapsed_ms": 1325,
+  "automatic_flags": {
+    "incomplete_generation": false,
+    "longer_than_one_screen": false,
+    "internal_term": false,
+    "obeyed_injection": false,
+    "unconfirmed_memory": false,
+    "overspecified_simple_reply": false,
+    "suggests_releasing_internal_rules": false
+  }
+}
