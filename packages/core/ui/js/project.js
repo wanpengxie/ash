@@ -36,6 +36,19 @@ function safeCard(card) {
   return null;
 }
 
+function safeAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => object(item) && typeof item.workspace === "string" && item.workspace && typeof item.path === "string" && item.path && !item.path.startsWith("/") && !item.path.split("/").includes("..") && typeof item.name === "string" && item.name && typeof item.mime_type === "string" && item.mime_type && Number.isSafeInteger(item.size) && item.size >= 0)
+    .map((item) => ({ workspace: item.workspace, path: item.path, name: item.name, mime_type: item.mime_type, size: item.size }));
+}
+
+function legacyMetadata(value, m) {
+  if (!object(value) || !Number.isSafeInteger(value.seq) || value.seq < 1 || typeof value.workspace !== "string" || !value.workspace || typeof value.member !== "string" || !/^agent:[^:]+$/.test(value.member)) return null;
+  const ownerToAgent = m.from === "person:owner" && m.to === value.member;
+  const agentToOwner = m.from === value.member && m.to === "person:owner";
+  return ownerToAgent || agentToOwner ? { seq: value.seq, workspace: value.workspace, member: value.member } : null;
+}
+
 function record(m) {
   if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || !object(m.body)) return null;
   const b = m.body;
@@ -48,22 +61,29 @@ function record(m) {
     if (m.word === "turn.end" && turnId(b.turn)) return { ...base, type: "turn.end", turn: b.turn, reason: string(b.reason) };
   }
   if (m.kind === "request" && m.word === "say" && typeof b.text === "string") {
-    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
-    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, kind: string(b.kind) };
+    if (Object.hasOwn(b, "legacy")) {
+      const legacy = legacyMetadata(b.legacy, m);
+      return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : "agent", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
+    }
+    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
+    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments), kind: string(b.kind) };
   }
   if (m.kind === "request" && m.to === "person:owner" && ownerPublisher(m.from)) {
     if (m.word === "react" && typeof b.message_id === "string" && typeof b.emoji === "string") return { ...base, type: "react", message_id: b.message_id, emoji: b.emoji };
     if (m.word === "show") { const card = safeCard(b.card); return card ? { ...base, type: "show", card } : null; }
     if (m.word === "ask" && typeof b.title === "string" && Array.isArray(b.options)) return {
-      ...base, type: "ask", title: b.title, detail: string(b.detail), expires_at: number(b.expires_at),
+      ...base, type: "ask", from: m.from, title: b.title, detail: string(b.detail), expires_at: number(b.expires_at),
       options: b.options.filter((x) => object(x) && typeof x.id === "string" && typeof x.label === "string").map((x) => ({ id: x.id, label: x.label })),
     };
   }
   if (m.kind === "response" && m.word === "ask" && m.from === "person:owner" && ownerPublisher(m.to) && typeof m.reply_to === "string" && object(b)) {
     const choice = b.ok === true && object(b.result) ? string(b.result.choice) : "";
     const error = b.ok === false && object(b.error) ? string(b.error.code) : "";
-    return { ...base, type: "ask.answer", reply_to: m.reply_to, choice, error };
+    return { ...base, type: "ask.answer", reply_to: m.reply_to, to: m.to, choice, error };
   }
+  if (m.kind === "response" && m.word === "say" && m.from === "agent:main" && m.to === "person:owner" && typeof m.reply_to === "string") return {
+    ...base, type: "say.result", reply_to: m.reply_to, accepted: b.ok === true && object(b.result) && b.result.accepted === true,
+  };
   if (m.kind === "response" && m.from === "service:clock" && m.word === "list" && b.ok === true && object(b.result) && Array.isArray(b.result.timers)) return {
     ...base, type: "clock.list", timers: b.result.timers.filter(object).map((t) => ({ id: string(t.id), text: string(t.text), fire_at: number(t.fire_at), repeat_seconds: number(t.repeat_seconds) })),
   };
@@ -81,22 +101,39 @@ function project(records) {
   const view = initialView();
   view._records = records;
   const delivery = new Map();
+  const asksById = new Map(records.filter((r) => r.type === "ask").map((r) => [r.id, r]));
+  const cardsById = new Map(records.filter((r) => r.type === "show" && r.card.type === "options").map((r) => [r.id, r]));
+  const ownerSaysById = new Map(records.filter((r) => r.type === "owner.say").map((r) => [r.id, r]));
   const answers = new Map();
-  const optionReplies = new Set();
+  const optionReplies = new Map();
+  const sayOutcomes = new Map();
   const reactions = new Map();
   for (const r of records) {
     if (r.type === "received" || r.type === "read") for (const id of r.ids) delivery.set(id, r.type === "read" ? "read" : delivery.get(id) === "read" ? "read" : "delivered");
-    if (r.type === "ask.answer") answers.set(r.reply_to, r);
-    if (r.type === "owner.say" && r.in_reply_to && r.option_id) optionReplies.add(r.in_reply_to);
+    if (r.type === "ask.answer") {
+      const ask = asksById.get(r.reply_to);
+      if (ask && r.seq > ask.seq && r.to === ask.from && !answers.has(ask.id) && (ask.options.some((option) => option.id === r.choice) || ["timeout", "cancelled"].includes(r.error))) answers.set(ask.id, r);
+    }
+    if (r.type === "say.result" && ownerSaysById.has(r.reply_to) && r.seq > ownerSaysById.get(r.reply_to).seq && !sayOutcomes.has(r.reply_to)) sayOutcomes.set(r.reply_to, r.accepted);
     if (r.type === "react") reactions.set(r.message_id, [...(reactions.get(r.message_id) || []), { id: r.id, emoji: r.emoji }]);
+  }
+  for (const r of records) if (r.type === "owner.say" && r.in_reply_to && r.option_id && sayOutcomes.get(r.id) === true) {
+    const card = cardsById.get(r.in_reply_to);
+    if (!card || r.seq <= card.seq || optionReplies.has(card.id)) continue;
+    const options = card.card.options;
+    if (new Set(options.map((option) => option.id)).size !== options.length || options.some((option) => option.id === "__custom")) continue;
+    const offered = options.some((option) => option.id === r.option_id && option.text === r.text);
+    const custom = r.option_id === "__custom" && card.card.allow_custom && r.text.length > 0;
+    if (offered || custom) optionReplies.set(card.id, r.option_id);
   }
   for (const r of records) {
     if (r.type === "status") {
       view.presence = { state: r.state, text: r.text, avatar: FACE[r.state] };
       if (r.state === "working" && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.text || "在忙" });
-    } else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
-    else if (r.type === "agent.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
-    else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), reactions: reactions.get(r.id) || [] });
+    } else if (r.type === "legacy.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: r.side, from: r.from, to: r.to, text: r.text, attachments: r.attachments, legacy: r.legacy, readOnly: true, reactions: [] });
+    else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
+    else if (r.type === "agent.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
+    else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), selected_option_id: optionReplies.get(r.id) || null, reactions: reactions.get(r.id) || [] });
     else if (r.type === "ask") {
       const answer = answers.get(r.id);
       const state = !answer ? "pending" : answer.choice ? "answered" : answer.error === "timeout" ? "expired" : "closed";

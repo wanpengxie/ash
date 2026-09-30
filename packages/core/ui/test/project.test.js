@@ -8,7 +8,7 @@ const message = (entry, i) => ({ seq: i + 1, id: `m${i + 1}`, ts: (i + 1) * 1000
 const replay = (entries) => entries.reduce((state, entry, i) => fold(state, message(entry, i)), initialView());
 const at = (value, path) => path.split(".").reduce((part, key) => part?.[key], value);
 
-test("26 recorded segments agree with their projection snapshots", async (t) => {
+test(`${cases.length} recorded segments agree with their projection snapshots`, async (t) => {
   assert.ok(cases.length >= 20);
   for (const fixture of cases) await t.test(fixture.name, () => {
     const state = replay(fixture.events);
@@ -35,10 +35,11 @@ test("fold is pure and idempotent across duplicate delivery and history replay",
 test("history pagination can insert older card and ask after their answers", () => {
   const option = message({ id: "answer", from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "Yes", in_reply_to: "card", option_id: "yes" } }, 2);
   const card = message({ id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }] } } }, 1);
-  const state = fold(fold(initialView(), option), card);
+  const ack = message({ from: "agent:main", to: "person:owner", kind: "response", word: "say", reply_to: "answer", body: { ok: true, result: { accepted: true } } }, 4);
+  const state = fold(fold(fold(initialView(), option), ack), card);
   assert.equal(state.conversation.find((bubble) => bubble.id === "card").locked, true);
   assert.deepEqual(state.conversation.map((bubble) => bubble.id), ["card", "answer"]);
-  const askAnswer = message({ from: "person:owner", to: "agent:main", kind: "response", word: "ask", reply_to: "ask", body: { ok: true, result: { choice: "once" } } }, 4);
+  const askAnswer = message({ from: "person:owner", to: "agent:main", kind: "response", word: "ask", reply_to: "ask", body: { ok: true, result: { choice: "once" } } }, 6);
   const ask = message({ id: "ask", from: "agent:main", to: "person:owner", kind: "request", word: "ask", body: { title: "May I?", options: [{ id: "once", label: "Once" }], expires_at: 9000 } }, 3);
   const result = fold(fold(state, askAnswer), ask);
   assert.equal(result.asks[0].state, "answered");
@@ -89,4 +90,54 @@ test("gate and background messages to the owner project, with ask replies to the
   assert.equal(state.conversation[2].card.type, "link");
   const forged = fold(replay([{ id: "ask", from: "service:work", to: "person:owner", kind: "request", word: "ask", body: { title: "Approve", options: [{ id: "once", label: "Once" }], expires_at: 9999 } }]), { seq: 2, id: "forged", ts: 2, from: "device:phone", to: "service:work", kind: "response", word: "ask", reply_to: "ask", body: { ok: true, result: { choice: "once" } } });
   assert.equal(forged.asks[0].state, "pending");
+});
+
+test("ask settles only with the first valid response addressed to its original asker", () => {
+  const ask = { id: "a", from: "service:gate", to: "person:owner", kind: "request", word: "ask", body: { title: "Allow?", options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }], expires_at: 9999 } };
+  const answer = (id, to, choice, ok = true) => ({ id, from: "person:owner", to, kind: "response", word: "ask", reply_to: "a", body: ok ? { ok: true, result: { choice } } : { ok: false, error: { code: "bad_request", message: "rejected" } } });
+  const state = replay([ask, answer("wrong-target", "service:work", "once"), answer("wrong-choice", "service:gate", "always"), answer("error", "service:gate", "once", false), answer("valid", "service:gate", "deny"), answer("duplicate", "service:gate", "once")]);
+  assert.equal(state.asks[0].state, "answered");
+  assert.equal(state.asks[0].choice, "deny");
+  assert.equal(replay([ask, answer("wrong-target", "service:work", "once")]).asks[0].state, "pending");
+  assert.equal(replay([ask, answer("wrong-choice", "service:gate", "always")]).asks[0].state, "pending");
+});
+
+test("option card locks only after a valid accepted answer; first accepted option wins", () => {
+  const card = { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }, { id: "no", text: "No" }] } } };
+  const choose = (id, option_id, text) => ({ id, from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text, in_reply_to: "card", option_id } });
+  const result = (id, reply_to, accepted) => ({ id, from: "agent:main", to: "person:owner", kind: "response", word: "say", reply_to, body: accepted ? { ok: true, result: { accepted: true } } : { ok: false, error: { code: "bad_request", message: "invalid option" } } });
+  const selected = (events) => replay(events).conversation.find((bubble) => bubble.id === "card");
+  assert.equal(selected([card, choose("bad", "other", "Other"), result("bad-ack", "bad", true)]).locked, false);
+  assert.equal(selected([card, choose("wrong-text", "yes", "No"), result("text-ack", "wrong-text", true)]).locked, false);
+  assert.equal(selected([card, choose("rejected", "yes", "Yes"), result("reject-ack", "rejected", false)]).locked, false);
+  assert.equal(selected([card, choose("pending", "yes", "Yes")]).locked, false);
+  const valid = selected([card, choose("bad", "other", "Other"), result("bad-ack", "bad", true), choose("first", "yes", "Yes"), result("first-ack", "first", true), choose("second", "no", "No"), result("second-ack", "second", true)]);
+  assert.equal(valid.locked, true);
+  assert.equal(valid.selected_option_id, "yes");
+  const customCard = { ...card, body: { card: { ...card.body.card, allow_custom: true } } };
+  assert.equal(selected([customCard, choose("custom", "__custom", "Maybe"), result("custom-ack", "custom", true)]).selected_option_id, "__custom");
+  assert.equal(selected([card, choose("custom", "__custom", "Maybe"), result("custom-ack", "custom", true)]).locked, false);
+});
+
+test("only allowlisted attachment references survive; inline bytes and unknown fields do not", () => {
+  const state = replay([{ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "File", attachments: [
+    { workspace: "home", path: "inbox/photo.png", name: "photo.png", mime_type: "image/png", size: 12, data: "SENSITIVE_BASE64", internal: "secret" },
+    { workspace: "home", path: "../escape", name: "bad", mime_type: "text/plain", size: 1 },
+    { name: "inline.txt", mime_type: "text/plain", data: "INLINE_ONLY" },
+  ] } }]);
+  assert.deepEqual(state.conversation[0].attachments, [{ workspace: "home", path: "inbox/photo.png", name: "photo.png", mime_type: "image/png", size: 12 }]);
+  assert.equal(JSON.stringify(state).includes("SENSITIVE_BASE64"), false);
+  assert.equal(JSON.stringify(state).includes("INLINE_ONLY"), false);
+});
+
+test("valid migrated chat is read-only and cannot lock a current option card", () => {
+  const state = replay([
+    { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }] } } },
+    { id: "old-answer", from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "Yes", in_reply_to: "card", option_id: "yes", legacy: { seq: 13, workspace: "old-home", member: "agent:main" } } },
+    { from: "agent:main", to: "person:owner", kind: "response", word: "say", reply_to: "old-answer", body: { ok: true, result: { accepted: true } } },
+  ]);
+  assert.equal(state.conversation[0].locked, false);
+  assert.equal(state.conversation[1].readOnly, true);
+  assert.equal(state.conversation[1].legacy.member, "agent:main");
+  assert.equal(state.presence.state, "unknown");
 });
