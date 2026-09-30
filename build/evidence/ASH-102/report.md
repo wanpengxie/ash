@@ -19,6 +19,8 @@ On the current v2 base, `npm run -s typecheck` passed. The focused router file i
 
 After merging v2's natural-exit test runner, the full `npm test` process exited normally with 136 pass, 57 intentional skips, 0 failures (193 total). `npm run -s build:core` completed. The public-term scan against the private out-of-repository term list scanned 310 tracked public files and found 0 matches; the term list itself is neither printed nor committed.
 
+CI exposed a test-only race in the old timeout fixture: a 25 ms deadline could pass during SQLite setup before the fake handler entered, leaving its late-result release function unset. The timeout fixture now waits for explicit handler-entry evidence and asserts that entry precedes the terminal timeout, while keeping a genuine late success after timeout to verify one durable response. The cancellation fixture likewise asserts its fake device is in flight before cancellation. These changes do not relax the router's timeout behavior.
+
 ## Claims covered by the focused tests
 
 - Request acceptance, `client_id` retry identity, matching `reply_to`, one response, and a matching external response (F-W01).

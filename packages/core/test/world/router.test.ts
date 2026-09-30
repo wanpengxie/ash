@@ -69,9 +69,9 @@ test("timeout and cancellation settle immediately; ignored abort cannot publish 
     let cancelled = 0;
     const notices: string[] = [];
     router.subscribe((m) => notices.push(`${m.kind}:${m.word}:${m.body.ok ?? ""}`));
-    router.register({ member: "device:fake", spec: spec("run", "none", 1000), handle: () => new Promise((resolve) => { release = resolve; }), cancel: () => { cancelled++; } });
+    router.register({ member: "device:fake", spec: spec("run", "none", 5000), handle: () => new Promise((resolve) => { release = resolve; }), cancel: () => { cancelled++; } });
     const sent = await router.send(owner, request());
-    await tick();
+    assert.equal(typeof release, "function", "cancellation exercise must have an in-flight device effect");
     const start = performance.now();
     const cancelledMessages = router.cancel([sent.id, sent.id]);
     assert.ok(performance.now() - start < 1000);
@@ -84,12 +84,18 @@ test("timeout and cancellation settle immediately; ignored abort cannot publish 
     assert.equal(ledger.list().filter((m) => m.kind === "response").length, 1);
     assert.equal(notices.filter((n) => n.startsWith("response:")).length, 1);
     let timeoutRelease!: (value: { ok: true; result: { value: number } }) => void;
-    router.register({ member: "device:fake", spec: spec("slow", "none", 25), handle: () => new Promise((resolve) => { timeoutRelease = resolve; }) });
-    const timed = await router.send(owner, { ...request("device:fake", "slow"), wait: true });
+    let markEntered!: () => void;
+    const handlerEntered = new Promise<void>((resolve) => { markEntered = resolve; });
+    router.register({ member: "device:fake", spec: spec("slow", "none", 2000), handle: () => new Promise((resolve) => { timeoutRelease = resolve; markEntered(); }) });
+    const timedReply = router.send(owner, { ...request("device:fake", "slow"), wait: true });
+    const first = await Promise.race([handlerEntered.then(() => "handler"), timedReply.then(() => "timeout-before-handler")]);
+    assert.equal(first, "handler", "late-result exercise requires a dispatched in-flight request");
+    const timed = await timedReply;
     assert.equal((timed.reply?.body.error as { code: string }).code, "timeout");
     timeoutRelease({ ok: true, result: { value: 2 } });
     await tick();
     assert.equal(ledger.list().filter((m) => m.kind === "response").length, 2);
+    assert.equal(notices.filter((n) => n.startsWith("response:")).length, 2);
   } finally { ledger.close(); }
 });
 
