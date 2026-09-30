@@ -82,6 +82,15 @@ test("managed writes require a valid base hash, while dated append has no base h
   assert.ok(!matchesSchema(append, { path: "memory/1999-12-31.md", text: "x", expected_hash: null }));
 });
 
+test("delivery count event is an authoritative nonnegative integer snapshot", () => {
+  const word = wordContract("service:post", "post.changed")!;
+  assert.equal(word.kind, "event");
+  assert.equal(word.direction, "out");
+  assert.ok(matchesSchema(word.input_schema!, { held: 0 }));
+  assert.ok(matchesSchema(word.input_schema!, { held: 7 }));
+  for (const body of [{}, { held: -1 }, { held: 1.5 }, { held: "2" }, { held: 2, delta: 1 }]) assert.ok(!matchesSchema(word.input_schema!, body));
+});
+
 test("normal say inputs reject migration-only legacy provenance", () => {
   const oldMarker = { seq: 1, workspace: "home", member: "agent:helper" };
   const inbound = wordContract("agent:main", "say")!.input_schema!;
