@@ -1,0 +1,276 @@
+{
+  "mode": "live",
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+  "structural": {
+    "frontmatter_files": 3,
+    "name_cases": 10,
+    "distinct_hints": 7,
+    "starter_options": 3
+  },
+  "prompt_file_sha256": {
+    "packages/ash-skills/skills/first-meeting/SKILL.md": "9d520335d8452b37754b53bce34370695af2250e76405725e9abd4944156f054",
+    "packages/ash-skills/skills/self-awareness/SKILL.md": "1183253926a9527fd2a84b2cb7014183366c22870f2edc953212b34215b3485e",
+    "packages/ash-skills/skills/forget/SKILL.md": "15955a1eb74a769a688903aa759ebbe2f610955cdb9d17df71b00ca07729b281"
+  },
+  "name_results": [
+    {
+      "id": "single",
+      "question": "user",
+      "input": "小舟",
+      "expected": "user_name",
+      "visible_reply": "{\"kind\": \"user_name\", \"name\": \"小舟\", \"reply\": \"小舟，好的。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "user_name",
+        "name": "小舟",
+        "reply": "小舟，好的。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "call_me",
+      "question": "assistant",
+      "input": "叫我阿宁",
+      "expected": "user_name",
+      "visible_reply": "{\"kind\": \"user_name\", \"name\": \"阿宁\", \"reply\": \"阿宁，好的。我的名字先照旧。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "user_name",
+        "name": "阿宁",
+        "reply": "阿宁，好的。我的名字先照旧。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "you_choose",
+      "question": "assistant",
+      "input": "你来起",
+      "expected": "delegate_assistant",
+      "visible_reply": "{\"kind\":\"delegate_assistant\",\"name\":\"小启\",\"reply\":\"好，那我就叫小启。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "delegate_assistant",
+        "name": "小启",
+        "reply": "好，那我就叫小启。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "greeting",
+      "question": "user",
+      "input": "hi",
+      "expected": "none",
+      "visible_reply": "{\"kind\":\"none\",\"name\":null,\"reply\":\"嗨，我在。想先做点什么？我可以帮你理一理今天要做的事、设个提醒，或者记下一项你希望我以后知道的偏好。\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "none",
+        "name": null,
+        "reply": "嗨，我在。想先做点什么？我可以帮你理一理今天要做的事、设个提醒，或者记下一项你希望我以后知道的偏好。"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "question",
+      "question": "user",
+      "input": "你能帮我看看明天的安排吗？",
+      "expected": "none",
+      "visible_reply": "{\"kind\":\"none\",\"name\":null,\"reply\":\"可以。把明天要做的事或已有安排发我，我帮你理出先后和空档。\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "none",
+        "name": null,
+        "reply": "可以。把明天要做的事或已有安排发我，我帮你理出先后和空档。"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "emoji",
+      "question": "user",
+      "input": "🌙",
+      "expected": "none",
+      "visible_reply": "{\"kind\":\"none\",\"name\":null,\"reply\":\"收到你的月亮。称呼先不急着定，你想先理一理今天的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "none",
+        "name": null,
+        "reply": "收到你的月亮。称呼先不急着定，你想先理一理今天的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "blank",
+      "question": "user",
+      "input": "   ",
+      "expected": "none",
+      "visible_reply": "{\"kind\":\"none\",\"name\":null,\"reply\":\"没关系，先不用定称呼。你想先理一理今天要做的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "none",
+        "name": null,
+        "reply": "没关系，先不用定称呼。你想先理一理今天要做的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "long_story",
+      "question": "user",
+      "input": "我今天和小北一起去了书店，后来赶上大雨，想先聊聊怎么把明天的事排开。",
+      "expected": "none",
+      "visible_reply": "{\"kind\":\"none\",\"name\":null,\"reply\":\"听起来今天挺折腾的。明天有哪些事要排？都发我，我帮你理个先后。\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "none",
+        "name": null,
+        "reply": "听起来今天挺折腾的。明天有哪些事要排？都发我，我帮你理个先后。"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "english",
+      "question": "user",
+      "input": "Call me Alex.",
+      "expected": "user_name",
+      "visible_reply": "{\"kind\": \"user_name\", \"name\": \"Alex\", \"reply\": \"Alex，好的。我的名字先照旧。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "user_name",
+        "name": "Alex",
+        "reply": "Alex，好的。我的名字先照旧。现在你想先理一理今天的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    },
+    {
+      "id": "refusal",
+      "question": "assistant",
+      "input": "先别起名，我想直接开始。",
+      "expected": "none",
+      "visible_reply": "{\"kind\":\"none\",\"name\":null,\"reply\":\"好，那先不起名，我就先照旧。你想先理一理今天要做的事、设个提醒，还是告诉我一项偏好？\"}",
+      "stop_reason": "end_turn",
+      "parsed": {
+        "kind": "none",
+        "name": null,
+        "reply": "好，那先不起名，我就先照旧。你想先理一理今天要做的事、设个提醒，还是告诉我一项偏好？"
+      },
+      "matches_expected": true,
+      "flags": {
+        "repeated_name_question": false,
+        "unconfirmed_save_claim": false
+      }
+    }
+  ],
+  "qualitative_results": [
+    {
+      "id": "self-known",
+      "skill": "self-awareness",
+      "context": "Available USER.md says: 喜欢无糖茶。MEMORY.md has no other preference. No more files were read.",
+      "user": "你记得我什么？",
+      "visible_reply": "我目前能看到的记录里，关于你的资料只有一条：你喜欢无糖茶。`MEMORY.md` 里没有其他偏好记录，这次也没有再读别的文件。\n\n所以除此之外，我没有更多关于你的记忆可以核实。如果你觉得还应该有别的，可以告诉我，我再看能不能对上。",
+      "stop_reason": "end_turn",
+      "manual_review_required": true,
+      "flags": {
+        "unverified_absence_lead": false
+      }
+    },
+    {
+      "id": "self-unknown",
+      "skill": "self-awareness",
+      "context": "USER.md and MEMORY.md were read successfully; neither mentions coffee.",
+      "user": "我喜欢哪种咖啡，你还记得吗？",
+      "visible_reply": "我目前能看的记录里没有你喜欢的咖啡类型。`USER.md` 和 `MEMORY.md` 都读到了，但里面没有提到咖啡相关的偏好。\n\n如果你愿意告诉我，我这次会按你说的理解；不过在你确认保存之前，我不会把它当成已经记住的长期信息。",
+      "stop_reason": "end_turn",
+      "manual_review_required": true,
+      "flags": {
+        "unverified_absence_lead": false
+      }
+    },
+    {
+      "id": "self-read-error",
+      "skill": "self-awareness",
+      "context": "USER.md could not be read. MEMORY.md was read and says nothing about waking early.",
+      "user": "我是不是说过不喜欢早起？",
+      "visible_reply": "这部分记录没读到，暂时无法核实：`USER.md` 这次读取失败，所以我没法确认里面有没有你关于早起偏好的记录。\n\n我能看到的是 `MEMORY.md`，里面没有提到你早起或不早起的事。所以目前我手上没有证据能确认你说过不喜欢早起——既不能肯定，也不能否定。\n\n如果你愿意，可以再告诉我一次，我这次会按你说的理解。",
+      "stop_reason": "end_turn",
+      "manual_review_required": true,
+      "flags": {
+        "unverified_absence_lead": false
+      }
+    },
+    {
+      "id": "forget-plan",
+      "skill": "forget",
+      "context": "Read-only inspection found the target in USER.md and one dated note. Version history is visible but cannot be erased with available actions. No approval has been given.",
+      "user": "把我喜欢无糖茶这件事忘掉。",
+      "visible_reply": "我先只做了只读检查，没有改动任何内容。目前看到：\n\n- `USER.md` 里有一条关于“喜欢无糖茶”的记录。\n- 一条日期记录里也提到了这件事。\n- 版本历史里可能仍保留旧版本，但当前可用操作无法清除版本历史。\n\n我建议的处理范围是：\n\n1. 从 `USER.md` 中删除或改写“喜欢无糖茶”这条信息。\n2. 从那条日期记录中删除或改写相关表述。\n3. 版本历史、备份或外部副本不在这次可处理范围内，可能仍会保留旧内容。\n\n这还只是计划，尚未执行。请确认是否按这个范围处理；如果你希望只改其中一处，或还想包含其他内容，也请说明。",
+      "stop_reason": "end_turn",
+      "manual_review_required": true,
+      "flags": {
+        "unverified_absence_lead": false
+      }
+    },
+    {
+      "id": "forget-denied",
+      "skill": "forget",
+      "context": "A removal plan was offered. The user declined. No write or delete has been attempted.",
+      "user": "算了，别删。你现在做了什么？",
+      "visible_reply": "没有做任何写入或删除。刚才只是只读调查，然后给你列了一份计划；你说了“算了，别删”，所以计划没有执行，记录保持原样。\n\n如果你之后改主意，或者想只处理其中一部分，告诉我具体范围就行。",
+      "stop_reason": "end_turn",
+      "manual_review_required": true,
+      "flags": {
+        "unverified_absence_lead": false
+      }
+    },
+    {
+      "id": "forget-unverified",
+      "skill": "forget",
+      "context": "The user approved removing the current USER.md entry. The write returned success. A later read did not complete; a history snapshot is still known to exist.",
+      "user": "现在你已经彻底忘了吗？",
+      "visible_reply": "不能这么说。当前可编辑记录里的那条内容已经移除，写入也返回成功，但这次操作还没有完成复查：后续读取没有完成，而且已知还存在一个历史快照。\n\n所以准确的说法是：**当前可编辑记录已移除这些内容**。历史快照、以及这次没能复查到的部分，我无法确认已经清掉，也不能说“已经彻底忘掉”。",
+      "stop_reason": "end_turn",
+      "manual_review_required": true,
+      "flags": {
+        "unverified_absence_lead": false
+      }
+    }
+  ],
+  "names_matching_expected": 10,
+  "all_end_turn": true,
+  "flagged_cases": [],
+  "limitations": "No actual file, device, clock, card, or gate actions were executed; integration acceptance remains separate."
+}

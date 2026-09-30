@@ -1,0 +1,77 @@
+{
+  "mode": "mock",
+  "purpose": "Fixture and routing check only; no semantic model evaluation",
+  "structural": {
+    "frontmatter_files": 3,
+    "name_cases": 10,
+    "distinct_hints": 7,
+    "starter_options": 3
+  },
+  "prompt_file_sha256": {
+    "packages/ash-skills/skills/first-meeting/SKILL.md": "9d520335d8452b37754b53bce34370695af2250e76405725e9abd4944156f054",
+    "packages/ash-skills/skills/self-awareness/SKILL.md": "1183253926a9527fd2a84b2cb7014183366c22870f2edc953212b34215b3485e",
+    "packages/ash-skills/skills/forget/SKILL.md": "15955a1eb74a769a688903aa759ebbe2f610955cdb9d17df71b00ca07729b281"
+  },
+  "cases": [
+    {
+      "id": "single",
+      "expected": "user_name",
+      "fake_output": "user_name",
+      "valid_kind": true
+    },
+    {
+      "id": "call_me",
+      "expected": "user_name",
+      "fake_output": "user_name",
+      "valid_kind": true
+    },
+    {
+      "id": "you_choose",
+      "expected": "delegate_assistant",
+      "fake_output": "delegate_assistant",
+      "valid_kind": true
+    },
+    {
+      "id": "greeting",
+      "expected": "none",
+      "fake_output": "none",
+      "valid_kind": true
+    },
+    {
+      "id": "question",
+      "expected": "none",
+      "fake_output": "none",
+      "valid_kind": true
+    },
+    {
+      "id": "emoji",
+      "expected": "none",
+      "fake_output": "none",
+      "valid_kind": true
+    },
+    {
+      "id": "blank",
+      "expected": "none",
+      "fake_output": "none",
+      "valid_kind": true
+    },
+    {
+      "id": "long_story",
+      "expected": "none",
+      "fake_output": "none",
+      "valid_kind": true
+    },
+    {
+      "id": "english",
+      "expected": "user_name",
+      "fake_output": "user_name",
+      "valid_kind": true
+    },
+    {
+      "id": "refusal",
+      "expected": "none",
+      "fake_output": "none",
+      "valid_kind": true
+    }
+  ]
+}
