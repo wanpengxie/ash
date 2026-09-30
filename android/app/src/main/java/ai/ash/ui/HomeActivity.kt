@@ -127,6 +127,16 @@ class HomeActivity : Activity() {
         ui.postDelayed({ poll() }, 1000)
     }
 
+    override fun onResume() {
+        super.onResume()
+        CoreService.start(this, CoreService.ACTION_APP_OPEN)
+    }
+
+    override fun onPause() {
+        CoreService.start(this, CoreService.ACTION_APP_LEFT)
+        super.onPause()
+    }
+
     private fun load(url: String) {
         if (loaded) return
         loaded = true

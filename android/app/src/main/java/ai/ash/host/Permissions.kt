@@ -1,6 +1,7 @@
 package ai.ash.host
 
 import android.app.Activity
+import android.Manifest
 import android.app.AppOpsManager
 import android.app.NotificationManager
 import android.content.Context
@@ -49,6 +50,11 @@ object Permissions {
 
     val all: List<Permission> by lazy {
         buildList {
+            add(Permission(
+                "calendar", "日历", "只在授权后读取接下来一天的日程与提醒",
+                { it.checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED },
+                { a -> a.requestPermissions(arrayOf(Manifest.permission.READ_CALENDAR), 7102) },
+            ))
             add(Permission(
                 "notifications", "通知", "提醒、需要你确认的卡片，都靠通知送达",
                 { it.getSystemService(NotificationManager::class.java).areNotificationsEnabled() },
