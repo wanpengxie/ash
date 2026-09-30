@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 
@@ -12,10 +13,11 @@ function filesUnder(root: string): Tree {
   const visit = (dir: string) => {
     if (!existsSync(dir)) return;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (["node_modules", ".git", "build", "dist"].includes(e.name)) continue;
+      if (["node_modules", ".git", "dist"].includes(e.name)) continue;
       const full = join(dir, e.name);
-      if (e.isDirectory()) visit(full);
-      else if (e.isFile() && /\.(?:[cm]?[jt]sx?|md|json|ya?ml|html|css|sh)$/.test(e.name)) out[relative(root, full).split(sep).join("/")] = readFileSync(full, "utf8");
+      if (e.isDirectory() && e.name === "build" && dir === root) visit(join(full, "evidence"));
+      else if (e.isDirectory()) visit(full);
+      else if (e.isFile() && /\.(?:[cm]?[jt]sx?|md|json|ya?ml|html|css|sh|log|txt|csv)$/.test(e.name)) out[relative(root, full).split(sep).join("/")] = readFileSync(full, "utf8");
     }
   };
   visit(root);
@@ -50,11 +52,16 @@ export function checkTree(tree: Tree, terms: string[] = [primaryTerm]): Finding[
       if (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) spec = n.moduleSpecifier && stringValue(n.moduleSpecifier);
       if (ts.isCallExpression(n) && (n.expression.kind === ts.SyntaxKind.ImportKeyword || n.expression.getText(sf) === "require")) spec = n.arguments[0] && stringValue(n.arguments[0]);
       if (!spec) return;
-      if (!spec.startsWith(".")) { add("AR1", file, `line ${lineOf(sf, n)}: member import outside world/sdk/self ${spec}`); return; }
+      if (!spec.startsWith(".")) {
+        if (!builtinModules.includes(spec) && !builtinModules.includes(spec.replace(/^node:/, ""))) add("AR1", file, `line ${lineOf(sf, n)}: member import outside world/sdk/self ${spec}`);
+        return;
+      }
       const target = resolve("/repo", file, "..", spec).replace("/repo/", "");
-      const own = file.slice((core + "members/").length).split("/")[0];
-      if (target.startsWith(core + "members/") && !target.startsWith(core + `members/${own}/`) && target !== core + `members/${own}` && !target.startsWith(core + `members/${own}.`)) add("AR1", file, `line ${lineOf(sf, n)}: cross-member import ${spec}`);
-      else if (!target.startsWith(core + "world/") && !target.startsWith("packages/sdk/") && !target.startsWith(core + `members/${own}`)) add("AR1", file, `line ${lineOf(sf, n)}: member import outside world/sdk/self ${spec}`);
+      const ownPath = file.slice((core + "members/").length);
+      const own = ownPath.split("/")[0].replace(/\.[jt]sx?$/, "").split("-")[0];
+      const sameMember = target.startsWith(core + `members/${own}/`) || new RegExp(`^${core}members/${own}(?:-|\\.[jt]sx?$)`).test(target);
+      if (target.startsWith(core + "members/") && !sameMember) add("AR1", file, `line ${lineOf(sf, n)}: cross-member import ${spec}`);
+      else if (!target.startsWith(core + "world/") && !target.startsWith("packages/sdk/") && !sameMember) add("AR1", file, `line ${lineOf(sf, n)}: member import outside world/sdk/self ${spec}`);
     });
   }
 
@@ -105,7 +112,7 @@ export function checkTree(tree: Tree, terms: string[] = [primaryTerm]): Finding[
   for (const [file, value] of Object.entries(tree)) {
     for (const term of activeTerms) {
       const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "iu");
+      const pattern = new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, "iu");
       if (pattern.test(value)) add("AR12", file, `prohibited term found (${term.length} characters)`);
     }
   }

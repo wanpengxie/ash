@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkTree, type Finding } from "./checks";
+import { checkRepository, checkTree, type Finding } from "./checks";
 import { IntrinsicMonitor } from "./intrinsic-monitor";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const clean = () => ({
+const clean = (): Record<string, string> => ({
   "packages/core/src/members/main.ts": 'import { send } from "../world/router"; export const main = send;',
   "packages/core/src/members/self.ts": 'export const self = true;',
   "packages/core/src/world/router.ts": 'export const send = true;',
@@ -17,6 +17,15 @@ const clean = () => ({
 });
 
 test("architecture fixture: clean tree has no findings", () => assert.deepEqual(checkTree(clean()), []));
+
+test("AR1 permits standard library imports and helpers of one logical member", () => {
+  const tree = clean();
+  tree["packages/core/src/members/main.ts"] = 'import { randomUUID } from "node:crypto"; import { status } from "./main-status"; export const main = [randomUUID, status];';
+  tree["packages/core/src/members/main-status.ts"] = 'export const status = true;';
+  assert.equal(checkTree(tree).filter(f => f.rule === "AR1").length, 0);
+  tree["packages/core/src/members/main-status.ts"] = 'import "./self";';
+  assert.equal(checkTree(tree).filter(f => f.rule === "AR1").length, 1);
+});
 
 for (const [rule, file, bad] of [
   ["AR1", "packages/core/src/members/main.ts", 'import "./other";'],
@@ -46,6 +55,27 @@ test("AR12 token boundaries distinguish encoded substrings from written terms", 
   assert.equal(checkTree(tree, [term]).filter(f => f.rule === "AR12").length, 0);
   tree["packages/core/src/world/router.ts"] = `// ${term} is an architecture identifier`;
   assert.equal(checkTree(tree, [term]).filter(f => f.rule === "AR12").length, 1);
+  tree["packages/core/src/world/router.ts"] = `// 引入${term}的概念`;
+  assert.equal(checkTree(tree, [term]).filter(f => f.rule === "AR12").length, 1);
+  tree["packages/core/src/world/router.ts"] = `const blob = "ZZ${term}abC09";`;
+  assert.equal(checkTree(tree, [term]).filter(f => f.rule === "AR12").length, 0);
+});
+
+test("AR12 scans evidence alongside source", () => {
+  const tree = clean();
+  tree["build/evidence/ASH-999/report.md"] = `引入${String.fromCharCode(68, 50, 49)}的概念`;
+  assert.deepEqual(checkTree(tree, [String.fromCharCode(68, 50, 49)]).filter(f => f.rule === "AR12").map(f => f.file), ["build/evidence/ASH-999/report.md"]);
+});
+
+test("AR12 repository walk includes ignored-build evidence logs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-evidence-scan-"));
+  const evidence = join(dir, "build", "evidence", "ASH-999");
+  mkdirSync(evidence, { recursive: true });
+  const term = String.fromCharCode(68, 50, 49);
+  writeFileSync(join(evidence, "trace.log"), `引入${term}的概念`);
+  const termsFile = join(dir, "terms.txt");
+  writeFileSync(termsFile, term);
+  assert.ok(checkRepository(dir, termsFile).some(f => f.rule === "AR12" && f.file === "build/evidence/ASH-999/trace.log"));
 });
 
 test("AR4 runtime monitor identifies a write without self authorization", () => {

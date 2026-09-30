@@ -1,0 +1,229 @@
+
+> test
+> npm run -s gen:ui && node --expose-internals --import tsx --test --test-force-exit packages/*/test/*.test.ts packages/core/test/arch/*.test.ts packages/core/test/fixtures/*.test.ts
+
+TAP version 13
+# Subtest: architecture fixture: clean tree has no findings
+ok 1 - architecture fixture: clean tree has no findings
+  ---
+  duration_ms: 14.656659
+  type: 'test'
+  ...
+# Subtest: AR1 permits standard library imports and helpers of one logical member
+ok 2 - AR1 permits standard library imports and helpers of one logical member
+  ---
+  duration_ms: 5.66487
+  type: 'test'
+  ...
+# Subtest: AR1: deliberate violation is reported
+ok 3 - AR1: deliberate violation is reported
+  ---
+  duration_ms: 1.020959
+  type: 'test'
+  ...
+# Subtest: AR2: deliberate violation is reported
+ok 4 - AR2: deliberate violation is reported
+  ---
+  duration_ms: 0.916487
+  type: 'test'
+  ...
+# Subtest: AR3: deliberate violation is reported
+ok 5 - AR3: deliberate violation is reported
+  ---
+  duration_ms: 0.886393
+  type: 'test'
+  ...
+# Subtest: AR4: deliberate violation is reported
+ok 6 - AR4: deliberate violation is reported
+  ---
+  duration_ms: 0.963419
+  type: 'test'
+  ...
+# Subtest: AR12: deliberate violation is reported
+ok 7 - AR12: deliberate violation is reported
+  ---
+  duration_ms: 0.835951
+  type: 'test'
+  ...
+# Subtest: AR checks fail closed when target sources are missing
+ok 8 - AR checks fail closed when target sources are missing
+  ---
+  duration_ms: 0.225079
+  type: 'test'
+  ...
+# Subtest: AR12 token boundaries distinguish encoded substrings from written terms
+ok 9 - AR12 token boundaries distinguish encoded substrings from written terms
+  ---
+  duration_ms: 4.602234
+  type: 'test'
+  ...
+# Subtest: AR12 scans evidence alongside source
+ok 10 - AR12 scans evidence alongside source
+  ---
+  duration_ms: 1.574015
+  type: 'test'
+  ...
+# Subtest: AR12 repository walk includes ignored-build evidence logs
+ok 11 - AR12 repository walk includes ignored-build evidence logs
+  ---
+  duration_ms: 1.572708
+  type: 'test'
+  ...
+# Subtest: AR4 runtime monitor identifies a write without self authorization
+ok 12 - AR4 runtime monitor identifies a write without self authorization
+  ---
+  duration_ms: 1.344121
+  type: 'test'
+  ...
+# Subtest: host records manifest, scripted call and presentation lifecycle
+ok 13 - host records manifest, scripted call and presentation lifecycle
+  ---
+  duration_ms: 62.890451
+  type: 'test'
+  ...
+# Subtest: model scripts tool and worker JSON, captures both requests
+ok 14 - model scripts tool and worker JSON, captures both requests
+  ---
+  duration_ms: 12.754173
+  type: 'test'
+  ...
+# (node:1769451) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# 2026-09-30T20:40:16.604Z ash core (test) listening on http://127.0.0.1:38399; UI URL in /tmp/ash-core-qkBvZb/state/ui-url
+# 2026-09-30T20:40:16.673Z agent:main ready (echo)
+# 2026-09-30T20:40:16.689Z agent:helper ready (echo)
+# Subtest: manifest describes the space, the caller, agents and devices
+ok 15 - manifest describes the space, the caller, agents and devices
+  ---
+  duration_ms: 102.766972
+  type: 'test'
+  ...
+# Subtest: requests without a token are refused; the UI trades its token for a cookie
+ok 16 - requests without a token are refused; the UI trades its token for a cookie
+  ---
+  duration_ms: 20.35985
+  type: 'test'
+  ...
+# Subtest: deliver → the agent answers; retries with the same message_id are accepted once
+ok 17 - deliver → the agent answers; retries with the same message_id are accepted once
+  ---
+  duration_ms: 51.835976
+  type: 'test'
+  ...
+# Subtest: attachments are saved into the agent's workspace and logged with the message
+ok 18 - attachments are saved into the agent's workspace and logged with the message
+  ---
+  duration_ms: 53.584189
+  type: 'test'
+  ...
+# Subtest: steer is refused when the runtime cannot steer; cancel stops a running turn
+ok 19 - steer is refused when the runtime cannot steer; cancel stops a running turn
+  ---
+  duration_ms: 31.820616
+  type: 'test'
+  ...
+# Subtest: MCP projection lists system tools and granted device capabilities, and runs them as the agent
+ok 20 - MCP projection lists system tools and granted device capabilities, and runs them as the agent
+  ---
+  duration_ms: 22.325133
+  type: 'test'
+  ...
+# Subtest: an agent's timer fires back into its own inbox
+ok 21 - an agent's timer fires back into its own inbox
+  ---
+  duration_ms: 1838.915293
+  type: 'test'
+  ...
+# Subtest: agents talk through ash: send delivers to the other agent's inbox as that agent
+ok 22 - agents talk through ash: send delivers to the other agent's inbox as that agent
+  ---
+  duration_ms: 74.805321
+  type: 'test'
+  ...
+# Subtest: confirm-first capabilities wait for the owner; approve runs it, deny or expiry refuses
+ok 23 - confirm-first capabilities wait for the owner; approve runs it, deny or expiry refuses
+  ---
+  duration_ms: 3190.472312
+  type: 'test'
+  ...
+# Subtest: grants: the owner grants and revokes; the agent's view follows
+ok 24 - grants: the owner grants and revokes; the agent's view follows
+  ---
+  duration_ms: 29.268479
+  type: 'test'
+  ...
+# Subtest: remote callers (paired browsers through the gateway) chat but cannot manage
+ok 25 - remote callers (paired browsers through the gateway) chat but cannot manage
+  ---
+  duration_ms: 37.289229
+  type: 'test'
+  ...
+# Subtest: the event stream replays after a cursor and follows live
+ok 26 - the event stream replays after a cursor and follows live
+  ---
+  duration_ms: 216.950744
+  type: 'test'
+  ...
+# (node:1769457) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# 2026-09-30T20:40:16.599Z ash core (t) listening on http://127.0.0.1:46781; UI URL in /tmp/ash-dsh-rEzy7I/state/ui-url
+# 2026-09-30T20:40:18.244Z DSH 0.2.0-rc.2 core booted in 1484 ms (profile ash, home /tmp/ash-dsh-rEzy7I/dsh-home)
+# 2026-09-30T20:40:18.321Z [agent:main] DSH session session-6526bf29-78f4-42bf-b28f-fcdda04f30c2 (new)
+# 2026-09-30T20:40:18.326Z agent:main ready (dsh)
+# 2026-09-30T20:40:18.360Z agent:helper ready (echo)
+# Subtest: the DSH agent starts in-process with every control capability
+ok 27 - the DSH agent starts in-process with every control capability
+  ---
+  duration_ms: 1828.516745
+  type: 'test'
+  ...
+# Subtest: a turn: origin line, ash context in the system prompt, native ash_* tool, device tool
+ok 28 - a turn: origin line, ash context in the system prompt, native ash_* tool, device tool
+  ---
+  duration_ms: 420.100799
+  type: 'test'
+  ...
+# Subtest: an attached image reaches the model as an image; other files are named by path
+ok 29 - an attached image reaches the model as an image; other files are named by path
+  ---
+  duration_ms: 179.067072
+  type: 'test'
+  ...
+# Subtest: devices appear and disappear as tools while the agent runs
+ok 30 - devices appear and disappear as tools while the agent runs
+  ---
+  duration_ms: 287.254424
+  type: 'test'
+  ...
+# Subtest: sensitive DSH tools from an untrusted origin ask the owner (denied here)
+ok 31 - sensitive DSH tools from an untrusted origin ask the owner (denied here)
+  ---
+  duration_ms: 260.15435
+  type: 'test'
+  ...
+# Subtest: the loop gate stops a runaway turn at the step budget
+ok 32 - the loop gate stops a runaway turn at the step budget
+  ---
+  duration_ms: 337.93432
+  type: 'test'
+  ...
+# 2026-09-30T20:40:19.920Z ash core (t) listening on http://127.0.0.1:35985; UI URL in /tmp/ash-dsh-rEzy7I/state/ui-url
+# 2026-09-30T20:40:20.191Z DSH 0.2.0-rc.2 core booted in 267 ms (profile ash, home /tmp/ash-dsh-rEzy7I/dsh-home)
+# 2026-09-30T20:40:20.248Z [agent:main] DSH session session-6526bf29-78f4-42bf-b28f-fcdda04f30c2 (resumed)
+# 2026-09-30T20:40:20.250Z agent:main ready (dsh)
+# 2026-09-30T20:40:20.262Z agent:helper ready (echo)
+# Subtest: the session survives a restart (resume)
+ok 33 - the session survives a restart (resume)
+  ---
+  duration_ms: 412.197818
+  type: 'test'
+  ...
+1..33
+# tests 33
+# suites 0
+# pass 33
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6067.430249
