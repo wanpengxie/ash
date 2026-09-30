@@ -1,6 +1,8 @@
 package ai.ash.host
 
 import android.content.Context
+import ai.ash.BuildConfig
+import ai.ash.host.senses.SenseTransport
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -34,4 +36,9 @@ class CoreClient(ctx: Context) {
     fun agents(): JSONArray = JSONArray(call("GET", "/api/agents"))
 
     fun manifest(): JSONObject = JSONObject(call("GET", "/api/manifest"))
+
+    /** Only the host's authenticated connection may submit a sensor event. */
+    fun sendSense(word: String, body: JSONObject, clientId: String) {
+        SenseTransport("http://127.0.0.1:${BuildConfig.SENSE_PORT}", secrets.coreToken).send(word, body, clientId)
+    }
 }

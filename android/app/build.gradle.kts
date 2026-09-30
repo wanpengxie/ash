@@ -33,6 +33,8 @@ android {
         targetSdk = 28
         versionCode = 10
         versionName = "0.2.0"
+        buildConfigField("int", "SENSE_PORT", "4700")
+        buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -58,6 +60,13 @@ android {
                 storeFile = file(shared); storePassword = "android"; keyAlias = System.getenv("ASH_DEBUG_ALIAS") ?: "ash"; keyPassword = "android"
             }
         }
+        create("sensesProbe") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".sensesprobe"
+            buildConfigField("int", "SENSE_PORT", "4870")
+            // Isolated emulator probe only; release keeps the six-hour rolling scan.
+            buildConfigField("long", "SENSE_RESCAN_MS", "90000L")
+        }
         release {
             isMinifyEnabled = false
             if (System.getenv("ASH_KEYSTORE") != null) signingConfig = signingConfigs.getByName("release")
@@ -65,6 +74,7 @@ android {
     }
 
     sourceSets["main"].assets.srcDir(payloadAssets)
+    buildFeatures { buildConfig = true }
 
     androidResources {
         // The payload is extracted with java.util.zip: store it, do not compress it twice.
@@ -86,4 +96,5 @@ tasks.named("preBuild") { dependsOn(copyPayload) }
 dependencies {
     implementation(files("libs/shizuku-api.aar", "libs/shizuku-provider.aar", "libs/shizuku-aidl.aar"))
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
