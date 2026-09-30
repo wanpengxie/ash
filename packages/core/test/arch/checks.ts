@@ -6,7 +6,6 @@ import ts from "typescript";
 export type Finding = { rule: "AR1" | "AR2" | "AR3" | "AR4" | "AR12"; file: string; detail: string };
 type Tree = Record<string, string>;
 const allowedRoutes = new Set(["POST /api/send", "GET /api/stream", "GET /api/describe", "GET /api/workspaces/:ws/files", "PUT /api/workspaces/:ws/files"]);
-const primaryTerm = String.fromCharCode(65, 116, 111, 108, 108);
 
 function filesUnder(root: string): Tree {
   const out: Tree = {};
@@ -38,7 +37,7 @@ function classifyUrl(raw: string): boolean {
 }
 
 /** Pure detector used by fixture tests and the final repository gate. Missing targets fail closed. */
-export function checkTree(tree: Tree, terms: string[] = [primaryTerm]): Finding[] {
+export function checkTree(tree: Tree, terms: string[] = []): Finding[] {
   const findings: Finding[] = [];
   const add = (rule: Finding["rule"], file: string, detail: string) => findings.push({ rule, file, detail });
   const names = Object.keys(tree);
@@ -120,8 +119,7 @@ export function checkTree(tree: Tree, terms: string[] = [primaryTerm]): Finding[
 }
 
 export function checkRepository(root: string, privateTermsFile?: string): Finding[] {
-  const terms = [primaryTerm];
-  if (privateTermsFile) terms.push(...readFileSync(privateTermsFile, "utf8").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#")));
-  else return [{ rule: "AR12", file: "<terms>", detail: "ASH_ARCH_PRIVATE_TERMS_FILE is required for final gate" }, ...checkTree(filesUnder(root), terms)];
+  if (!privateTermsFile) return [{ rule: "AR12", file: "<terms>", detail: "ASH_ARCH_PRIVATE_TERMS_FILE is required for final gate" }, ...checkTree(filesUnder(root), [])];
+  const terms = readFileSync(privateTermsFile, "utf8").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#"));
   return checkTree(filesUnder(root), terms);
 }
