@@ -13,6 +13,17 @@ type ClientRetry = { transportPrincipal: string; clientId: string };
 export type MigrationStage = "before-transaction" | "after-schema" | "after-first-row" | "halfway" | "before-commit" | "after-commit";
 export interface LedgerOptions { failpoint?: (stage: MigrationStage) => void }
 export interface MigrationStats { migrated: number; lastLegacySeq: number; backup: string | null }
+export type RequestPhase = "accepted" | "gate_waiting" | "dispatching" | "settled";
+export interface RequestContextSnapshot {
+  member: string;
+  local: boolean;
+  remote: boolean;
+  ownerProxy: boolean;
+  pairedDeviceId?: string;
+  screenId?: string;
+}
+export interface RequestTracking { deadlineAt: number; context: RequestContextSnapshot }
+export interface TrackedRequest { message: Message; phase: RequestPhase; deadlineAt: number; context: RequestContextSnapshot }
 
 const marker = "v2:messages:migrated";
 const idFromSeq = (seq: number) => `m_${createHash("sha256").update(`v10:${seq}`).digest("base64url").slice(0, 12)}`;
@@ -198,6 +209,9 @@ export class Ledger {
     const db = new DatabaseSync(file);
     try {
       const stats = Ledger.migrate(db, backupFile, options);
+      db.exec(`CREATE TABLE IF NOT EXISTS request_state (
+        request_id TEXT PRIMARY KEY, phase TEXT NOT NULL, deadline_at INTEGER NOT NULL,
+        context TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
       return new Ledger(db, stats);
     } catch (error) { db.close(); throw error; }
   }
@@ -262,7 +276,7 @@ export class Ledger {
     }
   }
 
-  append(input: NewMessage, retry?: ClientRetry): { message: Message; duplicate: boolean } {
+  append(input: NewMessage, retry?: ClientRetry, tracking?: RequestTracking): { message: Message; duplicate: boolean } {
     if (input.kind === "response") throw new TypeError("use settle() for responses");
     if (!["request", "event"].includes(input.kind) || !input.from || !input.word || (input.kind === "request" && !input.to) || !input.body || typeof input.body !== "object" || Array.isArray(input.body)) throw new TypeError("invalid message envelope");
     if (retry && (!retry.transportPrincipal || !retry.clientId || retry.clientId.length > 128)) throw new TypeError("invalid client retry key");
@@ -283,13 +297,21 @@ export class Ledger {
       const id = newId();
       const ts = Date.now();
       this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, input.from, input.to, input.kind, input.word, JSON.stringify(input.body), input.reply_to ?? null, input.origin ? JSON.stringify(input.origin) : null, input.turn ?? null);
+      if (input.kind === "request") {
+        const deadlineAt = tracking?.deadlineAt ?? ts + 60_000;
+        const supplied = tracking?.context ?? { member: input.from, local: true, remote: false, ownerProxy: false };
+        if (!Number.isSafeInteger(deadlineAt)) throw new TypeError("invalid request deadline");
+        const context: RequestContextSnapshot = { member: supplied.member, local: supplied.local, remote: supplied.remote, ownerProxy: supplied.ownerProxy,
+          ...(supplied.pairedDeviceId ? { pairedDeviceId: supplied.pairedDeviceId } : {}), ...(supplied.screenId ? { screenId: supplied.screenId } : {}) };
+        this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)").run(id, "accepted", deadlineAt, JSON.stringify(context), ts);
+      }
       if (retry) this.db.prepare("INSERT INTO client_retries (scope_hash,client_id,payload_hash,message_id) VALUES (?,?,?,?)").run(scope, retry.clientId, payload, id);
       this.db.exec("COMMIT");
       return { message: this.byId(id)!, duplicate: false };
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
-  settle(requestId: string, from: string, body: ResponseBody): { message: Message; settled: boolean } {
+  settle(requestId: string, from: string, body: ResponseBody, origin?: Message["origin"]): { message: Message; settled: boolean } {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const request = this.byId(requestId);
@@ -299,10 +321,28 @@ export class Ledger {
       if (existing) { this.db.exec("COMMIT"); return { message: decode(existing), settled: false }; }
       if (typeof body.ok !== "boolean" || (body.ok === false && !body.error)) throw new TypeError("invalid response body");
       const id = newId(); const ts = Date.now();
-      const inserted = this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,turn) VALUES (?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, request.turn ?? null);
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, origin ? JSON.stringify(origin) : null, request.turn ?? null);
+      this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=?").run(ts, requestId);
       this.db.exec("COMMIT");
-      return { message: { seq: Number(inserted.lastInsertRowid), id, ts, from, to: request.from, kind: "response", word: request.word, body, reply_to: request.id, ...(request.turn ? { turn: request.turn } : {}) }, settled: true };
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+      return { message: this.byId(id)!, settled: true };
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  responseTo(requestId: string): Message | null {
+    const row = this.db.prepare("SELECT * FROM messages WHERE kind='response' AND reply_to=?").get(requestId) as Row | undefined;
+    return row ? decode(row) : null;
+  }
+
+  trackedRequests(): TrackedRequest[] {
+    const rows = this.db.prepare(`SELECT m.*, s.phase AS tracking_phase, s.deadline_at, s.context AS tracking_context
+      FROM request_state s JOIN messages m ON m.id=s.request_id WHERE s.phase!='settled' ORDER BY m.seq`).all() as Row[];
+    return rows.map((row) => ({ message: decode(row), phase: String(row.tracking_phase) as RequestPhase, deadlineAt: Number(row.deadline_at), context: JSON.parse(String(row.tracking_context)) }));
+  }
+
+  advanceRequest(requestId: string, from: RequestPhase, to: RequestPhase): boolean {
+    if (!((from === "accepted" && (to === "gate_waiting" || to === "dispatching")) || (from === "gate_waiting" && to === "dispatching"))) throw new TypeError("invalid request phase transition");
+    const updated = this.db.prepare("UPDATE request_state SET phase=?,updated_at=? WHERE request_id=? AND phase=?").run(to, Date.now(), requestId, from);
+    return Number(updated.changes) === 1;
   }
 
   byId(id: string): Message | null {

@@ -355,7 +355,10 @@ export function startServer(router: Router, host: string, port: number): Promise
     if ("stream" in r) {
       r.stream(
         (chunk) => res.write(chunk),
-        (fn) => req.on("close", fn),
+        (fn) => {
+          if (res.destroyed || res.writableEnded) fn();
+          else res.once("close", fn);
+        },
       );
       return;
     }
