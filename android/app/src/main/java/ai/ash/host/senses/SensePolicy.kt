@@ -16,5 +16,5 @@ internal object SensePolicy {
         return at.takeIf { it > now && it <= now + DAY_MS }
     }
     fun due(start: Long, now: Long): Boolean = now >= start - REMINDER_LEAD_MS && now < start
-    fun nextScanAt(now: Long): Long = now + RESCAN_INTERVAL_MS
+    fun nextScanAt(now: Long, intervalMs: Long = RESCAN_INTERVAL_MS): Long = now + intervalMs
 }

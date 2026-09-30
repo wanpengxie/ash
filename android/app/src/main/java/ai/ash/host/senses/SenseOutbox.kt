@@ -18,15 +18,22 @@ internal class SenseOutbox(private val store: Store) {
     private fun pending(kind: String, key: String) = "pending:$kind:${digest(key)}"
     private fun accepted(kind: String, key: String) = "${prefix(kind)}${digest(key)}"
 
-    fun dispatch(kind: String, key: String, send: (clientId: String) -> Unit): Boolean {
+    fun dispatch(
+        kind: String,
+        key: String,
+        acceptedState: Map<String, String> = emptyMap(),
+        reservedState: Map<String, String> = emptyMap(),
+        acceptedRemoves: Set<String> = emptySet(),
+        send: (clientId: String) -> Unit,
+    ): Boolean {
         val ack = accepted(kind, key)
         if (store.get(ack) == "1") return true
         val pending = pending(kind, key)
         val id = store.get(pending) ?: UUID.randomUUID().toString().also {
-            if (!store.commit(mapOf(pending to it))) return false
+            if (!store.commit(reservedState + (pending to it))) return false
         }
         try { send(id) } catch (_: Exception) { return false }
-        return store.commit(mapOf(ack to "1"), setOf(pending))
+        return store.commit(acceptedState + (ack to "1"), acceptedRemoves + pending)
     }
 
     /** Call only in the same durable transaction as advancing the corresponding snapshot. */

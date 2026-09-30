@@ -34,6 +34,7 @@ android {
         versionCode = 10
         versionName = "0.2.0"
         buildConfigField("int", "SENSE_PORT", "4700")
+        buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -61,6 +62,8 @@ android {
             initWith(getByName("debug"))
             applicationIdSuffix = ".sensesprobe"
             buildConfigField("int", "SENSE_PORT", "4870")
+            // Isolated emulator probe only; release keeps the six-hour rolling scan.
+            buildConfigField("long", "SENSE_RESCAN_MS", "90000L")
         }
         release {
             isMinifyEnabled = false

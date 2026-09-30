@@ -18,7 +18,7 @@ import ai.ash.host.CoreService
 import org.json.JSONObject
 
 /** One observer and one next reminder alarm, owned by the resident service. */
-class CalendarSense(private val ctx: Context) {
+class CalendarSense(private val ctx: Context, private val rescanIntervalMs: Long = SensePolicy.RESCAN_INTERVAL_MS) {
     private val prefs = ctx.getSharedPreferences("sense_calendar", Context.MODE_PRIVATE)
     private val serial = SenseSerial()
     private val outbox = SenseOutbox(object : SenseOutbox.Store {
@@ -101,19 +101,38 @@ class CalendarSense(private val ctx: Context) {
         }
         val old = runCatching { JSONObject(prefs.getString("snapshot", "{}") ?: "{}") }.getOrDefault(JSONObject())
         val first = !prefs.contains("snapshot")
-        var accepted = true
-        for ((key, event) in rows) {
-            if (!first && old.optJSONObject(key)?.toString() != event.toString()) {
-                accepted = send("changed", event, "changed:$key:${event.toString()}") && accepted
-            }
+        val oldRows = linkedMapOf<String, String>()
+        val oldKeys = old.keys()
+        while (oldKeys.hasNext()) {
+            val key = oldKeys.next()
+            old.optJSONObject(key)?.let { oldRows[key] = it.toString() }
         }
+        val currentRows = rows.mapValues { it.value.toString() }
+        var accepted = true
         if (!first) {
-            val keys = old.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                if (!rows.containsKey(key)) old.optJSONObject(key)?.let { event ->
-                    accepted = send("changed", event, "removed:$key:${event.toString()}") && accepted
+            val unresolved = mutableSetOf<String>()
+            val attempts = CalendarDelivery.attempts(prefs.all)
+            val malformed = prefs.all.keys.filter { it.startsWith("attempt:") }
+                .filterNot { key -> attempts.any { CalendarDelivery.attemptKey(it.occurrence) == key } }
+            if (malformed.isNotEmpty()) {
+                accepted = false
+                unresolved += malformed.map { it.removePrefix("attempt:") }
+            }
+            for (attempt in attempts) {
+                val event = runCatching { JSONObject(attempt.event) }.getOrNull()
+                if (event == null || !sendAttempt(attempt, event, reserve = false)) {
+                    unresolved += attempt.occurrence
+                    accepted = false
                 }
+            }
+            for (change in CalendarDelivery.diff(oldRows, CalendarDelivery.journal(prefs.all), currentRows)) {
+                if (change.occurrence in unresolved) continue
+                val event = runCatching { JSONObject(change.current ?: change.previous ?: "") }.getOrNull()
+                if (event == null) { accepted = false; continue }
+                val version = change.current ?: CalendarDelivery.ABSENT
+                val generation = CalendarDelivery.nextGeneration(prefs.all, change.occurrence)
+                val attempt = CalendarDelivery.Attempt(change.occurrence, event.toString(), version, generation)
+                accepted = sendAttempt(attempt, event, reserve = true) && accepted
             }
         }
         if (accepted) {
@@ -121,12 +140,13 @@ class CalendarSense(private val ctx: Context) {
             for ((key, event) in rows) snapshot.put(key, event)
             val edit = prefs.edit().putString("snapshot", snapshot.toString())
             for (name in outbox.completedKeys("changed")) edit.remove(name)
+            for (name in CalendarDelivery.completedKeys(prefs.all)) edit.remove(name)
             for (name in prefs.all.keys) {
                 if (name.startsWith("reminded:") && !rows.containsKey(name.removePrefix("reminded:"))) edit.remove(name)
             }
             accepted = edit.commit()
         }
-        var next = if (accepted) SensePolicy.nextScanAt(now) else now + 60_000
+        var next = if (accepted) SensePolicy.nextScanAt(now, rescanIntervalMs) else now + 60_000
         for ((key, event) in rows) {
             val start = event.getLong("start")
             val reminderKey = "reminded:$key"
@@ -140,12 +160,27 @@ class CalendarSense(private val ctx: Context) {
         schedule(next)
     }
 
-    private fun send(kind: String, event: JSONObject, key: String): Boolean = outbox.dispatch(kind, key) { id ->
+    private fun send(kind: String, event: JSONObject, key: String, acceptedState: Map<String, String> = emptyMap()): Boolean = outbox.dispatch(kind, key, acceptedState) { id ->
         try {
             CoreClient(ctx).sendSense("sense.calendar", JSONObject().put("kind", kind).put("event", event), id)
         } catch (e: Exception) {
             Log.w("sense.calendar", "delivery unavailable: ${e.javaClass.simpleName}")
             throw e
+        }
+    }
+
+    private fun sendAttempt(attempt: CalendarDelivery.Attempt, event: JSONObject, reserve: Boolean): Boolean {
+        val acceptedState = mapOf(
+            CalendarDelivery.key(attempt.occurrence) to attempt.target,
+            CalendarDelivery.generationKey(attempt.occurrence) to attempt.generation.toString(),
+        )
+        val attemptKey = CalendarDelivery.attemptKey(attempt.occurrence)
+        return outbox.dispatch(
+            "changed", attempt.deliveryKey, acceptedState,
+            if (reserve) mapOf(attemptKey to attempt.encode()) else emptyMap(),
+            setOf(attemptKey),
+        ) { id ->
+            CoreClient(ctx).sendSense("sense.calendar", JSONObject().put("kind", "changed").put("event", event), id)
         }
     }
 

@@ -9,6 +9,7 @@ import android.os.PowerManager
 import android.util.Log
 import ai.ash.host.senses.CalendarSense
 import ai.ash.host.senses.DeviceSense
+import ai.ash.BuildConfig
 
 /**
  * The resident part of the app: a foreground service that
@@ -33,7 +34,7 @@ class CoreService : Service() {
         val h = HostServer(this, Secrets(this).hostToken)
         h.start(HostServer.PORT)
         host = h
-        calendarSense = CalendarSense(this).also { it.start() }
+        calendarSense = CalendarSense(this, BuildConfig.SENSE_RESCAN_MS).also { it.start() }
         deviceSense = DeviceSense(this).also { it.start() }
         supervisor = Thread({ supervise(h.port) }, "ash-supervisor").apply { start() }
         state = "starting"

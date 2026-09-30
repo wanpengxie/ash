@@ -12,6 +12,16 @@ toybox nc -s 127.0.0.1 -p 4870 -L sh -c '
         esac
     done
     case "$length" in *[!0-9]*|"") exit 0 ;; esac
-    dd bs=1 count="$length" of=/dev/null 2>/dev/null
+    body=$(dd bs=1 count="$length" 2>/dev/null)
+    case "$body" in
+        *sense.calendar*)
+            case "$body" in
+                *upcoming*) echo "accepted calendar upcoming" >&2 ;;
+                *changed*) echo "accepted calendar changed" >&2 ;;
+                *) echo "accepted calendar other" >&2 ;;
+            esac ;;
+        *sense.battery*|*sense.screen*) echo "accepted device" >&2 ;;
+        *) echo "accepted other" >&2 ;;
+    esac
     printf "HTTP/1.1 200 OK\r\nContent-Length: 18\r\nConnection: close\r\n\r\n{\"id\":\"m\",\"seq\":1}"
 '
