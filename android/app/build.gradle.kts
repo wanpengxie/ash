@@ -31,7 +31,7 @@ android {
         // 28 on purpose: from 29 on, app-private files are no longer executable (the payload's
         // node/git/python run from files/). Moving binaries to jniLibs is a separate project.
         targetSdk = 28
-        versionCode = 5
+        versionCode = 6
         versionName = "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }

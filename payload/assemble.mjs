@@ -211,6 +211,23 @@ async function build() {
     if (e.isSymbolicLink()) links.push([`runtime/bin/${e.name}`, fs.readlinkSync(path.join(runtime, "bin", e.name))]);
   }
 
+  // Extra files the runtime needs (locked by sha256), e.g. the wheel ensurepip/venv expect.
+  for (const f of manifest.runtimeFiles ?? []) {
+    const file = await fetchVerified(f.url, f.sha256, cache);
+    fs.mkdirSync(path.dirname(path.join(tree, f.path)), { recursive: true });
+    fs.copyFileSync(file, path.join(tree, f.path));
+    log("runtime file", f.path);
+  }
+  // Patches to the runtime (never to DSH): each replaces one file whose original must match its
+  // sha256 — an upstream change stops the build instead of silently losing the fix.
+  for (const pt of manifest.runtimePatches ?? []) {
+    const target = path.join(tree, pt.path);
+    const got = sha256(target);
+    if (got !== pt.sha256) throw new Error(`runtime patch ${pt.path}: original sha256 ${got} ≠ expected ${pt.sha256} (the package changed; review ${pt.with})`);
+    fs.copyFileSync(path.join(HERE, pt.with), target);
+    log("runtime patch", pt.path);
+  }
+
   // JS entry points whose shebang is `#!/usr/bin/env node` (npm, npx, corepack, pnpm …) become sh wrappers:
   // Android has no /usr/bin/env.
   for (let i = links.length - 1; i >= 0; i--) {

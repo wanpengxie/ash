@@ -87,9 +87,29 @@ abstract class Link {
         this.lastError = "";
         delay = 1000;
         conn.onUnmatched = (f) => this.onFrame(f);
-        const keepalive = setInterval(() => conn.ws.readyState === WebSocket.OPEN && conn.ws.send("ping"), 30_000);
+        // Liveness: the gateway answers "ping" with "pong" (and relays traffic). A connection that
+        // stays silent for 90 s is half-open (network change, NAT timeout): drop it and reconnect.
+        let lastHeard = Date.now();
+        let giveUp: (v: { code: number; reason: string }) => void = () => {};
+        const silent = new Promise<{ code: number; reason: string }>((r) => (giveUp = r));
+        conn.ws.addEventListener("message", () => (lastHeard = Date.now()));
+        const keepalive = setInterval(() => {
+          if (conn.ws.readyState !== WebSocket.OPEN) return;
+          if (Date.now() - lastHeard > 90_000) {
+            this.log("gateway connection silent for 90 s; reconnecting");
+            try {
+              conn.ws.close(4000, "silent");
+            } catch {
+              /* already closing */
+            }
+            // A half-open socket may never finish its close handshake: do not wait for it.
+            giveUp({ code: 4000, reason: "silent" });
+            return;
+          }
+          conn.ws.send("ping");
+        }, 30_000);
         await this.onConnected(conn).catch((e) => this.log("gateway: after-connect step failed:", e instanceof Error ? e.message : e));
-        const closed = await conn.closed;
+        const closed = await Promise.race([conn.closed, silent]);
         clearInterval(keepalive);
         this.log("gateway connection closed", closed.code, closed.reason);
         if (closed.code === 4003) this.lastError = "revoked by the owner";

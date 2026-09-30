@@ -8,6 +8,22 @@
     "@img/sharp-wasm32": "0.35.5"
   },
   "runtimeNpm": {},
+  "runtimeFiles": [
+    {
+      "why": "python -m venv / ensurepip: Termux ships pip separately, so ensurepip has no bundled wheel",
+      "path": "runtime/lib/python3.14/ensurepip/_bundled/pip-26.1.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/5d/95/6b5cb3461ea5673ba0995989746db58eb18b91b54dbf331e72f569540946/pip-26.1.2-py3-none-any.whl",
+      "sha256": "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab"
+    }
+  ],
+  "runtimePatches": [
+    {
+      "why": "npm-installed bins start with #!/usr/bin/env, which Android lacks: rewrite at install time",
+      "path": "runtime/lib/node_modules/npm/node_modules/bin-links/lib/fix-bin.js",
+      "sha256": "eed383d9cb6529244f5f5c29ee8258d141f3231b06db4a453d1181dac3f83f1b",
+      "with": "patches/npm-bin-links-fix-bin.js"
+    }
+  ],
   "termux": {
     "repo": "https://packages.termux.dev/apt/termux-main",
     "arch": "aarch64",

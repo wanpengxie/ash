@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regression checklist R1–R12 on a device/emulator (run on the machine with adb).
+# Regression checklist R1–R14 on a device/emulator (run on the machine with adb).
 #
 #   APK=app-debug.apk tools/regress.sh [R1 R2 …]        (default: R2 R4 R5 R6 R7 R8 R9 R11 R12)
 #
@@ -125,8 +125,17 @@ R12() { say "R12 DSH is byte-for-byte as published"
   if [ -n "${DSH_REFERENCE:-}" ] && [ "$got" = "$DSH_REFERENCE" ]; then ok "R12 @deepseek-ai/** identical to the desktop install"; else bad R12 "mismatch or no reference"; fi
 }
 
+R14() { say "R14 npm-installed CLIs, npx and python venv work (Android has no /usr/bin/env)"
+  local px; px=$(adb shell settings get global http_proxy | tr -d '\r'); [ "$px" = "null" ] && px=""
+  local env="export HOME=$F TMPDIR=$F/../cache/tmp PATH=$F/payload/bin:$F/payload/runtime/bin:$F/.npm-global/bin:/system/bin npm_config_prefix=$F/.npm-global npm_config_cache=$F/../cache/npm"
+  [ -n "$px" ] && env="$env HTTPS_PROXY=http://$px HTTP_PROXY=http://$px npm_config_https_proxy=http://$px npm_config_proxy=http://$px"
+  local out; out=$(asr "$env; cd \$TMPDIR; npm install -g cowsay --no-audit --no-fund >/dev/null 2>&1; cowsay r14-global | head -2; npx -y cowsay r14-npx | head -2; rm -rf r14v; python3 -m venv r14v && r14v/bin/python -m pip --version")
+  echo "$out" | sed 's/^/    /' | head -8
+  if echo "$out" | grep -q "r14-global" && echo "$out" | grep -q "r14-npx" && echo "$out" | grep -q "^pip "; then ok "R14 global CLIs, npx and venv work"; else bad R14; fi
+}
+
 adb get-state >/dev/null 2>&1 || { echo "no adb device"; exit 2; }
-TESTS=("$@"); [ ${#TESTS[@]} -eq 0 ] && TESTS=(R2 R4 R5 R6 R7 R8 R9 R11 R12)
+TESTS=("$@"); [ ${#TESTS[@]} -eq 0 ] && TESTS=(R2 R4 R5 R6 R7 R8 R9 R11 R12 R14)
 for t in "${TESTS[@]}"; do "$t"; done
 printf '\n== summary: %d passed, %d failed\n' "$PASS" "$FAIL"; printf '%s\n' "${RESULTS[@]}"
 [ "$FAIL" -eq 0 ]

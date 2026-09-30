@@ -103,6 +103,10 @@ class CoreService : Service() {
                     core.start(hostPort)
                     startedAt = System.currentTimeMillis()
                     unhealthySince = 0L
+                } else if (core.startedWithProxy != core.systemProxy() && startedAt > 0) {
+                    // Proxy settings are process environment: apply a change by restarting the core.
+                    core.note("proxy changed (${core.startedWithProxy ?: "none"} → ${core.systemProxy() ?: "none"}); restarting ash core")
+                    core.stop()
                 } else if (core.portOpen()) {
                     unhealthySince = 0L
                     if (state != "running") Notifications.updateService(this, "在线")

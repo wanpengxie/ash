@@ -76,11 +76,47 @@ class CoreProcess(private val ctx: Context) {
         p.config.writeText(cfg.toString(1))
     }
 
+    /**
+     * The phone's HTTP proxy (Wi-Fi proxy setting, or what a proxy app published), as host:port.
+     * VPN-style proxies need nothing (traffic is tunneled below us); this covers the rest, e.g. a
+     * network where overseas names only resolve through a proxy.
+     */
+    fun systemProxy(): String? {
+        try {
+            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+            val pi = if (Build.VERSION.SDK_INT >= 23) cm.defaultProxy else null
+            if (pi != null && !pi.host.isNullOrBlank() && pi.port > 0) return "${pi.host}:${pi.port}"
+        } catch (_: Exception) {
+        }
+        val h = System.getProperty("http.proxyHost")
+        val port = System.getProperty("http.proxyPort")
+        return if (!h.isNullOrBlank() && !port.isNullOrBlank()) "$h:$port" else null
+    }
+
+    /** Proxy variables understood by node (NODE_USE_ENV_PROXY), npm, git, curl, pip — and inherited by MCP servers. */
+    private fun proxyEnv(proxy: String?): Map<String, String> {
+        if (proxy == null) return emptyMap()
+        val u = "http://$proxy"
+        val direct = "127.0.0.1,localhost,::1"
+        return mapOf(
+            "HTTP_PROXY" to u, "HTTPS_PROXY" to u, "http_proxy" to u, "https_proxy" to u,
+            "NO_PROXY" to direct, "no_proxy" to direct,
+            "NODE_USE_ENV_PROXY" to "1",
+            "npm_config_proxy" to u, "npm_config_https_proxy" to u,
+        )
+    }
+
+    /** The proxy the running core was started with (the supervisor restarts it when this changes). */
+    @Volatile var startedWithProxy: String? = null
+        private set
+
     fun environment(): Map<String, String> {
         val pl = p.payload.path
         p.tmp.mkdirs()
         val cert = "$pl/runtime/etc/tls/cert.pem"
-        return mapOf(
+        val proxy = systemProxy()
+        startedWithProxy = proxy
+        return proxyEnv(proxy) + mapOf(
             "HOME" to p.files.path,
             "PATH" to "$pl/bin:$pl/runtime/bin:${p.files.path}/.npm-global/bin:/system/bin:/system/xbin",
             "TMPDIR" to p.tmp.path,
