@@ -4,7 +4,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
 import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordSpec } from "../../../sdk/src/api";
-import { matchesSchema } from "../../../sdk/src/schema";
+import { matchesSchema, schemaErrors } from "../../../sdk/src/schema";
 import { deviceWordSpec, wordContract } from "../../../sdk/src/words";
 import { Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
@@ -24,6 +24,14 @@ export interface RouteEndpoint {
   /** Only handlers with durable, message-id deduplicated intake may opt in. */
   idempotentRecovery?: boolean;
   direction?: "in" | "out";
+}
+export interface DeviceCapability {
+  name: string;
+  description: string;
+  input_schema: unknown;
+  result_schema?: unknown;
+  risk: "none" | "outward" | "structure";
+  label: string;
 }
 export interface GateDecision { allow: boolean; by?: "rule" | "answer" | "timeout"; reason?: string }
 export type GateHook = (request: Message, spec: WordSpec, caller: RequestContextSnapshot, signal: AbortSignal) => Promise<GateDecision>;
@@ -89,22 +97,49 @@ export class WorldRouter {
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
 
   register(endpoint: RouteEndpoint): void {
-    if (!endpoint.member || !endpoint.spec.word || !endpoint.spec.input_schema || this.endpoints.has(`${endpoint.member}/${endpoint.spec.word}`)) throw new TypeError("invalid or duplicate endpoint");
-    const spec = detached(endpoint.spec);
-    const validateInput = (value: unknown) => matchesSchema(spec.input_schema!, value);
-    const validateResult = spec.result_schema ? (value: unknown) => matchesSchema(spec.result_schema!, value) : undefined;
-    if (spec.timeout_ms !== undefined && (!Number.isSafeInteger(spec.timeout_ms) || spec.timeout_ms <= 0)) throw new TypeError("invalid endpoint timeout");
-    this.endpoints.set(`${endpoint.member}/${spec.word}`, { ...endpoint, spec, validateInput, validateResult });
+    this.registerBatch([endpoint]);
   }
 
-  registerDevice(member: string, capability: { name: string; description: string; input_schema: unknown; result_schema?: unknown; risk: "none" | "outward" | "structure"; label: string }, handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): void {
+  /** Validate every static endpoint before publishing any route. Returned specs are detached. */
+  registerBatch(endpoints: readonly RouteEndpoint[]): WordSpec[] {
+    const prepared = new Map<string, Registered>();
+    for (const endpoint of endpoints) {
+      if (!endpoint.member || !endpoint.spec || typeof endpoint.spec.word !== "string" || !endpoint.spec.word || !endpoint.spec.input_schema || typeof endpoint.spec.description !== "string" || !endpoint.spec.description.trim() || !["request", "event"].includes(endpoint.spec.kind)) throw new TypeError("invalid endpoint");
+      const key = `${endpoint.member}/${endpoint.spec.word}`;
+      if (this.endpoints.has(key) || prepared.has(key)) throw new TypeError("duplicate endpoint");
+      const spec = detached(endpoint.spec);
+      schemaErrors(spec.input_schema!, {}); // preflight the complete internal schema tree
+      if (spec.result_schema) schemaErrors(spec.result_schema, {});
+      if (spec.timeout_ms !== undefined && (!Number.isSafeInteger(spec.timeout_ms) || spec.timeout_ms <= 0)) throw new TypeError("invalid endpoint timeout");
+      if (spec.audience !== undefined && !["agent", "owner", "all"].includes(spec.audience)) throw new TypeError("invalid endpoint audience");
+      if (spec.risk !== undefined && !["none", "outward", "structure"].includes(spec.risk)) throw new TypeError("invalid endpoint risk");
+      const validateInput = (value: unknown) => matchesSchema(spec.input_schema!, value);
+      const validateResult = spec.result_schema ? (value: unknown) => matchesSchema(spec.result_schema!, value) : undefined;
+      prepared.set(key, { ...endpoint, spec, validateInput, validateResult });
+    }
+    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
+    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+  }
+
+  registerDevice(member: string, capability: DeviceCapability, handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): void {
+    this.registerDeviceBatch(member, [capability], handle, options);
+  }
+
+  /** Compile all external schemas with Ajv before any capability becomes callable. */
+  registerDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
     if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
-    const safeCapability = detached(capability);
-    const spec = deviceWordSpec(safeCapability as Parameters<typeof deviceWordSpec>[0]);
-    const validateInput = ajvFor(safeCapability.input_schema);
-    const validateResult = ajvFor(spec.result_schema);
-    if (this.endpoints.has(`${member}/${spec.word}`)) throw new TypeError("duplicate endpoint");
-    this.endpoints.set(`${member}/${spec.word}`, { member, spec, handle, ...options, validateInput, validateResult });
+    const prepared = new Map<string, Registered>();
+    for (const capability of capabilities) {
+      const safeCapability = detached(capability);
+      const spec = deviceWordSpec(safeCapability as Parameters<typeof deviceWordSpec>[0]);
+      const key = `${member}/${spec.word}`;
+      if (this.endpoints.has(key) || prepared.has(key)) throw new TypeError("duplicate endpoint");
+      const validateInput = ajvFor(safeCapability.input_schema);
+      const validateResult = ajvFor(spec.result_schema);
+      prepared.set(key, { member, spec, handle, ...options, validateInput, validateResult });
+    }
+    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
+    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
   }
 
   setGate(gate: GateHook): void { this.gate = gate; }
