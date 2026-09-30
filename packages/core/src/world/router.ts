@@ -105,9 +105,16 @@ export class WorldRouter {
     const prepared = new Map<string, Registered>();
     for (const endpoint of endpoints) {
       if (!endpoint.member || !endpoint.spec || typeof endpoint.spec.word !== "string" || !endpoint.spec.word || !endpoint.spec.input_schema || typeof endpoint.spec.description !== "string" || !endpoint.spec.description.trim() || !["request", "event"].includes(endpoint.spec.kind)) throw new TypeError("invalid endpoint");
+      const contract = endpoint.spec as WordSpec & { member?: unknown; direction?: unknown };
+      if (contract.member !== undefined && contract.member !== endpoint.member) throw new TypeError("endpoint member mismatch");
+      if (contract.direction !== undefined && !["in", "out"].includes(contract.direction as string)) throw new TypeError("invalid endpoint direction");
+      if (endpoint.direction !== undefined && contract.direction !== undefined && endpoint.direction !== contract.direction) throw new TypeError("endpoint direction mismatch");
+      const direction = endpoint.direction ?? contract.direction as RouteEndpoint["direction"];
       const key = `${endpoint.member}/${endpoint.spec.word}`;
       if (this.endpoints.has(key) || prepared.has(key)) throw new TypeError("duplicate endpoint");
       const spec = detached(endpoint.spec);
+      delete (spec as WordSpec & { member?: unknown; direction?: unknown }).member;
+      delete (spec as WordSpec & { member?: unknown; direction?: unknown }).direction;
       schemaErrors(spec.input_schema!, {}); // preflight the complete internal schema tree
       if (spec.result_schema) schemaErrors(spec.result_schema, {});
       if (spec.timeout_ms !== undefined && (!Number.isSafeInteger(spec.timeout_ms) || spec.timeout_ms <= 0)) throw new TypeError("invalid endpoint timeout");
@@ -115,7 +122,7 @@ export class WorldRouter {
       if (spec.risk !== undefined && !["none", "outward", "structure"].includes(spec.risk)) throw new TypeError("invalid endpoint risk");
       const validateInput = (value: unknown) => matchesSchema(spec.input_schema!, value);
       const validateResult = spec.result_schema ? (value: unknown) => matchesSchema(spec.result_schema!, value) : undefined;
-      prepared.set(key, { ...endpoint, spec, validateInput, validateResult });
+      prepared.set(key, { ...endpoint, direction, spec, validateInput, validateResult });
     }
     for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
     return [...prepared.values()].map((endpoint) => detached(endpoint.spec));

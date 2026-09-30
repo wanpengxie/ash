@@ -48,6 +48,10 @@ export class WorldMembers {
     if (!Array.isArray(words)) throw new TypeError("invalid member words");
     const idempotent = member.idempotentRecovery;
     if (idempotent !== undefined && (!Array.isArray(idempotent) || idempotent.some((word) => typeof word !== "string"))) throw new TypeError("invalid recovery declaration");
+    for (const spec of words) {
+      const direction = (spec as WordSpec & { direction?: unknown }).direction;
+      if (direction !== undefined && direction !== "in") throw new TypeError("member cannot register an outbound word as inbound");
+    }
     const handle = member.handle.bind(member);
     const cancel = member.cancel?.bind(member);
     const endpoints: RouteEndpoint[] = words.map((spec) => ({ member: info.id, spec, handle, ...(cancel ? { cancel } : {}), idempotentRecovery: idempotent?.includes(spec.word) ?? false }));

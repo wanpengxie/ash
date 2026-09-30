@@ -9,6 +9,7 @@ import { Ledger } from "../../src/world/ledger";
 import { type Member, WorldMembers } from "../../src/world/member";
 import { RouterError, WorldRouter, type DeviceCapability, type TrustedRouteContext } from "../../src/world/router";
 import { checkRepository, checkTree } from "../arch/checks";
+import { wordContract } from "../../../sdk/src/words";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: false };
 const agent: TrustedRouteContext = { transport: "agent", transportPrincipal: "main", member: "agent:main", local: true, remote: false, ownerProxy: false };
@@ -128,6 +129,22 @@ test("router batch snapshots cannot be changed through source or returned specif
     (deviceSpecs[0].input_schema as { required: string[] }).required.push("impossible");
     const device = await router.send(owner, request("device:snapshot", "run"));
     assert.equal(device.reply?.body.ok, true);
+  } finally { ledger.close(); }
+});
+
+test("an outbound status contract cannot become an inbound member word", async () => {
+  const { ledger, router, members } = await fixture();
+  try {
+    const status = wordContract("agent:main", "status")!;
+    assert.equal(status.direction, "out");
+    assert.throws(() => members.register({ id: "agent:main", kind: "agent", name: "Main", words: () => [word("first"), status], handle: () => ({ ok: true }) }), /outbound/);
+    assert.throws(() => members.describe("owner", "agent:main"), isNotFound);
+    await assert.rejects(router.send(owner, request("agent:main", "first")), isNotFound);
+    assert.equal(ledger.lastSeq(), 0);
+    // Direct router registration also preserves the contract's declared outbound direction.
+    router.register({ member: "agent:main", spec: status, handle: () => ({ ok: true }) });
+    await assert.rejects(router.send(owner, { to: "agent:main", kind: "event", word: "status", body: { state: "idle", text: "" } }), (error: unknown) => error instanceof RouterError && error.code === "forbidden");
+    assert.equal(ledger.lastSeq(), 0);
   } finally { ledger.close(); }
 });
 
