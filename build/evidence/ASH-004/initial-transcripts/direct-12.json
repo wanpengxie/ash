@@ -1,0 +1,18 @@
+{
+  "index": 12,
+  "instruction": "Read what I copied and summarize it.",
+  "expected": {
+    "word": "clipboard.read",
+    "body": {}
+  },
+  "calls": [
+    {
+      "name": "clipboard_read",
+      "input": {}
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

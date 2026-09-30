@@ -1,0 +1,44 @@
+{
+  "index": 9,
+  "instruction": "Tap the Save button on the current screen.",
+  "expected": {
+    "word": "screen.tap",
+    "body": {
+      "label": "Save"
+    }
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "screen.inspect",
+        "body": {}
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "body": {
+          "label": "Save"
+        },
+        "to": "device:fixture",
+        "word": "screen.tap"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": false
+}

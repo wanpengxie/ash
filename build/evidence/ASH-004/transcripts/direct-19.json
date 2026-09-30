@@ -1,0 +1,22 @@
+{
+  "index": 19,
+  "instruction": "Run `pwd` in the shell fixture.",
+  "expected": {
+    "word": "shell.run",
+    "body": {
+      "command": "pwd"
+    }
+  },
+  "calls": [
+    {
+      "name": "shell_run",
+      "input": {
+        "command": "pwd"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

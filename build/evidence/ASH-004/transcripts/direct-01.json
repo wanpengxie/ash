@@ -1,0 +1,22 @@
+{
+  "index": 1,
+  "instruction": "What is on my calendar about dentist?",
+  "expected": {
+    "word": "calendar.search",
+    "body": {
+      "query": "dentist"
+    }
+  },
+  "calls": [
+    {
+      "name": "calendar_search",
+      "input": {
+        "query": "dentist"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

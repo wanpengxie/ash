@@ -1,0 +1,18 @@
+{
+  "index": 13,
+  "instruction": "Check whether my clipboard contains the tracking number.",
+  "expected": {
+    "word": "clipboard.read",
+    "body": {}
+  },
+  "calls": [
+    {
+      "name": "clipboard_read",
+      "input": {}
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

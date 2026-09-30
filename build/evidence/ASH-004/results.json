@@ -1,0 +1,10 @@
+{
+  "model": "deepseek-flash",
+  "base": "https://api.deepseek.com/anthropic",
+  "case_count": 20,
+  "oracle": "exact normalized target member/word/body in normally completed first turn; no extra or duplicate effects",
+  "two_tool_score": 19,
+  "direct_tool_score": null,
+  "direct_tool_count": 8,
+  "direct_run_kind": "not run"
+}

@@ -1,0 +1,22 @@
+{
+  "index": 3,
+  "instruction": "Look up the flight in my calendar.",
+  "expected": {
+    "word": "calendar.search",
+    "body": {
+      "query": "flight"
+    }
+  },
+  "calls": [
+    {
+      "name": "calendar_search",
+      "input": {
+        "query": "flight"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

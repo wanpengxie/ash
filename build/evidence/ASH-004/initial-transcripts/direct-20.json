@@ -1,0 +1,22 @@
+{
+  "index": 20,
+  "instruction": "Run `git status --short` in the shell fixture.",
+  "expected": {
+    "word": "shell.run",
+    "body": {
+      "command": "git status --short"
+    }
+  },
+  "calls": [
+    {
+      "name": "shell_run",
+      "input": {
+        "command": "git status --short"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

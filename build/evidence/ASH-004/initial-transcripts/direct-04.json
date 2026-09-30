@@ -1,0 +1,40 @@
+{
+  "index": 4,
+  "instruction": "Put “Project sync” on my calendar tomorrow at 10:00.",
+  "expected": {
+    "word": "calendar.create",
+    "body": {
+      "title": "Project sync",
+      "start": "tomorrow 10:00"
+    }
+  },
+  "calls": [
+    {
+      "name": "screen_inspect",
+      "input": {}
+    },
+    {
+      "name": "calendar_search",
+      "input": {
+        "query": "events"
+      }
+    },
+    {
+      "name": "shell_run",
+      "input": {
+        "command": "date"
+      }
+    },
+    {
+      "name": "calendar_create",
+      "input": {
+        "title": "Project sync",
+        "start": "tomorrow 10:00"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": false
+}

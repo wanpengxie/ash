@@ -1,0 +1,36 @@
+{
+  "index": 16,
+  "instruction": "List the files in /project/reports.",
+  "expected": {
+    "word": "shell.inspect",
+    "body": {
+      "path": "/project/reports"
+    }
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "shell.inspect",
+        "body": {
+          "path": "/project/reports"
+        }
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

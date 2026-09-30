@@ -1,0 +1,22 @@
+{
+  "index": 2,
+  "instruction": "Find my calendar entry for the budget review.",
+  "expected": {
+    "word": "calendar.search",
+    "body": {
+      "query": "budget review"
+    }
+  },
+  "calls": [
+    {
+      "name": "calendar_search",
+      "input": {
+        "query": "budget review"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

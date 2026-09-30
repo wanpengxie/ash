@@ -1,0 +1,32 @@
+{
+  "index": 7,
+  "instruction": "Read the current screen before telling me what button is available.",
+  "expected": {
+    "word": "screen.inspect",
+    "body": {}
+  },
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "screen.inspect",
+        "body": {}
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

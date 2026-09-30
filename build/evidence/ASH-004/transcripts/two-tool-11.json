@@ -1,0 +1,76 @@
+{
+  "index": 11,
+  "instruction": "What text is in my clipboard?",
+  "expected": {
+    "word": "clipboard.read",
+    "body": {}
+  },
+  "target_reached": true,
+  "extra_effects": [],
+  "duplicate_effect": false,
+  "completed": true,
+  "first_turn_correct": true,
+  "first_device_call_correct": true,
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "clipboard.read",
+        "body": {}
+      }
+    }
+  ],
+  "model_steps": [
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "",
+      "tool_results": [
+        {
+          "name": "ash_describe",
+          "result": {
+            "members": [
+              {
+                "id": "device:fixture",
+                "words": [
+                  "calendar.search",
+                  "calendar.create",
+                  "screen.inspect",
+                  "screen.tap",
+                  "clipboard.read",
+                  "clipboard.write",
+                  "shell.inspect",
+                  "shell.run"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "",
+      "tool_results": [
+        {
+          "name": "ash_send",
+          "result": {
+            "ok": true,
+            "fixture": true,
+            "word": "clipboard.read",
+            "result": "sample clipboard text"
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "end_turn",
+      "assistant_text": "Your clipboard contains:\n\n**\"sample clipboard text\"**",
+      "tool_results": []
+    }
+  ]
+}

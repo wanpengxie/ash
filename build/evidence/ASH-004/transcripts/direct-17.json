@@ -1,0 +1,22 @@
+{
+  "index": 17,
+  "instruction": "What files are in /notes?",
+  "expected": {
+    "word": "shell.inspect",
+    "body": {
+      "path": "/notes"
+    }
+  },
+  "calls": [
+    {
+      "name": "shell_inspect",
+      "input": {
+        "path": "/notes"
+      }
+    }
+  ],
+  "first_turn_correct": true,
+  "target_reached": true,
+  "extra_effects": [],
+  "first_device_call_correct": true
+}

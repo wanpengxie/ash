@@ -1,0 +1,252 @@
+{
+  "index": 2,
+  "instruction": "Find my calendar entry for the budget review.",
+  "expected": {
+    "word": "calendar.search",
+    "body": {
+      "query": "budget review"
+    }
+  },
+  "target_reached": true,
+  "extra_effects": [],
+  "duplicate_effect": false,
+  "completed": true,
+  "first_turn_correct": true,
+  "first_device_call_correct": true,
+  "calls": [
+    {
+      "name": "ash_describe",
+      "input": {}
+    },
+    {
+      "name": "ash_describe",
+      "input": {
+        "member": "device:fixture"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "to": "device:fixture",
+        "word": "calendar.search",
+        "body": {
+          "query": "budget review"
+        }
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "body": {},
+        "to": "device:fixture",
+        "word": "screen.inspect"
+      }
+    },
+    {
+      "name": "ash_send",
+      "input": {
+        "body": {
+          "query": "budget"
+        },
+        "to": "device:fixture",
+        "word": "calendar.search"
+      }
+    }
+  ],
+  "model_steps": [
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "I'll look into what's available on your device first.",
+      "tool_results": [
+        {
+          "name": "ash_describe",
+          "result": {
+            "members": [
+              {
+                "id": "device:fixture",
+                "words": [
+                  "calendar.search",
+                  "calendar.create",
+                  "screen.inspect",
+                  "screen.tap",
+                  "clipboard.read",
+                  "clipboard.write",
+                  "shell.inspect",
+                  "shell.run"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "",
+      "tool_results": [
+        {
+          "name": "ash_describe",
+          "result": {
+            "member": "device:fixture",
+            "words": {
+              "calendar.search": {
+                "description": "Find existing calendar events. Use for questions about plans; read-only.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              },
+              "calendar.create": {
+                "description": "Add a calendar event. Use only when asked to schedule something. Fixture records the proposed event.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "start": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "title",
+                    "start"
+                  ]
+                }
+              },
+              "screen.inspect": {
+                "description": "Read the currently visible screen. Use before referring to current UI content; read-only.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {},
+                  "required": []
+                }
+              },
+              "screen.tap": {
+                "description": "Tap a labeled visible control. Use only when the user asks to interact with the current screen.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ]
+                }
+              },
+              "clipboard.read": {
+                "description": "Read clipboard text. Use when asked about copied content; read-only.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {},
+                  "required": []
+                }
+              },
+              "clipboard.write": {
+                "description": "Replace clipboard text. Use when asked to copy supplied text.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ]
+                }
+              },
+              "shell.inspect": {
+                "description": "List files in a fixture directory. Use for file listing questions; read-only.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              },
+              "shell.run": {
+                "description": "Run a shell command inside a simulated fixture. Use only for explicitly requested commands; no host shell runs.",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "command": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "command"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "",
+      "tool_results": [
+        {
+          "name": "ash_send",
+          "result": {
+            "ok": true,
+            "fixture": true,
+            "word": "calendar.search",
+            "result": "recorded in fixture only"
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "",
+      "tool_results": [
+        {
+          "name": "ash_send",
+          "result": {
+            "ok": true,
+            "fixture": true,
+            "word": "screen.inspect",
+            "result": "Save, Continue, Error: sample"
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "tool_use",
+      "assistant_text": "",
+      "tool_results": [
+        {
+          "name": "ash_send",
+          "result": {
+            "ok": true,
+            "fixture": true,
+            "word": "calendar.search",
+            "result": "recorded in fixture only"
+          }
+        }
+      ]
+    },
+    {
+      "stop_reason": "end_turn",
+      "assistant_text": "I searched your calendar, but I have to be straight with you: I couldn't actually retrieve the entry.\n\n- `calendar.search` for **\"budget review\"** (and a broader **\"budget\"**) both ran successfully, but the device only returned a placeholder acknowledgment — \"recorded in fixture only\" — with no event details.\n- I also checked the currently visible screen; it shows only generic controls (\"Save\", \"Continue\", \"Error: sample\"), nothing calendar-related.\n\nSo there's no real calendar data available to me here, and I can't tell you the date, time, or location of the budget review. I also won't guess at those details.\n\nA couple of options:\n- If you can open your calendar app to the relevant view, I can inspect the screen and read the entry off it.\n- Or, if you know roughly when it is, tell me and I can search again with a more specific query.\n\nWould you like to try one of those?",
+      "tool_results": []
+    }
+  ]
+}

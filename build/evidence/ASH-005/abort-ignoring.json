@@ -1,0 +1,72 @@
+{
+  "dsh_root": "/home/xiewanpeng/ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh",
+  "fixture": "in-memory delayed device; ignores abort to expose late-result behavior",
+  "tool_entered_at_ms": 2159.402885,
+  "signal_at_entry": false,
+  "cancel_at_ms": 2159.487544,
+  "signal_aborted_at_ms": 2164.106075,
+  "cancel_response": {
+    "cancelled": true
+  },
+  "turn_end_at_ms": null,
+  "turn_end_reason": null,
+  "cancel_to_turn_end_ms": null,
+  "tool_still_in_flight_at_turn_end": false,
+  "events_at_deadline": [
+    {
+      "type": "call.started",
+      "data": {
+        "id": "call_dZcDv04_tkPc",
+        "device": "device:lab",
+        "capability": "wait",
+        "caller": "agent:main"
+      }
+    }
+  ],
+  "tool_returned_at_ms": 7176.807735,
+  "events": [
+    {
+      "type": "agent.tool.call",
+      "data": {
+        "name": "lab__wait",
+        "args": {},
+        "message_id": "msg_kGcAkP4PsHlE"
+      }
+    },
+    {
+      "type": "call.started",
+      "data": {
+        "id": "call_dZcDv04_tkPc",
+        "device": "device:lab",
+        "capability": "wait",
+        "caller": "agent:main"
+      }
+    },
+    {
+      "type": "call.ended",
+      "data": {
+        "id": "call_dZcDv04_tkPc",
+        "ok": true
+      }
+    },
+    {
+      "type": "agent.tool.result",
+      "data": {
+        "name": "lab__wait",
+        "ok": false,
+        "preview": "Error: tool call aborted",
+        "message_id": "msg_kGcAkP4PsHlE"
+      }
+    },
+    {
+      "type": "agent.turn.ended",
+      "data": {
+        "message_id": "msg_kGcAkP4PsHlE",
+        "reason": "error",
+        "error": "undefined"
+      }
+    }
+  ],
+  "late_successful_call_end": true,
+  "pass": true
+}
