@@ -84,6 +84,7 @@ add("service:clock", "cancel", "request", obj({ id }, ["id"]), obj({ cancelled: 
 add("service:clock", "list", "request", empty, obj({ timers: array(any) }, ["timers"]));
 add("service:post", "deliver", "request", obj({ message_id: id, kind: choice("reply", "offer", "heads_up", "approval", "due"), dedupe_key: str }, ["message_id", "kind"]), obj({ channel: choice("inapp", "notification", "held") }, ["channel"]), { audience: "owner" });
 add("service:post", "visible", "event", empty, undefined, { audience: "owner", description: "Presence from the authenticated screen only." });
+add("service:post", "post.changed", "event", obj({ held: { type: "integer", minimum: 0 } }, ["held"]), undefined, { direction: "out", audience: "owner", label: "Updating deliveries", description: "Authoritative current held-delivery count for the owner; never infer a count from deliver results." });
 add("service:gate", "rules.list", "request", empty, obj({ rules: array(any) }, ["rules"]), { audience: "owner" });
 add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure" });
 add("service:gate", "history", "request", obj({ before: integer, limit: { type: "integer", minimum: 1, maximum: 1000 } }), obj({ items: array(any) }, ["items"]), { audience: "owner" });

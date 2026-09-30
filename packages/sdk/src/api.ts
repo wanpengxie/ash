@@ -317,6 +317,9 @@ export interface Message {
   turn?: string;
 }
 
+/** Authoritative pending-delivery count emitted to the owner by the delivery service. */
+export interface PostChangedBody { held: number }
+
 export interface JsonSchema {
   type?: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
   properties?: Record<string, JsonSchema>;
