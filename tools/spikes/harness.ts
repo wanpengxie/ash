@@ -7,7 +7,9 @@ import { DshHost } from "../../packages/dsh-binding/src/host";
 
 export type Request = { system: string; messages: { role: string; content: unknown }[]; tools: unknown[]; model: string };
 
-export async function startHarness(reply: (request: Request) => string) {
+export type ScriptedReply = string | { tool: string; input: Record<string, unknown> };
+
+export async function startHarness(reply: (request: Request) => ScriptedReply) {
   const root = process.env.ASH_TEST_DSH_ROOT;
   assert.ok(root, "set ASH_TEST_DSH_ROOT to the installed DSH package directory");
   assert.ok(existsSync(join(root, "package.json")), "DSH install missing; set ASH_TEST_DSH_ROOT");
@@ -25,10 +27,15 @@ export async function startHarness(reply: (request: Request) => string) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       const ev = (type: string, payload: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`);
       ev("message_start", { message: { id: "msg_spike", type: "message", role: "assistant", model: data.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
-      ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-      ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: value } });
+      if (typeof value === "string") {
+        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: value } });
+      } else {
+        ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_${requests.length}`, name: value.tool, input: {} } });
+        ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(value.input) } });
+      }
       ev("content_block_stop", { index: 0 });
-      ev("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } });
+      ev("message_delta", { delta: { stop_reason: typeof value === "string" ? "end_turn" : "tool_use" }, usage: { output_tokens: 5 } });
       ev("message_stop", {});
       res.end();
     });
