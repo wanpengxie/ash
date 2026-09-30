@@ -29,6 +29,8 @@ On the current v2 base, `npm run -s typecheck` passed. The focused router file i
 - Each subscriber, gate hook, and handler receives a detached copy of the accepted message, so mutating an observer's copy cannot change the checked body or device effect. Recovery checks the currently registered request kind, direction, and input schema again before any effect; an incompatible accepted request settles with `bad_request`.
 - `service:work/run` is owner-only. Trusted local `service:work` may use only `service:self/append` and `apply_plan` as itself, matching the background-flow contract; other services, remote work, and its `write`/`rollback` attempts are denied before ledger acceptance.
 - Web-screen and paired-phone notification answers persist their server-stamped origin on the response row. Valid phone sense broadcasts use only the four declared service:senses word schemas and keep `from=device:phone`; unknown words, invalid bodies, and non-phone attempts are rejected before acceptance.
+- An external `ask` reply must come from a verified web screen or paired-phone notification proxy, name an option offered by that exact request, and arrive before the earlier of its `expires_at` and endpoint timeout. Ordinary owner API calls and invalid choices leave the first-answer slot open. At expiry the router records one automatic `choice:deny` without owner-screen origin; a shorter generic endpoint timeout remains `timeout`. Restarted expired asks are denied without redispatch.
+- Stream replay captures each page's cursor before invoking listeners and provides detached message copies, so a listener cannot force duplicate or looping history by changing `seq`.
 
 ## Boundaries and follow-up
 

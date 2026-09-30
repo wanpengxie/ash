@@ -7,6 +7,7 @@ import test from "node:test";
 import { Ledger } from "../../src/world/ledger";
 import { RouterError, WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 import type { WordSpec } from "../../../sdk/src/api";
+import { wordContract } from "../../../sdk/src/words";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-login", member: "person:owner", local: true, remote: false, ownerProxy: false };
 const agent: TrustedRouteContext = { transport: "agent", transportPrincipal: "agent-main", member: "agent:main", local: true, remote: false, ownerProxy: false };
@@ -229,6 +230,23 @@ test("stream replay boundary emits every persisted event once in sequence", asyn
   } finally { ledger.close(); }
 });
 
+test("replay listener cannot rewrite the page cursor or force duplicate history", async () => {
+  const { ledger, router } = await setup();
+  try {
+    for (let i = 0; i < 3; i++) await router.send(agent, { to: null, kind: "event", word: "status", body: { state: "idle", text: String(i) } });
+    const seen: string[] = [];
+    const stop = router.subscribeFrom(0, (message) => {
+      seen.push(message.id);
+      message.seq = 0;
+      if (seen.length > 5) throw new Error("replay loop after observer mutation");
+    });
+    stop();
+    assert.equal(seen.length, 3);
+    assert.equal(new Set(seen).size, 3);
+    assert.deepEqual(ledger.list().map((message) => message.seq), [1, 2, 3]);
+  } finally { ledger.close(); }
+});
+
 test("broadcast reaches all subscribers; one broken stream cannot strand an accepted request", async () => {
   const { ledger, router } = await setup();
   try {
@@ -338,14 +356,16 @@ test("only owner starts work; only local work service gets its two declared self
 test("screen and phone notification replies persist server-stamped origin, never a caller claim", async () => {
   const { ledger, router } = await setup();
   try {
-    router.register({ member: "person:owner", spec: spec("ask"), handle: () => new Promise(() => {}) });
-    const screenAsk = await router.send(agent, request("person:owner", "ask"));
-    const screenReply = await router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: screenAsk.id, body: { ok: true, result: { value: 1 } } });
+    router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => new Promise(() => {}) });
+    const body = { title: "Proceed?", detail: "Synthetic", options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }], expires_at: Date.now() + 10_000,
+      source: { word: "run", to: "device:fake", body_preview: "Synthetic" } };
+    const screenAsk = await router.send(agent, { to: "person:owner", kind: "request", word: "ask", body });
+    const screenReply = await router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: screenAsk.id, body: { ok: true, result: { choice: "once" } } });
     assert.deepEqual(ledger.byId(screenReply.id)?.origin, { screen: "screen:tab_a", label: "Tab A" });
-    const phoneAsk = await router.send(agent, request("person:owner", "ask"));
-    const phoneReply = await router.send(phone, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { value: 2 } } });
+    const phoneAsk = await router.send(agent, { to: "person:owner", kind: "request", word: "ask", body });
+    const phoneReply = await router.send(phone, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { choice: "deny" } } });
     assert.deepEqual(ledger.byId(phoneReply.id)?.origin, { screen: "device:phone", label: "Phone notification" });
-    await assert.rejects(router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { value: 3 } }, origin: { screen: "screen:other", label: "Other" } } as never), code("bad_request"));
+    await assert.rejects(router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { choice: "once" } }, origin: { screen: "screen:other", label: "Other" } } as never), code("bad_request"));
   } finally { ledger.close(); }
 });
 
@@ -376,4 +396,64 @@ test("recovery authorizer receives detached request and context", async () => {
     assert.equal(ledger.responseTo(saved.id)?.body.ok, true);
     assert.equal(ledger.trackedRequests().length, 0);
   } finally { ledger.close(); }
+});
+
+test("ask accepts only an offered, unexpired first choice; invalid choice leaves the slot open", async () => {
+  const { ledger, router } = await setup();
+  try {
+    router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => undefined });
+    const body = { title: "Proceed?", detail: "Synthetic approval", options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }], expires_at: Date.now() + 10_000,
+      source: { word: "run", to: "device:fake", body_preview: "Synthetic" } };
+    const asked = await router.send(agent, { to: "person:owner", kind: "request", word: "ask", body });
+    const answer = (choice: string) => ({ to: "agent:main", kind: "response" as const, word: "ask", reply_to: asked.id, body: { ok: true, result: { choice } } });
+    await assert.rejects(router.send(owner, answer("once")), code("forbidden"));
+    await assert.rejects(router.send(screen, answer("always")), code("bad_request"));
+    await assert.rejects(router.send(screen, answer("__custom")), code("bad_request"));
+    assert.equal(ledger.responseTo(asked.id), null);
+    const valid = await router.send(screen, answer("once"));
+    assert.equal((ledger.byId(valid.id)?.body.result as { choice: string }).choice, "once");
+    await assert.rejects(router.send(phone, answer("deny")), code("bad_request"));
+    assert.equal(ledger.list().filter((message) => message.reply_to === asked.id).length, 1);
+  } finally { ledger.close(); }
+});
+
+test("expired ask auto-denies without presenting; late approval cannot replace it", async () => {
+  const { ledger, router } = await setup();
+  try {
+    let presentations = 0;
+    router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => { presentations++; } });
+    const body = { title: "Proceed?", detail: "Synthetic approval", options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }], expires_at: Date.now() - 1000,
+      source: { word: "run", to: "device:fake", body_preview: "Synthetic" } };
+    const asked = await router.send(agent, { to: "person:owner", kind: "request", word: "ask", body, wait: true });
+    assert.equal((asked.reply?.body.result as { choice: string }).choice, "deny");
+    assert.equal(asked.reply?.origin, undefined, "automatic denial is not attributed to a screen click");
+    assert.equal(presentations, 0);
+    await assert.rejects(router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: asked.id, body: { ok: true, result: { choice: "once" } } }), code("bad_request"));
+    assert.equal(ledger.list().filter((message) => message.reply_to === asked.id).length, 1);
+  } finally { ledger.close(); }
+});
+
+test("restarted expired ask auto-denies without redispatch; endpoint timeout before expiry remains timeout", async () => {
+  const { file, ledger } = await setup();
+  const body = { title: "Proceed?", detail: "Synthetic approval", options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }], expires_at: Date.now() - 1000,
+    source: { word: "run", to: "device:fake", body_preview: "Synthetic" } };
+  const saved = ledger.append({ from: "agent:main", to: "person:owner", kind: "request", word: "ask", body }, undefined,
+    { deadlineAt: body.expires_at, context: { member: "agent:main", local: true, remote: false, ownerProxy: false } }).message;
+  ledger.close();
+  const reopened = await Ledger.open(file);
+  try {
+    const router = new WorldRouter(reopened, async () => true);
+    let presentations = 0;
+    router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => { presentations++; } });
+    await router.recover();
+    assert.equal(presentations, 0);
+    assert.equal((reopened.responseTo(saved.id)?.body.result as { choice: string }).choice, "deny");
+    assert.equal(reopened.trackedRequests().length, 0);
+    const short = { ...wordContract("person:owner", "ask")!, timeout_ms: 25 };
+    const other = new WorldRouter(reopened, async () => true);
+    other.register({ member: "person:owner", spec: short, handle: () => undefined });
+    const later = { ...body, expires_at: Date.now() + 5000 };
+    const timed = await other.send(agent, { to: "person:owner", kind: "request", word: "ask", body: later, wait: true });
+    assert.equal((timed.reply?.body.error as { code: string }).code, "timeout");
+  } finally { reopened.close(); }
 });

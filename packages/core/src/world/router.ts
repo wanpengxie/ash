@@ -55,6 +55,9 @@ const detached = <T>(value: T): T => structuredClone(value);
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
+const askExpiry = (message: Pick<Message, "to" | "word" | "body">): number | null =>
+  message.to === "person:owner" && message.word === "ask" && typeof message.body.expires_at === "number" && Number.isFinite(message.body.expires_at)
+    ? Math.ceil(message.body.expires_at) : null;
 
 function ajvFor(schema: unknown): ValidateFunction {
   if (!plainObject(schema)) throw new TypeError("device schema must be an object");
@@ -173,7 +176,7 @@ export class WorldRouter {
     this.validateContext(ctx); this.validateRequestShape(request);
     const { from, origin } = this.stampedSender(ctx, request);
     this.authorize(ctx, request, from);
-    if (request.kind === "response") return this.acceptResponse(request, from, origin);
+    if (request.kind === "response") return this.acceptResponse(request, from, ctx, origin);
     if (request.to === null && request.kind !== "event") fail("bad_request", "request needs recipient");
     const endpoint = request.to ? this.endpoint(request.to, request.word) : undefined;
     const outbound = request.kind === "event" ? wordContract(from, request.word) : undefined;
@@ -190,10 +193,12 @@ export class WorldRouter {
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
     const timeoutMs = endpoint?.spec.timeout_ms ?? 60_000;
+    if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
+    const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
     const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
     let accepted: ReturnType<Ledger["append"]>;
     try { accepted = this.ledger.append(input, request.client_id ? { transportPrincipal: ctx.transportPrincipal, clientId: request.client_id } : undefined,
-      request.kind === "request" ? { deadlineAt: Date.now() + timeoutMs, context: contextSnapshot(ctx) } : undefined); }
+      request.kind === "request" ? { deadlineAt, context: contextSnapshot(ctx) } : undefined); }
     catch (error) { if (error instanceof TypeError) fail("bad_request", error.message); throw error; }
     const message = accepted.message;
     if (accepted.duplicate) {
@@ -209,29 +214,48 @@ export class WorldRouter {
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === message.id)!;
     const pending = makePending(message, endpoint, tracked.context, tracked.deadlineAt, "accepted");
     this.pending.set(message.id, pending);
-    this.armTimeout(pending);
-    void this.dispatch(pending, false);
+    if (Date.now() >= pending.deadlineAt) this.finish(pending, this.deadlineBody(pending), message.to!, true);
+    else { this.armTimeout(pending); void this.dispatch(pending, false); }
     const reply = request.wait ? await pending.reply : undefined;
     return { id: message.id, seq: message.seq, ...(reply ? { reply } : {}) };
   }
 
-  private async acceptResponse(request: SendRequestV2, from: string, origin?: Message["origin"]): Promise<{ id: string; seq: number }> {
+  private async acceptResponse(request: SendRequestV2, from: string, ctx: TrustedRouteContext, origin?: Message["origin"]): Promise<{ id: string; seq: number }> {
     const original = this.ledger.byId(request.reply_to!);
     if (!original || original.kind !== "request" || original.seq <= this.ledger.migration.lastLegacySeq || original.to !== from || original.from !== request.to || original.word !== request.word) throw new RouterError("bad_request", "response does not match an active request");
+    if (original.to === "person:owner" && original.word === "ask" && !(ctx.transport === "web_ui" || (ctx.transport === "phone" && ctx.ownerProxy))) fail("forbidden", "ask requires a verified screen or notification proxy");
     const endpoint = this.endpoint(original.to!, original.word);
     if (!endpoint || this.ledger.responseTo(original.id)) throw new RouterError("bad_request", "request already settled or unavailable");
     const body = request.body as ResponseBody;
     if (typeof body.ok !== "boolean" || (body.ok && endpoint.validateResult && !endpoint.validateResult(body.result)) || (!body.ok && (!plainObject(body.error) || !ERROR_CODES.has(body.error.code as MessageErrorCode) || typeof body.error.message !== "string"))) fail("bad_request", "invalid response body");
     const pending = this.pending.get(original.id);
-    if (!pending || pending.settled || Date.now() >= pending.deadlineAt) throw new RouterError("bad_request", "request no longer accepting replies");
+    if (!pending || pending.settled) throw new RouterError("bad_request", "request no longer accepting replies");
+    if (Date.now() >= pending.deadlineAt) {
+      this.finish(pending, this.deadlineBody(pending), original.to!, true);
+      throw new RouterError("bad_request", "request expired before reply");
+    }
+    if (original.to === "person:owner" && original.word === "ask") {
+      const choice = body.ok && plainObject(body.result) ? body.result.choice : undefined;
+      const options = original.body.options;
+      if (typeof choice !== "string" || !Array.isArray(options) || !options.some((option) => plainObject(option) && option.id === choice)) fail("bad_request", "ask choice was not offered");
+    }
     const result = this.finish(pending, body, from, false, origin);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
   }
 
+  private deadlineBody(pending: Pending): ResponseBody {
+    const expiry = askExpiry(pending.request);
+    return expiry !== null && Date.now() >= expiry ? { ok: true, result: { choice: "deny" } } : errors("timeout", "request timed out");
+  }
+
   private armTimeout(pending: Pending): void {
     const remaining = Math.max(0, pending.deadlineAt - Date.now());
-    pending.timer = setTimeout(() => this.finish(pending, errors("timeout", "request timed out"), pending.request.to!, true), remaining);
+    pending.timer = setTimeout(() => {
+      if (pending.settled) return;
+      if (Date.now() < pending.deadlineAt) { this.armTimeout(pending); return; }
+      this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
+    }, remaining);
   }
 
   private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean, origin?: Message["origin"]): Message | null {
@@ -315,7 +339,7 @@ export class WorldRouter {
       }
       const pending = makePending(message, endpoint, context, deadlineAt, phase);
       this.pending.set(message.id, pending);
-      if (Date.now() >= deadlineAt) { this.finish(pending, errors("timeout", "request timed out during restart"), message.to!, false); continue; }
+      if (Date.now() >= deadlineAt) { this.finish(pending, this.deadlineBody(pending), message.to!, true); continue; }
       if (phase === "gate_waiting" || (phase === "dispatching" && !endpoint.idempotentRecovery)) {
         this.finish(pending, errors("failed", "outcome unknown after restart; request not replayed"), message.to!, false);
         continue;
@@ -336,11 +360,12 @@ export class WorldRouter {
       while (cursor < watermark) {
         const page = this.ledger.list({ after: cursor, limit: 1000 }).filter((message) => message.seq <= watermark);
         if (!page.length) break;
-        for (const message of page) listener(message);
-        cursor = page.at(-1)!.seq;
+        const nextCursor = page.at(-1)!.seq;
+        for (const message of page) listener(detached(message));
+        cursor = nextCursor;
       }
       replaying = false;
-      for (const message of buffered.filter((item) => item.seq > watermark).sort((a, b) => a.seq - b.seq)) listener(message);
+      for (const message of buffered.filter((item) => item.seq > watermark).sort((a, b) => a.seq - b.seq)) listener(detached(message));
     } catch (error) { stop(); throw error; }
     return stop;
   }
