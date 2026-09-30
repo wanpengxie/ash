@@ -317,6 +317,13 @@ export interface Message {
   turn?: string;
 }
 
+/** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
+export interface LegacyConversationMetadata {
+  seq: number;
+  workspace: string;
+  member: string;
+}
+
 export interface JsonSchema {
   type?: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
   properties?: Record<string, JsonSchema>;
