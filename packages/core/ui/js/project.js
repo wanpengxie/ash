@@ -21,6 +21,7 @@ const number = (x) => typeof x === "number" && Number.isFinite(x) ? x : null;
 const strings = (x) => Array.isArray(x) ? x.filter((v) => typeof v === "string") : [];
 const knownState = (x) => Object.hasOwn(FACE, x);
 const turnId = (x) => typeof x === "string" && /^[tr]_[A-Za-z0-9_-]+$/.test(x);
+const ownerPublisher = (from) => ["agent:main", "service:gate", "service:work"].includes(from);
 
 function safeCard(card) {
   if (!object(card)) return null;
@@ -48,9 +49,9 @@ function record(m) {
   }
   if (m.kind === "request" && m.word === "say" && typeof b.text === "string") {
     if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
-    if (m.to === "person:owner" && m.from === "agent:main") return { ...base, type: "agent.say", text: b.text, kind: string(b.kind) };
+    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, kind: string(b.kind) };
   }
-  if (m.kind === "request" && m.to === "person:owner" && m.from === "agent:main") {
+  if (m.kind === "request" && m.to === "person:owner" && ownerPublisher(m.from)) {
     if (m.word === "react" && typeof b.message_id === "string" && typeof b.emoji === "string") return { ...base, type: "react", message_id: b.message_id, emoji: b.emoji };
     if (m.word === "show") { const card = safeCard(b.card); return card ? { ...base, type: "show", card } : null; }
     if (m.word === "ask" && typeof b.title === "string" && Array.isArray(b.options)) return {
@@ -58,7 +59,7 @@ function record(m) {
       options: b.options.filter((x) => object(x) && typeof x.id === "string" && typeof x.label === "string").map((x) => ({ id: x.id, label: x.label })),
     };
   }
-  if (m.kind === "response" && m.word === "ask" && m.to === "agent:main" && typeof m.reply_to === "string" && object(b)) {
+  if (m.kind === "response" && m.word === "ask" && m.from === "person:owner" && ownerPublisher(m.to) && typeof m.reply_to === "string" && object(b)) {
     const choice = b.ok === true && object(b.result) ? string(b.result.choice) : "";
     const error = b.ok === false && object(b.error) ? string(b.error.code) : "";
     return { ...base, type: "ask.answer", reply_to: m.reply_to, choice, error };
@@ -94,7 +95,7 @@ function project(records) {
       view.presence = { state: r.state, text: r.text, avatar: FACE[r.state] };
       if (r.state === "working" && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.text || "在忙" });
     } else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
-    else if (r.type === "agent.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", text: r.text, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
+    else if (r.type === "agent.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
     else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), reactions: reactions.get(r.id) || [] });
     else if (r.type === "ask") {
       const answer = answers.get(r.id);

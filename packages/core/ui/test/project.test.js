@@ -75,3 +75,18 @@ test("clock set/cancel responses do not synthesize a timer without list snapshot
   ]);
   assert.deepEqual(state.timers, []);
 });
+
+test("gate and background messages to the owner project, with ask replies to their original asker", () => {
+  const state = replay([
+    { id: "gate-ask", from: "service:gate", to: "person:owner", kind: "request", word: "ask", body: { title: "Allow?", options: [{ id: "deny", label: "No" }], expires_at: 9999 } },
+    { from: "person:owner", to: "service:gate", kind: "response", word: "ask", reply_to: "gate-ask", body: { ok: true, result: { choice: "deny" } } },
+    { from: "service:work", to: "person:owner", kind: "request", word: "say", body: { text: "Reminder", kind: "heads_up" } },
+    { from: "service:work", to: "person:owner", kind: "request", word: "show", body: { card: { type: "link", url: "https://example.invalid", title: "Source" } } },
+  ]);
+  assert.equal(state.asks[0].state, "answered");
+  assert.equal(state.asks[0].choice, "deny");
+  assert.equal(state.conversation[1].from, "service:work");
+  assert.equal(state.conversation[2].card.type, "link");
+  const forged = fold(replay([{ id: "ask", from: "service:work", to: "person:owner", kind: "request", word: "ask", body: { title: "Approve", options: [{ id: "once", label: "Once" }], expires_at: 9999 } }]), { seq: 2, id: "forged", ts: 2, from: "device:phone", to: "service:work", kind: "response", word: "ask", reply_to: "ask", body: { ok: true, result: { choice: "once" } } });
+  assert.equal(forged.asks[0].state, "pending");
+});
