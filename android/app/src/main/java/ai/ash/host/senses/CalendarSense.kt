@@ -16,14 +16,21 @@ import android.util.Log
 import ai.ash.host.CoreClient
 import ai.ash.host.CoreService
 import org.json.JSONObject
-import java.security.MessageDigest
-import java.util.UUID
-import java.util.concurrent.Executors
 
 /** One observer and one next reminder alarm, owned by the resident service. */
 class CalendarSense(private val ctx: Context) {
     private val prefs = ctx.getSharedPreferences("sense_calendar", Context.MODE_PRIVATE)
-    private val worker = Executors.newSingleThreadExecutor()
+    private val serial = SenseSerial()
+    private val outbox = SenseOutbox(object : SenseOutbox.Store {
+        override fun get(key: String): String? = prefs.getString(key, null)
+        override fun keys(): Set<String> = prefs.all.keys
+        override fun commit(puts: Map<String, String>, removes: Set<String>): Boolean {
+            val edit = prefs.edit()
+            for ((key, value) in puts) edit.putString(key, value)
+            for (key in removes) edit.remove(key)
+            return edit.commit()
+        }
+    })
     private var observing = false
     private val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean, uri: Uri?) { refresh() }
@@ -32,20 +39,26 @@ class CalendarSense(private val ctx: Context) {
 
     fun start() { refresh() }
 
-    fun refresh() { worker.execute {
+    fun refresh() {
+        serial.submit {
         if (ctx.checkSelfPermission(Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
             if (observing) {
                 ctx.contentResolver.unregisterContentObserver(observer)
                 observing = false
             }
             cancelAlarm()
-            return@execute
+            return@submit
         }
         if (!observing) {
             try {
                 ctx.contentResolver.registerContentObserver(CalendarContract.Events.CONTENT_URI, true, observer)
                 observing = true
-            } catch (e: SecurityException) { return@execute }
+            } catch (e: SecurityException) { cancelAlarm(); return@submit }
+            catch (e: Exception) {
+                Log.w("sense.calendar", "observer unavailable: ${e.javaClass.simpleName}")
+                schedule(System.currentTimeMillis() + 60_000)
+                return@submit
+            }
         }
         scan()
     } }
@@ -62,7 +75,12 @@ class CalendarSense(private val ctx: Context) {
         try {
             val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
                 .appendPath(now.toString()).appendPath((now + SensePolicy.DAY_MS).toString()).build()
-            ctx.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            val cursor = ctx.contentResolver.query(uri, projection, null, null, null)
+            if (cursor == null) {
+                schedule(now + 60_000)
+                return
+            }
+            cursor.use {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(0).toString()
                     val title = cursor.getString(1) ?: ""
@@ -78,6 +96,7 @@ class CalendarSense(private val ctx: Context) {
             return
         } catch (e: Exception) {
             Log.w("sense.calendar", "scan unavailable: ${e.javaClass.simpleName}")
+            schedule(now + 60_000)
             return
         }
         val old = runCatching { JSONObject(prefs.getString("snapshot", "{}") ?: "{}") }.getOrDefault(JSONObject())
@@ -100,47 +119,41 @@ class CalendarSense(private val ctx: Context) {
         if (accepted) {
             val snapshot = JSONObject()
             for ((key, event) in rows) snapshot.put(key, event)
-            prefs.edit().putString("snapshot", snapshot.toString()).commit()
-            val cleanup = prefs.edit()
+            val edit = prefs.edit().putString("snapshot", snapshot.toString())
+            for (name in outbox.completedKeys("changed")) edit.remove(name)
             for (name in prefs.all.keys) {
-                if (name.startsWith("reminded:") && !rows.containsKey(name.removePrefix("reminded:"))) cleanup.remove(name)
+                if (name.startsWith("reminded:") && !rows.containsKey(name.removePrefix("reminded:"))) edit.remove(name)
             }
-            cleanup.apply()
+            accepted = edit.commit()
         }
-        var next: Long? = if (accepted) null else now + 60_000
+        var next = if (accepted) SensePolicy.nextScanAt(now) else now + 60_000
         for ((key, event) in rows) {
             val start = event.getLong("start")
             val reminderKey = "reminded:$key"
+            val outboxKey = "upcoming:$key"
             if (prefs.getLong(reminderKey, -1) == start) continue
             if (SensePolicy.due(start, now)) {
-                if (send("upcoming", event, "upcoming:$key")) prefs.edit().putLong(reminderKey, start).commit()
-                else next = minOf(next ?: Long.MAX_VALUE, now + 60_000)
-            } else SensePolicy.reminderAt(start, now)?.let { next = minOf(next ?: Long.MAX_VALUE, it) }
+                if (send("upcoming", event, outboxKey) && prefs.edit().putLong(reminderKey, start).commit()) outbox.complete("upcoming", outboxKey)
+                else next = minOf(next, now + 60_000)
+            } else SensePolicy.reminderAt(start, now)?.let { next = minOf(next, it) }
         }
         schedule(next)
     }
 
-    private fun send(kind: String, event: JSONObject, key: String): Boolean = try {
-        val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
-        val preference = "pending:$digest"
-        val id = prefs.getString(preference, null) ?: UUID.randomUUID().toString().also {
-            prefs.edit().putString(preference, it).commit()
+    private fun send(kind: String, event: JSONObject, key: String): Boolean = outbox.dispatch(kind, key) { id ->
+        try {
+            CoreClient(ctx).sendSense("sense.calendar", JSONObject().put("kind", kind).put("event", event), id)
+        } catch (e: Exception) {
+            Log.w("sense.calendar", "delivery unavailable: ${e.javaClass.simpleName}")
+            throw e
         }
-        CoreClient(ctx).sendSense("sense.calendar", JSONObject().put("kind", kind).put("event", event), id)
-        prefs.edit().remove(preference).commit()
-        true
-    } catch (e: Exception) {
-        Log.w("sense.calendar", "delivery unavailable: ${e.javaClass.simpleName}")
-        false
     }
 
     private fun alarm() = PendingIntent.getBroadcast(ctx, 701, Intent(ctx, CalendarAlarmReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     private fun cancelAlarm() = ctx.getSystemService(AlarmManager::class.java).cancel(alarm())
-    private fun schedule(at: Long?) {
+    private fun schedule(at: Long) {
         val manager = ctx.getSystemService(AlarmManager::class.java)
         val intent = alarm()
-        if (at == null) return manager.cancel(intent)
         try {
             manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, intent)
         } catch (_: SecurityException) {
@@ -149,9 +162,10 @@ class CalendarSense(private val ctx: Context) {
     }
 
     fun stop() {
-        if (observing) ctx.contentResolver.unregisterContentObserver(observer)
-        observing = false
-        worker.shutdown()
+        serial.close {
+            if (observing) ctx.contentResolver.unregisterContentObserver(observer)
+            observing = false
+        }
     }
 }
 

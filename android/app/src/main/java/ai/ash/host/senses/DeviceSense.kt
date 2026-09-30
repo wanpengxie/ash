@@ -9,13 +9,11 @@ import android.util.Log
 import ai.ash.host.CoreClient
 import org.json.JSONObject
 import java.util.UUID
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
 /** Foreground-service-owned receivers; no polling, and no wake-up decision on the phone. */
 class DeviceSense(private val ctx: Context) {
     private val prefs = ctx.getSharedPreferences("sense_device", Context.MODE_PRIVATE)
-    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
+    private val serial = SenseSerial()
     private var registered = false
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -23,10 +21,10 @@ class DeviceSense(private val ctx: Context) {
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
                     val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-                    if (scale > 0 && level >= 0) worker.execute { battery(level * 100 / scale) }
+                    if (scale > 0 && level >= 0) serial.submit { battery(level * 100 / scale) }
                 }
-                Intent.ACTION_SCREEN_OFF -> worker.execute { prefs.edit().putLong("screen_off", System.currentTimeMillis()).apply() }
-                Intent.ACTION_SCREEN_ON -> worker.execute { screen("on", prefs.getLong("screen_off", 0)) }
+                Intent.ACTION_SCREEN_OFF -> serial.submit { prefs.edit().putLong("screen_off", System.currentTimeMillis()).apply() }
+                Intent.ACTION_SCREEN_ON -> serial.submit { screen("on", prefs.getLong("screen_off", 0)) }
             }
         }
     }
@@ -42,13 +40,13 @@ class DeviceSense(private val ctx: Context) {
         registered = true
     }
 
-    fun appOpen() = worker.execute { screen("app_open", prefs.getLong("app_left", 0)) }
-    fun appLeft() = worker.execute { prefs.edit().putLong("app_left", System.currentTimeMillis()).apply() }
+    fun appOpen() { serial.submit { screen("app_open", prefs.getLong("app_left", 0)) } }
+    fun appLeft() { serial.submit { prefs.edit().putLong("app_left", System.currentTimeMillis()).apply() } }
     fun retryBattery() {
         val intent = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-        if (scale > 0 && level >= 0) worker.execute { battery(level * 100 / scale) }
+        if (scale > 0 && level >= 0) serial.submit { battery(level * 100 / scale) }
     }
 
     private fun battery(level: Int) {
@@ -81,6 +79,6 @@ class DeviceSense(private val ctx: Context) {
     fun stop() {
         if (registered) ctx.unregisterReceiver(receiver)
         registered = false
-        worker.shutdown()
+        serial.close()
     }
 }

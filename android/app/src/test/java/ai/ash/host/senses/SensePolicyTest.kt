@@ -28,5 +28,12 @@ class SensePolicyTest {
         assertNull(SensePolicy.reminderAt(now + SensePolicy.REMINDER_LEAD_MS, now))
         assertTrue(SensePolicy.due(now + SensePolicy.REMINDER_LEAD_MS, now))
         assertFalse(SensePolicy.due(now, now))
+        assertEquals(now + 6 * 60 * 60 * 1000L, SensePolicy.nextScanAt(now))
+        // Even an empty first scan has a future alarm; a later scan discovers an
+        // unchanged event that has since entered the rolling 24-hour window.
+        val futureStart = now + SensePolicy.DAY_MS + 1_000
+        assertFalse(SensePolicy.inWindow(futureStart, futureStart + 1_000, now))
+        val nextScan = SensePolicy.nextScanAt(now)
+        assertTrue(SensePolicy.inWindow(futureStart, futureStart + 1_000, nextScan))
     }
 }

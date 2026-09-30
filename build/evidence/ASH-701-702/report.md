@@ -16,7 +16,7 @@ cd android
 ./gradlew :app:compileDebugKotlin --offline --console=plain
 ```
 
-Six JVM tests passed: three decision tests cover the battery 14–16% non-repeat/rearm threshold, elapsed-away non-negativity, and calendar day/reminder boundaries; three tests drive the exact HTTP envelope against a loopback fake server, including a rejected status and invalid word/ID negatives. Kotlin compilation passed. These do not prove that the not-yet-implemented core receiver accepts events.
+Eleven JVM tests passed: decision tests cover battery 14–16% non-repeat/rearm, elapsed-away non-negativity, calendar day/reminder boundaries, and rolling-window rediscovery after an initially empty scan. Three tests drive the exact HTTP envelope against a loopback fake server, including rejected status and invalid word/ID negatives. Three outbox tests cover partial batch success followed by process-style reconstruction, lost acknowledgement storage with stable client ID, and reminder marker retry. Two lifecycle tests cover queued observer work during stop and idempotent close. Kotlin compilation passed. These do not prove that the not-yet-implemented core receiver accepts events.
 
 To repeat the Android target-28 permission boundary on a disposable API 36 emulator, build the existing isolated permission fixture with an independent package name:
 
@@ -44,13 +44,15 @@ Observed with one synthetic local calendar and event, initially more than 30 min
 | Battery 100→14→15→16→14 | One request at 14, none during oscillation. 17→14 produced a second request; battery test mode was reset to the original AC-powered 100%. |
 | Power off/on, app foreground | The fake core received two requests in that sequence; the screen was restored to Awake. Per-event body identity/elapsed time was covered by JVM policy and transport tests, not captured in this device run. |
 
+A subsequent code review found three boundaries after this device run. The scanner now keeps a six-hour rolling rescan alarm even when no occurrence/reminder is present; this prevents an unchanged event beyond the initial 24-hour horizon from being invisible when it later enters the window. Independently accepted `changed` deliveries now retain durable acknowledgement records until the whole snapshot advances, so retry after one event fails does not resend already accepted siblings with a new ID. Shutdown serializes queued callbacks behind cleanup and refuses callbacks after close, preventing an already-dispatched observer callback from re-registering after service stop. The new tests verify these mechanics offline; they have not yet been replayed on the emulator after this patch.
+
 Before the direct-loopback fix, the isolated host's `HttpURLConnection` received HTTP 503 from the emulator's configured system proxy while a direct shell request reached the fake core. After `Proxy.NO_PROXY`, the actual host requests reached the fake core. No credential value or calendar body was logged or committed.
 
 After the run, the synthetic event and its calendar were deleted by their verified IDs and a provider query returned no rows. Both disposable APKs and the temporary fake-core script/log were removed; the fake port was closed. The original application's loopback ports remained open. The original app package and its private data were not touched.
 
 ## Open integration checks
 
-- The isolated host validated its `ContentObserver`, already-due reminder, battery hysteresis and screen-on/foreground request activity through a fake core. A future real-time alarm fire, process-kill/reboot restoration, and genuine core ledger receipt/wake rules remain unverified; independent review is still required before F-D01/F-D03/F-D04 are signed.
+- The isolated host validated its `ContentObserver`, already-due reminder, battery hysteresis and screen-on/foreground request activity through a fake core. A future real-time alarm fire, process-kill/reboot restoration, the new rolling scan/outbox/lifecycle changes on-device, and genuine core ledger receipt/wake rules remain unverified; independent review is still required before F-D01/F-D03/F-D04 are signed.
 - No-permission safety is covered by a local grant guard, `SecurityException` handling and the isolated revocation/regrant run; the in-conversation permission card belongs to the later core/UI integration. F-D02 remains open until that card is exercised with the host.
 - Browser `screen.registered`/token and visible heartbeats are server/Web UI responsibilities; the Android activity reports native foreground entry/exit only. F-D13 remains open until the browser implementation is joined and background heartbeat cessation is observed.
 - This emulator run does not establish behavior on other ROMs, a physical device, or sideloaded restricted-settings branches.
