@@ -1,0 +1,211 @@
+
+> test
+> npm run -s gen:ui && node --expose-internals --import tsx --test --test-force-exit packages/*/test/*.test.ts packages/core/test/arch/*.test.ts packages/core/test/fixtures/*.test.ts
+
+TAP version 13
+# Subtest: architecture fixture: clean tree has no findings
+ok 1 - architecture fixture: clean tree has no findings
+  ---
+  duration_ms: 14.330237
+  type: 'test'
+  ...
+# Subtest: AR1: deliberate violation is reported
+ok 2 - AR1: deliberate violation is reported
+  ---
+  duration_ms: 2.34154
+  type: 'test'
+  ...
+# Subtest: AR2: deliberate violation is reported
+ok 3 - AR2: deliberate violation is reported
+  ---
+  duration_ms: 1.528097
+  type: 'test'
+  ...
+# Subtest: AR3: deliberate violation is reported
+ok 4 - AR3: deliberate violation is reported
+  ---
+  duration_ms: 0.976184
+  type: 'test'
+  ...
+# Subtest: AR4: deliberate violation is reported
+ok 5 - AR4: deliberate violation is reported
+  ---
+  duration_ms: 1.029626
+  type: 'test'
+  ...
+# Subtest: AR12: deliberate violation is reported
+ok 6 - AR12: deliberate violation is reported
+  ---
+  duration_ms: 0.770142
+  type: 'test'
+  ...
+# Subtest: AR checks fail closed when target sources are missing
+ok 7 - AR checks fail closed when target sources are missing
+  ---
+  duration_ms: 0.271815
+  type: 'test'
+  ...
+# Subtest: AR12 token boundaries distinguish encoded substrings from written terms
+ok 8 - AR12 token boundaries distinguish encoded substrings from written terms
+  ---
+  duration_ms: 2.801907
+  type: 'test'
+  ...
+# Subtest: AR4 runtime monitor identifies a write without self authorization
+ok 9 - AR4 runtime monitor identifies a write without self authorization
+  ---
+  duration_ms: 1.600105
+  type: 'test'
+  ...
+# Subtest: host records manifest, scripted call and presentation lifecycle
+ok 10 - host records manifest, scripted call and presentation lifecycle
+  ---
+  duration_ms: 56.630433
+  type: 'test'
+  ...
+# Subtest: model scripts tool and worker JSON, captures both requests
+ok 11 - model scripts tool and worker JSON, captures both requests
+  ---
+  duration_ms: 9.912677
+  type: 'test'
+  ...
+# (node:1760027) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# 2026-09-30T20:34:04.982Z ash core (test) listening on http://127.0.0.1:34499; UI URL in /tmp/ash-core-90yklh/state/ui-url
+# 2026-09-30T20:34:05.073Z agent:main ready (echo)
+# 2026-09-30T20:34:05.098Z agent:helper ready (echo)
+# Subtest: manifest describes the space, the caller, agents and devices
+ok 12 - manifest describes the space, the caller, agents and devices
+  ---
+  duration_ms: 143.51572
+  type: 'test'
+  ...
+# Subtest: requests without a token are refused; the UI trades its token for a cookie
+ok 13 - requests without a token are refused; the UI trades its token for a cookie
+  ---
+  duration_ms: 11.336958
+  type: 'test'
+  ...
+# Subtest: deliver → the agent answers; retries with the same message_id are accepted once
+ok 14 - deliver → the agent answers; retries with the same message_id are accepted once
+  ---
+  duration_ms: 70.322998
+  type: 'test'
+  ...
+# Subtest: attachments are saved into the agent's workspace and logged with the message
+ok 15 - attachments are saved into the agent's workspace and logged with the message
+  ---
+  duration_ms: 104.021139
+  type: 'test'
+  ...
+# Subtest: steer is refused when the runtime cannot steer; cancel stops a running turn
+ok 16 - steer is refused when the runtime cannot steer; cancel stops a running turn
+  ---
+  duration_ms: 68.335137
+  type: 'test'
+  ...
+# Subtest: MCP projection lists system tools and granted device capabilities, and runs them as the agent
+ok 17 - MCP projection lists system tools and granted device capabilities, and runs them as the agent
+  ---
+  duration_ms: 35.510209
+  type: 'test'
+  ...
+# Subtest: an agent's timer fires back into its own inbox
+ok 18 - an agent's timer fires back into its own inbox
+  ---
+  duration_ms: 1806.744229
+  type: 'test'
+  ...
+# Subtest: agents talk through ash: send delivers to the other agent's inbox as that agent
+ok 19 - agents talk through ash: send delivers to the other agent's inbox as that agent
+  ---
+  duration_ms: 154.424901
+  type: 'test'
+  ...
+# Subtest: confirm-first capabilities wait for the owner; approve runs it, deny or expiry refuses
+ok 20 - confirm-first capabilities wait for the owner; approve runs it, deny or expiry refuses
+  ---
+  duration_ms: 3255.494353
+  type: 'test'
+  ...
+# Subtest: grants: the owner grants and revokes; the agent's view follows
+ok 21 - grants: the owner grants and revokes; the agent's view follows
+  ---
+  duration_ms: 48.715689
+  type: 'test'
+  ...
+# Subtest: remote callers (paired browsers through the gateway) chat but cannot manage
+ok 22 - remote callers (paired browsers through the gateway) chat but cannot manage
+  ---
+  duration_ms: 63.967252
+  type: 'test'
+  ...
+# Subtest: the event stream replays after a cursor and follows live
+ok 23 - the event stream replays after a cursor and follows live
+  ---
+  duration_ms: 219.679532
+  type: 'test'
+  ...
+# (node:1760028) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# 2026-09-30T20:34:05.007Z ash core (t) listening on http://127.0.0.1:33335; UI URL in /tmp/ash-dsh-u2VnxD/state/ui-url
+# 2026-09-30T20:34:06.535Z DSH 0.2.0-rc.2 core booted in 1338 ms (profile ash, home /tmp/ash-dsh-u2VnxD/dsh-home)
+# 2026-09-30T20:34:06.612Z [agent:main] DSH session session-25870bb4-12fc-4a74-9b80-76c37ef22440 (new)
+# 2026-09-30T20:34:06.619Z agent:main ready (dsh)
+# 2026-09-30T20:34:06.672Z agent:helper ready (echo)
+# Subtest: the DSH agent starts in-process with every control capability
+ok 24 - the DSH agent starts in-process with every control capability
+  ---
+  duration_ms: 1834.128866
+  type: 'test'
+  ...
+# Subtest: a turn: origin line, ash context in the system prompt, native ash_* tool, device tool
+ok 25 - a turn: origin line, ash context in the system prompt, native ash_* tool, device tool
+  ---
+  duration_ms: 543.355901
+  type: 'test'
+  ...
+# Subtest: an attached image reaches the model as an image; other files are named by path
+ok 26 - an attached image reaches the model as an image; other files are named by path
+  ---
+  duration_ms: 328.517186
+  type: 'test'
+  ...
+# Subtest: devices appear and disappear as tools while the agent runs
+ok 27 - devices appear and disappear as tools while the agent runs
+  ---
+  duration_ms: 349.193599
+  type: 'test'
+  ...
+# Subtest: sensitive DSH tools from an untrusted origin ask the owner (denied here)
+ok 28 - sensitive DSH tools from an untrusted origin ask the owner (denied here)
+  ---
+  duration_ms: 290.061329
+  type: 'test'
+  ...
+# Subtest: the loop gate stops a runaway turn at the step budget
+ok 29 - the loop gate stops a runaway turn at the step budget
+  ---
+  duration_ms: 462.302346
+  type: 'test'
+  ...
+# 2026-09-30T20:34:08.759Z ash core (t) listening on http://127.0.0.1:45707; UI URL in /tmp/ash-dsh-u2VnxD/state/ui-url
+# 2026-09-30T20:34:09.024Z DSH 0.2.0-rc.2 core booted in 261 ms (profile ash, home /tmp/ash-dsh-u2VnxD/dsh-home)
+# 2026-09-30T20:34:09.092Z [agent:main] DSH session session-25870bb4-12fc-4a74-9b80-76c37ef22440 (resumed)
+# 2026-09-30T20:34:09.099Z agent:main ready (dsh)
+# 2026-09-30T20:34:09.119Z agent:helper ready (echo)
+# Subtest: the session survives a restart (resume)
+ok 30 - the session survives a restart (resume)
+  ---
+  duration_ms: 465.29211
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6425.926333

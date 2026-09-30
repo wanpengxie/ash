@@ -1,0 +1,26 @@
+AR1 packages/core/src/members/: member sources missing
+AR2 packages/core/ui/js/: UI JavaScript sources missing
+AR3 packages/core/src/server.ts: unapproved route GET /api/manifest
+AR3 packages/core/src/server.ts: unapproved route GET /api/me
+AR3 packages/core/src/server.ts: unapproved route GET /api/members
+AR3 packages/core/src/server.ts: unapproved route GET /api/agents
+AR3 packages/core/src/server.ts: unapproved route GET /api/events
+AR3 packages/core/src/server.ts: unapproved route GET /api/events/stream
+AR3 packages/core/src/server.ts: unapproved route GET /api/devices
+AR3 packages/core/src/server.ts: unapproved route POST /api/call
+AR3 packages/core/src/server.ts: unapproved route GET /api/timers
+AR3 packages/core/src/server.ts: unapproved route POST /api/timers
+AR3 packages/core/src/server.ts: unapproved route POST /api/notify
+AR3 packages/core/src/server.ts: unapproved route GET /api/confirms
+AR3 packages/core/src/server.ts: unapproved route GET /api/grants
+AR3 packages/core/src/server.ts: unapproved route POST /api/grants
+AR3 packages/core/src/server.ts: unapproved route GET /api/settings
+AR3 packages/core/src/server.ts: unapproved route POST /api/settings
+AR3 packages/core/src/server.ts: unapproved route GET /api/plugins
+AR3 packages/core/src/server.ts: unapproved route POST /api/plugins
+AR3 packages/core/src/server.ts: unapproved route GET /api/gateway
+AR3 packages/core/src/server.ts: required route missing POST /api/send
+AR3 packages/core/src/server.ts: required route missing GET /api/stream
+AR3 packages/core/src/server.ts: required route missing GET /api/describe
+AR4 packages/core/src/workers/: workers/flows sources missing
+Architecture gate: NOT YET CONFORMANT (25 findings)
