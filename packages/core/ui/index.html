@@ -49,6 +49,14 @@ footer form{display:flex;gap:.5rem;max-width:760px;margin:0 auto}
 textarea{flex:1;resize:none;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:12px;padding:.55rem .75rem;font:inherit;max-height:40vh}
 footer button{border:0;background:var(--me);color:#fff;border-radius:12px;padding:0 1rem;font-size:1rem;cursor:pointer}
 footer button.stop{background:var(--err)}
+#attach{background:var(--chip);color:var(--fg);padding:0 .8rem;font-size:1.15rem}
+#pending{display:flex;gap:.4rem;flex-wrap:wrap;max-width:760px;margin:0 auto .4rem}#pending:empty{display:none}
+.pa{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.25rem .5rem;font-size:.8rem;display:flex;align-items:center;gap:.3rem;max-width:12rem}
+.pa img{width:3rem;height:3rem;object-fit:cover;border-radius:6px}.pa span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pa b{cursor:pointer;color:var(--mute);font-weight:400;padding-left:.2rem}
+.atts{display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.35rem}.atts img{max-width:14rem;max-height:14rem;border-radius:10px;display:block}
+.atts a{font-size:.8rem;background:rgba(255,255,255,.18);border-radius:8px;padding:.15rem .5rem;color:inherit;text-decoration:none}
+.ai .atts a{background:var(--chip)}
 #drawer{position:fixed;inset:0 0 0 auto;width:min(420px,94vw);background:var(--bg);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .2s;z-index:5;overflow-y:auto;padding:0 1rem 2rem}
 #drawer.open{transform:none;box-shadow:-8px 0 24px #0002}
 #tabs{display:flex;gap:.2rem;position:sticky;top:0;background:var(--bg);padding:.7rem 0 .5rem;border-bottom:1px solid var(--line);z-index:1}
@@ -72,7 +80,7 @@ code.k{background:var(--chip);padding:.15rem .4rem;border-radius:5px;word-break:
   <button id="menu" title="设备与设置">☰<span id="badge"></span></button>
 </header>
 <main id="log"></main>
-<footer><form id="f"><textarea id="t" rows="1" placeholder="跟 Ash 说点什么…"></textarea><button id="send">发送</button></form></footer>
+<footer><div id="pending"></div><form id="f"><button type="button" id="attach" title="图片或文件">📎</button><input type="file" id="file" multiple hidden><textarea id="t" rows="1" placeholder="跟 Ash 说点什么…"></textarea><button id="send">发送</button></form></footer>
 <aside id="drawer"><div id="tabs"></div><div id="panel"></div></aside>
 <script>
 "use strict";
@@ -133,7 +141,8 @@ function render(e, live) {
     case "message.delivered": {
       const own = d.from === "person:owner" || d.from === M?.me;
       if (!own) add(node("from " + (d.from.startsWith("device:") ? "r" : "l"), esc(d.origin || nameOf(d.from)) + " · " + time(e.ts)));
-      add(node("msg " + (d.from.startsWith("timer:") || d.from.startsWith("agent:") ? "ai" : "me"), md(d.text)));
+      const m = add(node("msg " + (d.from.startsWith("timer:") || d.from.startsWith("agent:") ? "ai" : "me"), md(d.text)));
+      if (d.attachments?.length) m.appendChild(attachmentsNode(d.attachments));
       break;
     }
     case "agent.text": add(node("msg ai", md(d.text))); break;
@@ -238,13 +247,54 @@ function follow() {
 const t = $("#t");
 t.addEventListener("input", () => { t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; });
 t.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(pointer:fine)").matches) { e.preventDefault(); $("#f").requestSubmit(); } });
+// Attachments: images are shrunk in the browser (long side 2048, JPEG) — enough for the model,
+// small enough for phones and the gateway; other files go as they are.
+let pending = [];
+const fileUrl = (a) => "api/workspaces/" + encodeURIComponent(a.workspace) + "/files?path=" + encodeURIComponent(a.path);
+function attachmentsNode(list) {
+  const box = document.createElement("div"); box.className = "atts";
+  for (const a of list) {
+    if (/^image\//.test(a.mime_type)) { const img = document.createElement("img"); img.src = fileUrl(a); img.alt = a.name; img.loading = "lazy"; img.onclick = () => window.open(img.src, "_blank"); box.appendChild(img); }
+    else { const l = document.createElement("a"); l.href = fileUrl(a); l.target = "_blank"; l.textContent = "📄 " + a.name; box.appendChild(l); }
+  }
+  return box;
+}
+const b64 = (buf) => { let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+async function prepare(file) {
+  if (/^image\/(png|jpeg|webp|gif|heic|heif|bmp)$/.test(file.type) && file.type !== "image/gif") {
+    try {
+      const bmp = await createImageBitmap(file);
+      const k = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.85));
+      return { name: file.name.replace(/\.[^.]+$/, "") + ".jpg", mime_type: "image/jpeg", data: b64(await blob.arrayBuffer()), preview: URL.createObjectURL(blob) };
+    } catch { /* fall through: send as is */ }
+  }
+  return { name: file.name, mime_type: file.type || "application/octet-stream", data: b64(await file.arrayBuffer()), preview: /^image\//.test(file.type) ? URL.createObjectURL(file) : null };
+}
+function renderPending() {
+  $("#pending").innerHTML = pending.map((p, i) => '<div class="pa">' + (p.preview ? '<img src="' + p.preview + '">' : "📄") + "<span>" + esc(p.name) + '</span><b data-i="' + i + '">✕</b></div>').join("");
+  $("#pending").querySelectorAll("b").forEach((x) => (x.onclick = () => { pending.splice(Number(x.dataset.i), 1); renderPending(); }));
+}
+$("#attach").onclick = () => $("#file").click();
+$("#file").onchange = async (e) => {
+  for (const f of [...e.target.files]) {
+    if (f.size > 20 * 1024 * 1024) { alert(f.name + " 超过 20 MB"); continue; }
+    try { pending.push(await prepare(f)); } catch (err) { alert("读取失败：" + f.name); }
+  }
+  e.target.value = ""; renderPending();
+};
 $("#f").onsubmit = async (e) => {
   e.preventDefault();
   const text = t.value.trim();
-  if (!text) { if (status[AGENT] === "running") await api("POST", "agents/" + encodeURIComponent(AGENT) + "/cancel", {}).catch((err) => alert(err.message)); return; }
+  if (!text && !pending.length) { if (status[AGENT] === "running") await api("POST", "agents/" + encodeURIComponent(AGENT) + "/cancel", {}).catch((err) => alert(err.message)); return; }
+  const files = pending; pending = []; renderPending();
   t.value = ""; t.style.height = "auto";
-  try { await api("POST", "agents/" + encodeURIComponent(AGENT) + "/deliver", { text, mode: status[AGENT] === "running" ? "steer" : "queue" }); }
-  catch (err) { add(node("err", "发送失败：" + esc(err.message))); t.value = text; }
+  const attachments = files.map(({ name, mime_type, data }) => ({ name, mime_type, data }));
+  const mode = status[AGENT] === "running" && !attachments.length ? "steer" : "queue";
+  try { await api("POST", "agents/" + encodeURIComponent(AGENT) + "/deliver", { text, mode, ...(attachments.length ? { attachments } : {}) }); }
+  catch (err) { add(node("err", "发送失败：" + esc(err.message))); t.value = text; pending = files; renderPending(); }
 };
 $("#agents").onchange = (e) => { AGENT = e.target.value; localStorage.setItem("ash.agent", AGENT); refresh().then(history); };
 
@@ -343,6 +393,7 @@ async function settingsTab() {
     await api("POST", "settings", { credentials: creds, ...(provider ? { model: { provider, model } } : {}) });
     document.getElementById("saved").textContent = " 已保存"; setTimeout(refresh, 300);
   });
+  h += await pluginsSection();
   h += "<h2>网关</h2>";
   h += '<label>网关地址</label><input type="url" id="gw" value="' + esc(g.gateway || "") + '" placeholder="https://ash-gateway.xxx.workers.dev">';
   h += '<label>BOOTSTRAP_SECRET（只在第一次认领时需要）</label><input type="password" id="gws" autocomplete="off">';
@@ -350,6 +401,39 @@ async function settingsTab() {
   on("gwsave", async () => { await api("POST", "gateway/configure", { url: document.getElementById("gw").value.trim(), secret: document.getElementById("gws").value }); showTab("devices"); });
   if (navigator.userAgent.includes("AshApp")) h += '<h2>手机</h2><p><a class="btn gray" href="ash://console">诊断、权限与日志</a></p>';
   h += '<h2>关于</h2><p class="muted">ash · DSH ' + esc(s.dsh || "") + " · 空间 " + esc(M.space) + "</p>";
+  return h;
+}
+
+// DSH plugins through DSH's own plugin manager. App shells (DSH's web app, SDK, ACP …) are not
+// offered: ash is the surface; switching them on would bring DSH's own UI back.
+const SHELLS = /(^@deepseek-ai\/dsh-(web-app|sdk-app|sdk-minimal|acp-app|headless|experimental-voice-input-bundle))$/;
+async function pluginsSection() {
+  let h = "<h2>插件</h2>";
+  let l;
+  try { l = await api("GET", "plugins"); } catch (err) { return h + '<p class="muted">' + esc(err.message) + "</p>"; }
+  const mine = l.bundles.filter((b) => b.removable);
+  const builtin = l.bundles.filter((b) => !b.removable && b.optional && !SHELLS.test(b.name) && b.name !== "@deepseek-ai/dsh-base");
+  const row = (b) => '<div class="row"><span class="t">' + esc(b.meta?.title || b.meta?.name || b.name) + "</span>" + (b.version ? " <small>" + esc(b.version) + "</small>" : "") +
+    '<span class="right"><button class="btn ' + (b.enabled ? "gray" : "") + '" id="pt_' + esc(b.name) + '">' + (b.enabled ? "停用" : "启用") + "</button>" + (b.removable ? '<button class="btn red" id="pr_' + esc(b.name) + '">卸载</button>' : "") + "</span>" +
+    "<br><small>" + esc(b.description || b.meta?.description || b.name) + "</small>" + (b.error ? '<br><small class="err">' + esc(b.error.diagnostic || b.error.code) + "</small>" : "") + "</div>";
+  h += mine.map(row).join("") || '<p class="muted">还没装插件。</p>';
+  h += '<div class="row"><label>安装插件（npm 包名、GitHub 地址或本地路径）</label><input type="text" id="pspec" placeholder="例如 dsh-mnemon 或 github:用户/仓库"><button class="btn" id="pinstall">安装</button> <span id="pmsg" class="muted"></span></div>';
+  if (builtin.length) h += "<h2>DSH 自带的可选功能</h2>" + builtin.map(row).join("");
+  const act = async (body, label) => {
+    const msg = document.getElementById("pmsg");
+    if (msg) msg.textContent = label + "…";
+    try {
+      const r = await api("POST", "plugins", body);
+      if (r.error) alert("没有成功：" + (r.error.diagnostic || r.error.code) + (r.packageResult?.output ? "\n\n" + r.packageResult.output.slice(-600) : ""));
+      else if (r.restarting) alert("已完成，Ash 正在重启以加载插件，稍等片刻。");
+    } catch (err) { alert(err.message); }
+    showTab("settings");
+  };
+  for (const b of [...mine, ...builtin]) {
+    on("pt_" + b.name, () => act({ op: b.enabled ? "disable" : "enable", name: b.name }, b.enabled ? "停用中" : "启用中"));
+    if (b.removable) on("pr_" + b.name, () => confirm("卸载 " + b.name + "？") && act({ op: "remove", name: b.name }, "卸载中"));
+  }
+  on("pinstall", () => { const spec = document.getElementById("pspec").value.trim(); if (spec) act({ op: "install", spec }, "安装中（可能要一两分钟）"); });
   return h;
 }
 

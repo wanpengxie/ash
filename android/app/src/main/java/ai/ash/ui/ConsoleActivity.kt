@@ -1,30 +1,25 @@
 package ai.ash.ui
 
 import android.app.Activity
-import android.app.AppOpsManager
-import android.app.NotificationManager
 import android.content.Intent
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
-import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.HostServer
 import ai.ash.host.LogShareProvider
 import ai.ash.host.PayloadInstaller
 import ai.ash.host.Paths
-import ai.ash.host.a11y.A11yService
+import ai.ash.host.Permissions
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -53,6 +48,7 @@ class ConsoleActivity : Activity() {
         h("手机权限（给 Ash 用的能力）")
         perms = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(perms)
+        row("权限引导" to { startActivity(Intent(this, OnboardingActivity::class.java)) }, "显示虚拟屏预览" to { showPreview() })
 
         h("日志")
         row("刷新" to { showLog() }, "分享日志" to { shareLogs() })
@@ -92,50 +88,24 @@ class ConsoleActivity : Activity() {
 
     private fun renderPerms() {
         perms.removeAllViews()
-        fun perm(label: String, ok: Boolean, why: String, fix: () -> Unit) {
+        for (item in Permissions.all) {
+            val ok = item.granted(this)
+            val extra = item.status(this)?.let { "\n$it" } ?: ""
             perms.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(TextView(context).apply { text = "${if (ok) "✅" else "⚪️"} $label\n$why"; textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-                if (!ok) addView(Button(context).apply { text = "去开启"; isAllCaps = false; setOnClickListener { runCatching { fix() } } })
+                addView(TextView(context).apply { text = "${if (ok) "✅" else "⚪️"} ${item.title}\n${item.why}$extra"; textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
+                if (!ok) addView(Button(context).apply { text = "去开启"; isAllCaps = false; setOnClickListener { item.open(this@ConsoleActivity) } })
             })
         }
-        val nm = getSystemService(NotificationManager::class.java)
-        perm("通知", nm.areNotificationsEnabled(), "提醒、确认卡片都靠通知") {
-            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-        }
-        val pm = getSystemService(PowerManager::class.java)
-        perm("不受电池优化限制", pm.isIgnoringBatteryOptimizations(packageName), "后台常驻、定时提醒准时") {
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        }
-        perm("无障碍（屏幕助手）", A11yService.instance != null, "读屏、点击、输入（screen.* 能力）") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-        val ops = getSystemService(AppOpsManager::class.java)
-        @Suppress("DEPRECATION")
-        val usage = ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED
-        perm("使用情况访问", usage, "应用使用统计（apps.usage）") { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-        perm("修改系统设置", Settings.System.canWrite(this), "调整亮度等系统设置（settings.put）") {
-            startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
-        }
-        if (Build.VERSION.SDK_INT >= 30) perm("所有文件访问", Environment.isExternalStorageManager(), "让 Ash 读写手机存储里的文件") {
-            startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
-        }
-        perm("Shizuku", shizukuOk(), "shell、虚拟屏等高级能力（需要安装并启动 Shizuku）") { requestShizuku() }
     }
 
-    private fun shizukuOk(): Boolean = try {
-        rikka.shizuku.Shizuku.pingBinder() && rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
-    } catch (e: Throwable) {
-        false
-    }
-
-    private fun requestShizuku() {
-        try {
-            if (rikka.shizuku.Shizuku.pingBinder()) rikka.shizuku.Shizuku.requestPermission(42)
-            else startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/")))
-        } catch (e: Throwable) {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/")))
+    private fun showPreview() {
+        val msg = when (VScreenPreview.show(this)) {
+            VScreenPreview.Shown.OK -> "已显示虚拟屏预览"
+            VScreenPreview.Shown.NO_SCREEN -> "当前没有虚拟屏（Ash 用到虚拟屏时会自动显示预览）"
+            VScreenPreview.Shown.NO_PERMISSION -> "需要先开启「悬浮窗」权限"
         }
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
     private fun tail(f: File, bytes: Long = 48 * 1024): String {

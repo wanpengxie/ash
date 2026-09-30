@@ -23,7 +23,7 @@ const skip = !existsSync(join(ROOT, "package.json")) ? "no DSH install (set ASH_
 
 type Plan = { tool: string; input: Record<string, unknown> } | { text: string };
 const plans: Plan[] = [];
-const seen: { system: string; tools: string[]; lastUser: string; toolResults: string[] }[] = [];
+const seen: { system: string; tools: string[]; lastUser: string; toolResults: string[]; images: number }[] = [];
 let mock: Server;
 
 function startMock(): Promise<number> {
@@ -43,7 +43,8 @@ function startMock(): Promise<number> {
       const toolResults = Array.isArray(last?.content) ? last.content.filter((b: { type: string }) => b.type === "tool_result").map((b: { content: unknown }) => JSON.stringify(b.content)) : [];
       // Title generation and other helper calls come without tools.
       const plan: Plan = tools.length === 0 ? { text: "title" } : (plans.shift() ?? { text: "done" });
-      if (tools.length) seen.push({ system, tools, lastUser: texts.join("\n"), toolResults });
+      const images = (p.messages ?? []).reduce((n: number, m: { content: unknown }) => n + (Array.isArray(m.content) ? (m.content as { type: string }[]).filter((b) => b.type === "image").length : 0), 0);
+      if (tools.length) seen.push({ system, tools, lastUser: texts.join("\n"), toolResults, images });
       res.writeHead(200, { "content-type": "text/event-stream" });
       const ev = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
       ev("message_start", { message: { id: "msg_x", type: "message", role: "assistant", model: p.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
@@ -148,6 +149,17 @@ test("a turn: origin line, ash context in the system prompt, native ash_* tool, 
   assert.match(seen.at(-1)!.toolResults.join(""), /a\.txt b\.txt/);
   const ended = await waitFor((e) => e.type === "agent.turn.ended", from);
   assert.equal(ended.data.reason, "completed");
+});
+
+test("an attached image reaches the model as an image; other files are named by path", { skip }, async () => {
+  plans.push({ text: "nice picture" });
+  const from = await lastSeq();
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  await ash.deliver("agent:main", { text: "what is this?", attachments: [{ name: "dot.png", mime_type: "image/png", data: png }, { name: "a.csv", mime_type: "text/csv", data: Buffer.from("x,y").toString("base64") }] });
+  await waitFor((e) => e.type === "agent.text" && e.data.text === "nice picture", from);
+  const last = seen.at(-1)!;
+  assert.ok(last.images >= 1, "image block sent to the model");
+  assert.match(last.lastUser, /inbox\/.*a\.csv/);
 });
 
 test("devices appear and disappear as tools while the agent runs", { skip }, async () => {

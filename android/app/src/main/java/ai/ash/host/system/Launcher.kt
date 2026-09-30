@@ -13,7 +13,7 @@ import android.provider.Settings
  * background activity starts are silently dropped unless an exemption applies: ash has a visible
  * window, ash's accessibility service is enabled (bound by the system), or (before Android 15)
  * ash may draw overlays. Otherwise the start goes through the privileged shell (`am start`, the
- * shell is always allowed) when Shizuku/root is available.
+ * shell is always allowed) when Shizuku is available.
  */
 object Launcher {
 

@@ -68,6 +68,11 @@ export class HostBridge {
     };
   }
 
+  /** Ask the host to restart ash core (e.g. after a plugin change DSH cannot hot-reload). */
+  async restart(): Promise<void> {
+    await this.req("POST", "/restart", {});
+  }
+
   stop(): void {
     if (this.refresh) clearInterval(this.refresh);
   }

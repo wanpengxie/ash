@@ -120,6 +120,19 @@ test("deliver → the agent answers; retries with the same message_id are accept
   await waitFor((e) => e.type === "agent.turn.ended" && e.data.message_id === "m-1", from);
 });
 
+test("attachments are saved into the agent's workspace and logged with the message", async () => {
+  const from = await lastSeq();
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+  await ash.deliver("agent:main", { text: "look", attachments: [{ name: "dot.png", mime_type: "image/png", data: png.toString("base64") }, { name: "notes.txt", mime_type: "text/plain", data: Buffer.from("hi").toString("base64") }] });
+  const d = await waitFor((e) => e.type === "message.delivered" && e.data.text === "look", from);
+  const atts = d.data.attachments as { name: string; path: string; size: number }[];
+  assert.equal(atts.length, 2);
+  assert.match(atts[0].path, /^inbox\/.*dot\.png$/);
+  const r = await fetch(`${base}/api/workspaces/home/files?path=${encodeURIComponent(atts[0].path)}`, { headers: { authorization: `Bearer ${Object.entries(run.tokens.api).find(([, m]) => m === OWNER)![0]}` } });
+  assert.deepEqual(Buffer.from(await r.arrayBuffer()), png);
+  await assert.rejects(ash.deliver("agent:main", { text: "" }), /text is required/);
+});
+
 test("steer is refused when the runtime cannot steer; cancel stops a running turn", async () => {
   await assert.rejects(ash.deliver("agent:main", { text: "x", mode: "steer" }), /cannot steer/);
   const from = await lastSeq();

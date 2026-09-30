@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
  *   GET  /manifest          the phone's capabilities       POST /call {capability, args, caller}
  *   POST /notify            show a notification            POST /confirm {…}, /confirm/hide {id}
  *   POST /alarm {at}        wake ash core at a time        GET /key, POST /sign {data}
+ *   POST /restart {reason?} restart ash core (e.g. after a plugin change); answered before it happens
  * Every other app on the phone can reach loopback ports, so every request carries the bearer
  * token that only ash core (started by us, with the token in its config) knows.
  */
@@ -110,6 +111,17 @@ class HostServer(private val ctx: Context, private val token: String) {
             200 to JSONObject().put("id", Keys.id()).put("publicKey", Keys.publicKey())
         }
         "POST /sign" -> 200 to JSONObject().put("sig", Keys.sign(Keys.unb64u(b.getString("data"))))
+        "POST /restart" -> {
+            // The caller is the process about to be stopped: answer first, restart a moment later
+            // (the same path as the diagnostics page's 重启: stop it, the supervisor starts it again).
+            val reason = b.optString("reason").take(200)
+            Thread({
+                try { Thread.sleep(RESTART_DELAY_MS) } catch (_: InterruptedException) {}
+                CoreProcess(ctx).note("restart requested by ash core${if (reason.isNotEmpty()) ": $reason" else ""}")
+                CoreService.start(ctx, CoreService.ACTION_RESTART)
+            }, "ash-restart").start()
+            200 to JSONObject().put("ok", true)
+        }
         else -> 404 to JSONObject().put("error", "not_found")
     }
 
@@ -144,5 +156,6 @@ class HostServer(private val ctx: Context, private val token: String) {
     companion object {
         private const val TAG = "ash.host"
         const val PORT = 4710
+        private const val RESTART_DELAY_MS = 500L
     }
 }

@@ -23,7 +23,9 @@ import type {
 } from "../../sdk/src/api";
 import { API_VERSION, AshApiError } from "../../sdk/src/api";
 import { type CallContext, DeviceRegistry, fail } from "./devices";
-import type { AgentPort, AgentRuntime, InboundMessage, Origin, RuntimeContext, StepDecision, ToolDecision } from "./runtime";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import type { AgentPort, AgentRuntime, InboundAttachment, InboundMessage, Origin, RuntimeContext, StepDecision, ToolDecision } from "./runtime";
 import type { Store } from "./store";
 
 export interface Notifier {
@@ -208,7 +210,8 @@ export class Core {
 
   deliver(agentId: string, req: DeliverRequest, caller: string): DeliverResult {
     const slot = this.agent(agentId);
-    if (typeof req.text !== "string" || !req.text.trim()) throw new AshApiError(400, "bad_request", "text is required");
+    const files = Array.isArray(req.attachments) ? req.attachments : [];
+    if (typeof req.text !== "string" || (!req.text.trim() && !files.length)) throw new AshApiError(400, "bad_request", "text is required");
     if (req.text.length > 100_000) throw new AshApiError(413, "too_long", "text is limited to 100k characters");
     // Only the owner (and ash itself, for timers) may speak for someone else.
     const from = req.from && (caller === OWNER || caller === "service:ash") ? req.from : caller;
@@ -216,8 +219,17 @@ export class Core {
     if (mode === "steer" && !slot.runtime.capabilities.deliver_steer) throw new AshApiError(409, "unsupported", `${slot.runtime.kind} cannot steer`);
     const message_id = req.message_id ?? newId("msg");
     if (!this.store.claimMessageId(message_id)) return { accepted: true, message_id, position: -1 }; // duplicate retry
-    const msg: InboundMessage = { message_id, from, origin: this.originOf(from), text: req.text, mode };
-    this.emit(slot.info.workspace, from, "message.delivered", { to: agentId, from, text: msg.text, message_id, mode, origin: msg.origin.name });
+    const attachments = files.length ? this.saveAttachments(slot, files) : undefined;
+    const msg: InboundMessage = { message_id, from, origin: this.originOf(from), text: req.text, mode, attachments };
+    this.emit(slot.info.workspace, from, "message.delivered", {
+      to: agentId,
+      from,
+      text: msg.text,
+      message_id,
+      mode,
+      origin: msg.origin.name,
+      ...(attachments ? { attachments: attachments.map((a) => ({ name: a.name, mime_type: a.mimeType, size: a.size, path: a.rel, workspace: slot.info.workspace })) } : {}),
+    });
     if (mode === "steer" && slot.running && slot.runtime.steer) {
       void slot.runtime.steer(msg).catch((e) => this.log("steer failed", e));
       return { accepted: true, message_id, position: 0 };
@@ -226,6 +238,27 @@ export class Core {
     const position = slot.queue.length - (slot.running ? 0 : 1);
     void this.pump(slot);
     return { accepted: true, message_id, position };
+  }
+
+  /** Files sent with a message land in the agent's workspace (inbox/), where its tools can reach them too. */
+  private saveAttachments(slot: AgentSlot, files: NonNullable<DeliverRequest["attachments"]>): InboundAttachment[] {
+    if (files.length > 10) throw new AshApiError(413, "too_many_files", "at most 10 files per message");
+    const stamp = new Date().toLocaleString("sv").replace(/[-: ]/g, "").slice(0, 12);
+    const out: InboundAttachment[] = [];
+    let total = 0;
+    for (const [i, f] of files.entries()) {
+      if (typeof f?.data !== "string" || typeof f.name !== "string") throw new AshApiError(400, "bad_request", "attachments need name and data (base64)");
+      const data = Buffer.from(f.data, "base64");
+      total += data.length;
+      if (total > 20 * 1024 * 1024) throw new AshApiError(413, "too_large", "attachments are limited to 20 MB per message");
+      const safe = basename(f.name).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(-80) || `file${i}`;
+      const rel = `inbox/${stamp}-${i}-${safe}`;
+      const full = join(slot.ctx.workspaceDir, rel);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, data);
+      out.push({ name: f.name, mimeType: String(f.mime_type || "application/octet-stream"), size: data.length, path: full, rel });
+    }
+    return out;
   }
 
   inbox(agentId: string): { running: InboundMessage | null; queued: InboundMessage[] } {

@@ -11,6 +11,8 @@ import type { RuntimeCapabilities } from "../../sdk/src/api";
 import type { AgentRuntime, InboundMessage, Origin, RuntimeContext, RuntimeEvent, TurnResult } from "../../core/src/runtime";
 import { type DshAgent, type DshHost, userMessage } from "./host";
 
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
 export const DSH_CAPABILITIES: RuntimeCapabilities = {
   deliver_queue: true,
   deliver_steer: true,
@@ -104,8 +106,34 @@ export class DshRuntime implements AgentRuntime {
       signal.addEventListener("abort", () => this.agent.cancel("cancelled by ash"), { once: true });
       // Who is speaking and when: model-visible context for this step, not part of their words.
       this.agent.inject(userMessage(originLine(msg.origin)));
-      this.agent.followup(userMessage(msg.text, dshId));
+      void this.content(msg)
+        .then((content) => this.agent.followup({ id: dshId, role: "user", content, source: { kind: "user" } } as never))
+        .catch((e) => finish({ reason: "error", error: `attachments: ${e instanceof Error ? e.message : e}` }));
     });
+  }
+
+  /**
+   * The owner's words plus what they attached: images become image blocks through DSH's
+   * attachment store (the model sees them); other files are named with their workspace path.
+   */
+  private async content(msg: InboundMessage): Promise<unknown[]> {
+    const files = msg.attachments ?? [];
+    const others = files.filter((f) => !IMAGE_TYPES.has(f.mimeType));
+    let text = msg.text;
+    if (others.length) {
+      text += `${text ? "\n\n" : ""}[attached files, saved in your workspace]\n` + others.map((f) => `- ${f.rel} (${f.mimeType}, ${Math.max(1, Math.round(f.size / 1024))} KB)`).join("\n");
+    }
+    const content: unknown[] = [{ type: "text", text: text || "(image)" }];
+    const store = this.host.ctx.get("attachments");
+    for (const f of files.filter((x) => IMAGE_TYPES.has(x.mimeType))) {
+      if (!store) {
+        content.push({ type: "text", text: `[image saved at ${f.rel}]` });
+        continue;
+      }
+      const ref = await store.saveImage({ data: new Uint8Array(readFileSync(f.path)), mediaType: f.mimeType, name: f.name });
+      content.push({ type: "image", attachment: ref });
+    }
+    return content;
   }
 
   async steer(msg: InboundMessage): Promise<void> {

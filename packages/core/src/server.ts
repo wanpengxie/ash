@@ -44,10 +44,11 @@ export type Res =
 export interface Extensions {
   settings?: { get(): Promise<unknown>; set(body: Record<string, unknown>): Promise<unknown> };
   gateway?: { state(): Promise<unknown>; op(op: string, body: Record<string, unknown>): Promise<unknown> };
+  plugins?: { list(): Promise<unknown>; op(body: Record<string, unknown>): Promise<unknown> };
   workspaces: Record<string, string>;
 }
 
-const MAX_BODY = 8 * 1024 * 1024;
+const MAX_BODY = 28 * 1024 * 1024; // 20 MB of attachments, base64
 
 function same(a: string, b: string): boolean {
   const x = Buffer.from(a);
@@ -182,6 +183,14 @@ export class Router {
       case "POST /api/settings":
         need(ownerLocal, "change settings");
         return json(200, (await this.ext.settings?.set(body())) ?? {});
+      case "GET /api/plugins":
+        need(ownerLocal, "manage plugins");
+        if (!this.ext.plugins) throw new AshApiError(409, "no_plugins", "this ash core hosts no DSH world");
+        return json(200, await this.ext.plugins.list());
+      case "POST /api/plugins":
+        need(ownerLocal, "manage plugins");
+        if (!this.ext.plugins) throw new AshApiError(409, "no_plugins", "this ash core hosts no DSH world");
+        return json(200, await this.ext.plugins.op(body()));
       case "GET /api/gateway":
         need(ownerLocal, "manage the gateway");
         return json(200, (await this.ext.gateway?.state()) ?? { configured: false });
@@ -195,7 +204,7 @@ export class Router {
       if (m[2] === "deliver") {
         // Everyone with a token speaks as themselves; the local owner may relay for someone else.
         const b = body();
-        return json(200, core.deliver(agent, { text: String(b.text ?? ""), mode: b.mode as never, message_id: b.message_id as never, from: ownerLocal ? (b.from as string | undefined) : undefined }, ownerLocal && me === PHONE ? OWNER : me));
+        return json(200, core.deliver(agent, { text: String(b.text ?? ""), attachments: b.attachments as never, mode: b.mode as never, message_id: b.message_id as never, from: ownerLocal ? (b.from as string | undefined) : undefined }, ownerLocal && me === PHONE ? OWNER : me));
       }
       need(owner, "cancel turns");
       return json(200, await core.cancel(agent));

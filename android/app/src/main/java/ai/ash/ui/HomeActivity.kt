@@ -2,6 +2,7 @@ package ai.ash.ui
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
@@ -12,6 +13,9 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.MimeTypeMap
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -37,6 +41,8 @@ class HomeActivity : Activity() {
     private lateinit var action: Button
     private val ui = Handler(Looper.getMainLooper())
     private var loaded = false
+    /** The web page's pending <input type=file> request; answered exactly once (null = cancelled). */
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
 
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
@@ -76,6 +82,11 @@ class HomeActivity : Activity() {
             }
         }
 
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(view: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean =
+                chooseFiles(cb, params)
+        }
+
         val fg = if (night) Color.rgb(236, 236, 238) else Color.rgb(28, 28, 30)
         status = TextView(this).apply { textSize = 15f; setTextColor(fg); gravity = Gravity.CENTER; setPadding(48, 24, 48, 24) }
         action = Button(this).apply { text = "诊断"; setOnClickListener { startActivity(Intent(this@HomeActivity, ConsoleActivity::class.java)) } }
@@ -93,6 +104,7 @@ class HomeActivity : Activity() {
             addView(cover, FrameLayout.LayoutParams(-1, -1))
         })
         poll()
+        OnboardingActivity.showOnce(this)
     }
 
     private fun poll() {
@@ -122,6 +134,46 @@ class HomeActivity : Activity() {
         ui.postDelayed({ cover.visibility = View.GONE }, 400)
     }
 
+    /** Opens the system picker for the web UI's attachment button (images or any file, several at once). */
+    private fun chooseFiles(cb: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean {
+        answerFiles(null) // a request still open (should not happen) is cancelled, not dropped
+        fileCallback = cb
+        val pick = try { params.createIntent() } catch (e: Throwable) { null }
+            ?: Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+        // createIntent() only uses the first accept type; "image/*,.pdf" must offer both.
+        val mimes = params.acceptTypes.orEmpty().flatMap { it.split(',') }.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+            .map { if (it.startsWith('.')) MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.substring(1)) ?: "*/*" else it }.distinct()
+        if (mimes.size > 1 && "*/*" !in mimes) {
+            pick.type = "*/*"
+            pick.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toTypedArray())
+        } else if (pick.type.isNullOrEmpty() || "*/*" in mimes || pick.type?.startsWith(".") == true) pick.type = "*/*"
+        if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        try {
+            startActivityForResult(Intent.createChooser(pick, "选择文件"), REQ_FILES)
+        } catch (e: ActivityNotFoundException) {
+            answerFiles(null)
+        }
+        return true
+    }
+
+    private fun answerFiles(uris: Array<Uri>?) {
+        val cb = fileCallback ?: return
+        fileCallback = null
+        try { cb.onReceiveValue(uris) } catch (_: Throwable) {}
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != REQ_FILES) return super.onActivityResult(requestCode, resultCode, data)
+        val uris = LinkedHashSet<Uri>()
+        if (resultCode == RESULT_OK && data != null) {
+            // Several files come as ClipData; a single one may come as data (or both, on some pickers).
+            data.clipData?.let { clip -> for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris.add(it) } }
+            data.data?.let { uris.add(it) }
+        }
+        answerFiles(if (uris.isEmpty()) null else uris.toTypedArray())
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         if ((newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK) != (if (night) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO)) recreate()
@@ -134,10 +186,15 @@ class HomeActivity : Activity() {
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
+        answerFiles(null)
         web.destroy()
         super.onDestroy()
     }
 
     @Suppress("unused")
     private fun open(u: String) = startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
+
+    companion object {
+        private const val REQ_FILES = 7101
+    }
 }

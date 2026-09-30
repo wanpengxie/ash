@@ -134,8 +134,27 @@ export interface AgentInfo {
   model?: string;
 }
 
+/** A file sent along with a message (base64 on the wire). */
+export interface AttachmentInput {
+  name: string;
+  mime_type: string;
+  data: string; // base64
+}
+
+/** A file that arrived with a message, saved into the agent's workspace. */
+export interface Attachment {
+  name: string;
+  mime_type: string;
+  size: number;
+  /** Path inside the workspace (e.g. inbox/20260930-1015-photo.jpg). */
+  path: string;
+  workspace: string;
+}
+
 export interface DeliverRequest {
   text: string;
+  /** Images go to the model as images; other files are saved for the agent's tools. */
+  attachments?: AttachmentInput[];
   /** Who is speaking; defaults to the caller's member id (only the owner may speak for others). */
   from?: string;
   /** queue (default) waits for the current turn; steer injects into it (if supported). */
@@ -158,7 +177,7 @@ export interface DeliverResult {
  * caused it. Clients resume with `after=<seq>`.
  */
 export type EventType =
-  | "message.delivered" // {to, from, text, message_id, mode}
+  | "message.delivered" // {to, from, text, message_id, mode, origin, attachments?}
   | "agent.status" // {status, error?}
   | "agent.turn.started" // {message_id}
   | "agent.text" // {text, message_id}             — one assistant message

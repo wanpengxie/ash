@@ -177,7 +177,7 @@ object SystemCapabilities {
         "apps.open",
         "Open (launch or bring to front) an app on the phone's screen, by package name or launcher label. Android 10+ blocks " +
             "background apps from opening screens, so this works when ash is in the foreground, ash's accessibility service is " +
-            "enabled, or Shizuku/root is available (it then goes through the privileged shell); otherwise the result says it may have been blocked.",
+            "enabled, or Shizuku is running with ash authorized (it then goes through the Shizuku shell); otherwise the result says it may have been blocked.",
         schema("app" to prop("string", "Package name (e.g. com.tencent.mm) or launcher label (e.g. \"WeChat\").", required = true)),
     ) { ctx, args ->
         val app = try { Apps.resolve(ctx, args.optString("app")) } catch (e: Exception) { return@Cap CapResult.fail(e.message ?: "unknown app") }
@@ -375,8 +375,8 @@ object SystemCapabilities {
         "settings.get",
         "Read an Android system setting from Settings.System, Settings.Secure or Settings.Global (e.g. system " +
             "screen_brightness, screen_off_timeout; secure default_input_method, location_mode; global airplane_mode_on, " +
-            "adb_enabled). Without key, lists all keys and values of the namespace (needs Shizuku/root). Reading needs no permission; " +
-            "a few protected keys need Shizuku/root.",
+            "adb_enabled). Without key, lists all keys and values of the namespace (requires Shizuku). Reading needs no permission; " +
+            "a few protected keys require Shizuku.",
         schema(
             "namespace" to prop("string", "system, secure or global.", required = true, enum = NAMESPACES),
             "key" to prop("string", "Setting key; omit to list the namespace."),
@@ -387,7 +387,7 @@ object SystemCapabilities {
         val key = args.optString("key").trim()
         if (key.isEmpty()) {
             val r = try { PrivShell.exec(ctx, "settings list $ns", 15_000, maxOut = 60_000) } catch (e: Exception) {
-                return@Cap CapResult.fail("listing settings needs Shizuku or root: ${e.message}")
+                return@Cap CapResult.fail("listing settings requires Shizuku: ${e.message}")
             }
             if (!r.ok) return@Cap CapResult.fail("settings list failed: ${r.stderr.ifEmpty { r.stdout }.take(500)}")
             return@Cap CapResult.text(r.stdout + if (r.stdoutTruncated) "\n[truncated]" else "")
@@ -407,8 +407,8 @@ object SystemCapabilities {
         "settings.put",
         "Change an Android system setting. namespace=system keys (e.g. screen_brightness 0-255, screen_brightness_mode 0/1, " +
             "screen_off_timeout ms, accelerometer_rotation 0/1, font_scale) are written by ash itself when the owner granted it " +
-            "\"Modify system settings\" (settings.open page=write_settings), otherwise through Shizuku/root; secure and global keys " +
-            "always need Shizuku or root. Special keys volume_music / volume_ring / volume_alarm / volume_notification / volume_system / " +
+            "\"Modify system settings\" (settings.open page=write_settings), otherwise through Shizuku; secure and global keys " +
+            "always require Shizuku. Special keys volume_music / volume_ring / volume_alarm / volume_notification / volume_system / " +
             "volume_voice_call set that volume (a level or a percentage like \"50%\") and need nothing. The previous and new values are returned.",
         schema(
             "namespace" to prop("string", "system, secure or global.", required = true, enum = NAMESPACES),
@@ -437,7 +437,7 @@ object SystemCapabilities {
         }
         if (!written) {
             val via = try { PrivShell.requireChannel(ctx) } catch (e: Exception) {
-                val need = if (ns == "system") "grant ash \"Modify system settings\" (settings.open page=write_settings) or enable Shizuku" else "$ns settings need Shizuku or root"
+                val need = if (ns == "system") "grant ash \"Modify system settings\" (settings.open page=write_settings) or enable Shizuku" else "$ns settings require Shizuku"
                 return@Cap CapResult.fail("cannot write $ns/$key: $need (${e.message})")
             }
             val r = PrivShell.exec(ctx, "settings put $ns ${PrivShell.quote(key)} ${PrivShell.quote(value)}", 15_000, via = via)
@@ -512,7 +512,7 @@ object SystemCapabilities {
         "Press a key on the phone. Media keys (${MEDIA_KEYS.keys.joinToString(", ")}) control whatever is playing and volume keys " +
             "(${VOLUME_KEYS.keys.joinToString(", ")}) change the active volume; both need no permission. Other keys " +
             "(${SHELL_KEYS.keys.joinToString(", ")}, or any Android keycode number) are injected on the main screen with the " +
-            "shell `input keyevent` and need Shizuku or root. For back/home/recents the accessibility screen capabilities also work.",
+            "shell `input keyevent` and require Shizuku. For back/home/recents the accessibility screen capabilities also work.",
         schema(
             "key" to prop("string", "Key name or numeric KeyEvent keycode.", required = true),
             "long_press" to prop("boolean", "Long-press (injected keys only)."),
@@ -543,7 +543,7 @@ object SystemCapabilities {
             else -> {
                 val code = SHELL_KEYS[k] ?: num ?: return@Cap CapResult.fail("unknown key \"$k\"")
                 val via = try { PrivShell.requireChannel(ctx) } catch (e: Exception) {
-                    return@Cap CapResult.fail("injecting $k needs Shizuku or root: ${e.message}")
+                    return@Cap CapResult.fail("injecting $k requires Shizuku: ${e.message}")
                 }
                 val r = PrivShell.exec(ctx, "input keyevent ${if (args.optBoolean("long_press")) "--longpress " else ""}$code", 10_000, via = via)
                 if (r.ok) CapResult.text("Key $k ($code) injected.") else CapResult.fail("input keyevent failed: ${(r.stderr + " " + r.stdout).trim().take(400)}")

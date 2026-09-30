@@ -33,12 +33,23 @@ export interface Origin {
   mayRequestSensitive: boolean;
 }
 
+export interface InboundAttachment {
+  name: string;
+  mimeType: string;
+  size: number;
+  /** Absolute path of the saved file. */
+  path: string;
+  /** Path inside the agent's workspace. */
+  rel: string;
+}
+
 export interface InboundMessage {
   message_id: string;
   from: string;
   origin: Origin;
   text: string;
   mode: "queue" | "steer";
+  attachments?: InboundAttachment[];
 }
 
 /** Normalized things that happen inside one turn; ash writes them to the event log. */

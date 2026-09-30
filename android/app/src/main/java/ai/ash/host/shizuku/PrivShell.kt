@@ -3,13 +3,12 @@ package ai.ash.host.shizuku
 import android.content.Context
 import android.os.ParcelFileDescriptor
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 
-/** A privileged child process (Shizuku shell/root uid, or su), with its three pipes. */
+/** A privileged child process (run by the Shizuku server, as its uid), with its three pipes. */
 class PrivProcess internal constructor(
-    /** "shizuku" or "root". */
+    /** Always "shizuku" (kept in results so callers can tell how a command ran). */
     val via: String,
     val stdin: OutputStream,
     val stdout: InputStream,
@@ -26,11 +25,12 @@ class PrivProcess internal constructor(
 }
 
 /**
- * Runs shell commands with elevated privileges from the app process:
- * Shizuku first (IShizukuService.newProcess → runs as Shizuku's uid: 2000 "shell" in adb mode,
- * 0 in root mode), then root via `su -c`. No rish, no dex files: the Shizuku API in this APK
- * is enough (the old engine-side rish timed out on ROMs that freeze the Shizuku app; the
- * in-process API channel was the one that worked).
+ * Runs shell commands with elevated privileges from the app process, through Shizuku only
+ * (IShizukuService.newProcess → runs as the Shizuku server's uid, normally 2000 "shell").
+ * ash deliberately never uses su: one well-understood privilege path the owner grants and revokes
+ * in the Shizuku app. No rish, no dex files: the Shizuku API in this APK is enough (the old
+ * engine-side rish timed out on ROMs that freeze the Shizuku app; the in-process API channel was
+ * the one that worked).
  */
 object PrivShell {
     const val DEFAULT_TIMEOUT_MS = 30_000
@@ -48,49 +48,34 @@ object PrivShell {
         val ok get() = !timedOut && exitCode == 0
     }
 
-    /** Which channel would be used right now without prompting anybody ("shizuku", "root") or null. */
-    fun channel(ctx: Context): String? = when {
-        ShizukuState.ready() -> "shizuku"
-        RootShell.known() == true -> "root"
-        else -> null
-    }
+    /** "shizuku" when the privileged shell is usable right now without prompting anybody, else null. */
+    fun channel(@Suppress("UNUSED_PARAMETER") ctx: Context): String? = if (ShizukuState.ready()) "shizuku" else null
 
-    /** A channel exists or might exist (Shizuku installed, or an su binary present). Cheap. */
-    fun maybeAvailable(ctx: Context): Boolean = ShizukuState.ready() || ShizukuState.installed(ctx) || RootShell.present()
+    /** Shizuku is ready, or installed and might become ready (binder late after a cold start). Cheap. */
+    fun maybeAvailable(ctx: Context): Boolean = ShizukuState.ready() || ShizukuState.installed(ctx)
 
     /**
-     * Resolves a channel, waiting briefly for the Shizuku binder after a cold start and probing su
-     * when Shizuku cannot be used. Throws with a readable reason when nothing is usable.
+     * Resolves the channel, waiting briefly for the Shizuku binder after a cold start.
+     * Throws with a readable reason when Shizuku cannot be used.
      */
-    fun requireChannel(ctx: Context, allowRoot: Boolean = true): String {
+    fun requireChannel(ctx: Context): String {
         if (ShizukuState.awaitReady(ctx)) return "shizuku"
-        if (allowRoot && RootShell.probe()) return "root"
         val why = ShizukuState.whyNot(ctx) ?: "Shizuku is unavailable"
-        val root = if (!allowRoot) "" else if (RootShell.present()) "; root (su) was refused or timed out" else "; the phone is not rooted"
-        throw IllegalStateException("no privileged shell: $why$root")
+        throw IllegalStateException("no privileged shell (ash needs Shizuku): $why")
     }
 
-    /** Starts `sh -c <command>` through the given channel (see [requireChannel]). */
-    fun spawn(via: String, command: String, cwd: String? = null): PrivProcess = when (via) {
-        "shizuku" -> {
-            val rp = ShizukuState.service().newProcess(arrayOf("/system/bin/sh", "-c", command), null, cwd)
-                ?: throw IllegalStateException("Shizuku newProcess returned null")
-            PrivProcess(
-                "shizuku",
-                ParcelFileDescriptor.AutoCloseOutputStream(rp.outputStream),
-                ParcelFileDescriptor.AutoCloseInputStream(rp.inputStream),
-                ParcelFileDescriptor.AutoCloseInputStream(rp.errorStream),
-                { rp.waitFor() }, { rp.destroy() }, { rp.alive() }, rp,
-            )
-        }
-        "root" -> {
-            val pb = ProcessBuilder("su", "-c", command)
-            if (cwd != null) pb.directory(File(cwd))
-            pb.environment().apply { remove("LD_LIBRARY_PATH"); remove("LD_PRELOAD") }
-            val p = pb.start()
-            PrivProcess("root", p.outputStream, p.inputStream, p.errorStream, { p.waitFor() }, { p.destroy() }, { isAlive(p) }, p)
-        }
-        else -> throw IllegalArgumentException("unknown channel $via")
+    /** Starts `sh -c <command>` through Shizuku (see [requireChannel]). */
+    fun spawn(via: String, command: String, cwd: String? = null): PrivProcess {
+        require(via == "shizuku") { "unknown channel $via" }
+        val rp = ShizukuState.service().newProcess(arrayOf("/system/bin/sh", "-c", command), null, cwd)
+            ?: throw IllegalStateException("Shizuku newProcess returned null")
+        return PrivProcess(
+            "shizuku",
+            ParcelFileDescriptor.AutoCloseOutputStream(rp.outputStream),
+            ParcelFileDescriptor.AutoCloseInputStream(rp.inputStream),
+            ParcelFileDescriptor.AutoCloseInputStream(rp.errorStream),
+            { rp.waitFor() }, { rp.destroy() }, { rp.alive() }, rp,
+        )
     }
 
     /**
@@ -153,6 +138,4 @@ object PrivShell {
         } catch (e: Throwable) {
         } finally { try { input.close() } catch (e: Throwable) {} }
     }, name).apply { isDaemon = true; start() }
-
-    private fun isAlive(p: Process): Boolean = try { p.exitValue(); false } catch (e: IllegalThreadStateException) { true }
 }

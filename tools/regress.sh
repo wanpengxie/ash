@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regression checklist R1–R14 on a device/emulator (run on the machine with adb).
+# Regression checklist R1–R16 on a device/emulator (run on the machine with adb).
 #
 #   APK=app-debug.apk tools/regress.sh [R1 R2 …]        (default: R2 R4 R5 R6 R7 R8 R9 R11 R12)
 #
@@ -40,6 +40,7 @@ wait_online() { # wait_online SECONDS
 control() { adb shell am broadcast -n $PKG/ai.ash.host.ControlReceiver -a "ai.ash.$1" >/dev/null; }
 last_seq() { api GET '/api/events?limit=1000' | jq_ 'v.next||0'; }
 deliver_and_wait() { # deliver_and_wait TEXT SECONDS → prints the agent's reply text
+  wait_online 300 || return 1
   local from; from=$(last_seq)
   local id="regress-$RANDOM$RANDOM"
   api POST /api/agents/agent:main/deliver "$(node -e 'console.log(JSON.stringify({text:process.argv[1],message_id:process.argv[2]}))' "$1" "$id")" >/dev/null
@@ -134,8 +135,36 @@ R14() { say "R14 npm-installed CLIs, npx and python venv work (Android has no /u
   if echo "$out" | grep -q "r14-global" && echo "$out" | grep -q "r14-npx" && echo "$out" | grep -q "^pip "; then ok "R14 global CLIs, npx and venv work"; else bad R14; fi
 }
 
+R15() { say "R15 an image sent in the chat reaches the model"
+  wait_online 300 || { bad R15 "agent not online"; return; }
+  local img; img=$(node -e '
+    // 64x64 solid red PNG, built by hand (no deps): zlib-stored scanlines + CRCs.
+    const zlib=require("zlib");const w=64,h=64;const raw=Buffer.alloc((w*3+1)*h);for(let y=0;y<h;y++){raw[y*(w*3+1)]=0;for(let x=0;x<w;x++){const o=y*(w*3+1)+1+x*3;raw[o]=230;raw[o+1]=20;raw[o+2]=20}}
+    const crc=(b)=>{let c=~0;for(const v of b){c^=v;for(let k=0;k<8;k++)c=(c>>>1)^(0xedb88320&-(c&1))}return ~c>>>0};
+    const chunk=(t,d)=>{const l=Buffer.alloc(4);l.writeUInt32BE(d.length);const td=Buffer.concat([Buffer.from(t),d]);const c=Buffer.alloc(4);c.writeUInt32BE(crc(td));return Buffer.concat([l,td,c])};
+    const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=2;
+    process.stdout.write(Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk("IHDR",ihdr),chunk("IDAT",zlib.deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]).toString("base64"))')
+  local from; from=$(last_seq)
+  api POST /api/agents/agent:main/deliver "{\"text\":\"这张图片主要是什么颜色？只回答颜色。\",\"message_id\":\"r15-$RANDOM\",\"attachments\":[{\"name\":\"r15.png\",\"mime_type\":\"image/png\",\"data\":\"$img\"}]}" >/dev/null
+  local r=""; local end=$((SECONDS+180))
+  while [ $SECONDS -lt $end ]; do r=$(api GET "/api/events?after=$from&limit=1000" | jq_ "(()=>{const e=v.events;if(!e.some(x=>x.type==='agent.turn.ended'))return '';return e.filter(x=>x.type==='agent.text').map(x=>x.data.text).join(' ')||'(no text)'})()"); [ -n "$r" ] && break; sleep 3; done
+  echo "    reply: ${r:0:120}"
+  if echo "$r" | grep -q "红"; then ok "R15 the model sees the attached image (answers red)"; else bad R15 "unexpected reply"; fi
+}
+R16() { say "R16 plugins: disable and enable through ash settings (DSH's plugin manager)"
+  wait_online 300 || { bad R16 "agent not online"; return; }
+  local n0 n1 n2
+  n0=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
+  api POST /api/plugins '{"op":"disable","name":"dsh-mnemon"}' >/dev/null; sleep 5
+  n1=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
+  api POST /api/plugins '{"op":"enable","name":"dsh-mnemon"}' >/dev/null; sleep 5
+  n2=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
+  echo "    mnemon tools: $n0 → disabled $n1 → enabled $n2"
+  if [ "${n0:-0}" -gt 0 ] && [ "${n1:-1}" = "0" ] && [ "$n2" = "$n0" ]; then ok "R16 plugin switches hot-apply"; else bad R16; fi
+}
+
 adb get-state >/dev/null 2>&1 || { echo "no adb device"; exit 2; }
-TESTS=("$@"); [ ${#TESTS[@]} -eq 0 ] && TESTS=(R2 R4 R5 R6 R7 R8 R9 R11 R12 R14)
+TESTS=("$@"); [ ${#TESTS[@]} -eq 0 ] && TESTS=(R2 R4 R5 R6 R7 R8 R9 R11 R12 R14 R15 R16)
 for t in "${TESTS[@]}"; do "$t"; done
 printf '\n== summary: %d passed, %d failed\n' "$PASS" "$FAIL"; printf '%s\n' "${RESULTS[@]}"
 [ "$FAIL" -eq 0 ]

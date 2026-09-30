@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { DshHost, type DshHostOptions, DshRuntime, dshSettings } from "../../dsh-binding/src/index";
+import { DshHost, type DshHostOptions, DshRuntime, dshPlugins, dshSettings } from "../../dsh-binding/src/index";
 import { Core, OWNER, PHONE, type Notifier, type Policy } from "./core";
 import { ClientLink, fileSigner, OwnerLink, type Signer } from "./gateway/link";
 import { HostBridge, type HostOptions } from "./host";
@@ -142,6 +142,7 @@ export async function startOwner(cfg: Config): Promise<Running> {
     dsh = new DshHost(cfg.dsh, log);
     await dsh.boot();
     ext.settings = dshSettings(dsh);
+    ext.plugins = dshPlugins(dsh, bridge ? () => bridge!.restart() : null, log);
   }
 
   const runtimeFor = (def: AgentDef): AgentRuntime => {

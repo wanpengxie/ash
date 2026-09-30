@@ -4,6 +4,7 @@ import ai.ash.host.shizuku.ShizukuState
 import ai.ash.host.shizuku.VScreenClient
 import ai.ash.host.system.Apps
 import ai.ash.host.system.Clip
+import ai.ash.ui.VScreenPreview
 import android.content.Context
 import android.os.Build
 import org.json.JSONObject
@@ -58,6 +59,8 @@ object VScreenCapabilities {
         if (dpi > 0) req.put("dpi", dpi.coerceIn(120, 640))
         val r = VScreenClient.call(ctx, "create", req, 20_000)
         if (!r.optBoolean("ok")) return@vcap fail(r)
+        // Let the owner watch: a live preview window (if ash may draw overlays; otherwise nothing).
+        VScreenPreview.show(ctx)
         val d = JSONObject().put("displayId", r.optInt("displayId")).put("width", r.optInt("width"))
             .put("height", r.optInt("height")).put("dpi", r.optInt("dpi")).put("reused", r.optBoolean("reused"))
         CapResult.text(
@@ -188,6 +191,7 @@ object VScreenCapabilities {
         "Destroy the virtual screen (apps running on it are closed or moved) and stop its server. Call when the task is done.",
     ) { ctx, _ ->
         if (!VScreenClient.running()) return@vcap CapResult.text("No virtual screen was open.")
+        VScreenPreview.hide()
         val r = VScreenClient.call(ctx, "close", timeoutMs = 8000, start = false)
         VScreenClient.stop()
         if (r.optBoolean("ok")) CapResult.text("Virtual screen closed.") else fail(r)
