@@ -2,6 +2,7 @@
 // Language review only: supplied records are synthetic; no research subtask runs here.
 import { createHash } from 'node:crypto';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { coverageSumMismatch } from './wide-research-coverage.mjs';
 
 const root = new URL('../../', import.meta.url);
 const skillPath = 'packages/ash-skills/skills/wide-research/SKILL.md';
@@ -39,17 +40,7 @@ for (const item of cases) {
         item.id === 'conflicting-sources' ? !(/0\s*\/\s*3/.test(visible) || /已核实[：:\s|*]*0(?:\s|\||$)/m.test(visible)) : false,
       pending_as_finished: item.id === 'partial-results' && !/(?:待返回|仍在进行|等待结果)/.test(visible),
       suggests_second_retry: item.id !== 'plan-only' && /(?:再试一次|再重试一次)/.test(visible),
-      coverage_sum_mismatch: item.id !== 'plan-only' && (() => {
-        const summary = visible.slice(visible.indexOf('覆盖说明'));
-        const labels = ['已核实', '部分核实', '未完成', '待返回'];
-        const counts = labels.map(label => {
-          const bullet = summary.match(new RegExp('^\\s*[-*]\\s*\\*{0,2}' + label + '\\*{0,2}[：:]\\s*(\\d+)', 'm'));
-          const table = summary.match(new RegExp('^\\s*\\|\\s*' + label + '\\s*\\|\\s*(\\d+)\\s*\\|', 'm'));
-          const inline = summary.match(new RegExp(label + '\\*{0,2}[：:\\s|*]*(\\d+)\\s*题'));
-          return bullet || table || inline ? Number((bullet || table || inline)[1]) : NaN;
-        });
-        return counts.some(Number.isNaN) || counts.reduce((sum, count) => sum + count, 0) !== (item.id === 'partial-results' ? 4 : 3);
-      })(),
+      coverage_sum_mismatch: item.id !== 'plan-only' && coverageSumMismatch(visible, item.id === 'partial-results' ? 4 : 3),
     } };
   records.push(record);
   console.log(item.id + ': end_turn flags=' + Object.entries(record.flags).filter(([, value]) => value).map(([name]) => name).join(','));
