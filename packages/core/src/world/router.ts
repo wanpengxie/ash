@@ -173,17 +173,20 @@ export class WorldRouter {
     this.validateContext(ctx); this.validateRequestShape(request);
     const { from, origin } = this.stampedSender(ctx, request);
     this.authorize(ctx, request, from);
-    if (request.kind === "response") return this.acceptResponse(request, from, ctx);
+    if (request.kind === "response") return this.acceptResponse(request, from, origin);
     if (request.to === null && request.kind !== "event") fail("bad_request", "request needs recipient");
     const endpoint = request.to ? this.endpoint(request.to, request.word) : undefined;
     const outbound = request.kind === "event" ? wordContract(from, request.word) : undefined;
     const sourceEvent = outbound?.kind === "event" && outbound.direction === "out";
+    const senseContract = request.kind === "event" && ctx.transport === "phone" && from === "device:phone" && request.to === null ? wordContract("service:senses", request.word) : undefined;
+    const phoneSense = senseContract?.kind === "event" && senseContract.direction === "in" && request.word.startsWith("sense.");
     if (request.to && !endpoint && !sourceEvent) fail("not_found", "recipient word not found");
     if (endpoint && (endpoint.direction === "out" || endpoint.spec.kind !== request.kind)) fail("forbidden", "word cannot be sent in this direction");
     if (endpoint && !endpoint.validateInput(request.body)) fail("bad_request", "body does not match word schema");
-    if (request.kind === "event" && !endpoint && !sourceEvent) fail("not_found", "event word not found");
+    if (request.kind === "event" && !endpoint && !sourceEvent && !phoneSense) fail("not_found", "event word not found");
     if (sourceEvent && !matchesSchema(outbound.input_schema!, request.body)) fail("bad_request", "event body does not match schema");
-    if (request.to === null && !sourceEvent) fail("forbidden", "broadcast not authorized");
+    if (phoneSense && !matchesSchema(senseContract.input_schema!, request.body)) fail("bad_request", "sense body does not match schema");
+    if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
     const timeoutMs = endpoint?.spec.timeout_ms ?? 60_000;
@@ -212,7 +215,7 @@ export class WorldRouter {
     return { id: message.id, seq: message.seq, ...(reply ? { reply } : {}) };
   }
 
-  private async acceptResponse(request: SendRequestV2, from: string, ctx: TrustedRouteContext): Promise<{ id: string; seq: number }> {
+  private async acceptResponse(request: SendRequestV2, from: string, origin?: Message["origin"]): Promise<{ id: string; seq: number }> {
     const original = this.ledger.byId(request.reply_to!);
     if (!original || original.kind !== "request" || original.seq <= this.ledger.migration.lastLegacySeq || original.to !== from || original.from !== request.to || original.word !== request.word) throw new RouterError("bad_request", "response does not match an active request");
     const endpoint = this.endpoint(original.to!, original.word);
@@ -221,7 +224,7 @@ export class WorldRouter {
     if (typeof body.ok !== "boolean" || (body.ok && endpoint.validateResult && !endpoint.validateResult(body.result)) || (!body.ok && (!plainObject(body.error) || !ERROR_CODES.has(body.error.code as MessageErrorCode) || typeof body.error.message !== "string"))) fail("bad_request", "invalid response body");
     const pending = this.pending.get(original.id);
     if (!pending || pending.settled || Date.now() >= pending.deadlineAt) throw new RouterError("bad_request", "request no longer accepting replies");
-    const result = this.finish(pending, body, from, false);
+    const result = this.finish(pending, body, from, false, origin);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
   }
@@ -231,9 +234,9 @@ export class WorldRouter {
     pending.timer = setTimeout(() => this.finish(pending, errors("timeout", "request timed out"), pending.request.to!, true), remaining);
   }
 
-  private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean): Message | null {
+  private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean, origin?: Message["origin"]): Message | null {
     if (pending.settled) return null;
-    const result = this.ledger.settle(pending.request.id, from, body);
+    const result = this.ledger.settle(pending.request.id, from, body, origin);
     pending.settled = true;
     if (pending.timer) clearTimeout(pending.timer);
     this.pending.delete(pending.request.id);
@@ -305,7 +308,7 @@ export class WorldRouter {
         continue;
       }
       let authorized = false;
-      try { authorized = Boolean(endpoint && await this.authorizeRecovery(message, context)); } catch { /* current permission cannot be verified */ }
+      try { authorized = Boolean(endpoint && await this.authorizeRecovery(detached(message), detached(context))); } catch { /* current permission cannot be verified */ }
       if (!endpoint || !authorized) {
         this.publish(this.ledger.settle(message.id, message.to!, errors("forbidden", "authorization unavailable after restart")).message);
         continue;

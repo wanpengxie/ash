@@ -334,3 +334,46 @@ test("only owner starts work; only local work service gets its two declared self
     assert.deepEqual(writers, ["service:work/append", "service:work/apply_plan"]);
   } finally { ledger.close(); }
 });
+
+test("screen and phone notification replies persist server-stamped origin, never a caller claim", async () => {
+  const { ledger, router } = await setup();
+  try {
+    router.register({ member: "person:owner", spec: spec("ask"), handle: () => new Promise(() => {}) });
+    const screenAsk = await router.send(agent, request("person:owner", "ask"));
+    const screenReply = await router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: screenAsk.id, body: { ok: true, result: { value: 1 } } });
+    assert.deepEqual(ledger.byId(screenReply.id)?.origin, { screen: "screen:tab_a", label: "Tab A" });
+    const phoneAsk = await router.send(agent, request("person:owner", "ask"));
+    const phoneReply = await router.send(phone, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { value: 2 } } });
+    assert.deepEqual(ledger.byId(phoneReply.id)?.origin, { screen: "device:phone", label: "Phone notification" });
+    await assert.rejects(router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { value: 3 } }, origin: { screen: "screen:other", label: "Other" } } as never), code("bad_request"));
+  } finally { ledger.close(); }
+});
+
+test("phone sense broadcast accepts only four declared schemas from the trusted phone", async () => {
+  const { ledger, router } = await setup();
+  try {
+    const seen: string[] = [];
+    router.subscribe((message) => seen.push(`${message.from}/${message.word}`));
+    const sent = await router.send(phone, { to: null, kind: "event", word: "sense.battery", body: { level: 72 } });
+    assert.equal(ledger.byId(sent.id)?.from, "device:phone");
+    await assert.rejects(router.send(phone, { to: null, kind: "event", word: "sense.battery", body: { level: 101 } }), code("bad_request"));
+    await assert.rejects(router.send(phone, { to: null, kind: "event", word: "sense.unlisted", body: {} }), code("not_found"));
+    await assert.rejects(router.send(agent, { to: null, kind: "event", word: "sense.battery", body: { level: 72 } }), code("not_found"));
+    assert.deepEqual(seen, ["device:phone/sense.battery"]);
+  } finally { ledger.close(); }
+});
+
+test("recovery authorizer receives detached request and context", async () => {
+  const { ledger } = await setup();
+  try {
+    const saved = ledger.append({ from: "person:owner", to: "device:fake", kind: "request", word: "run", body: { n: 1 } }, undefined,
+      { deadlineAt: Date.now() + 5000, context: { member: "person:owner", local: true, remote: false, ownerProxy: false } }).message;
+    const recovered = new WorldRouter(ledger, async (message, context) => { message.body.n = 999; context.member = "forged"; return true; });
+    recovered.register({ member: "device:fake", spec: spec("run"), handle: (message) => { assert.equal(message.body.n, 1); return { ok: true, result: { value: 1 } }; } });
+    await recovered.recover();
+    await tick();
+    assert.equal(ledger.byId(saved.id)?.body.n, 1);
+    assert.equal(ledger.responseTo(saved.id)?.body.ok, true);
+    assert.equal(ledger.trackedRequests().length, 0);
+  } finally { ledger.close(); }
+});

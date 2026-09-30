@@ -311,7 +311,7 @@ export class Ledger {
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
-  settle(requestId: string, from: string, body: ResponseBody): { message: Message; settled: boolean } {
+  settle(requestId: string, from: string, body: ResponseBody, origin?: Message["origin"]): { message: Message; settled: boolean } {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const request = this.byId(requestId);
@@ -321,7 +321,7 @@ export class Ledger {
       if (existing) { this.db.exec("COMMIT"); return { message: decode(existing), settled: false }; }
       if (typeof body.ok !== "boolean" || (body.ok === false && !body.error)) throw new TypeError("invalid response body");
       const id = newId(); const ts = Date.now();
-      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,turn) VALUES (?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, request.turn ?? null);
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, origin ? JSON.stringify(origin) : null, request.turn ?? null);
       this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=?").run(ts, requestId);
       this.db.exec("COMMIT");
       return { message: this.byId(id)!, settled: true };
