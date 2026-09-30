@@ -5,7 +5,6 @@
 #
 # Needs: adb (one device), node ≥ 22, curl. Optional env:
 #   GATEWAY_URL      the gateway the phone is connected to (R7, R9)
-#   DSH_REFERENCE    output of `node tools/verify-dsh.mjs <desktop install>` for the same version (R12)
 #   LAPTOP_SHARE     directory the paired laptop lends as "files" (R8), default ~/ash-shared
 # R1 (fresh install) and R3 (reboot) are destructive/slow and only run when named.
 # Secrets never reach the output: tokens are read on the device and used in-process only.
@@ -122,8 +121,10 @@ R11() { say "R11 DSH ecosystem: install a community plugin with DSH's own plugin
 R12() { say "R12 DSH is byte-for-byte as published"
   adb push "$HERE/verify-dsh.mjs" /data/local/tmp/verify-dsh.mjs >/dev/null
   local got; got=$(asr "$F/payload/runtime/bin/node /data/local/tmp/verify-dsh.mjs $F/payload/dsh/lib/node_modules/@deepseek-ai/dsh" | tr -d '\r')
-  echo "    phone:     $got"; echo "    reference: ${DSH_REFERENCE:-?}"
-  if [ -n "${DSH_REFERENCE:-}" ] && [ "$got" = "$DSH_REFERENCE" ]; then ok "R12 @deepseek-ai/** identical to the desktop install"; else bad R12 "mismatch or no reference"; fi
+  # The build compared the payload with a same-moment desktop install and recorded the result.
+  local ref; ref=$(asr "cat $F/payload/payload-index.json" | jq_ 'v.dshVerify||""')
+  echo "    phone:     $got"; echo "    at build:  ${ref:-?}"
+  if [ -n "$ref" ] && [ "$got" = "$ref" ]; then ok "R12 DSH on the phone is exactly what the build verified against a desktop install"; else bad R12 "mismatch or no reference"; fi
 }
 
 R14() { say "R14 npm-installed CLIs, npx and python venv work (Android has no /usr/bin/env)"

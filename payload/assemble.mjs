@@ -23,6 +23,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { dshFingerprint } from "../tools/verify-dsh.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -252,6 +253,15 @@ async function build() {
   sh("npm", ["install", "-g", "--prefix", dsh, spec, "--os=android", "--cpu=arm64", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], { stdio: "inherit" });
   fs.rmSync(path.join(dsh, "bin"), { recursive: true, force: true }); // symlinks into lib/; the host starts DSH through ash core
   const dshTree = hashTree(path.join(dsh, "lib/node_modules", manifest.dsh.package));
+  // R12 at build time: a desktop install of the same version, now, must be byte-identical in
+  // @deepseek-ai/** (platform packages aside). Anything else means DSH was altered on the way.
+  const reference = path.join(out, "reference");
+  sh("npm", ["install", "-g", "--prefix", reference, spec, "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], { stdio: "inherit" });
+  const ours = dshFingerprint(path.join(dsh, "lib/node_modules", manifest.dsh.package)).line;
+  const desktop = dshFingerprint(path.join(reference, "lib/node_modules", manifest.dsh.package)).line;
+  fs.rmSync(reference, { recursive: true, force: true });
+  if (ours !== desktop) throw new Error(`DSH differs from a desktop install of the same version:\n  payload: ${ours}\n  desktop: ${desktop}`);
+  log("DSH identical to a desktop install:", ours);
 
   // 3. android-compat packages next to DSH (Node's resolution walks up to dsh/lib/node_modules).
   const compatSrc = path.join(ROOT, "packages/android-compat/packages");
@@ -299,9 +309,10 @@ async function build() {
     if (!links.some(([from]) => from === rel)) links.push([rel, fs.readlinkSync(path.join(tree, rel))]);
     fs.rmSync(path.join(tree, rel));
   }
-  const inputs = createHash("sha256").update(JSON.stringify(manifest)).update(fs.readFileSync(core)).digest("hex").slice(0, 16);
+  // Everything that shapes the tree: locked inputs, ash core, and the DSH tree as resolved today.
+  const inputs = createHash("sha256").update(JSON.stringify(manifest)).update(fs.readFileSync(core)).update(ours).digest("hex").slice(0, 16);
   const entries = [...walk(tree)].length + 1;
-  const index = { schema: 1, build: `${manifest.dsh.version}-${inputs}`, entries, dsh: manifest.dsh, links, exec: [...new Set(exec)].sort(), placeholders: [...new Set(placeholders)].sort(), placeholder: PLACEHOLDER, dshTree };
+  const index = { schema: 1, build: `${manifest.dsh.version}-${inputs}`, entries, dsh: manifest.dsh, dshVerify: ours, links, exec: [...new Set(exec)].sort(), placeholders: [...new Set(placeholders)].sort(), placeholder: PLACEHOLDER, dshTree };
   fs.writeFileSync(path.join(tree, "payload-index.json"), JSON.stringify(index));
   fs.rmSync(path.join(out, "payload.zip"), { force: true });
   sh("zip", ["-q", "-r", "-X", "-9", path.join(out, "payload.zip"), "."], { cwd: tree });
