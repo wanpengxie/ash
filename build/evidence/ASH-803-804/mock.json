@@ -9,69 +9,84 @@
   },
   "prompt_file_sha256": {
     "packages/ash-skills/skills/first-meeting/SKILL.md": "9d520335d8452b37754b53bce34370695af2250e76405725e9abd4944156f054",
-    "packages/ash-skills/skills/self-awareness/SKILL.md": "1183253926a9527fd2a84b2cb7014183366c22870f2edc953212b34215b3485e",
-    "packages/ash-skills/skills/forget/SKILL.md": "15955a1eb74a769a688903aa759ebbe2f610955cdb9d17df71b00ca07729b281"
+    "packages/ash-skills/skills/self-awareness/SKILL.md": "87188b25a099702b3df49b085e9846292647d558d481f7c0e0ba429fc30237cf",
+    "packages/ash-skills/skills/forget/SKILL.md": "f8346dd11b4fac0e2b82b173d9d4486b8cfda9f59edbf0c619efa58ea09a9f76"
   },
   "cases": [
     {
       "id": "single",
+      "request": "user:\"小舟\"",
+      "fake_output": "{\"kind\":\"user_name\"}",
       "expected": "user_name",
-      "fake_output": "user_name",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "call_me",
+      "request": "assistant:\"叫我阿宁\"",
+      "fake_output": "{\"kind\":\"user_name\"}",
       "expected": "user_name",
-      "fake_output": "user_name",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "you_choose",
+      "request": "assistant:\"你来起\"",
+      "fake_output": "{\"kind\":\"delegate_assistant\"}",
       "expected": "delegate_assistant",
-      "fake_output": "delegate_assistant",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "greeting",
+      "request": "user:\"hi\"",
+      "fake_output": "{\"kind\":\"none\"}",
       "expected": "none",
-      "fake_output": "none",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "question",
+      "request": "user:\"你能帮我看看明天的安排吗？\"",
+      "fake_output": "{\"kind\":\"none\"}",
       "expected": "none",
-      "fake_output": "none",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "emoji",
+      "request": "user:\"🌙\"",
+      "fake_output": "{\"kind\":\"none\"}",
       "expected": "none",
-      "fake_output": "none",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "blank",
+      "request": "user:\"   \"",
+      "fake_output": "{\"kind\":\"none\"}",
       "expected": "none",
-      "fake_output": "none",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "long_story",
+      "request": "user:\"我今天和小北一起去了书店，后来赶上大雨，想先聊聊怎么把明天的事排开。\"",
+      "fake_output": "{\"kind\":\"none\"}",
       "expected": "none",
-      "fake_output": "none",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "english",
+      "request": "user:\"Call me Alex.\"",
+      "fake_output": "{\"kind\":\"user_name\"}",
       "expected": "user_name",
-      "fake_output": "user_name",
-      "valid_kind": true
+      "accepted": true
     },
     {
       "id": "refusal",
+      "request": "assistant:\"先别起名，我想直接开始。\"",
+      "fake_output": "{\"kind\":\"none\"}",
       "expected": "none",
-      "fake_output": "none",
-      "valid_kind": true
+      "accepted": true
     }
-  ]
+  ],
+  "negative_control": {
+    "case_id": "single",
+    "fake_output": "{\"kind\":\"none\"}",
+    "rejected": true
+  }
 }

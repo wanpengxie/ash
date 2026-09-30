@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Review fixture: synthetic context is not an actual device read or file mutation.
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 
 const mode = process.argv[2];
@@ -44,8 +45,13 @@ function staticChecks() {
   for (const [path, body] of Object.entries(skills)) {
     const frontmatter = body.match(/^---\n([\s\S]*?)\n---\n/);
     if (!frontmatter) throw new Error('Missing frontmatter: ' + path);
+    const parsed = spawnSync('ruby', ['-ryaml', '-rjson', '-e',
+      'begin; puts JSON.generate(YAML.safe_load(STDIN.read)); rescue StandardError; exit 2; end'],
+    { input: frontmatter[1], encoding: 'utf8' });
+    if (parsed.status !== 0) throw new Error('Invalid YAML frontmatter: ' + path);
+    const fields = JSON.parse(parsed.stdout);
     for (const field of ['name', 'description', 'whenToUse']) {
-      if (!new RegExp('^' + field + ':\\s*\\S', 'm').test(frontmatter[1])) throw new Error('Missing ' + field + ': ' + path);
+      if (typeof fields[field] !== 'string' || !fields[field].trim()) throw new Error('Missing ' + field + ': ' + path);
     }
   }
   const first = skills[skillPaths[0]];
@@ -75,12 +81,45 @@ async function ask(system, user) {
 const structural = staticChecks();
 await mkdir(output, { recursive: true });
 if (mode === '--mock') {
+  const scripted = new Map([
+    ['user:"小舟"', 'user_name'],
+    ['assistant:"叫我阿宁"', 'user_name'],
+    ['assistant:"你来起"', 'delegate_assistant'],
+    ['user:"hi"', 'none'],
+    ['user:"你能帮我看看明天的安排吗？"', 'none'],
+    ['user:"🌙"', 'none'],
+    ['user:"   "', 'none'],
+    ['user:"我今天和小北一起去了书店，后来赶上大雨，想先聊聊怎么把明天的事排开。"', 'none'],
+    ['user:"Call me Alex."', 'user_name'],
+    ['assistant:"先别起名，我想直接开始。"', 'none'],
+  ]);
+  const fakeModel = async request => {
+    const key = request.messages[0].content;
+    const kind = scripted.get(key);
+    if (!kind) throw new Error('Fake model has no response for ' + key);
+    return { content: [{ type: 'text', text: JSON.stringify({ kind }) }], stop_reason: 'end_turn' };
+  };
+  const judge = (item, response) => {
+    const kind = JSON.parse(response.content[0].text).kind;
+    return response.stop_reason === 'end_turn' && kind === item.expected;
+  };
+  const cases = [];
+  for (const item of names) {
+    const request = { system: skills[skillPaths[0]], messages: [{ role: 'user', content: item.question + ':' + JSON.stringify(item.input) }] };
+    const response = await fakeModel(request);
+    cases.push({ id: item.id, request: request.messages[0].content, fake_output: response.content[0].text,
+      expected: item.expected, accepted: judge(item, response) });
+  }
+  const wrong = { ...await fakeModel({ messages: [{ role: 'user', content: 'user:"小舟"' }] }),
+    content: [{ type: 'text', text: JSON.stringify({ kind: 'none' }) }] };
+  const negative = { case_id: 'single', fake_output: wrong.content[0].text,
+    rejected: !judge(names[0], wrong) };
+  if (cases.some(row => !row.accepted) || !negative.rejected) throw new Error('Fake model judge failed');
   const result = { mode: 'mock', purpose: 'Fixture and routing check only; no semantic model evaluation',
     structural, prompt_file_sha256: hashes,
-    cases: names.map(row => ({ id: row.id, expected: row.expected, fake_output: row.expected,
-      valid_kind: ['user_name', 'assistant_name', 'delegate_assistant', 'none'].includes(row.expected) })) };
+    cases, negative_control: negative };
   await writeFile(new URL('mock.json', output), JSON.stringify(result, null, 2) + '\n');
-  console.log('mock: 10 catalog entries and 3 skill frontmatter files; semantic quality not tested');
+  console.log('mock: 10 scripted model requests accepted, deliberate wrong classification rejected; semantic quality not tested');
   process.exit(0);
 }
 
@@ -104,7 +143,11 @@ for (const item of qualitative) {
   const { reply, stop_reason } = await ask(skills[path] + '\n\nThis is a read-only language review. Context states what was observed; there are no callable tools. Do not invent additional reads, writes, or approvals.',
     'Context: ' + item.context + '\nUser: ' + item.user);
   qualitativeResults.push({ ...item, visible_reply: reply, stop_reason, manual_review_required: true,
-    flags: { unverified_absence_lead: item.id === 'self-read-error' && /^[^。\n]{0,45}(?:没有这条|没有记录|找不到记录)/.test(reply) } });
+    flags: {
+      unverified_absence_lead: item.id === 'self-read-error' && /^[^。\n]{0,45}(?:没有这条|没有记录|找不到记录)/.test(reply),
+      unsupported_other_records: item.id === 'self-known' && /(?:其他资料|别的记录|其余文件)(?:里|中)?.{0,6}(?:没有更多|没有相关|没提到|没找到|不包含)/.test(reply),
+      invented_prior_inspection: item.id === 'forget-denied' && /(?:我(?:已经|刚才|先)?(?:做了)?只读调查|我(?:读过|查过|找到)了?)/.test(reply),
+    } });
   console.log('sample ' + item.id + ': visible end_turn');
 }
 const result = { mode: 'live', model: 'deepseek-flash', endpoint: 'https://api.deepseek.com/anthropic/v1/messages',
