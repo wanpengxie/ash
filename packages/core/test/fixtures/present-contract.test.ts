@@ -16,6 +16,8 @@ test("fake host records a routed approval and rejects missing reply target", asy
     const absent = { ...approval, reply_target: undefined };
     assert.equal((await send(absent)).status, 400);
     assert.equal((await send({ ...approval, reply_target: "https://example.invalid/redirect" })).status, 400);
+    assert.equal((await send({ ...approval, options: [{ id: "once", label: "Once" }] })).status, 400);
+    assert.equal((await send({ ...approval, options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }] })).status, 200);
     const injected = { ...approval, callback_url: "https://example.invalid/redirect" };
     assert.equal((await send(injected)).status, 400);
     const ordinary = { id: "p2", kind: "reply", title: "Hello", text: "Reply text" };

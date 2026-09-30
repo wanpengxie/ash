@@ -54,6 +54,7 @@ export function hostPresentationErrors(value: unknown): string[] {
         if (seen.has(id)) errors.push("duplicate option");
         seen.add(id);
       }
+      if (!seen.has("deny")) errors.push("approval notification needs deny option");
     }
   } else if (item.options !== undefined || item.reply_target !== undefined) errors.push("reply routing is only for approval");
   return errors;

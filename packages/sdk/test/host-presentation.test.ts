@@ -13,6 +13,7 @@ const replyWithTarget: HostPresentationV2 = { ...reply, reply_target: "service:g
 
 test("approval has explicit original ask route and ordinary reply cannot route elsewhere", () => {
   assert.deepEqual(hostPresentationErrors(approval), []);
+  assert.deepEqual(hostPresentationErrors({ ...approval, options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }] }), []);
   assert.deepEqual(hostPresentationErrors(reply), []);
   assert.ok(hostPresentationErrors(missingTarget).some((message) => message.includes("reply_target")));
   assert.ok(hostPresentationErrors(replyWithTarget).some((message) => message.includes("only for approval")));
@@ -22,6 +23,7 @@ test("missing or forged routing and invalid choices are rejected", () => {
   for (const mutation of [
     { reply_to: undefined }, { reply_target: undefined }, { options: undefined }, { expires_at: undefined },
     { reply_target: "" }, { reply_target: "https://example.invalid/redirect" }, { options: [{ id: "later", label: "Later" }] },
+    { options: [{ id: "once", label: "Once" }] },
     { options: [{ id: "once", label: "Once" }, { id: "once", label: "Again" }] },
     { callback_url: "https://example.invalid/redirect" },
   ]) assert.notDeepEqual(hostPresentationErrors({ ...approval, ...mutation }), [], JSON.stringify(mutation));
