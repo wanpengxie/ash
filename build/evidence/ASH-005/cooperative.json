@@ -1,0 +1,44 @@
+{
+  "dsh_root": "/home/xiewanpeng/ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh",
+  "fixture": "in-memory delayed device; resolves on abort",
+  "tool_entered_at_ms": 2047.634984,
+  "signal_at_entry": false,
+  "cancel_at_ms": 2047.682047,
+  "signal_aborted_at_ms": 2050.651874,
+  "tool_returned_at_ms": 2051.515742,
+  "cancel_response": {
+    "cancelled": true
+  },
+  "turn_end_at_ms": 2071.166324,
+  "turn_end_reason": "error",
+  "cancel_to_turn_end_ms": 23.484276999999793,
+  "tool_still_in_flight_at_turn_end": false,
+  "events": [
+    {
+      "type": "agent.tool.call",
+      "data": {
+        "name": "lab__wait",
+        "args": {},
+        "message_id": "msg_dGH1-zdvTpTq"
+      }
+    },
+    {
+      "type": "agent.tool.result",
+      "data": {
+        "name": "lab__wait",
+        "ok": false,
+        "preview": "Error: tool call aborted",
+        "message_id": "msg_dGH1-zdvTpTq"
+      }
+    },
+    {
+      "type": "agent.turn.ended",
+      "data": {
+        "message_id": "msg_dGH1-zdvTpTq",
+        "reason": "error",
+        "error": "undefined"
+      }
+    }
+  ],
+  "pass": true
+}

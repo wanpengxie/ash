@@ -1,0 +1,44 @@
+{
+  "dsh_root": "/home/xiewanpeng/ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh",
+  "fixture": "in-memory delayed device; ignores abort to expose late-result behavior",
+  "tool_entered_at_ms": 2382.473879,
+  "signal_at_entry": false,
+  "cancel_at_ms": 2382.529884,
+  "signal_aborted_at_ms": 2385.549578,
+  "cancel_response": {
+    "cancelled": true
+  },
+  "turn_end_at_ms": null,
+  "turn_end_reason": null,
+  "cancel_to_turn_end_ms": null,
+  "tool_still_in_flight_at_turn_end": false,
+  "tool_returned_at_ms": 7403.430881,
+  "events": [
+    {
+      "type": "agent.tool.call",
+      "data": {
+        "name": "lab__wait",
+        "args": {},
+        "message_id": "msg_O3qTMiSp87FW"
+      }
+    },
+    {
+      "type": "agent.tool.result",
+      "data": {
+        "name": "lab__wait",
+        "ok": false,
+        "preview": "Error: tool call aborted",
+        "message_id": "msg_O3qTMiSp87FW"
+      }
+    },
+    {
+      "type": "agent.turn.ended",
+      "data": {
+        "message_id": "msg_O3qTMiSp87FW",
+        "reason": "error",
+        "error": "undefined"
+      }
+    }
+  ],
+  "pass": true
+}
