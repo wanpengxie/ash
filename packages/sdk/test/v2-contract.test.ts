@@ -115,6 +115,9 @@ test("config fills defaults, preserves legacy root keys, and rejects invalid nes
     { delivery: { dedupe_minutes: -1 } },
     { reflex: { threshold: 1.1 } },
     { reflex: { jev: { key: "inline" } } },
+    { reflex: { jev: [] } },
+    { reflex: { jev: null } },
+    { reflex: { jev: ["unexpected"] } },
     { workers: { model: { provider: "p" } } },
     { memory: { idle_minutes: 0 } },
     { heartbeat: { every_minutes: 0.5 } },
@@ -134,6 +137,11 @@ test("internal schema subset fails closed and compares unique objects independen
   assert.throws(() => matchesSchema({ type: "object", properties: { x: { type: "string", format: "email" } as JsonSchema } }, {}), /unsupported schema keyword format/);
   assert.throws(() => matchesSchema({ minLength: 4 }, "x"), /requires string type/);
   assert.throws(() => matchesSchema({ type: "number", minLength: 4 }, 10), /requires string type/);
+  assert.throws(() => matchesSchema({ type: "string", minLength: "bad" } as unknown as JsonSchema, "x"), /minLength must be a nonnegative integer/);
+  assert.throws(() => matchesSchema({ type: "array", minItems: "bad" } as unknown as JsonSchema, []), /minItems must be a nonnegative integer/);
+  assert.throws(() => matchesSchema({ type: "number", minimum: "bad" } as unknown as JsonSchema, 1), /minimum must be a finite number/);
+  assert.throws(() => matchesSchema({ type: "string", pattern: "[" }, "x"), /invalid pattern/);
+  assert.throws(() => matchesSchema({ type: "array", uniqueItems: "yes" } as unknown as JsonSchema, []), /uniqueItems must be boolean/);
   assert.throws(() => matchesSchema({ properties: { x: { type: "string" } } }, {}), /requires object type/);
   assert.throws(() => matchesSchema({ items: { type: "string" } }, []), /requires array type/);
   assert.throws(() => matchesSchema({ minimum: 1 }, 2), /requires number type/);

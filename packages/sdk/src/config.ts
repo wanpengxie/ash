@@ -38,14 +38,17 @@ export const WORLD_CONFIG_SCHEMA_V2: JsonSchema = {
 
 /** Fill only this protocol's settings; existing top-level application settings survive. */
 export function resolveWorldConfigV2<T extends Record<string, unknown>>(input: T): T & WorldConfigV2 {
+  const plainObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+  if (!plainObject(input)) throw new TypeError("config: expected object");
   const merged = { ...input, ...structuredClone(DEFAULT_WORLD_CONFIG_V2) } as Record<string, unknown>;
   for (const key of Object.keys(DEFAULT_WORLD_CONFIG_V2)) {
     const value = input[key];
     if (value === undefined) continue;
-    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${key}: expected object`);
-    const section = { ...(merged[key] as Record<string, unknown>), ...(value as Record<string, unknown>) };
-    if (key === "reflex" && (value as Record<string, unknown>).jev && typeof (value as Record<string, unknown>).jev === "object") {
-      section.jev = { ...DEFAULT_WORLD_CONFIG_V2.reflex.jev, ...((value as Record<string, unknown>).jev as object) };
+    if (!plainObject(value)) throw new TypeError(`${key}: expected object`);
+    const section = { ...(merged[key] as Record<string, unknown>), ...value };
+    if (key === "reflex" && Object.hasOwn(value, "jev")) {
+      if (!plainObject(value.jev)) throw new TypeError("reflex.jev: expected object");
+      section.jev = { ...DEFAULT_WORLD_CONFIG_V2.reflex.jev, ...value.jev };
     }
     merged[key] = section;
   }

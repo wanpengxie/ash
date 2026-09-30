@@ -18,6 +18,24 @@ function assertInternalSchema(schema: JsonSchema, path = "$", active = new WeakS
   for (const [type, keywords] of Object.entries(typedKeywords)) {
     for (const keyword of keywords) if (Object.hasOwn(schema, keyword) && schema.type !== type && !(type === "number" && schema.type === "integer") && !(type === "integer" && schema.type === "number")) throw new TypeError(`${path}: ${keyword} requires ${type} type`);
   }
+  for (const keyword of ["minLength", "maxLength", "minItems", "maxItems"] as const) {
+    const bound = schema[keyword];
+    if (bound !== undefined && (!Number.isInteger(bound) || bound < 0)) throw new TypeError(`${path}: ${keyword} must be a nonnegative integer`);
+  }
+  for (const keyword of ["minimum", "maximum"] as const) {
+    const bound = schema[keyword];
+    if (bound !== undefined && (typeof bound !== "number" || !Number.isFinite(bound))) throw new TypeError(`${path}: ${keyword} must be a finite number`);
+  }
+  if (schema.minLength !== undefined && schema.maxLength !== undefined && schema.minLength > schema.maxLength) throw new TypeError(`${path}: invalid string bounds`);
+  if (schema.minItems !== undefined && schema.maxItems !== undefined && schema.minItems > schema.maxItems) throw new TypeError(`${path}: invalid array bounds`);
+  if (schema.minimum !== undefined && schema.maximum !== undefined && schema.minimum > schema.maximum) throw new TypeError(`${path}: invalid numeric bounds`);
+  if (schema.uniqueItems !== undefined && typeof schema.uniqueItems !== "boolean") throw new TypeError(`${path}: uniqueItems must be boolean`);
+  if (schema.pattern !== undefined) {
+    if (typeof schema.pattern !== "string") throw new TypeError(`${path}: pattern must be string`);
+    try { new RegExp(schema.pattern); } catch { throw new TypeError(`${path}: invalid pattern`); }
+  }
+  if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some((key) => typeof key !== "string") || new Set(schema.required).size !== schema.required.length)) throw new TypeError(`${path}: invalid required keys`);
+  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0)) throw new TypeError(`${path}: enum must be a non-empty array`);
   if (schema.properties !== undefined) {
     if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) throw new TypeError(`${path}: invalid properties`);
     for (const [key, child] of Object.entries(schema.properties)) assertInternalSchema(child, `${path}.properties.${key}`, active);
