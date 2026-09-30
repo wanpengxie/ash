@@ -17,6 +17,8 @@ The focused tests use temporary synthetic SQLite databases and fake members/devi
 
 On the current v2 base, `npm run -s typecheck` passed. The focused router file is run without `--test-force-exit`; the full suite's pass/skip count should be taken from the command's current output because unrelated tests change on the shared integration branch. The skipped word-route skeletons are not runtime evidence.
 
+After merging v2's natural-exit test runner, the full `npm test` process exited normally with 136 pass, 57 intentional skips, 0 failures (193 total). `npm run -s build:core` completed. The public-term scan against the private out-of-repository term list scanned 310 tracked public files and found 0 matches; the term list itself is neither printed nor committed.
+
 ## Claims covered by the focused tests
 
 - Request acceptance, `client_id` retry identity, matching `reply_to`, one response, and a matching external response (F-W01).
