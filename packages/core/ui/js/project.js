@@ -44,9 +44,9 @@ function safeAttachments(value) {
 
 function legacyMetadata(value, m) {
   if (!object(value) || !Number.isSafeInteger(value.seq) || value.seq < 1 || typeof value.workspace !== "string" || !value.workspace || typeof value.member !== "string" || !/^agent:[^:]+$/.test(value.member)) return null;
-  const ownerToAgent = m.from === "person:owner" && m.to === value.member;
+  const inboundToAgent = typeof m.from === "string" && m.from.length > 0 && m.to === value.member;
   const agentToOwner = m.from === value.member && m.to === "person:owner";
-  return ownerToAgent || agentToOwner ? { seq: value.seq, workspace: value.workspace, member: value.member } : null;
+  return inboundToAgent || agentToOwner ? { seq: value.seq, workspace: value.workspace, member: value.member } : null;
 }
 
 function record(m) {
@@ -63,7 +63,7 @@ function record(m) {
   if (m.kind === "request" && m.word === "say" && typeof b.text === "string") {
     if (Object.hasOwn(b, "legacy")) {
       const legacy = legacyMetadata(b.legacy, m);
-      return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : "agent", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
+      return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : m.from === legacy.member ? "agent" : "inbound", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
     }
     if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
     if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments), kind: string(b.kind) };
