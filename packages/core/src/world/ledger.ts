@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
-import type { Message, ResponseBody } from "../../../sdk/src/api";
+import type { LegacyConversationMetadata, Message, ResponseBody } from "../../../sdk/src/api";
 
 type Row = Record<string, unknown>;
 type NewMessage = Pick<Message, "from" | "to" | "kind" | "word" | "body"> & Pick<Partial<Message>, "reply_to" | "origin" | "turn">;
@@ -28,27 +28,45 @@ function integrity(db: DatabaseSync): void {
   if (!result || Object.values(result)[0] !== "ok") throw new Error("SQLite integrity check failed");
 }
 
+/** Fingerprint all pre-migration schema and table rows, including non-event durable state. */
+function snapshotFingerprint(db: DatabaseSync): string {
+  const hash = createHash("sha256");
+  const schema = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all() as Row[];
+  for (const entry of schema) hash.update(stable(entry)).update("\n");
+  for (const entry of schema.filter((item) => item.type === "table")) {
+    const table = String(entry.name).replaceAll('"', '""');
+    hash.update(`table:${table}\n`);
+    for (const row of db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).iterate() as Iterable<Row>) hash.update(stable(row)).update("\n");
+  }
+  return hash.digest("hex");
+}
+
 /** Online, WAL-consistent snapshot made before the first schema write. Never checkpoints source. */
 async function ensureBackup(file: string): Promise<string> {
   const source = new DatabaseSync(file);
   try {
     source.exec("PRAGMA query_only=ON");
-    const sourceLast = Number((source.prepare("SELECT MAX(seq) AS n FROM events").get() as Row).n ?? 0);
+    const sourceFingerprint = snapshotFingerprint(source);
     let target = `${file}.v10.backup`;
     if (existsSync(target)) {
       const existing = new DatabaseSync(target);
       try {
         existing.exec("PRAGMA query_only=ON"); integrity(existing);
-        const backupLast = Number((existing.prepare("SELECT MAX(seq) AS n FROM events").get() as Row).n ?? 0);
-        if (backupLast === sourceLast) return target;
-        if (backupLast > sourceLast) throw new Error("legacy source is older than its migration backup");
-        target = `${target}.${sourceLast}`;
+        if (snapshotFingerprint(existing) === sourceFingerprint) {
+          if (snapshotFingerprint(source) !== sourceFingerprint) throw new Error("source changed while verifying migration backup");
+          return target;
+        }
+        target = `${target}.${sourceFingerprint.slice(0, 16)}`;
       } finally { existing.close(); }
     }
     if (existsSync(target)) {
       const existing = new DatabaseSync(target);
-      try { existing.exec("PRAGMA query_only=ON"); integrity(existing); }
+      try {
+        existing.exec("PRAGMA query_only=ON"); integrity(existing);
+        if (snapshotFingerprint(existing) !== sourceFingerprint) throw new Error("migration backup name collision or inconsistent source");
+      }
       finally { existing.close(); }
+      if (snapshotFingerprint(source) !== sourceFingerprint) throw new Error("source changed while verifying migration backup");
       return target;
     }
     const dir = mkdtempSync(join(dirname(file), `.${basename(file)}-backup-`));
@@ -57,7 +75,10 @@ async function ensureBackup(file: string): Promise<string> {
       await backup(source, temp);
       chmodSync(temp, 0o600);
       const check = new DatabaseSync(temp);
-      try { check.exec("PRAGMA query_only=ON"); integrity(check); } finally { check.close(); }
+      try {
+        check.exec("PRAGMA query_only=ON"); integrity(check);
+        if (snapshotFingerprint(check) !== sourceFingerprint || snapshotFingerprint(source) !== sourceFingerprint) throw new Error("source changed during online backup; retry after writer stops");
+      } finally { check.close(); }
       // Earlier recovery points are never overwritten when old v1 events grew after a failed attempt.
       if (!existsSync(target)) renameSync(temp, target);
       return target;
@@ -90,6 +111,7 @@ const legacyKey = (workspace: string, key: string) => `${workspace}\0${key}`;
 
 function fromLegacy(row: LegacyRow, state: MigrationState): NewMessage {
   const data = obj(JSON.parse(row.data));
+  const legacy: LegacyConversationMetadata = { seq: row.seq, workspace: row.workspace, member: row.member };
   const from = str(data.from, row.member);
   const context = legacyKey(row.workspace, str(data.message_id));
   const actor = legacyKey(row.workspace, row.member);
@@ -101,13 +123,13 @@ function fromLegacy(row: LegacyRow, state: MigrationState): NewMessage {
     case "message.delivered": {
       const id = str(data.message_id);
       if (id) state.deliveries.set(legacyKey(row.workspace, id), idFromSeq(row.seq));
-      const body: Row = { text: str(data.text) };
+      const body: Row = { text: str(data.text), legacy };
       if (Array.isArray(data.attachments)) body.attachments = data.attachments;
       const origin = typeof data.origin === "string" ? { screen: "legacy", label: data.origin } : undefined;
       return { from, to: str(data.to, "agent:main"), kind: "request", word: "say", body, ...(origin ? { origin } : {}) };
     }
     case "agent.text":
-      return { from: row.member, to: "person:owner", kind: "request", word: "say", body: { text: str(data.text), kind: "reply" }, ...(state.deliveries.has(context) ? { reply_to: state.deliveries.get(context) } : {}), ...(turn ? { turn } : {}) };
+      return { from: row.member, to: "person:owner", kind: "request", word: "say", body: { text: str(data.text), kind: "reply", legacy }, ...(state.deliveries.has(context) ? { reply_to: state.deliveries.get(context) } : {}), ...(turn ? { turn } : {}) };
     case "agent.turn.started": {
       const current = turnFromSeq(row.seq);
       state.turns.set(context, current);
@@ -260,10 +282,10 @@ export class Ledger {
       }
       const id = newId();
       const ts = Date.now();
-      const result = this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, input.from, input.to, input.kind, input.word, JSON.stringify(input.body), input.reply_to ?? null, input.origin ? JSON.stringify(input.origin) : null, input.turn ?? null);
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, input.from, input.to, input.kind, input.word, JSON.stringify(input.body), input.reply_to ?? null, input.origin ? JSON.stringify(input.origin) : null, input.turn ?? null);
       if (retry) this.db.prepare("INSERT INTO client_retries (scope_hash,client_id,payload_hash,message_id) VALUES (?,?,?,?)").run(scope, retry.clientId, payload, id);
       this.db.exec("COMMIT");
-      return { message: { seq: Number(result.lastInsertRowid), id, ts, ...input }, duplicate: false };
+      return { message: this.byId(id)!, duplicate: false };
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -40,6 +40,7 @@ test("synthetic v10 migration preserves conversation, order, timestamps and lega
     assert.deepEqual(migrated.map((m) => m.ts), old.map((e) => e.ts));
     assert.equal(migrated[0].word, "say");
     assert.equal(migrated[0].body.text, "Synthetic hello");
+    assert.deepEqual(migrated[0].body.legacy, { seq: old[0].seq, workspace: "home", member: "person:owner" });
     assert.equal((migrated[0].body.attachments as unknown[]).length, 1);
     assert.equal(migrated[7].body.text, "Synthetic answer");
     assert.equal(migrated[7].body.kind, "reply");
@@ -49,6 +50,10 @@ test("synthetic v10 migration preserves conversation, order, timestamps and lega
     assert.equal(migrated[8].body.turn, migrated[1].turn);
     assert.equal(migrated[5].turn, migrated[1].turn);
     assert.equal(migrated[13].body.text, "Synthetic second workspace");
+    assert.deepEqual(migrated[13].body.legacy, { seq: old[13].seq, workspace: "secondary", member: "person:owner" });
+    assert.deepEqual(migrated[14].body.legacy, { seq: old[14].seq, workspace: "secondary", member: "agent:helper" });
+    assert.equal(migrated[14].from, "agent:helper");
+    assert.equal(migrated[13].to, "agent:helper");
     assert.equal(migrated[14].reply_to, migrated[13].id);
     assert.equal(migrated[3].kind, "request");
     assert.equal(migrated[4].kind, "response");
@@ -76,6 +81,9 @@ test("append and stable-transport retry claim commit atomically; response settle
     const first = ledger.append(input, retry);
     assert.equal(first.duplicate, false);
     assert.equal(first.message.seq, 17);
+    input.body.meta.a = 99;
+    assert.equal((first.message.body.meta as { a: number }).a, 1, "returned message must not share mutable caller body");
+    input.body.meta.a = 1;
     const second = ledger.append({ ...input, body: { meta: { b: 2, a: 1 }, text: "Hi" } }, retry);
     assert.equal(second.duplicate, true);
     assert.deepEqual(second.message, first.message);
@@ -150,6 +158,51 @@ test("a failed attempt followed by new v1 events keeps the first backup and take
     assert.equal(rows(`${file}.v10.backup`, "events").length, 16);
     assert.equal(rows(ledger.migration.backup!, "events").length, 17);
   } finally { ledger.close(); }
+});
+
+test("same event max with changed middle row or another durable table never reuses an old backup", async () => {
+  for (const changed of ["event", "timer"] as const) {
+    const file = isolated();
+    const originalBackup = `${file}.v10.backup`;
+    copyFileSync(file, originalBackup);
+    const db = new DatabaseSync(file);
+    try {
+      if (changed === "event") db.prepare("UPDATE events SET data=? WHERE seq=4").run(JSON.stringify({ name: "calendar.search", args: { synthetic: "changed" }, message_id: "msg-a" }));
+      else db.prepare("INSERT INTO timers(id,owner,text,fire_at,repeat_seconds,created_by) VALUES(?,?,?,?,?,?)").run("timer-late", "agent:main", "synthetic", 123, null, "person:owner");
+    } finally { db.close(); }
+    const oldMax = Number(rows(originalBackup, "events").at(-1)!.seq);
+    const ledger = await Ledger.open(file);
+    try {
+      assert.equal(ledger.migration.lastLegacySeq, oldMax);
+      assert.notEqual(ledger.migration.backup, originalBackup);
+      assert.ok(ledger.migration.backup && existsSync(ledger.migration.backup));
+      assert.equal(rows(originalBackup, "events").length, 16);
+      const current = new DatabaseSync(file);
+      const safe = new DatabaseSync(ledger.migration.backup!);
+      const prior = new DatabaseSync(originalBackup);
+      try {
+        if (changed === "event") {
+          const read = (database: DatabaseSync) => (database.prepare("SELECT data FROM events WHERE seq=4").get() as { data: string }).data;
+          assert.notEqual(read(prior), read(current));
+          assert.equal(read(safe), read(current));
+        } else {
+          assert.equal((prior.prepare("SELECT COUNT(*) n FROM timers").get() as { n: number }).n, 0);
+          assert.equal((safe.prepare("SELECT COUNT(*) n FROM timers").get() as { n: number }).n, 1);
+        }
+      } finally { current.close(); safe.close(); prior.close(); }
+    } finally { ledger.close(); }
+  }
+});
+
+test("an existing corrupt backup blocks migration and is never overwritten", async () => {
+  const file = isolated();
+  const backup = `${file}.v10.backup`;
+  writeFileSync(backup, "not a SQLite database");
+  await assert.rejects(Ledger.open(file));
+  assert.equal(existsSync(backup), true);
+  const db = new DatabaseSync(file);
+  try { assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").get(), undefined); }
+  finally { db.close(); }
 });
 
 test("a committed client retry survives process death before acknowledgement", async () => {
