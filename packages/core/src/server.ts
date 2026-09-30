@@ -14,7 +14,7 @@ import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { AshApiError, type AshEvent } from "../../sdk/src/api";
 import { type Core, OWNER, PHONE } from "./core";
 import { handleMcp } from "./mcp";
-import { ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
+import { AVATARS, ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
 
 export interface Tokens {
   /** API token → member id it speaks for. */
@@ -56,6 +56,7 @@ function same(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+const FACES = new Map(Object.entries(AVATARS).map(([k, v]) => [`/avatars/${k}.webp`, Buffer.from(v, "base64")]));
 const json = (status: number, body: unknown): Res => ({ status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, body: JSON.stringify(body) });
 
 export class Router {
@@ -101,6 +102,7 @@ export class Router {
       // ---- static (anonymous: the PWA manifest and icon are fetched without cookies)
       if (req.method === "GET" && path === "/manifest.webmanifest") return { status: 200, headers: { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }, body: WEB_MANIFEST };
       if (req.method === "GET" && path === "/icon.svg") return { status: 200, headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" }, body: ICON_SVG };
+      if (req.method === "GET" && FACES.has(path)) return { status: 200, headers: { "content-type": "image/webp", "cache-control": "public, max-age=86400" }, body: FACES.get(path) };
 
       // ---- UI: /?token=… trades the token for an HttpOnly cookie (local only)
       if (req.method === "GET" && (path === "/" || path === "/index.html")) {
