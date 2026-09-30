@@ -3,6 +3,7 @@ package ai.ash.permissionprobe;
 import android.Manifest;
 import android.app.Activity;
 import android.app.NotificationManager;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
@@ -23,8 +24,16 @@ public final class ProbeActivity extends Activity {
         column.addView(status);
         add(column, "Request calendar access", v ->
             requestPermissions(new String[]{Manifest.permission.READ_CALENDAR}, 1));
-        add(column, "Open notification listener settings", v ->
-            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        add(column, "Open notification listener settings", v -> {
+            Intent detail = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS);
+            detail.putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                new ComponentName(this, ProbeListener.class).flattenToString());
+            try {
+                startActivity(detail);
+            } catch (android.content.ActivityNotFoundException unavailable) {
+                startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+            }
+        });
         setContentView(column);
         refresh();
     }
