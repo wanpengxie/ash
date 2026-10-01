@@ -32,25 +32,6 @@ class WakeReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) = CoreService.start(ctx, CoreService.ACTION_WAKE)
 }
 
-/** ✓ / ✗ on a confirmation notification → answered through ash core as the phone. */
-class ConfirmReceiver : BroadcastReceiver() {
-    override fun onReceive(ctx: Context, intent: Intent) {
-        val id = intent.getStringExtra("id") ?: return
-        val approve = intent.getBooleanExtra("approve", false)
-        val pending = goAsync()
-        Thread {
-            try {
-                CoreClient(ctx).answer(id, approve)
-            } catch (e: Exception) {
-                Log.w("ash.confirm", "answer failed", e)
-            } finally {
-                Notifications.hideConfirm(ctx, id)
-                pending.finish()
-            }
-        }.start()
-    }
-}
-
 /**
  * Start/stop/restart from tooling: `adb shell am broadcast -n ai.ash.agent/ai.ash.host.ControlReceiver -a ai.ash.STOP`.
  * Guarded by android.permission.DUMP, which only the shell and the system hold — other apps cannot use it.

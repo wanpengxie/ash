@@ -52,6 +52,8 @@ android {
 
     buildTypes {
         debug {
+            // Opt-in isolated package for emulator probes; never replace the owner's installed app.
+            if (providers.gradleProperty("ashIsolatedProbe").orNull == "true") applicationIdSuffix = ".probe"
             // A stable debug key across machines (so updates install over each other).
             val shared = System.getenv("ASH_DEBUG_KEYSTORE")
             if (shared != null) signingConfig = signingConfigs.create("sharedDebug") {
