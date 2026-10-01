@@ -1,7 +1,7 @@
 // Isolated Chrome + real inbox/HTTP/SSE conversation probe; no personal browser profile.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -42,6 +42,9 @@ async function until(check, label, timeout = 15_000) {
 }
 
 const directory = mkdtempSync(join(tmpdir(), "ash-conversation-probe-"));
+mkdirSync(join(directory, "workspace"));
+writeFileSync(join(directory, "workspace", "card.txt"), "card file bytes");
+writeFileSync(join(directory, "workspace", "card.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/tS8AAAAASUVORK5CYII=", "base64"));
 const ledger = await Ledger.open(join(directory, "ledger.db"));
 const world = new WorldRouter(ledger, async () => true);
 const members = new WorldMembers(world);
@@ -75,7 +78,7 @@ const agent = createAgentMember({ ledger, router: world, stateDir: join(director
 } });
 members.register(new OwnerMember("Owner", ledger));
 members.register(agent);
-const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 7) });
+const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 7), workspaces: { home: join(directory, "workspace") } });
 members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
 const originalHandle = edge.handle.bind(edge);
 edge.handle = async (request, caller) => {
@@ -209,8 +212,17 @@ try {
   await until(async () => await evaluate("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Race choice'))?.textContent.includes('已选择')") &&
     await evaluateSecond("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Race choice'))?.textContent.includes('已选择')"), "both screens show locked card");
   assert.equal(ledger.list({ limit: 1000 }).filter((message) => message.from === "person:owner" && message.word === "say" && message.body?.in_reply_to === racedCard).length, 1);
+  for (const card of [
+    { type: "file", workspace: "home", path: "card.txt", name: "card.txt", mime_type: "text/plain", size: 15 },
+    { type: "image", workspace: "home", path: "card.png", alt: "one pixel" },
+    { type: "link", url: "https://example.com/path", title: "Example" },
+  ]) await world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false },
+    { to: "person:owner", kind: "request", word: "show", body: { card } });
+  await until(() => evaluate("[...document.querySelectorAll('#log .card a')].some(x=>x.textContent==='card.txt') && [...document.querySelectorAll('#log .card img')].some(x=>x.alt==='one pixel'&&x.naturalWidth===1) && [...document.querySelectorAll('#log .card a')].some(x=>x.textContent==='Example')"), "file image and link cards rendered");
+  const openedCards = await evaluate("(async()=>{const links=[...document.querySelectorAll('#log .card a')];const file=links.find(x=>x.textContent==='card.txt');const external=links.find(x=>x.textContent==='Example');return {bytes:await(await fetch(file.href)).text(),link:external.href,target:external.target}})()");
+  assert.deepEqual(openedCards, { bytes: "card file bytes", link: "https://example.com/path", target: "_blank" });
   console.log(JSON.stringify({ result: "PASS", browser: "Chrome", sendingDeliveredRead: true, groupedReplies: 2, reactionOnOwnerBubble: true, offlineAccepted: 1, offlineRunnerReceipts: 1,
-    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked", crossScreenOptionAccepted: 1 }));
+    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked", crossScreenOptionAccepted: 1, fileImageLinkCards: true }));
 } finally {
   firstSendRelease();
   readRelease();
