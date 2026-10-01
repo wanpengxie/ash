@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fold, initialView } from "../js/project.js";
-import { approvalSections, renderApprovalsSheet } from "../js/sheet-approvals.js";
+import { answerGateAsk, approvalSections, renderApprovalsSheet } from "../js/sheet-approvals.js";
 
 class Node {
-  constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.className = ""; this.value = ""; }
+  constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.className = ""; this.value = ""; this.listeners = {}; }
   append(child) { this.children.push(child); }
   replaceChildren(...children) { this.children = children; }
+  addEventListener(name, listener) { this.listeners[name] = listener; }
   set textContent(value) { this.value = String(value); this.children = []; }
   get textContent() { return this.value + this.children.map((child) => child.textContent).join(""); }
 }
@@ -80,4 +81,57 @@ test("the read-only sheet limits text, rejects malformed option sets and never r
   assert.equal(sections.pending[0].title.length, 240);
   assert.equal(nodes.some((node) => node.tag === "script" || node.tag === "button"), false);
   assert.match(nodes.find((node) => node.tag === "article").textContent, /<script>/);
+});
+
+test("answer sends only an original gate option from the current screen and waits for its exact ledger response", async () => {
+  const ask = approvalSections(fold(initialView(), gateAsk("gate-live", 7)), 5000).pending[0];
+  const sent = [];
+  const ledger = new Map();
+  const net = { token: "token-r", screen: "screen:remote", currentScope: "scope-r", generation: 2,
+    request: async (_path, options) => {
+      sent.push({ ...options, wire: JSON.parse(options.body) });
+      ledger.set("response-1", { id: "response-1", seq: 8, from: "person:owner", to: "service:gate",
+        kind: "response", word: "ask", reply_to: ask.id, origin: { screen: net.screen, label: "Remote" },
+        body_summary: { ok: true, result: { choice: "once" } } });
+      return { ok: true, json: async () => ({ id: "response-1", seq: 8 }) };
+    } };
+  const result = await answerGateAsk(net, () => true, ask, "once", "stable-1", (id) => ledger.get(id), { now: () => 5000 });
+  assert.deepEqual(result, { id: "response-1", seq: 8 });
+  assert.equal(sent[0].headers["Ash-Screen"], "token-r");
+  assert.deepEqual(sent[0].wire, { to: "service:gate", kind: "response", word: "ask", reply_to: "gate-live",
+    body: { ok: true, result: { choice: "once" } }, client_id: "stable-1" });
+  assert.equal(Object.hasOwn(sent[0].wire, "local_management"), false);
+  await assert.rejects(answerGateAsk(net, () => true, ask, "always", "stable-2", () => null, { now: () => 5000 }), /选项不可用/);
+  assert.equal(sent.length, 1, "unoffered choice has zero network calls");
+});
+
+test("expired, forged, stale or mismatched ledger answers cannot be marked confirmed", async () => {
+  const ask = approvalSections(fold(initialView(), gateAsk("gate-live", 7)), 5000).pending[0];
+  let calls = 0;
+  const net = { token: "token-r", screen: "screen:remote", currentScope: "scope-r", generation: 2,
+    request: async () => { calls++; return { ok: true, json: async () => ({ id: "response-1", seq: 8 }) }; } };
+  await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => null, { now: () => 9000 }), /已失效/);
+  await assert.rejects(answerGateAsk(net, () => true, { ...ask, from: "agent:main" }, "once", "stable", () => null, { now: () => 5000 }), /已失效/);
+  assert.equal(calls, 0);
+  const fake = { id: "response-1", seq: 8, from: "person:owner", to: "service:gate", kind: "response",
+    word: "ask", reply_to: ask.id, origin: { screen: "screen:other" }, body_summary: { ok: true, result: { choice: "once" } } };
+  await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => fake,
+    { now: () => 5000, maxWaitMs: 0 }), /权威记录/);
+  assert.equal(calls, 1);
+  net.request = async () => { calls++; net.currentScope = "scope-other"; return { ok: true, json: async () => ({ id: "response-1", seq: 8 }) }; };
+  await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => fake,
+    { now: () => 5000, maxWaitMs: 0 }), /屏幕身份/);
+  assert.equal(calls, 2);
+});
+
+test("5xx, timeout and rate limiting are unknown ACKs, not definitive rejection", async () => {
+  const ask = approvalSections(fold(initialView(), gateAsk("gate-live", 7)), 5000).pending[0];
+  const net = { token: "token-r", screen: "screen:remote", currentScope: "scope-r", generation: 2,
+    request: async () => ({ ok: false, status: 503 }) };
+  for (const status of [503, 408, 429]) {
+    net.request = async () => ({ ok: false, status });
+    await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => null, { now: () => 5000 }), /回执未知.*原样重试/);
+  }
+  net.request = async () => ({ ok: false, status: 403 });
+  await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => null, { now: () => 5000 }), /无权回答/);
 });

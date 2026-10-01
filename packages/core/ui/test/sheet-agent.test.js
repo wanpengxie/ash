@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentSheet, cancelClockForScreen, safeActivityView } from "../js/sheet-agent.js";
+import { approvalSections } from "../js/sheet-approvals.js";
 
 class Element {
   constructor(tag) {
@@ -18,7 +19,7 @@ class Element {
   querySelector(selector) { return this.named?.[selector]; }
 }
 
-function fixture({ localManagement = true, request, getView = () => ({ turns: {} }), idFactory = () => "cancel-client-one" } = {}) {
+function fixture({ localManagement = true, request, getView = () => ({ turns: {} }), getLedgerMessage = () => null, idFactory = () => "cancel-client-one" } = {}) {
   globalThis.document = { createElement: (tag) => new Element(tag), createDocumentFragment: () => new Element("fragment") };
   const root = new Element("aside");
   root.named = { "#agentTabs": new Element("nav"), "#agentPanel": new Element("div"), "#agentClose": new Element("button") };
@@ -28,7 +29,7 @@ function fixture({ localManagement = true, request, getView = () => ({ turns: {}
       return { ok: true, json: async () => ({ id: "id", reply: { kind: "response", reply_to: "id", from: "service:self",
         to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
     }) };
-  const sheet = new AgentSheet(root, net, { confirmDiscard: () => false, getView, idFactory });
+  const sheet = new AgentSheet(root, net, { confirmDiscard: () => false, getView, getLedgerMessage, idFactory });
   return { root, net, sheet };
 }
 
@@ -44,8 +45,8 @@ test("five tabs show safe activity, and failed clock never claims empty", async 
     await f.sheet.show("upcoming");
     assert.match(f.sheet.panels.get("upcoming").textContent, /不能据此判断待办为空/);
     await f.sheet.show("approvals");
-    assert.match(f.sheet.panels.get("approvals").textContent, /不能确认操作/);
-    assert.equal(f.sheet.panels.get("approvals").children.length, 1, "no fake approval button");
+    assert.match(f.sheet.panels.get("approvals").textContent, /当前没有可确认的待批请求/);
+    assert.match(f.sheet.panels.get("approvals").textContent, /不能据此判断没有规则/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -248,6 +249,74 @@ function clockResponse(word, result) {
     body: { ok: true, result },
   } }) };
 }
+
+const pendingGateAsk = () => ({ id: "gate-ask", seq: 7, from: "service:gate", state: "pending",
+  options_valid: true, title: "发送一条测试消息？", detail: "仅合成内容", expires_at: Date.now() + 60_000,
+  options: [{ id: "once", label: "仅这次" }, { id: "deny", label: "拒绝" }] });
+
+test("remote approval double click is single-flight; unknown ACK retries only the same choice and client id", async () => {
+  const ask = pendingGateAsk();
+  const calls = [];
+  let releaseFirst;
+  let ledgerResponse = null;
+  const f = fixture({ localManagement: false, getView: () => ({ asks: [ask] }),
+    getLedgerMessage: () => ledgerResponse, idFactory: () => "stable-answer-id",
+    request: async (_path, options) => {
+      const wire = JSON.parse(options.body);
+      if (wire.to === "service:self") return clockResponse("read", {});
+      calls.push(wire);
+      if (calls.length === 1) return new Promise((_resolve, reject) => { releaseFirst = () => reject(new Error("synthetic lost ACK")); });
+      ledgerResponse = { id: "answer-1", seq: 8, from: "person:owner", to: "service:gate", kind: "response",
+        word: "ask", reply_to: ask.id, origin: { screen: f.net.screen },
+        body_summary: { ok: true, result: { choice: "once" } } };
+      return { ok: true, json: async () => ({ id: "answer-1", seq: 8 }) };
+    } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("approvals");
+    const shown = approvalSections(f.sheet.getView()).pending[0];
+    const binding = f.sheet.session;
+    const epoch = f.sheet.loadEpoch;
+    const first = f.sheet.answerApproval(shown, "once", binding, epoch);
+    await f.sheet.answerApproval(shown, "once", binding, epoch);
+    assert.equal(calls.length, 1, "double click cannot duplicate a pending response");
+    releaseFirst();
+    await first;
+    assert.equal(f.sheet.answerIntents.get(ask.id).status, "uncertain");
+    assert.match(f.sheet.panels.get("approvals").textContent, /结果未确认/);
+    await f.sheet.answerApproval(shown, "deny", binding, epoch);
+    assert.equal(calls.length, 1, "unknown ACK cannot change the intended choice");
+    await f.sheet.answerApproval(shown, "once", binding, epoch);
+    assert.deepEqual(calls.map((call) => call.client_id), ["stable-answer-id", "stable-answer-id"]);
+    assert.deepEqual(calls.map((call) => call.body.result.choice), ["once", "once"]);
+    assert.equal(f.sheet.answerIntents.get(ask.id).status, "confirmed");
+    assert.match(f.sheet.panels.get("approvals").textContent, /记录中确认/);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+test("late remote approval ACK after auth-scope change cannot confirm or retain an intent", async () => {
+  const ask = pendingGateAsk();
+  let release;
+  const f = fixture({ localManagement: false, getView: () => ({ asks: [ask] }),
+    request: async (_path, options) => {
+      const wire = JSON.parse(options.body);
+      if (wire.to === "service:self") return clockResponse("read", {});
+      return new Promise((resolve) => { release = () => resolve({ ok: true, json: async () => ({ id: "answer-1", seq: 8 }) }); });
+    } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("approvals");
+    const shown = approvalSections(f.sheet.getView()).pending[0];
+    const pending = f.sheet.answerApproval(shown, "deny", f.sheet.session, f.sheet.loadEpoch);
+    f.net.currentScope = "scope-b";
+    f.sheet.registration();
+    release();
+    await pending;
+    assert.equal(f.sheet.answerIntents.size, 0);
+    assert.equal(f.root.classList.contains("open"), false);
+    assert.doesNotMatch(f.root.textContent, /记录中确认/);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
 
 test("remote identity is read-only; scope loss discards draft and delayed read", async () => {
   let release;
