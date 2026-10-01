@@ -13,6 +13,8 @@ export class SettingsControls {
     this.allowed = false;
     this.connected = false;
     this.section = null;
+    this.sectionContext = null;
+    this.preferences = null;
     this.render();
   }
 
@@ -34,9 +36,15 @@ export class SettingsControls {
   }
 
   render() {
+    const usable = this.allowed && this.connected && this.net.localManagement === true && Boolean(this.net.token);
+    const context = usable ? `${this.net.currentScope ?? ""}\0${this.net.screen ?? ""}\0${this.net.token}` : null;
+    if (this.section && context && context === this.sectionContext) return;
+    this.preferences?.dispose();
+    this.preferences = null;
     this.panel.replaceChildren(node("h2", "设置"));
     this.section = null;
-    if (!this.allowed || !this.connected || this.net.localManagement !== true || !this.net.token) {
+    this.sectionContext = null;
+    if (!usable) {
       this.panel.append(node("p", "更多设置尚未接入。", "muted"));
       return;
     }
@@ -82,7 +90,14 @@ export class SettingsControls {
     yes.addEventListener("click", () => { confirmation.hidden = true; void run("resume"); });
     no.addEventListener("click", () => { confirmation.hidden = true; });
     section.append(heading, pause, resume, confirmation, feedback);
+    const preferencesRoot = document.createElement("section");
+    preferencesRoot.id = "settingsProactive";
+    section.append(preferencesRoot);
     this.panel.append(section);
     this.section = section;
+    this.sectionContext = context;
+    this.preferences = new ProactivePreferences(preferencesRoot, this.net,
+      () => this.section === section && this.connected && this.allowed);
   }
 }
+import { ProactivePreferences } from "./settings-preferences.js";
