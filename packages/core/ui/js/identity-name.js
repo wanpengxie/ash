@@ -4,12 +4,12 @@ const DEFAULT_NAME = "Ash";
 
 /** The display name is one field of the managed identity file, not a status guess. */
 export function nameFromIdentity(content) {
-  if (typeof content !== "string") return null;
+  if (typeof content !== "string" || content.length > 65_536) return null;
   const lines = content.split(/\r?\n/);
   const names = lines.filter((line) => /^\s*[-*]\s*(?:名字|Name)\s*[：:]/iu.test(line));
   if (names.length !== 1) return null;
   const match = /^\s*[-*]\s*(?:名字|Name)\s*[：:]\s*(.*?)\s*$/iu.exec(names[0]);
-  const name = match?.[1]?.split(/[（(]/u, 1)[0].trim();
+  const name = match?.[1]?.trim().replace(/（初次见面时可以换成你喜欢的名字）$/u, "").trim();
   if (!name || [...name].length > 32 || /[\u0000-\u001f\u007f<>]/u.test(name)) return null;
   return name;
 }
@@ -20,20 +20,23 @@ export class IdentityName {
     this.onName = onName;
     this.epoch = 0;
     this.name = DEFAULT_NAME;
+    this.resolvedContext = null;
     this.onName(this.name);
   }
 
   reset() {
     this.epoch++;
     this.name = DEFAULT_NAME;
+    this.resolvedContext = null;
     this.onName(this.name);
   }
 
-  async refresh() {
+  async refresh({ preserveCurrent = false } = {}) {
     const epoch = ++this.epoch;
     const { token, screen, currentScope: scope, generation } = this.net;
-    this.name = DEFAULT_NAME;
-    this.onName(this.name);
+    const sameContext = this.resolvedContext?.token === token && this.resolvedContext?.screen === screen &&
+      this.resolvedContext?.scope === scope && this.resolvedContext?.generation === generation;
+    if (!preserveCurrent || !sameContext) this.resetName();
     if (!token || !screen || !scope) return;
     try {
       const accepted = await createSelfScreenSender(this.net)({ to: "service:self", kind: "request", word: "read",
@@ -41,15 +44,25 @@ export class IdentityName {
       if (epoch !== this.epoch || token !== this.net.token || screen !== this.net.screen ||
         scope !== this.net.currentScope || generation !== this.net.generation) return;
       const body = accepted.reply.body;
-      if (body?.ok !== true || typeof body.result?.content !== "string") return;
+      if (body?.ok !== true || typeof body.result?.content !== "string") { this.resetName(); return; }
       this.name = nameFromIdentity(body.result.content) || DEFAULT_NAME;
+      this.resolvedContext = { token, screen, scope, generation };
       this.onName(this.name);
-    } catch { /* A missing or unavailable identity never preserves a prior account's name. */ }
+    } catch {
+      if (epoch === this.epoch && token === this.net.token && screen === this.net.screen &&
+        scope === this.net.currentScope && generation === this.net.generation) this.resetName();
+    }
+  }
+
+  resetName() {
+    this.name = DEFAULT_NAME;
+    this.resolvedContext = null;
+    this.onName(this.name);
   }
 
   changed(message, historical = false) {
     if (historical || message?.kind !== "event" || message.from !== "service:self" ||
       message.word !== "self.changed" || (message.body_summary || message.body)?.path !== "IDENTITY.md") return;
-    void this.refresh();
+    void this.refresh({ preserveCurrent: true });
   }
 }
