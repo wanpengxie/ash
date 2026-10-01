@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember, type AgentTurnRunner } from "./members/agent";
+import { ClockMember } from "./members/clock";
 import { OwnerMember } from "./members/owner";
 import { PostPresenceMember } from "./members/post";
 import { createSelfMember, type SelfMember } from "./members/self";
@@ -80,6 +81,7 @@ export async function startOwner(config: Config): Promise<Running> {
   const tokens = loadTokens(config);
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
   let agent: ReturnType<typeof createAgentMember> | null = null;
+  let clock: ClockMember | null = null;
   let self: SelfMember | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
@@ -97,6 +99,10 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner: echoRunner(), name: agents[0].name });
     members.register(agent);
+    clock = new ClockMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"),
+      isPaused: () => clock!.journal.isPaused(),
+      ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
+    members.register(clock);
     if (config.workspaces?.home) {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
       members.register(self);
@@ -118,6 +124,7 @@ export async function startOwner(config: Config): Promise<Running> {
     await self?.prepareRecovery();
     await world.recover();
     await agent.start();
+    await clock.start();
     server = await startEdgeServer(edge, host, port);
     const address = server.address();
     const url = `http://${host}:${typeof address === "object" && address ? address.port : port}`;
@@ -128,12 +135,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await agent?.close(); await self?.close(); ledger.close();
+      await clock?.close(); await agent?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await agent?.close(); await self?.close(); ledger.close();
+    await clock?.close(); await agent?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }
