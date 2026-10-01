@@ -18,6 +18,7 @@ import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
 import { createSelfMember, type SelfMember } from "./members/self";
+import { WorkMember } from "./members/work";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EchoTurnRunner } from "./runtimes/echo";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
@@ -93,6 +94,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let reflex: ReflexMember | null = null;
   let dsh: DshHost | null = null;
   let self: SelfMember | null = null;
+  let work: WorkMember | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
   try {
@@ -106,6 +108,8 @@ export async function startOwner(config: Config): Promise<Running> {
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
+      if (caller.transportPrincipal === "service:work" && caller.member === "service:work" && caller.local && !caller.remote)
+        return Boolean(work?.ownsRequestTurn(request));
       if (caller.transportPrincipal === "service:gate" && caller.member === "service:gate" && caller.local && !caller.remote &&
         request.from === "service:gate" && request.to === "person:owner" && request.word === "ask") return true;
       return false;
@@ -125,13 +129,16 @@ export async function startOwner(config: Config): Promise<Running> {
       isPaused: () => clock!.journal.isPaused(),
       ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
     members.register(clock);
+    // No 503/505 production flow is registered yet; an unknown flow fails explicitly.
+    work = new WorkMember({ ledger, router: world, isPaused: () => clock!.journal.isPaused() });
+    members.register(work);
     if (config.workspaces?.home) {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
       members.register(self);
     }
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
-    admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), onPauseChanged: () => agent!.resamplePause(),
+    admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       currentAgentTurn: () => agent!.inbox.activeTurn()?.id ?? null,
       currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });
     members.register(admin);
@@ -154,6 +161,7 @@ export async function startOwner(config: Config): Promise<Running> {
     await self?.prepareRecovery();
     post.prepareRecovery();
     admin.prepareRecovery();
+    work.prepareRecovery();
     await world.recover();
     await post.start();
     if (dsh) {
@@ -165,6 +173,7 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     await agent.start();
     await clock.start();
+    work.start();
     server = await startEdgeServer(edge, host, port);
     const address = server.address();
     const url = `http://${host}:${typeof address === "object" && address ? address.port : port}`;
@@ -175,12 +184,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await reflex?.close(); await post?.close(); await clock?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

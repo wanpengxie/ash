@@ -19,7 +19,8 @@ function example(schema: JsonSchema): unknown {
       : schema.pattern?.startsWith("^agent:") ? "agent:main"
       : schema.pattern?.startsWith("^device:") ? "device:phone/calendar.create"
       : schema.pattern?.startsWith("^(\\*|device:") ? "*"
-      : schema.pattern?.includes("memory/") ? "memory/2020-01-01.md" : "value";
+      : schema.pattern?.includes("memory/") ? "memory/2020-01-01.md"
+      : schema.pattern?.startsWith("^r_") ? "r_value" : "value";
     case "number": case "integer": return schema.minimum ?? 1;
     case "boolean": return true;
     case "array": return Array.from({ length: schema.minItems ?? 0 }, () => example(schema.items ?? {}));

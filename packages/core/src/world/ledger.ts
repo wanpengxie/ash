@@ -5,16 +5,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
-import { STREAM_RAW_PAGE_BYTES, type GateAccessItemV2, type GateHistoryItemV2, type GateRuleItemV2, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2 } from "../../../sdk/src/api";
+import { STREAM_RAW_PAGE_BYTES, type GateAccessItemV2, type GateHistoryItemV2, type GateRuleItemV2, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2, type WorkRunInfoV2, type WorkRunStepBodyV2 } from "../../../sdk/src/api";
 import { matchesSchema } from "../../../sdk/src/schema";
-import { wordContract } from "../../../sdk/src/words";
+import { wordContract, workRunTurn, workRunsResultErrors } from "../../../sdk/src/words";
 import { readSummaryPage, type StreamPageQuery } from "./stream-page";
 
 type Row = Record<string, unknown>;
 type NewMessage = Pick<Message, "from" | "to" | "kind" | "word" | "body"> & Pick<Partial<Message>, "reply_to" | "origin" | "turn">;
 type ClientRetry = { transportPrincipal: string; clientId: string };
 export type MigrationStage = "before-transaction" | "after-schema" | "after-first-row" | "halfway" | "before-commit" | "after-commit";
-export interface LedgerOptions { failpoint?: (stage: MigrationStage) => void }
+export type WorkStage = "start-after-row" | "start-before-commit" | "start-after-commit" | "end-after-row" | "end-before-commit" | "end-after-commit";
+export interface LedgerOptions { failpoint?: (stage: MigrationStage) => void; workFailpoint?: (stage: WorkStage) => void }
 export interface MigrationStats { migrated: number; lastLegacySeq: number; backup: string | null }
 export type RequestPhase = "accepted" | "gate_waiting" | "dispatching" | "settled";
 export interface RequestContextSnapshot {
@@ -217,7 +218,7 @@ function fromLegacy(row: LegacyRow, state: MigrationState): NewMessage {
 }
 
 export class Ledger {
-  private constructor(private readonly db: DatabaseSync, readonly migration: MigrationStats) {}
+  private constructor(private readonly db: DatabaseSync, readonly migration: MigrationStats, private readonly workFailpoint?: (stage: WorkStage) => void) {}
 
   static async open(file: string, options: LedgerOptions = {}): Promise<Ledger> {
     const legacy = existsSync(file);
@@ -236,11 +237,19 @@ export class Ledger {
     const db = new DatabaseSync(file);
     try {
       const stats = Ledger.migrate(db, backupFile, options);
+      db.exec("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       db.exec(`CREATE TABLE IF NOT EXISTS request_state (
         request_id TEXT PRIMARY KEY, phase TEXT NOT NULL, deadline_at INTEGER NOT NULL,
         context TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
       db.exec(`CREATE TABLE IF NOT EXISTS admin_pause_claims (
         by_message_id TEXT PRIMARY KEY, pause_request_id TEXT NOT NULL UNIQUE);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS work_runs (
+        run TEXT PRIMARY KEY, request_id TEXT UNIQUE, flow TEXT NOT NULL, trigger TEXT NOT NULL,
+        state TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, detail TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS work_one_active_flow ON work_runs(flow) WHERE state='running';
+        CREATE TABLE IF NOT EXISTS work_trigger_slots (
+          slot TEXT PRIMARY KEY, flow TEXT NOT NULL, trigger TEXT NOT NULL,
+          run TEXT UNIQUE, state TEXT NOT NULL CHECK(state IN ('started','skipped')));`);
       db.exec(`CREATE TABLE IF NOT EXISTS gate_cases (
         request_id TEXT PRIMARY KEY, ask_id TEXT NOT NULL UNIQUE, subject TEXT NOT NULL,
         risk TEXT NOT NULL, contract_fingerprint TEXT NOT NULL, expires_at INTEGER NOT NULL,
@@ -274,7 +283,7 @@ export class Ledger {
           session_id TEXT NOT NULL, turn TEXT NOT NULL, call_id TEXT NOT NULL,
           request_id TEXT NOT NULL UNIQUE, PRIMARY KEY(session_id,turn,call_id));`);
       Ledger.migrateLegacyGate(db);
-      return new Ledger(db, stats);
+      return new Ledger(db, stats, options.workFailpoint);
     } catch (error) { db.close(); throw error; }
   }
 
@@ -533,6 +542,148 @@ export class Ledger {
       const result = write(this.db, snapshot, delivery);
       this.db.exec("COMMIT");
       return result;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** A run row and its start event are one durable fact; the active-flow index is the mutex. */
+  workStart(requestId: string | null, flow: string, trigger: WorkRunInfoV2["trigger"], now = Date.now()): { run: string; event: Message | null; duplicate: boolean } {
+    if (!Number.isSafeInteger(now) || now < 0 || !matchesSchema(wordContract("service:work", "run.start")!.input_schema!, { run: "r_check", flow, trigger }))
+      throw new TypeError("invalid work start");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (requestId !== null) {
+        const prior = this.db.prepare("SELECT run FROM work_runs WHERE request_id=?").get(requestId) as Row | undefined;
+        if (prior) { this.db.exec("COMMIT"); return { run: String(prior.run), event: null, duplicate: true }; }
+        const source = this.byId(requestId);
+        if (!source || source.kind !== "request" || source.to !== "service:work" || source.word !== "run" || source.body.flow !== flow)
+          throw new TypeError("work source does not match accepted request");
+      }
+      const pausedRow = this.db.prepare("SELECT value FROM kv WHERE key='v2:admin:paused'").get() as Row | undefined;
+      if (pausedRow) {
+        let paused: unknown;
+        try { paused = JSON.parse(String(pausedRow.value)); } catch { throw new TypeError("invalid durable pause state"); }
+        if (typeof paused !== "boolean") throw new TypeError("invalid durable pause state");
+        if (paused) throw new TypeError("work paused");
+      }
+      const run = workRunTurn(`r_${randomBytes(12).toString("hex")}`);
+      this.db.prepare("INSERT INTO work_runs(run,request_id,flow,trigger,state,started_at,ended_at,detail) VALUES(?,?,?,?,?,?,NULL,'')")
+        .run(run, requestId, flow, trigger, "running", now);
+      this.workFailpoint?.("start-after-row");
+      const id = newId();
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, now, "service:work", null, "event", "run.start", JSON.stringify({ run, flow, trigger }), null, null, run);
+      this.workFailpoint?.("start-before-commit");
+      this.db.exec("COMMIT");
+      this.workFailpoint?.("start-after-commit");
+      return { run, event: this.byId(id)!, duplicate: false };
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** A process-local timer claims a durable slot once; pause consumes it without later replay. */
+  workStartScheduled(flow: string, trigger: "cooldown" | "hourly" | "event", slot: string, now = Date.now()):
+    { run: string | null; event: Message | null; duplicate: boolean; skipped: boolean } {
+    if (typeof slot !== "string" || !/^[a-z][a-z0-9._:-]{0,127}$/.test(slot) ||
+      !Number.isSafeInteger(now) || now < 0 || !matchesSchema(wordContract("service:work", "run.start")!.input_schema!, { run: "r_check", flow, trigger }))
+      throw new TypeError("invalid work trigger");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const prior = this.db.prepare("SELECT run,state FROM work_trigger_slots WHERE slot=?").get(slot) as Row | undefined;
+      if (prior) { this.db.exec("COMMIT"); return { run: prior.run === null ? null : String(prior.run), event: null, duplicate: true, skipped: prior.state === "skipped" }; }
+      const pausedRow = this.db.prepare("SELECT value FROM kv WHERE key='v2:admin:paused'").get() as Row | undefined;
+      let paused = false;
+      if (pausedRow) {
+        try { const value: unknown = JSON.parse(String(pausedRow.value)); if (typeof value !== "boolean") throw new Error(); paused = value; }
+        catch { throw new TypeError("invalid durable pause state"); }
+      }
+      if (paused) {
+        this.db.prepare("INSERT INTO work_trigger_slots(slot,flow,trigger,run,state) VALUES(?,?,?,NULL,'skipped')").run(slot, flow, trigger);
+        this.db.exec("COMMIT");
+        return { run: null, event: null, duplicate: false, skipped: true };
+      }
+      const run = workRunTurn(`r_${randomBytes(12).toString("hex")}`);
+      this.db.prepare("INSERT INTO work_runs(run,request_id,flow,trigger,state,started_at,ended_at,detail) VALUES(?,NULL,?,?,?, ?,NULL,'')")
+        .run(run, flow, trigger, "running", now);
+      this.db.prepare("INSERT INTO work_trigger_slots(slot,flow,trigger,run,state) VALUES(?,?,?,?, 'started')").run(slot, flow, trigger, run);
+      const id = newId();
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, now, "service:work", null, "event", "run.start", JSON.stringify({ run, flow, trigger }), null, null, run);
+      this.db.exec("COMMIT");
+      return { run, event: this.byId(id)!, duplicate: false, skipped: false };
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** Latest completed main turn, unless a newer owner message makes that idle window stale. */
+  workCooldownCandidate(now: number): { id: string; due: number } | null {
+    const row = this.db.prepare(`SELECT seq,id,ts FROM messages WHERE "from"='agent:main' AND kind='event' AND word='turn.end' ORDER BY seq DESC LIMIT 1`).get() as Row | undefined;
+    if (!row) return null;
+    const due = Number(row.ts) + 300_000;
+    if (!Number.isSafeInteger(due) || now < due) return null;
+    const later = this.db.prepare(`SELECT 1 FROM messages WHERE seq>? AND "from"='person:owner' AND "to"='agent:main' AND kind='request' AND word='say' LIMIT 1`).get(Number(row.seq));
+    return later ? null : { id: String(row.id), due };
+  }
+
+  /** Settle the run and its terminal event atomically; late or repeated completions cannot add a second end. */
+  workFinish(run: string, outcome: "done" | "no_change" | "failed", detail: string, now = Date.now()): Message | null {
+    if (!Number.isSafeInteger(now) || now < 0 || !matchesSchema(wordContract("service:work", "run.end")!.input_schema!, { run, outcome, detail }))
+      throw new TypeError("invalid work finish");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT state,started_at FROM work_runs WHERE run=?").get(run) as Row | undefined;
+      if (!row) throw new TypeError("unknown work run");
+      if (row.state !== "running") { this.db.exec("COMMIT"); return null; }
+      if (now < Number(row.started_at)) throw new TypeError("work end precedes start");
+      this.db.prepare("UPDATE work_runs SET state=?,ended_at=?,detail=? WHERE run=? AND state='running'").run(outcome, now, detail, run);
+      this.workFailpoint?.("end-after-row");
+      const id = newId();
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, now, "service:work", null, "event", "run.end", JSON.stringify({ run, outcome, detail }), null, null, run);
+      this.workFailpoint?.("end-before-commit");
+      this.db.exec("COMMIT");
+      this.workFailpoint?.("end-after-commit");
+      return this.byId(id)!;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** No uncertain step or external effect is replayed after a process death. */
+  workRecover(now = Date.now()): Message[] {
+    const active = this.db.prepare("SELECT run,started_at FROM work_runs WHERE state='running' ORDER BY started_at,run").all() as Row[];
+    return active.flatMap((row) => {
+      const event = this.workFinish(String(row.run), "failed", "interrupted_unknown_effect", Math.max(now, Number(row.started_at)));
+      return event ? [event] : [];
+    });
+  }
+
+  workRuns(flow?: string, limit = 50): WorkRunInfoV2[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid runs limit");
+    if (flow !== undefined && !matchesSchema(wordContract("service:work", "run")!.input_schema!, { flow })) throw new TypeError("invalid flow");
+    const rows = (flow === undefined
+      ? this.db.prepare("SELECT run,flow,trigger,state,started_at,ended_at FROM work_runs ORDER BY started_at DESC,run DESC LIMIT ?").all(limit)
+      : this.db.prepare("SELECT run,flow,trigger,state,started_at,ended_at FROM work_runs WHERE flow=? ORDER BY started_at DESC,run DESC LIMIT ?").all(flow, limit)) as Row[];
+    const runs = rows.map((row) => ({ run: String(row.run), flow: String(row.flow), trigger: String(row.trigger) as WorkRunInfoV2["trigger"],
+      state: String(row.state) as WorkRunInfoV2["state"], started_at: Number(row.started_at), ended_at: row.ended_at === null ? null : Number(row.ended_at) }));
+    if (workRunsResultErrors({ runs }).length) throw new TypeError("invalid durable work run metadata");
+    return runs;
+  }
+
+  /** Provenance for a code-owned work request; existence of a service name alone is not authorization. */
+  workRunSource(run: string): { flow: string; startedAt: number; endedAt: number | null } | null {
+    if (!matchesSchema(wordContract("service:work", "run")!.result_schema!, { run })) return null;
+    const row = this.db.prepare("SELECT flow,started_at,ended_at FROM work_runs WHERE run=?").get(run) as Row | undefined;
+    return row ? { flow: String(row.flow), startedAt: Number(row.started_at), endedAt: row.ended_at === null ? null : Number(row.ended_at) } : null;
+  }
+
+  workStep(body: WorkRunStepBodyV2, now = Date.now()): Message {
+    if (!Number.isSafeInteger(now) || now < 0 || !matchesSchema(wordContract("service:work", "run.step")!.input_schema!, body))
+      throw new TypeError("invalid work step");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT state FROM work_runs WHERE run=?").get(body.run) as Row | undefined;
+      if (row?.state !== "running") throw new TypeError("work step needs active run");
+      const id = newId();
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, now, "service:work", null, "event", "run.step", JSON.stringify(body), null, null, workRunTurn(body.run));
+      this.db.exec("COMMIT");
+      return this.byId(id)!;
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 

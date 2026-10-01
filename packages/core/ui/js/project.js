@@ -112,8 +112,10 @@ function record(m) {
     return { ...base, type: "post.delivery", message_id: b.message_id, state: b.state };
   if (m.kind === "event" && m.from === "service:self" && m.word === "self.changed" && typeof b.path === "string") return { ...base, type: "self.changed", path: b.path, by: string(b.by), summary: string(b.summary), version: number(b.version) };
   if (m.kind === "event" && m.from === "service:work") {
-    if (m.word === "run.start" && turnId(b.run)) return { ...base, type: "run.start", turn: b.run, flow: string(b.flow), trigger: string(b.trigger) };
-    if (m.word === "run.end" && turnId(b.run)) return { ...base, type: "run.end", turn: b.run, outcome: string(b.outcome) };
+    if (m.word === "run.start" && turnId(b.run) && (m.turn === undefined || m.turn === b.run)) return { ...base, type: "run.start", turn: b.run, flow: string(b.flow), trigger: string(b.trigger) };
+    if (m.word === "run.step" && turnId(b.run) && m.turn === b.run && typeof b.step === "string" && /^[a-z][a-z0-9._-]{0,47}$/.test(b.step) &&
+      ["started", "done", "failed", "skipped"].includes(b.state)) return { ...base, type: "run.step", turn: b.run, step: b.step, state: b.state };
+    if (m.word === "run.end" && turnId(b.run) && (m.turn === undefined || m.turn === b.run)) return { ...base, type: "run.end", turn: b.run, outcome: string(b.outcome) };
   }
   if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word };
   // Activity uses only routing metadata, never request arguments or tool results.
@@ -184,6 +186,12 @@ function project(records, snapshots = new Map()) {
     } else if (r.type === "turn.end" || r.type === "run.end") {
       if (view.turns[r.turn]) { view.turns[r.turn].ended = r.ts; view.turns[r.turn].outcome = r.reason || r.outcome; }
     } else if (r.type === "clock.list") view.timers = r.timers;
+    else if (r.type === "run.step" && view.turns[r.turn]) {
+      const steps = view.turns[r.turn].steps;
+      const pending = r.state === "started" ? null : [...steps].reverse().find((step) => step.step === r.step && step.state === "pending");
+      if (pending) pending.state = r.state;
+      else steps.push({ seq: r.seq, ts: r.ts, label: r.step, step: r.step, state: r.state === "started" ? "pending" : r.state });
+    }
     else if (r.type === "activity.request" && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: `${r.to} · ${r.word}`, requestId: r.id, state: "pending" });
     else if (r.type === "activity.response") {
       const request = activityRequests.get(r.reply_to);
