@@ -1,5 +1,6 @@
 // Pure ledger projection. _records contains only selected display-safe facts,
 // never tool arguments, raw results, credentials, or stream control frames.
+import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
 const FACE = {
   idle: "default", resting: "resting", listening: "listening",
   thinking: "thinking", working: "focused", done: "success", waiting_you: "listening",
@@ -12,6 +13,7 @@ export function initialView() {
     self: { changed: [] }, held: 0,
   };
   Object.defineProperty(view, "_records", { value: [], writable: true });
+  Object.defineProperty(view, "_postSnapshots", { value: new Map(), writable: true });
   return view;
 }
 
@@ -99,6 +101,8 @@ function record(m) {
     ...base, type: "clock.list", timers: b.result.timers.filter(object).map((t) => ({ id: string(t.id), text: string(t.text), fire_at: number(t.fire_at), repeat_seconds: number(t.repeat_seconds) })),
   };
   if (m.kind === "event" && m.from === "service:post" && m.to === "person:owner" && m.word === "post.changed" && Number.isSafeInteger(b.held) && b.held >= 0) return { ...base, type: "post.changed", held: b.held };
+  if (m.kind === "event" && m.from === "service:post" && m.to === "person:owner" && m.word === "post.delivery" && typeof b.message_id === "string" && b.message_id && ["held", "released", "dropped"].includes(b.state))
+    return { ...base, type: "post.delivery", message_id: b.message_id, state: b.state };
   if (m.kind === "event" && m.from === "service:self" && m.word === "self.changed" && typeof b.path === "string") return { ...base, type: "self.changed", path: b.path, by: string(b.by), summary: string(b.summary), version: number(b.version) };
   if (m.kind === "event" && m.from === "service:work") {
     if (m.word === "run.start" && turnId(b.run)) return { ...base, type: "run.start", turn: b.run };
@@ -108,9 +112,10 @@ function record(m) {
   return null;
 }
 
-function project(records) {
+function project(records, snapshots = new Map()) {
   const view = initialView();
   view._records = records;
+  view._postSnapshots = snapshots;
   const delivery = new Map();
   const asksById = new Map(records.filter((r) => r.type === "ask").map((r) => [r.id, r]));
   const cardsById = new Map(records.filter((r) => r.type === "show" && r.card.type === "options").map((r) => [r.id, r]));
@@ -119,7 +124,10 @@ function project(records) {
   const optionReplies = new Map();
   const sayOutcomes = new Map();
   const reactions = new Map();
+  const postStates = new Map(snapshots);
   for (const r of records) {
+    if (r.type === "post.delivery" && (r.state === "dropped" || postStates.get(r.message_id)?.state !== "dropped" && (!postStates.has(r.message_id) || postStates.get(r.message_id).version_seq <= r.seq)))
+      postStates.set(r.message_id, { state: r.state, version_seq: r.seq });
     if (r.type === "received" || r.type === "read") for (const id of r.ids) delivery.set(id, r.type === "read" ? "read" : delivery.get(id) === "read" ? "read" : "delivered");
     if (r.type === "ask.answer") {
       const ask = asksById.get(r.reply_to);
@@ -143,7 +151,10 @@ function project(records) {
       if (r.state === "working" && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.text || "在忙" });
     } else if (r.type === "legacy.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: r.side, from: r.from, to: r.to, text: r.text, attachments: r.attachments, legacy: r.legacy, readOnly: true, reactions: [] });
     else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
-    else if (r.type === "agent.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
+    else if (r.type === "agent.say") {
+      if (["offer", "heads_up"].includes(r.kind) && postStates.get(r.id)?.state !== "released") continue;
+      view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
+    }
     else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), selected_option_id: optionReplies.get(r.id) || null, reactions: reactions.get(r.id) || [] });
     else if (r.type === "ask") {
       const answer = answers.get(r.id);
@@ -169,5 +180,17 @@ export function fold(state, message) {
   const next = record(message);
   if (!next || current._records.some((r) => r.id === next.id || r.seq === next.seq)) return current;
   const records = [...current._records, next].sort((a, b) => a.seq - b.seq);
-  return project(records);
+  return project(records, current._postSnapshots);
+}
+
+/** Apply an authenticated, bounded control snapshot without treating it as a ledger row. */
+export function foldPostSnapshot(state, snapshot) {
+  const current = state && Array.isArray(state._records) ? state : initialView();
+  if (postDeliverySnapshotErrors(snapshot).length) return current;
+  const snapshots = new Map(current._postSnapshots);
+  for (const item of snapshot.items) {
+    const old = snapshots.get(item.message_id);
+    if ((!old || old.state !== "dropped") && (!old || old.version_seq < item.version_seq)) snapshots.set(item.message_id, { state: item.state, version_seq: item.version_seq });
+  }
+  return project(current._records, snapshots);
 }

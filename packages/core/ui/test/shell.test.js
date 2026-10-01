@@ -161,12 +161,28 @@ test("older pagination sorts/deduplicates and drops a late prior-session page", 
   const pending = timeline.older();
   timeline.reset();
   timeline.add(message(300));
-  resolveOld([message(198), message(199), message(199), message(200)]);
+  resolveOld({ messages: [message(198), message(199), message(199), message(200)], snapshots: [] });
   assert.equal(await pending, 0);
   assert.deepEqual([...timeline.records.keys()], [300]);
-  net.page = async () => [message(297), message(296), message(297), message(298), message(299)];
+  net.page = async () => ({ messages: [message(297), message(296), message(297), message(298), message(299)], snapshots: [] });
   assert.equal(await timeline.older(), 5);
   assert.deepEqual(timeline.view.conversation.map((item) => item.seq), [296, 297, 298, 299, 300]);
+});
+
+test("finite history applies delivery snapshot and say in one render, including an older page", async () => {
+  const offer = { seq: 2, id: "m_offer", ts: 2, kind: "request", from: "agent:main", to: "person:owner", word: "say", body: { text: "Only after release", kind: "offer" } };
+  const held = { at_seq: 5, items: [{ message_id: offer.id, state: "held", version_seq: 5 }] };
+  const released = { at_seq: 9, items: [{ message_id: offer.id, state: "released", version_seq: 9 }] };
+  const renders = [];
+  const timeline = new Timeline(null, (view) => renders.push(view.conversation.map((bubble) => bubble.text)));
+  const sse = (snapshot, rows) => `event: post.delivery.snapshot\ndata: ${JSON.stringify(snapshot)}\n\n${rows.map((row) => `id: ${row.seq}\ndata: ${JSON.stringify(row)}\n\n`).join("")}`;
+  const net = netWith({ fetchImpl: async () => new Response(sse(held, [offer, message(3)])), onHistory: (rows, snapshots) => timeline.addMany(rows, snapshots) });
+  await net.catchUp(net.generation, new AbortController().signal);
+  assert.deepEqual(renders.at(-1), ["text 3"]);
+  assert.equal(renders.some((texts) => texts.includes("Only after release")), false);
+  timeline.net = { page: async () => ({ messages: [message(1)], snapshots: [released] }) };
+  await timeline.older();
+  assert.deepEqual(renders.at(-1), ["text 1", "Only after release", "text 3"]);
 });
 
 test("legacy sources and two screen labels remain visible as inert text", () => {

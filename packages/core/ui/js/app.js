@@ -1,4 +1,4 @@
-import { fold, initialView } from "./project.js";
+import { fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
@@ -27,7 +27,7 @@ export class Timeline {
     this.view = fold(this.view, message);
     this.onChange(this.view);
   }
-  addMany(messages) {
+  addMany(messages, snapshots = []) {
     let changed = false;
     for (const message of messages.sort((a, b) => a.seq - b.seq)) {
       if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string" || this.records.has(message.seq)) continue;
@@ -36,7 +36,15 @@ export class Timeline {
       this.view = fold(this.view, message);
       changed = true;
     }
+    for (const snapshot of snapshots) {
+      const next = foldPostSnapshot(this.view, snapshot);
+      if (next !== this.view) { this.view = next; changed = true; }
+    }
     if (changed) this.onChange(this.view);
+  }
+  snapshot(snapshot) {
+    const next = foldPostSnapshot(this.view, snapshot);
+    if (next !== this.view) { this.view = next; this.onChange(this.view); }
   }
   async older() {
     if (this.loading || this.exhausted || !this.records.size) return 0;
@@ -48,9 +56,9 @@ export class Timeline {
     try {
       const page = await this.net.page(before, controller.signal);
       if (epoch !== this.epoch) return 0;
-      if (page.length < 200) this.exhausted = true;
-      this.addMany(page);
-      return page.length;
+      if (page.messages.length < 200) this.exhausted = true;
+      this.addMany(page.messages, page.snapshots);
+      return page.messages.length;
     } finally {
       if (epoch === this.epoch) this.loading = false;
     }
@@ -123,7 +131,8 @@ export function boot() {
       // perform target is explicitly reported as unopened.
       void net.respondOpen(message, false).then((sent) => { if (!sent) state.textContent = "页面请求回执未送达"; }).catch(() => { state.textContent = "页面请求回执未送达"; });
     },
-    onHistory: (messages) => { timeline.addMany(messages); performance.mark("shell.history-rendered"); },
+    onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
+    onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
     onState: (status, error) => {
       state.textContent = status === "online" ? (presenceProblem || "已连接") : status === "connecting" ? "连接中…" : status === "send-error" ? "消息未送达，等待重试" : "离线，正在重连…";
       if (error) state.title = String(error.message || error);

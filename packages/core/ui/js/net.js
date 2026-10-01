@@ -1,4 +1,5 @@
-import { SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER, isScreenRegistration } from "../../../sdk/src/api.ts";
+import { POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER, isScreenRegistration } from "../../../sdk/src/api.ts";
+import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
 import { openPendingStore } from "./pending-store.js";
 
 const TOKEN_KEY = "ash.screen.token.v2";
@@ -43,12 +44,13 @@ export async function readSse(response, onFrame, signal) {
 }
 
 export class ScreenNet {
-  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, pendingStore = openPendingStore(), endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
+  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, pendingStore = openPendingStore(), endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onSnapshot = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
     this.transport = fetchImpl;
     this.storage = storage;
     this.label = label;
     this.onMessage = onMessage;
     this.onHistory = onHistory;
+    this.onSnapshot = onSnapshot;
     this.onState = onState;
     this.onRegistered = onRegistered;
     this.onQueue = onQueue;
@@ -84,12 +86,13 @@ export class ScreenNet {
       const response = await this.request(`/api/stream${query}`, { credentials: "same-origin", signal });
       let count = 0;
       const history = [];
+      const snapshots = [];
       await readSse(response, (frame) => {
         if (frame.type === SCREEN_REGISTRATION_EVENT) return;
         if (/^[1-9][0-9]*$/.test(frame.id)) count++;
-        this.frame(frame, generation, true, history);
+        this.frame(frame, generation, true, history, snapshots);
       }, signal);
-      if (generation === this.generation && !signal.aborted && history.length) this.onHistory(history);
+      if (generation === this.generation && !signal.aborted && (history.length || snapshots.length)) this.onHistory(history, snapshots);
       more = !initial && count === 1000;
       if (initial) this.bootstrapped = true;
       if (this.cursor === null) this.cursor = 0;
@@ -141,7 +144,7 @@ export class ScreenNet {
     this.onState("offline");
   }
 
-  frame(frame, generation, historical = false, history = null) {
+  frame(frame, generation, historical = false, history = null, snapshots = null) {
     if (generation !== this.generation) return;
     if (frame.type === SCREEN_REGISTRATION_EVENT) {
       let registered;
@@ -159,6 +162,14 @@ export class ScreenNet {
       this.onRegistered(registered);
       this.onState("online");
       void this.restorePending(registered.auth_scope).then(() => this.flush());
+      return;
+    }
+    if (frame.type === POST_DELIVERY_SNAPSHOT_EVENT && frame.id === "") {
+      let snapshot;
+      try { snapshot = JSON.parse(frame.data); } catch { return; }
+      if (postDeliverySnapshotErrors(snapshot).length) return;
+      if (snapshots) snapshots.push(snapshot);
+      else this.onSnapshot(snapshot);
       return;
     }
     if ((!this.token && !historical) || !/^[1-9][0-9]*$/.test(frame.id)) return;
@@ -183,12 +194,17 @@ export class ScreenNet {
     if (!Number.isSafeInteger(before) || before < 1) throw new Error("invalid page cursor");
     const response = await this.request(`/api/stream?before=${before}&limit=200&follow=false`, { credentials: "same-origin", signal });
     const records = [];
+    const snapshots = [];
     await readSse(response, (frame) => {
       if (frame.type === SCREEN_REGISTRATION_EVENT) return;
+      if (frame.type === POST_DELIVERY_SNAPSHOT_EVENT) {
+        try { const snapshot = JSON.parse(frame.data); if (!postDeliverySnapshotErrors(snapshot).length) snapshots.push(snapshot); } catch { /* ignore malformed control */ }
+        return;
+      }
       if (!/^[1-9][0-9]*$/.test(frame.id)) return;
       try { const message = JSON.parse(frame.data); if (message?.seq === Number(frame.id)) records.push(message); } catch { /* ignore malformed frame */ }
     }, signal);
-    return records.sort((a, b) => a.seq - b.seq).filter((item, index, all) => index === 0 || item.seq !== all[index - 1].seq);
+    return { messages: records.sort((a, b) => a.seq - b.seq).filter((item, index, all) => index === 0 || item.seq !== all[index - 1].seq), snapshots };
   }
 
   publishOutbox() {
