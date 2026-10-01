@@ -3,6 +3,7 @@ import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
 import { renderProgress } from "./progress.js";
 import { presentUiOpen } from "./suggestions.js";
+import { composerContext } from "./composer.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
@@ -123,6 +124,7 @@ export function boot({ uiTransport } = {}) {
   const pending = document.querySelector("#pending");
   const suggestions = document.querySelector("#suggestions");
   const contextRoot = document.querySelector("#context");
+  const context = composerContext(contextRoot, input);
   const fileInput = document.querySelector("#file");
   const attachButton = document.querySelector("#attach");
   const selected = document.querySelector("#selected");
@@ -165,7 +167,7 @@ export function boot({ uiTransport } = {}) {
       render(timeline.view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     },
   };
-  const clearContext = () => { contextRoot.replaceChildren(); contextRoot.hidden = true; };
+  const clearContext = context.clear;
   const progress = () => renderProgress(progressRoot, timeline?.view, { onOpen: () => {
     if (agentSheet?.open()) void agentSheet.show("activity");
   } });
@@ -234,15 +236,7 @@ export function boot({ uiTransport } = {}) {
   agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view,
     getLedgerMessage: (id) => timeline.byId.get(id), onAskAbout: ({ turn, text: prefill }) => {
       if (!agentSheet.close()) return;
-      input.value = prefill;
-      clearContext();
-      contextRoot.hidden = false;
-      const chip = text(contextRoot, "div", "关于这件事", "context-chip");
-      chip.dataset.turn = turn;
-      const remove = text(chip, "button", "移除", "context-remove");
-      remove.type = "button";
-      remove.addEventListener("click", clearContext);
-      input.focus();
+      context.askAbout({ turn, text: prefill });
     } });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
