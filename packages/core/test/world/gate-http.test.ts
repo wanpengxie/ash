@@ -100,6 +100,6 @@ test("local owner grants one exact device capability without waiving the agent's
     assert.equal(answer.status, 200);
     while (!running.ledger.responseTo(requested.id) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(effects, 0);
-    assert.equal(running.ledger.responseTo(requested.id)?.body.error?.code, "forbidden");
+    assert.equal((running.ledger.responseTo(requested.id)?.body.error as { code?: string } | undefined)?.code, "forbidden");
   } finally { await running.close(); }
 });
