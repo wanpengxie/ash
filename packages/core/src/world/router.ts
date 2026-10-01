@@ -545,10 +545,10 @@ export class WorldRouter {
         const caseState = this.ledger.gateCase(request.id);
         if (!caseState || caseState.decision !== "allowed") return;
         const identity = this.gateIdentity(pending);
-        const currentEndpoint = this.endpoint(request.to!, request.word);
-        const currentValid = currentEndpoint === endpoint && endpoint.validateInput(request.body) &&
-          await this.currentlyAuthorized(request, pending.context);
+        const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;
+        // No await between the final route/schema check, the SQLite CAS and handler dispatch.
+        const currentValid = currentAuthority && this.endpoint(request.to!, request.word) === endpoint && endpoint.validateInput(request.body);
         if (!currentValid || !this.ledger.dispatchAllowedGate(request.id, identity.subject, identity.fingerprint)) {
           this.finish(pending, errors("forbidden", "approval no longer authorizes this action"), request.to!, false);
           return;
@@ -602,6 +602,16 @@ export class WorldRouter {
       const pending = this.pending.get(tracked.message.id);
       if (pending) settled.push(...this.cancel([tracked.message.id]));
       else {
+        const gateCase = this.durableGate && tracked.phase === "gate_waiting" ? this.ledger.gateCase(tracked.message.id) : null;
+        if (gateCase?.decision === "waiting") {
+          const outcome = this.ledger.settleGateAsk(gateCase.askId, "deny", "cancelled");
+          if (outcome) {
+            this.publish(outcome.askResponse);
+            if (outcome.event) this.publish(outcome.event);
+            if (outcome.originalResponse) { this.publish(outcome.originalResponse); settled.push(outcome.originalResponse); }
+          }
+          continue;
+        }
         const result = this.ledger.settle(tracked.message.id, tracked.message.to!, errors("cancelled", "request cancelled; external effect may be unknown"));
         if (result.settled) { this.publish(result.message); settled.push(result.message); }
       }

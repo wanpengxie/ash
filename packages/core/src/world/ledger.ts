@@ -249,7 +249,7 @@ export class Ledger {
         risk TEXT NOT NULL, decision TEXT NOT NULL, at INTEGER NOT NULL, rule_id TEXT);
         CREATE INDEX IF NOT EXISTS gate_history_request ON gate_history(request_id);`);
       db.exec(`CREATE TABLE IF NOT EXISTS gate_rules (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, subject TEXT NOT NULL,
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, subject TEXT NOT NULL, subject_alias TEXT NOT NULL,
         device_id TEXT, capability_id TEXT, target TEXT NOT NULL, word TEXT NOT NULL,
         object_pattern TEXT NOT NULL, risk TEXT NOT NULL, contract_fingerprint TEXT NOT NULL,
         created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER);
@@ -604,7 +604,7 @@ export class Ledger {
     if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid gate rules page");
     const rows = this.db.prepare("SELECT * FROM gate_rules WHERE seq<? ORDER BY seq DESC LIMIT ?").all(before, limit + 1) as Row[];
     const page = rows.slice(0, limit);
-    return { rules: page.map((row) => ({ id: String(row.id), subject: String(row.subject),
+    return { rules: page.map((row) => ({ id: String(row.id), subject: String(row.subject_alias),
       ...(row.device_id === null ? {} : { device_id: String(row.device_id) }),
       ...(row.capability_id === null ? {} : { capability_id: String(row.capability_id) }),
       to: String(row.target), word: String(row.word), object_pattern: String(row.object_pattern),
@@ -616,10 +616,11 @@ export class Ledger {
 
   gateHistoryPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { items: GateHistoryItemV2[]; next_before?: number } {
     if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new TypeError("invalid gate history page");
-    const rows = this.db.prepare("SELECT * FROM gate_history WHERE seq<? ORDER BY seq DESC LIMIT ?").all(before, limit + 1) as Row[];
+    const rows = this.db.prepare(`SELECT h.*,m."from" AS caller_member FROM gate_history h
+      JOIN messages m ON m.id=h.request_id WHERE h.seq<? ORDER BY h.seq DESC LIMIT ?`).all(before, limit + 1) as Row[];
     const page = rows.slice(0, limit);
     return { items: page.map((row) => ({ id: String(row.id), request_id: String(row.request_id), ask_id: String(row.ask_id),
-      subject: String(row.subject), to: String(row.target), word: String(row.word), risk: row.risk as "outward" | "structure",
+      subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "outward" | "structure",
       decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule", at: Number(row.at),
       ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }), source: "current" as const })),
       ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };

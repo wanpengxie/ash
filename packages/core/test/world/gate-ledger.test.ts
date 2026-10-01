@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { Ledger } from "../../src/world/ledger";
+import { WorldRouter } from "../../src/world/router";
 
 const gate = (expiresAt: number) => ({ subject: "principal:exact", risk: "outward" as const,
   contractFingerprint: "a".repeat(64), expiresAt,
@@ -15,7 +16,7 @@ const gate = (expiresAt: number) => ({ subject: "principal:exact", risk: "outwar
 async function fixture(deadlineMs = 60_000) {
   const file = join(mkdtempSync(join(tmpdir(), "ash-gate-ledger-")), "ash.db");
   const ledger = await Ledger.open(file);
-  const accepted = ledger.append({ from: "agent:main", to: "device:fake", kind: "request", word: "run", body: { n: 1 } },
+  const accepted = ledger.append({ from: "agent:main", to: "device:fake", kind: "request", word: "run", body: { n: 1 }, turn: "t_gate" },
     undefined, { deadlineAt: Date.now() + deadlineMs, context: { member: "agent:main", local: true, remote: false,
       ownerProxy: false, transportPrincipal: "agent:main" } }).message;
   return { file, ledger, accepted };
@@ -126,6 +127,10 @@ test("trusted deadline cannot fire early; at expiry it atomically denies origina
     assert.equal(settled?.originalResponse?.body.ok, false);
     assert.equal(ledger.gateCase(accepted.id)?.decision, "timeout");
     assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer"), null);
+    const history = ledger.gateHistoryPage().items[0];
+    assert.equal(history?.subject, "agent:main");
+    assert.equal(JSON.stringify(ledger.gateHistoryPage()).includes("principal:exact"), false);
+    assert.equal(JSON.stringify(ledger.gateHistoryPage()).includes("a".repeat(64)), false);
     assert.equal(ledger.list().filter((item) => item.kind === "response" && item.reply_to === accepted.id).length, 1);
     assert.equal(ledger.trackedRequests().some((item) => item.message.id === accepted.id), false);
   } finally { ledger.close(); }
@@ -143,4 +148,21 @@ test("cancelling a waiting gate withdraws the ask and settles the original atomi
     assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer"), null);
     assert.equal(ledger.gateHistoryPage().items[0]?.decision, "cancelled");
   } finally { ledger.close(); }
+});
+
+test("pre-recovery turn cancellation withdraws a durable ask before any request replay", async () => {
+  const { file, ledger, accepted } = await fixture();
+  const askId = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!.ask.id;
+  ledger.close();
+  const reopened = await Ledger.open(file);
+  try {
+    const router = new WorldRouter(reopened, async () => true);
+    router.enableDurableGate();
+    const cancelled = router.cancelTurn("agent:main", "t_gate");
+    assert.equal(cancelled.length, 1);
+    assert.equal(cancelled[0]?.reply_to, accepted.id);
+    assert.equal(reopened.responseTo(askId)?.body.ok, false);
+    assert.equal(reopened.gateCase(accepted.id)?.decision, "cancelled");
+    assert.equal(router.cancelTurn("agent:main", "t_gate").length, 0);
+  } finally { reopened.close(); }
 });
