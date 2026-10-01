@@ -25,11 +25,16 @@ function clipField(value: string, cap: number): string {
   return `${prefix}…(+${total - bytes(prefix)}B)`;
 }
 
-function bodyPrefix(value: string, extraBytes: number): string {
+const dataJson = (value: string, external: boolean): string => {
+  const json = JSON.stringify(value);
+  return external ? json.replace(/</gu, "\\u003c").replace(/>/gu, "\\u003e") : json;
+};
+
+function bodyPrefix(value: string, extraBytes: number, external: boolean): string {
   let prefix = "";
   let used = 0;
   for (const point of value) {
-    const escaped = JSON.stringify(point).slice(1, -1);
+    const escaped = dataJson(point, external).slice(1, -1);
     const cost = bytes(escaped);
     if (used + cost > extraBytes) break;
     prefix += point;
@@ -73,22 +78,26 @@ export function renderTurnBatch(messages: readonly Message[], budgetBytes = DEFA
     const from = clipField(message.from, 96);
     const source = clipField(origin, 96);
     const stamp = new Date(message.ts).toISOString();
-    const prefix = `[${index + 1}/${ordered.length} id=${message.id} seq=${message.seq} ts=${stamp} from=${from} origin=${source}] text=`;
+    const external = message.from !== "person:owner";
+    const prefix = `[${index + 1}/${ordered.length} id=${message.id} seq=${message.seq} ts=${stamp} from=${from} origin=${source}]` +
+      (external ? `\n<data source="${from}">\ntext=` : " text=");
+    const suffix = external ? "\n</data>\n" : "\n";
     const text = typeof message.body.text === "string" ? message.body.text : "";
-    return { prefix, text, full: JSON.stringify(text), rawBytes: bytes(text) };
+    return { prefix, suffix, external, text, full: dataJson(text, external), rawBytes: bytes(text) };
   });
-  const full = header + factSection + records.map((record) => `${record.prefix}${record.full}\n`).join("");
+  const full = header + factSection + records.map((record) => `${record.prefix}${record.full}${record.suffix}`).join("");
   if (bytes(full) <= budgetBytes) return full;
   const reserve = records.map((record) => ` [excerpt; omitted ${record.rawBytes} UTF-8 bytes]`);
-  const minimum = bytes(header + factSection) + records.reduce((sum, record, index) => sum + bytes(record.prefix) + 2 + bytes(reserve[index]) + 1, 0);
+  const minimum = bytes(header + factSection) + records.reduce((sum, record, index) =>
+    sum + bytes(record.prefix) + 2 + bytes(reserve[index]) + bytes(record.suffix), 0);
   if (minimum > budgetBytes) throw new TurnTextBudgetError(minimum, budgetBytes);
   const needs = records.map((record) => bytes(record.full) - 2);
   const allocations = fairAllocations(needs, budgetBytes - minimum);
   const rendered = header + factSection + records.map((record, index) => {
-    if (allocations[index] >= needs[index]) return `${record.prefix}${record.full}\n`;
-    const prefix = bodyPrefix(record.text, allocations[index]);
+    if (allocations[index] >= needs[index]) return `${record.prefix}${record.full}${record.suffix}`;
+    const prefix = bodyPrefix(record.text, allocations[index], record.external);
     const omitted = record.rawBytes - bytes(prefix);
-    return `${record.prefix}${JSON.stringify(prefix)} [excerpt; omitted ${omitted} UTF-8 bytes]\n`;
+    return `${record.prefix}${dataJson(prefix, record.external)} [excerpt; omitted ${omitted} UTF-8 bytes]${record.suffix}`;
   }).join("");
   if (bytes(rendered) > budgetBytes) throw new Error("turn text rendering exceeded its byte budget");
   return rendered;

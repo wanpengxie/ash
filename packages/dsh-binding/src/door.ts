@@ -288,7 +288,10 @@ export class DshDoor {
         if (this.options.sessionId) {
           if (!fact || !binding.validateExecution(fact, exec)) throw new Error("tool pre-execute approval no longer valid");
         }
-        try { return { text: JSON.stringify(await action(args as Record<string, unknown>, exec)) }; }
+        try {
+          const result = JSON.stringify(await action(args as Record<string, unknown>, exec));
+          return { text: name === "ash_send" ? `<data source="ash_send/result">\n${result.replace(/</gu, "\\u003c").replace(/>/gu, "\\u003e")}\n</data>` : result };
+        }
         catch (error) { throw new Error(errorText(error)); }
       },
     });
