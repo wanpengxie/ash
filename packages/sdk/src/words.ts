@@ -125,7 +125,7 @@ add("service:self", "read", "request", obj({ path: selfPath }, ["path"]), obj({ 
 add("service:self", "write", "request", obj({ path: selfPath, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });
 add("service:self", "append", "request", obj({ path: datePath, text: str }, ["path", "text"]), obj({ hash: sha }, ["hash"]), { label: "Adding to a log", description: "Atomically append to any allowed dated log." });
 add("service:self", "apply_plan", "request", obj({ path: selfPath, expected_hash: sha, edits: array(edit) }, ["path", "expected_hash", "edits"]), obj({ applied: integer, hash: sha }, ["applied", "hash"]));
-add("service:self", "rollback", "request", obj({ path: selfPath, to_ts: num }, ["path", "to_ts"]), empty, { risk: "structure" });
+add("service:self", "rollback", "request", obj({ path: selfPath, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure" });
 add("service:self", "history", "request", obj({ path: selfPath }, ["path"]), obj({ versions: array(any) }, ["versions"]));
 add("service:self", "self.changed", "event", obj({ path: selfPath, by: id, summary: str, version: integer }, ["path", "by", "summary"]), undefined, { direction: "out" });
 
