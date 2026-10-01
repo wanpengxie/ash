@@ -98,6 +98,15 @@ try {
   await evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').click()");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent === '已保存并核对当前版本。'"), "SOUL write/readback");
   assert.equal(readFileSync(join(dir, "first-home", "SOUL.md"), "utf8"), "Synthetic SOUL A\n");
+  await evaluate("document.querySelector('#agentPanel section[data-tab=identity] nav button:nth-child(2)').click()");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .markdown-source')?.value === ''"), "identity file ready");
+  await fill(identityText, "# 我的名片\n- 名字：小舟\n");
+  await evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').click()");
+  await until(() => evaluate("document.querySelector('#title')?.textContent === '小舟'"), "name refreshed from canonical identity");
+  assert.equal(await evaluate("document.querySelector('#presence').getAttribute('aria-label')"), "打开 小舟 人物页");
+  assert.equal(await evaluate("document.querySelector('#agentSheetHeader h2').textContent"), "小舟");
+  await evaluate("document.querySelector('#agentPanel section[data-tab=identity] nav button:nth-child(1)').click()");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .markdown-source')?.value === 'Synthetic SOUL A\\n'"), "SOUL editor restored");
 
   await clickTab("memory");
   await until(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(memoryText)}))`), "memory editor");
@@ -169,6 +178,7 @@ try {
   await until(() => remoteEval("document.querySelector('#connection')?.textContent === '已连接'"), "remote registered screen");
   await remoteEval("document.querySelector('#presence').click()");
   await until(() => remoteEval(`Boolean(document.querySelector(${JSON.stringify(identityText)}))`), "remote read-only identity");
+  await until(() => remoteEval("document.querySelector('#title')?.textContent === '小舟'"), "remote reads current identity name");
   assert.equal(await remoteEval(`document.querySelector(${JSON.stringify(identityText)}).disabled`), true);
   assert.equal(await remoteEval("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').disabled"), true);
   const beforeRemote = first.ledger.lastSeq();
@@ -190,9 +200,10 @@ try {
   assert.equal(await evaluate("document.querySelector('#agentSheet')?.getAttribute('aria-hidden')"), "true");
   await evaluate("document.querySelector('#presence').click()");
   await until(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(identityText)}))`), "new scope identity");
+  assert.equal(await evaluate("document.querySelector('#title').textContent"), "Ash");
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(identityText)}).value`), "");
   assert.equal(selfWrites(second).length, 0);
-  console.log("PASS: avatar sheet, local SOUL/USER save/history, rollback gate unavailable with unchanged file, stale guard, remote read-only/403, offline and scope clear, delayed reply discarded");
+  console.log("PASS: authoritative identity name read/write refresh, remote read-only name, scope reset, avatar sheet, local SOUL/USER save/history, rollback gate unavailable, stale guard, remote 403, offline and delayed reply discarded");
 } finally {
   remoteSocket?.close(); socket?.close();
   if (remoteServer) await new Promise((resolve) => { remoteServer.close(resolve); remoteServer.closeAllConnections(); });
