@@ -19,6 +19,8 @@ export interface RequestContextSnapshot {
   local: boolean;
   remote: boolean;
   ownerProxy: boolean;
+  /** Authenticated principal identifier, never a bearer token. */
+  transportPrincipal?: string;
   pairedDeviceId?: string;
   screenId?: string;
 }
@@ -33,6 +35,7 @@ const obj = (value: unknown): Record<string, unknown> => value && typeof value =
 const str = (value: unknown, fallback = "") => typeof value === "string" ? value : fallback;
 const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Row)[key])}`).join(",")}}` : JSON.stringify(value);
 const digest = (value: unknown) => createHash("sha256").update(stable(value)).digest("hex");
+const retryPayload = (input: NewMessage) => digest({ to: input.to, kind: input.kind, word: input.word, body: input.body, reply_to: input.reply_to ?? null });
 
 function integrity(db: DatabaseSync): void {
   const result = db.prepare("PRAGMA integrity_check").get() as Row | undefined;
@@ -281,7 +284,7 @@ export class Ledger {
     if (!["request", "event"].includes(input.kind) || !input.from || !input.word || (input.kind === "request" && !input.to) || !input.body || typeof input.body !== "object" || Array.isArray(input.body)) throw new TypeError("invalid message envelope");
     if (retry && (!retry.transportPrincipal || !retry.clientId || retry.clientId.length > 128)) throw new TypeError("invalid client retry key");
     const scope = retry ? digest(retry.transportPrincipal) : "";
-    const payload = retry ? digest({ to: input.to, kind: input.kind, word: input.word, body: input.body, reply_to: input.reply_to ?? null }) : "";
+    const payload = retry ? retryPayload(input) : "";
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (retry) {
@@ -302,6 +305,7 @@ export class Ledger {
         const supplied = tracking?.context ?? { member: input.from, local: true, remote: false, ownerProxy: false };
         if (!Number.isSafeInteger(deadlineAt)) throw new TypeError("invalid request deadline");
         const context: RequestContextSnapshot = { member: supplied.member, local: supplied.local, remote: supplied.remote, ownerProxy: supplied.ownerProxy,
+          ...(supplied.transportPrincipal ? { transportPrincipal: supplied.transportPrincipal } : {}),
           ...(supplied.pairedDeviceId ? { pairedDeviceId: supplied.pairedDeviceId } : {}), ...(supplied.screenId ? { screenId: supplied.screenId } : {}) };
         this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)").run(id, "accepted", deadlineAt, JSON.stringify(context), ts);
       }
@@ -311,17 +315,36 @@ export class Ledger {
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
-  settle(requestId: string, from: string, body: ResponseBody, origin?: Message["origin"]): { message: Message; settled: boolean } {
+  /** A response retry is readable only after the edge has authenticated its current source. */
+  responseRetry(retry: ClientRetry, input: NewMessage): Message | null {
+    if (!retry.transportPrincipal || !retry.clientId || retry.clientId.length > 128 || input.kind !== "response") throw new TypeError("invalid response retry");
+    const row = this.db.prepare("SELECT payload_hash,message_id FROM client_retries WHERE scope_hash=? AND client_id=?")
+      .get(digest(retry.transportPrincipal), retry.clientId) as Row | undefined;
+    if (!row) return null;
+    if (row.payload_hash !== retryPayload(input)) throw new TypeError("client_id reused with different message");
+    const message = this.byId(String(row.message_id));
+    if (!message || message.kind !== "response") throw new Error("retry record has no response");
+    return message;
+  }
+
+  settle(requestId: string, from: string, body: ResponseBody, origin?: Message["origin"], retry?: ClientRetry): { message: Message; settled: boolean } {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const request = this.byId(requestId);
       if (!request || request.kind !== "request" || !request.to) throw new TypeError("unknown request");
       if (from !== request.to) throw new TypeError("response sender does not match request target");
+      const input: NewMessage = { from, to: request.from, kind: "response", word: request.word, body, reply_to: requestId, ...(origin ? { origin } : {}) };
+      if (retry) {
+        const prior = this.responseRetry(retry, input);
+        if (prior) { this.db.exec("COMMIT"); return { message: prior, settled: false }; }
+      }
       const existing = this.db.prepare("SELECT * FROM messages WHERE kind='response' AND reply_to=?").get(requestId) as Row | undefined;
       if (existing) { this.db.exec("COMMIT"); return { message: decode(existing), settled: false }; }
       if (typeof body.ok !== "boolean" || (body.ok === false && !body.error)) throw new TypeError("invalid response body");
       const id = newId(); const ts = Date.now();
       this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, origin ? JSON.stringify(origin) : null, request.turn ?? null);
+      if (retry) this.db.prepare("INSERT INTO client_retries (scope_hash,client_id,payload_hash,message_id) VALUES (?,?,?,?)")
+        .run(digest(retry.transportPrincipal), retry.clientId, retryPayload(input), id);
       this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=?").run(ts, requestId);
       this.db.exec("COMMIT");
       return { message: this.byId(id)!, settled: true };

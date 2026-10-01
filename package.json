@@ -11,6 +11,7 @@
     "test:arch:final": "node --import tsx tools/arch-gate.ts",
     "test:originality": "node --test tools/originality.test.mjs",
     "test:public-terms": "node tools/originality.mjs --ci-terms",
+    "check:manifest": "node tools/check-manifest.mjs && node --test tools/check-manifest.test.mjs",
     "build:core": "npm run -s gen:ui && esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload"
   },

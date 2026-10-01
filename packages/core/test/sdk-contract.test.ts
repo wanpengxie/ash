@@ -10,7 +10,7 @@ import { after, before, test } from "node:test";
 import { API_VERSION, type AshEvent } from "../../sdk/src/api";
 import { AshClient } from "../../sdk/src/client";
 import { OWNER } from "../src/core";
-import { type Running, startOwner } from "../src/main";
+import { type Running, startOwner } from "./legacy/main";
 
 let ash: AshClient;
 let run: Running;
@@ -213,7 +213,7 @@ test("grants: the owner grants and revokes; the agent's view follows", async () 
 test("remote callers (paired browsers through the gateway) chat but cannot manage", async () => {
   run.core.devices.upsert({ id: "device:browser1", name: "Mac Chrome", kind: "browser", online: true, via: "gateway", permissions: ["chat", "web_ui"], capabilities: [] }, null);
   run.core.devices.upsert({ id: "device:im", name: "IM bridge", kind: "other", online: true, via: "gateway", permissions: ["chat"], capabilities: [] }, null);
-  const router = (run as unknown as { core: unknown }) && (await import("../src/server"));
+  const router = (run as unknown as { core: unknown }) && (await import("./legacy/server"));
   const r = new router.Router(run.core, run.tokens, { workspaces: {} });
   const call = (method: string, path: string, member: string, body?: unknown) =>
     r.handle({ method, url: new URL(path, "http://ash"), headers: {}, body: body ? Buffer.from(JSON.stringify(body)) : null }, { member, local: false });

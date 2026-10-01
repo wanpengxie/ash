@@ -62,6 +62,7 @@ const errors = (code: MessageErrorCode, message: string): ResponseBody => ({ ok:
 const detached = <T>(value: T): T => structuredClone(value);
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
+  transportPrincipal: ctx.transportPrincipal,
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
 const askExpiry = (message: Pick<Message, "to" | "word" | "body">): number | null =>
   message.to === "person:owner" && message.word === "ask" && typeof message.body.expires_at === "number" && Number.isFinite(message.body.expires_at)
@@ -134,19 +135,42 @@ export class WorldRouter {
 
   /** Compile all external schemas with Ajv before any capability becomes callable. */
   registerDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
+    const prepared = this.prepareDeviceBatch(member, capabilities, handle, options);
+    for (const key of prepared.keys()) if (this.endpoints.has(key)) throw new TypeError("duplicate endpoint");
+    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
+    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+  }
+
+  /** Recompile the complete manifest before a synchronous, all-or-nothing route switch. */
+  replaceDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
+    const prepared = this.prepareDeviceBatch(member, capabilities, handle, options);
+    this.unregisterDevice(member);
+    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
+    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+  }
+
+  unregisterDevice(member: string): void {
+    if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
+    for (const key of this.endpoints.keys()) if (key.startsWith(`${member}/`)) this.endpoints.delete(key);
+  }
+
+  cancelMember(member: string): Message[] {
+    return this.cancel([...this.pending.values()].filter((item) => item.request.to === member).map((item) => item.request.id));
+  }
+
+  private prepareDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery">): Map<string, Registered> {
     if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
     const prepared = new Map<string, Registered>();
     for (const capability of capabilities) {
       const safeCapability = detached(capability);
       const spec = deviceWordSpec(safeCapability as Parameters<typeof deviceWordSpec>[0]);
       const key = `${member}/${spec.word}`;
-      if (this.endpoints.has(key) || prepared.has(key)) throw new TypeError("duplicate endpoint");
+      if (prepared.has(key)) throw new TypeError("duplicate endpoint");
       const validateInput = ajvFor(safeCapability.input_schema);
       const validateResult = ajvFor(spec.result_schema);
       prepared.set(key, { member, spec, handle, ...options, validateInput, validateResult });
     }
-    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
-    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+    return prepared;
   }
 
   setGate(gate: GateHook): void { this.gate = gate; }
@@ -256,6 +280,11 @@ export class WorldRouter {
       return { id: message.id, seq: message.seq };
     }
     if (!endpoint) throw new RouterError("not_found", "recipient word not found");
+    if (this.endpoint(message.to!, message.word) !== endpoint) {
+      const response = this.ledger.settle(message.id, message.to!, errors("cancelled", "device route changed before dispatch")).message;
+      this.publish(response);
+      return { id: message.id, seq: message.seq, ...(request.wait ? { reply: response } : {}) };
+    }
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === message.id)!;
     const pending = makePending(message, endpoint, tracked.context, tracked.deadlineAt, "accepted");
     this.pending.set(message.id, pending);
@@ -269,6 +298,13 @@ export class WorldRouter {
     const original = this.ledger.byId(request.reply_to!);
     if (!original || original.kind !== "request" || original.seq <= this.ledger.migration.lastLegacySeq || original.to !== from || original.from !== request.to || original.word !== request.word) throw new RouterError("bad_request", "response does not match an active request");
     if (original.to === "person:owner" && original.word === "ask" && !(ctx.transport === "web_ui" || (ctx.transport === "phone" && ctx.ownerProxy))) fail("forbidden", "ask requires a verified screen or notification proxy");
+    const retry = request.client_id ? { transportPrincipal: ctx.transportPrincipal, clientId: request.client_id } : undefined;
+    if (retry) {
+      let previous: Message | null;
+      try { previous = this.ledger.responseRetry(retry, { from, to: request.to, kind: "response", word: request.word, body: request.body, reply_to: request.reply_to, ...(origin ? { origin } : {}) }); }
+      catch (error) { if (error instanceof TypeError) fail("bad_request", error.message); throw error; }
+      if (previous) return { id: previous.id, seq: previous.seq };
+    }
     const endpoint = this.endpoint(original.to!, original.word);
     if (!endpoint || this.ledger.responseTo(original.id)) throw new RouterError("bad_request", "request already settled or unavailable");
     const body = request.body as ResponseBody;
@@ -285,7 +321,7 @@ export class WorldRouter {
       if (typeof choice !== "string" || !Array.isArray(options) || !options.some((option) => plainObject(option) && option.id === choice)) fail("bad_request", "ask choice was not offered");
     }
     if (signal?.aborted) fail("cancelled", "send aborted before settlement");
-    const result = this.finish(pending, body, from, false, origin);
+    const result = this.finish(pending, body, from, false, origin, retry);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
   }
@@ -304,9 +340,9 @@ export class WorldRouter {
     }, remaining);
   }
 
-  private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean, origin?: Message["origin"]): Message | null {
+  private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean, origin?: Message["origin"], retry?: { transportPrincipal: string; clientId: string }): Message | null {
     if (pending.settled) return null;
-    const result = this.ledger.settle(pending.request.id, from, body, origin);
+    const result = this.ledger.settle(pending.request.id, from, body, origin, retry);
     pending.settled = true;
     if (pending.timer) clearTimeout(pending.timer);
     this.pending.delete(pending.request.id);

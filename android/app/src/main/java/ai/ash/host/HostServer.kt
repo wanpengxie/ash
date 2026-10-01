@@ -17,7 +17,7 @@ import java.util.concurrent.Executors
 /**
  * The host bridge: a loopback HTTP/1.1 service ash core talks to (see packages/core/src/host.ts).
  *   GET  /manifest          the phone's capabilities       POST /call {capability, args, caller}
- *   POST /notify            show a notification            POST /confirm {…}, /confirm/hide {id}
+ *   POST /present           show a notification            POST /present/hide {id}
  *   POST /alarm {at}        wake ash core at a time        GET /key, POST /sign {data}
  *   POST /restart {reason?} restart ash core (e.g. after a plugin change); answered before it happens
  * Every other app on the phone can reach loopback ports, so every request carries the bearer
@@ -90,17 +90,12 @@ class HostServer(private val ctx: Context, private val token: String) {
             val r: CapResult = Capabilities.call(ctx, b.optString("capability"), b.optJSONObject("args") ?: JSONObject())
             200 to r.toJson()
         }
-        "POST /notify" -> {
-            Notifications.message(ctx, b.optString("title"), b.optString("text"), b.optString("urgency", "normal"))
-            200 to JSONObject().put("ok", true)
-        }
-        "POST /confirm" -> {
-            Notifications.confirm(ctx, b)
-            200 to JSONObject().put("ok", true)
-        }
-        "POST /confirm/hide" -> {
-            Notifications.hideConfirm(ctx, b.optString("id"))
-            200 to JSONObject().put("ok", true)
+        "POST /present" -> Present.show(ctx, b)
+        "POST /present/hide" -> {
+            val id = b.optString("id")
+            if (id.isBlank()) 400 to JSONObject().put("error", "id_required")
+            else if (Present.hide(ctx, id)) 200 to JSONObject().put("ok", true)
+            else 500 to JSONObject().put("error", "store_failed")
         }
         "POST /alarm" -> {
             Wake.schedule(ctx, if (b.isNull("at")) null else b.optLong("at"))
