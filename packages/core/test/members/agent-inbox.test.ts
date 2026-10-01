@@ -11,7 +11,7 @@ import { createAgentMember, type AgentTurnInput, type AgentTurnRunner } from "..
 import { DEFAULT_TURN_TEXT_BUDGET, TurnTextBudgetError, renderTurnBatch } from "../../src/members/agent-render";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
-import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { RouterError, WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-api", member: "person:owner", local: true, remote: false, ownerProxy: false };
 const screen = (label: string, id: string): TrustedRouteContext => ({ transport: "web_ui", transportPrincipal: id, member: "person:owner", local: true,
@@ -183,6 +183,40 @@ test("saved emit callback cannot publish after its turn has ended", async () => 
     assert.ok(savedEmit);
     await savedEmit({ id: "after-end", text: "must not publish" });
     assert.equal(f.messages().filter((message) => message.kind === "request" && message.from === "agent:main" && message.word === "say").length, 0);
+  } finally { await f.close(); }
+});
+
+test("close aborts a reply held before its ledger append", async () => {
+  let held!: () => void; let release!: () => void;
+  const entered = new Promise<void>((resolve) => { held = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const f = await fixture({ async runTurn(_input, emit) { await emit({ id: "held-reply", text: "must not arrive" }); return { reason: "completed" }; } });
+  const original = f.router.send.bind(f.router);
+  f.router.send = (async (...args: Parameters<WorldRouter["send"]>) => {
+    if (args[1].word === "say" && args[0].member === "agent:main" && args[1].to === "person:owner") { held(); await gate; }
+    return original(...args);
+  }) as WorldRouter["send"];
+  try {
+    await f.member.start();
+    await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "go" }, wait: true });
+    await Promise.race([entered, sleep(2_000).then(() => { throw new Error("reply was not held"); })]);
+    await f.member.close();
+    release();
+    await sleep(30);
+    assert.equal(f.messages().filter((message) => message.kind === "request" && message.from === "agent:main" && message.word === "say").length, 0);
+  } finally { release(); await f.close(); }
+});
+
+test("aborted internal send cannot accept a request or settle a response", async () => {
+  const f = await fixture({ async runTurn() { return { reason: "completed" }; } });
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "blocked" } }, controller.signal),
+      (error: unknown) => error instanceof RouterError && error.code === "cancelled");
+    await assert.rejects(f.router.send(owner, { to: "agent:main", kind: "response", word: "say", reply_to: "none", body: { ok: true } }, controller.signal),
+      (error: unknown) => error instanceof RouterError && error.code === "cancelled");
+    assert.deepEqual(f.messages(), []);
   } finally { await f.close(); }
 });
 
