@@ -210,6 +210,16 @@ export class WorldRouter {
       throw new TypeError("not a committed post event");
     this.publish(stored);
   }
+  /** Notify streams only after a work row and its event have committed together. */
+  publishWorkEvent(message: Message): void {
+    const stored = this.ledger.byId(message.id);
+    const schema = stored && ["run.start", "run.step", "run.end"].includes(stored.word)
+      ? wordContract("service:work", stored.word)?.input_schema : null;
+    if (!stored || stored.seq !== message.seq || stored.from !== "service:work" || stored.to !== null ||
+      stored.kind !== "event" || !schema || !matchesSchema(schema, stored.body) || stored.turn !== stored.body.run)
+      throw new TypeError("not a committed work event");
+    this.publish(stored);
+  }
   private publish(message: Message): void {
     for (const listener of this.subscribers) {
       try { listener(detached(message)); } catch { /* a broken stream cannot interrupt durable routing */ }
@@ -279,7 +289,8 @@ export class WorldRouter {
       const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan");
       if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
     }
-    if (request.to === "service:work" && request.word === "run" && from !== "person:owner") fail("forbidden", "only owner may start a background run");
+    if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
+      fail("forbidden", "only owner may inspect or start background work");
     if (request.to === "service:gate" && request.word === "rules.revoke" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "rule revocation requires local owner");
     if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
@@ -475,6 +486,21 @@ export class WorldRouter {
       if (pending) settled.push(...this.cancel([tracked.message.id]));
       else {
         const result = this.ledger.settle(tracked.message.id, tracked.message.to!, errors("cancelled", "request cancelled; external effect may be unknown"));
+        if (result.settled) { this.publish(result.message); settled.push(result.message); }
+      }
+    }
+    return settled;
+  }
+
+  /** Restricted work-run cancellation; never reuses the agent t_ turn authority. */
+  cancelWorkTurn(run: string): Message[] {
+    if (!/^r_[A-Za-z0-9_-]+$/.test(run)) throw new TypeError("invalid work turn cancellation");
+    const settled: Message[] = [];
+    for (const tracked of this.ledger.trackedRequests().filter((item) => item.message.turn === run && item.message.from === "service:work")) {
+      const pending = this.pending.get(tracked.message.id);
+      if (pending) settled.push(...this.cancel([tracked.message.id]));
+      else {
+        const result = this.ledger.settle(tracked.message.id, tracked.message.to!, errors("cancelled", "work run stopped; external effect may be unknown"));
         if (result.settled) { this.publish(result.message); settled.push(result.message); }
       }
     }
