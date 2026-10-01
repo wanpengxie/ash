@@ -38,6 +38,45 @@ async function accepted(router: WorldRouter, ledger: Ledger) {
   return { sent, gate, ask: ask! };
 }
 
+test("internal DSH ask uses the accepted durable deadline across clock ticks", async (t) => {
+  const { ledger, router } = await setup();
+  let tick = Date.now();
+  t.mock.method(Date, "now", () => ++tick);
+  try {
+    const work = router.requestInternalApproval({ sessionId: "session-550e8400-e29b-41d4-a716-446655440000",
+      turn: "t_gateclock", callId: "call_gateclock", toolName: "ash_describe", contractFingerprint: "a".repeat(64),
+      signal: new AbortController().signal, stillValid: () => true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const parent = ledger.list().find((message) => message.word === "internal.approval" && message.kind === "request")!;
+    const tracked = ledger.trackedRequests().find((item) => item.message.id === parent.id)!;
+    const gate = ledger.gateCase(parent.id);
+    assert.ok(gate, "a later clock tick must not reject the ask");
+    assert.equal(gate.expiresAt, tracked.deadlineAt);
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: gate.askId,
+      body: { ok: true, result: { choice: "once" } } });
+    assert.equal(await work, "allowed-once");
+    assert.equal(ledger.responseTo(parent.id)?.body.ok, true);
+  } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
+});
+
+test("risky requests persist one total deadline: default 600s, explicit 90s and 900s", async (t) => {
+  const { ledger, router } = await setup();
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  for (const [word, timeout_ms] of [["short", 90_000], ["long", 900_000]] as const)
+    router.register({ member: "device:fake", spec: { word, kind: "request", risk: "outward", timeout_ms,
+      description: "Synthetic timed effect", input_schema: { type: "object", additionalProperties: false } }, handle: () => assert.fail("unapproved effect") });
+  try {
+    for (const [word, total, ask] of [["run", 600_000, 600_000], ["short", 90_000, 90_000], ["long", 900_000, 600_000]] as const) {
+      const sent = await router.send(screen, { to: "device:fake", kind: "request", word, body: word === "run" ? { n: 1 } : {} });
+      await new Promise((resolve) => setImmediate(resolve));
+      const tracked = ledger.trackedRequests().find((item) => item.message.id === sent.id)!;
+      assert.equal(tracked.deadlineAt, now + total);
+      assert.equal(ledger.gateCase(sent.id)?.expiresAt, now + ask);
+    }
+  } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
+});
+
 test("durable gate waits for owner choice then runs one synthetic effect", async () => {
   const { ledger, router, effects } = await setup();
   try {

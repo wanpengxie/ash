@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +83,48 @@ test("an access grant, audit and response roll back together on an injected SQLi
   finally { reopened.close(); }
 });
 
+for (const stage of ["accepted", "asked", "answered", "dispatching", "handoff"] as const) {
+  test(`SIGKILL after internal DSH approval ${stage} never reopens the old call`, async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "ash-internal-approval-kill-")), "ash.db");
+    const source = `import { Ledger } from './packages/core/src/world/ledger.ts';
+      const ledger=await Ledger.open(${JSON.stringify(file)});
+      const parent=ledger.acceptInternalApproval({sessionId:'session-550e8400-e29b-41d4-a716-446655440000',turn:'t_synthetic',
+        callId:'toolu_synthetic',toolName:'ash_describe',contractFingerprint:'a'.repeat(64),deadlineAt:Date.now()+120000});
+      if (${JSON.stringify(stage)}!=='accepted') {
+        const ask=ledger.beginGate(parent.id,{subject:'synthetic-root',risk:'structure',contractFingerprint:'a'.repeat(64),
+          expiresAt:Date.now()+60000,askBody:{title:'Synthetic approval',detail:'Read-only fixture',
+            options:[{id:'once',label:'Once'},{id:'deny',label:'Deny'}],
+            source:{word:'internal.approval',to:'service:gate',body_preview:'Synthetic tool'}}});
+        if (!ask) throw new Error('missing ask');
+        if (${JSON.stringify(stage)}!=='asked') {
+          ledger.settleGateAsk(ask.ask.id,'once','answer');
+          if (${JSON.stringify(stage)}==='dispatching'||${JSON.stringify(stage)}==='handoff')
+            ledger.dispatchAllowedGate(parent.id,'synthetic-root','a'.repeat(64));
+          if (${JSON.stringify(stage)}==='handoff') ledger.settle(parent.id,'service:gate',{ok:true,result:{outcome:'allowed-once'}});
+        }
+      }
+      process.kill(process.pid,'SIGKILL');`;
+    const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source],
+      { cwd: process.cwd(), timeout: 10_000, encoding: "utf8" });
+    assert.equal(child.signal, "SIGKILL", child.stderr);
+    const ledger = await Ledger.open(file);
+    try {
+      const parent = ledger.list().find((message) => message.word === "internal.approval" && message.kind === "request")!;
+      assert.ok(parent);
+      const prior = ledger.responseTo(parent.id);
+      const final = ledger.failInternalApproval(parent.id)!;
+      assert.equal(final.id, prior?.id ?? final.id);
+      assert.equal(final.body.ok, stage === "handoff");
+      assert.equal(ledger.list().filter((message) => message.reply_to === parent.id && message.kind === "response").length, 1);
+      const gate = ledger.gateCase(parent.id);
+      if (gate) assert.ok(ledger.responseTo(gate.askId), "old owner ask remained actionable");
+      assert.equal(ledger.trackedRequests().some((request) => request.message.id === parent.id || request.message.id === gate?.askId), false);
+      assert.throws(() => ledger.acceptInternalApproval({ sessionId: "session-550e8400-e29b-41d4-a716-446655440000", turn: "t_synthetic",
+        callId: "toolu_synthetic", toolName: "ash_describe", contractFingerprint: "a".repeat(64), deadlineAt: Date.now() + 120_000 }));
+    } finally { ledger.close(); }
+  });
+}
+
 test("an answer before ask expiry remains valid for dispatch after ask expiry but before original deadline", async (t) => {
   const { ledger, accepted } = await fixture(900_000);
   try {
@@ -93,6 +136,22 @@ test("an answer before ask expiry remains valid for dispatch after ask expiry bu
     assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer")?.event?.word, "gate.passed");
     now = base + 601_000;
     assert.equal(ledger.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), true);
+  } finally { ledger.close(); }
+});
+
+test("committed device ACL revoke between authorization and dispatch CAS blocks the effect", async () => {
+  const { file, ledger, accepted } = await fixture(60_000, true);
+  try {
+    const started = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!;
+    assert.ok(started);
+    assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer")?.event?.word, "gate.passed");
+    assert.equal(ledger.gateDeviceAccess("agent:main", "device:fake", "run"), true);
+    const other = new DatabaseSync(file);
+    try { other.prepare("UPDATE gate_access SET revoked_at=? WHERE member=? AND scope=?")
+      .run(Date.now(), "agent:main", "device:fake/run"); }
+    finally { other.close(); }
+    assert.equal(ledger.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), false);
+    assert.equal(ledger.trackedRequests().find((item) => item.message.id === accepted.id)?.phase, "gate_waiting");
   } finally { ledger.close(); }
 });
 

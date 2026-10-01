@@ -37,6 +37,17 @@ export interface DeviceCapability {
 export interface GateDecision { allow: boolean; by?: "rule" | "answer" | "timeout"; reason?: string }
 export type GateHook = (request: Message, spec: WordSpec, caller: RequestContextSnapshot, signal: AbortSignal) => Promise<GateDecision>;
 export type RecoveryAuthorizer = (request: Message, caller: RequestContextSnapshot) => boolean | Promise<boolean>;
+/** Not a send envelope: only the bound DSH Door may construct this after pre-execute provenance. */
+export interface InternalApprovalIngress {
+  sessionId: string;
+  turn: string;
+  callId: string;
+  toolName: string;
+  contractFingerprint: string;
+  signal: AbortSignal;
+  stillValid: () => boolean;
+}
+export type InternalApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 type Subscriber = (message: Message) => void;
 interface Registered extends RouteEndpoint { validateInput: (value: unknown) => boolean; validateResult?: (value: unknown) => boolean }
 interface Pending {
@@ -105,8 +116,67 @@ export class WorldRouter {
   private gate: GateHook | null = null;
   private durableGate = false;
   private isolatedFakeAlways = false;
+  private readonly internalApprovals = new Map<string, (outcome: InternalApprovalOutcome | "approved") => void>();
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
+
+  /** A one-shot DSH waterfall bridge. No public endpoint or Member owns internal.approval. */
+  async requestInternalApproval(input: InternalApprovalIngress): Promise<InternalApprovalOutcome> {
+    if (!this.durableGate || input.signal.aborted || !input.stillValid() || !this.endpoint("person:owner", "ask")) return "unavailable";
+    let parent: Message;
+    try { parent = this.ledger.acceptInternalApproval({ sessionId: input.sessionId, turn: input.turn, callId: input.callId,
+      toolName: input.toolName, contractFingerprint: input.contractFingerprint, deadlineAt: Date.now() + 600_000 }); }
+    catch { return "unavailable"; }
+    this.publish(parent);
+    const outcome = new Promise<InternalApprovalOutcome | "approved">((resolve) => this.internalApprovals.set(parent.id, resolve));
+    let askId: string | null = null;
+    const abort = () => { if (askId) this.cancel([askId]); else {
+      const response = this.ledger.failInternalApproval(parent.id);
+      if (response) this.publish(response);
+      this.internalApprovals.get(parent.id)?.("cancelled");
+    } };
+    input.signal.addEventListener("abort", abort, { once: true });
+    try {
+      if (input.signal.aborted || !input.stillValid()) { abort(); return "cancelled"; }
+      const accepted = this.ledger.trackedRequests().find((item) => item.message.id === parent.id);
+      if (!accepted) return "unavailable";
+      // The ask shares the parent's durable deadline. Recomputing from parent.ts
+      // can exceed it by even one millisecond and sporadically reject beginGate.
+      const expiresAt = accepted.deadlineAt;
+      const started = this.ledger.beginGate(parent.id, { subject: hash({ member: "agent:main", sessionId: input.sessionId }),
+        risk: "structure", contractFingerprint: input.contractFingerprint, expiresAt,
+        askBody: { title: "Confirm tool", detail: `Allow ${input.toolName} once?`,
+          options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+          source: { word: "internal.approval", to: "service:gate", body_preview: "DSH tool request" } } });
+      if (!started) return "unavailable";
+      askId = started.ask.id;
+      this.publish(started.ask); this.publish(started.event);
+      this.activateGateAsk(started.ask);
+      if (input.signal.aborted) abort();
+      const decision = await outcome;
+      if (decision !== "approved") return decision;
+      if (input.signal.aborted || !input.stillValid()) return "cancelled";
+      const tracked = this.ledger.trackedRequests().find((item) => item.message.id === parent.id);
+      if (!tracked || !await this.currentlyAuthorized(parent, tracked.context) || input.signal.aborted || !input.stillValid()) return "unavailable";
+      if (!this.ledger.dispatchAllowedGate(parent.id, hash({ member: "agent:main", sessionId: input.sessionId }), input.contractFingerprint))
+        return "unavailable";
+      const response = this.ledger.settle(parent.id, "service:gate", { ok: true, result: { outcome: "allowed-once" } }).message;
+      this.publish(response);
+      return "allowed-once";
+    } catch {
+      const response = this.ledger.failInternalApproval(parent.id);
+      if (response) this.publish(response);
+      return "unavailable";
+    } finally {
+      input.signal.removeEventListener("abort", abort);
+      if (!this.ledger.responseTo(parent.id)) {
+        if (askId && this.pending.has(askId)) this.cancel([askId]);
+        const response = this.ledger.failInternalApproval(parent.id);
+        if (response) this.publish(response);
+      }
+      this.internalApprovals.delete(parent.id);
+    }
+  }
 
   /** Recheck a stored delegate against the current credential/grant authority. */
   async currentlyAuthorized(request: Message, caller: RequestContextSnapshot): Promise<boolean> {
@@ -504,6 +574,9 @@ export class WorldRouter {
     this.publish(outcome.askResponse);
     if (outcome.event) this.publish(outcome.event);
     const originalId = this.ledger.gateCaseByAsk(pending.request.id)!.requestId;
+    const internal = this.internalApprovals.get(originalId);
+    if (internal) internal(cause === "cancelled" ? "cancelled" : cause === "deadline" ? "unavailable"
+      : choice === "deny" ? "rejected" : "approved");
     const original = this.pending.get(originalId);
     if (outcome.originalResponse) {
       if (original) this.adoptGateTerminal(original, outcome.originalResponse, true);
@@ -685,6 +758,17 @@ export class WorldRouter {
       const { message, phase, context, deadlineAt } = tracked;
       if (this.ledger.responseTo(message.id)) continue;
       if (this.pending.has(message.id)) continue;
+      if (message.from === "agent:main" && message.to === "service:gate" && message.word === "internal.approval") {
+        const askId = this.ledger.gateCase(message.id)?.askId;
+        const priorAskResponse = askId ? this.ledger.responseTo(askId) : null;
+        const response = this.ledger.failInternalApproval(message.id);
+        if (askId && !priorAskResponse) {
+          const askResponse = this.ledger.responseTo(askId);
+          if (askResponse) this.publish(askResponse);
+        }
+        if (response) this.publish(response);
+        continue;
+      }
       if (this.durableGate && message.from === "service:gate" && message.to === "person:owner" && message.word === "ask") {
         const gateCase = this.ledger.gateCaseByAsk(message.id);
         const original = gateCase && this.ledger.trackedRequests().find((item) => item.message.id === gateCase.requestId);

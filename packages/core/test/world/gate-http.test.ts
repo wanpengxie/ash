@@ -19,6 +19,15 @@ test("production owner HTTP routes one fake risk request through durable ask and
     const headers = { authorization: `Bearer ${auth}`, "content-type": "application/json" };
     const send = (wire: unknown, extra: Record<string, string> = {}) => fetch(`${running.url}/api/send`,
       { method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify(wire) });
+    const beforeSpoof = running.ledger.lastSeq();
+    const fakeOwner = await send({ to: "device:fake", kind: "request", word: "run", body: { n: 1 } },
+      { authorization: "Bearer invalid-owner-token" });
+    assert.equal(fakeOwner.status, 401);
+    const fakeInternal = await send({ to: "service:gate", kind: "request", word: "internal.approval",
+      body: { session_id: "session-550e8400-e29b-41d4-a716-446655440000", call_id: "forged" } });
+    assert.equal(fakeInternal.status, 404);
+    assert.equal(running.ledger.lastSeq(), beforeSpoof);
+    assert.equal(effects, 0);
     const accepted = await send({ to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
     assert.equal(accepted.status, 200);
     const request = await accepted.json() as { id: string };

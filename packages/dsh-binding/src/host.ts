@@ -194,7 +194,7 @@ export class DshHost {
       const agentOptions = this.agentOptions();
       door = createDshDoor({ tools: this.ctx.tools, members: options.members, router: options.router,
         workspace: options.workspace, managedRoot: options.managedRoot, protectedRoots: options.protectedRoots,
-        scopeChainOf: scope.scopeChainOf, nativeMode: options.nativeMode ?? "disabled" });
+        scopeChainOf: scope.scopeChainOf, nativeMode: options.nativeMode ?? "disabled", sessionId });
       const preparedDoor = door;
       const persistence = this.ctx.get("sessionPersistence");
       if (options.resume && !persistence) throw new Error("DSH history persistence unavailable");

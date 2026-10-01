@@ -269,7 +269,10 @@ export class Ledger {
         CREATE TABLE IF NOT EXISTS gate_access_audit (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE,
           access_id TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('grant','revoke')),
-          at INTEGER NOT NULL);`);
+          at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS internal_approval_calls (
+          session_id TEXT NOT NULL, turn TEXT NOT NULL, call_id TEXT NOT NULL,
+          request_id TEXT NOT NULL UNIQUE, PRIMARY KEY(session_id,turn,call_id));`);
       Ledger.migrateLegacyGate(db);
       return new Ledger(db, stats);
     } catch (error) { db.close(); throw error; }
@@ -413,6 +416,43 @@ export class Ledger {
       this.db.exec("COMMIT");
       return { message: this.byId(id)!, duplicate: false };
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** No public route accepts this word. A call identity and parent request commit together. */
+  acceptInternalApproval(input: { sessionId: string; turn: string; callId: string; toolName: string;
+    contractFingerprint: string; deadlineAt: number }): Message {
+    if (!/^session-[0-9a-f-]{36}$/.test(input.sessionId) || !/^t_[A-Za-z0-9_-]+$/.test(input.turn) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(input.callId) || !/^[A-Za-z0-9_-]{1,128}$/.test(input.toolName) ||
+      !/^[a-f0-9]{64}$/.test(input.contractFingerprint) || !Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= Date.now())
+      throw new TypeError("invalid internal approval identity");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const id = newId(); const at = Date.now();
+      this.db.prepare(`INSERT INTO internal_approval_calls(session_id,turn,call_id,request_id) VALUES(?,?,?,?)`)
+        .run(input.sessionId, input.turn, input.callId, id);
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(id, at, "agent:main", "service:gate", "request", "internal.approval", JSON.stringify({ session_id: input.sessionId,
+          tool_name: input.toolName, call_id: input.callId, contract_fingerprint: input.contractFingerprint }), null, null, input.turn);
+      this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)")
+        .run(id, "accepted", input.deadlineAt, JSON.stringify({ member: "agent:main", local: true, remote: false,
+          ownerProxy: false, transportPrincipal: "agent:main" }), at);
+      this.db.exec("COMMIT");
+      return this.byId(id)!;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** A DSH session cannot resume a borrowed approval call after process death. */
+  failInternalApproval(requestId: string): Message | null {
+    const request = this.byId(requestId);
+    if (!request || request.from !== "agent:main" || request.to !== "service:gate" || request.word !== "internal.approval") return null;
+    const prior = this.responseTo(requestId);
+    if (prior) return prior;
+    const gate = this.gateCase(requestId);
+    if (gate?.decision === "waiting") {
+      const settled = this.settleGateAsk(gate.askId, "deny", "cancelled");
+      if (settled?.originalResponse) return settled.originalResponse;
+    }
+    return this.settle(requestId, "service:gate", { ok: false, error: { code: "failed", message: "DSH approval handoff unknown after restart" } }).message;
   }
 
   /** A response retry is readable only after the edge has authenticated its current source. */
@@ -695,14 +735,20 @@ export class Ledger {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.db.prepare(`SELECT c.decision,c.subject,c.contract_fingerprint,c.expires_at,s.phase,s.deadline_at,
+        m."from" AS request_from,m."to" AS request_to,m.word AS request_word,
         a.kind AS ask_kind,a.word AS ask_word,r.body AS answer_body
         FROM gate_cases c JOIN request_state s ON s.request_id=c.request_id
+        JOIN messages m ON m.id=c.request_id
         JOIN messages a ON a.id=c.ask_id
         LEFT JOIN messages r ON r.reply_to=c.ask_id AND r.kind='response'
         WHERE c.request_id=?`).get(requestId) as Row | undefined;
       if (!row || row.decision !== "allowed" || row.phase !== "gate_waiting" || row.subject !== subject ||
         row.contract_fingerprint !== contractFingerprint || row.ask_kind !== "request" || row.ask_word !== "ask" ||
         typeof row.answer_body !== "string" || Date.now() >= Number(row.deadline_at)) {
+        this.db.exec("COMMIT"); return false;
+      }
+      if (String(row.request_to).startsWith("device:") &&
+        !this.gateDeviceAccess(String(row.request_from), String(row.request_to), String(row.request_word))) {
         this.db.exec("COMMIT"); return false;
       }
       const answer = JSON.parse(row.answer_body) as ResponseBody;
