@@ -365,6 +365,21 @@ export class WorldRouter {
     return settled;
   }
 
+  /** Reconcile a trusted agent's durable turn cancellation before normal request recovery can replay it. */
+  cancelTurn(actor: string, turn: string): Message[] {
+    if (!/^agent:[A-Za-z0-9_-]+$/.test(actor) || !/^t_[A-Za-z0-9_-]+$/.test(turn)) throw new TypeError("invalid agent turn cancellation");
+    const settled: Message[] = [];
+    for (const tracked of this.ledger.trackedRequests().filter((item) => item.message.turn === turn && item.message.from === actor)) {
+      const pending = this.pending.get(tracked.message.id);
+      if (pending) settled.push(...this.cancel([tracked.message.id]));
+      else {
+        const result = this.ledger.settle(tracked.message.id, tracked.message.to!, errors("cancelled", "request cancelled; external effect may be unknown"));
+        if (result.settled) { this.publish(result.message); settled.push(result.message); }
+      }
+    }
+    return settled;
+  }
+
   /** Call only after endpoint registration. Revalidate current grants/permissions; never replay uncertain effects. */
   async recover(): Promise<void> {
     for (const tracked of this.ledger.trackedRequests()) {

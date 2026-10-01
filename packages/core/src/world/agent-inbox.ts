@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Message } from "../../../sdk/src/api";
 
-export type StoredTurnReason = "completed" | "error";
+export type StoredTurnReason = "completed" | "cancelled" | "error";
 export interface StoredTurn {
   id: string;
   status: "active" | "ended";
@@ -19,7 +19,7 @@ type Row = Record<string, unknown>;
 const turnId = () => `t_${randomBytes(9).toString("base64url")}`;
 const decodeTurn = (row: Row): StoredTurn => ({
   id: String(row.id), status: row.status as StoredTurn["status"],
-  reason: row.reason as StoredTurnReason | null, error: row.error === null ? null : String(row.error),
+  reason: (row.reason_v2 ?? row.reason) as StoredTurnReason | null, error: row.error === null ? null : String(row.error),
   readLogged: Boolean(row.read_logged), startLogged: Boolean(row.start_logged), endLogged: Boolean(row.end_logged),
 });
 
@@ -46,7 +46,17 @@ export class AgentInbox {
       CHECK ((state='pending' AND turn_id IS NULL) OR (state='read' AND turn_id IS NOT NULL))
     );
     CREATE INDEX IF NOT EXISTS inbox_pending ON inbox(state,seq);
-    CREATE INDEX IF NOT EXISTS inbox_turn ON inbox(turn_id,seq);`);
+    CREATE INDEX IF NOT EXISTS inbox_turn ON inbox(turn_id,seq);
+    CREATE TABLE IF NOT EXISTS cancel_receipts (
+      request_id TEXT PRIMARY KEY, cancelled INTEGER NOT NULL CHECK(cancelled IN (0,1)),
+      turn_id TEXT REFERENCES turns(id)
+    );
+    CREATE TABLE IF NOT EXISTS cancel_intents (
+      turn_id TEXT PRIMARY KEY REFERENCES turns(id), request_id TEXT NOT NULL UNIQUE,
+      reason TEXT NOT NULL, by_id TEXT, fact TEXT NOT NULL, consumed_at INTEGER
+    );`);
+    const columns = this.db.prepare("PRAGMA table_info(turns)").all() as Row[];
+    if (!columns.some((column) => column.name === "reason_v2")) this.db.exec("ALTER TABLE turns ADD COLUMN reason_v2 TEXT CHECK(reason_v2 IN ('completed','cancelled','error'))");
   }
 
   accept(message: Message): boolean {
@@ -88,6 +98,40 @@ export class AgentInbox {
     return decodeTurn(row);
   }
 
+  activeTurn(): StoredTurn | null {
+    const row = this.db.prepare("SELECT * FROM turns WHERE status='active' ORDER BY rowid DESC LIMIT 1").get() as Row | undefined;
+    return row ? decodeTurn(row) : null;
+  }
+
+  /** Store a replay-safe result and cancellation intent together before any cross-database settlement. */
+  recordCancel(requestId: string, reason: string, by: string | undefined, fact: string): { cancelled: boolean; turn: string | null } {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const prior = this.db.prepare("SELECT cancelled,turn_id FROM cancel_receipts WHERE request_id=?").get(requestId) as Row | undefined;
+      if (prior) { this.db.exec("COMMIT"); return { cancelled: Boolean(prior.cancelled), turn: prior.turn_id === null ? null : String(prior.turn_id) }; }
+      const active = this.activeTurn();
+      const existing = active ? this.db.prepare("SELECT request_id FROM cancel_intents WHERE turn_id=?").get(active.id) as Row | undefined : undefined;
+      const cancelled = Boolean(active && !existing);
+      this.db.prepare("INSERT INTO cancel_receipts(request_id,cancelled,turn_id) VALUES (?,?,?)").run(requestId, cancelled ? 1 : 0, cancelled ? active!.id : null);
+      if (cancelled) this.db.prepare("INSERT INTO cancel_intents(turn_id,request_id,reason,by_id,fact) VALUES (?,?,?,?,?)").run(active!.id, requestId, reason, by ?? null, fact);
+      this.db.exec("COMMIT");
+      return { cancelled, turn: cancelled ? active!.id : null };
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  cancelIntents(): string[] {
+    return (this.db.prepare("SELECT turn_id FROM cancel_intents ORDER BY rowid").all() as Row[]).map((row) => String(row.turn_id));
+  }
+
+  stopFacts(): { turn: string; text: string }[] {
+    return (this.db.prepare("SELECT turn_id,fact FROM cancel_intents WHERE consumed_at IS NULL ORDER BY rowid").all() as Row[])
+      .map((row) => ({ turn: String(row.turn_id), text: String(row.fact) }));
+  }
+
+  consumeStopFacts(turns: readonly string[]): void {
+    for (const turn of turns) this.db.prepare("UPDATE cancel_intents SET consumed_at=? WHERE turn_id=? AND consumed_at IS NULL").run(Date.now(), turn);
+  }
+
   turnsNeedingEvents(): StoredTurn[] {
     return (this.db.prepare("SELECT * FROM turns WHERE read_logged=0 OR start_logged=0 OR (status='ended' AND end_logged=0) ORDER BY rowid").all() as Row[]).map(decodeTurn);
   }
@@ -101,12 +145,12 @@ export class AgentInbox {
   }
 
   finish(id: string, reason: StoredTurnReason, error?: string): StoredTurn {
-    this.db.prepare("UPDATE turns SET status='ended',reason=?,error=? WHERE id=? AND status='active'").run(reason, error ?? null, id);
+    this.db.prepare("UPDATE turns SET status='ended',reason=?,reason_v2=?,error=? WHERE id=? AND status='active'").run(reason === "cancelled" ? "error" : reason, reason, error ?? null, id);
     return this.turn(id);
   }
 
   interruptActive(): StoredTurn[] {
-    this.db.prepare("UPDATE turns SET status='ended',reason='error',error='Interrupted by process restart' WHERE status='active'").run();
+    this.db.prepare("UPDATE turns SET status='ended',reason='error',reason_v2='error',error='Interrupted by process restart' WHERE status='active'").run();
     return this.turnsNeedingEvents();
   }
 
