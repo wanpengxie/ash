@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+async function main() {
 const [mode, urlFile, stateFile] = process.argv.slice(2);
 if (!["start", "resume", "verify", "stop"].includes(mode) || !urlFile || !stateFile) throw new Error("usage: node mac-cdp.mjs start|resume|verify|stop private-url private-state");
 const port = 14763;
@@ -70,8 +71,17 @@ if (mode === "start") {
   if (existsSync(stateFile)) throw new Error("isolated profile already has state");
   // A second profile is essential: do not attach CDP to an existing user browser.
   const profile = mkdtempSync(join(tmpdir(), "ash-v2-mac-cdp-"));
-  const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const chrome = process.env.ASH_PROBE_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   const child = spawn(chrome, [`--user-data-dir=${profile}`, "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`, "--no-first-run", "--new-window", testUrl], { detached: true, stdio: "ignore" });
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", () => reject(new Error("isolated Chrome could not start")));
+    });
+  } catch {
+    rmSync(profile, { recursive: true, force: true });
+    throw new Error("isolated Chrome could not start");
+  }
   child.unref();
   state = { pid: child.pid, profile, port };
   writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
@@ -107,3 +117,10 @@ if (mode === "start" || mode === "resume") {
   rmSync(stateFile);
   process.stdout.write(JSON.stringify({ stopped: true, profileRemoved: true }) + "\n");
 }
+}
+
+// Never print underlying spawn/fetch/CDP errors: they may contain the synthetic URL.
+await main().catch(() => {
+  process.stderr.write("isolated Mac screen probe failed\n");
+  process.exitCode = 1;
+});

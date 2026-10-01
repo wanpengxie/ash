@@ -4,6 +4,8 @@ Scope: a Mac Chrome isolated profile and an Android API 36 emulator WebView ran 
 
 The reproducible fixtures are `tools/spikes/v2-cross-device-server.mjs`, `tools/spikes/v2-cross-device-android.mjs`, `tools/spikes/v2-cross-device-mac-cdp.mjs`, and `packages/core/ui/test/android-webview/`. First establish the dedicated localhost forward and `adb reverse tcp:14762 tcp:14762`; build/install only the fixture package; start the echo owner on Linux with `ASH_PROBE_MAIN` pointing at the exact core checkout; copy only the generated mode-0600 synthetic URL file and Mac CDP script to the Mac; run the CDP script's `start`, `verify`, then `stop` commands against a fresh isolated Chrome profile. The Android launcher takes the generated URL file. The scripts do not print the token. When repeating, use a fresh state directory and do not reuse the prior token or ledger.
 
+The adb server is on the Mac: the emulator's `adb reverse` target is Mac localhost, so the dedicated Mac-localhost-to-Linux-localhost forward is required even for an Android-only presence rerun. A negative test, `node --test tools/spikes/v2-cross-device-safety.test.mjs`, points each launcher at a missing executable and verifies the disposable URL token and subprocess arguments do not appear in stdout/stderr.
+
 F-U22 observations came from the earlier isolated echo process with the merged 602 shell and a 307 candidate. That process did not have a working post member, so its 404 presence attempts are excluded from F-U21. The F-U21 process was restarted with a fresh state directory and 307 source at `557252f`.
 
 F-U22 owner-request ledger observations:
