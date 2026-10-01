@@ -14,7 +14,7 @@ The single production post member reuses the authenticated screen registry. A vi
 
 The post journal and `post.changed` count event use one SQLite connection and one transaction. Dedupe decisions are persisted by key and a half-open configured window; a suppressed attempt returns `dropped` while the original owner message remains intact. Quiet evaluation uses the running host's local timezone, with an injectable zone for exact cross-midnight boundary tests; no urgency field exists and no bypass is inferred. A notification attempt enters durable `dispatching` before `/present`; a restart turns an unsettled attempt into diagnosable `unknown` and does not replay external I/O. A lost host acknowledgement yields an error, never a claimed `notification` success. The synthetic spike actually kills the core child after host entry and confirms one delivery request and zero new host effects after reopen.
 
-Current quiet-release interpretation awaits final review: a held offer/headsup remains in the ledger history, suppresses proactive notification during quiet hours, and at the release boundary uses host notification if no screen is foreground (or in-app if one is). This is not a claim that the message was hidden from historical UI before release.
+Held offer/headsup remains in the audit ledger and releases to in-app only at the quiet boundary; it never upgrades to a host notification. Current UI projection does not yet hide the chat bubble until release. F-S07/S13 and user-visible quiet-hour behavior remain pending a per-message delivery-state contract and projection integration; a held-count event alone is insufficient.
 
 Reproduce candidate checks:
 

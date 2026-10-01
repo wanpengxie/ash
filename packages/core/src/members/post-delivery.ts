@@ -158,17 +158,10 @@ export class PostMember implements Member {
     const now = this.now();
     for (const item of this.journal.due(now)) {
       const source = this.source(item.messageId, item.kind);
-      const to = this.foreground() ? "inapp" : "notification";
-      if (to === "notification" && !this.options.host) continue; // keep held until a real presenter or visible screen exists
-      const claim = this.journal.release(item.messageId, to, now);
+      const claim = this.journal.release(item.messageId, "inapp", now);
       if (!claim) continue;
       this.publish(claim.snapshot);
-      if (!source) { if (to === "notification") this.journal.failKnown(item.messageId, "source_unavailable"); continue; }
-      if (to === "inapp") { await this.ui.present(source); continue; }
-      const presentation = this.presentation(source, item.kind);
-      if (!presentation) { this.journal.failKnown(item.messageId, "presentation_contract_rejected"); continue; }
-      try { await this.options.host!.present(presentation); this.journal.finish(item.messageId, true); }
-      catch { this.journal.finish(item.messageId, false); }
+      if (source) await this.ui.present(source);
     }
   }
   async tick(): Promise<void> { if (!this.closed) { await this.scan(); await this.releaseDue(); } }

@@ -122,8 +122,8 @@ test("real owner messages route foreground in-app, background due notification, 
     await f.post.tick();
     assert.equal(f.post.journal.heldCount(), 0);
     assert.equal(f.ledger.list({ limit: 1000 }).filter((item) => item.word === "post.changed").at(-1)?.body.held, 0);
-    assert.equal(f.post.journal.record(offer.id)?.channel, "notification");
-    assert.equal(f.presentations.length, 2, "quiet offer is released after the boundary, not before");
+    assert.equal(f.post.journal.record(offer.id)?.channel, "inapp");
+    assert.equal(f.presentations.length, 1, "quiet offer never upgrades to a host notification");
   } finally { await f.close(); }
 });
 
