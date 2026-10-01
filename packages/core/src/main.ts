@@ -8,6 +8,7 @@ import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember, type AgentTurnRunner } from "./members/agent";
 import { OwnerMember } from "./members/owner";
+import { createSelfMember, type SelfMember } from "./members/self";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
 import { Ledger } from "./world/ledger";
@@ -78,6 +79,7 @@ export async function startOwner(config: Config): Promise<Running> {
   const tokens = loadTokens(config);
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
   let agent: ReturnType<typeof createAgentMember> | null = null;
+  let self: SelfMember | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
   try {
@@ -94,6 +96,10 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new OwnerMember(config.owner ?? "Owner"));
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner: echoRunner(), name: agents[0].name });
     members.register(agent);
+    if (config.workspaces?.home) {
+      self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
+      members.register(self);
+    }
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces });
     const gatewayFile = join(config.stateDir, "gateway.json");
@@ -105,6 +111,7 @@ export async function startOwner(config: Config): Promise<Running> {
       void link.run();
       await link.waitConnected(); // remote recovery requires current grants, not an old snapshot
     }
+    await self?.prepareRecovery();
     await world.recover();
     await agent.start();
     server = await startEdgeServer(edge, host, port);
@@ -117,12 +124,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await agent?.close(); ledger.close();
+      await agent?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await agent?.close(); ledger.close();
+    await agent?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }
