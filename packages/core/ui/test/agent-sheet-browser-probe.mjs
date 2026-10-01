@@ -127,10 +127,20 @@ try {
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-warning')?.textContent.includes('其他操作修改')"), "stale draft warning");
   assert.equal(readFileSync(join(dir, "first-home", "SOUL.md"), "utf8"), "Synthetic external update\n");
 
+  await fill("#t", "Synthetic weather task");
+  await evaluate("document.querySelector('#f').requestSubmit()");
+  await until(() => first.ledger.list({ limit: 1000 }).some((row) => row.from === "agent:main" && row.word === "turn.start"), "real turn recorded");
   await clickTab("activity");
-  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent"), /尚未接入/);
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent.includes('Synthetic weather task')"), "real turn shown in activity");
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent"), /后台活动服务尚未接入/);
+  assert.doesNotMatch(await evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent"), /service:|device:|calendar\.list/);
+  const clockSet = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "set",
+    body: { to: "agent:main", word: "say", body: { text: "synthetic reminder" }, label: "synthetic umbrella", at: Date.now() + 3600000 }, wait: true });
+  assert.equal(clockSet.reply?.body?.ok, true, `clock set rejected: ${clockSet.reply?.body?.error?.code || "unknown"}`);
   await clickTab("upcoming");
-  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /不能代表真实待办为空/);
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('synthetic umbrella')"), "authoritative clock timer visible");
+  assert.equal(await evaluate("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), false);
   await clickTab("approvals");
   assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /不能确认操作/);
 
@@ -171,6 +181,11 @@ try {
   await until(() => remoteEval(`Boolean(document.querySelector(${JSON.stringify(identityText)}))`), "remote read-only identity");
   assert.equal(await remoteEval(`document.querySelector(${JSON.stringify(identityText)}).disabled`), true);
   assert.equal(await remoteEval("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').disabled"), true);
+  await remoteEval("document.querySelector('#agentTabs button[data-tab=upcoming]').click()");
+  await delay(1000);
+  assert.match(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /计划列表暂不可用/);
+  assert.doesNotMatch(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /暂无计划/);
+  assert.equal(await remoteEval("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), false);
   const beforeRemote = first.ledger.lastSeq();
   const remoteScreen = await remoteEval("sessionStorage.getItem('ash.screen.token.v2')");
   const denied = await remoteEval(`fetch('/api/send',{method:'POST',headers:{'content-type':'application/json','Ash-Screen':${JSON.stringify(remoteScreen)}},body:JSON.stringify({to:'service:self',kind:'request',word:'write',body:{path:'SOUL.md',content:'remote',why:'synthetic',expected_hash:null},wait:true})}).then(r=>r.status)`);
@@ -192,7 +207,7 @@ try {
   await until(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(identityText)}))`), "new scope identity");
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(identityText)}).value`), "");
   assert.equal(selfWrites(second).length, 0);
-  console.log("PASS: avatar sheet, local SOUL/USER save/history, rollback gate unavailable with unchanged file, stale guard, remote read-only/403, offline and scope clear, delayed reply discarded");
+  console.log("PASS: avatar sheet, real clock list/read-only, activity work-source boundary, local SOUL/USER save/history, rollback gate unavailable, remote read-only/403, offline and scope clear, delayed reply discarded");
 } finally {
   remoteSocket?.close(); socket?.close();
   if (remoteServer) await new Promise((resolve) => { remoteServer.close(resolve); remoteServer.closeAllConnections(); });

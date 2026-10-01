@@ -159,9 +159,12 @@ export function boot() {
       if (timeline) render(timeline.view, outbox, openInline, presenceBar);
     },
   });
-  timeline = new Timeline(net, (view) => render(view, net.outbox, openInline, presenceBar));
+  timeline = new Timeline(net, (view) => {
+    render(view, net.outbox, openInline, presenceBar);
+    agentSheet?.update();
+  });
   settings = new SettingsControls(document.querySelector("#panel"), net);
-  agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net);
+  agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
