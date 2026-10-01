@@ -321,6 +321,15 @@ export interface Message {
 export interface PostChangedBody { held: number }
 /** Dropped suppresses only a repeated presentation; the original owner message remains in the ledger. */
 export type PostDeliveryChannel = "inapp" | "notification" | "held" | "dropped";
+/** Per-message chat visibility, distinct from an external notification outcome. */
+export type PostDeliveryState = "held" | "released" | "dropped";
+export interface PostDeliveryBodyV2 { message_id: string; state: PostDeliveryState }
+/** A bounded read-only stream control frame; version_seq names a real ledger state event. */
+export interface PostDeliverySnapshotV2 {
+  at_seq: number;
+  items: { message_id: string; state: PostDeliveryState; version_seq: number }[];
+}
+export const POST_DELIVERY_SNAPSHOT_EVENT = "post.delivery.snapshot" as const;
 /** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
 export interface LegacyConversationMetadata {
   seq: number;
