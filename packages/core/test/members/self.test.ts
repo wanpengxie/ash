@@ -53,6 +53,103 @@ test("self enforces canonical paths, byte hashes, USER frontmatter and authentic
   } finally { await f.self.close(); f.ledger.close(); }
 });
 
+test("legacy USER.md is read-only until an exact-hash authorized upgrade and preserves original bytes", async () => {
+  const f = await fixture();
+  try {
+    const original = "Legacy notes\nSecond line\n";
+    writeFileSync(join(f.home, "USER.md"), original);
+    const oldHash = createHash("sha256").update(original).digest("hex");
+    const read = await f.send("read", { path: "USER.md" });
+    assert.deepEqual(read.reply?.body.result, { content: original, hash: oldHash });
+    assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), original);
+    const stale = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: "0".repeat(64) });
+    assert.equal(stale.reply?.body.error?.message, "stale");
+    const upgraded = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: oldHash }, owner, "legacy-upgrade");
+    assert.equal(upgraded.reply?.body.ok, true);
+    const after = readFileSync(join(f.home, "USER.md"), "utf8");
+    assert.match(after, /^---\nversion: 1\nupdated: .*\n---\nLegacy notes\nSecond line\n$/);
+    const retry = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: oldHash }, owner, "legacy-upgrade");
+    assert.equal(retry.id, upgraded.id);
+    assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), after);
+    const oldAgain = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: oldHash });
+    assert.equal(oldAgain.reply?.body.error?.message, "stale");
+    const versions = readdirSync(join(f.home, ".ash", "versions", "USER.md"));
+    assert.equal(versions.length, 1);
+    assert.equal(readFileSync(join(f.home, ".ash", "versions", "USER.md", versions[0]), "utf8"), original);
+    writeFileSync(join(f.home, "USER.md"), "---\nversion: nope\n---\nMalformed\n");
+    const malformed = await f.send("write", { path: "USER.md", content: "replace", why: "test", expected_hash: createHash("sha256").update("---\nversion: nope\n---\nMalformed\n").digest("hex") });
+    assert.equal(malformed.reply?.body.error?.code, "bad_request");
+  } finally { await f.self.close(); f.ledger.close(); }
+});
+
+test("legacy USER.md apply_plan requires exact hash and original-line guard", async () => {
+  const f = await fixture();
+  try {
+    const original = "Old line\nKeep\n";
+    writeFileSync(join(f.home, "USER.md"), original);
+    const oldHash = createHash("sha256").update(original).digest("hex");
+    const edit = { op: "replace", start: 1, end: 1, guard: "Old line", text: "New line", reason: "correct", evidence: [] };
+    const wrong = await f.send("apply_plan", { path: "USER.md", expected_hash: oldHash, edits: [{ ...edit, guard: "wrong" }] });
+    assert.equal(wrong.reply?.body.error?.message, "stale");
+    assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), original);
+    const good = await f.send("apply_plan", { path: "USER.md", expected_hash: oldHash, edits: [edit] }, owner, "legacy-plan");
+    assert.equal(good.reply?.body.ok, true);
+    assert.match(readFileSync(join(f.home, "USER.md"), "utf8"), /^---\nversion: 1\nupdated: .*\n---\nNew line\nKeep\n$/);
+    const retry = await f.send("apply_plan", { path: "USER.md", expected_hash: oldHash, edits: [edit] }, owner, "legacy-plan");
+    assert.equal(retry.id, good.id);
+    assert.equal(f.ledger.list().filter((m) => m.word === "self.changed").length, 1);
+  } finally { await f.self.close(); f.ledger.close(); }
+});
+
+test("USER version and snapshot timestamp exhaustion fail before write or event", async () => {
+  const f = await fixture();
+  try {
+    const huge = `---\nversion: ${Number.MAX_SAFE_INTEGER}\nupdated: 2026-10-01T00:00:00.000Z\n---\nNotes\n`;
+    writeFileSync(join(f.home, "USER.md"), huge);
+    const badVersion = await f.send("write", { path: "USER.md", content: huge, why: "test", expected_hash: createHash("sha256").update(huge).digest("hex") });
+    assert.equal(badVersion.reply?.body.error?.code, "bad_request");
+    assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), huge);
+    writeFileSync(join(f.home, "MEMORY.md"), "before\n");
+    const snapshots = join(f.home, ".ash", "versions", "MEMORY.md");
+    mkdirSync(snapshots, { recursive: true });
+    writeFileSync(join(snapshots, "999999999999999999999999999999.md"), "synthetic\n");
+    const badTimestamp = await f.send("write", { path: "MEMORY.md", content: "after\n", why: "test", expected_hash: createHash("sha256").update("before\n").digest("hex") });
+    assert.equal(badTimestamp.reply?.body.error?.code, "bad_request");
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "before\n");
+    assert.equal(f.ledger.list().filter((m) => m.word === "self.changed").length, 0);
+  } finally { await f.self.close(); f.ledger.close(); }
+});
+
+test("completed historical writes remain committed after later authorized writes and restart", async () => {
+  const f = await fixture();
+  const journalPath = join(f.dir, "state");
+  let firstId = "";
+  let secondId = "";
+  try {
+    const first = await f.send("write", { path: "MEMORY.md", content: "A\n", why: "test", expected_hash: null });
+    firstId = first.id;
+    const second = await f.send("write", { path: "MEMORY.md", content: "B\n", why: "test", expected_hash: (first.reply?.body.result as { hash: string }).hash });
+    secondId = second.id;
+    assert.equal(first.reply?.body.ok, true);
+    assert.equal(second.reply?.body.ok, true);
+  } finally { await f.self.close(); f.ledger.close(); }
+  const ledger = await Ledger.open(join(f.dir, "ash.db"));
+  const world = new WorldRouter(ledger, async () => true);
+  const members = new WorldMembers(world);
+  const self = createSelfMember({ home: f.home, stateDir: journalPath, ledger, router: world }); members.register(self);
+  try {
+    await self.prepareRecovery(); await world.recover();
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "B\n");
+    assert.equal(ledger.responseTo(firstId)?.body.ok, true);
+    assert.equal(ledger.responseTo(secondId)?.body.ok, true);
+    assert.equal(ledger.list().filter((m) => m.word === "self.changed").length, 2);
+    const journal = await import("../../src/world/self-journal");
+    const db = new journal.SelfJournal(journalPath);
+    try { assert.deepEqual([db.get(firstId)?.state, db.get(secondId)?.state], ["committed", "committed"]); }
+    finally { db.close(); }
+  } finally { await self.close(); ledger.close(); }
+});
+
 test("self applies all guards against original lines, rejects stale batch and deduplicates append", async () => {
   const f = await fixture();
   try {
@@ -109,6 +206,32 @@ test("SIGKILL at every durable self-write boundary recovers one file effect and 
       const retry = await world.send(owner, { to: "service:self", kind: "request", word: "write", body: { path: "MEMORY.md", content: "after\n", why: "synthetic crash", expected_hash: createHash("sha256").update("before\n").digest("hex") }, client_id: "crash-write", wait: true });
       assert.equal(retry.id, request.id, stage);
       assert.equal(ledger.list().filter((m) => m.word === "self.changed").length, 1, stage);
+    } finally { await self.close(); ledger.close(); }
+  }
+});
+
+test("legacy USER.md upgrade survives SIGKILL without duplicate version or event", async () => {
+  const child = fileURLToPath(new URL("../fixtures/self-crash-child.ts", import.meta.url));
+  for (const stage of ["after-intent", "after-temp", "after-rename", "after-event"] as SelfStage[]) {
+    const dir = mkdtempSync(join(tmpdir(), `ash-self-legacy-${stage}-`));
+    const home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "USER.md"), "Legacy notes\n");
+    const killed = spawnSync(process.execPath, ["--import", "tsx", child, dir, stage, "legacy-user"], { cwd: process.cwd(), timeout: 10_000, encoding: "utf8" });
+    assert.equal(killed.signal, "SIGKILL", `${stage}: ${killed.stderr}`);
+    const ledger = await Ledger.open(join(dir, "ash.db"));
+    const world = new WorldRouter(ledger, async () => true);
+    const members = new WorldMembers(world);
+    const self = createSelfMember({ home, stateDir: join(dir, "self"), ledger, router: world }); members.register(self);
+    try {
+      await self.prepareRecovery(); await world.recover();
+      const request = ledger.list().find((m) => m.to === "service:self" && m.word === "write")!;
+      const until = Date.now() + 2_000;
+      while (!ledger.responseTo(request.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(ledger.responseTo(request.id)?.body.ok, true, stage);
+      assert.match(readFileSync(join(home, "USER.md"), "utf8"), /^---\nversion: 1\nupdated: .*\n---\nLegacy notes\nUpdated\n$/, stage);
+      assert.equal(ledger.list().filter((m) => m.word === "self.changed").length, 1, stage);
+      const versions = readdirSync(join(home, ".ash", "versions", "USER.md"));
+      assert.equal(versions.length, 1, stage);
+      assert.equal(readFileSync(join(home, ".ash", "versions", "USER.md", versions[0]), "utf8"), "Legacy notes\n");
     } finally { await self.close(); ledger.close(); }
   }
 });

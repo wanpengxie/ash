@@ -44,16 +44,20 @@ function ordinaryFile(path: string): boolean {
   return item.isFile() && item.nlink === 1;
 }
 
-function userVersion(content: string | null): number {
+function userVersion(content: string | null): number | null {
   if (content === null) return 0;
   const match = /^---\nversion: ([1-9][0-9]*)\nupdated: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\n---\n/.exec(content);
-  if (!match || !Number.isSafeInteger(Number(match[1]))) throw new SelfFailure("bad_request", "USER.md has invalid frontmatter");
+  if (!match) {
+    if (content.startsWith("---")) throw new SelfFailure("bad_request", "USER.md has invalid frontmatter");
+    return null; // existing v10 prose: read unchanged; only a hash-guarded mutation may add the header
+  }
+  if (!Number.isSafeInteger(Number(match[1]))) throw new SelfFailure("bad_request", "USER.md has invalid frontmatter");
   return Number(match[1]);
 }
 
 function updateUser(content: string, version: number, at: number): string {
   const prefix = /^---\nversion: [1-9][0-9]*\nupdated: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\n---\n/;
-  if (content.startsWith("---\n") && !prefix.test(content)) throw new SelfFailure("bad_request", "USER.md has invalid frontmatter");
+  if (content.startsWith("---") && !prefix.test(content)) throw new SelfFailure("bad_request", "USER.md has invalid frontmatter");
   const body = content.replace(prefix, "");
   return `---\nversion: ${version}\nupdated: ${new Date(at).toISOString()}\n---\n${body}`;
 }
@@ -180,13 +184,19 @@ export class SelfMember implements Member {
   private chooseSnapshotTs(path: string): number {
     const dir = this.versions(path);
     if (!existsSync(dir)) return Date.now();
-    const highest = Math.max(0, ...readdirSync(dir).filter((name) => /^[0-9]+\.md$/.test(name)).map((name) => Number(name.slice(0, -3))));
+    let highest = 0;
+    for (const name of readdirSync(dir)) {
+      if (!/^[0-9]+\.md$/.test(name)) continue;
+      const ts = Number(name.slice(0, -3));
+      if (!Number.isSafeInteger(ts) || ts < 0) throw new SelfFailure("bad_request", "invalid snapshot timestamp");
+      if (ts > highest) highest = ts;
+    }
+    if (highest === Number.MAX_SAFE_INTEGER) throw new SelfFailure("bad_request", "snapshot timestamp exhausted");
     return Math.max(Date.now(), highest + 1);
   }
   private calculate(message: Message, old: string | null, at: number): { content: string; result: Record<string, unknown>; summary: string } {
     const body = message.body;
     const path = String(body.path);
-    const previous = path === "USER.md" ? userVersion(old) : 0;
     let content: string;
     let result: Record<string, unknown>;
     let summary: string;
@@ -209,6 +219,7 @@ export class SelfMember implements Member {
       result = { applied: body.edits.length };
     } else if (message.word === "rollback") {
       if (!Number.isSafeInteger(body.to_ts) || old === null) throw new SelfFailure("bad_request", "invalid rollback target");
+      if (path === "USER.md" && userVersion(old) === null) throw new SelfFailure("bad_request", "legacy USER.md requires a hash-guarded write");
       const file = join(this.versions(path), `${body.to_ts}.md`);
       if (!existsSync(file)) throw new SelfFailure("not_found", "snapshot not found");
       if (!ordinaryFile(file)) throw new SelfFailure("forbidden", "snapshot has an alias");
@@ -216,7 +227,13 @@ export class SelfMember implements Member {
       summary = "Managed file rolled back";
       result = {};
     } else throw new SelfFailure("not_found", "self word unavailable");
-    if (path === "USER.md") { content = updateUser(content, previous + 1, at); if (message.word === "write") result.version = previous + 1; }
+    if (path === "USER.md") {
+      const previous = userVersion(old) ?? 0;
+      if (previous >= Number.MAX_SAFE_INTEGER) throw new SelfFailure("bad_request", "USER.md version exhausted");
+      const version = previous + 1;
+      content = updateUser(content, version, at);
+      if (message.word === "write") result.version = version;
+    }
     if (message.word !== "rollback") result.hash = hash(content);
     return { content, result, summary };
   }
@@ -302,7 +319,7 @@ export class SelfMember implements Member {
     if (message.word === "read") {
       if (content === null) return responseError("not_found", "managed file not found");
       const version = path === "USER.md" ? userVersion(content) : undefined;
-      return { ok: true, result: { content, hash: hash(content), ...(version === undefined ? {} : { version }) } };
+      return { ok: true, result: { content, hash: hash(content), ...(version === undefined || version === null ? {} : { version }) } };
     }
     const dir = this.versions(path);
     const versions = existsSync(dir) ? readdirSync(dir).filter((name) => /^[0-9]+\.md$/.test(name) && ordinaryFile(join(dir, name))).map((name) => ({ ts: Number(name.slice(0, -3)), hash: hash(readText(join(dir, name))) })).sort((a, b) => b.ts - a.ts) : [];
@@ -326,6 +343,15 @@ export class SelfMember implements Member {
     for (const op of this.journal.active()) {
       const request = this.options.ledger.byId(op.id);
       if (!request || request.to !== this.id || request.from !== op.by || request.word !== op.word || request.body.path !== op.path) throw new Error("self intent has no matching authorized request");
+      if (op.state === "committed") {
+        // Later authorized writes may already have advanced this file. A committed
+        // operation has a durable changed event; only its missing response needs repair.
+        if (!this.options.ledger.responseTo(op.id)) {
+          await this.event(op);
+          this.options.ledger.settle(op.id, this.id, { ok: true, result: op.result });
+        }
+        continue;
+      }
       const content = this.content(op.path);
       const current = content === null ? null : hash(content);
       if (current === op.newHash) {
@@ -340,7 +366,12 @@ export class SelfMember implements Member {
         if (!this.options.ledger.responseTo(op.id)) this.options.ledger.settle(op.id, this.id, { ok: true, result: op.result });
         this.state(op.id, "committed"); this.prune(op.path);
       } else if (current === op.oldHash) {
-        if (this.options.ledger.responseTo(op.id)) { this.discardUnapplied(op); this.state(op.id, "aborted"); } // no effect; do not resurrect a cancelled request
+        const response = this.options.ledger.responseTo(op.id);
+        if (response?.body.ok) {
+          this.state(op.id, "conflict"); // a completed write was subsequently changed outside this member
+        } else if (response) {
+          this.discardUnapplied(op); this.state(op.id, "aborted"); // no effect; do not resurrect a cancelled request
+        }
       } else {
         this.state(op.id, "conflict");
         if (!this.options.ledger.responseTo(op.id)) this.options.ledger.settle(op.id, this.id, responseError("failed", "conflict"));
