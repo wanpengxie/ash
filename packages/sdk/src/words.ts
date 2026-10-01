@@ -13,6 +13,15 @@ const obj = (properties: Record<string, JsonSchema> = {}, required: string[] = [
 const array = (items: JsonSchema): JsonSchema => ({ type: "array", items });
 const choice = (...values: string[]): JsonSchema => ({ type: "string", enum: values });
 const id = nonempty;
+const workName: JsonSchema = { type: "string", minLength: 1, maxLength: 48, pattern: "^[a-z][a-z0-9._-]*$" };
+const workRunId: JsonSchema = { type: "string", minLength: 3, maxLength: 128, pattern: "^r_[A-Za-z0-9_-]+$" };
+const workReason: JsonSchema = { type: "string", minLength: 1, maxLength: 96, pattern: "^[a-z][a-z0-9._-]*$" };
+const workTime: JsonSchema = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+const workRunInfo: JsonSchema = obj({
+  run: workRunId, flow: workName, trigger: choice("manual", "cooldown", "hourly", "event"),
+  state: choice("running", "done", "no_change", "failed"), started_at: workTime,
+  ended_at: { anyOf: [workTime, { type: "null" }] },
+}, ["run", "flow", "trigger", "state", "started_at", "ended_at"]);
 const deliveryDedupeKey: JsonSchema = { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" };
 const empty = obj();
 const accepted = obj({ accepted: bool }, ["accepted"]);
@@ -172,10 +181,29 @@ add("service:senses", "sense.battery", "event", obj({ level: { type: "number", m
 add("service:senses", "sense.screen", "event", obj({ state: choice("on", "app_open"), away_ms: { type: "number", minimum: 0 } }, ["state", "away_ms"]), undefined, { audience: "owner" });
 add("service:senses", "sense.notification", "event", obj({ app: str, title: str, text: str }, ["app", "title", "text"]), undefined, { audience: "owner" });
 add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined, { direction: "out" });
-add("service:work", "run", "request", obj({ flow: nonempty }, ["flow"]), obj({ run: id }, ["run"]), { audience: "owner" });
-add("service:work", "runs", "request", obj({ flow: str, limit: { type: "integer", minimum: 1 } }), obj({ runs: array(any) }, ["runs"]), { audience: "owner" });
-add("service:work", "run.start", "event", obj({ run: id, flow: nonempty, trigger: str }, ["run", "flow", "trigger"]), undefined, { direction: "out" });
-add("service:work", "run.end", "event", obj({ run: id, outcome: choice("done", "no_change", "failed"), detail: str }, ["run", "outcome", "detail"]), undefined, { direction: "out" });
+add("service:work", "run", "request", obj({ flow: workName }, ["flow"]), obj({ run: workRunId }, ["run"]), { audience: "owner" });
+add("service:work", "runs", "request", obj({ flow: workName, limit: { type: "integer", minimum: 1, maximum: 100 } }),
+  obj({ runs: { type: "array", items: workRunInfo, maxItems: 100 } }, ["runs"]), { audience: "owner" });
+add("service:work", "run.start", "event", obj({ run: workRunId, flow: workName, trigger: choice("manual", "cooldown", "hourly", "event") }, ["run", "flow", "trigger"]), undefined, { direction: "out" });
+add("service:work", "run.end", "event", obj({ run: workRunId, outcome: choice("done", "no_change", "failed"), detail: workReason }, ["run", "outcome", "detail"]), undefined, { direction: "out" });
+add("service:work", "run.step", "event", obj({ run: workRunId, step: workName, state: choice("started", "done", "failed", "skipped") }, ["run", "step", "state"]), undefined,
+  { direction: "out", description: "Pure-code step lifecycle for a background run; metadata only, never step content." });
+
+/** JSON Schema checks the item shape; this enforces the temporal invariant on readback. */
+export function workRunsResultErrors(value: unknown): string[] {
+  const schema = wordContract("service:work", "runs")?.result_schema;
+  if (!schema || !matchesSchema(schema, value)) return ["invalid runs result shape"];
+  const runs = (value as { runs: { state: string; started_at: number; ended_at: number | null }[] }).runs;
+  return runs.flatMap((run, index) => run.state === "running"
+    ? (run.ended_at === null ? [] : [`runs[${index}]: running has ended_at`])
+    : (run.ended_at !== null && run.ended_at >= run.started_at ? [] : [`runs[${index}]: terminal ended_at invalid`]));
+}
+
+/** The run identity is the ledger turn; callers must not prepend another r_. */
+export function workRunTurn(run: string): string {
+  if (!matchesSchema(workRunId, run)) throw new TypeError("invalid work run id");
+  return run;
+}
 
 const worker = (name: string, input: JsonSchema, normal: JsonSchema) => add(`worker:${name}`, name, "request", obj({ input, run: id }, ["input", "run"]), workerResult(normal), { audience: "owner", description: "One tool-free model judgment with validated structured output." });
 worker("extract", obj({ chunk: array(message), summary: str, known: strings }, ["chunk", "summary", "known"]), obj({ claims: array(claim) }, ["claims"]));

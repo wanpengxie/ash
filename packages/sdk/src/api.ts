@@ -526,6 +526,23 @@ export interface ClockFiredBodyV2 {
   request_id?: string;
 }
 
+/** Bounded, non-content metadata for one background run. Never include step input, output, or prompts. */
+export interface WorkRunInfoV2 {
+  run: string;
+  flow: string;
+  trigger: "manual" | "cooldown" | "hourly" | "event";
+  state: "running" | "done" | "no_change" | "failed";
+  started_at: number;
+  ended_at: number | null;
+}
+
+/** A pure-code step is an outbound ledger fact, not a callable tool. */
+export interface WorkRunStepBodyV2 {
+  run: string;
+  step: string;
+  state: "started" | "done" | "failed" | "skipped";
+}
+
 export interface SendRequestV2 {
   to: string | null;
   kind: Kind;
