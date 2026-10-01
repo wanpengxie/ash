@@ -213,7 +213,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     if (!session || this.busy) throw new Error("DSH session unavailable or still busy");
     if (signal.aborted) return { reason: "error", error: "turn cancelled before dispatch" };
     this.busy = true;
-    const messageId = randomUUID();
+    // A stable one-to-one bridge from the durable core turn to DSH history.
+    // An interrupted core turn is never re-followed-up after restart.
+    const messageId = `core-${input.turn}`;
     const seen = new Set<string>();
     let pending = Promise.resolve();
     let emitError: unknown;

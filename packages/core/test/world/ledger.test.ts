@@ -110,6 +110,25 @@ test("append and stable-transport retry claim commit atomically; response settle
   } finally { reopened.close(); }
 });
 
+test("startup turn projection ignores large unrelated bodies and keeps completed boundaries", async () => {
+  const ledger = await Ledger.open(isolated());
+  try {
+    ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say",
+      body: { text: "image", attachments: [{ data: "A".repeat(2 * 1024 * 1024) }] } });
+    ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.start", body: { turn: "t_one", ids: [] }, turn: "t_one" });
+    ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.end", body: { turn: "t_one", reason: "completed" }, turn: "t_one" });
+    ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.start", body: { turn: "t_two", ids: [] }, turn: "t_two" });
+    ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.end", body: { turn: "t_two", reason: "cancelled" }, turn: "t_two" });
+    ledger.append({ from: "agent:helper", to: null, kind: "event", word: "turn.start", body: { turn: "t_other", ids: [] }, turn: "t_other" });
+    const history = ledger.agentTurnHistory("agent:main");
+    assert.equal(history.startedTurns.has("t_one"), true);
+    assert.equal(history.startedTurns.has("t_two"), true);
+    assert.equal(history.startedTurns.has("t_other"), false);
+    assert.equal(history.completedTurns.has("t_one"), true);
+    assert.equal(history.completedTurns.has("t_two"), false);
+  } finally { ledger.close(); }
+});
+
 test("response and retry claim roll back together when retry insertion fails", async () => {
   const file = isolated();
   const ledger = await Ledger.open(file);
