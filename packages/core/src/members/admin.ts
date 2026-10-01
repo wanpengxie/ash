@@ -11,6 +11,7 @@ const service: TrustedRouteContext = { member: "service:admin", transport: "serv
   local: true, remote: false, ownerProxy: false };
 
 export interface AdminOptions { ledger: Ledger; router: WorldRouter; dbFile: string; onPauseChanged: () => void;
+  currentAgentTurn?: () => string | null;
   /** Current server-owned registration, not the screen name persisted with the request. */
   currentScreenBinding: (screen: string, principal: string) => boolean }
 
@@ -27,14 +28,21 @@ export class AdminMember implements Member {
   words(): readonly WordSpec[] { return [pause, resume]; }
 
   /** A current durable pause may have crashed before it reached agent cancellation. */
-  currentCommittedPause(): string | null {
+  currentCommittedPause(): { requestId: string; targetTurn: string | null } | null {
     const latest = this.journal.currentCommand();
     if (!latest?.paused) return null;
     const message = this.options.ledger.byId(latest.requestId);
     if (!message || message.seq !== latest.seq || message.word !== "pause" || message.to !== this.id ||
       message.kind !== "request" || !this.journal.committedFact(message)?.current)
       throw new TypeError("current pause has no matching accepted request");
-    return message.id;
+    return { requestId: message.id, targetTurn: latest.targetTurn };
+  }
+
+  /** The original accepted pause and its captured turn must both still be current. */
+  currentPauseTargets(requestId: unknown, turn: unknown): boolean {
+    if (typeof requestId !== "string" || typeof turn !== "string" || !turn) return false;
+    const latest = this.currentCommittedPause();
+    return latest?.requestId === requestId && latest.targetTurn === turn;
   }
 
   /** Settle already committed effects before router recovery rechecks permission or replays handlers. */
@@ -65,14 +73,15 @@ export class AdminMember implements Member {
       return { ok: false, error: { code: "forbidden", message: "current local owner screen confirmation unavailable" } };
     if (context.signal.aborted)
       return { ok: false, error: { code: "cancelled", message: "admin request settled before effect" } };
+    const targetTurn = paused ? this.options.currentAgentTurn?.() ?? null : null;
     let applied: ReturnType<AdminJournal["apply"]>;
-    try { applied = this.journal.apply(message, paused); }
+    try { applied = this.journal.apply(message, paused, targetTurn); }
     catch { return { ok: false, error: { code: "failed", message: "durable pause state unavailable" } }; }
     if (!applied.applied) return { ok: false, error: { code: "failed", message: "admin command superseded by a newer request" } };
     this.options.onPauseChanged();
-    if (paused) {
+    if (paused && targetTurn) {
       try {
-        const cancel = await this.options.router.send(service, { to: "agent:main", kind: "request", word: "cancel_turn",
+        const cancel = await this.options.router.send({ ...service, turn: targetTurn }, { to: "agent:main", kind: "request", word: "cancel_turn",
           body: { reason: "Paused by owner", by: message.id }, client_id: `admin-pause:${message.id}`, wait: true });
         if (cancel.reply?.body.ok !== true) return { ok: false, error: { code: "failed", message: "paused, but current turn cancellation was not acknowledged" } };
       } catch { return { ok: false, error: { code: "failed", message: "paused, but current turn cancellation was not acknowledged" } }; }

@@ -55,7 +55,7 @@ test("admin pause is durable and a reflex owner message is consumed atomically o
     assert.equal(f.ledger.list({ limit: 1000 }).filter((item) => item.to === "service:admin" && item.word === "pause").length, 1);
     assert.equal(f.admin.journal.isPaused(), true);
     assert.equal(f.changes, 1);
-    assert.equal(f.cancellations, 1);
+    assert.equal(f.cancellations, 0, "an idle pause has no target turn to cancel");
     const first = (accepted[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof f.router.send>>>).value;
     assert.deepEqual(first.reply?.body, { ok: true, result: { paused: true } });
     const retryId = attempts[0].status === "fulfilled" ? "reflex:one" : "reflex:two";
@@ -171,6 +171,29 @@ test("recovery reports a committed pause superseded by a later committed resume"
   } finally { await f.close(); }
 });
 
+test("a new pause cannot revive an older pause cancellation target", async () => {
+  const f = await fixture();
+  try {
+    const accepted = (word: "pause" | "resume") => f.ledger.append({ from: "person:owner", to: "service:admin", kind: "request", word,
+      body: word === "pause" ? {} : { confirmed: true } }, undefined,
+    { deadlineAt: Date.now() + 30_000, context: { member: "person:owner", local: true, remote: false, ownerProxy: true,
+      transportPrincipal: owner.transportPrincipal } }).message;
+    const first = accepted("pause");
+    assert.equal(f.admin.journal.apply(first, true, "t_first").applied, true);
+    assert.throws(() => f.admin.journal.apply(first, true, "t_changed"), /changed after acceptance/);
+    assert.equal(f.admin.currentPauseTargets(first.id, "t_first"), true);
+    const resumed = accepted("resume");
+    assert.equal(f.admin.journal.apply(resumed, false).applied, true);
+    const second = accepted("pause");
+    assert.equal(f.admin.journal.apply(second, true, "t_second").applied, true);
+    assert.equal(f.admin.journal.isPaused(), true);
+    assert.equal(f.admin.currentPauseTargets(first.id, "t_first"), false);
+    assert.equal(f.admin.currentPauseTargets(first.id, "t_second"), false);
+    assert.equal(f.admin.currentPauseTargets(second.id, "t_first"), false);
+    assert.equal(f.admin.currentPauseTargets(second.id, "t_second"), true);
+  } finally { await f.close(); }
+});
+
 test("an accepted resume cannot clear pause after its screen expires before execution", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-admin-screen-race-"));
   const file = join(dir, "world.db");
@@ -223,7 +246,7 @@ test("a delayed pause cannot report paused after a newer registered screen resum
   const members = new WorldMembers(router);
   members.register({ id: "agent:main", kind: "agent", name: "Synthetic", words: () => [wordContract("agent:main", "cancel_turn")!],
     handle: async () => { entered(); await blocked; return { ok: true, result: { cancelled: false } }; } });
-  const admin = new AdminMember({ ledger, router, dbFile: file, onPauseChanged: () => {},
+  const admin = new AdminMember({ ledger, router, dbFile: file, onPauseChanged: () => {}, currentAgentTurn: () => "t_synthetic_target",
     currentScreenBinding: (id, principal) => screens.currentBinding(id, principal) });
   members.register(admin);
   const first = screens.register({ member: screen.member, transport: screen.transport, transportPrincipal: screen.transportPrincipal,
@@ -343,6 +366,7 @@ test("durable pause cancels an active turn and blocks the next one until resume"
   let admin!: AdminMember, runs = 0, entered!: () => void;
   const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
   const agent = createAgentMember({ ledger, router, stateDir: join(dir, "agent"), isPaused: () => admin.journal.isPaused(),
+    currentAdminPauseTargets: (requestId, turn) => admin.currentPauseTargets(requestId, turn),
     runner: { async runTurn(_input, _emit, signal) {
       runs++;
       if (runs === 1) {
@@ -354,6 +378,7 @@ test("durable pause cancels an active turn and blocks the next one until resume"
     } } });
   members.register(agent);
   admin = new AdminMember({ ledger, router, dbFile: file, onPauseChanged: () => agent.resamplePause(),
+    currentAgentTurn: () => agent.inbox.activeTurn()?.id ?? null,
     currentScreenBinding: (id, principal) => id === screen.screenId && principal === screen.transportPrincipal });
   members.register(admin);
   try {

@@ -29,6 +29,7 @@ export interface AgentMemberOptions {
   runner: AgentTurnRunner;
   name?: string;
   isPaused?: () => boolean;
+  currentAdminPauseTargets?: (requestId: unknown, turn: unknown) => boolean;
 }
 
 const say = wordContract("agent:main", "say") as WordSpec | undefined;
@@ -49,6 +50,7 @@ export class AgentMember implements Member {
   private readonly router: WorldRouter;
   private readonly runner: AgentTurnRunner;
   private readonly isPaused: () => boolean;
+  private readonly currentAdminPauseTargets: (requestId: unknown, turn: unknown) => boolean;
   private started = false;
   private closed = false;
   private draining = false;
@@ -66,6 +68,7 @@ export class AgentMember implements Member {
     this.router = options.router;
     this.runner = options.runner;
     this.isPaused = options.isPaused ?? (() => false);
+    this.currentAdminPauseTargets = options.currentAdminPauseTargets ?? (() => false);
     this.inbox = new AgentInbox(options.stateDir);
     this.status = new AgentStatus(this.router, Date.now, options.isPaused);
   }
@@ -95,6 +98,9 @@ export class AgentMember implements Member {
     const reason = String(message.body.reason ?? "Stop requested");
     const by = typeof message.body.by === "string" ? message.body.by : undefined;
     const active = this.inbox.activeTurn();
+    if (message.from === "service:admin" && (!message.turn || active?.id !== message.turn ||
+      !this.currentAdminPauseTargets(message.body.by, message.turn)))
+      return { ok: true, result: { cancelled: false } };
     // Reflex captures the turn when the owner spoke. A late decision must never
     // cancel a newer turn that happened to start before this request dispatched.
     if (message.from === "service:reflex" && message.turn && active?.id !== message.turn)
@@ -113,10 +119,12 @@ export class AgentMember implements Member {
   }
 
   /** Must run after member registration and before router.recover(), so cancelled effects cannot replay. */
-  reconcileCommittedPause(pauseRequestId: string): void {
+  reconcileCommittedPause(pauseRequestId: string, targetTurn: string | null): void {
     if (this.closed || this.started || this.prepared) throw new Error("pause reconciliation must precede recovery");
     const active = this.inbox.activeTurn();
     if (!active) return;
+    if (!targetTurn || active.id !== targetTurn || !this.currentAdminPauseTargets(pauseRequestId, targetTurn))
+      throw new Error("active turn does not match current durable pause target");
     const action = this.ledger.trackedRequests().filter((item) => item.message.from === this.id && item.message.turn === active.id).at(-1)?.message;
     const fact = `The previous turn was stopped${action ? ` while ${action.to}/${action.word} was pending` : "; the exact last action is unknown"}. Reason: Paused by owner. Any external effect may be unknown.`;
     this.inbox.recordCancel(`admin-recovery:${pauseRequestId}`, "Paused by owner", pauseRequestId, fact);

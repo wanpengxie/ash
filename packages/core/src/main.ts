@@ -112,7 +112,7 @@ export async function startOwner(config: Config): Promise<Running> {
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
-      isPaused: () => clock!.journal.isPaused() });
+      isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
     reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null);
     members.register(reflex);
@@ -127,6 +127,7 @@ export async function startOwner(config: Config): Promise<Running> {
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), onPauseChanged: () => agent!.resamplePause(),
+      currentAgentTurn: () => agent!.inbox.activeTurn()?.id ?? null,
       currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });
     members.register(admin);
     post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
@@ -143,7 +144,7 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     // Reconcile durable stop intents before router recovery can replay an old tool request.
     const committedPause = admin.currentCommittedPause();
-    if (committedPause) agent.reconcileCommittedPause(committedPause);
+    if (committedPause) agent.reconcileCommittedPause(committedPause.requestId, committedPause.targetTurn);
     agent.prepareRecovery();
     await self?.prepareRecovery();
     post.prepareRecovery();

@@ -52,8 +52,8 @@ if (mode === "victim") {
   await until(() => rows().some((row) => row.to === "device:probe" && row.word === "hold"));
   await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "synthetic queued turn" }, wait: true });
   const apply = AdminJournal.prototype.apply;
-  AdminJournal.prototype.apply = function (message, paused) {
-    const committed = apply.call(this, message, paused);
+  AdminJournal.prototype.apply = function (message, paused, targetTurn) {
+    const committed = apply.call(this, message, paused, targetTurn);
     if (message.word === "pause") {
       writeSync(1, "COMMITTED\n");
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
