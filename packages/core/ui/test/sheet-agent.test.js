@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AgentSheet, safeActivityView } from "../js/sheet-agent.js";
+import { AgentSheet, cancelClockForScreen, safeActivityView } from "../js/sheet-agent.js";
 
 class Element {
   constructor(tag) {
@@ -18,7 +18,7 @@ class Element {
   querySelector(selector) { return this.named?.[selector]; }
 }
 
-function fixture({ localManagement = true, request, getView = () => ({ turns: {} }) } = {}) {
+function fixture({ localManagement = true, request, getView = () => ({ turns: {} }), idFactory = () => "cancel-client-one" } = {}) {
   globalThis.document = { createElement: (tag) => new Element(tag), createDocumentFragment: () => new Element("fragment") };
   const root = new Element("aside");
   root.named = { "#agentTabs": new Element("nav"), "#agentPanel": new Element("div"), "#agentClose": new Element("button") };
@@ -28,7 +28,7 @@ function fixture({ localManagement = true, request, getView = () => ({ turns: {}
       return { ok: true, json: async () => ({ id: "id", reply: { kind: "response", reply_to: "id", from: "service:self",
         to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
     }) };
-  const sheet = new AgentSheet(root, net, { confirmDiscard: () => false, getView });
+  const sheet = new AgentSheet(root, net, { confirmDiscard: () => false, getView, idFactory });
   return { root, net, sheet };
 }
 
@@ -49,7 +49,7 @@ test("five tabs show safe activity, and failed clock never claims empty", async 
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
-test("activity strips raw route words; a paired live clock list is read-only", async () => {
+test("activity strips raw route words; a paired live clock list offers cancellation", async () => {
   const view = { turns: { t_one: { title: "查天气", started: 1000, steps: [
     { label: "service:self · write", requestId: "raw" }, { label: "calendar.search", ts: 1000 },
     { label: "正在查找", ts: 1001 },
@@ -71,7 +71,8 @@ test("activity strips raw route words; a paired live clock list is read-only", a
     assert.doesNotMatch(activity, /service:self|secret flow|write/);
     await f.sheet.show("upcoming");
     assert.match(f.sheet.panels.get("upcoming").textContent, /带伞/);
-    assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /删除计划|service:/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /删除计划/);
+    assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /service:/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -137,6 +138,116 @@ test("clock labels and blocked reasons cannot expose raw route names", async () 
     assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /calendar.search/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
+
+test("cancel keeps the timer until a paired acknowledgement and authoritative list", async () => {
+  const timer = { id: "timer-a", next: 100000, every: null, label: "带伞", blocked: null };
+  let releaseCancel;
+  let active = [timer];
+  const calls = [];
+  const f = fixture({ request: async (_path, options) => {
+    const wire = JSON.parse(options.body);
+    if (wire.to === "service:self") return { ok: true, json: async () => ({ id: "self", reply: { kind: "response", reply_to: "self", from: "service:self", to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
+    calls.push(wire);
+    if (wire.word === "cancel") return new Promise((resolve) => { releaseCancel = () => resolve(clockResponse("cancel", { cancelled: true })); });
+    return clockResponse("list", { timers: active });
+  } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("upcoming");
+    const section = f.sheet.panels.get("upcoming");
+    const button = section.children[0].children.find((child) => child.tag === "button");
+    const pending = button.listeners.click();
+    await button.listeners.click();
+    assert.equal(calls.filter((wire) => wire.word === "cancel").length, 1, "double click cannot duplicate an effect");
+    assert.match(section.textContent, /带伞/, "no optimistic removal before an acknowledgement");
+    active = [];
+    releaseCancel();
+    await pending;
+    assert.match(section.textContent, /暂无计划/);
+    assert.deepEqual(calls.map((wire) => wire.word), ["list", "cancel", "list"]);
+    assert.deepEqual(calls[1], { to: "service:clock", kind: "request", word: "cancel",
+      body: { id: "timer-a" }, wait: true, client_id: "cancel-client-one" });
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+test("lost cancel acknowledgement retries only on a new click with the same client id", async () => {
+  const timer = { id: "timer-a", next: 100000, every: null, label: "带伞", blocked: null };
+  let active = [timer];
+  let cancels = 0;
+  const ids = [];
+  const f = fixture({ request: async (_path, options) => {
+    const wire = JSON.parse(options.body);
+    if (wire.to === "service:self") return { ok: true, json: async () => ({ id: "self", reply: { kind: "response", reply_to: "self", from: "service:self", to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
+    if (wire.word === "list") return clockResponse("list", { timers: active });
+    ids.push(wire.client_id);
+    cancels++;
+    if (cancels === 1) { active = []; throw new Error("synthetic lost acknowledgement"); }
+    return clockResponse("cancel", { cancelled: true });
+  } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("upcoming");
+    const section = f.sheet.panels.get("upcoming");
+    const button = section.children[0].children.find((child) => child.tag === "button");
+    await button.listeners.click();
+    assert.match(section.textContent, /带伞.*结果未确认/s);
+    assert.equal(cancels, 1, "no automatic retry of an ambiguous effect");
+    await button.listeners.click();
+    assert.deepEqual(ids, ["cancel-client-one", "cancel-client-one"]);
+    assert.match(section.textContent, /暂无计划/);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+test("cancelled false, rejected HTTP, forged pairing and stale scope never remove a timer", async () => {
+  const net = { token: "token-a", screen: "screen:a", currentScope: "scope-a", generation: 1 };
+  const accepted = (word, result, overrides = {}) => ({ ok: true, json: async () => ({ id: "request-a", reply: {
+    kind: "response", reply_to: "request-a", from: "service:clock", to: "person:owner", word,
+    body: { ok: true, result }, ...overrides } }) });
+  net.request = async () => accepted("cancel", { cancelled: false });
+  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /未确认删除/);
+  net.request = async () => ({ ok: false, status: 403 });
+  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /无权修改/);
+  net.request = async () => accepted("cancel", { cancelled: true }, { reply_to: "other" });
+  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /未配对/);
+  let release;
+  net.request = async () => new Promise((resolve) => { release = resolve; });
+  const pending = cancelClockForScreen(net, () => true, "timer-a", "client-a");
+  net.currentScope = "scope-b";
+  release(accepted("cancel", { cancelled: true }));
+  await assert.rejects(pending, /身份已变化/);
+});
+
+test("late cancel acknowledgement after sheet scope loss cannot revive rows or reuse intent", async () => {
+  const timer = { id: "timer-a", next: 100000, every: null, label: "旧账户计划", blocked: null };
+  let releaseCancel;
+  let listCount = 0;
+  const f = fixture({ request: async (_path, options) => {
+    const wire = JSON.parse(options.body);
+    if (wire.to === "service:self") return { ok: true, json: async () => ({ id: "self", reply: { kind: "response", reply_to: "self", from: "service:self", to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
+    if (wire.word === "list") { listCount++; return clockResponse("list", { timers: [timer] }); }
+    return new Promise((resolve) => { releaseCancel = () => resolve(clockResponse("cancel", { cancelled: true })); });
+  } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("upcoming");
+    const button = f.sheet.panels.get("upcoming").children[0].children.find((child) => child.tag === "button");
+    const pending = button.listeners.click();
+    f.net.currentScope = "scope-b";
+    f.sheet.registration();
+    releaseCancel();
+    await pending;
+    assert.equal(f.root.named["#agentPanel"].textContent, "");
+    assert.equal(f.sheet.cancelIntents.size, 0);
+    assert.equal(listCount, 1, "old response cannot start a new-scope list");
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+function clockResponse(word, result) {
+  return { ok: true, json: async () => ({ id: `clock-${word}`, reply: {
+    kind: "response", reply_to: `clock-${word}`, from: "service:clock", to: "person:owner", word,
+    body: { ok: true, result },
+  } }) };
+}
 
 test("remote identity is read-only; scope loss discards draft and delayed read", async () => {
   let release;
