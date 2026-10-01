@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type JsonSchema, type SendRequestV2 } from "../src/api";
+import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type ClockFiredBodyV2, type JsonSchema, type SendRequestV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
@@ -28,6 +28,24 @@ test("response send contract carries a stable client id for acknowledgement-loss
   const first: SendRequestV2 = { to: "agent:main", kind: "response", word: "ask", reply_to: "m_request", body: { ok: true, result: { choice: "once" } }, client_id: "approval-1" };
   const retry: SendRequestV2 = { ...first, body: { ok: true, result: { choice: "once" } } };
   assert.deepEqual(retry, first);
+});
+
+test("clock.fired is a closed, clock-only outbound occurrence record", () => {
+  const contract = wordContract("service:clock", "clock.fired")!;
+  assert.equal(contract.kind, "event");
+  assert.equal(contract.direction, "out");
+  assert.equal(contract.result_schema, undefined);
+  assert.equal(wordContract("service:other", "clock.fired"), undefined);
+  const schema = contract.input_schema!;
+  const valid: ClockFiredBodyV2 = { timer_id: "tmr_1", scheduled_at: 1_727_740_800_000, outcome: "dispatched", request_id: "m_1" };
+  assert.ok(matchesSchema(schema, valid));
+  assert.ok(matchesSchema(schema, { timer_id: valid.timer_id, scheduled_at: valid.scheduled_at, outcome: "skipped", reason: "paused" }));
+  for (const invalid of [
+    { ...valid, timer_id: "" }, { ...valid, scheduled_at: -1 }, { ...valid, scheduled_at: 1.5 },
+    { ...valid, scheduled_at: Number.MAX_SAFE_INTEGER + 1 }, { ...valid, scheduled_at: Infinity },
+    { ...valid, outcome: "completed" }, { ...valid, request_id: "" }, { ...valid, extra: true },
+    { scheduled_at: valid.scheduled_at, outcome: "failed" }, null,
+  ]) assert.ok(!matchesSchema(schema, invalid), `invalid clock event accepted: ${JSON.stringify(invalid)}`);
 });
 
 test("v2 is additive to the existing client protocol", () => {
