@@ -319,6 +319,8 @@ export interface Message {
 
 /** Authoritative pending-delivery count emitted to the owner by the delivery service. */
 export interface PostChangedBody { held: number }
+/** Dropped suppresses only a repeated presentation; the original owner message remains in the ledger. */
+export type PostDeliveryChannel = "inapp" | "notification" | "held" | "dropped";
 /** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
 export interface LegacyConversationMetadata {
   seq: number;

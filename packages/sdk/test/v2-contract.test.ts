@@ -48,6 +48,15 @@ test("clock.fired is a closed, clock-only outbound occurrence record", () => {
   ]) assert.ok(!matchesSchema(schema, invalid), `invalid clock event accepted: ${JSON.stringify(invalid)}`);
 });
 
+test("post deliver distinguishes dedupe suppression from a real presentation", () => {
+  const contract = wordContract("service:post", "deliver")!;
+  const result = contract.result_schema!;
+  for (const channel of ["inapp", "notification", "held", "dropped"])
+    assert.ok(matchesSchema(result, { channel }));
+  for (const invalid of [{ channel: "silent" }, { channel: "dropped", delivered: true }, {}, null])
+    assert.ok(!matchesSchema(result, invalid));
+});
+
 test("target-screen ui.open acknowledgement uses the existing paired response and exact boolean result", () => {
   const word = wordContract("screen:tab-1", "ui.open")!;
   assert.ok(matchesSchema(word.input_schema!, { target: "memory", mode: "perform" }));
