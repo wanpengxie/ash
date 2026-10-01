@@ -160,43 +160,46 @@ internal class DirectCoreHttpTransport : CoreHttpTransport {
     override fun execute(request: CoreHttpRequest, cancellation: CoreCancellation, onChunk: (ByteArray) -> Unit): CoreHttpReply {
         val connection = request.url.openConnection(Proxy.NO_PROXY) as HttpURLConnection
         cancellation.bind { connection.disconnect() }
-        connection.instanceFollowRedirects = false
-        connection.requestMethod = request.method
-        connection.connectTimeout = 3_000
-        connection.readTimeout = if (request.streaming) 35_000 else 10_000
-        request.headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
-        if (request.body != null) {
-            connection.doOutput = true
-            connection.setFixedLengthStreamingMode(request.body.size)
-            connection.outputStream.use { it.write(request.body) }
-        }
-        val status = connection.responseCode
-        if (status in 300..399) { connection.disconnect(); return CoreHttpReply(status, "application/octet-stream", ByteArray(0)) }
-        val stream = if (status < 400) connection.inputStream else connection.errorStream
-        val collected = java.io.ByteArrayOutputStream()
-        var previousLf = false
-        try { stream?.use { source ->
-            val buffer = ByteArray(64 * 1024)
-            var frameBytes = 0
-            while (true) {
-                if (cancellation.cancelled) throw IOException("cancelled")
-                val count = source.read(buffer)
-                if (count < 0) break
-                val chunk = buffer.copyOf(count)
-                if (request.streaming) {
-                    for (byte in chunk) {
-                        frameBytes++
-                        if (frameBytes > 2 * 1024 * 1024) throw IOException("stream frame too large")
-                        if (byte == '\n'.code.toByte() && previousLf) frameBytes = 0
-                        if (byte != '\r'.code.toByte()) previousLf = byte == '\n'.code.toByte()
+        try {
+            connection.instanceFollowRedirects = false
+            connection.requestMethod = request.method
+            connection.connectTimeout = 3_000
+            connection.readTimeout = if (request.streaming) 35_000 else 10_000
+            request.headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+            if (request.body != null) {
+                connection.doOutput = true
+                connection.setFixedLengthStreamingMode(request.body.size)
+                connection.outputStream.use { it.write(request.body) }
+            }
+            val status = connection.responseCode
+            if (status in 300..399) return CoreHttpReply(status, "application/octet-stream", ByteArray(0))
+            val contentType = connection.contentType ?: "application/octet-stream"
+            val stream = if (status < 400) connection.inputStream else connection.errorStream
+            val collected = java.io.ByteArrayOutputStream()
+            var previousLf = false
+            stream?.use { source ->
+                val buffer = ByteArray(64 * 1024)
+                var frameBytes = 0
+                while (true) {
+                    if (cancellation.cancelled) throw IOException("cancelled")
+                    val count = source.read(buffer)
+                    if (count < 0) break
+                    val chunk = buffer.copyOf(count)
+                    if (request.streaming) {
+                        for (byte in chunk) {
+                            frameBytes++
+                            if (frameBytes > 2 * 1024 * 1024) throw IOException("stream frame too large")
+                            if (byte == '\n'.code.toByte() && previousLf) frameBytes = 0
+                            if (byte != '\r'.code.toByte()) previousLf = byte == '\n'.code.toByte()
+                        }
+                        onChunk(chunk)
+                    } else {
+                        if (collected.size().toLong() + count > 33L * 1024 * 1024) throw IOException("core reply too large")
+                        collected.write(chunk)
                     }
-                    onChunk(chunk)
-                } else {
-                    if (collected.size().toLong() + count > 33L * 1024 * 1024) throw IOException("core reply too large")
-                    collected.write(chunk)
                 }
             }
-        } } finally { connection.disconnect() }
-        return CoreHttpReply(status, connection.contentType ?: "application/octet-stream", collected.toByteArray())
+            return CoreHttpReply(status, contentType, collected.toByteArray())
+        } finally { connection.disconnect() }
     }
 }
