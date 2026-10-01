@@ -135,19 +135,42 @@ export class WorldRouter {
 
   /** Compile all external schemas with Ajv before any capability becomes callable. */
   registerDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
+    const prepared = this.prepareDeviceBatch(member, capabilities, handle, options);
+    for (const key of prepared.keys()) if (this.endpoints.has(key)) throw new TypeError("duplicate endpoint");
+    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
+    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+  }
+
+  /** Recompile the complete manifest before a synchronous, all-or-nothing route switch. */
+  replaceDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
+    const prepared = this.prepareDeviceBatch(member, capabilities, handle, options);
+    this.unregisterDevice(member);
+    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
+    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+  }
+
+  unregisterDevice(member: string): void {
+    if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
+    for (const key of this.endpoints.keys()) if (key.startsWith(`${member}/`)) this.endpoints.delete(key);
+  }
+
+  cancelMember(member: string): Message[] {
+    return this.cancel([...this.pending.values()].filter((item) => item.request.to === member).map((item) => item.request.id));
+  }
+
+  private prepareDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery">): Map<string, Registered> {
     if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
     const prepared = new Map<string, Registered>();
     for (const capability of capabilities) {
       const safeCapability = detached(capability);
       const spec = deviceWordSpec(safeCapability as Parameters<typeof deviceWordSpec>[0]);
       const key = `${member}/${spec.word}`;
-      if (this.endpoints.has(key) || prepared.has(key)) throw new TypeError("duplicate endpoint");
+      if (prepared.has(key)) throw new TypeError("duplicate endpoint");
       const validateInput = ajvFor(safeCapability.input_schema);
       const validateResult = ajvFor(spec.result_schema);
       prepared.set(key, { member, spec, handle, ...options, validateInput, validateResult });
     }
-    for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
-    return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
+    return prepared;
   }
 
   setGate(gate: GateHook): void { this.gate = gate; }
@@ -257,6 +280,11 @@ export class WorldRouter {
       return { id: message.id, seq: message.seq };
     }
     if (!endpoint) throw new RouterError("not_found", "recipient word not found");
+    if (this.endpoint(message.to!, message.word) !== endpoint) {
+      const response = this.ledger.settle(message.id, message.to!, errors("cancelled", "device route changed before dispatch")).message;
+      this.publish(response);
+      return { id: message.id, seq: message.seq, ...(request.wait ? { reply: response } : {}) };
+    }
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === message.id)!;
     const pending = makePending(message, endpoint, tracked.context, tracked.deadlineAt, "accepted");
     this.pending.set(message.id, pending);

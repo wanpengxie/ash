@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceKey, GatewayClient } from "ash-gateway/client/client";
-import { startOwner } from "../packages/core/src/main";
+import { startClient, startOwner } from "../packages/core/src/main";
 
 const base = process.env.GATEWAY_URL?.replace(/\/$/, "");
 const secret = process.env.BOOTSTRAP_SECRET;
@@ -58,4 +58,41 @@ try {
   const events = (await replay.text()).split("\n\n").filter((block) => block.startsWith("id: ")).map((block) => JSON.parse(block.split("\ndata: ")[1] ?? "null"));
   check(events.some((event) => event.id === accepted.id && event.from === "person:owner" && event.origin?.screen === registration!.screen), "trusted origin and durable replay");
   check(events.filter((event) => event.id === accepted.id).length === 1, "single accepted request");
+
+  // A synthetic MCP server exercises the actual client tunnel and v2 device adapter.
+  const fake = join(dir, "controlled-mcp.mjs");
+  writeFileSync(fake, `import { createInterface } from "node:readline";
+const out = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.method === "initialize") out({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "controlled", version: "1" } } });
+  else if (request.method === "tools/list") out({ jsonrpc: "2.0", id: request.id, result: { tools: [{ name: "echo", description: "Echo controlled text", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false } }] } });
+  else if (request.method === "tools/call") out({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "synthetic:" + request.params.arguments.text }] } });
+});`, { mode: 0o600 });
+  const remoteTicket = (await link.ticket()).ticket;
+  const laptopPromise = startClient({ role: "client", name: "Controlled laptop", stateDir: join(dir, "laptop"), gateway: { url: base },
+    mcp: { fake: { command: process.execPath, args: [fake] } } }, remoteTicket);
+  const remotePending = await wait(async () => [...link.pending.values()].find((item) => item.name === "Controlled laptop"));
+  await link.approve(remotePending.request_id, ["expose_capability"]);
+  const laptop = await laptopPromise;
+  try {
+    const remoteId = `device:${remotePending.client_id}`;
+    const detail = await wait(async () => {
+      await link.refreshDevices();
+      try { return owner.members.describe("agent", remoteId).members[0]; } catch { return undefined; }
+    });
+    check(detail.online && detail.words.some((word) => word.word === "fake.echo" && word.risk === "structure"), "paired remote MCP is a conservative structure-risk device word");
+    let approvals = 0;
+    owner.world.setGate(async (message) => {
+      const allowed = message.to === remoteId && message.word === "fake.echo" && message.body.text === "controlled" && approvals++ === 0;
+      return { allow: allowed, by: "rule", reason: "synthetic gate rejects all other effects" };
+    });
+    const result = await owner.world.send({ transport: "agent", transportPrincipal: "e2e-agent", member: "agent:main", local: true, remote: false, ownerProxy: false },
+      { to: remoteId, kind: "request", word: "fake.echo", body: { text: "controlled" }, wait: true });
+    check(result.reply?.body.ok === true && JSON.stringify(result.reply.body.result).includes("synthetic:controlled"), "one explicitly gated synthetic remote effect returns through the tunnel");
+    check(approvals === 1, "test-only gate saw exactly one remote effect");
+    await link.revoke(remoteId);
+    await link.refreshDevices();
+    check(!owner.members.describe("agent").members.some((member) => member.id === remoteId), "revocation removes remote routes");
+  } finally { laptop.close(); }
 } finally { await owner.close(); }

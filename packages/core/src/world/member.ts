@@ -70,6 +70,29 @@ export class WorldMembers {
     this.members.set(info.id, { info, online: () => member.online, words: validated });
   }
 
+  /** One validated manifest snapshot drives both describe and send; in-flight old calls are cancelled. */
+  replaceDevice(member: DeviceMemberLike): void {
+    const info = validInfo(member);
+    if (info.kind !== "device") throw new TypeError("device member required");
+    if (!this.members.has(info.id)) { this.registerDevice(member); return; }
+    const capabilities = member.capabilities();
+    if (!Array.isArray(capabilities)) throw new TypeError("invalid device capabilities");
+    const handle = member.handle.bind(member);
+    const cancel = member.cancel?.bind(member);
+    const validated = this.router.replaceDeviceBatch(info.id, capabilities, handle, cancel ? { cancel } : {});
+    this.members.set(info.id, { info, online: () => member.online, words: validated });
+    this.router.cancelMember(info.id);
+  }
+
+  removeDevice(memberId: string): void {
+    const existing = this.members.get(memberId);
+    if (!existing) return;
+    if (existing.info.kind !== "device") throw new TypeError("cannot remove a non-device member");
+    this.router.unregisterDevice(memberId);
+    this.members.delete(memberId);
+    this.router.cancelMember(memberId);
+  }
+
   describe(audience: "owner" | "agent"): DescribeSummary;
   describe(audience: "owner" | "agent", memberId: string): DescribeDetail;
   describe(audience: "owner" | "agent", memberId?: string): DescribeSummary | DescribeDetail {

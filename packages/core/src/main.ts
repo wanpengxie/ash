@@ -112,7 +112,7 @@ export async function startOwner(config: Config): Promise<Running> {
     const url = `http://${host}:${typeof address === "object" && address ? address.port : port}`;
     const ownerToken = Object.entries(tokens.api).find(([, member]) => member === "person:owner")![0];
     writeFileSync(join(config.stateDir, "ui-url"), `${url}/?token=${ownerToken}\n`, { mode: 0o600 });
-    hostLink?.startHealthChecks();
+    hostLink?.startHealthChecks(members);
     link?.enable();
     return { url, tokens, ledger, world, members, edge, link, async close() {
       link?.stop(); hostLink?.close();

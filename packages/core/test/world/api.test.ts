@@ -10,6 +10,7 @@ import { WorldMembers } from "../../src/world/member";
 import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type EdgeResponse } from "../../src/server";
 import { wordContract } from "../../../sdk/src/words";
 import { HostDeviceLink } from "../../src/host-v2";
+import { DeviceMember } from "../../src/members/device";
 
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-credential", local: true, remote: false, ownerProxy: true, transport: "api" };
 const remote: EdgeCaller = { member: "person:owner", transportPrincipal: "paired-browser", pairedDeviceId: "paired-browser", local: false, remote: true, ownerProxy: true, transport: "web_ui" };
@@ -184,12 +185,13 @@ test("MCP exposes only describe/send and agent audience omits owner-only words",
 test("host manifest without declared risk and label fails closed before device registration", async () => {
   const { ledger, world, members } = await fixture();
   let upgraded = false;
+  let capabilityName = "calendar.search";
   let effects = 0;
   const host = createServer((req, res) => {
     if (req.headers.authorization !== "Bearer host-token") { res.writeHead(401).end(); return; }
     res.setHeader("content-type", "application/json");
     if (req.method === "GET" && req.url === "/manifest") {
-      res.end(JSON.stringify({ name: "Controlled phone", capabilities: [{ name: "calendar.search", description: "Search controlled calendar", input_schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] }, ...(upgraded ? { risk: "none", label: "Searching calendar" } : {}) }] }));
+      res.end(JSON.stringify({ name: "Controlled phone", capabilities: [{ name: capabilityName, description: "Search controlled calendar", input_schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] }, ...(upgraded ? { risk: "none", label: "Searching calendar" } : {}) }] }));
     } else if (req.method === "POST" && req.url === "/call") { effects++; res.end(JSON.stringify({ ok: true, content: [{ type: "text", text: "controlled result" }] })); }
     else res.writeHead(404).end("{}");
   });
@@ -205,6 +207,68 @@ test("host manifest without declared risk and label fails closed before device r
       const result = await world.send({ transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: false }, { to: "device:phone", kind: "request", word: "calendar.search", body: { n: 1 }, wait: true });
       assert.equal(result.reply?.body.ok, true);
       assert.equal(effects, 1);
+      upgraded = false;
+      await link.refreshManifest(members);
+      assert.equal(members.describe("owner", "device:phone").members[0].online, false);
+      const offline = await world.send({ transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: false }, { to: "device:phone", kind: "request", word: "calendar.search", body: { n: 1 }, wait: true });
+      assert.equal((offline.reply?.body.error as { code: string }).code, "offline");
+      assert.equal(effects, 1);
+      upgraded = true;
+      capabilityName = "calendar.updated";
+      await link.refreshManifest(members);
+      assert.equal(members.describe("owner", "device:phone").members[0].online, true);
+      assert.deepEqual(members.describe("owner", "device:phone").members[0].words.map((word) => word.word), ["calendar.updated"]);
+      await assert.rejects(world.send({ transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: false }, { to: "device:phone", kind: "request", word: "calendar.search", body: { n: 1 } }), /not found/);
     } finally { link.close(); }
   } finally { await new Promise<void>((resolve) => { host.close(() => resolve()); host.closeAllConnections(); }); ledger.close(); }
+});
+
+test("device manifest replacement is atomic and cancels an uncertain old call before new routes publish", async () => {
+  const { ledger, world, members } = await fixture();
+  const context = { transport: "api" as const, transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: true };
+  const cap = (name: string, input_schema: unknown) => ({ name, description: `Controlled ${name}`, input_schema, risk: "none" as const, label: `Using ${name}` });
+  let release!: (value: { ok: true; result: Record<string, unknown> }) => void;
+  try {
+    members.registerDevice(new DeviceMember("device:synthetic", "Synthetic", [cap("old", { type: "object", properties: {}, additionalProperties: false })],
+      () => new Promise((resolve) => { release = resolve; })));
+    const old = await world.send(context, send("device:synthetic", "old", {}));
+    assert.equal(typeof release, "function");
+    assert.throws(() => members.replaceDevice(new DeviceMember("device:synthetic", "Invalid", [
+      cap("new", { type: "object", properties: {}, additionalProperties: false }),
+      cap("bad", { type: "object", properties: { n: { type: "unknown" } } }),
+    ], () => ({ ok: true, result: {} }))), /schema|type|unknown/i);
+    assert.equal(members.describe("owner", "device:synthetic").members[0].words[0].word, "old");
+    assert.equal(ledger.responseTo(old.id), null);
+    members.replaceDevice(new DeviceMember("device:synthetic", "Updated", [cap("new", { type: "object", properties: { n: { type: "integer" } }, required: ["n"], additionalProperties: false })],
+      () => ({ ok: true, result: {} })));
+    const cancelled = ledger.responseTo(old.id);
+    assert.equal((cancelled?.body.error as { code: string }).code, "cancelled");
+    release({ ok: true, result: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(ledger.list().filter((message) => message.reply_to === old.id).length, 1);
+    assert.equal(members.describe("owner", "device:synthetic").members[0].words[0].word, "new");
+    await assert.rejects(world.send(context, send("device:synthetic", "old", {})), /not found/);
+    await assert.rejects(world.send(context, send("device:synthetic", "new", { n: "bad" })), /schema/);
+    const fresh = await world.send(context, { ...send("device:synthetic", "new", { n: 2 }), wait: true });
+    assert.equal(fresh.reply?.body.ok, true);
+    members.removeDevice("device:synthetic");
+    assert.equal(members.describe("owner").members.some((entry) => entry.id === "device:synthetic"), false);
+    await assert.rejects(world.send(context, send("device:synthetic", "new", { n: 2 })), /not found/);
+  } finally { ledger.close(); }
+});
+
+test("observer revocation between durable request publication and dispatch never executes the old route", async () => {
+  const { ledger, world, members } = await fixture();
+  let effects = 0;
+  try {
+    members.registerDevice(new DeviceMember("device:volatile", "Volatile", [{ name: "run", description: "Synthetic effect", risk: "none", label: "Running", input_schema: { type: "object", properties: {}, additionalProperties: false } }],
+      () => { effects++; return { ok: true, result: {} }; }));
+    const stop = world.subscribe((message) => { if (message.kind === "request" && message.to === "device:volatile") members.removeDevice("device:volatile"); });
+    const sent = await world.send({ transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: false },
+      { to: "device:volatile", kind: "request", word: "run", body: {}, wait: true });
+    stop();
+    assert.equal(effects, 0);
+    assert.equal((sent.reply?.body.error as { code: string }).code, "cancelled");
+    assert.equal(ledger.list().filter((message) => message.reply_to === sent.id).length, 1);
+  } finally { ledger.close(); }
 });
