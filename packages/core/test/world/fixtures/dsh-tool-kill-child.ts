@@ -15,6 +15,12 @@ if (process.env.TEST_PHASE === "first") {
   process.send?.({ type: "accepted", status: sent.status });
   await new Promise(() => {});
 } else {
+  const oldToken = process.env.TEST_OLD_TOKEN;
+  // The synthetic old token is supplied only by this child-process test after
+  // its persisted grant has been removed; no new turn is submitted on recovery.
+  const oldAuthStatus = oldToken ? (await fetch(`${running.url}/api/describe`, { headers: { authorization: `Bearer ${oldToken}` } })).status : -1;
+  const newToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")?.[0];
+  const newAuthStatus = newToken ? (await fetch(`${running.url}/api/describe`, { headers: { authorization: `Bearer ${newToken}` } })).status : -1;
   const rows = running.ledger.list({ after: 0, limit: 1000 });
   const hold = rows.find((message) => message.kind === "request" && message.to === "device:phone" && message.word === "hold");
   const reply = hold ? running.ledger.responseTo(hold.id) : null;
@@ -26,7 +32,8 @@ if (process.env.TEST_PHASE === "first") {
     replyCount: rows.filter((message) => message.kind === "response" && message.reply_to === hold?.id).length,
     replyCode: (reply?.body.error as { code?: string } | undefined)?.code,
     turnReasons: rows.filter((message) => message.word === "turn.end").map((message) => message.body.reason),
-    dshUnknownToolResults: events.filter((event) => event.type === "tool/result" && JSON.stringify(event.data).includes("unknown")).length });
+    dshUnknownToolResults: events.filter((event) => event.type === "tool/result" && JSON.stringify(event.data).includes("unknown")).length,
+    oldAuthStatus, newAuthStatus });
   await running.close();
   process.exit(0);
 }

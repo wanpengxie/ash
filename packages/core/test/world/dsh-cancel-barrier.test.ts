@@ -303,8 +303,9 @@ test("SIGKILL in a real tool call closes uncertain history without replaying the
   await Promise.all([new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve)),
     new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve))]);
   const childFile = fileURLToPath(new URL("./fixtures/dsh-tool-kill-child.ts", import.meta.url));
-  const launch = (phase: string) => fork(childFile, [], { execArgv: ["--expose-internals", "--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"],
+  const launch = (phase: string, oldToken?: string) => fork(childFile, [], { execArgv: ["--expose-internals", "--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"],
     env: { ...process.env, TEST_ROOT: root, TEST_PHASE: phase, ASH_TEST_DSH_ROOT: install!,
+      ...(oldToken ? { TEST_OLD_TOKEN: oldToken } : {}),
       TEST_HOST_URL: `http://127.0.0.1:${(host.address() as { port: number }).port}`,
       TEST_MODEL_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/anthropic` } });
   let child = launch("first");
@@ -322,10 +323,18 @@ test("SIGKILL in a real tool call closes uncertain history without replaying the
     assert.equal(deviceCalls, 1);
     child.kill("SIGKILL");
     await timeout("first exit", new Promise<void>((resolve) => child.once("exit", () => resolve())));
-    child = launch("second");
+    const tokenFile = join(root, "state", "tokens.json");
+    const tokens = JSON.parse(readFileSync(tokenFile, "utf8")) as { api: Record<string, string> };
+    const oldOwnerToken = Object.entries(tokens.api).find(([, member]) => member === "person:owner")?.[0];
+    assert.ok(oldOwnerToken);
+    delete tokens.api[oldOwnerToken];
+    writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o600 });
+    child = launch("second", oldOwnerToken);
     child.stderr?.on("data", (part) => { childError += String(part).slice(0, 1000); });
-    const recovered = new Promise<{ type: string; holdCount: number; replyCount: number; replyCode: string; turnReasons: string[]; dshUnknownToolResults: number }>((resolve) =>
-      child.once("message", (value) => resolve(value as { type: string; holdCount: number; replyCount: number; replyCode: string; turnReasons: string[]; dshUnknownToolResults: number })));
+    const recovered = new Promise<{ type: string; holdCount: number; replyCount: number; replyCode: string; turnReasons: string[];
+      dshUnknownToolResults: number; oldAuthStatus: number; newAuthStatus: number }>((resolve) =>
+      child.once("message", (value) => resolve(value as { type: string; holdCount: number; replyCount: number; replyCode: string;
+        turnReasons: string[]; dshUnknownToolResults: number; oldAuthStatus: number; newAuthStatus: number })));
     const result = await timeout("recovery", recovered);
     assert.equal(result.type, "recovered");
     assert.equal(result.holdCount, 1);
@@ -333,6 +342,8 @@ test("SIGKILL in a real tool call closes uncertain history without replaying the
     assert.equal(result.replyCode, "failed"); // outcome unknown, not a fabricated success
     assert.deepEqual(result.turnReasons, ["error"]);
     assert.ok(result.dshUnknownToolResults >= 1, "DSH history did not close the interrupted call as unknown");
+    assert.equal(result.oldAuthStatus, 401);
+    assert.equal(result.newAuthStatus, 200);
     await timeout("second exit", new Promise<void>((resolve) => child.once("exit", () => resolve())));
     assert.equal(deviceCalls, 1, "the external device call was replayed");
     assert.equal(modelCalls, 1, "DSH resumed an old prompt rather than waiting for a new core batch");

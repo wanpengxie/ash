@@ -61,6 +61,7 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
   const pending = { "next-turn": [] as string[], "next-step": [] as string[] };
   const seenPrompts = new Set<string>();
   const promptTurns = new Map<string, number>();
+  const boundDshTurns = new Set<number>();
   const finishedTurns = new Map<number, string>();
   let openTurn: number | null = null;
   for (const event of events) {
@@ -94,9 +95,10 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
         throw new Error("DSH history contains a user message without a core turn");
       if (!runtimeContext) {
         if (seenPrompts.has(id)) throw new Error("DSH history repeats a core prompt");
-        if (openTurn === null || [...promptTurns.values()].includes(openTurn)) throw new Error("DSH core prompt has no distinct active turn");
+        if (openTurn === null || boundDshTurns.has(openTurn)) throw new Error("DSH core prompt has no distinct active turn");
         seenPrompts.add(id);
         promptTurns.set(id, openTurn);
+        boundDshTurns.add(openTurn);
       }
     }
     if (event.type !== "agent/inbox/spliced") continue;
