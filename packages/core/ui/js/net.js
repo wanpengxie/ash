@@ -1,6 +1,7 @@
 import { AUTH_SCOPE_EVENT, MESSAGE_SUMMARY_EVENT, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER, STREAM_ERROR_EVENT, STREAM_PAGE_END_EVENT, isAuthScopeControlV2, isMessageSummaryV2, isScreenRegistration, isStreamErrorV2, isStreamPageEndV2 } from "../../../sdk/src/api.ts";
 import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
 import { openPendingStore } from "./pending-store.js";
+import { browserUiTransport } from "./ui-transport.js";
 
 const TOKEN_KEY = "ash.screen.token.v2";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,8 +60,9 @@ export async function readSse(response, onFrame, signal, maxFrameBytes = 2_000_0
 }
 
 export class ScreenNet {
-  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, pendingStore = openPendingStore(), endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onSnapshot = () => {}, onReset = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
-    this.transport = fetchImpl;
+  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), uiTransport, storage = sessionStorage, pendingStore = null, endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onSnapshot = () => {}, onReset = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
+    this.uiTransport = uiTransport ?? browserUiTransport(fetchImpl);
+    if (this.uiTransport.embedded && endpoint !== (globalThis.location?.origin || "http://local.test") && endpoint !== this.uiTransport.endpoint) throw new Error("conflicting logical core endpoint");
     this.storage = storage;
     this.label = label;
     this.onMessage = onMessage;
@@ -70,8 +72,8 @@ export class ScreenNet {
     this.onState = onState;
     this.onRegistered = onRegistered;
     this.onQueue = onQueue;
-    this.endpoint = endpoint;
-    this.pendingReady = Promise.resolve(pendingStore).catch(() => null);
+    this.endpoint = this.uiTransport.embedded ? this.uiTransport.endpoint : endpoint;
+    this.pendingReady = this.uiTransport.whenReady().then(() => pendingStore ?? openPendingStore()).catch(() => null);
     this.tabOwner = crypto.randomUUID();
     this.currentScope = null;
     this.queue = [];
@@ -91,10 +93,7 @@ export class ScreenNet {
   }
 
   request(url, options = {}) {
-    const isStream = /^\/api\/stream(?:\?|$)/.test(url) && (!options.method || options.method === "GET");
-    const isSend = url === "/api/send" && options.method === "POST";
-    if (!isStream && !isSend) throw new Error("unapproved UI route");
-    return this.transport(url, options);
+    return this.uiTransport.request(url, options);
   }
 
   async catchUp(generation, signal) {
@@ -146,6 +145,8 @@ export class ScreenNet {
     if (this.active) return;
     this.active = true;
     const generation = ++this.generation;
+    await this.uiTransport.whenReady();
+    if (!this.active || generation !== this.generation) return;
     let delay = 500;
     while (this.active && generation === this.generation) {
       const controller = new AbortController();
@@ -362,6 +363,7 @@ export class ScreenNet {
   }
 
   async enqueueSay(text, attachments = []) {
+    if (!this.uiTransport.isReady()) throw new Error("native transport not ready");
     const scope = this.currentScope;
     if (!scope) throw new Error("connect once before storing an offline message");
     const store = await this.pendingReady;
@@ -425,7 +427,7 @@ export class ScreenNet {
   }
 
   async flush() {
-    if (this.flushing || !this.token || !this.currentScope) return;
+    if (this.flushing || !this.uiTransport.isReady() || !this.uiTransport.allowsQueueFlush() || !this.token || !this.currentScope) return;
     this.flushing = true;
     const startingToken = this.token;
     const startingScope = this.currentScope;
