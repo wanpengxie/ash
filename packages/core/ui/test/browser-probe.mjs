@@ -18,7 +18,8 @@ const ledger = await Ledger.open(join(directory, "ledger.db"));
 const world = new WorldRouter(ledger, async () => true);
 const members = new WorldMembers(world);
 members.register({ id: "agent:main", kind: "agent", name: "Main", words: () => [wordContract("agent:main", "say"), wordContract("agent:main", "typing")], handle: () => ({ ok: true, result: { accepted: true } }) });
-const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} });
+const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
+let alternateLedger;
 let browser;
 let socket;
 let socket2;
@@ -65,11 +66,36 @@ try {
     assert.equal(absentPost.status, 404);
   } finally { closeNegative(); }
   members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
+  if (process.env.ASH_PROBE_SWITCH === "1") {
+    alternateLedger = await Ledger.open(join(directory, "alternate.db"));
+    const alternateWorld = new WorldRouter(alternateLedger, async () => true);
+    const alternateMembers = new WorldMembers(alternateWorld);
+    alternateMembers.register({ id: "agent:main", kind: "agent", name: "Alternate", words: () => [wordContract("agent:main", "say"), wordContract("agent:main", "typing")], handle: () => ({ ok: true, result: { accepted: true } }) });
+    const alternateEdge = new EdgeRouter(alternateLedger, alternateWorld, alternateMembers, { api: { "probe-owner-B": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
+    alternateMembers.register(new PostPresenceMember((screen) => alternateEdge.screens.markVisible(screen)));
+    for (let n = 1; n <= 3; n++) alternateLedger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: `account B ${n}` } });
+    edge.tokens.api["probe-owner-B"] = "person:owner";
+    const originalCaller = edge.localCaller.bind(edge);
+    const originalHandle = edge.handle.bind(edge);
+    const switched = (headers) => /(?:^|;\s*)ash_ui=probe-owner-B(?:;|$)/.test(headers.cookie ?? "");
+    edge.localCaller = (headers) => switched(headers) ? alternateEdge.localCaller(headers) : originalCaller(headers);
+    edge.handle = (request, caller) => switched(request.headers) ? alternateEdge.handle(request, caller) : originalHandle(request, caller);
+  }
   for (let n = 1; n <= 120; n++) await world.send({ member: "person:owner", transport: "api", transportPrincipal: "fixture", local: true, remote: false, ownerProxy: true }, { to: "agent:main", kind: "request", word: "say", body: { text: `fixture ${n}` }, client_id: `fixture-${n}` });
   server = await startEdgeServer(edge, "127.0.0.1", 0);
   const base = `http://127.0.0.1:${server.address().port}`;
   const streamHeaders = [];
-  server.on("request", (request) => { if (request.url?.startsWith("/api/stream?follow=true")) streamHeaders.push(request.headers["last-event-id"] ?? null); });
+  const rawReads = [];
+  const rawStatuses = [];
+  const alternateFinite = [];
+  server.on("request", (request, response) => {
+    if (request.url?.startsWith("/api/stream?follow=true")) streamHeaders.push(request.headers["last-event-id"] ?? null);
+    if (request.url?.includes("follow=false") && request.url?.includes("limit=1") && !request.url?.includes("summary=true")) {
+      rawReads.push(request.url);
+      response.on("finish", () => rawStatuses.push(response.statusCode));
+    }
+    if (request.url?.includes("follow=false") && request.url?.includes("summary=true") && /(?:^|;\s*)ash_ui=probe-owner-B(?:;|$)/.test(request.headers.cookie ?? "")) alternateFinite.push(request.url);
+  });
   browser = spawn(process.env.ASH_PROBE_CHROME || "/opt/google/chrome/chrome", ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-breakpad", `--user-data-dir=${join(directory, "profile")}`, "--remote-debugging-port=0", "about:blank"], { stdio: "ignore", detached: true });
   const debugFile = join(directory, "profile", "DevToolsActivePort");
   const port = await until(() => { try { return Number(readFileSync(debugFile, "utf8").split("\n")[0]); } catch { return 0; } }, "browser debug port");
@@ -140,7 +166,32 @@ try {
   assert.ok(streamHeaders.length >= 2);
   assert.match(String(streamHeaders.at(-1)), /^[1-9][0-9]*$/);
   assert.equal(await evaluate("[...document.querySelectorAll('#log .msg')].filter(x => x.textContent === 'after reconnect').length"), 1);
-  console.log(JSON.stringify({ browser: "Chrome", firstRenderMs, latestRecords: 200, olderRows: 20, crossTab: true, targetScreenOpen: true, suggestAck: false, performAck: false, reconnectLastEventId: streamHeaders.at(-1), visibleRecorded: true, result: "PASS" }));
+  if (process.env.ASH_PROBE_LARGE === "1") {
+    await evaluate("(() => { window.__fixtureBlobOpens=0; const original=URL.createObjectURL.bind(URL); URL.createObjectURL=(blob)=>{window.__fixtureBlobOpens++;return original(blob)}; return true; })()");
+    for (const [index, mib] of [2, 19].entries()) {
+      const name = `synthetic-${mib}.bin`;
+      const beforeLarge = ledger.lastSeq();
+      await evaluate(`(() => { const bytes = new Uint8Array(${mib} * 1024 * 1024).fill(7); const file = new File([bytes], ${JSON.stringify(name)}, { type: 'application/octet-stream' }); const transfer = new DataTransfer(); transfer.items.add(file); document.querySelector('#file').files = transfer.files; document.querySelector('#f').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); return true; })()`);
+      const accepted = await until(() => ledger.postRead((db) => db.prepare("SELECT seq,id FROM messages WHERE seq>? AND word='say' AND json_extract(body,'$.attachments[0].name')=? ORDER BY seq LIMIT 1").get(beforeLarge, name)), `${mib} MiB ledger acceptance`, 30_000);
+      await until(async () => await evaluate(`[...document.querySelectorAll('#log button.attachment')].some(x => x.textContent === ${JSON.stringify(name)})`), `${mib} MiB summary bubble`, 30_000);
+      await evaluate(`[...document.querySelectorAll('#log button.attachment')].find(x => x.textContent === ${JSON.stringify(name)}).click()`);
+      await until(() => rawReads.some((url) => url.includes(`before=${Number(accepted.seq) + 1}`)), `${mib} MiB authorized raw fetch`, 30_000);
+      await until(async () => await evaluate("window.__fixtureBlobOpens") === index + 1, `${mib} MiB decoded raw attachment`, 30_000);
+      assert.equal(rawStatuses[index], 200);
+    }
+  }
+  if (process.env.ASH_PROBE_SWITCH === "1") {
+    assert.equal(await evaluate("fetch('/?token=probe-owner-B',{credentials:'same-origin'}).then(r=>r.status)"), 200);
+    server.closeAllConnections();
+    await until(async () => await evaluate("[...document.querySelectorAll('#log .msg')].some(x=>x.textContent==='account B 1')"), "new credential history after old high cursor", 30_000);
+    assert.equal(await evaluate("[...document.querySelectorAll('#log .msg')].some(x=>x.textContent?.startsWith('fixture '))"), false);
+    assert.equal(await evaluate("[...document.querySelectorAll('#log .msg')].filter(x=>x.textContent?.startsWith('account B ')).length"), 3);
+    assert.ok(alternateFinite.some((url) => /after=[1-9][0-9]{2,}/.test(url)), "first alternate page used the old high cursor");
+    assert.ok(alternateFinite.some((url) => url.includes("limit=200") && !url.includes("after=")), "client refetched the latest page after scope reset");
+  }
+  console.log(JSON.stringify({ browser: "Chrome", firstRenderMs, latestRecords: 200, olderRows: 20, crossTab: true, targetScreenOpen: true, suggestAck: false, performAck: false, reconnectLastEventId: streamHeaders.at(-1), visibleRecorded: true,
+    ...(process.env.ASH_PROBE_LARGE === "1" ? { largeAttachmentsMiB: [2, 19], authorizedRawReads: rawReads.length } : {}),
+    ...(process.env.ASH_PROBE_SWITCH === "1" ? { sameOriginCredentialSwitch: true, oldSeqAboveNew: ledger.lastSeq() > alternateLedger.lastSeq(), staleCursorPageDiscarded: true } : {}), result: "PASS" }));
 } finally {
   socket?.close();
   socket2?.close();
@@ -148,5 +199,6 @@ try {
   if (browser && browser.exitCode === null && browser.signalCode === null) await new Promise((resolve) => browser.once("exit", resolve));
   if (server) await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
   ledger.close();
+  alternateLedger?.close();
   rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

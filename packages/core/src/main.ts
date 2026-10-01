@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadAuthScopeKey } from "./auth-scope";
 import { DshHost } from "../../dsh-binding/src/host";
 import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
@@ -123,7 +124,7 @@ export async function startOwner(config: Config): Promise<Running> {
       members.register(self);
     }
     if (hostLink) members.registerDevice(hostLink.device());
-    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces });
+    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
     post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
     members.register(post);
     edge.attachPostJournal(post.journal);

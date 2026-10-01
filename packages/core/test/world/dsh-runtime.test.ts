@@ -12,6 +12,82 @@ const install = process.env.ASH_TEST_DSH_ROOT;
 const skip = !install || !existsSync(join(install, "package.json")) ? "set ASH_TEST_DSH_ROOT to an installed runtime" :
   !process.execArgv.includes("--expose-internals") ? "needs node --expose-internals" : false;
 
+type JsonPost = (url: string, init: RequestInit) => Promise<Response>;
+
+/** A lost transport response may be retried only with the identical durable client_id and JSON bytes. */
+async function postWithOneResetRetry(url: string, token: string, payload: { client_id: string; [key: string]: unknown }, post: JsonPost = fetch): Promise<{ response: Response; retried: boolean }> {
+  if (!payload.client_id) throw new TypeError("retry requires a stable client_id");
+  const init: RequestInit = { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(payload) };
+  try { return { response: await post(url, init), retried: false }; }
+  catch (first) {
+    if (!(first instanceof TypeError) || (first as TypeError & { cause?: { code?: string } }).cause?.code !== "ECONNRESET") throw first;
+    try { return { response: await post(url, init), retried: true }; }
+    catch (second) { throw new AggregateError([first, second], "POST retry failed after ECONNRESET"); }
+  }
+}
+
+test("an ambiguous reset retries one identical send and does not retry other failures", async () => {
+  const calls: { body: string; auth: string }[] = [];
+  const body = { to: "agent:main", kind: "request", word: "say", body: { text: "fixture" }, client_id: "one-stable-id" };
+  const reset = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) });
+  const post: JsonPost = async (_url, init) => {
+    calls.push({ body: String(init.body), auth: (init.headers as Record<string, string>).authorization });
+    if (calls.length === 1) throw reset;
+    return new Response(JSON.stringify({ id: "accepted" }), { status: 200 });
+  };
+  const recovered = await postWithOneResetRetry("http://127.0.0.1/fixture", "synthetic", body, post);
+  assert.equal(recovered.response.status, 200);
+  assert.equal(recovered.retried, true);
+  assert.deepEqual(calls, [{ body: JSON.stringify(body), auth: "Bearer synthetic" }, { body: JSON.stringify(body), auth: "Bearer synthetic" }]);
+  let resetCalls = 0;
+  await assert.rejects(postWithOneResetRetry("http://127.0.0.1/fixture", "synthetic", body, async () => { resetCalls++; throw reset; }),
+    (failure: unknown) => failure instanceof AggregateError && failure.errors.length === 2 && failure.errors[0] === reset && failure.errors[1] === reset);
+  assert.equal(resetCalls, 2);
+  await assert.rejects(postWithOneResetRetry("http://127.0.0.1/fixture", "synthetic", { client_id: "" }, post), /stable client_id/);
+  let failedCalls = 0;
+  await assert.rejects(postWithOneResetRetry("http://127.0.0.1/fixture", "synthetic", body, async () => {
+    failedCalls++;
+    throw new TypeError("unrelated failure");
+  }), /unrelated failure/);
+  assert.equal(failedCalls, 1);
+});
+
+test("an accepted send with a lost HTTP acknowledgement retries without a second inbox message", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "send-ack-loss-"));
+  const running = await startOwner({ stateDir, listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+  try {
+    const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const payload = { to: "agent:main", kind: "request", word: "say", body: { text: "synthetic ACK loss" }, client_id: "accepted-before-reset" };
+    const reset = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) });
+    let firstId: string | null = null;
+    let attempts = 0;
+    const post: JsonPost = async (url, init) => {
+      attempts++;
+      const response = await fetch(url, init);
+      if (attempts === 1) {
+        assert.equal(response.status, 200);
+        firstId = (await response.json() as { id: string }).id;
+        throw reset; // The server accepted it, but this caller did not receive the acknowledgement.
+      }
+      return response;
+    };
+    const { response, retried } = await postWithOneResetRetry(`${running.url}/api/send`, token, payload, post);
+    assert.equal(response.status, 200);
+    assert.equal(retried, true);
+    const retriedMessage = await response.json() as { id: string };
+    assert.equal(attempts, 2);
+    assert.equal(retriedMessage.id, firstId);
+    const principal = running.edge.localCaller({ authorization: `Bearer ${token}` })!.transportPrincipal;
+    assert.equal(running.ledger.retryMessage(principal, payload.client_id)?.id, retriedMessage.id);
+    const received = running.ledger.list().filter((message) => message.from === "person:owner" && message.to === "agent:main" && message.word === "say" && message.kind === "request");
+    assert.equal(received.length, 1, JSON.stringify(received.map((message) => ({ id: message.id, kind: message.kind }))));
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && !running.ledger.list().some((message) => message.from === "agent:main" && message.to === "person:owner" && message.word === "say"))
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(running.ledger.list().filter((message) => message.from === "agent:main" && message.to === "person:owner" && message.word === "say" && message.kind === "request").length, 1);
+  } finally { await running.close(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
 test("production DSH main uses one bounded followup, routes its tool once, and splits only assistant text", { skip }, async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-main-"));
   const home = join(root, "home"); mkdirSync(home);
@@ -61,6 +137,7 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     const response = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "synthetic input" }, client_id: "dsh-main-input" }) });
     assert.equal(response.status, 200);
+    await response.json();
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline && running.ledger.list().filter((message) => message.from === "agent:main" && message.to === "person:owner" && message.kind === "request" && message.word === "say").length < 4)
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -76,6 +153,23 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.equal(reacts.length, 2);
     assert.deepEqual(reacts.map((message) => running!.ledger.responseTo(message.id)?.body.ok), [true, false]);
     assert.equal(running.ledger.list().filter((message) => message.word === "turn.end" && message.body.reason === "completed").length, 1);
+    const inline = { name: "fixture.txt", mime_type: "text/plain", data: Buffer.from("SYNTHETIC_FILE_BYTES").toString("base64") };
+    const { response: onlyAttachment, retried } = await postWithOneResetRetry(`${running.url}/api/send`, token,
+      { to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [inline] }, client_id: "dsh-attachment-only" });
+    if (retried) console.error("attachment POST recovered one ECONNRESET with the same client_id");
+    assert.equal(onlyAttachment.status, 200);
+    const accepted = await onlyAttachment.json() as { id: string };
+    assert.deepEqual(running.ledger.byId(accepted.id)?.body, { text: "", attachments: [inline] });
+    const principal = running.edge.localCaller({ authorization: `Bearer ${token}` })!.transportPrincipal;
+    assert.equal(running.ledger.retryMessage(principal, "dsh-attachment-only")?.id, accepted.id);
+    assert.equal(running.ledger.list().filter((message) => message.id === accepted.id).length, 1);
+    const nextDeadline = Date.now() + 15_000;
+    while (Date.now() < nextDeadline && captured.length < 5) await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(captured.length, 5);
+    assert.match(captured[4].user, /fixture\.txt/);
+    assert.match(captured[4].user, /attachment source id=/);
+    assert.ok(!captured[4].user.includes("SYNTHETIC_FILE_BYTES"));
+    assert.ok(!captured[4].user.includes(inline.data));
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));

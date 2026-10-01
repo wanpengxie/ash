@@ -3,14 +3,15 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, closeSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
-import type { Message, ResponseBody, SendRequestV2, WordSpec } from "../../sdk/src/api";
-import { POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER } from "../../sdk/src/api";
+import type { Message, MessageSummaryV2, ResponseBody, ScreenRegistration, SendRequestV2, StreamPageEndV2, WordSpec } from "../../sdk/src/api";
+import { AUTH_SCOPE_EVENT, MESSAGE_SUMMARY_EVENT, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, STREAM_ERROR_EVENT, STREAM_PAGE_END_EVENT, STREAM_RAW_PAGE_BYTES, STREAM_SUMMARY_PAGE_BYTES } from "../../sdk/src/api";
 import { wordContract } from "../../sdk/src/words";
 import { WorldMembers } from "./world/member";
 import { RouterError, WorldRouter, type TrustedRouteContext } from "./world/router";
 import { Ledger } from "./world/ledger";
 import type { PostJournal } from "./world/post-journal";
 import { AVATARS, ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
+import { authScope } from "./auth-scope";
 
 export interface EdgeTokens { api: Record<string, string>; mcp: Record<string, string> }
 export interface EdgeCaller {
@@ -25,7 +26,7 @@ export interface EdgeCaller {
 export interface EdgeRequest { method: string; url: URL; headers: Record<string, string>; body: Buffer | null }
 export type EdgeResponse = { status: number; headers?: Record<string, string>; body?: string | Buffer } |
   { status: number; headers?: Record<string, string>; stream: (write: (chunk: string) => void, onClose: (fn: () => void) => void, end: () => void) => void };
-export interface EdgeOptions { workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
+export interface EdgeOptions { authScopeKey: Buffer; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
 
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
@@ -66,14 +67,14 @@ export class ScreenRegistry {
       if (at >= entry.expiresAt && entry.connections === 0 && !this.pending.get(entry.screen)?.size) this.registrations.delete(token);
     }
   }
-  register(caller: EdgeCaller, labelHint?: string): { screen: string; token: string; label: string } {
+  register(caller: EdgeCaller, auth_scope: string, labelHint?: string): ScreenRegistration {
     if (!caller.ownerProxy || caller.member !== "person:owner") fail(403, "forbidden", "owner screen permission required");
     this.sweep();
     const token = randomBytes(24).toString("base64url");
     const screen = `screen:${randomBytes(9).toString("base64url")}`;
     const label = typeof labelHint === "string" && labelHint.trim() ? labelHint.trim().slice(0, 80) : "Screen";
     this.registrations.set(token, { screen, principal: caller.transportPrincipal, label, expiresAt: this.now() + SCREEN_REGISTRATION_TTL_MS, connections: 0, visibleAt: null });
-    return { screen, token, label };
+    return { screen, token, label, auth_scope };
   }
   verify(caller: EdgeCaller, token: string): Registration {
     this.sweep();
@@ -135,7 +136,8 @@ export class ScreenRegistry {
 export class EdgeRouter {
   readonly screens: ScreenRegistry;
   private postJournal: PostJournal | null = null;
-  constructor(readonly ledger: Ledger, readonly world: WorldRouter, readonly members: WorldMembers, readonly tokens: EdgeTokens, readonly options: EdgeOptions = {}) {
+  constructor(readonly ledger: Ledger, readonly world: WorldRouter, readonly members: WorldMembers, readonly tokens: EdgeTokens, readonly options: EdgeOptions) {
+    if (options.authScopeKey.length !== 32) throw new Error("screen auth scope key required");
     let installed = screenRegistries.get(world);
     if (!installed) {
       const screens = new ScreenRegistry(world, options.clock ?? Date.now, options.screenAckMs ?? OPEN_ACK_WAIT_MS);
@@ -249,40 +251,59 @@ export class EdgeRouter {
     const followRaw = params.get("follow");
     if (followRaw !== null && followRaw !== "true" && followRaw !== "false") fail(400, "bad_request", "invalid follow flag");
     const follow = followRaw !== "false";
+    const summaryRaw = params.get("summary");
+    if (summaryRaw !== null && summaryRaw !== "true" && summaryRaw !== "false") fail(400, "bad_request", "invalid summary flag");
+    const summary = summaryRaw === "true";
     if (afterQuery !== undefined && afterHeader !== undefined && afterQuery !== afterHeader) fail(400, "bad_request", "cursor conflict");
     if (before !== undefined && (afterQuery !== undefined || afterHeader !== undefined || follow)) fail(400, "bad_request", "before requires finite standalone pagination");
     const after = afterQuery ?? afterHeader;
+    const scope = authScope(this.options.authScopeKey, caller.transportPrincipal);
+    const query = before !== undefined ? { before, limit } : after !== undefined ? { after, limit } : { before: Number.MAX_SAFE_INTEGER, limit };
+    // Page preparation is synchronous and bounded, so a raw overflow is HTTP 413
+    // before headers rather than a partial successful event stream.
+    let initial: { page: (Message | MessageSummaryV2)[]; snapshot?: ReturnType<PostJournal["pageSnapshot"]>["snapshot"]; end?: StreamPageEndV2 };
+    try {
+      initial = summary
+        ? this.postJournal?.pageSnapshotBounded(query, () => this.ledger.summaryPage(query)) ?? this.ledger.summaryPage(query)
+        : this.postJournal?.pageSnapshotBounded(query, () => this.ledger.rawPageWithEnd(query)) ?? this.ledger.rawPageWithEnd(query);
+    } catch (error) {
+      if (error instanceof RangeError) fail(413, "too_large", "stream page exceeds byte budget");
+      throw error;
+    }
+    const scopeFrame = `event: ${AUTH_SCOPE_EVENT}\ndata: ${JSON.stringify({ auth_scope: scope })}\n\n`;
+    const snapshotFrame = initial.snapshot ? `event: ${POST_DELIVERY_SNAPSHOT_EVENT}\ndata: ${JSON.stringify(initial.snapshot)}\n\n` : "";
+    const endFrame = initial.end ? `event: ${STREAM_PAGE_END_EVENT}\ndata: ${JSON.stringify(initial.end)}\n\n` : "";
+    const frame = (message: Message | MessageSummaryV2) => `id: ${message.seq}\n${"summary" in message ? `event: ${MESSAGE_SUMMARY_EVENT}\n` : ""}data: ${JSON.stringify(message)}\n\n`;
+    const rowFrames = initial.page.map(frame);
+    const pageBytes = Buffer.byteLength(scopeFrame) + Buffer.byteLength(snapshotFrame) + Buffer.byteLength(endFrame) + rowFrames.reduce((bytes, row) => bytes + Buffer.byteLength(row), 0);
+    if (pageBytes > (summary ? STREAM_SUMMARY_PAGE_BYTES : STREAM_RAW_PAGE_BYTES)) fail(413, "too_large", "stream page control budget exceeded");
     // A finite history page is an audit read, not a live tab. It has no screen identity.
-    const registered = follow ? this.screens.register(caller, params.get("label") ?? undefined) : null;
+    const registered = follow ? this.screens.register(caller, scope, params.get("label") ?? undefined) : null;
     return { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" }, stream: (write, onClose, end) => {
       if (registered) {
         write(`event: ${SCREEN_REGISTRATION_EVENT}\ndata: ${JSON.stringify(registered)}\n\n`);
         this.screens.connect(registered.token);
-      }
-      const send = (message: Message) => {
+      } else write(scopeFrame);
+      const send = (message: Message | MessageSummaryV2) => {
         // Live delivery is a command only for the addressed tab. Finite history
         // pagination remains the owner's complete audit view.
         if (follow && message.word === "ui.open" && message.kind === "request" &&
           (message.to !== registered!.screen || !this.screens.online(registered!.screen))) return;
-        write(`id: ${message.seq}\ndata: ${JSON.stringify(message)}\n\n`);
+        write(frame(message));
       };
-      const writeSnapshot = (snapshot: ReturnType<PostJournal["pageSnapshot"]>["snapshot"]) => {
+      const writeSnapshot = (snapshot: NonNullable<typeof initial.snapshot>) => {
         write(`event: ${POST_DELIVERY_SNAPSHOT_EVENT}\ndata: ${JSON.stringify(snapshot)}\n\n`);
       };
       if (!follow) {
-        const query = before !== undefined ? { before, limit } : after !== undefined ? { after, limit } : { before: this.ledger.lastSeq() + 1, limit };
-        const result = this.postJournal?.pageSnapshot(query);
-        const page = result?.page ?? this.ledger.list(query);
-        if (result) writeSnapshot(result.snapshot);
-        for (const message of page) send(message);
+        if (snapshotFrame) write(snapshotFrame);
+        for (const row of rowFrames) write(row);
+        if (endFrame) write(endFrame);
         end();
         return;
       }
-      const first = after !== undefined ? { after, limit } : { before: this.ledger.lastSeq() + 1, limit };
-      const initial = this.postJournal?.pageSnapshot(first);
-      if (initial) writeSnapshot(initial.snapshot);
-      const start = after ?? (initial?.page.at(0)?.seq ?? this.ledger.list(first).at(0)?.seq ?? 1) - 1;
-      const initialIds = new Set(initial?.snapshot.items.map((item) => item.message_id) ?? []);
+      if (initial.snapshot) writeSnapshot(initial.snapshot);
+      const start = after ?? (initial.page.at(0)?.seq ?? 1) - 1;
+      const initialIds = new Set(initial.snapshot?.items.map((item) => item.message_id) ?? []);
       const liveSend = (message: Message) => {
         if (this.postJournal && message.kind === "request" && message.word === "say" && message.to === "person:owner" &&
           (message.body.kind === "offer" || message.body.kind === "heads_up") && !Object.hasOwn(message.body, "legacy") && !initialIds.has(message.id)) {
@@ -291,13 +312,37 @@ export class EdgeRouter {
         }
         send(message);
       };
-      const stop = this.world.subscribeFrom(start, liveSend);
+      const liveSummary = (seq: number) => {
+        const one = { after: seq - 1, limit: 1 };
+        const result = this.postJournal?.pageSnapshotBounded(one, () => this.ledger.summaryPage(one)) ?? this.ledger.summaryPage(one);
+        const status = "snapshot" in result ? result.snapshot : undefined;
+        const message = result.page[0];
+        if (!message || message.seq !== seq) return;
+        if (message.kind === "request" && message.word === "say" && message.to === "person:owner" &&
+          (message.body_summary.kind === "offer" || message.body_summary.kind === "heads_up") && !Object.hasOwn(message.body_summary, "legacy") && !initialIds.has(message.id) && status)
+          writeSnapshot(status);
+        send(message);
+      };
       let closed = false;
+      let stop = () => {};
+      let beat: ReturnType<typeof setInterval> | null = null;
       const cleanup = () => {
         if (closed) return;
-        closed = true; clearInterval(beat); stop(); this.screens.disconnect(registered!.token);
+        closed = true; if (beat) clearInterval(beat); stop(); this.screens.disconnect(registered!.token);
       };
-      const beat = setInterval(() => {
+      const streamFailure = (error: unknown) => {
+        if (closed) return;
+        write(`event: ${STREAM_ERROR_EVENT}\ndata: ${JSON.stringify({ code: error instanceof RangeError ? "too_large" : "failed" })}\n\n`);
+        cleanup(); end();
+      };
+      let replaying = true;
+      const guardedSummary = (seq: number) => { try { liveSummary(seq); } catch (error) { streamFailure(error); if (replaying) throw error; } };
+      const guardedRaw = (message: Message) => { try { liveSend(message); } catch (error) { streamFailure(error); if (replaying) throw error; } };
+      try { stop = summary ? this.world.subscribeSeqFrom(start, guardedSummary) : this.world.subscribeFrom(start, guardedRaw); }
+      catch (error) { streamFailure(error); return; }
+      replaying = false;
+      if (closed) { stop(); return; }
+      beat = setInterval(() => {
         if (!this.screens.valid(registered!.token)) { cleanup(); end(); return; }
         write(": keepalive\n\n");
       }, this.options.streamBeatMs ?? 25_000);

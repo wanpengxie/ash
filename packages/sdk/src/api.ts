@@ -317,6 +317,75 @@ export interface Message {
   turn?: string;
 }
 
+/** Read-only projection of a ledger row. It is never a Message or a send body. */
+export interface MessageSummaryV2 extends Omit<Message, "body"> {
+  summary: true;
+  body_summary: Record<string, unknown>;
+  inline_attachments?: { index: number; name: string; mime_type: string; size: number }[];
+}
+export const MESSAGE_SUMMARY_EVENT = "message.summary" as const;
+export const AUTH_SCOPE_EVENT = "auth.scope" as const;
+export const STREAM_PAGE_END_EVENT = "stream.page_end" as const;
+export const STREAM_ERROR_EVENT = "stream.error" as const;
+export const STREAM_SUMMARY_PAGE_BYTES = 4 * 1024 * 1024;
+export const STREAM_SUMMARY_ITEM_BYTES = 1024 * 1024;
+export const STREAM_SUMMARY_CONTROL_RESERVE_BYTES = 256 * 1024;
+export const STREAM_RAW_PAGE_BYTES = 32 * 1024 * 1024;
+export interface AuthScopeControlV2 { auth_scope: string }
+export interface StreamPageEndV2 { has_more: boolean; first_seq: number | null; last_seq: number | null }
+export interface StreamErrorV2 { code: "too_large" | "failed" }
+
+const streamObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const streamSeq = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+const streamScope = (value: unknown): value is string => typeof value === "string" && /^v1_[A-Za-z0-9_-]{43}$/.test(value);
+const exactKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
+
+export function isAuthScopeControlV2(value: unknown): value is AuthScopeControlV2 {
+  return streamObject(value) && exactKeys(value, ["auth_scope"]) && streamScope(value.auth_scope);
+}
+
+export function isStreamPageEndV2(value: unknown): value is StreamPageEndV2 {
+  if (!streamObject(value) || !exactKeys(value, ["has_more", "first_seq", "last_seq"]) || typeof value.has_more !== "boolean") return false;
+  return value.first_seq === null && value.last_seq === null && value.has_more === false || streamSeq(value.first_seq) && streamSeq(value.last_seq) && value.first_seq <= value.last_seq;
+}
+
+export function isStreamErrorV2(value: unknown): value is StreamErrorV2 {
+  return streamObject(value) && exactKeys(value, ["code"]) && (value.code === "too_large" || value.code === "failed");
+}
+
+export function isMessageSummaryV2(value: unknown): value is MessageSummaryV2 {
+  if (!streamObject(value) || !exactKeys(value, ["seq", "id", "ts", "from", "to", "kind", "word", "reply_to", "origin", "turn", "summary", "body_summary", "inline_attachments"]) || value.summary !== true || Object.hasOwn(value, "body") || !streamSeq(value.seq) || typeof value.id !== "string" || !value.id || !Number.isSafeInteger(value.ts) || typeof value.from !== "string" || !value.from || !(value.to === null || typeof value.to === "string") || !["request", "response", "event"].includes(String(value.kind)) || typeof value.word !== "string" || !value.word || !streamObject(value.body_summary)) return false;
+  if (value.reply_to !== undefined && (typeof value.reply_to !== "string" || !value.reply_to)) return false;
+  if (value.turn !== undefined && (typeof value.turn !== "string" || !value.turn)) return false;
+  if (value.origin !== undefined && (!streamObject(value.origin) || !exactKeys(value.origin, ["screen", "label"]) || typeof value.origin.screen !== "string" || typeof value.origin.label !== "string")) return false;
+  if (value.inline_attachments !== undefined) {
+    if (!Array.isArray(value.inline_attachments) || !value.inline_attachments.every((item) => streamObject(item) && exactKeys(item, ["index", "name", "mime_type", "size"]) && Number.isSafeInteger(item.index) && typeof item.index === "number" && item.index >= 0 && typeof item.name === "string" && item.name.length > 0 && typeof item.mime_type === "string" && item.mime_type.length > 0 && Number.isSafeInteger(item.size) && typeof item.size === "number" && item.size >= 0)) return false;
+    if (new Set(value.inline_attachments.map((item) => item.index)).size !== value.inline_attachments.length) return false;
+  }
+  if (Object.hasOwn(value.body_summary, "attachments") && (!Array.isArray(value.body_summary.attachments) || value.body_summary.attachments.some((item) => !streamObject(item) || Object.hasOwn(item, "data")))) return false;
+  return true;
+}
+
+/** Counts UTF-8 SSE bytes, not JavaScript code units; rows must be visited in page order. */
+export class SummaryPageBudgetV2 {
+  private readonly rows: number[] = [];
+  private bytes = STREAM_SUMMARY_CONTROL_RESERVE_BYTES;
+  private full = false;
+  tryInclude(seq: number, encodedSseBytes: number): boolean {
+    if (!streamSeq(seq) || !Number.isSafeInteger(encodedSseBytes) || encodedSseBytes <= 0) throw new TypeError("invalid summary row budget input");
+    if (encodedSseBytes > STREAM_SUMMARY_ITEM_BYTES) throw new RangeError("summary row exceeds 1 MiB");
+    if (this.full) return false;
+    if (this.rows.length >= 1000 || this.bytes + encodedSseBytes > STREAM_SUMMARY_PAGE_BYTES) { this.full = true; return false; }
+    this.rows.push(seq);
+    this.bytes += encodedSseBytes;
+    return true;
+  }
+  end(hasMore: boolean): StreamPageEndV2 {
+    if (hasMore && !this.rows.length || this.full && !hasMore) throw new RangeError("invalid summary page continuation");
+    return { has_more: hasMore, first_seq: this.rows.length ? Math.min(...this.rows) : null, last_seq: this.rows.length ? Math.max(...this.rows) : null };
+  }
+}
+
 /** Authoritative pending-delivery count emitted to the owner by the delivery service. */
 export interface PostChangedBody { held: number }
 /** Dropped suppresses only a repeated presentation; the original owner message remains in the ledger. */
@@ -440,9 +509,18 @@ export type ScreenUiOpenAnswerV2 = SendRequestV2 & {
   reply_to: string;
   body: { ok: true; result: { opened: boolean } };
 };
-export interface StreamQueryV2 { after?: number; before?: number; limit?: number; follow?: boolean; screen?: string; label?: string }
+export interface StreamQueryV2 { after?: number; before?: number; limit?: number; follow?: boolean; screen?: string; label?: string; summary?: boolean }
 /** A live stream control frame, not a ledger message or cursor-bearing SSE event. */
-export interface ScreenRegistration { screen: string; token: string; label: string }
+/** Opaque credential scope for browser-local pending data; never an authorization proof. */
+export interface ScreenRegistration { screen: string; token: string; label: string; auth_scope: string }
+export function isScreenRegistration(value: unknown): value is ScreenRegistration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const frame = value as Record<string, unknown>;
+  return typeof frame.screen === "string" && /^screen:[A-Za-z0-9_-]+$/.test(frame.screen) &&
+    typeof frame.token === "string" && /^[A-Za-z0-9_-]{32,}$/.test(frame.token) &&
+    typeof frame.label === "string" && frame.label.length > 0 && frame.label.length <= 80 &&
+    typeof frame.auth_scope === "string" && /^v1_[A-Za-z0-9_-]{43}$/.test(frame.auth_scope);
+}
 export const SCREEN_REGISTRATION_EVENT = "screen.registered" as const;
 /** Browser proof survives the gateway's reserved x-ash-* header stripping. */
 export const SCREEN_TOKEN_HEADER = "Ash-Screen" as const;

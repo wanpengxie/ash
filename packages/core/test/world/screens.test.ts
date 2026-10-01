@@ -9,7 +9,7 @@ import { WorldMembers } from "../../src/world/member";
 import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type EdgeResponse } from "../../src/server";
 import { OwnerMember } from "../../src/members/owner";
 import { PostPresenceMember } from "../../src/members/post";
-import { SCREEN_REGISTRATION_TTL_MS } from "../../../sdk/src/api";
+import { SCREEN_REGISTRATION_TTL_MS, isScreenRegistration } from "../../../sdk/src/api";
 
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-test", local: true, remote: false, ownerProxy: true, transport: "api" };
 const agent: TrustedRouteContext = { member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false, transport: "agent" };
@@ -23,7 +23,7 @@ async function fixture(clock?: () => number, ackMs = 100, streamBeatMs?: number)
   const world = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(world);
   members.register(new OwnerMember("Owner", ledger));
-  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: {} }, { clock, screenAckMs: ackMs, streamBeatMs });
+  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: {} }, { clock, screenAckMs: ackMs, streamBeatMs, authScopeKey: Buffer.alloc(32, 1) });
   members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
   return { ledger, world, members, edge };
 }
@@ -131,9 +131,32 @@ async function tab(edge: EdgeRouter, label: string) {
   response.stream((chunk) => { output += chunk; }, (cleanup) => { close = cleanup; }, () => {});
   const match = /^event: screen\.registered\ndata: (.+)\n\n/.exec(output);
   assert.ok(match);
-  const registration = JSON.parse(match[1]) as { screen: string; token: string; label: string };
+  const registration = JSON.parse(match[1]) as { screen: string; token: string; label: string; auth_scope: string };
   return { ...registration, output: () => output, close };
 }
+
+test("authenticated live frames expose a stable opaque credential scope, not a tab or caller-supplied value", async () => {
+  const f = await fixture();
+  try {
+    const a = await tab(f.edge, "One");
+    const b = await tab(f.edge, "Two");
+    assert.ok(isScreenRegistration(a));
+    assert.ok(isScreenRegistration(b));
+    assert.notEqual(a.token, b.token);
+    assert.equal(a.auth_scope, b.auth_scope);
+    assert.ok(!a.auth_scope.includes("owner-test"));
+    const other = await f.edge.handle(req("GET", "/api/stream?follow=true&auth_scope=forged"), { ...owner, transportPrincipal: "other-credential" });
+    assert.equal(other.status, 200);
+    assert.ok("stream" in other);
+    let output = "";
+    let close = () => {};
+    other.stream((chunk) => { output += chunk; }, (cleanup) => { close = cleanup; }, () => {});
+    const frame = JSON.parse(/^event: screen\.registered\ndata: (.+)\n\n/.exec(output)![1]);
+    assert.ok(isScreenRegistration(frame));
+    assert.notEqual(frame.auth_scope, a.auth_scope);
+    close(); a.close(); b.close();
+  } finally { f.ledger.close(); }
+});
 
 test("two live tabs receive only their own ui.open command; only the target may ACK actual navigation", async () => {
   const f = await fixture();
@@ -294,7 +317,7 @@ test("an unanswered ask remains answerable after router restart without a second
   const world = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(world);
   members.register(new OwnerMember("Owner", ledger));
-  const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} });
+  const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
   const screen = await tab(edge, "After restart");
   try {
     await world.recover();
