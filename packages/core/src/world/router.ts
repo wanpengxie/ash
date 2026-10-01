@@ -15,7 +15,7 @@ export interface TrustedRouteContext extends AuthenticatedCallerContext {
   screenLabel?: string;
   turn?: string;
 }
-export interface RouteHandlerContext { signal: AbortSignal; recovered: boolean }
+export interface RouteHandlerContext { signal: AbortSignal; recovered: boolean; /** Server-stamped acceptance context; never supplied by a word body. */ caller?: Readonly<RequestContextSnapshot> }
 export interface RouteEndpoint {
   member: string;
   spec: WordSpec;
@@ -96,6 +96,19 @@ export class WorldRouter {
   private gate: GateHook | null = null;
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
+
+  /** Recheck a stored delegate against the current credential/grant authority. */
+  async currentlyAuthorized(request: Message, caller: RequestContextSnapshot): Promise<boolean> {
+    try { return Boolean(await this.authorizeRecovery(detached(request), detached(caller))); }
+    catch { return false; }
+  }
+
+  /** Internal preflight for a future request; actual dispatch validates again. */
+  acceptsRequest(to: string, word: string, body: unknown): boolean {
+    const endpoint = this.endpoint(to, word);
+    try { return Boolean(endpoint && endpoint.direction !== "out" && endpoint.spec.kind === "request" && endpoint.validateInput(body)); }
+    catch { return false; }
+  }
 
   register(endpoint: RouteEndpoint): void {
     this.registerBatch([endpoint]);
@@ -277,7 +290,7 @@ export class WorldRouter {
     }
     this.publish(message);
     if (request.kind === "event") {
-      if (endpoint) void Promise.resolve(endpoint.handle(detached(message), { signal: new AbortController().signal, recovered: false })).catch(() => {});
+      if (endpoint) void Promise.resolve(endpoint.handle(detached(message), { signal: new AbortController().signal, recovered: false, caller: Object.freeze(contextSnapshot(ctx)) })).catch(() => {});
       return { id: message.id, seq: message.seq };
     }
     if (!endpoint) throw new RouterError("not_found", "recipient word not found");
@@ -381,7 +394,7 @@ export class WorldRouter {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
         pending.phase = "dispatching";
       }
-      const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered });
+      const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered, caller: Object.freeze(detached(pending.context)) });
       if (pending.settled || result === undefined) return;
       if (result.ok && endpoint.validateResult && !endpoint.validateResult(result.result)) { this.finish(pending, errors("failed", "handler returned invalid result"), request.to!, false); return; }
       this.finish(pending, result, request.to!, false);

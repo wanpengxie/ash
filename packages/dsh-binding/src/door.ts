@@ -22,6 +22,8 @@ export interface DoorOptions {
   managedRoot: string;
   /** Core ledger, inbox, credentials, and configuration roots, even if nested in workspace. */
   protectedRoots: readonly string[];
+  /** Production first stage exposes only the five owned tools. Audited native mode remains test-only pending full routing. */
+  nativeMode?: "disabled" | "audited";
   /** The installed runtime's scope chain; no guessed agent-id inheritance. */
   scopeChainOf(agent: object): readonly object[];
 }
@@ -114,11 +116,11 @@ export class DshDoor {
   bind(agent: DoorAgent): void {
     if (this.binding) throw new Error("door is already bound to a root agent");
     const natives = new Map<string, ToolDefinition>();
-    for (const name of NATIVE) {
+    for (const name of this.options.nativeMode === "audited" ? NATIVE : []) {
       const definition = this.options.tools.get(name);
       if (definition) natives.set(name, definition);
     }
-    for (const name of REQUIRED) if (!natives.has(name)) throw new Error(`required native tool unavailable: ${name}`);
+    if (this.options.nativeMode === "audited") for (const name of REQUIRED) if (!natives.has(name)) throw new Error(`required native tool unavailable: ${name}`);
     const binding: Binding = { agent, natives, definitions: new Map(), active: null, disposers: [] };
     try {
       for (const definition of this.definitions()) {

@@ -8,10 +8,10 @@ import { startOwner } from "../../src/main";
 import { AgentInbox } from "../../src/world/agent-inbox";
 import { Ledger } from "../../src/world/ledger";
 
-test("production DSH configuration fails before migration rather than falling back to echo", async () => {
+test("production DSH configuration without an installation fails before migration rather than falling back to echo", async () => {
   const root = mkdtempSync(join(tmpdir(), "ash-v2-boot-"));
   const stateDir = join(root, "state");
-  await assert.rejects(startOwner({ stateDir, agents: [{ id: "agent:main", runtime: "dsh" }] }), /ASH-206/);
+  await assert.rejects(startOwner({ stateDir, agents: [{ id: "agent:main", runtime: "dsh" }] }), /installed root and existing home workspace/);
   assert.equal(existsSync(stateDir), false);
 });
 

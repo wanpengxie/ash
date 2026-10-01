@@ -4,9 +4,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DshHost } from "../../dsh-binding/src/host";
+import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember, type AgentTurnRunner } from "./members/agent";
+import { ClockMember } from "./members/clock";
 import { OwnerMember } from "./members/owner";
 import { PostPresenceMember } from "./members/post";
 import { createSelfMember, type SelfMember } from "./members/self";
@@ -24,6 +27,7 @@ export interface Config {
   stateDir: string;
   workspaces?: Record<string, string>;
   agents?: { id: "agent:main"; name?: string; runtime: "echo" | "dsh" }[];
+  dsh?: { root: string; home?: string; env?: Record<string, string> };
   host?: HostConnection & { coreToken?: string };
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
@@ -61,6 +65,7 @@ export interface Running {
   members: WorldMembers;
   edge: EdgeRouter;
   link: OwnerLink | null;
+  dsh: DshHost | null;
   close(): Promise<void>;
 }
 
@@ -68,9 +73,11 @@ export interface Running {
 export async function startOwner(config: Config): Promise<Running> {
   const agents = config.agents ?? [{ id: "agent:main" as const, runtime: "dsh" as const }];
   if (agents.length !== 1 || agents[0].id !== "agent:main") throw new Error("v2 requires one real agent:main member");
-  if (agents[0].runtime === "dsh") throw new Error("DSH turn runner is not available until ASH-206; no database was opened");
-  if (agents[0].runtime !== "echo") throw new Error("unsupported agent runtime");
+  if (agents[0].runtime !== "echo" && agents[0].runtime !== "dsh") throw new Error("unsupported agent runtime");
   if (!config.stateDir) throw new Error("stateDir is required");
+  if (agents[0].runtime === "dsh" && (!config.dsh?.root || !config.workspaces?.home || !existsSync(join(config.dsh.root, "package.json")) || !existsSync(config.workspaces.home))) {
+    throw new Error("DSH runtime requires an installed root and existing home workspace; no database was opened");
+  }
   const [host, portText] = (config.listen ?? "127.0.0.1:4700").split(":");
   const port = Number(portText);
   if (!host || !Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error("invalid listen address");
@@ -80,6 +87,8 @@ export async function startOwner(config: Config): Promise<Running> {
   const tokens = loadTokens(config);
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
   let agent: ReturnType<typeof createAgentMember> | null = null;
+  let clock: ClockMember | null = null;
+  let dsh: DshHost | null = null;
   let self: SelfMember | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
@@ -95,8 +104,14 @@ export async function startOwner(config: Config): Promise<Running> {
     });
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
-    agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner: echoRunner(), name: agents[0].name });
+    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : echoRunner();
+    agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name });
     members.register(agent);
+    clock = new ClockMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"),
+      isPaused: () => clock!.journal.isPaused(),
+      ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
+    members.register(clock);
     if (config.workspaces?.home) {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
       members.register(self);
@@ -117,7 +132,14 @@ export async function startOwner(config: Config): Promise<Running> {
     agent.prepareRecovery();
     await self?.prepareRecovery();
     await world.recover();
+    if (dsh) {
+      await dsh.boot();
+      await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
+        protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
+        nativeMode: "disabled" });
+    }
     await agent.start();
+    await clock.start();
     server = await startEdgeServer(edge, host, port);
     const address = server.address();
     const url = `http://${host}:${typeof address === "object" && address ? address.port : port}`;
@@ -125,15 +147,15 @@ export async function startOwner(config: Config): Promise<Running> {
     writeFileSync(join(config.stateDir, "ui-url"), `${url}/?token=${ownerToken}\n`, { mode: 0o600 });
     hostLink?.startHealthChecks(members);
     link?.enable();
-    return { url, tokens, ledger, world, members, edge, link, async close() {
+    return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await agent?.close(); await self?.close(); ledger.close();
+      await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await agent?.close(); await self?.close(); ledger.close();
+    await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

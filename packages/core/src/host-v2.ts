@@ -89,6 +89,12 @@ export class HostDeviceLink {
     if (this.closed || this.refresh) return;
     this.refresh = setInterval(() => void this.refreshManifest(members), 60_000);
   }
+  /** Confirm the Android host has replaced or cancelled its one core wake alarm. */
+  async scheduleAlarm(at: number | null): Promise<void> {
+    if (this.closed || (at !== null && (!Number.isSafeInteger(at) || at < 0))) throw new TypeError("invalid host alarm time");
+    const result = await this.request("POST", "/alarm", { at }) as { ok?: unknown };
+    if (!result || result.ok !== true) throw new Error("host alarm acknowledgement unavailable");
+  }
   async signer(): Promise<Signer> {
     const key = await this.request("GET", "/key") as { id: string; publicKey: string };
     if (!key || typeof key.id !== "string" || typeof key.publicKey !== "string") throw new TypeError("invalid host gateway key");
