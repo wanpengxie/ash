@@ -12,7 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AshEvent } from "../../sdk/src/api";
-import { AshClient } from "../../sdk/src/client";
+import { AshClient } from "../../core/test/legacy/client";
 import { OWNER } from "../../core/src/core";
 import { type Running, startOwner } from "../../core/test/legacy/main";
 

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { API_VERSION, type AshEvent } from "../../sdk/src/api";
-import { AshClient } from "../../sdk/src/client";
+import { AshClient } from "./legacy/client";
 import { OWNER } from "../src/core";
 import { type Running, startOwner } from "./legacy/main";
 
