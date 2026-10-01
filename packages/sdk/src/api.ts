@@ -399,6 +399,41 @@ export interface PostDeliverySnapshotV2 {
   items: { message_id: string; state: PostDeliveryState; version_seq: number }[];
 }
 export const POST_DELIVERY_SNAPSHOT_EVENT = "post.delivery.snapshot" as const;
+/** Read-only owner-facing alias; never a bearer token or credential digest. */
+export interface GateRuleItemV2 {
+  id: string;
+  subject: string;
+  device_id?: string;
+  capability_id?: string;
+  to: string;
+  word: string;
+  object_pattern: string;
+  risk: "outward" | "structure";
+  contract_fingerprint: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at?: number;
+}
+/** Device access is distinct from an approval rule and never waives a risk ask. */
+export interface GateAccessItemV2 {
+  id: string;
+  member: string;
+  scope: string;
+  source: "current" | "legacy";
+  created_at: number;
+  expires_at: number;
+  revoked_at?: number;
+}
+export type GateHistoryDecisionV2 =
+  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule"
+  | "legacy_unresolved" | "legacy_approved" | "legacy_denied" | "legacy_expired" | "legacy_cancelled"
+  | "legacy_access_imported" | "legacy_access_expired" | "legacy_access_invalid";
+export type GateHistoryItemV2 =
+  | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
+      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule"; at: number; rule_id?: string; source: "current" }
+  | { id: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
+      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule">;
+      at: number; legacy_scope?: string; source: "legacy" };
 /** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
 export interface LegacyConversationMetadata {
   seq: number;

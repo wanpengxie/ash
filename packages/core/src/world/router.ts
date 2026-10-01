@@ -1,4 +1,5 @@
 import Ajv from "ajv";
+import { createHash } from "node:crypto";
 import Ajv2019 from "ajv/dist/2019.js";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
@@ -36,6 +37,17 @@ export interface DeviceCapability {
 export interface GateDecision { allow: boolean; by?: "rule" | "answer" | "timeout"; reason?: string }
 export type GateHook = (request: Message, spec: WordSpec, caller: RequestContextSnapshot, signal: AbortSignal) => Promise<GateDecision>;
 export type RecoveryAuthorizer = (request: Message, caller: RequestContextSnapshot) => boolean | Promise<boolean>;
+/** Not a send envelope: only the bound DSH Door may construct this after pre-execute provenance. */
+export interface InternalApprovalIngress {
+  sessionId: string;
+  turn: string;
+  callId: string;
+  toolName: string;
+  contractFingerprint: string;
+  signal: AbortSignal;
+  stillValid: () => boolean;
+}
+export type InternalApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 type Subscriber = (message: Message) => void;
 interface Registered extends RouteEndpoint { validateInput: (value: unknown) => boolean; validateResult?: (value: unknown) => boolean }
 interface Pending {
@@ -60,6 +72,14 @@ const SCREEN = /^screen:[A-Za-z0-9_-]+$/;
 const LOCAL_SELF_MUTATIONS = new Set(["write", "append", "apply_plan", "rollback"]);
 const errors = (code: MessageErrorCode, message: string): ResponseBody => ({ ok: false, error: { code, message } });
 const detached = <T>(value: T): T => structuredClone(value);
+const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+  : value && typeof value === "object" ? `{${Object.keys(value).sort().filter((key) => (value as Record<string, unknown>)[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
+const hash = (value: unknown): string => createHash("sha256").update(canonical(value)).digest("hex");
+const ISOLATED_MESSAGE_SCHEMA: JsonSchema = { type: "object", properties: {
+  recipient_id: { type: "string", format: "uuid" }, text: { type: "string", minLength: 1 },
+}, required: ["recipient_id", "text"], additionalProperties: false } as unknown as JsonSchema;
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   transportPrincipal: ctx.transportPrincipal,
@@ -94,8 +114,69 @@ export class WorldRouter {
   private readonly pending = new Map<string, Pending>();
   private readonly subscribers = new Set<Subscriber>();
   private gate: GateHook | null = null;
+  private durableGate = false;
+  private isolatedFakeAlways = false;
+  private readonly internalApprovals = new Map<string, (outcome: InternalApprovalOutcome | "approved") => void>();
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
+
+  /** A one-shot DSH waterfall bridge. No public endpoint or Member owns internal.approval. */
+  async requestInternalApproval(input: InternalApprovalIngress): Promise<InternalApprovalOutcome> {
+    if (!this.durableGate || input.signal.aborted || !input.stillValid() || !this.endpoint("person:owner", "ask")) return "unavailable";
+    let parent: Message;
+    try { parent = this.ledger.acceptInternalApproval({ sessionId: input.sessionId, turn: input.turn, callId: input.callId,
+      toolName: input.toolName, contractFingerprint: input.contractFingerprint, deadlineAt: Date.now() + 600_000 }); }
+    catch { return "unavailable"; }
+    this.publish(parent);
+    const outcome = new Promise<InternalApprovalOutcome | "approved">((resolve) => this.internalApprovals.set(parent.id, resolve));
+    let askId: string | null = null;
+    const abort = () => { if (askId) this.cancel([askId]); else {
+      const response = this.ledger.failInternalApproval(parent.id);
+      if (response) this.publish(response);
+      this.internalApprovals.get(parent.id)?.("cancelled");
+    } };
+    input.signal.addEventListener("abort", abort, { once: true });
+    try {
+      if (input.signal.aborted || !input.stillValid()) { abort(); return "cancelled"; }
+      const accepted = this.ledger.trackedRequests().find((item) => item.message.id === parent.id);
+      if (!accepted) return "unavailable";
+      // The ask shares the parent's durable deadline. Recomputing from parent.ts
+      // can exceed it by even one millisecond and sporadically reject beginGate.
+      const expiresAt = accepted.deadlineAt;
+      const started = this.ledger.beginGate(parent.id, { subject: hash({ member: "agent:main", sessionId: input.sessionId }),
+        risk: "structure", contractFingerprint: input.contractFingerprint, expiresAt,
+        askBody: { title: "Confirm tool", detail: `Allow ${input.toolName} once?`,
+          options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+          source: { word: "internal.approval", to: "service:gate", body_preview: "DSH tool request" } } });
+      if (!started) return "unavailable";
+      askId = started.ask.id;
+      this.publish(started.ask); this.publish(started.event);
+      this.activateGateAsk(started.ask);
+      if (input.signal.aborted) abort();
+      const decision = await outcome;
+      if (decision !== "approved") return decision;
+      if (input.signal.aborted || !input.stillValid()) return "cancelled";
+      const tracked = this.ledger.trackedRequests().find((item) => item.message.id === parent.id);
+      if (!tracked || !await this.currentlyAuthorized(parent, tracked.context) || input.signal.aborted || !input.stillValid()) return "unavailable";
+      if (!this.ledger.dispatchAllowedGate(parent.id, hash({ member: "agent:main", sessionId: input.sessionId }), input.contractFingerprint))
+        return "unavailable";
+      const response = this.ledger.settle(parent.id, "service:gate", { ok: true, result: { outcome: "allowed-once" } }).message;
+      this.publish(response);
+      return "allowed-once";
+    } catch {
+      const response = this.ledger.failInternalApproval(parent.id);
+      if (response) this.publish(response);
+      return "unavailable";
+    } finally {
+      input.signal.removeEventListener("abort", abort);
+      if (!this.ledger.responseTo(parent.id)) {
+        if (askId && this.pending.has(askId)) this.cancel([askId]);
+        const response = this.ledger.failInternalApproval(parent.id);
+        if (response) this.publish(response);
+      }
+      this.internalApprovals.delete(parent.id);
+    }
+  }
 
   /** Recheck a stored delegate against the current credential/grant authority. */
   async currentlyAuthorized(request: Message, caller: RequestContextSnapshot): Promise<boolean> {
@@ -198,6 +279,12 @@ export class WorldRouter {
   }
 
   setGate(gate: GateHook): void { this.gate = gate; }
+  /** Production gate is ledger-backed; fake GateHook remains only for isolated router tests. */
+  enableDurableGate(options: { reviewedIsolatedFakeMessageSend?: boolean } = {}): void {
+    if (this.gate) throw new TypeError("cannot combine durable gate with fake gate hook");
+    this.durableGate = true;
+    this.isolatedFakeAlways = options.reviewedIsolatedFakeMessageSend === true;
+  }
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
 
   /** Publish a post event only after its journal transition and event have committed. */
@@ -291,7 +378,12 @@ export class WorldRouter {
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
       fail("forbidden", "only owner may inspect or start background work");
-    if (request.to === "service:gate" && request.word === "rules.revoke" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "rule revocation requires local owner");
+    if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
+      fail("forbidden", "only owner may inspect or start background work");
+    if (request.to === "service:gate" && from !== "person:owner") fail("forbidden", "gate inspection requires owner");
+    if (request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
+      (ctx.remote || !ctx.local || !ctx.ownerProxy || (request.word.startsWith("access.") && !["api", "web_ui"].includes(ctx.transport))))
+      fail("forbidden", "gate change requires current local owner");
     if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
     if ((request.word === "typing" || request.word === "visible") && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
@@ -335,7 +427,11 @@ export class WorldRouter {
     if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
-    const timeoutMs = endpoint?.spec.timeout_ms ?? 60_000;
+    if (this.durableGate && request.kind === "request" && request.to?.startsWith("device:") &&
+      !this.ledger.gateDeviceAccess(from, request.to, request.word)) fail("forbidden", "current device access grant unavailable");
+    // A risky request and its owner approval share one persisted total budget.
+    // Explicit endpoint deadlines remain authoritative, even when shorter.
+    const timeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint?.spec.risk && endpoint.spec.risk !== "none" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
     const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
@@ -364,7 +460,7 @@ export class WorldRouter {
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === message.id)!;
     const pending = makePending(message, endpoint, tracked.context, tracked.deadlineAt, "accepted");
     this.pending.set(message.id, pending);
-    if (Date.now() >= pending.deadlineAt) this.finish(pending, this.deadlineBody(pending), message.to!, true);
+    if (Date.now() >= pending.deadlineAt) this.expirePending(pending);
     else { this.armTimeout(pending); void this.dispatch(pending, false); }
     const reply = request.wait ? await pending.reply : undefined;
     return { id: message.id, seq: message.seq, ...(reply ? { reply } : {}) };
@@ -388,7 +484,7 @@ export class WorldRouter {
     const pending = this.pending.get(original.id);
     if (!pending || pending.settled) throw new RouterError("bad_request", "request no longer accepting replies");
     if (Date.now() >= pending.deadlineAt) {
-      this.finish(pending, this.deadlineBody(pending), original.to!, true);
+      this.expirePending(pending);
       throw new RouterError("bad_request", "request expired before reply");
     }
     if (original.to === "person:owner" && original.word === "ask") {
@@ -397,6 +493,14 @@ export class WorldRouter {
       if (typeof choice !== "string" || !Array.isArray(options) || !options.some((option) => plainObject(option) && option.id === choice)) fail("bad_request", "ask choice was not offered");
     }
     if (signal?.aborted) fail("cancelled", "send aborted before settlement");
+    const gateCase = this.durableGate && original.from === "service:gate" ? this.ledger.gateCaseByAsk(original.id) : null;
+    if (gateCase) {
+      const choice = body.ok && plainObject(body.result) ? body.result.choice : undefined;
+      if (choice !== "once" && choice !== "always" && choice !== "deny") throw new RouterError("bad_request", "gate choice is not available");
+      const response = this.settleGateAsk(pending, choice, "answer", origin, retry);
+      if (!response) throw new RouterError("bad_request", "gate ask already settled");
+      return { id: response.id, seq: response.seq };
+    }
     const result = this.finish(pending, body, from, false, origin, retry);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
@@ -412,7 +516,7 @@ export class WorldRouter {
     pending.timer = setTimeout(() => {
       if (pending.settled) return;
       if (Date.now() < pending.deadlineAt) { this.armTimeout(pending); return; }
-      this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
+      this.expirePending(pending);
     }, remaining);
   }
 
@@ -436,11 +540,124 @@ export class WorldRouter {
     this.publish(event);
   }
 
+  private gateIdentity(pending: Pending): { subject: string; fingerprint: string } {
+    const { request, endpoint, context } = pending;
+    return {
+      subject: hash({ member: request.from, principal: context.transportPrincipal, pairedDeviceId: context.pairedDeviceId ?? null }),
+      fingerprint: hash({ to: request.to, word: request.word, spec: endpoint.spec }),
+    };
+  }
+
+  private reviewedObject(pending: Pending): string | null {
+    const { request, endpoint } = pending;
+    if (!this.isolatedFakeAlways || request.to !== "device:isolated" || request.word !== "message.send" ||
+      endpoint.spec.risk !== "outward" || canonical(endpoint.spec.input_schema) !== canonical(ISOLATED_MESSAGE_SCHEMA)) return null;
+    const recipient = request.body.recipient_id;
+    return typeof recipient === "string" && CANONICAL_UUID.test(recipient.toLowerCase()) ? recipient.toLowerCase() : null;
+  }
+
+  private activateGateAsk(ask: Message): void {
+    const endpoint = this.endpoint("person:owner", "ask");
+    const tracked = this.ledger.trackedRequests().find((item) => item.message.id === ask.id);
+    if (!endpoint || !tracked || endpoint.spec.kind !== "request" || !endpoint.validateInput(ask.body))
+      throw new TypeError("owner ask endpoint unavailable after gate commit");
+    const pending = makePending(ask, endpoint, tracked.context, tracked.deadlineAt, "accepted");
+    this.pending.set(ask.id, pending);
+    this.armTimeout(pending);
+    void this.dispatch(pending, false);
+  }
+
+  private adoptGateTerminal(pending: Pending, response: Message, abort: boolean): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    if (pending.timer) clearTimeout(pending.timer);
+    this.pending.delete(pending.request.id);
+    if (abort) {
+      pending.controller.abort();
+      try { pending.endpoint.cancel?.(pending.request.id); } catch { /* no handler may block settlement */ }
+    }
+    pending.resolve(response);
+  }
+
+  private settleGateAsk(pending: Pending, choice: "once" | "always" | "deny", cause: "answer" | "deadline" | "cancelled",
+    origin?: Message["origin"], retry?: { transportPrincipal: string; clientId: string }): Message | null {
+    const outcome = this.ledger.settleGateAsk(pending.request.id, choice, cause, origin, retry);
+    if (!outcome) return null;
+    this.adoptGateTerminal(pending, outcome.askResponse, cause !== "answer");
+    this.publish(outcome.askResponse);
+    if (outcome.event) this.publish(outcome.event);
+    const originalId = this.ledger.gateCaseByAsk(pending.request.id)!.requestId;
+    const internal = this.internalApprovals.get(originalId);
+    if (internal) internal(cause === "cancelled" ? "cancelled" : cause === "deadline" ? "unavailable"
+      : choice === "deny" ? "rejected" : "approved");
+    const original = this.pending.get(originalId);
+    if (outcome.originalResponse) {
+      if (original) this.adoptGateTerminal(original, outcome.originalResponse, true);
+      this.publish(outcome.originalResponse);
+    } else if (original && !original.settled) void this.dispatch(original, false);
+    return outcome.askResponse;
+  }
+
+  private expirePending(pending: Pending): void {
+    const gateAsk = pending.request.from === "service:gate" && pending.request.to === "person:owner" && pending.request.word === "ask"
+      ? this.ledger.gateCaseByAsk(pending.request.id) : null;
+    const gateOriginal = this.durableGate && pending.phase === "gate_waiting" ? this.ledger.gateCase(pending.request.id) : null;
+    if (gateAsk && gateAsk.decision === "waiting") { this.settleGateAsk(pending, "deny", "deadline"); return; }
+    if (gateOriginal?.decision === "waiting") {
+      const ask = this.pending.get(gateOriginal.askId);
+      if (ask) { this.settleGateAsk(ask, "deny", "deadline"); return; }
+      const outcome = this.ledger.settleGateAsk(gateOriginal.askId, "deny", "deadline");
+      if (outcome?.originalResponse) {
+        this.publish(outcome.askResponse);
+        if (outcome.event) this.publish(outcome.event);
+        this.adoptGateTerminal(pending, outcome.originalResponse, true);
+        this.publish(outcome.originalResponse);
+        return;
+      }
+      // Missing owner ask is corrupt state, never a reason to execute the request.
+    }
+    this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
+  }
+
   private async dispatch(pending: Pending, recovered: boolean): Promise<void> {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
-      if (pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
+      const gateBypass = request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
+        request.from === "person:owner" && pending.context.local && !pending.context.remote;
+      if (this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none" && !gateBypass) {
+        const currentAuthority = await this.currentlyAuthorized(request, pending.context);
+        if (pending.settled) return;
+        if (!currentAuthority || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body) ||
+          (request.to?.startsWith("device:") && !this.ledger.gateDeviceAccess(request.from, request.to, request.word))) {
+          this.finish(pending, errors("forbidden", "risk request authority changed before gate"), request.to!, false); return;
+        }
+        if (!pending.context.transportPrincipal || !this.endpoint("person:owner", "ask")) {
+          this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
+        }
+        const identity = this.gateIdentity(pending);
+        const objectPattern = this.reviewedObject(pending);
+        const ruleEvent = objectPattern ? this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint, objectPattern) : null;
+        if (ruleEvent) {
+          pending.phase = "dispatching";
+          this.publish(ruleEvent);
+        } else {
+        const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
+        const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
+          contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
+          askBody: { title: "Confirm action", detail: "A protected action is waiting for approval.",
+            options: [{ id: "once", label: "Allow once" }, ...(objectPattern ? [{ id: "always", label: "Allow this recipient for 30 days" }] : []),
+              { id: "deny", label: "Deny" }],
+            source: { word: request.word, to: request.to!, body_preview: "Protected action" } } });
+        if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
+        pending.phase = "gate_waiting";
+        this.publish(started.ask);
+        this.publish(started.event);
+        this.activateGateAsk(started.ask);
+        return;
+        }
+      }
+      if (!this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";
@@ -451,17 +668,40 @@ export class WorldRouter {
         this.gateEvent(decision.allow ? "gate.passed" : "gate.denied", { request_id: request.id, by });
         if (!decision.allow) { this.finish(pending, errors("denied", decision.reason ?? "gate denied request"), request.to!, false); return; }
       }
+      if (this.durableGate && pending.phase === "gate_waiting") {
+        const caseState = this.ledger.gateCase(request.id);
+        if (!caseState || caseState.decision !== "allowed") return;
+        const identity = this.gateIdentity(pending);
+        const currentAuthority = await this.currentlyAuthorized(request, pending.context);
+        if (pending.settled) return;
+        // No await between the final route/schema check, the SQLite CAS and handler dispatch.
+        const currentValid = currentAuthority && this.endpoint(request.to!, request.word) === endpoint && endpoint.validateInput(request.body);
+        if (!currentValid || !this.ledger.dispatchAllowedGate(request.id, identity.subject, identity.fingerprint)) {
+          this.finish(pending, errors("forbidden", "approval no longer authorizes this action"), request.to!, false);
+          return;
+        }
+        pending.phase = "dispatching";
+      }
       if (pending.settled) return;
+      if (this.durableGate && request.to?.startsWith("device:") &&
+        !this.ledger.gateDeviceAccess(request.from, request.to, request.word)) {
+        this.finish(pending, errors("forbidden", "device access changed before effect"), request.to, false); return;
+      }
       if (pending.phase === "accepted" || pending.phase === "gate_waiting") {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
         pending.phase = "dispatching";
       }
       const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered, caller: Object.freeze(detached(pending.context)) });
-      if (pending.settled || result === undefined) return;
+      if (pending.settled) return; // a cancellation/timeout already published its sole terminal
+      const committed = this.ledger.responseTo(request.id);
+      if (committed) { this.adoptGateTerminal(pending, committed, false); this.publish(committed); return; }
+      if (result === undefined) return;
       if (result.ok && endpoint.validateResult && !endpoint.validateResult(result.result)) { this.finish(pending, errors("failed", "handler returned invalid result"), request.to!, false); return; }
       this.finish(pending, result, request.to!, false);
     } catch {
       if (pending.settled) return;
+      const committed = this.ledger.responseTo(request.id);
+      if (committed) { this.adoptGateTerminal(pending, committed, false); this.publish(committed); return; }
       this.finish(pending, errors("failed", "handler or gate failed"), request.to!, false);
     }
   }
@@ -471,6 +711,30 @@ export class WorldRouter {
     for (const id of ids) {
       const pending = this.pending.get(id);
       if (!pending || pending.settled) continue;
+      if (this.durableGate) {
+        const gateCase = pending.request.from === "service:gate" && pending.request.word === "ask"
+          ? this.ledger.gateCaseByAsk(id) : this.ledger.gateCase(id);
+        if (gateCase?.decision === "waiting") {
+          const ask = this.pending.get(gateCase.askId);
+          if (ask) {
+            this.settleGateAsk(ask, "deny", "cancelled");
+            const response = this.ledger.responseTo(id);
+            if (response) settled.push(response);
+            continue;
+          }
+          const outcome = this.ledger.settleGateAsk(gateCase.askId, "deny", "cancelled");
+          if (outcome) {
+            this.publish(outcome.askResponse);
+            if (outcome.originalResponse) {
+              const originalPending = this.pending.get(gateCase.requestId);
+              if (originalPending) this.adoptGateTerminal(originalPending, outcome.originalResponse, true);
+              this.publish(outcome.originalResponse);
+              settled.push(id === gateCase.askId ? outcome.askResponse : outcome.originalResponse);
+            }
+            continue;
+          }
+        }
+      }
       const response = this.finish(pending, errors("cancelled", "request cancelled; external effect may be unknown"), pending.request.to!, true);
       if (response) settled.push(response);
     }
@@ -485,6 +749,16 @@ export class WorldRouter {
       const pending = this.pending.get(tracked.message.id);
       if (pending) settled.push(...this.cancel([tracked.message.id]));
       else {
+        const gateCase = this.durableGate && tracked.phase === "gate_waiting" ? this.ledger.gateCase(tracked.message.id) : null;
+        if (gateCase?.decision === "waiting") {
+          const outcome = this.ledger.settleGateAsk(gateCase.askId, "deny", "cancelled");
+          if (outcome) {
+            this.publish(outcome.askResponse);
+            if (outcome.event) this.publish(outcome.event);
+            if (outcome.originalResponse) { this.publish(outcome.originalResponse); settled.push(outcome.originalResponse); }
+          }
+          continue;
+        }
         const result = this.ledger.settle(tracked.message.id, tracked.message.to!, errors("cancelled", "request cancelled; external effect may be unknown"));
         if (result.settled) { this.publish(result.message); settled.push(result.message); }
       }
@@ -511,12 +785,38 @@ export class WorldRouter {
   async recover(): Promise<void> {
     for (const tracked of this.ledger.trackedRequests()) {
       const { message, phase, context, deadlineAt } = tracked;
+      if (this.ledger.responseTo(message.id)) continue;
       if (this.pending.has(message.id)) continue;
+      if (message.from === "agent:main" && message.to === "service:gate" && message.word === "internal.approval") {
+        const askId = this.ledger.gateCase(message.id)?.askId;
+        const priorAskResponse = askId ? this.ledger.responseTo(askId) : null;
+        const response = this.ledger.failInternalApproval(message.id);
+        if (askId && !priorAskResponse) {
+          const askResponse = this.ledger.responseTo(askId);
+          if (askResponse) this.publish(askResponse);
+        }
+        if (response) this.publish(response);
+        continue;
+      }
+      if (this.durableGate && message.from === "service:gate" && message.to === "person:owner" && message.word === "ask") {
+        const gateCase = this.ledger.gateCaseByAsk(message.id);
+        const original = gateCase && this.ledger.trackedRequests().find((item) => item.message.id === gateCase.requestId);
+        if (!gateCase || gateCase.decision !== "waiting" || !original || original.phase !== "gate_waiting" ||
+          this.ledger.responseTo(gateCase.requestId)) {
+          this.publish(this.ledger.settle(message.id, "person:owner", errors("failed", "orphaned gate ask after restart")).message);
+          continue;
+        }
+      }
       const endpoint = this.endpoint(message.to!, message.word);
       let contractValid = false;
       try { contractValid = Boolean(endpoint && endpoint.direction !== "out" && endpoint.spec.kind === "request" && endpoint.validateInput(message.body)); } catch { /* changed or invalid endpoint contract */ }
       if (!contractValid) {
         this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
+        continue;
+      }
+      if (this.durableGate && message.to?.startsWith("device:") &&
+        !this.ledger.gateDeviceAccess(message.from, message.to, message.word)) {
+        this.publish(this.ledger.settle(message.id, message.to, errors("forbidden", "device access unavailable after restart")).message);
         continue;
       }
       // Screen registrations are process-local. An old screenId plus a still-valid
@@ -542,7 +842,22 @@ export class WorldRouter {
       }
       const pending = makePending(message, endpoint, context, deadlineAt, phase);
       this.pending.set(message.id, pending);
-      if (Date.now() >= deadlineAt) { this.finish(pending, this.deadlineBody(pending), message.to!, true); continue; }
+      if (this.durableGate && phase === "gate_waiting") {
+        const gateCase = this.ledger.gateCase(message.id);
+        if (!gateCase || !this.ledger.byId(gateCase.askId) || !["waiting", "allowed"].includes(gateCase.decision)) {
+          this.finish(pending, errors("failed", "gate case missing or invalid after restart"), message.to!, false);
+          continue;
+        }
+        if (Date.now() >= deadlineAt && gateCase.decision === "waiting") {
+          this.expirePending(pending);
+          continue;
+        }
+        if (Date.now() >= deadlineAt) { this.expirePending(pending); continue; }
+        this.armTimeout(pending);
+        if (gateCase.decision === "allowed") void this.dispatch(pending, true);
+        continue;
+      }
+      if (Date.now() >= deadlineAt) { this.expirePending(pending); continue; }
       if (phase === "gate_waiting" || (phase === "dispatching" && !endpoint.idempotentRecovery)) {
         this.finish(pending, errors("failed", "outcome unknown after restart; request not replayed"), message.to!, false);
         continue;

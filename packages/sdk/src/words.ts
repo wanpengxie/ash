@@ -39,6 +39,8 @@ export const CARD_SCHEMA: JsonSchema = { oneOf: [
   obj({ type: { const: "permission" }, permission: nonempty, why: nonempty }, ["type", "permission", "why"]),
 ] };
 const sha = { type: "string", pattern: "^[0-9a-f]{64}$" } as const satisfies JsonSchema;
+const positiveSafe: JsonSchema = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
+const nonnegativeSafe: JsonSchema = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const datePath = { type: "string", pattern: "^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
 const selfPath = { type: "string", pattern: "^(SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE)\\.md$|^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
 const edit = obj({ op: choice("replace", "delete", "insert_after"), start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 }, guard: str, text: str, reason: choice("promote", "correct", "complete", "expire", "dedupe", "condense", "demote"), evidence: strings }, ["op", "start", "end", "guard", "reason", "evidence"]);
@@ -61,6 +63,9 @@ const guidance: Record<string, string> = {
   "service:gate/rules.list": "Use to inspect current approval rules, not to assume a risky action is already allowed.",
   "service:gate/rules.revoke": "Use to remove a known rule with local owner authority; this changes future decisions, not past actions.",
   "service:gate/history": "Use to review earlier gate decisions; this is read-only.",
+  "service:gate/access.list": "Inspect device access grants; access alone never approves a protected action.",
+  "service:gate/access.grant": "As the local owner, grant one exact agent and device capability for 30 days; risk approval remains separate.",
+  "service:gate/access.revoke": "As the local owner, revoke one device access grant; already executed actions cannot be undone.",
   "service:self/read": "Use to read an allowed managed file and its hash before editing. Do not infer a stable baseline from stale conversation context.",
   "service:self/write": "Use for a complete managed-file replacement with the exact baseline hash; null creates only a missing file. Do not use native file tools for managed writes.",
   "service:self/append": "Use to atomically add text to an allowed dated log, including an older date. No baseline hash is required.",
@@ -125,10 +130,42 @@ export function postDeliverySnapshotErrors(value: unknown): string[] {
   if (snapshot.items.some((item) => item.version_seq > snapshot.at_seq)) return ["version_seq exceeds at_seq"];
   return [];
 }
-add("service:gate", "rules.list", "request", empty, obj({ rules: array(any) }, ["rules"]), { audience: "owner" });
+const gateRisk = choice("outward", "structure");
+const gateRule = obj({ id, subject: nonempty, device_id: id, capability_id: id, to: id, word: id, object_pattern: nonempty,
+  risk: gateRisk, contract_fingerprint: sha, created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
+["id", "subject", "to", "word", "object_pattern", "risk", "contract_fingerprint", "created_at", "expires_at"]);
+const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: gateRisk,
+  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule"), at: nonnegativeSafe, rule_id: id,
+  source: { const: "current" } },
+["id", "request_id", "decision", "at", "source"]);
+const gateLegacyScope: JsonSchema = { type: "string", pattern: "^(\\*|device:[A-Za-z0-9_-]+/(\\*|[A-Za-z0-9_.-]+))$" };
+const gateLegacyHistory = obj({ id, subject: nonempty, to: id, word: id, risk: gateRisk,
+  decision: choice("legacy_unresolved", "legacy_approved", "legacy_denied", "legacy_expired", "legacy_cancelled",
+    "legacy_access_imported", "legacy_access_expired", "legacy_access_invalid"), at: nonnegativeSafe,
+  legacy_scope: gateLegacyScope, source: { const: "legacy" } }, ["id", "decision", "at", "source"]);
+const gateAccessScope: JsonSchema = { type: "string", pattern: "^device:[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$" };
+const gateAccessItem = obj({ id, member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateLegacyScope,
+  source: choice("current", "legacy"), created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
+["id", "member", "scope", "source", "created_at", "expires_at"]);
+// A current case always names its accepted request; a migrated row is never an actionable ask.
+add("service:gate", "rules.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
+  obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe }, ["rules"]), { audience: "owner" });
 add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure" });
-add("service:gate", "history", "request", obj({ before: integer, limit: { type: "integer", minimum: 1, maximum: 1000 } }), obj({ items: array(any) }, ["items"]), { audience: "owner" });
-for (const word of ["gate.asked", "gate.passed", "gate.denied"]) add("service:gate", word, "event", obj({}, [], true), undefined, { direction: "out" });
+add("service:gate", "history", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 1000 } }),
+  obj({ items: { type: "array", items: { oneOf: [gateCurrentHistory, gateLegacyHistory] }, maxItems: 1000 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
+add("service:gate", "access.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
+  obj({ items: { type: "array", items: gateAccessItem, maxItems: 100 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
+add("service:gate", "access.grant", "request", obj({ member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope }, ["member", "scope"]),
+  obj({ id, member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope, expires_at: nonnegativeSafe }, ["id", "member", "scope", "expires_at"]),
+  { audience: "owner", risk: "structure" });
+add("service:gate", "access.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]),
+  { audience: "owner", risk: "structure" });
+add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: gateRisk, to: id, word: id,
+  expires_at: nonnegativeSafe }, ["request_id", "ask_id", "risk", "to", "word", "expires_at"]), undefined, { direction: "out" });
+add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer"), rule_id: id, ask_id: id },
+  ["request_id", "by"]), undefined, { direction: "out" });
+add("service:gate", "gate.denied", "event", obj({ request_id: id, by: choice("answer", "timeout"), ask_id: id },
+  ["request_id", "by"]), undefined, { direction: "out" });
 
 add("service:self", "read", "request", obj({ path: selfPath }, ["path"]), obj({ content: str, hash: sha, version: integer }, ["content", "hash"]));
 add("service:self", "write", "request", obj({ path: selfPath, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });

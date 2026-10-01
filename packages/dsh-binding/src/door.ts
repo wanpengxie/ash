@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SendRequestV2 } from "../../sdk/src/api";
 import type { WorldMembers } from "../../core/src/world/member";
@@ -11,7 +12,8 @@ type ToolDefinition = { name: string; description: string; parameters: object;
 type ToolRuntime = { register(definition: ToolDefinition): () => void; restrict(filter: { allow: string[] }): () => void;
   guard(check: (exec: ToolCall) => string | undefined): () => void; get(name: string, scope?: object): ToolDefinition | undefined;
   schemas(scope?: object): { name: string }[] };
-export interface DoorAgent { ctx: { tools: ToolRuntime } }
+export interface DoorAgent { ctx: { tools: ToolRuntime; on?: (event: string, listener: (...args: any[]) => unknown) => () => void;
+  get?: (name: string) => unknown }; session?: { seq: number; eventAt: (seq: number) => { type?: string; data?: { policy?: unknown } } | undefined } }
 export interface DoorOptions {
   tools: ToolRuntime;
   members: WorldMembers;
@@ -26,6 +28,8 @@ export interface DoorOptions {
   nativeMode?: "disabled" | "audited";
   /** The installed runtime's scope chain; no guessed agent-id inheritance. */
   scopeChainOf(agent: object): readonly object[];
+  /** Verified private DSH session journal, never supplied by a model tool. */
+  sessionId?: string;
 }
 
 const NATIVE = ["read", "read_image", "glob", "grep", "web_search", "web_fetch", "write", "edit"] as const;
@@ -98,7 +102,8 @@ const OUTPUT = Object.freeze({
 const shape = (properties: object, required: string[] = []) => Object.freeze({ type: "object", properties, required, additionalProperties: false });
 
 interface Binding { agent: DoorAgent; definitions: Map<string, ToolDefinition>; natives: Map<string, ToolDefinition>; active: { turn: string; signal: AbortSignal; controller: AbortController } | null;
-  disposers: (() => void)[] }
+  disposers: (() => void)[]; approvalFacts: Map<string, { toolName: string; turn: string; definition: ToolDefinition; fingerprint: string; signal: AbortSignal; policyStamp: string }>;
+  seenApprovalCalls: Set<string> }
 
 /** Bind only an explicitly registered root; descendants receive no inherited authority. */
 export class DshDoor {
@@ -121,7 +126,7 @@ export class DshDoor {
       if (definition) natives.set(name, definition);
     }
     if (this.options.nativeMode === "audited") for (const name of REQUIRED) if (!natives.has(name)) throw new Error(`required native tool unavailable: ${name}`);
-    const binding: Binding = { agent, natives, definitions: new Map(), active: null, disposers: [] };
+    const binding: Binding = { agent, natives, definitions: new Map(), active: null, disposers: [], approvalFacts: new Map(), seenApprovalCalls: new Set() };
     try {
       for (const definition of this.definitions()) {
         // Definition identity and executable closure must not be mutable in place.
@@ -132,6 +137,7 @@ export class DshDoor {
       binding.disposers.push(agent.ctx.tools.restrict({ allow: [...natives.keys()] }));
       this.binding = binding;
       this.assertReady();
+      if (this.options.sessionId && agent.ctx.on) this.bindApproval(binding);
     } catch (error) {
       this.binding = null;
       for (const dispose of binding.disposers.reverse()) dispose();
@@ -147,7 +153,67 @@ export class DshDoor {
     this.binding!.active = { turn, controller, signal: AbortSignal.any([signal, controller.signal]) };
   }
   endTurn(turn: string): void {
-    if (this.binding?.active?.turn === turn) { this.binding.active.controller.abort(); this.binding.active = null; }
+    if (this.binding?.active?.turn === turn) { this.binding.active.controller.abort(); this.binding.active = null;
+      this.binding.approvalFacts.clear(); this.binding.seenApprovalCalls.clear(); }
+  }
+
+  private bindApproval(binding: Binding): void {
+    const ctx = binding.agent.ctx;
+    const policyStamp = (): string | null => {
+      try {
+        const session = binding.agent.session;
+        const service = ctx.get?.("approval") as { config?: { policy?: unknown }; overrideOf?: (session: object) => unknown } | undefined;
+        if (!session || !Number.isSafeInteger(session.seq) || !service || typeof service.overrideOf !== "function") return null;
+        const override = service.overrideOf(session);
+        const effective = override ?? service.config?.policy ?? "ask";
+        if (effective !== "ask") return null;
+        let policySeq = -1;
+        let recorded: unknown;
+        for (let seq = session.seq - 1; seq >= 0; seq--) {
+          const event = session.eventAt(seq);
+          if (event?.type === "approval/policy") { policySeq = seq; recorded = event.data?.policy; break; }
+        }
+        if (policySeq >= 0 ? recorded !== override : override !== undefined) return null;
+        return `${policySeq}:ask:${String(service.config?.policy ?? "ask")}`;
+      } catch { return null; }
+    };
+    const fingerprint = (name: string, definition: ToolDefinition, currentPolicy: string): string => createHash("sha256").update(JSON.stringify({
+      name, description: definition.description, parameters: definition.parameters, output: definition.output.schema, risk: "structure", policy: currentPolicy,
+    })).digest("hex");
+    binding.disposers.push(ctx.on!("tools/pre-execute", async (exec: ToolCall, next: () => Promise<{ kind: string }>) => {
+      const activeAtEntry = binding.active;
+      const result = await next();
+      const active = binding.active === activeAtEntry ? activeAtEntry : null;
+      const definition = binding.definitions.get(exec.name) ?? binding.natives.get(exec.name);
+      const currentPolicy = policyStamp();
+      if (result.kind === "ask" && exec.agent === binding.agent && active && !active.signal.aborted && !exec.signal.aborted &&
+        currentPolicy && /^[A-Za-z0-9_-]{1,128}$/.test(exec.callId) && definition && this.options.tools.get(exec.name, binding.agent) === definition) {
+        if (binding.seenApprovalCalls.has(exec.callId)) binding.approvalFacts.delete(exec.callId);
+        else {
+          binding.seenApprovalCalls.add(exec.callId);
+          binding.approvalFacts.set(exec.callId, { toolName: exec.name, turn: active.turn, definition,
+            fingerprint: fingerprint(exec.name, definition, currentPolicy), signal: exec.signal, policyStamp: currentPolicy });
+        }
+      }
+      return result;
+    }));
+    binding.disposers.push(ctx.on!("approval/request", async (request: ToolCall & { toolName: string }, _next: () => Promise<string>) => {
+      const active = binding.active;
+      const fact = binding.approvalFacts.get(request.callId);
+      if (!fact || request.agent !== binding.agent || request.toolName !== fact.toolName || !active ||
+        active.turn !== fact.turn || active.signal.aborted || request.signal?.aborted || request.signal !== fact.signal ||
+        policyStamp() !== fact.policyStamp ||
+        this.options.tools.get(fact.toolName, binding.agent) !== fact.definition ||
+        fingerprint(fact.toolName, fact.definition, fact.policyStamp) !== fact.fingerprint) return "unavailable";
+      binding.approvalFacts.delete(request.callId);
+      try { return await this.options.router.requestInternalApproval({ sessionId: this.options.sessionId!, turn: fact.turn,
+        callId: request.callId, toolName: fact.toolName, contractFingerprint: fact.fingerprint,
+        signal: AbortSignal.any([active.signal, request.signal]), stillValid: () => binding.active === active &&
+          !active.signal.aborted && !request.signal.aborted && policyStamp() === fact.policyStamp &&
+          this.options.tools.get(fact.toolName, binding.agent) === fact.definition &&
+          fingerprint(fact.toolName, fact.definition, fact.policyStamp) === fact.fingerprint }); }
+      catch { return "unavailable"; }
+    }));
   }
 
   assertReady(): void {
@@ -216,6 +282,8 @@ export class DshDoor {
     const bound = this.binding;
     bound?.active?.controller.abort();
     this.binding = null;
+    bound?.approvalFacts.clear();
+    bound?.seenApprovalCalls.clear();
     if (bound) for (const dispose of bound.disposers.reverse()) dispose();
     this.guardDispose();
   }
