@@ -30,6 +30,8 @@ class CoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         startForeground(Notifications.ID_SERVICE, Notifications.service(this, "启动中…"))
+        Notifications.clearLegacy(this)
+        Present.restore(this)
         running = true
         val h = HostServer(this, Secrets(this).hostToken)
         h.start(HostServer.PORT)
@@ -130,6 +132,7 @@ class CoreService : Service() {
                         calendarSense?.refresh()
                     }
                     state = "running"
+                    Present.flushAsync(this)
                 } else {
                     if (unhealthySince == 0L) unhealthySince = System.currentTimeMillis()
                     // Booting DSH takes ~30 s on a phone; only a core that stays deaf is restarted.
