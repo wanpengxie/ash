@@ -53,12 +53,18 @@ test("two live screens see the same messages without conversation control button
     await second.goto(`${running.url}/`);
     await expect(page.locator("#connection")).toContainText("已连接");
     await expect(second.locator("#connection")).toContainText("已连接");
+    await second.evaluate(() => sessionStorage.setItem("ash.screen.label.v2", "E2E phone"));
+    await second.reload();
+    await expect(second.locator("#connection")).toContainText("已连接");
     const text = `two screens ${Date.now()}`;
-    await page.locator("#t").fill(text);
-    await page.locator("#send").click();
+    await second.locator("#t").fill(text);
+    await second.locator("#send").click();
     await expect(page.locator("#log .msg.me").filter({ hasText: text })).toHaveCount(1);
     await expect(second.locator("#log .msg.me").filter({ hasText: text })).toHaveCount(1);
-    await expect(second.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
+    await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
+    await expect(page.locator("#log .from").filter({ hasText: "E2E phone" })).toHaveCount(1);
+    const source = running.ledger.list().find((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text);
+    expect(source.origin?.label).toBe("E2E phone");
     for (const screen of [page, second]) {
       await expect(screen.locator("#log button").filter({ hasText: /停止|插话|编辑|撤回/ })).toHaveCount(0);
     }
@@ -220,4 +226,22 @@ test("the composer compresses a static image and keeps a document intact", async
   expect(message.body.attachments[1].name).toBe("memo.txt");
   expect(Buffer.from(message.body.attachments[1].data, "base64").toString()).toBe("exact document bytes");
   await expect(page.locator("#log .msg.me").filter({ hasText: text })).toContainText("memo.txt");
+});
+
+test("recent history paints promptly and upward scroll loads the earlier page", async ({ page }) => {
+  const batch = `E2E history ${Date.now()}`;
+  for (let index = 0; index < 225; index++) running.ledger.append({ from: "person:owner", to: "agent:main",
+    kind: "request", word: "say", body: { text: `${batch} item ${index}` } });
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await expect(page.locator("#log .msg.me").filter({ hasText: `${batch} item 224` })).toHaveCount(1);
+  await expect(page.locator("#log .msg.me").filter({ hasText: `${batch} item 0` })).toHaveCount(0);
+  const paintMs = await page.evaluate(() => {
+    const boot = performance.getEntriesByName("shell.boot").at(-1);
+    const painted = performance.getEntriesByName("shell.history-rendered").at(-1);
+    return painted.startTime - boot.startTime;
+  });
+  expect(paintMs).toBeLessThan(1000);
+  await page.locator("#log").evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
+  await expect(page.locator("#log .msg.me").filter({ hasText: `${batch} item 0` })).toHaveCount(1);
 });
