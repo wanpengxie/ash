@@ -88,7 +88,7 @@ export class PostMember implements Member {
       : { id: source.id, kind, title: kind === "due" ? "Due" : kind === "reply" ? "Reply" : "Ash", text: source.body.text };
     return hostPresentationErrors(value).length ? null : value as HostPresentationV2;
   }
-  private publish(snapshot: Message | null): void { if (snapshot) this.options.router.publishPostSnapshot(snapshot); }
+  private publish(snapshot: Message | null): void { if (snapshot) this.options.router.publishPostEvent(snapshot); }
   private track(task: Promise<unknown>): void { this.tasks.add(task); void task.finally(() => this.tasks.delete(task)).catch(() => {}); }
   handle(message: Message, _context: RouteHandlerContext): Promise<ResponseBody | void> | ResponseBody | void {
     if (message.kind === "event" && message.word === "visible" && message.to === this.id && message.from.startsWith("screen:")) {
@@ -112,6 +112,7 @@ export class PostMember implements Member {
       ...(typeof message.body.dedupe_key === "string" ? { dedupeKey: message.body.dedupe_key } : {}), now,
       dedupeMs: this.options.delivery.dedupe_minutes * minute,
       ...(held ? { releaseAt: quietEnd(now, this.options.delivery.quiet, this.options.timeZone) } : {}) });
+    this.publish(selected.visibility);
     this.publish(selected.snapshot);
     const record = selected.record;
     if (!selected.fresh) {
@@ -158,8 +159,9 @@ export class PostMember implements Member {
     const now = this.now();
     for (const item of this.journal.due(now)) {
       const source = this.source(item.messageId, item.kind);
-      const claim = this.journal.release(item.messageId, "inapp", now);
+      const claim = this.journal.release(item.messageId);
       if (!claim) continue;
+      this.publish(claim.visibility);
       this.publish(claim.snapshot);
       if (source) await this.ui.present(source);
     }

@@ -4,7 +4,9 @@ The `service:post/deliver` result now distinguishes `dropped` from `inapp`, `not
 
 The SDK test accepts each of the four exact channel values and rejects an unknown channel, extra success assertions, an absent channel, and a non-object result. The word's input and all other result fields are unchanged.
 
-Reproduce: `node --import tsx --test packages/sdk/test/v2-contract.test.ts` (13 pass, zero skip/fail); `npm run -s typecheck` (pass).
+The subsequent bounded-visibility SDK checkpoint adds a service-only `post.delivery` event and an unnumbered `post.delivery.snapshot` stream control frame. The snapshot contract rejects more than 1000 entries, duplicate message IDs, invalid states, and versions beyond its ledger watermark. It never advances a ledger cursor or acts as a screen credential.
+
+Reproduce: `node --import tsx --test packages/sdk/test/v2-contract.test.ts` (15 pass, zero skip/fail); `npm run -s typecheck` (pass).
 
 Runtime held-queue atomicity, foreground and quiet-window classification, host presentation, and recovery remain pending at this checkpoint.
 
@@ -14,7 +16,7 @@ The single production post member reuses the authenticated screen registry. A vi
 
 The post journal and `post.changed` count event use one SQLite connection and one transaction. Dedupe decisions are persisted by key and a half-open configured window; a suppressed attempt returns `dropped` while the original owner message remains intact. Quiet evaluation uses the running host's local timezone, with an injectable zone for exact cross-midnight boundary tests; no urgency field exists and no bypass is inferred. A notification attempt enters durable `dispatching` before `/present`; a restart turns an unsettled attempt into diagnosable `unknown` and does not replay external I/O. A lost host acknowledgement yields an error, never a claimed `notification` success. The synthetic spike actually kills the core child after host entry and confirms one delivery request and zero new host effects after reopen.
 
-Held offer/headsup remains in the audit ledger and releases to in-app only at the quiet boundary; it never upgrades to a host notification. Current UI projection does not yet hide the chat bubble until release. F-S07/S13 and user-visible quiet-hour behavior remain pending a per-message delivery-state contract and projection integration; a held-count event alone is insufficient.
+Held offer/headsup remains in the audit ledger and releases to in-app only at the quiet boundary; it never upgrades to a host notification. Its held/released/dropped event and journal transition share the same SQLite transaction as the held-count update. A finite history page and its per-ID latest-state snapshot share one SQLite read transaction, avoiding an unbounded ledger scan. The live stream sends its first snapshot before replaying from the original cursor, so a transition in the registration gap is replayed as a numbered ledger event. A synthetic day-one offer released on day two appears in its old-page state snapshot; a synthetic release between snapshot and subscription is also replayed. Current UI projection does not yet hide the chat bubble until release. F-S07/S13 and user-visible quiet-hour behavior remain pending projection integration and real-browser verification; a held-count event alone was insufficient.
 
 Reproduce candidate checks:
 
@@ -25,4 +27,4 @@ ASH_TEST_DSH_ROOT="$INSTALLED_DSH_PACKAGE" npm test
 npm run -s typecheck
 ```
 
-The focused post suites currently pass 9/9 with zero skips/fails; the real DSH full suite exits naturally with 317 total, 259 pass, 58 intentional skips, and zero failures. The synthetic SIGKILL unknown-recovery probe passes. Independent QA and the quiet-release decision remain pending, so the card is not marked complete.
+The focused post suites currently pass 11/11 with zero skips/fails; the earlier real DSH full suite exited naturally with 317 total, 259 pass, 58 intentional skips, and zero failures before the new visibility tests. The synthetic SIGKILL unknown-recovery probe passes. Full-suite rerun, independent QA, and UI/browser integration remain pending, so the card is not marked complete.

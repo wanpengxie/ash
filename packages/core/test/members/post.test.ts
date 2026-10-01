@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { HostPresentationV2 } from "../../../sdk/src/host";
 import { PostMember, isQuiet, quietEnd } from "../../src/members/post-delivery";
-import { ScreenRegistry } from "../../src/server";
+import { EdgeRouter, ScreenRegistry, type EdgeCaller } from "../../src/server";
 import { OwnerMember } from "../../src/members/owner";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
@@ -43,7 +43,7 @@ async function fixture(at = local(1, 12), autoStart = true) {
     }
     throw new Error("delivery did not settle");
   };
-  return { dir, ledger, router, post, presentations, hides, wait,
+  return { dir, ledger, router, members, post, presentations, hides, wait,
     setTime(value: number) { time = value; }, setForeground(value: boolean) { foreground = value; }, setAck(value: boolean) { ack = value; },
     async close() { await post.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -115,6 +115,8 @@ test("real owner messages route foreground in-app, background due notification, 
     const offer = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic offer", kind: "offer" }, wait: true });
     assert.equal((await f.wait(offer.id)).channel, "held");
     assert.equal(f.post.journal.heldCount(), 1);
+    const heldState = f.ledger.list({ limit: 1000 }).find((item) => item.word === "post.delivery" && item.body.message_id === offer.id);
+    assert.equal(heldState?.body.state, "held");
     const snapshots = f.ledger.list({ limit: 1000 }).filter((item) => item.word === "post.changed");
     assert.equal(snapshots.at(-1)?.body.held, 1);
     assert.equal(f.presentations.length, 1);
@@ -124,6 +126,63 @@ test("real owner messages route foreground in-app, background due notification, 
     assert.equal(f.ledger.list({ limit: 1000 }).filter((item) => item.word === "post.changed").at(-1)?.body.held, 0);
     assert.equal(f.post.journal.record(offer.id)?.channel, "inapp");
     assert.equal(f.presentations.length, 1, "quiet offer never upgrades to a host notification");
+    const releasedState = f.ledger.list({ limit: 1000 }).filter((item) => item.word === "post.delivery" && item.body.message_id === offer.id).at(-1);
+    assert.equal(releasedState?.body.state, "released");
+    assert.ok(releasedState!.seq > heldState!.seq);
+  } finally { await f.close(); }
+});
+
+test("old-page offer gets the latest released state without scanning later ledger pages", async () => {
+  const f = await fixture(local(1, 22));
+  try {
+    const offer = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic offer", kind: "offer" }, wait: true });
+    assert.equal((await f.wait(offer.id)).state, "held");
+    for (let n = 0; n < 210; n++) f.ledger.append({ from: "agent:main", to: "person:owner", kind: "event", word: "status", body: { state: "idle" } });
+    f.setTime(local(2, 9)); await f.post.tick();
+    const edge = new EdgeRouter(f.ledger, f.router, f.members, { api: {}, mcp: {} });
+    edge.attachPostJournal(f.post.journal);
+    const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "synthetic-owner", local: true, remote: false, ownerProxy: true, transport: "api" };
+    const page = await edge.handle({ method: "GET", url: new URL(`/api/stream?before=${offer.seq + 1}&limit=1&follow=false`, "http://ash"), headers: {}, body: null }, owner);
+    assert.equal(page.status, 200);
+    let output = "";
+    if ("stream" in page) page.stream((chunk) => { output += chunk; }, () => {}, () => {});
+    const [snapshotFrame, messageFrame] = output.trim().split("\n\n");
+    assert.match(snapshotFrame, /^event: post\.delivery\.snapshot\n/);
+    assert.doesNotMatch(snapshotFrame, /(?:^|\n)id:/);
+    const snapshot = JSON.parse(snapshotFrame.split("\ndata: ")[1]);
+    const release = f.ledger.list({ after: offer.seq, limit: 1000 }).filter((item) => item.word === "post.delivery" && item.body.message_id === offer.id).at(-1)!;
+    assert.deepEqual(snapshot.items, [{ message_id: offer.id, state: "released", version_seq: release.seq }]);
+    assert.ok(snapshot.at_seq >= release.seq);
+    assert.match(messageFrame, new RegExp(`^id: ${offer.seq}\\n`));
+  } finally { await f.close(); }
+});
+
+test("live registration replays a release committed after its first status snapshot", async () => {
+  const f = await fixture(local(1, 22));
+  try {
+    const offer = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic live offer", kind: "offer" }, wait: true });
+    assert.equal((await f.wait(offer.id)).state, "held");
+    const edge = new EdgeRouter(f.ledger, f.router, f.members, { api: {}, mcp: {} });
+    edge.attachPostJournal(f.post.journal);
+    const original = f.post.journal.pageSnapshot.bind(f.post.journal);
+    let releaseSeq = 0;
+    f.post.journal.pageSnapshot = (query) => {
+      const result = original(query);
+      if (!releaseSeq) releaseSeq = f.post.journal.release(offer.id)!.visibility.seq;
+      return result;
+    };
+    const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "synthetic-owner", local: true, remote: false, ownerProxy: true, transport: "api" };
+    const live = await edge.handle({ method: "GET", url: new URL(`/api/stream?after=${offer.seq - 1}&follow=true`, "http://ash"), headers: {}, body: null }, owner);
+    assert.equal(live.status, 200);
+    let output = "", close = () => {};
+    if ("stream" in live) live.stream((chunk) => { output += chunk; }, (cleanup) => { close = cleanup; }, () => {});
+    close();
+    assert.ok(releaseSeq > offer.seq);
+    const snapshot = output.split("\n\n").find((frame) => frame.startsWith("event: post.delivery.snapshot"))!;
+    assert.deepEqual(JSON.parse(snapshot.split("\ndata: ")[1]).items, [{ message_id: offer.id, state: "held",
+      version_seq: f.ledger.list({ after: offer.seq, limit: 100 }).find((item) => item.word === "post.delivery" && item.body.state === "held")!.seq }]);
+    assert.match(output, new RegExp(`(?:^|\\n)id: ${releaseSeq}\\n`), "the post-snapshot release must be replayed by its ledger seq");
+    assert.ok(output.indexOf(snapshot) < output.indexOf(`id: ${offer.seq}\n`));
   } finally { await f.close(); }
 });
 
@@ -155,10 +214,11 @@ test("held row and changed-count event roll back together when an internal trans
   const f = await fixture();
   try {
     const before = f.ledger.lastSeq();
-    assert.throws(() => f.ledger.postWrite((db, snapshot) => {
+    assert.throws(() => f.ledger.postWrite((db, snapshot, delivery) => {
       db.prepare("INSERT INTO post_deliveries(message_id,kind,channel,state,created_at) VALUES(?,?,?,?,?)")
         .run("synthetic-failed-transition", "offer", "held", "held", local(1, 22));
       snapshot(1);
+      delivery({ message_id: "synthetic-failed-transition", state: "held" });
       throw new Error("synthetic transaction crash");
     }), /synthetic transaction crash/);
     assert.equal(f.post.journal.heldCount(), 0);

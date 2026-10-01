@@ -125,6 +125,7 @@ export async function startOwner(config: Config): Promise<Running> {
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces });
     post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
     members.register(post);
+    edge.attachPostJournal(post.journal);
     const gatewayFile = join(config.stateDir, "gateway.json");
     const gatewayUrl = existsSync(gatewayFile) ? (JSON.parse(readFileSync(gatewayFile, "utf8")) as { url?: string }).url : config.gateway?.url;
     if (gatewayUrl) {
