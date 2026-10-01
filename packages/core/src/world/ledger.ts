@@ -480,7 +480,7 @@ export class Ledger {
       const tracked = this.db.prepare(`SELECT m.*,s.phase,s.deadline_at FROM messages m JOIN request_state s ON s.request_id=m.id
         WHERE m.id=?`).get(requestId) as Row | undefined;
       if (!tracked || tracked.kind !== "request" || tracked.phase !== "accepted" || !tracked.to ||
-        input.expiresAt > Number(tracked.deadline_at)) { this.db.exec("COMMIT"); return null; }
+        input.expiresAt > Number(tracked.deadline_at) || input.expiresAt <= Date.now()) { this.db.exec("COMMIT"); return null; }
       const source = obj(input.askBody.source);
       if (source.word !== tracked.word || source.to !== tracked.to) throw new TypeError("gate ask source does not match accepted request");
       if (this.db.prepare("SELECT 1 FROM gate_cases WHERE request_id=?").get(requestId)) throw new TypeError("duplicate gate case");
@@ -588,7 +588,7 @@ export class Ledger {
         WHERE c.request_id=?`).get(requestId) as Row | undefined;
       if (!row || row.decision !== "allowed" || row.phase !== "gate_waiting" || row.subject !== subject ||
         row.contract_fingerprint !== contractFingerprint || row.ask_kind !== "request" || row.ask_word !== "ask" ||
-        typeof row.answer_body !== "string" || Date.now() >= Math.min(Number(row.deadline_at), Number(row.expires_at))) {
+        typeof row.answer_body !== "string" || Date.now() >= Number(row.deadline_at)) {
         this.db.exec("COMMIT"); return false;
       }
       const answer = JSON.parse(row.answer_body) as ResponseBody;

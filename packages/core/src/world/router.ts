@@ -1,4 +1,5 @@
 import Ajv from "ajv";
+import { createHash } from "node:crypto";
 import Ajv2019 from "ajv/dist/2019.js";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
@@ -60,6 +61,10 @@ const SCREEN = /^screen:[A-Za-z0-9_-]+$/;
 const LOCAL_SELF_MUTATIONS = new Set(["write", "append", "apply_plan", "rollback"]);
 const errors = (code: MessageErrorCode, message: string): ResponseBody => ({ ok: false, error: { code, message } });
 const detached = <T>(value: T): T => structuredClone(value);
+const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+  : value && typeof value === "object" ? `{${Object.keys(value).sort().filter((key) => (value as Record<string, unknown>)[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
+const hash = (value: unknown): string => createHash("sha256").update(canonical(value)).digest("hex");
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   transportPrincipal: ctx.transportPrincipal,
@@ -94,6 +99,7 @@ export class WorldRouter {
   private readonly pending = new Map<string, Pending>();
   private readonly subscribers = new Set<Subscriber>();
   private gate: GateHook | null = null;
+  private durableGate = false;
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
 
@@ -198,6 +204,11 @@ export class WorldRouter {
   }
 
   setGate(gate: GateHook): void { this.gate = gate; }
+  /** Production gate is ledger-backed; fake GateHook remains only for isolated router tests. */
+  enableDurableGate(): void {
+    if (this.gate) throw new TypeError("cannot combine durable gate with fake gate hook");
+    this.durableGate = true;
+  }
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
 
   /** Publish a post event only after its journal transition and event have committed. */
@@ -355,7 +366,7 @@ export class WorldRouter {
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === message.id)!;
     const pending = makePending(message, endpoint, tracked.context, tracked.deadlineAt, "accepted");
     this.pending.set(message.id, pending);
-    if (Date.now() >= pending.deadlineAt) this.finish(pending, this.deadlineBody(pending), message.to!, true);
+    if (Date.now() >= pending.deadlineAt) this.expirePending(pending);
     else { this.armTimeout(pending); void this.dispatch(pending, false); }
     const reply = request.wait ? await pending.reply : undefined;
     return { id: message.id, seq: message.seq, ...(reply ? { reply } : {}) };
@@ -379,7 +390,7 @@ export class WorldRouter {
     const pending = this.pending.get(original.id);
     if (!pending || pending.settled) throw new RouterError("bad_request", "request no longer accepting replies");
     if (Date.now() >= pending.deadlineAt) {
-      this.finish(pending, this.deadlineBody(pending), original.to!, true);
+      this.expirePending(pending);
       throw new RouterError("bad_request", "request expired before reply");
     }
     if (original.to === "person:owner" && original.word === "ask") {
@@ -388,6 +399,14 @@ export class WorldRouter {
       if (typeof choice !== "string" || !Array.isArray(options) || !options.some((option) => plainObject(option) && option.id === choice)) fail("bad_request", "ask choice was not offered");
     }
     if (signal?.aborted) fail("cancelled", "send aborted before settlement");
+    const gateCase = this.durableGate && original.from === "service:gate" ? this.ledger.gateCaseByAsk(original.id) : null;
+    if (gateCase) {
+      const choice = body.ok && plainObject(body.result) ? body.result.choice : undefined;
+      if (choice !== "once" && choice !== "deny") throw new RouterError("bad_request", "gate choice is not available");
+      const response = this.settleGateAsk(pending, choice, "answer", origin, retry);
+      if (!response) throw new RouterError("bad_request", "gate ask already settled");
+      return { id: response.id, seq: response.seq };
+    }
     const result = this.finish(pending, body, from, false, origin, retry);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
@@ -403,7 +422,7 @@ export class WorldRouter {
     pending.timer = setTimeout(() => {
       if (pending.settled) return;
       if (Date.now() < pending.deadlineAt) { this.armTimeout(pending); return; }
-      this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
+      this.expirePending(pending);
     }, remaining);
   }
 
@@ -427,11 +446,91 @@ export class WorldRouter {
     this.publish(event);
   }
 
+  private gateIdentity(pending: Pending): { subject: string; fingerprint: string } {
+    const { request, endpoint, context } = pending;
+    return {
+      subject: hash({ member: request.from, principal: context.transportPrincipal, pairedDeviceId: context.pairedDeviceId ?? null }),
+      fingerprint: hash({ to: request.to, word: request.word, spec: endpoint.spec }),
+    };
+  }
+
+  private activateGateAsk(ask: Message): void {
+    const endpoint = this.endpoint("person:owner", "ask");
+    const tracked = this.ledger.trackedRequests().find((item) => item.message.id === ask.id);
+    if (!endpoint || !tracked || endpoint.spec.kind !== "request" || !endpoint.validateInput(ask.body))
+      throw new TypeError("owner ask endpoint unavailable after gate commit");
+    const pending = makePending(ask, endpoint, tracked.context, tracked.deadlineAt, "accepted");
+    this.pending.set(ask.id, pending);
+    this.armTimeout(pending);
+    void this.dispatch(pending, false);
+  }
+
+  private adoptGateTerminal(pending: Pending, response: Message, abort: boolean): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    if (pending.timer) clearTimeout(pending.timer);
+    this.pending.delete(pending.request.id);
+    if (abort) {
+      pending.controller.abort();
+      try { pending.endpoint.cancel?.(pending.request.id); } catch { /* no handler may block settlement */ }
+    }
+    pending.resolve(response);
+  }
+
+  private settleGateAsk(pending: Pending, choice: "once" | "deny", cause: "answer" | "deadline" | "cancelled",
+    origin?: Message["origin"], retry?: { transportPrincipal: string; clientId: string }): Message | null {
+    const outcome = this.ledger.settleGateAsk(pending.request.id, choice, cause, origin, retry);
+    if (!outcome) return null;
+    this.adoptGateTerminal(pending, outcome.askResponse, cause !== "answer");
+    this.publish(outcome.askResponse);
+    if (outcome.event) this.publish(outcome.event);
+    const originalId = this.ledger.gateCaseByAsk(pending.request.id)!.requestId;
+    const original = this.pending.get(originalId);
+    if (outcome.originalResponse) {
+      if (original) this.adoptGateTerminal(original, outcome.originalResponse, true);
+      this.publish(outcome.originalResponse);
+    } else if (original && !original.settled) void this.dispatch(original, false);
+    return outcome.askResponse;
+  }
+
+  private expirePending(pending: Pending): void {
+    const gateAsk = pending.request.from === "service:gate" && pending.request.to === "person:owner" && pending.request.word === "ask"
+      ? this.ledger.gateCaseByAsk(pending.request.id) : null;
+    const gateOriginal = this.durableGate && pending.phase === "gate_waiting" ? this.ledger.gateCase(pending.request.id) : null;
+    if (gateAsk && gateAsk.decision === "waiting") { this.settleGateAsk(pending, "deny", "deadline"); return; }
+    if (gateOriginal?.decision === "waiting") {
+      const ask = this.pending.get(gateOriginal.askId);
+      if (ask) { this.settleGateAsk(ask, "deny", "deadline"); return; }
+      // Missing owner ask is corrupt state, never a reason to execute the request.
+    }
+    this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
+  }
+
   private async dispatch(pending: Pending, recovered: boolean): Promise<void> {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
-      if (pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
+      const gateBypass = request.to === "service:gate" && request.word === "rules.revoke" &&
+        request.from === "person:owner" && pending.context.local && !pending.context.remote;
+      if (this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none" && !gateBypass) {
+        if (!pending.context.transportPrincipal || !this.endpoint("person:owner", "ask")) {
+          this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
+        }
+        const identity = this.gateIdentity(pending);
+        const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
+        const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
+          contractFingerprint: identity.fingerprint, expiresAt,
+          askBody: { title: "Confirm action", detail: "A protected action is waiting for approval.",
+            options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+            source: { word: request.word, to: request.to!, body_preview: "Protected action" } } });
+        if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
+        pending.phase = "gate_waiting";
+        this.publish(started.ask);
+        this.publish(started.event);
+        this.activateGateAsk(started.ask);
+        return;
+      }
+      if (!this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";
@@ -441,6 +540,20 @@ export class WorldRouter {
         const by = decision.allow ? (decision.by === "rule" ? "rule" : "answer") : (decision.by === "timeout" ? "timeout" : "answer");
         this.gateEvent(decision.allow ? "gate.passed" : "gate.denied", { request_id: request.id, by });
         if (!decision.allow) { this.finish(pending, errors("denied", decision.reason ?? "gate denied request"), request.to!, false); return; }
+      }
+      if (this.durableGate && pending.phase === "gate_waiting") {
+        const caseState = this.ledger.gateCase(request.id);
+        if (!caseState || caseState.decision !== "allowed") return;
+        const identity = this.gateIdentity(pending);
+        const currentEndpoint = this.endpoint(request.to!, request.word);
+        const currentValid = currentEndpoint === endpoint && endpoint.validateInput(request.body) &&
+          await this.currentlyAuthorized(request, pending.context);
+        if (pending.settled) return;
+        if (!currentValid || !this.ledger.dispatchAllowedGate(request.id, identity.subject, identity.fingerprint)) {
+          this.finish(pending, errors("forbidden", "approval no longer authorizes this action"), request.to!, false);
+          return;
+        }
+        pending.phase = "dispatching";
       }
       if (pending.settled) return;
       if (pending.phase === "accepted" || pending.phase === "gate_waiting") {
@@ -462,6 +575,19 @@ export class WorldRouter {
     for (const id of ids) {
       const pending = this.pending.get(id);
       if (!pending || pending.settled) continue;
+      if (this.durableGate) {
+        const gateCase = pending.request.from === "service:gate" && pending.request.word === "ask"
+          ? this.ledger.gateCaseByAsk(id) : this.ledger.gateCase(id);
+        if (gateCase?.decision === "waiting") {
+          const ask = this.pending.get(gateCase.askId);
+          if (ask) {
+            this.settleGateAsk(ask, "deny", "cancelled");
+            const response = this.ledger.responseTo(id);
+            if (response) settled.push(response);
+            continue;
+          }
+        }
+      }
       const response = this.finish(pending, errors("cancelled", "request cancelled; external effect may be unknown"), pending.request.to!, true);
       if (response) settled.push(response);
     }
@@ -487,6 +613,7 @@ export class WorldRouter {
   async recover(): Promise<void> {
     for (const tracked of this.ledger.trackedRequests()) {
       const { message, phase, context, deadlineAt } = tracked;
+      if (this.ledger.responseTo(message.id)) continue;
       if (this.pending.has(message.id)) continue;
       const endpoint = this.endpoint(message.to!, message.word);
       let contractValid = false;
@@ -518,7 +645,28 @@ export class WorldRouter {
       }
       const pending = makePending(message, endpoint, context, deadlineAt, phase);
       this.pending.set(message.id, pending);
-      if (Date.now() >= deadlineAt) { this.finish(pending, this.deadlineBody(pending), message.to!, true); continue; }
+      if (this.durableGate && phase === "gate_waiting") {
+        const gateCase = this.ledger.gateCase(message.id);
+        if (!gateCase || !this.ledger.byId(gateCase.askId) || !["waiting", "allowed"].includes(gateCase.decision)) {
+          this.finish(pending, errors("failed", "gate case missing or invalid after restart"), message.to!, false);
+          continue;
+        }
+        if (Date.now() >= deadlineAt && gateCase.decision === "waiting") {
+          const outcome = this.ledger.settleGateAsk(gateCase.askId, "deny", "deadline");
+          if (outcome?.originalResponse) {
+            this.publish(outcome.askResponse);
+            if (outcome.event) this.publish(outcome.event);
+            this.adoptGateTerminal(pending, outcome.originalResponse, true);
+            this.publish(outcome.originalResponse);
+          } else this.finish(pending, errors("failed", "gate expiry could not be reconciled"), message.to!, false);
+          continue;
+        }
+        if (Date.now() >= deadlineAt) { this.expirePending(pending); continue; }
+        this.armTimeout(pending);
+        if (gateCase.decision === "allowed") void this.dispatch(pending, true);
+        continue;
+      }
+      if (Date.now() >= deadlineAt) { this.expirePending(pending); continue; }
       if (phase === "gate_waiting" || (phase === "dispatching" && !endpoint.idempotentRecovery)) {
         this.finish(pending, errors("failed", "outcome unknown after restart; request not replayed"), message.to!, false);
         continue;

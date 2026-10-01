@@ -12,11 +12,11 @@ const gate = (expiresAt: number) => ({ subject: "principal:exact", risk: "outwar
     { id: "once", label: "Only now" }, { id: "deny", label: "Deny" }],
     source: { word: "run", to: "device:fake", body_preview: "Synthetic action" } } });
 
-async function fixture() {
+async function fixture(deadlineMs = 60_000) {
   const file = join(mkdtempSync(join(tmpdir(), "ash-gate-ledger-")), "ash.db");
   const ledger = await Ledger.open(file);
   const accepted = ledger.append({ from: "agent:main", to: "device:fake", kind: "request", word: "run", body: { n: 1 } },
-    undefined, { deadlineAt: Date.now() + 60_000, context: { member: "agent:main", local: true, remote: false,
+    undefined, { deadlineAt: Date.now() + deadlineMs, context: { member: "agent:main", local: true, remote: false,
       ownerProxy: false, transportPrincipal: "agent:main" } }).message;
   return { file, ledger, accepted };
 }
@@ -43,6 +43,20 @@ test("gate start commits one case, owner ask, phase and strict audit event toget
   } finally { reopened.close(); }
 });
 
+test("an answer before ask expiry remains valid for dispatch after ask expiry but before original deadline", async (t) => {
+  const { ledger, accepted } = await fixture(900_000);
+  try {
+    const base = Date.now();
+    let now = base;
+    t.mock.method(Date, "now", () => now);
+    const started = ledger.beginGate(accepted.id, gate(base + 600_000))!;
+    now = base + 599_000;
+    assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer")?.event?.word, "gate.passed");
+    now = base + 601_000;
+    assert.equal(ledger.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), true);
+  } finally { ledger.close(); }
+});
+
 test("a failed gate event insert rolls back case, ask and phase", async () => {
   const { file, ledger, accepted } = await fixture();
   const blocker = new DatabaseSync(file);
@@ -65,6 +79,7 @@ test("gate rejects an invalid ask or expiry beyond the original accepted deadlin
       source: { word: "different", to: "device:fake", body_preview: "Wrong action" } } }));
     assert.throws(() => ledger.beginGate(accepted.id, { ...valid, askBody: { ...valid.askBody,
       source: { word: "run", to: "device:other", body_preview: "Wrong device" } } }));
+    assert.equal(ledger.beginGate(accepted.id, gate(Date.now() - 1)), null);
     assert.equal(ledger.beginGate(accepted.id, gate(Date.now() + 120_000)), null);
     assert.equal(ledger.gateCase(accepted.id), null);
     assert.deepEqual(ledger.list().map((item) => item.word), ["run"]);
