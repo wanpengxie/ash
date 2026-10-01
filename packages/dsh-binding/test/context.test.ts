@@ -9,3 +9,11 @@ test("main context keeps persona, rules and standing files in design order", () 
     "MEMORY_MARKER", "HEARTBEAT_MARKER"].map((marker) => context.indexOf(marker));
   assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])));
 });
+
+test("main context asks for the owner's calendar grant through an in-chat card", () => {
+  const context = renderMainContext({ soul: null, identity: null, user: null, memory: null, heartbeat: null });
+  assert.match(context, /没有 `calendar\.search`/);
+  assert.match(context, /`ash_show`/);
+  assert.match(context, /"type": "permission", "permission": "calendar"/);
+  assert.match(context, /获得授权并看到能力可用后，才查询日历/);
+});
