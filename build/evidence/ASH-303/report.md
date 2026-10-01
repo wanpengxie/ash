@@ -21,7 +21,7 @@ npm run -s build:core
 npm run -s test:public-terms -- --terms-file /path/to/private/terms
 ```
 
-The complete installed-DSH suite, run once serially and once at the repository's default concurrency after the fixes, naturally exited with 494 tests, 432 pass, 0 fail, and 62 existing intentional skips in each run. Typecheck and the core build passed; the public-term scan found 0 findings across 520 files. Earlier full runs were red: first, synthetic-device fixtures lacked grants; then a late terminal was published twice. Both failures and their focused reproductions informed the fixes above. The serial and default-concurrency final TAP transcripts are kept outside the repository for independent review.
+The complete installed-DSH suite, run once serially and once at the repository's default concurrency after the fixes, naturally exited with 494 tests, 432 pass, 0 fail, and 62 skips in each run (59 pre-existing skips plus 3 new SDK route skeleton skips; these are not runtime passes). Typecheck and the core build passed; the public-term scan found 0 findings across 520 files. Earlier full runs were red: first, synthetic-device fixtures lacked grants; then a late terminal was published twice. Both failures and their focused reproductions informed the fixes above. The serial and default-concurrency final TAP transcripts are kept outside the repository for independent review.
 
 ## Scope still awaiting independent verification
 
