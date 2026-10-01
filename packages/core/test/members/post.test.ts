@@ -132,6 +132,28 @@ test("real owner messages route foreground in-app, background due notification, 
   } finally { await f.close(); }
 });
 
+test("an expired risk ask denies the effect and withdraws its notification", async () => {
+  const f = await fixture();
+  let effects = 0;
+  try {
+    f.router.register({ member: "service:fake", spec: { word: "run", kind: "request", risk: "outward", timeout_ms: 250,
+      description: "Synthetic outward effect", input_schema: { type: "object", additionalProperties: false } },
+    handle: () => { effects++; return { ok: true, result: {} }; } });
+    f.router.enableDurableGate();
+    const request = await f.router.send(agent, { to: "service:fake", kind: "request", word: "run", body: {} });
+    for (let i = 0; i < 40 && !f.ledger.gateCase(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    const askId = f.ledger.gateCase(request.id)!.askId;
+    assert.equal((await f.wait(askId)).channel, "notification");
+    assert.equal(f.presentations.filter((item) => item.id === askId).length, 1);
+    for (let i = 0; i < 80 && !f.ledger.responseTo(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(f.ledger.gateCase(request.id)?.decision, "timeout");
+    assert.equal((f.ledger.responseTo(request.id)?.body.error as { code?: string } | undefined)?.code, "denied");
+    for (let i = 0; i < 40 && !f.hides.includes(askId); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(f.hides, [askId]);
+    assert.equal(effects, 0);
+  } finally { await f.close(); }
+});
+
 test("old-page offer gets the latest released state without scanning later ledger pages", async () => {
   const f = await fixture(local(1, 22));
   try {

@@ -37,7 +37,7 @@ export interface GateCaseStart {
   contractFingerprint: string;
   askBody: Record<string, unknown>;
   expiresAt: number;
-  /** Only an explicitly reviewed extractor may supply this exact object. */
+  /** Exact action object chosen from the validated request. */
   objectPattern?: string;
   ruleId?: string;
 }
@@ -61,17 +61,17 @@ const str = (value: unknown, fallback = "") => typeof value === "string" ? value
 const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Row)[key])}`).join(",")}}` : JSON.stringify(value);
 const digest = (value: unknown) => createHash("sha256").update(stable(value)).digest("hex");
 const retryPayload = (input: NewMessage) => digest({ to: input.to, kind: input.kind, word: input.word, body: input.body, reply_to: input.reply_to ?? null });
-const gateObject = (target: string, word: string, body: Record<string, unknown>): string | null => {
+export const gateObject = (target: string, word: string, body: Record<string, unknown>): string => {
   if (target.startsWith("device:") && word === "calendar.create") {
     const id = body.calendar_id;
-    return Number.isSafeInteger(id) && (id as number) > 0 ? String(id) : null;
+    if (Number.isSafeInteger(id) && (id as number) > 0) return String(id);
   }
-  if (target === "device:isolated" && word === "message.send") {
+  if (target.startsWith("device:") && word === "message.send") {
     const recipient = body.recipient_id;
-    return typeof recipient === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(recipient.toLowerCase())
-      ? recipient.toLowerCase() : null;
+    if (typeof recipient === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(recipient.toLowerCase()))
+      return recipient.toLowerCase();
   }
-  return null;
+  return stable(body);
 };
 
 function integrity(db: DatabaseSync): void {
@@ -775,7 +775,7 @@ export class Ledger {
       const optionIds = (input.askBody.options as { id?: unknown }[]).map((option) => option.id);
       const reviewedObject = typeof input.objectPattern === "string" &&
         gateObject(String(tracked.to), String(tracked.word), obj(JSON.parse(String(tracked.body)))) === input.objectPattern;
-      if (input.objectPattern !== undefined && !reviewedObject) throw new TypeError("unreviewed approval object");
+      if (input.objectPattern !== undefined && !reviewedObject) throw new TypeError("approval object does not match request");
       if (optionIds.join(",") !== (reviewedObject ? "once,always,deny" : "once,deny")) throw new TypeError("gate choices do not match reviewed object policy");
       if (this.db.prepare("SELECT 1 FROM gate_cases WHERE request_id=?").get(requestId)) throw new TypeError("duplicate gate case");
       const at = Date.now();

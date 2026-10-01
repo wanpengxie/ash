@@ -159,17 +159,17 @@ test("risky request without explicit timeout receives one persisted ten-minute t
   } finally { ledger.close(); }
 });
 
-test("risk gate also runs for owner requests and records approval before device effect", async () => {
+test("owner-direct risk request executes without an approval ask", async () => {
   const { ledger, router } = await setup();
   try {
     router.register({ member: "device:fake", spec: spec("run", "structure"), handle: () => {
-      assert.deepEqual(ledger.list().map((m) => m.word), ["run", "gate.asked", "gate.passed"]);
+      assert.deepEqual(ledger.list().map((m) => m.word), ["run"]);
       return { ok: true, result: { value: 2 } };
     } });
-    router.setGate(async () => ({ allow: true, by: "rule" }));
+    router.setGate(async () => { assert.fail("direct owner action must not enter gate"); });
     const sent = await router.send(owner, { ...request(), wait: true });
     assert.equal(sent.reply?.body.ok, true);
-    assert.deepEqual(ledger.list().map((m) => m.word), ["run", "gate.asked", "gate.passed", "run"]);
+    assert.deepEqual(ledger.list().map((m) => m.word), ["run", "run"]);
   } finally { ledger.close(); }
 });
 

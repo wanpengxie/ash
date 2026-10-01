@@ -7,7 +7,7 @@ import type { ValidateFunction } from "ajv";
 import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema, schemaErrors } from "../../../sdk/src/schema";
 import { deviceWordSpec, optionReplyErrors, wordContract } from "../../../sdk/src/words";
-import { Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
+import { gateObject, Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
 type Transport = "web_ui" | "api" | "phone" | "agent" | "device" | "service";
 /** Constructed only after edge authentication and (for web_ui) screen-token verification. */
@@ -76,10 +76,6 @@ const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.m
   : value && typeof value === "object" ? `{${Object.keys(value).sort().filter((key) => (value as Record<string, unknown>)[key] !== undefined)
     .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
 const hash = (value: unknown): string => createHash("sha256").update(canonical(value)).digest("hex");
-const ISOLATED_MESSAGE_SCHEMA: JsonSchema = { type: "object", properties: {
-  recipient_id: { type: "string", format: "uuid" }, text: { type: "string", minLength: 1 },
-}, required: ["recipient_id", "text"], additionalProperties: false } as unknown as JsonSchema;
-const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   transportPrincipal: ctx.transportPrincipal,
@@ -115,7 +111,6 @@ export class WorldRouter {
   private readonly subscribers = new Set<Subscriber>();
   private gate: GateHook | null = null;
   private durableGate = false;
-  private isolatedFakeAlways = false;
   private readonly internalApprovals = new Map<string, (outcome: InternalApprovalOutcome | "approved") => void>();
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
@@ -280,10 +275,9 @@ export class WorldRouter {
 
   setGate(gate: GateHook): void { this.gate = gate; }
   /** Production gate is ledger-backed; fake GateHook remains only for isolated router tests. */
-  enableDurableGate(options: { reviewedIsolatedFakeMessageSend?: boolean } = {}): void {
+  enableDurableGate(): void {
     if (this.gate) throw new TypeError("cannot combine durable gate with fake gate hook");
     this.durableGate = true;
-    this.isolatedFakeAlways = options.reviewedIsolatedFakeMessageSend === true;
   }
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
 
@@ -571,18 +565,6 @@ export class WorldRouter {
     };
   }
 
-  private reviewedObject(pending: Pending): string | null {
-    const { request, endpoint } = pending;
-    if (request.to?.startsWith("device:") && request.word === "calendar.create" && endpoint.spec.risk === "outward") {
-      const calendarId = request.body.calendar_id;
-      return Number.isSafeInteger(calendarId) && (calendarId as number) > 0 ? String(calendarId) : null;
-    }
-    if (!this.isolatedFakeAlways || request.to !== "device:isolated" || request.word !== "message.send" ||
-      endpoint.spec.risk !== "outward" || canonical(endpoint.spec.input_schema) !== canonical(ISOLATED_MESSAGE_SCHEMA)) return null;
-    const recipient = request.body.recipient_id;
-    return typeof recipient === "string" && CANONICAL_UUID.test(recipient.toLowerCase()) ? recipient.toLowerCase() : null;
-  }
-
   private activateGateAsk(ask: Message): void {
     const endpoint = this.endpoint("person:owner", "ask");
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === ask.id);
@@ -650,8 +632,7 @@ export class WorldRouter {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
-      const gateBypass = request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
-        request.from === "person:owner" && pending.context.local && !pending.context.remote;
+      const gateBypass = request.from === "person:owner";
       if (this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;
@@ -663,26 +644,28 @@ export class WorldRouter {
           this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
         }
         const identity = this.gateIdentity(pending);
-        const objectPattern = this.reviewedObject(pending);
+        const objectPattern = gateObject(request.to!, request.word, request.body);
         const ruleEvent = objectPattern ? this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint, objectPattern) : null;
         if (ruleEvent) {
           pending.phase = "dispatching";
           this.publish(ruleEvent);
         } else {
         const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
-        const calendarAsk = request.word === "calendar.create" && objectPattern !== null;
+        const calendarAsk = request.word === "calendar.create" && Number.isSafeInteger(request.body.calendar_id) &&
+          (request.body.calendar_id as number) > 0;
         const eventTitle = typeof request.body.title === "string" ? request.body.title.slice(0, 100) : "未命名事件";
         const eventStart = request.body.start_ms;
         const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
           ? `，开始时间 ${new Date(eventStart).toLocaleString("zh-CN")}` : "";
-        const detail = calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。` : "A protected action is waiting for approval.";
+        const detail = calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
+          : `${endpoint.spec.label ?? request.word}: ${JSON.stringify(request.body).slice(0, 500)}`;
         const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
-          contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
+          contractFingerprint: identity.fingerprint, expiresAt, objectPattern,
           askBody: { title: calendarAsk ? "创建日历事件" : "Confirm action", detail,
-            options: [{ id: "once", label: "Allow once" }, ...(objectPattern ? [{ id: "always", label: request.word === "calendar.create"
-              ? "Allow this calendar for 30 days" : "Allow this recipient for 30 days" }] : []),
+            options: [{ id: "once", label: "Allow once" }, { id: "always", label: calendarAsk
+              ? "Allow this calendar for 30 days" : "Allow this action and object for 30 days" },
               { id: "deny", label: "Deny" }],
-            source: { word: request.word, to: request.to!, body_preview: calendarAsk ? detail : "Protected action" } } });
+            source: { word: request.word, to: request.to!, body_preview: detail } } });
         if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
         pending.phase = "gate_waiting";
         this.publish(started.ask);
@@ -691,7 +674,7 @@ export class WorldRouter {
         return;
         }
       }
-      if (!this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
+      if (!this.durableGate && request.from !== "person:owner" && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";
