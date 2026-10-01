@@ -149,7 +149,8 @@ test("close during a persisted lifecycle send cannot touch a closed inbox", asyn
     let arrived!: () => void; let release!: () => void;
     const blocked = new Promise<void>((resolve) => { arrived = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const f = await fixture({ async runTurn() { return { reason: "completed" }; } });
+    let runnerCalls = 0;
+    const f = await fixture({ async runTurn() { runnerCalls++; return { reason: "completed" }; } });
     const original = f.router.send.bind(f.router);
     f.router.send = (async (...args: Parameters<WorldRouter["send"]>) => {
       if (args[1].word === blockedWord) { arrived(); await gate; }
@@ -167,8 +168,22 @@ test("close during a persisted lifecycle send cannot touch a closed inbox", asyn
       release();
       await sleep(30);
       assert.equal(f.member.lastError, null, `closed inbox touched after ${blockedWord}`);
+      assert.equal(runnerCalls, 0, `runner started after close during ${blockedWord}`);
     } finally { release(); await f.close(); }
   }
+});
+
+test("saved emit callback cannot publish after its turn has ended", async () => {
+  let savedEmit: ((output: { id: string; text: string }) => Promise<void>) | undefined;
+  const f = await fixture({ async runTurn(_input, emit) { savedEmit = emit; return { reason: "completed" }; } });
+  try {
+    await f.member.start();
+    await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "go" }, wait: true });
+    await f.waitFor((rows) => rows.some((message) => message.word === "turn.end"));
+    assert.ok(savedEmit);
+    await savedEmit({ id: "after-end", text: "must not publish" });
+    assert.equal(f.messages().filter((message) => message.kind === "request" && message.from === "agent:main" && message.word === "say").length, 0);
+  } finally { await f.close(); }
 });
 
 test("a non-cooperative runner cannot emit after close", async () => {
