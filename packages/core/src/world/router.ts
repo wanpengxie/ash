@@ -239,6 +239,10 @@ export class WorldRouter {
   }
 
   private authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): void {
+    if (request.to === "person:owner" && request.word === "say" && Object.hasOwn(request.body, "dedupe_key") &&
+      (ctx.remote || !ctx.local || !((ctx.transport === "agent" && from === "agent:main" && ctx.transportPrincipal === "agent:main") ||
+        (ctx.transport === "service" && from === "service:work" && ctx.transportPrincipal === "service:work"))))
+      fail("forbidden", "proactive delivery key requires trusted local agent or work service");
     if (request.to === "service:admin" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "administration requires local owner");
     if (request.to === "service:self" && LOCAL_SELF_MUTATIONS.has(request.word)) {
       const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan");
@@ -451,6 +455,12 @@ export class WorldRouter {
       try { contractValid = Boolean(endpoint && endpoint.direction !== "out" && endpoint.spec.kind === "request" && endpoint.validateInput(message.body)); } catch { /* changed or invalid endpoint contract */ }
       if (!contractValid) {
         this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
+        continue;
+      }
+      if (message.to === "person:owner" && message.word === "say" && Object.hasOwn(message.body, "dedupe_key") &&
+        (context.remote || !context.local || !((message.from === "agent:main" && context.member === "agent:main" && context.transportPrincipal === "agent:main") ||
+          (message.from === "service:work" && context.member === "service:work" && context.transportPrincipal === "service:work")))) {
+        this.publish(this.ledger.settle(message.id, message.to!, errors("forbidden", "proactive delivery key source is no longer authorized")).message);
         continue;
       }
       let authorized = false;
