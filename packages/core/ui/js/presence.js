@@ -12,7 +12,7 @@ export function faceForStatus(state) { return Object.hasOwn(FACE, state) ? FACE[
 
 /** The state and avatar come only from the projected agent status event. Connectivity is separate. */
 export class PresenceBar {
-  constructor(root = document) {
+  constructor(root = document, { onOpen } = {}) {
     this.bar = root.querySelector("#presence");
     this.state = root.querySelector("#state");
     this.avatar = root.querySelector("#face img");
@@ -20,8 +20,8 @@ export class PresenceBar {
     this.connection = root.querySelector("#connection");
     this.notice = root.querySelector("#presenceNotice");
     this.bar.addEventListener("click", () => {
-      // AgentSheet has no working destination yet. Never imply a page was opened.
-      this.notice.textContent = "人物页尚未接入";
+      if (typeof onOpen === "function") onOpen();
+      else this.notice.textContent = "人物页尚未接入";
     });
   }
 
