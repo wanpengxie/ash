@@ -324,7 +324,9 @@ export class WorldRouter {
     if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
-    const timeoutMs = endpoint?.spec.timeout_ms ?? 60_000;
+    // A risky request and its owner approval share one persisted total budget.
+    // Explicit endpoint deadlines remain authoritative, even when shorter.
+    const timeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint?.spec.risk && endpoint.spec.risk !== "none" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
     const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
