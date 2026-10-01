@@ -127,10 +127,19 @@ export async function startOwner(config: Config): Promise<Running> {
     await self?.prepareRecovery();
     await world.recover();
     if (dsh) {
+      const startedTurns = new Set<string>();
+      let cursor = 0;
+      for (;;) {
+        const page = ledger.list({ after: cursor, limit: 1000 });
+        if (!page.length) break;
+        for (const message of page) if (message.from === "agent:main" && message.word === "turn.start" && typeof message.body.turn === "string")
+          startedTurns.add(message.body.turn);
+        cursor = page.at(-1)!.seq;
+      }
       await dsh.boot();
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
-        nativeMode: "disabled" });
+        nativeMode: "disabled", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns } });
     }
     await agent.start();
     server = await startEdgeServer(edge, host, port);
