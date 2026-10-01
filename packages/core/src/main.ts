@@ -45,7 +45,7 @@ export interface Config {
   stateDir: string;
   workspaces?: Record<string, string>;
   agents?: { id: "agent:main"; name?: string; runtime: "echo" | "dsh" }[];
-  dsh?: { root: string; home?: string; env?: Record<string, string> };
+  dsh?: { root: string; home?: string; skillsRoot?: string; env?: Record<string, string> };
   host?: HostConnection & { coreToken?: string };
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
@@ -137,7 +137,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     members.register(new GateMember(ledger, world, members));
     world.enableDurableGate();
-    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
+    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,

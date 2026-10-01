@@ -7,7 +7,7 @@ import type { WorldMembers } from "../../core/src/world/member";
 import type { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, type DoorAgent, type DoorOptions, type DshDoor } from "./door";
 
-export interface DshHostOptions { root: string; home: string; env?: Record<string, string> }
+export interface DshHostOptions { root: string; home: string; skillsRoot?: string; env?: Record<string, string> }
 export interface DshRootAgent extends DoorAgent {
   id: string;
   followup(message: { id: string; role: "user"; content: unknown[]; source: { kind: "user" } }): void;
@@ -168,6 +168,10 @@ export class DshHost {
     const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash-v2", patchFiles: [], args: [] });
     this.ctx = ctx;
     this.shutdownHandle = shutdown;
+    if (this.options.skillsRoot) {
+      const plugin = await import(pathToFileURL(join(this.options.skillsRoot, "index.mjs")).href);
+      await ctx.plugin(plugin);
+    }
     ctx.on("session/event", (session: { id?: string; header?: { id?: string } }, event: DshSessionEvent) => {
       const id = session?.id ?? session?.header?.id ?? "";
       for (const listener of this.listeners) listener(id, event);

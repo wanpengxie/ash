@@ -1,0 +1,8 @@
+{
+  "name": "ash-skills",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "files": ["index.mjs", "skills", "persona"]
+}

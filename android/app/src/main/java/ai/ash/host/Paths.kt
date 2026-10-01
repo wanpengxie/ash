@@ -36,6 +36,7 @@ class Paths(ctx: Context) {
     val node = File(payload, "runtime/bin/node")
     val coreBundle = File(payload, "ash/ash-core.mjs")
     val dshRoot = File(payload, "dsh/lib/node_modules/@deepseek-ai/dsh")
+    val skillsRoot = File(payload, "ash-skills")
     val compatPreload = File(payload, "dsh/lib/node_modules/android-node-compat/index.cjs")
     val hostPatch = File(payload, "profile/cordis.patch.yml")
     val buildMarker = File(payload, ".build")
