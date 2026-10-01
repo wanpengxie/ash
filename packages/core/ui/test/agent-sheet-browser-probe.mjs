@@ -129,7 +129,12 @@ try {
   await until(() => evaluate("Boolean(document.querySelector('#agentPanel section[data-tab=memory] .editor-rollback'))"), "USER version history");
   assert.equal(await evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-rollback').disabled"), false);
   await evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-rollback').click()");
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-status, #agentPanel section[data-tab=memory] .editor-warning')?.textContent.includes('审批服务未就绪')"), "rollback denied without a gate service");
+  const rollbackRequest = await until(() => first.ledger.list({ limit: 1000 }).find((row) => row.kind === "request" && row.to === "service:self" && row.word === "rollback" && row.body?.path === "USER.md"), "USER rollback accepted");
+  const rollbackGate = await until(() => first.ledger.gateCase(rollbackRequest.id), "USER rollback gate ask");
+  const denial = await evaluate(`fetch('/api/send',{method:'POST',headers:{'content-type':'application/json','Ash-Screen':sessionStorage.getItem('ash.screen.token.v2')},body:JSON.stringify({to:'service:gate',kind:'response',word:'ask',reply_to:${JSON.stringify(rollbackGate.askId)},body:{ok:true,result:{choice:'deny'}},client_id:'synthetic-sheet-rollback-deny'})}).then(r=>r.status)`);
+  assert.equal(denial, 200);
+  await until(() => first.ledger.responseTo(rollbackRequest.id), "denied rollback settled");
+  assert.equal(first.ledger.gateCase(rollbackRequest.id)?.decision, "denied");
   assert.match(readFileSync(join(dir, "first-home", "USER.md"), "utf8"), /Synthetic owner fact B/);
 
   await clickTab("identity");
@@ -187,7 +192,7 @@ try {
   await clickTab("activity"); await clickTab("upcoming");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('暂无计划')"), "fresh list sees externally removed timer");
   await clickTab("approvals");
-  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /不能确认操作/);
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /规则清单和撤销功能尚未连接/);
 
   await clickTab("identity");
   holdNextRead = true;
@@ -266,7 +271,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#title').textContent"), "Ash");
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(identityText)}).value`), "");
   assert.equal(selfWrites(second).length, 0);
-  console.log("PASS: authoritative name read/write refresh, remote name/scope reset, avatar sheet, real clock cancel with lost ACK retry and failed cancel retained, activity work-source boundary, local SOUL/USER save/history, rollback gate unavailable, remote 403, offline and delayed reply discarded");
+  console.log("PASS: authoritative name read/write refresh, remote name/scope reset, avatar sheet, real clock cancel with lost ACK retry and failed cancel retained, activity work-source boundary, local SOUL/USER save/history, denied rollback, remote 403, offline and delayed reply discarded");
 } finally {
   remoteSocket?.close(); socket?.close();
   if (remoteServer) await new Promise((resolve) => { remoteServer.close(resolve); remoteServer.closeAllConnections(); });
