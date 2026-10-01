@@ -6,6 +6,7 @@ import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
 import { AgentSheet } from "./sheet-agent.js";
 import { IdentityName } from "./identity-name.js";
+import { readWorkspaceFile } from "./ui-transport.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -88,13 +89,13 @@ function text(parent, tag, value, className = "") {
   return node;
 }
 
-export function render(view, outbox = [], openInline, presenceBar) {
+export function render(view, outbox = [], openInline, presenceBar, openWorkspaceFile) {
   const log = document.querySelector("#log");
   const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const oldHeight = log.scrollHeight;
   const oldTop = log.scrollTop;
   const fragment = document.createDocumentFragment();
-  appendConversation(fragment, view.conversation, { openInline });
+  appendConversation(fragment, view.conversation, { openInline, openWorkspaceFile });
   appendOutbox(fragment, outbox);
   log.replaceChildren(fragment);
   if (nearEnd) log.scrollTop = log.scrollHeight;
@@ -102,7 +103,7 @@ export function render(view, outbox = [], openInline, presenceBar) {
   presenceBar?.render(view.presence);
 }
 
-export function boot() {
+export function boot({ uiTransport } = {}) {
   performance.mark("shell.boot");
   const form = document.querySelector("#f");
   const input = document.querySelector("#t");
@@ -131,7 +132,9 @@ export function boot() {
     const item = await net.fetchOriginalAttachment(ref.summary, ref.descriptor);
     return openInlineBlob(item, ref.descriptor);
   };
+  const openWorkspaceFile = uiTransport?.embedded ? (ref) => readWorkspaceFile(uiTransport, ref) : undefined;
   const net = new ScreenNet({
+    uiTransport,
     label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "Phone browser" : "Computer browser"),
     onMessage: (message, context) => {
       timeline.add(message);
@@ -160,11 +163,11 @@ export function boot() {
     onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
-      if (timeline) render(timeline.view, outbox, openInline, presenceBar);
+      if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile);
     },
   });
   timeline = new Timeline(net, (view) => {
-    render(view, net.outbox, openInline, presenceBar);
+    render(view, net.outbox, openInline, presenceBar, openWorkspaceFile);
     agentSheet?.update();
   });
   identityName = new IdentityName(net, (name) => {
@@ -235,4 +238,6 @@ export function boot() {
   return { net, timeline };
 }
 
-if (typeof document !== "undefined") boot();
+// A packaged asset page must wait for an explicitly injected native transport.
+if (typeof document !== "undefined" && globalThis.location?.origin !== "https://appassets.androidplatform.net" &&
+    !document.documentElement?.hasAttribute("data-native-transport")) boot();
