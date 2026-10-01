@@ -4,6 +4,7 @@ import { appendConversation, appendOutbox } from "./conversation.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
+import { AgentSheet } from "./sheet-agent.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -104,7 +105,11 @@ export function boot() {
   performance.mark("shell.boot");
   const form = document.querySelector("#f");
   const input = document.querySelector("#t");
-  const presenceBar = new PresenceBar(document);
+  let agentSheet;
+  const presenceBar = new PresenceBar(document, { onOpen: () => {
+    document.querySelector("#drawer").classList.remove("open");
+    agentSheet?.open();
+  } });
   const connection = document.querySelector("#connection");
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
@@ -141,13 +146,14 @@ export function boot() {
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
-    onReset: () => { timeline.reset(); suggestions.replaceChildren(); settings?.reset(); },
+    onReset: () => { timeline.reset(); suggestions.replaceChildren(); settings?.reset(); agentSheet?.reset(); },
     onState: (status, error) => {
       settings?.network(status);
+      agentSheet?.network(status);
       presenceBar.network(status, status === "online" ? presenceProblem : "");
       if (error) connection.title = String(error.message || error);
     },
-    onRegistered: (frame) => { settings?.registration(frame); if (!document.hidden) void visible(); },
+    onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
       if (timeline) render(timeline.view, outbox, openInline, presenceBar);
@@ -155,6 +161,7 @@ export function boot() {
   });
   timeline = new Timeline(net, (view) => render(view, net.outbox, openInline, presenceBar));
   settings = new SettingsControls(document.querySelector("#panel"), net);
+  agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net);
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
@@ -205,8 +212,12 @@ export function boot() {
     const files = [...fileInput.files];
     selected.textContent = files.length ? `${files.length} 个附件，${files.map((file) => file.name).join("、").slice(0, 120)}` : "";
   });
-  document.querySelector("#menu").addEventListener("click", () => document.querySelector("#drawer").classList.toggle("open"));
+  document.querySelector("#menu").addEventListener("click", () => {
+    if (!agentSheet.close()) return;
+    document.querySelector("#drawer").classList.toggle("open");
+  });
   window.addEventListener("pagehide", () => net.stop());
+  window.addEventListener("offline", () => agentSheet.reset());
   window.addEventListener("pageshow", (event) => { if (event.persisted) void net.start(); });
   void net.start();
   return { net, timeline };
