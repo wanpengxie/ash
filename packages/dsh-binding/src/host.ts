@@ -60,7 +60,21 @@ function loadOrCreateSessionId(file: string, startedTurns: ReadonlySet<string>):
 export function assertResumableHistory(events: readonly { type: string; data?: any }[], startedTurns: ReadonlySet<string>, completedTurns: ReadonlySet<string> = new Set()): void {
   const pending = { "next-turn": [] as string[], "next-step": [] as string[] };
   const seenPrompts = new Set<string>();
+  const promptTurns = new Map<string, number>();
+  const finishedTurns = new Map<number, string>();
+  let openTurn: number | null = null;
   for (const event of events) {
+    if (event.type === "turn/start") {
+      const turn = event.data?.turn;
+      if (openTurn !== null || !Number.isSafeInteger(turn) || turn < 1) throw new Error("invalid DSH turn start in history");
+      openTurn = turn;
+    } else if (event.type === "turn/end") {
+      const turn = event.data?.turn;
+      const reason = event.data?.reason?.kind;
+      if (openTurn !== turn || typeof reason !== "string") throw new Error("invalid DSH turn end in history");
+      finishedTurns.set(turn, reason);
+      openTurn = null;
+    }
     if (event.type === "user/message") {
       const id = event.data?.id;
       // The installed runtime adds its own context snapshot as a user-role
@@ -80,7 +94,9 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
         throw new Error("DSH history contains a user message without a core turn");
       if (!runtimeContext) {
         if (seenPrompts.has(id)) throw new Error("DSH history repeats a core prompt");
+        if (openTurn === null || [...promptTurns.values()].includes(openTurn)) throw new Error("DSH core prompt has no distinct active turn");
         seenPrompts.add(id);
+        promptTurns.set(id, openTurn);
       }
     }
     if (event.type !== "agent/inbox/spliced") continue;
@@ -96,7 +112,11 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
       return message.id;
     }));
   }
-  for (const turn of completedTurns) if (!seenPrompts.has(`core-${turn}`)) throw new Error("completed core turn is missing from DSH history");
+  for (const turn of completedTurns) {
+    const dshTurn = promptTurns.get(`core-${turn}`);
+    if (dshTurn === undefined) throw new Error("completed core turn is missing from DSH history");
+    if (finishedTurns.get(dshTurn) !== "completed") throw new Error("completed core turn lacks a matching completed DSH turn");
+  }
   if (pending["next-turn"].length || pending["next-step"].length) throw new Error("DSH has queued work that cannot be automatically resumed safely");
 }
 

@@ -91,6 +91,16 @@ test("real session becomes idle after cancelling a tool while its external devic
     await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.word === "say" && message.body.text === "new batch answer"), "next batch");
     assert.equal(deviceSettled, false, "the new DSH turn follows session idle, not the external device promise");
     assert.equal(running.ledger.list().filter((message) => message.from === "agent:main" && message.word === "hold" && message.kind === "request").length, 1);
+    const nextModelRequest = modelRequests.find((request) => request.includes("next batch"));
+    assert.ok(nextModelRequest);
+    assert.match(nextModelRequest, /stop synthetic hold/, "the next actual model input omitted the stop reason");
+    assert.match(nextModelRequest, /device:probe\/hold/, "the next actual model input omitted the stopped action");
+    await until(() => running!.ledger.list().some((message) => message.word === "turn.end" && message.body.reason === "completed"), "second completed turn");
+    const modelCallsBeforeIdleCancel = modelRequests.length;
+    const idle = await running.world.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "idle retry" }, wait: true });
+    assert.deepEqual(idle.reply?.body.result, { cancelled: false });
+    assert.equal(modelRequests.length, modelCallsBeforeIdleCancel, "idle cancellation drove the DSH session");
+    assert.equal(deviceSettled, false, "idle cancellation must not be inferred from the external effect");
     deviceRelease.resolve(); await sleep(40);
     assert.equal(running.ledger.list().filter((message) => message.word === "hold" && message.kind === "response" && message.reply_to === hold.id).length, 1,
       "late device success cannot replace or duplicate the cancelled terminal");
@@ -159,6 +169,9 @@ test("the root session resumes its prior model history after a clean restart", {
     assert.notEqual(newOwnerToken, oldOwnerToken);
     assert.equal((await sendAtEdge(newOwnerToken, "second history input")).status, 200);
     await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.body.text === "second remembered answer"), "second answer");
+    await until(() => running!.ledger.list().filter((message) => message.from === "agent:main" && message.word === "turn.end" && message.body.reason === "completed").length === 2,
+      "two completed core turns");
+    const secondTurn = running.ledger.list().filter((message) => message.from === "agent:main" && message.word === "turn.end" && message.body.reason === "completed").at(-1)!.body.turn as string;
     assert.ok(requests.length >= 2);
     const resumedRequest = requests.find((request) => request.includes("second history input"));
     assert.ok(resumedRequest);
@@ -200,14 +213,36 @@ test("the root session resumes its prior model history after a clean restart", {
     assert.equal(files.length, 1, "synthetic root must have one canonical session artifact");
     const file = files[0];
     const original = readFileSync(file);
+    const frameMagic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+    const frameEnds: number[] = [];
+    for (let index = 1; index + 4 < original.length; index++) if (original.subarray(index, index + 4).equals(frameMagic)) frameEnds.push(index);
+    frameEnds.push(original.length);
     let headerLength = 0;
-    for (let size = 4; size < original.length; size++) {
+    let promptOnlyLength = 0;
+    let decoded = "";
+    let frameStart = 0;
+    for (const size of frameEnds) {
       try {
-        const decoded = zstdDecompressSync(original.subarray(0, size)).toString("utf8");
-        if (decoded.endsWith("\n") && decoded.trim().split("\n").length === 1) { headerLength = size; break; }
+        decoded += zstdDecompressSync(original.subarray(frameStart, size)).toString("utf8");
+        frameStart = size;
+        if (!decoded.endsWith("\n")) continue;
+        const rows = decoded.trim().split("\n").map((line) => JSON.parse(line) as { type?: string; data?: { id?: string; turn?: number } });
+        if (!headerLength && rows.length === 1) headerLength = size;
+        let active: number | null = null;
+        let promptTurn: number | null = null;
+        let promptEnded = false;
+        for (const row of rows) {
+          if (row.type === "turn/start") active = row.data?.turn ?? null;
+          if (row.type === "user/message" && row.data?.id === `core-${secondTurn}`) promptTurn = active;
+          if (row.type === "turn/end") { if (promptTurn === row.data?.turn) promptEnded = true; active = null; }
+        }
+        if (!promptOnlyLength && promptTurn !== null && !promptEnded) promptOnlyLength = size;
       } catch { /* incomplete frame */ }
     }
     assert.ok(headerLength > 0 && headerLength < original.length, "failed to locate the persisted header frame");
+    assert.ok(promptOnlyLength > headerLength && promptOnlyLength < original.length, "no complete persisted frame ends after the second prompt and before its turn end");
+    writeFileSync(file, original.subarray(0, promptOnlyLength));
+    refusal(/completed core turn lacks a matching completed DSH turn/);
     writeFileSync(file, original.subarray(0, headerLength));
     refusal(/history missing for existing core turns|completed core turn is missing from DSH history/);
     writeFileSync(file, Buffer.concat([original.subarray(0, headerLength), Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00])]));
