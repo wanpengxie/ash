@@ -120,17 +120,23 @@ try {
   // DSH's prompt registry renders current context as a superseding runtime snapshot.
   const beforeVisible = JSON.stringify(captured[0].messages ?? []);
   const afterVisible = JSON.stringify(captured[1].messages ?? []);
+  const beforeTail = currentTail(captured[0]);
   const afterTail = currentTail(captured[1]);
   const laterTail = currentTail(captured[2]);
+  const ordered = [oldSoul, "像在对话里帮一个熟悉的人办事", "当系统正在等对方答复", userFact]
+    .map((marker) => beforeTail.indexOf(marker));
   const observed = { firstHasOldSoul: beforeVisible.includes(oldSoul), firstHasUser: beforeVisible.includes(userFact),
-    firstHasMemory: beforeVisible.includes(memoryFact), secondHasNewSoul: afterVisible.includes(newSoul),
+    firstHasMemory: beforeVisible.includes(memoryFact), firstContextOrder: ordered.every((position, index) =>
+      position >= 0 && (index === 0 || position > ordered[index - 1])), firstDynamicVisible: beforeTail.includes("Synthetic context check before"),
+    secondHasNewSoul: afterVisible.includes(newSoul),
     secondCurrentHasNewSoul: afterTail.includes(newSoul), secondCurrentHasOldSoul: afterTail.includes(oldSoul),
     secondHasUser: afterVisible.includes(userFact), secondHasMemory: afterVisible.includes(memoryFact),
     secondHasChangedFact: afterTail.includes("self.changed") &&
       afterTail.includes(changed[0].body.summary), thirdHasChangedFact: laterTail.includes("self.changed") &&
       laterTail.includes(changed[0].body.summary) };
   console.log(JSON.stringify(observed)); // Synthetic marker booleans only; never dump the provider request or headers.
-  assert.deepEqual(observed, { firstHasOldSoul: true, firstHasUser: true, firstHasMemory: true,
+  assert.deepEqual(observed, { firstHasOldSoul: true, firstHasUser: true, firstHasMemory: true, firstContextOrder: true,
+    firstDynamicVisible: true,
     secondHasNewSoul: true, secondCurrentHasNewSoul: true, secondCurrentHasOldSoul: false,
     secondHasUser: true, secondHasMemory: true, secondHasChangedFact: true, thirdHasChangedFact: false });
 } finally {
