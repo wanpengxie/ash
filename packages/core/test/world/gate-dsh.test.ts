@@ -17,7 +17,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-for (const choice of ["once", "deny", "cancel", "policy" ] as const) test(`installed DSH gate handles ${choice} without extra tool effects`, { skip }, async () => {
+for (const choice of ["once", "deny", "cancel", "policy", "policy-before" ] as const) test(`installed DSH gate handles ${choice} without extra tool effects`, { skip }, async () => {
   const root = mkdtempSync(join(tmpdir(), "ash-gate-dsh-"));
   const home = join(root, "home"); mkdirSync(home);
   let calls = 0;
@@ -60,6 +60,8 @@ for (const choice of ["once", "deny", "cancel", "policy" ] as const) test(`insta
       if (exec.name !== "ash_describe") return next();
       spoofOutcome = await (running!.dsh as unknown as { ctx: { get: (name: string) => { request: (input: object) => Promise<string> } } }).ctx
         .get("approval").request({ agent: exec.agent, toolName: exec.name, callId: "toolu_gate_spoof", signal: exec.signal });
+      if (choice === "policy-before") (running!.dsh as unknown as { ctx: { get: (name: string) => { setPolicy: (agent: object, policy: string) => void } } }).ctx
+        .get("approval").setPolicy(exec.agent, "never");
       return { kind: "ask", reason: "synthetic approval" };
     });
     const stopEffect = session.agent.ctx.on("tools/execute", async (exec: { name: string }, next: () => Promise<unknown>) => {
@@ -76,6 +78,15 @@ for (const choice of ["once", "deny", "cancel", "policy" ] as const) test(`insta
       "content-type": "application/json", "Ash-Screen": screen.token }, body: JSON.stringify(wire) });
     const first = await send({ to: "agent:main", kind: "request", word: "say", body: { text: "first synthetic turn" } });
     assert.equal(first.status, 200);
+    if (choice === "policy-before") {
+      await until(() => running!.ledger.list().some((message) => message.word === "turn.end"), "policy-rejected turn");
+      assert.equal(running.ledger.list().filter((message) => message.word === "internal.approval").length, 0);
+      assert.equal(effects, 0);
+      assert.equal(spoofOutcome, "unavailable");
+      assert.equal(audit.at(-1)?.data?.outcome, "rejected");
+      stopAudit(); stopEffect(); stopAsk();
+      return;
+    }
     await until(() => running!.ledger.list().some((message) => message.word === "internal.approval" && message.kind === "request"), "first internal approval");
     const parent = running.ledger.list().find((message) => message.word === "internal.approval" && message.kind === "request")!;
     try { await until(() => Boolean(running!.ledger.gateCase(parent.id)), "committed gate case"); }
