@@ -364,15 +364,18 @@ export function isMessageSummaryV2(value: unknown): value is MessageSummaryV2 {
 export class SummaryPageBudgetV2 {
   private readonly rows: number[] = [];
   private bytes = STREAM_SUMMARY_CONTROL_RESERVE_BYTES;
+  private full = false;
   tryInclude(seq: number, encodedSseBytes: number): boolean {
     if (!streamSeq(seq) || !Number.isSafeInteger(encodedSseBytes) || encodedSseBytes <= 0) throw new TypeError("invalid summary row budget input");
     if (encodedSseBytes > STREAM_SUMMARY_ITEM_BYTES) throw new RangeError("summary row exceeds 1 MiB");
-    if (this.rows.length >= 1000 || this.bytes + encodedSseBytes > STREAM_SUMMARY_PAGE_BYTES) return false;
+    if (this.full) return false;
+    if (this.rows.length >= 1000 || this.bytes + encodedSseBytes > STREAM_SUMMARY_PAGE_BYTES) { this.full = true; return false; }
     this.rows.push(seq);
     this.bytes += encodedSseBytes;
     return true;
   }
   end(hasMore: boolean): StreamPageEndV2 {
+    if (hasMore && !this.rows.length || this.full && !hasMore) throw new RangeError("invalid summary page continuation");
     return { has_more: hasMore, first_seq: this.rows.length ? Math.min(...this.rows) : null, last_seq: this.rows.length ? Math.max(...this.rows) : null };
   }
 }

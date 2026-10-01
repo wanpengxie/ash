@@ -132,10 +132,18 @@ test("L025 summary budget counts UTF-8 bytes and emits a continuous page prefix"
   assert.equal(budget.tryInclude(8, 900_000), true);
   assert.equal(budget.tryInclude(7, 900_000), true);
   assert.equal(budget.tryInclude(6, 900_000), false);
+  assert.equal(budget.tryInclude(5, 1), false, "a smaller row after the excluded row cannot create a hole");
+  assert.throws(() => budget.end(false), RangeError);
   assert.deepEqual(budget.end(true), { has_more: true, first_seq: 7, last_seq: 10 });
   assert.throws(() => budget.tryInclude(6, STREAM_SUMMARY_ITEM_BYTES + 1), RangeError);
   assert.throws(() => budget.tryInclude(0, 1), TypeError);
   assert.throws(() => budget.tryInclude(6, -1), TypeError);
+  const empty = new SummaryPageBudgetV2();
+  assert.throws(() => empty.end(true), RangeError);
+  const multibyte = new SummaryPageBudgetV2();
+  const encoded = new TextEncoder().encode("event: message.summary\\ndata: 你好\\n\\n");
+  assert.equal(multibyte.tryInclude(1, encoded.byteLength), true);
+  assert.deepEqual(multibyte.end(false), { has_more: false, first_seq: 1, last_seq: 1 });
 });
 
 test("target-screen ui.open acknowledgement uses the existing paired response and exact boolean result", () => {
