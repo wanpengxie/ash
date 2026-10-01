@@ -126,13 +126,16 @@ function attachmentRows(messages: readonly Message[]): { id: string; index: numb
 }
 
 /** Only the already-budgeted rendered text and bounded attachment references enter DSH. */
-export async function turnContent(host: DshHost, input: AgentTurnInput, attachmentRoot: string, workspaceRoot: string): Promise<unknown[]> {
+export async function turnContent(host: DshHost, input: AgentTurnInput, attachmentRoot: string, workspaceRoot: string, managedContext?: string): Promise<unknown[]> {
   const last = input.messages.at(-1);
   const source = last?.origin && typeof last.origin === "object" && typeof last.origin.label === "string" ? last.origin.label : last?.from ?? "unknown";
   const safeSource = [...source.replace(/[\x00-\x1f\x7f]/g, " ")].slice(0, 120).join("");
   const prefix = `[ash] ${last ? new Date(last.ts).toISOString() : new Date().toISOString()} · ${safeSource}\n`;
   if (Buffer.byteLength(prefix) > MAX_PREFIX_BYTES) throw new Error("turn source prefix exceeds its budget");
-  const content: unknown[] = [{ type: "text", text: `${prefix}${input.rendered}` }];
+  // One DSH followup preserves C9's model-visible order: current persona/rules/files, then this turn.
+  // Earlier followups remain history; the current snapshot explicitly supersedes them.
+  const context = managedContext ? `[Current Ash context; supersedes earlier turn snapshots]\n${managedContext}\n\n` : "";
+  const content: unknown[] = [{ type: "text", text: `${context}${prefix}${input.rendered}` }];
   const rows = attachmentRows(input.messages);
   if (rows.length > MAX_ATTACHMENTS) throw new Error("too many attachments for one turn");
   let totalBytes = 0;
@@ -204,20 +207,6 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     if (this.session) throw new Error("runner already attached");
     this.session = { agent, door, id: sessionId };
   }
-  attachManagedPrompt(agentContext: unknown): () => void {
-    const prompt = (agentContext as { systemPrompt?: {
-      context(value: { name: string; order: number; text: string }): () => void;
-      variable(name: string, provider: () => string | undefined): () => void;
-      getContextOrder(name: "SUBAGENT_DELEGATION"): number;
-    } })?.systemPrompt;
-    if (!prompt) throw new Error("DSH prompt registry unavailable");
-    const off = [
-      prompt.variable("ash_managed_context", () => this.currentManagedPrompt ?? undefined),
-      prompt.context({ name: "ash:managed-context", order: prompt.getContextOrder("SUBAGENT_DELEGATION") + 1,
-        text: "{{ash_managed_context}}" }),
-    ];
-    return () => { for (const dispose of off.reverse()) dispose(); };
-  }
   private async proveIdle(agent: DshRootAgent): Promise<void> {
     try { await agent.whenIdle(); }
     catch {
@@ -276,7 +265,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     signal.addEventListener("abort", abort, { once: true });
     try {
       session.door.beginTurn(input.turn, signal);
-      const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot);
+      const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, this.currentManagedPrompt ?? undefined);
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
       session.agent.followup({ id: messageId, role: "user", content, source: { kind: "user" } });
       const result = await ended;

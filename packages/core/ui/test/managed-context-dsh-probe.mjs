@@ -117,13 +117,13 @@ try {
   await until(() => captured.length >= 2 && owner.ledger.list({ limit: 1000 }).filter((message) => message.word === "turn.end" && message.body?.reason === "completed").length >= 2, "second real DSH turn");
   await say("later");
   await until(() => captured.length >= 3 && owner.ledger.list({ limit: 1000 }).filter((message) => message.word === "turn.end" && message.body?.reason === "completed").length >= 3, "third real DSH turn");
-  // DSH's prompt registry renders current context as a superseding runtime snapshot.
+  // Ash places the current context before this turn's dynamic messages in one DSH followup.
   const beforeVisible = JSON.stringify(captured[0].messages ?? []);
   const afterVisible = JSON.stringify(captured[1].messages ?? []);
   const beforeTail = currentTail(captured[0]);
   const afterTail = currentTail(captured[1]);
   const laterTail = currentTail(captured[2]);
-  const ordered = [oldSoul, "像在对话里帮一个熟悉的人办事", "当系统正在等对方答复", userFact]
+  const ordered = [oldSoul, "像在对话里帮一个熟悉的人办事", "当系统正在等对方答复", userFact, "Synthetic context check before"]
     .map((marker) => beforeTail.indexOf(marker));
   const observed = { firstHasOldSoul: beforeVisible.includes(oldSoul), firstHasUser: beforeVisible.includes(userFact),
     firstHasMemory: beforeVisible.includes(memoryFact), firstContextOrder: ordered.every((position, index) =>
@@ -131,8 +131,8 @@ try {
     secondHasNewSoul: afterVisible.includes(newSoul),
     secondCurrentHasNewSoul: afterTail.includes(newSoul), secondCurrentHasOldSoul: afterTail.includes(oldSoul),
     secondHasUser: afterVisible.includes(userFact), secondHasMemory: afterVisible.includes(memoryFact),
-    secondHasChangedFact: afterTail.includes("self.changed") &&
-      afterTail.includes(changed[0].body.summary), thirdHasChangedFact: laterTail.includes("self.changed") &&
+    secondHasChangedFact: afterTail.includes("self.changed") && afterTail.includes("SOUL.md") &&
+      afterTail.includes(`by ${changed[0].body.by}`) && afterTail.includes(changed[0].body.summary), thirdHasChangedFact: laterTail.includes("self.changed") &&
       laterTail.includes(changed[0].body.summary) };
   console.log(JSON.stringify(observed)); // Synthetic marker booleans only; never dump the provider request or headers.
   assert.deepEqual(observed, { firstHasOldSoul: true, firstHasUser: true, firstHasMemory: true, firstContextOrder: true,

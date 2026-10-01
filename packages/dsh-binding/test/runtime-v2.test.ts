@@ -44,6 +44,11 @@ test("batch content sends bounded rendered text, image block, and sourced file p
   try {
     const content = await turnContent(host, { turn: "t_1", messages: [message], rendered: "BOUNDED_RENDERED", stopFacts: [] }, join(root, "inbox"), root);
     assert.match((content[0] as { text: string }).text, /^\[ash\] .* · person:owner\nBOUNDED_RENDERED$/);
+    const ordered = await turnContent(host, { turn: "t_1", messages: [{ ...message, body: { text: "DYNAMIC_MARKER" } }], rendered: "DYNAMIC_MARKER", stopFacts: [] }, join(root, "inbox"), root,
+      "SOUL_MARKER\nRULE_MARKER\nUSER_MARKER");
+    const orderedText = (ordered[0] as { text: string }).text;
+    const positions = ["SOUL_MARKER", "RULE_MARKER", "USER_MARKER", "DYNAMIC_MARKER"].map((marker) => orderedText.indexOf(marker));
+    assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])));
     assert.equal(JSON.stringify(content).includes("SECRET_RAW_CONTROL"), false);
     assert.equal((content[1] as { type: string }).type, "image");
     assert.equal(saved.length, 1);
