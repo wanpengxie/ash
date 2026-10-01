@@ -50,6 +50,27 @@ test("managed editor keeps a dirty draft on stale write and never uses file PUT"
   assert.equal(editor.draft, "background update\n");
 }));
 
+test("USER write verifies the server's canonical versioned content, then keeps it as the new baseline", () => dom(async (root) => {
+  let content = null;
+  const send = async (request) => {
+    if (request.word === "read") return content === null ? fail("not_found", "missing") : ok({ content, hash: digest(content), version: 1 });
+    assert.equal(request.word, "write");
+    assert.equal(request.body.expected_hash, null);
+    content = `---\nversion: 1\nupdated: 2026-10-01T00:00:00.000Z\n---\n${request.body.content}`;
+    return ok({ hash: digest(content), version: 1 });
+  };
+  const editor = new ManagedMarkdownEditor(root, { path: "USER.md", send });
+  await editor.load();
+  editor.setDraft("Synthetic owner fact\n");
+  await editor.save();
+  assert.equal(editor.conflict, false);
+  assert.equal(editor.unverified, false);
+  assert.equal(editor.content, content);
+  assert.equal(editor.draft, content);
+  assert.equal(editor.version, 1);
+  assert.equal(editor.status, "已保存并核对当前版本。");
+}));
+
 test("uncertain write ACK reuses the same client id and exact payload", () => dom(async (root) => {
   let content = "old";
   const calls = [];
@@ -126,9 +147,11 @@ test("identity and memory sheets use only allowlisted managed paths and block di
 
 test("screen sender requires live registration and rejects scope switch before trusting a reply", async () => {
   const requests = [];
+  const paired = (word = "read", from = "service:self") => ({ id: "request-id", reply: {
+    kind: "response", reply_to: "request-id", from, to: "person:owner", word, body: { ok: true, result: {} } } });
   const net = { token: null, screen: null, currentScope: null, request: async (_path, options) => {
     requests.push(options);
-    return { ok: true, json: async () => ok({}) };
+    return { ok: true, json: async () => paired() };
   } };
   const send = createSelfScreenSender(net);
   const wire = { to: "service:self", kind: "request", word: "read", body: { path: "SOUL.md" }, wait: true };
@@ -138,6 +161,13 @@ test("screen sender requires live registration and rejects scope switch before t
   await assert.rejects(send({ ...wire, to: "device:unrelated" }), /unsupported/);
   await send(wire);
   assert.equal(requests[0].headers["Ash-Screen"], "screen-token");
-  net.request = async () => { net.currentScope = "scope-b"; return { ok: true, json: async () => ok({}) }; };
+  await assert.rejects(send({ ...wire, word: "write" }), /本地管理权限/);
+  net.request = async () => { net.currentScope = "scope-b"; return { ok: true, json: async () => paired() }; };
   await assert.rejects(send(wire), /身份已变化/);
+  net.currentScope = "scope-a";
+  net.request = async () => ({ ok: true, json: async () => { net.screen = "screen:b"; return paired(); } });
+  await assert.rejects(send(wire), /身份已变化/, "JSON parse after a registration change is not trusted");
+  net.screen = "screen:a";
+  net.request = async () => ({ ok: true, json: async () => paired("read", "agent:main") });
+  await assert.rejects(send(wire), /未配对/, "a response from the wrong member is not a file result");
 });

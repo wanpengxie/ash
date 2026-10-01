@@ -4,8 +4,12 @@ const paths = new Set(["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"]);
 const sha = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const safeVersion = (value) => value === undefined || Number.isSafeInteger(value) && value >= 1;
 const safeTs = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
+const userHeader = /^---\nversion: ([1-9][0-9]*)\nupdated: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\n---\n/;
+const userBody = (content) => content.replace(userHeader, "");
 const errorText = (body) => body?.error?.code === "bad_request" && body.error.message === "stale"
   ? "文件已被其他操作修改。你的草稿仍在；请先查看新版本，再决定如何改。"
+  : body?.error?.message === "gate unavailable"
+  ? "审批服务未就绪，回滚未执行。"
   : typeof body?.error?.message === "string" ? body.error.message : "操作未完成。";
 
 /** Bind managed requests to the existing live ScreenNet registration. */
@@ -17,12 +21,22 @@ export function createSelfScreenSender(net) {
     const token = net.token;
     const scope = net.currentScope;
     const screen = net.screen;
+    const generation = net.generation;
     if (!token || !scope || !screen) throw new Error("屏幕尚未注册，不能读取或修改用户文件。");
+    if (["write", "rollback"].includes(request.word) && net.localManagement !== true)
+      throw new Error("当前屏幕无本地管理权限，不能修改用户文件。");
     const response = await net.request("/api/send", { method: "POST", credentials: "same-origin",
       headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token }, body: JSON.stringify(request) });
-    if (token !== net.token || scope !== net.currentScope || screen !== net.screen) throw new Error("屏幕身份已变化，请核对操作状态。");
+    const current = () => token === net.token && scope === net.currentScope && screen === net.screen && generation === net.generation &&
+      (!["write", "rollback"].includes(request.word) || net.localManagement === true);
+    if (!current()) throw new Error("屏幕身份已变化，请核对操作状态。");
     if (!response.ok) throw new Error(`用户文件服务拒绝请求：HTTP ${response.status}`);
-    return response.json();
+    const accepted = await response.json();
+    if (!current()) throw new Error("屏幕身份已变化，请核对操作状态。");
+    if (typeof accepted?.id !== "string" || accepted.reply?.kind !== "response" || accepted.reply.reply_to !== accepted.id ||
+      accepted.reply.from !== "service:self" || accepted.reply.to !== "person:owner" || accepted.reply.word !== request.word)
+      throw new Error("用户文件回执未配对，可使用同一请求重试。");
+    return accepted;
   };
 }
 
@@ -61,11 +75,26 @@ export class ManagedMarkdownEditor {
     this.pendingRollback = null;
     this.status = "尚未读取。";
     this.snapshots = null;
+    this.disposed = false;
     this.render();
   }
 
+  dispose() {
+    this.disposed = true;
+    this.loaded = false;
+    this.content = "";
+    this.draft = "";
+    this.pending = null;
+    this.pendingRollback = null;
+    this.snapshots = null;
+    this.root.replaceChildren();
+  }
+
   async request(word, body, client_id) {
-    return this.send({ to: "service:self", kind: "request", word, body, wait: true, ...(client_id ? { client_id } : {}) });
+    if (this.disposed) throw new Error("编辑器已关闭。");
+    const result = await this.send({ to: "service:self", kind: "request", word, body, wait: true, ...(client_id ? { client_id } : {}) });
+    if (this.disposed) throw new Error("编辑器已关闭。");
+    return result;
   }
 
   /** Reload discards a local draft only when explicitly requested by the caller. */
@@ -107,6 +136,7 @@ export class ManagedMarkdownEditor {
     if (this.pending && this.draft !== this.pending.content) throw new Error("上次保存结果尚未确认；只能用原草稿重试。" );
     this.pending ??= { content: this.draft, expected_hash: this.hash, client_id: this.idFactory() };
     const pending = this.pending;
+    this.render();
     let body;
     try {
       body = resultBody(await this.request("write", { path: this.path, content: pending.content,
@@ -123,7 +153,7 @@ export class ManagedMarkdownEditor {
       this.render();
       throw new Error(this.status);
     }
-    if (!sha(body.result?.hash) || !safeVersion(body.result?.version)) {
+    if (!sha(body.result?.hash) || !safeVersion(body.result?.version) || this.path === "USER.md" && !Number.isSafeInteger(body.result?.version)) {
       this.status = "保存回执不完整；只能原样重试。";
       this.render();
       throw new Error(this.status);
@@ -132,15 +162,26 @@ export class ManagedMarkdownEditor {
     this.hash = body.result.hash;
     this.content = pending.content;
     this.version = body.result.version ?? null;
+    this.unverified = true;
     this.status = "保存已确认；正在核对当前版本。";
     this.render();
     try {
       const current = resultBody(await this.request("read", { path: this.path }));
       if (!current.ok || !sha(current.result?.hash) || typeof current.result?.content !== "string") throw new Error("保存后无法复核文件。" );
-      if (current.result.hash !== body.result.hash || current.result.content !== pending.content) {
+      const canonical = current.result.content;
+      const userMatches = this.path === "USER.md" && userHeader.test(canonical) &&
+        Number(userHeader.exec(canonical)[1]) === body.result.version && current.result.version === body.result.version &&
+        userBody(canonical) === userBody(pending.content);
+      if (current.result.hash !== body.result.hash || !(this.path === "USER.md" ? userMatches : canonical === pending.content)) {
         this.conflict = true;
         this.status = "保存后文件又发生变化；草稿已保留，请刷新查看。";
-      } else this.status = "已保存并核对当前版本。";
+      } else {
+        this.content = canonical;
+        this.draft = canonical;
+        this.version = current.result.version ?? null;
+        this.status = "已保存并核对当前版本。";
+      }
+      this.unverified = false;
     } catch {
       this.unverified = true;
       this.status = "保存已确认，但重新读取失败；请刷新核对。";
@@ -156,6 +197,7 @@ export class ManagedMarkdownEditor {
     if (this.pendingRollback && this.pendingRollback.to_ts !== to_ts) throw new Error("上次回滚结果尚未确认；只能原样重试。" );
     if (!this.pendingRollback) {
       if (!await this.confirmRollback({ path: this.path, to_ts, expected_hash: this.hash })) return { cancelled: true };
+      if (this.disposed) throw new Error("编辑器已关闭。");
       this.pendingRollback = { to_ts, expected_hash: this.hash, client_id: this.idFactory() };
     }
     const pending = this.pendingRollback;
@@ -200,13 +242,14 @@ export class ManagedMarkdownEditor {
   }
 
   render() {
+    if (this.disposed) { this.root.replaceChildren(); return; }
     const fragment = document.createDocumentFragment();
     node(fragment, "h3", this.path);
     node(fragment, "p", this.path === "USER.md" && this.loaded ? this.version === null ? "旧版（无版本头）" : `版本 ${this.version}` : this.loaded ? "已读取" : "未读取", "editor-version");
     node(fragment, "p", this.status, this.conflict || this.unverified || this.pending || this.pendingRollback ? "editor-warning" : "editor-status");
     const source = node(fragment, "textarea", "", "markdown-source");
     source.value = this.draft;
-    source.disabled = !this.loaded || !this.canEdit;
+    source.disabled = !this.loaded || !this.canEdit || !!this.pending || this.unverified;
     source.addEventListener("input", () => { this.draft = source.value; });
     const save = node(fragment, "button", this.pending ? "重试同一保存" : "保存", "editor-save");
     save.type = "button";
