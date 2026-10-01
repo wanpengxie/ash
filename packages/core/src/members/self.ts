@@ -163,6 +163,11 @@ export class SelfMember implements Member {
     const file = join(this.versions(op.path), `${op.snapshotTs}.md`);
     return existsSync(file) && ordinaryFile(file) && hash(readText(file)) === op.oldHash;
   }
+  private samePrepared(op: Operation, path: string): boolean {
+    if (op.preparedDev === null || op.preparedIno === null || !ordinaryFile(path)) return false;
+    const item = lstatSync(path, { bigint: true });
+    return item.dev.toString() === op.preparedDev && item.ino.toString() === op.preparedIno;
+  }
   private prune(path: string): void {
     const dir = this.versions(path);
     if (!existsSync(dir)) return;
@@ -225,7 +230,7 @@ export class SelfMember implements Member {
     const calculated = this.calculate(message, old, message.ts);
     const op: Operation = { id: message.id, digest, path: String(message.body.path), word: message.word, by: message.from,
       oldHash: old === null ? null : hash(old), newHash: hash(calculated.content), snapshotTs: old === null ? null : this.chooseSnapshotTs(String(message.body.path)),
-      result: calculated.result, summary: calculated.summary, state: "intent" };
+      result: calculated.result, summary: calculated.summary, state: "intent", preparedDev: null, preparedIno: null };
     this.journal.insert(op);
     this.options.failpoint?.("after-intent");
     return op;
@@ -236,6 +241,20 @@ export class SelfMember implements Member {
     this.options.failpoint?.("after-event");
   }
   private temp(op: Operation): string { return join(dirname(this.path(op.path)), `.${basename(op.path)}.self-${op.id}.tmp`); }
+  private discardUnapplied(op: Operation): void {
+    const temp = this.temp(op);
+    if (existsSync(temp)) {
+      if (!ordinaryFile(temp) || hash(readText(temp)) !== op.newHash) throw new SelfFailure("failed", "temporary file conflict");
+      unlinkSync(temp); syncDirectory(dirname(temp));
+    }
+    if (op.oldHash !== null && op.snapshotTs !== null) {
+      const snapshot = join(this.versions(op.path), `${op.snapshotTs}.md`);
+      if (existsSync(snapshot)) {
+        if (!this.validSnapshot(op)) throw new SelfFailure("failed", "snapshot conflict");
+        unlinkSync(snapshot); syncDirectory(dirname(snapshot));
+      }
+    }
+  }
   private async mutate(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
     if (context.signal.aborted) return responseError("cancelled", "request cancelled before self write");
     const path = String(message.body.path);
@@ -245,6 +264,7 @@ export class SelfMember implements Member {
     if (op.state === "conflict") return responseError("failed", "conflict");
     if (op.state === "aborted") return responseError("cancelled", "request cancelled before self write");
     if (old !== null && hash(old) === op.newHash) {
+      if (op.oldHash !== op.newHash && !this.samePrepared(op, target)) { this.state(op.id, "conflict"); return responseError("failed", "conflict"); }
       if (op.oldHash === op.newHash && op.snapshotTs !== null) this.snapshot(path, op, old);
       if (op.oldHash !== null && !this.validSnapshot(op)) throw new SelfFailure("failed", "snapshot missing or corrupt after write");
       await this.event(op); this.state(op.id, "committed"); this.prune(path);
@@ -253,7 +273,7 @@ export class SelfMember implements Member {
     if ((old === null ? null : hash(old)) !== op.oldHash) { this.state(op.id, "conflict"); return responseError("failed", "conflict"); }
     const calculated = this.calculate(message, old, message.ts);
     if (hash(calculated.content) !== op.newHash) { this.state(op.id, "conflict"); return responseError("failed", "conflict"); }
-    if (context.signal.aborted) { this.state(op.id, "aborted"); return responseError("cancelled", "request cancelled before self write"); }
+    if (context.signal.aborted) { this.discardUnapplied(op); this.state(op.id, "aborted"); return responseError("cancelled", "request cancelled before self write"); }
     const parent = dirname(target);
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     this.path(path); // re-check aliases after creating the parent
@@ -261,8 +281,13 @@ export class SelfMember implements Member {
     const temp = this.temp(op);
     if (existsSync(temp)) { if (!ordinaryFile(temp) || hash(readText(temp)) !== op.newHash) throw new SelfFailure("failed", "temporary file conflict"); }
     else durableNewFile(temp, calculated.content);
+    if (op.preparedDev === null || op.preparedIno === null) {
+      const item = lstatSync(temp, { bigint: true });
+      this.journal.prepared(op.id, item.dev.toString(), item.ino.toString());
+      op.preparedDev = item.dev.toString(); op.preparedIno = item.ino.toString();
+    } else if (!this.samePrepared(op, temp)) throw new SelfFailure("failed", "temporary file identity changed");
     this.options.failpoint?.("after-temp");
-    if (context.signal.aborted) { this.state(op.id, "aborted"); return responseError("cancelled", "request cancelled before self write"); }
+    if (context.signal.aborted) { this.discardUnapplied(op); this.state(op.id, "aborted"); return responseError("cancelled", "request cancelled before self write"); }
     old = this.content(path);
     if ((old === null ? null : hash(old)) !== op.oldHash) { this.state(op.id, "conflict"); return responseError("failed", "conflict"); }
     renameSync(temp, target); syncDirectory(parent);
@@ -304,13 +329,18 @@ export class SelfMember implements Member {
       const content = this.content(op.path);
       const current = content === null ? null : hash(content);
       if (current === op.newHash) {
+        if (op.oldHash !== op.newHash && !this.samePrepared(op, this.path(op.path))) {
+          this.state(op.id, "conflict");
+          if (!this.options.ledger.responseTo(op.id)) this.options.ledger.settle(op.id, this.id, responseError("failed", "conflict"));
+          continue;
+        }
         if (op.oldHash === op.newHash && content !== null) this.snapshot(op.path, op, content);
         if (op.oldHash !== null && !this.validSnapshot(op)) throw new Error("self write completed without a valid snapshot");
         await this.event(op);
         if (!this.options.ledger.responseTo(op.id)) this.options.ledger.settle(op.id, this.id, { ok: true, result: op.result });
         this.state(op.id, "committed"); this.prune(op.path);
       } else if (current === op.oldHash) {
-        if (this.options.ledger.responseTo(op.id)) this.state(op.id, "aborted"); // no effect; do not resurrect a cancelled request
+        if (this.options.ledger.responseTo(op.id)) { this.discardUnapplied(op); this.state(op.id, "aborted"); } // no effect; do not resurrect a cancelled request
       } else {
         this.state(op.id, "conflict");
         if (!this.options.ledger.responseTo(op.id)) this.options.ledger.settle(op.id, this.id, responseError("failed", "conflict"));

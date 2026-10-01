@@ -162,6 +162,43 @@ test("recovery rechecks authority before an unfinished write but records an alre
   }
 });
 
+test("an external writer producing the intended bytes is not misattributed to self", async () => {
+  const child = fileURLToPath(new URL("../fixtures/self-crash-child.ts", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "ash-self-same-bytes-"));
+  const home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "MEMORY.md"), "before\n");
+  const killed = spawnSync(process.execPath, ["--import", "tsx", child, dir, "after-temp"], { cwd: process.cwd(), timeout: 10_000, encoding: "utf8" });
+  assert.equal(killed.signal, "SIGKILL", killed.stderr);
+  writeFileSync(join(home, "MEMORY.md"), "after\n"); // same bytes, but the prepared inode was not renamed
+  const ledger = await Ledger.open(join(dir, "ash.db"));
+  const world = new WorldRouter(ledger, async () => true);
+  const members = new WorldMembers(world);
+  const self = createSelfMember({ home, stateDir: join(dir, "self"), ledger, router: world }); members.register(self);
+  try {
+    await self.prepareRecovery(); await world.recover();
+    const request = ledger.list().find((m) => m.to === "service:self" && m.word === "write")!;
+    assert.equal((ledger.responseTo(request.id)?.body.error as { message: string }).message, "conflict");
+    assert.equal(ledger.list().filter((m) => m.word === "self.changed").length, 0);
+    assert.equal(readFileSync(join(home, "MEMORY.md"), "utf8"), "after\n");
+  } finally { await self.close(); ledger.close(); }
+});
+
+test("cancellation before rename leaves neither a write nor a misleading snapshot", async () => {
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  let requestId = "";
+  f = await fixture((stage) => { if (stage === "after-temp") f.router.cancel([requestId]); });
+  try {
+    writeFileSync(join(f.home, "MEMORY.md"), "before\n");
+    const stop = f.router.subscribe((message) => { if (message.to === "service:self" && message.word === "write") requestId = message.id; });
+    const sent = await f.send("write", { path: "MEMORY.md", content: "after\n", why: "test", expected_hash: createHash("sha256").update("before\n").digest("hex") });
+    stop();
+    assert.equal((sent.reply?.body.error as { code: string }).code, "cancelled");
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "before\n");
+    assert.equal(f.ledger.list().filter((message) => message.word === "self.changed").length, 0);
+    const history = await f.send("history", { path: "MEMORY.md" });
+    assert.deepEqual((history.reply?.body.result as { versions: unknown[] }).versions, []);
+  } finally { await f.self.close(); f.ledger.close(); }
+});
+
 test("self rejects symbolic and hard-link aliases and retains only the latest 50 snapshots", async () => {
   const f = await fixture();
   try {
