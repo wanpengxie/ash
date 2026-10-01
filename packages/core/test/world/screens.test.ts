@@ -9,6 +9,7 @@ import { WorldMembers } from "../../src/world/member";
 import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type EdgeResponse } from "../../src/server";
 import { OwnerMember } from "../../src/members/owner";
 import { PostPresenceMember } from "../../src/members/post";
+import { SCREEN_REGISTRATION_TTL_MS } from "../../../sdk/src/api";
 
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-test", local: true, remote: false, ownerProxy: true, transport: "api" };
 const agent: TrustedRouteContext = { member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false, transport: "agent" };
@@ -16,16 +17,71 @@ const req = (method: string, path: string, body?: unknown, headers: Record<strin
   ({ method, url: new URL(path, "http://ash"), headers, body: body === undefined ? null : Buffer.from(JSON.stringify(body)) });
 const body = (response: EdgeResponse): Record<string, any> => JSON.parse("body" in response ? String(response.body) : "{}");
 
-async function fixture(clock?: () => number, ackMs = 100) {
+async function fixture(clock?: () => number, ackMs = 100, streamBeatMs?: number) {
   const root = mkdtempSync(join(tmpdir(), "ash-screens-"));
   const ledger = await Ledger.open(join(root, "ash.db"));
   const world = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(world);
   members.register(new OwnerMember("Owner", ledger));
-  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: {} }, { clock, screenAckMs: ackMs });
+  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: {} }, { clock, screenAckMs: ackMs, streamBeatMs });
   members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
   return { ledger, world, members, edge };
 }
+
+test("one hundred finite history pages create no screen token, member, or retained registration", async () => {
+  const f = await fixture();
+  try {
+    for (let i = 0; i < 100; i++) {
+      const page = await f.edge.handle(req("GET", "/api/stream?after=0&follow=false&label=History"), owner);
+      assert.equal(page.status, 200);
+      let output = "";
+      if ("stream" in page) page.stream((chunk) => { output += chunk; }, () => {}, () => {});
+      assert.ok(!output.includes("screen.registered"));
+    }
+    assert.equal(f.members.describe("agent").members.some((member) => member.kind === "screen"), false);
+    assert.equal((Reflect.get(f.edge.screens, "registrations") as Map<string, unknown>).size, 0);
+  } finally { f.ledger.close(); }
+});
+
+test("a live screen survives disconnect for its bounded token window, then expires and is swept", async () => {
+  let now = 1_000;
+  const f = await fixture(() => now);
+  const a = await tab(f.edge, "Reconnect window");
+  try {
+    a.close();
+    assert.equal(f.members.describe("agent", a.screen).members[0].online, false);
+    assert.equal((Reflect.get(f.edge.screens, "registrations") as Map<string, unknown>).size, 1);
+    now += SCREEN_REGISTRATION_TTL_MS - 1;
+    assert.equal(f.edge.screens.verify(owner, a.token).screen, a.screen);
+    now++;
+    assert.equal(f.members.describe("agent").members.some((member) => member.id === a.screen), false);
+    assert.equal((Reflect.get(f.edge.screens, "registrations") as Map<string, unknown>).size, 0);
+    assert.throws(() => f.edge.screens.verify(owner, a.token));
+  } finally { a.close(); f.ledger.close(); }
+});
+
+test("an expired live connection is closed, its pending command resolves false, and its token is reclaimed", async () => {
+  let now = 2_000;
+  const f = await fixture(() => now, 5_000, 10);
+  const stream = await f.edge.handle(req("GET", "/api/stream?after=0&follow=true"), owner);
+  assert.ok("stream" in stream);
+  let output = "";
+  let close = () => {};
+  let ended = false;
+  stream.stream((chunk) => { output += chunk; }, (cleanup) => { close = cleanup; }, () => { ended = true; });
+  const registration = JSON.parse(/^event: screen\.registered\ndata: (.+)\n\n/.exec(output)![1]) as { screen: string; token: string };
+  try {
+    const pending = f.world.send(agent, { to: registration.screen, kind: "request", word: "ui.open", body: { target: "activity", mode: "perform" }, wait: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    now += SCREEN_REGISTRATION_TTL_MS + 1;
+    const until = Date.now() + 1_000;
+    while (!ended && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(ended, true);
+    const result = await pending;
+    assert.equal((result.reply?.body.result as { opened: boolean }).opened, false);
+    assert.equal((Reflect.get(f.edge.screens, "registrations") as Map<string, unknown>).size, 0);
+  } finally { close(); f.ledger.close(); }
+});
 
 test("real HTTP SSE delivers ui.open only to its target tab and rejects the bystander ACK", async () => {
   const f = await fixture(undefined, 2_000);

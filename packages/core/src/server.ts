@@ -24,7 +24,7 @@ export interface EdgeCaller {
 export interface EdgeRequest { method: string; url: URL; headers: Record<string, string>; body: Buffer | null }
 export type EdgeResponse = { status: number; headers?: Record<string, string>; body?: string | Buffer } |
   { status: number; headers?: Record<string, string>; stream: (write: (chunk: string) => void, onClose: (fn: () => void) => void, end: () => void) => void };
-export interface EdgeOptions { workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number }
+export interface EdgeOptions { workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
 
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
@@ -59,8 +59,15 @@ export class ScreenRegistry {
   private readonly registrations = new Map<string, Registration>();
   private readonly pending = new Map<string, Set<() => void>>();
   constructor(private readonly world: WorldRouter, private readonly now: () => number = Date.now, private readonly ackMs = OPEN_ACK_WAIT_MS) {}
+  private sweep(): void {
+    const at = this.now();
+    for (const [token, entry] of this.registrations) {
+      if (at >= entry.expiresAt && entry.connections === 0 && !this.pending.get(entry.screen)?.size) this.registrations.delete(token);
+    }
+  }
   register(caller: EdgeCaller, labelHint?: string): { screen: string; token: string; label: string } {
     if (!caller.ownerProxy || caller.member !== "person:owner") fail(403, "forbidden", "owner screen permission required");
+    this.sweep();
     const token = randomBytes(24).toString("base64url");
     const screen = `screen:${randomBytes(9).toString("base64url")}`;
     const label = typeof labelHint === "string" && labelHint.trim() ? labelHint.trim().slice(0, 80) : "Screen";
@@ -68,10 +75,12 @@ export class ScreenRegistry {
     return { screen, token, label };
   }
   verify(caller: EdgeCaller, token: string): Registration {
+    this.sweep();
     const found = this.registrations.get(token);
     if (!found || !caller.ownerProxy || caller.member !== "person:owner" || found.principal !== caller.transportPrincipal || this.now() >= found.expiresAt) fail(403, "forbidden", "valid screen registration required");
     return found!;
   }
+  valid(token: string): boolean { return Boolean(this.registrations.get(token) && this.now() < this.registrations.get(token)!.expiresAt); }
   renew(token: string): void { const entry = this.registrations.get(token); if (entry) { entry.expiresAt = this.now() + SCREEN_REGISTRATION_TTL_MS; entry.visibleAt = this.now(); } }
   markVisible(screen: string): void { const entry = this.find(screen); if (entry && entry.connections > 0) entry.visibleAt = this.now(); }
   connect(token: string): void { const entry = this.registrations.get(token); if (entry) entry.connections++; }
@@ -80,11 +89,13 @@ export class ScreenRegistry {
     if (!entry) return;
     entry.connections = Math.max(0, entry.connections - 1);
     if (entry.connections === 0) for (const settle of [...(this.pending.get(entry.screen) ?? [])]) settle();
+    this.sweep();
   }
-  private find(screen: string): Registration | undefined { return [...this.registrations.values()].find((entry) => entry.screen === screen && this.now() < entry.expiresAt); }
+  private find(screen: string): Registration | undefined { this.sweep(); return [...this.registrations.values()].find((entry) => entry.screen === screen && this.now() < entry.expiresAt); }
   online(screen: string): boolean { return (this.find(screen)?.connections ?? 0) > 0; }
   visible(screen: string): boolean { const entry = this.find(screen); return Boolean(entry && entry.connections > 0 && entry.visibleAt !== null && this.now() - entry.visibleAt <= VISIBLE_WINDOW_MS); }
   list(): { id: string; name: string; online: boolean }[] {
+    this.sweep();
     return [...this.registrations.values()].filter((entry) => this.now() < entry.expiresAt)
       .map((entry) => ({ id: entry.screen, name: entry.label, online: entry.connections > 0 }));
   }
@@ -103,6 +114,7 @@ export class ScreenRegistry {
         if (done) return;
         done = true; clearTimeout(timer); stop(); signal.removeEventListener("abort", cancelled);
         const bucket = this.pending.get(screen); bucket?.delete(disconnected); if (bucket?.size === 0) this.pending.delete(screen);
+        this.sweep();
         resolve(body);
       };
       const disconnected = () => finish(falseBody);
@@ -232,28 +244,38 @@ export class EdgeRouter {
     if (afterQuery !== undefined && afterHeader !== undefined && afterQuery !== afterHeader) fail(400, "bad_request", "cursor conflict");
     if (before !== undefined && (afterQuery !== undefined || afterHeader !== undefined || follow)) fail(400, "bad_request", "before requires finite standalone pagination");
     const after = afterQuery ?? afterHeader;
-    const registered = this.screens.register(caller, params.get("label") ?? undefined);
+    // A finite history page is an audit read, not a live tab. It has no screen identity.
+    const registered = follow ? this.screens.register(caller, params.get("label") ?? undefined) : null;
     return { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" }, stream: (write, onClose, end) => {
-      write(`event: ${SCREEN_REGISTRATION_EVENT}\ndata: ${JSON.stringify(registered)}\n\n`);
-      this.screens.connect(registered.token);
+      if (registered) {
+        write(`event: ${SCREEN_REGISTRATION_EVENT}\ndata: ${JSON.stringify(registered)}\n\n`);
+        this.screens.connect(registered.token);
+      }
       const send = (message: Message) => {
         // Live delivery is a command only for the addressed tab. Finite history
         // pagination remains the owner's complete audit view.
         if (follow && message.word === "ui.open" && message.kind === "request" &&
-          (message.to !== registered.screen || !this.screens.online(registered.screen))) return;
+          (message.to !== registered!.screen || !this.screens.online(registered!.screen))) return;
         write(`id: ${message.seq}\ndata: ${JSON.stringify(message)}\n\n`);
       };
       if (!follow) {
         const page = before !== undefined ? this.ledger.list({ before, limit }) : after !== undefined ? this.ledger.list({ after, limit }) : this.ledger.list({ before: this.ledger.lastSeq() + 1, limit });
         for (const message of page) send(message);
-        this.screens.disconnect(registered.token);
         end();
         return;
       }
       const start = after ?? (this.ledger.list({ before: this.ledger.lastSeq() + 1, limit }).at(0)?.seq ?? 1) - 1;
       const stop = this.world.subscribeFrom(start, send);
-      const beat = setInterval(() => write(": keepalive\n\n"), 25_000);
-      onClose(() => { clearInterval(beat); stop(); this.screens.disconnect(registered.token); });
+      let closed = false;
+      const cleanup = () => {
+        if (closed) return;
+        closed = true; clearInterval(beat); stop(); this.screens.disconnect(registered!.token);
+      };
+      const beat = setInterval(() => {
+        if (!this.screens.valid(registered!.token)) { cleanup(); end(); return; }
+        write(": keepalive\n\n");
+      }, this.options.streamBeatMs ?? 25_000);
+      onClose(cleanup);
     } };
   }
 
