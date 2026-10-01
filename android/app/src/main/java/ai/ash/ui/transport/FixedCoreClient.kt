@@ -61,6 +61,8 @@ internal class FixedCoreClient(
             }
             synchronized(this) {
                 if (pageEpoch != epoch || cancellation.cancelled) throw IOException("page no longer active")
+                if (result.status !in 100..599) throw IOException("invalid core reply")
+                if (result.body.size > 33 * 1024 * 1024 || route.streaming && result.body.isNotEmpty()) throw IOException("core reply too large")
                 if (containsBytes(result.body, tokenBytes)) throw IOException("credential in core reply")
                 if (route.streaming && trailing.isNotEmpty()) onChunk(trailing)
             }

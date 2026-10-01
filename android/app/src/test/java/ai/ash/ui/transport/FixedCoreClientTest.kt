@@ -20,6 +20,13 @@ class FixedCoreClientTest {
         }
     }
 
+    @Test fun invalidTransportStatusCannotBecomeBrowserSuccess() {
+        val client = FixedCoreClient(14763, { token }, CoreHttpTransport { _, _, _ ->
+            CoreHttpReply(0, "text/plain", "unexpected".toByteArray())
+        })
+        assertFails { client.execute(client.beginPage(true), send()) }
+    }
+
     @Test fun fixedOriginAndNoBearerInReply() {
         var called = 0
         val client = FixedCoreClient(14763, { token }, CoreHttpTransport { request, _, _ ->
