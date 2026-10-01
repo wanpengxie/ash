@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { DshHost, type DshHostOptions, DshRuntime, dshPlugins, dshSettings } from "../../../dsh-binding/src/index";
+import { DshHost, type DshHostOptions, DshRuntime, dshPlugins, dshSettings } from "../../../dsh-binding/test/legacy/index";
 import { Core, OWNER, PHONE, type Notifier, type Policy } from "../../src/core";
 import { ClientLink, fileSigner, OwnerLink, type Signer } from "./link";
 import { HostBridge, type HostOptions } from "../../src/host";
