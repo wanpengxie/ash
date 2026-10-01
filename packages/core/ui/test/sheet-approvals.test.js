@@ -49,16 +49,30 @@ test("missing or body-spoofed source fails closed and empty state never claims r
   assert.match(nodes.map((node) => node.textContent).join(" "), /尚未连接/);
 });
 
+test("malformed raw options cannot be laundered into a valid approval by projection", () => {
+  const invalid = gateAsk("invalid-raw", 1);
+  invalid.body.options = [{ id: "once", label: "Once" }, { id: 23, label: "Malformed" }];
+  let view = fold(initialView(), invalid);
+  view = fold(view, gateAsk("valid-control", 2));
+  assert.deepEqual(view.asks.find((ask) => ask.id === "invalid-raw").options, [{ id: "once", label: "Once" }], "ordinary conversation still retains its safe option");
+  assert.deepEqual(view.conversation.find((item) => item.id === "invalid-raw").ask.options, [{ id: "once", label: "Once" }]);
+  assert.equal(view.asks.find((ask) => ask.id === "invalid-raw").options_valid, false);
+  assert.equal(view.asks.find((ask) => ask.id === "valid-control").options_valid, true);
+  const { sections, nodes } = draw(view);
+  assert.deepEqual(sections.pending.map((ask) => ask.id), ["valid-control"]);
+  assert.deepEqual(nodes.filter((node) => node.tag === "article").map((node) => node.dataset.askId), ["valid-control"]);
+});
+
 test("the read-only sheet limits text, rejects malformed option sets and never renders raw markup", () => {
   const view = { asks: [
-    { id: "safe", seq: 2, from: "service:gate", state: "pending", title: "<script>".repeat(100), detail: "synthetic", expires_at: 9000,
+    { id: "safe", seq: 2, from: "service:gate", state: "pending", options_valid: true, title: "<script>".repeat(100), detail: "synthetic", expires_at: 9000,
       options: [{ id: "once", label: "Once" }, { id: "deny", label: "Deny" }] },
-    { id: "duplicate-option", seq: 3, from: "service:gate", state: "pending", expires_at: 9000,
+    { id: "duplicate-option", seq: 3, from: "service:gate", state: "pending", options_valid: true, expires_at: 9000,
       options: [{ id: "once", label: "One" }, { id: "once", label: "Another" }] },
-    { id: "invented", seq: 4, from: "service:gate", state: "pending", expires_at: 9000, options: [{ id: "admin", label: "Admin" }] },
-    { id: "mixed", seq: 5, from: "service:gate", state: "pending", expires_at: 9000,
+    { id: "invented", seq: 4, from: "service:gate", state: "pending", options_valid: true, expires_at: 9000, options: [{ id: "admin", label: "Admin" }] },
+    { id: "mixed", seq: 5, from: "service:gate", state: "pending", options_valid: true, expires_at: 9000,
       options: [{ id: "once", label: "Once" }, { id: "admin", label: "Admin" }] },
-    { id: "safe", seq: 6, from: "service:gate", state: "pending", expires_at: 9000,
+    { id: "safe", seq: 6, from: "service:gate", state: "pending", options_valid: true, expires_at: 9000,
       options: [{ id: "always", label: "Always" }] },
   ] };
   const { sections, nodes } = draw(view);

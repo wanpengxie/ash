@@ -14,7 +14,7 @@ export function approvalSections(view, now = Date.now()) {
       if (ask.from === undefined) unknownSource++;
       continue;
     }
-    if (!Number.isSafeInteger(ask.seq) || ask.seq < 1 || ask.state !== "pending" || !validTime(ask.expires_at) || ask.expires_at <= now) continue;
+    if (!Number.isSafeInteger(ask.seq) || ask.seq < 1 || ask.state !== "pending" || ask.options_valid !== true || !validTime(ask.expires_at) || ask.expires_at <= now) continue;
     const offered = ask.options;
     if (!Array.isArray(offered) || offered.length === 0 || offered.length > choices.size ||
       !offered.every((option) => option && choices.has(option.id) && typeof option.label === "string" && option.label.length > 0) ||
