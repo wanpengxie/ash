@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -53,7 +54,9 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
       } } });
     const sessions = new Map<string, unknown[]>();
     const off = running.dsh!.onSessionEvent((id, event) => sessions.set(id, [...(sessions.get(id) ?? []), event]));
-    const owner = { transport: "api" as const, transportPrincipal: "test-owner", member: "person:owner", local: true, remote: false, ownerProxy: true };
+    const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const owner = { transport: "api" as const, transportPrincipal: `token:${createHash("sha256").update(token).digest("hex")}`,
+      member: "person:owner", local: true, remote: false, ownerProxy: true };
     const clock = { transport: "service" as const, transportPrincipal: "service:clock", member: "service:clock", local: true, remote: false, ownerProxy: false };
     const first = await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "MAIN_FIRST" }, wait: true });
     assert.equal(first.reply?.body.ok, true);
@@ -82,6 +85,11 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     assert.equal(extract.reply?.body.ok, true);
     assert.deepEqual(extract.reply?.body.result, { no_change: { checked: [], details: "No new claims" } });
     assert.deepEqual(requests.find((item) => item.worker)?.tools, []);
+    const memory = await running.world.send(owner, { to: "service:work", kind: "request", word: "run", body: { flow: "memory" }, wait: true });
+    assert.equal(memory.reply?.body.ok, true, JSON.stringify({ reply: memory.reply?.body, runs: running.ledger.workRuns("memory") }));
+    const memoryRun = (memory.reply?.body.result as { run: string }).run;
+    await until(() => running!.ledger.workRuns("memory").some((item) => item.run === memoryRun && item.state !== "running"));
+    assert.equal(running.ledger.workRuns("memory").find((item) => item.run === memoryRun)?.state, "no_change");
     off();
   } finally {
     await running?.close();

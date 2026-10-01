@@ -665,6 +665,18 @@ export class Ledger {
     return runs;
   }
 
+  /** Conversation since the last successfully processed memory run, frozen at this run's start. */
+  memoryEvidenceWindow(run: string): Message[] {
+    const start = this.db.prepare("SELECT seq FROM messages WHERE turn=? AND word='run.start' AND kind='event'").get(run) as Row | undefined;
+    if (!start) throw new TypeError("memory run has no start event");
+    const previous = this.db.prepare(`SELECT MAX(m.seq) AS seq FROM messages m JOIN work_runs w ON w.run=m.turn
+      WHERE m.word='run.end' AND m.kind='event' AND w.flow='memory' AND w.state IN ('done','no_change') AND m.seq<?`).get(Number(start.seq)) as Row;
+    const rows = this.db.prepare(`SELECT * FROM messages WHERE seq>? AND seq<? AND kind='request' AND word='say'
+      AND (("from"='person:owner' AND "to"='agent:main') OR ("from"='agent:main' AND "to"='person:owner')) ORDER BY seq`)
+      .all(Number(previous.seq ?? 0), Number(start.seq)) as Row[];
+    return rows.map(decode);
+  }
+
   /** Provenance for a code-owned work request; existence of a service name alone is not authorization. */
   workRunSource(run: string): { flow: string; startedAt: number; endedAt: number | null } | null {
     if (!matchesSchema(wordContract("service:work", "run")!.result_schema!, { run })) return null;
