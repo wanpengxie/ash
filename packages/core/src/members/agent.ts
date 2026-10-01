@@ -5,6 +5,7 @@ import { Ledger } from "../world/ledger";
 import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from "../world/router";
 import { AgentInbox, type StoredTurn } from "../world/agent-inbox";
 import { DEFAULT_TURN_TEXT_BUDGET, TurnTextBudgetError, renderTurnBatch } from "./agent-render";
+import { AgentStatus } from "./agent-status";
 
 /** Full messages are control data. A model adapter must inject only `rendered`, never stringify `messages`. */
 export interface AgentTurnInput {
@@ -27,11 +28,13 @@ export interface AgentMemberOptions {
   stateDir: string;
   runner: AgentTurnRunner;
   name?: string;
+  isPaused?: () => boolean;
 }
 
 const say = wordContract("agent:main", "say") as WordSpec | undefined;
 const cancelTurn = wordContract("agent:main", "cancel_turn") as WordSpec | undefined;
-if (!say || say.kind !== "request" || !cancelTurn || cancelTurn.kind !== "request") throw new Error("agent contract unavailable");
+const typing = wordContract("agent:main", "typing") as WordSpec | undefined;
+if (!say || say.kind !== "request" || !cancelTurn || cancelTurn.kind !== "request" || !typing || typing.kind !== "event") throw new Error("agent contract unavailable");
 
 /** Durable one-at-a-time intake. The secondary session is added by later work. */
 export class AgentMember implements Member {
@@ -41,6 +44,7 @@ export class AgentMember implements Member {
   readonly idempotentRecovery = ["say", "cancel_turn"] as const;
   readonly name: string;
   readonly inbox: AgentInbox;
+  readonly status: AgentStatus;
   private readonly ledger: Ledger;
   private readonly router: WorldRouter;
   private readonly runner: AgentTurnRunner;
@@ -61,16 +65,19 @@ export class AgentMember implements Member {
     this.router = options.router;
     this.runner = options.runner;
     this.inbox = new AgentInbox(options.stateDir);
+    this.status = new AgentStatus(this.router, Date.now, options.isPaused);
   }
 
-  words(): readonly WordSpec[] { return [say!, cancelTurn!]; }
-  get lastError(): Error | null { return this.error; }
+  words(): readonly WordSpec[] { return [say!, cancelTurn!, typing!]; }
+  get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
   counts(): { pending: number; read: number; active: number } { return this.inbox.counts(); }
 
   handle(message: Message, _context: RouteHandlerContext): ResponseBody {
     if (this.closed) return { ok: false, error: { code: "offline", message: "agent inbox is closed" } };
+    if (message.word === "typing" && message.kind === "event") return { ok: true };
     if (message.word === "cancel_turn") return this.handleCancel(message);
+    if (message.word !== "say") return { ok: false, error: { code: "not_found", message: "agent word not available" } };
     this.inbox.accept(message); // sync durable commit before acknowledging the route
     if (this.started) void this.receipts().catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
     this.schedule();
@@ -114,6 +121,7 @@ export class AgentMember implements Member {
     this.inbox.interruptActive();
     await this.reconcile();
     if (this.closed) return;
+    await this.status.start();
     this.started = true;
     this.schedule();
   }
@@ -121,6 +129,7 @@ export class AgentMember implements Member {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.status.close();
     if (this.retry) clearTimeout(this.retry);
     this.active?.abort();
     this.inbox.close();
