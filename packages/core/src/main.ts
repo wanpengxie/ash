@@ -111,6 +111,8 @@ export async function startOwner(config: Config): Promise<Running> {
       void link.run();
       await link.waitConnected(); // remote recovery requires current grants, not an old snapshot
     }
+    // Reconcile durable stop intents before router recovery can replay an old tool request.
+    agent.prepareRecovery();
     await self?.prepareRecovery();
     await world.recover();
     await agent.start();

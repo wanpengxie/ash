@@ -26,6 +26,7 @@ async function fixture(runner: AgentTurnRunner) {
   const members = new WorldMembers(router);
   members.register(member);
   router.register({ member: "person:owner", spec: wordContract("person:owner", "say")!, handle: () => ({ ok: true, result: { accepted: true } }) });
+  member.prepareRecovery();
   const messages = (): Message[] => {
     const all: Message[] = [];
     let after = 0;
