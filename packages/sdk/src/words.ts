@@ -13,6 +13,7 @@ const obj = (properties: Record<string, JsonSchema> = {}, required: string[] = [
 const array = (items: JsonSchema): JsonSchema => ({ type: "array", items });
 const choice = (...values: string[]): JsonSchema => ({ type: "string", enum: values });
 const id = nonempty;
+const deliveryDedupeKey: JsonSchema = { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" };
 const empty = obj();
 const accepted = obj({ accepted: bool }, ["accepted"]);
 const askChoice = choice("once", "always", "deny");
@@ -73,7 +74,10 @@ add("agent:main", "read", "event", obj({ ids: strings, turn: id }, ["ids", "turn
 add("agent:main", "turn.start", "event", obj({ turn: id, ids: strings }, ["turn", "ids"]), undefined, { direction: "out" });
 add("agent:main", "turn.end", "event", obj({ turn: id, reason: choice("completed", "cancelled", "error"), error: str }, ["turn", "reason"]), undefined, { direction: "out" });
 
-add("person:owner", "say", "request", obj({ text: nonempty, kind: choice("reply", "offer", "heads_up", "due"), facts: strings }, ["text", "kind"]), accepted, { label: "Replying", description: "Send a short message; it is acknowledged when recorded. facts are source message or fact IDs after the flow maps worker-local numeric indices, never those indices themselves." });
+add("person:owner", "say", "request", { oneOf: [
+  obj({ text: nonempty, kind: choice("reply", "due"), facts: strings }, ["text", "kind"]),
+  obj({ text: nonempty, kind: choice("offer", "heads_up"), facts: strings, dedupe_key: deliveryDedupeKey }, ["text", "kind"]),
+] }, accepted, { label: "Replying", description: "Send a short message; it is acknowledged when recorded. Proactive offers may carry an opaque stable dedupe_key at initial acceptance. facts are source message or fact IDs after the flow maps worker-local numeric indices, never those indices themselves." });
 add("person:owner", "react", "request", obj({ message_id: id, emoji: nonempty }, ["message_id", "emoji"]), accepted, { description: "React to one existing message; unknown ids fail." });
 add("person:owner", "show", "request", obj({ card: CARD_SCHEMA }, ["card"]), accepted, { description: "Show a result or choice card; it is acknowledged when recorded." });
 add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, options: { type: "array", items: askOption, minItems: 1 }, expires_at: num, source: obj({ word: nonempty, to: id, body_preview: str }, ["word", "to", "body_preview"]) }, ["title", "detail", "options", "expires_at", "source"]), obj({ choice: askChoice }, ["choice"]), { timeout_ms: 600_000, description: "Ask the owner; await the first valid answer or expiry." });
@@ -85,7 +89,7 @@ add("service:clock", "list", "request", empty, obj({ timers: array(any) }, ["tim
 add("service:clock", "clock.fired", "event", obj({ timer_id: id, scheduled_at: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
   outcome: choice("dispatched", "skipped", "failed"), reason: str, request_id: id }, ["timer_id", "scheduled_at", "outcome"]), undefined,
 { direction: "out", description: "Durable scheduled occurrence outcome; dispatched records router acceptance, not external completion." });
-add("service:post", "deliver", "request", obj({ message_id: id, kind: choice("reply", "offer", "heads_up", "approval", "due"), dedupe_key: str }, ["message_id", "kind"]), obj({ channel: choice("inapp", "notification", "held", "dropped") }, ["channel"]), { audience: "owner" });
+add("service:post", "deliver", "request", obj({ message_id: id, kind: choice("reply", "offer", "heads_up", "approval", "due"), dedupe_key: deliveryDedupeKey }, ["message_id", "kind"]), obj({ channel: choice("inapp", "notification", "held", "dropped") }, ["channel"]), { audience: "owner" });
 add("service:post", "visible", "event", empty, undefined, { audience: "owner", description: "Presence from the authenticated screen only." });
 add("service:post", "post.changed", "event", obj({ held: { type: "integer", minimum: 0 } }, ["held"]), undefined, { direction: "out", audience: "owner", label: "Updating deliveries", description: "Authoritative current held-delivery count for the owner; never infer a count from deliver results." });
 add("service:post", "post.delivery", "event", obj({ message_id: id, state: choice("held", "released", "dropped") }, ["message_id", "state"]), undefined,
