@@ -10,7 +10,7 @@ import type { WordSpec } from "../../../sdk/src/api";
 import { wordContract } from "../../../sdk/src/words";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-login", member: "person:owner", local: true, remote: false, ownerProxy: false };
-const agent: TrustedRouteContext = { transport: "agent", transportPrincipal: "agent-main", member: "agent:main", local: true, remote: false, ownerProxy: false };
+const agent: TrustedRouteContext = { transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false };
 const phone: TrustedRouteContext = { transport: "phone", transportPrincipal: "paired-phone", member: "device:phone", pairedDeviceId: "paired-phone", local: false, remote: true, ownerProxy: true };
 const screen: TrustedRouteContext = { transport: "web_ui", transportPrincipal: "owner-login", member: "person:owner", local: false, remote: true, ownerProxy: true, screenId: "screen:tab_a", screenLabel: "Tab A" };
 const spec = (word: string, risk: WordSpec["risk"] = "none", timeout_ms = 500): WordSpec => ({ word, kind: "request", description: "Synthetic test word", risk, timeout_ms,

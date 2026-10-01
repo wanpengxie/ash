@@ -112,7 +112,8 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : echoRunner();
-    agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name });
+    agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
+      isPaused: () => clock!.journal.isPaused() });
     members.register(agent);
     clock = new ClockMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"),
       isPaused: () => clock!.journal.isPaused(),

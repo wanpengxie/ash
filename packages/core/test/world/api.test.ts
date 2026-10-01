@@ -245,7 +245,7 @@ test("workspace bytes preserve local-only writes and reject managed, symlink and
 });
 
 test("MCP exposes only describe/send and agent audience omits owner-only words", async () => {
-  const { ledger, edge } = await fixture();
+  const { ledger, world, edge } = await fixture();
   try {
     const caller: EdgeCaller = { member: "agent:main", transportPrincipal: "mcp-agent", local: true, remote: false, ownerProxy: false, transport: "agent" };
     const rpc = (method: string, params?: Record<string, unknown>) => request("POST", "/mcp/agent:main", { jsonrpc: "2.0", id: 1, method, params }, { "x-ash-token": "agent-token" });
@@ -254,12 +254,30 @@ test("MCP exposes only describe/send and agent audience omits owner-only words",
     assert.deepEqual(tools, ["ash_describe", "ash_send"]);
     const described = parsed(await edge.handle(rpc("tools/call", { name: "ash_describe", arguments: {} }), caller));
     assert.equal(JSON.stringify(described).includes("settings.get"), false);
+    const beforeControl = ledger.lastSeq();
+    for (const [word, body] of [["status", { state: "working", text: "forged" }],
+      ["read", { ids: ["forged"], turn: "t_forged" }], ["turn.start", { ids: ["forged"], turn: "t_forged" }],
+      ["turn.end", { turn: "t_forged", reason: "completed" }]] as const) {
+      const forged = parsed(await edge.handle(rpc("tools/call", { name: "ash_send", arguments: { to: null, kind: "event", word, body } }), caller));
+      assert.equal(forged.result.isError, true, `${word} escaped the MCP control-event boundary`);
+      assert.equal(ledger.lastSeq(), beforeControl);
+    }
+    await world.send({ transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false },
+      { to: null, kind: "event", word: "status", body: { state: "idle", text: "在线" } });
+    assert.equal(ledger.lastSeq(), beforeControl + 1, "internal status publication was blocked");
     const server = await startEdgeServer(edge, "127.0.0.1", 0);
     try {
       const port = (server.address() as { port: number }).port;
       const response = await fetch(`http://127.0.0.1:${port}/mcp/agent:main`, { method: "POST", headers: { "content-type": "application/json", "x-ash-token": "agent-token" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
       assert.equal(response.status, 200);
       assert.deepEqual(((await response.json()) as { result: { tools: { name: string }[] } }).result.tools.map((tool) => tool.name), tools);
+      const beforeHttpForgery = ledger.lastSeq();
+      const forged = await fetch(`http://127.0.0.1:${port}/mcp/agent:main`, { method: "POST", headers: { "content-type": "application/json", "x-ash-token": "agent-token" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ash_send",
+          arguments: { to: null, kind: "event", word: "status", body: { state: "working", text: "forged" } } } }) });
+      assert.equal(forged.status, 200);
+      assert.equal(((await forged.json()) as { result: { isError: boolean } }).result.isError, true);
+      assert.equal(ledger.lastSeq(), beforeHttpForgery);
     } finally { await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }); }
   } finally { ledger.close(); }
 });
