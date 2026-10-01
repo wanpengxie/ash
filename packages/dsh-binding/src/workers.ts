@@ -1,13 +1,17 @@
 import type { WorkerModel } from "../../core/src/workers/llm";
+import type { WorldConfigV2 } from "../../sdk/src/config";
 import type { DshHost } from "./host";
 
 /** Uses the selected DSH provider without creating an agent or conversation session. */
-export function dshWorkerModel(host: DshHost): WorkerModel {
+export function dshWorkerModel(host: DshHost, configuredModel: () => WorldConfigV2["workers"]["model"]): WorkerModel {
   return {
     async complete(prompt, signal) {
-      const model = host.agentOptions();
+      const setting = configuredModel();
+      if (setting === undefined) throw new Error("worker model setting unavailable");
+      const model = setting === null ? host.agentOptions() : setting;
+      if (!model || typeof model.provider !== "string" || !model.provider.trim() || typeof model.model !== "string" || !model.model.trim()) throw new Error("worker model unavailable");
       const llm = host.ctx?.get("llm");
-      if (!model || !llm?.stream) throw new Error("worker model unavailable");
+      if (!llm?.stream) throw new Error("worker model service unavailable");
       let text = "";
       let stopped = false;
       let toolOutput = false;

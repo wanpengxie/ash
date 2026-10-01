@@ -11,12 +11,13 @@ const outputs = [
   JSON.stringify({ claims: [{ text: "Likes brief summaries", type: "preference", salience: "medium", evidence: ["source_1"], quote: "Keep summaries short" }] }),
   JSON.stringify({ claims: [{ text: "Unsupported", type: "preference", salience: "medium", evidence: ["invented"], quote: "invented" }] }),
   "not-json",
+  JSON.stringify({ claims: [{ text: "Likes brief summaries", type: "preference", salience: "medium", evidence: ["source_1"], quote: "Keep summaries short" }] }),
 ];
 const harness = await startHarness(() => outputs.shift() ?? "unexpected");
 try {
   const model = harness.host.agentOptions();
   assert.ok(model, "configured model absent");
-  const worker = new WorkerMember("extract", dshWorkerModel(harness.host));
+  const worker = new WorkerMember("extract", dshWorkerModel(harness.host, () => null));
   const message = { ...source, to: "worker:extract", word: "extract", body: request } as Message;
   const context = { signal: new AbortController().signal, recovered: false };
   const good = await worker.handle(message, context);
@@ -24,7 +25,13 @@ try {
   const bad = await worker.handle(message, context);
   assert.equal(bad.ok, false);
   if (!bad.ok) assert.equal(bad.error.code, "failed");
-  assert.equal(harness.requests.length, 3, "one valid call, then exactly two invalid attempts");
+  const currentDefault = harness.host.agentOptions;
+  harness.host.agentOptions = () => undefined;
+  try {
+    const explicit = new WorkerMember("extract", dshWorkerModel(harness.host, () => model));
+    assert.equal((await explicit.handle(message, context)).ok, true, "explicit model should work without default selection");
+  } finally { harness.host.agentOptions = currentDefault; }
+  assert.equal(harness.requests.length, 4, "one valid call, two invalid attempts, then one explicit override");
   const compiled = compileWorker("extract", request);
   for (const captured of harness.requests) {
     assert.equal(captured.model, model.model);
@@ -32,7 +39,7 @@ try {
     assert.equal(captured.system, compiled.system);
     assert.equal(requestText(captured), compiled.user);
   }
-  console.log(`PASS worker service: ${harness.requests.length} no-session DSH llm.stream calls; selected model captured; tools=[]; invalid evidence retried once and failed`);
+  console.log(`PASS worker service: ${harness.requests.length} no-session DSH llm.stream calls; default and explicit model captured; tools=[]; invalid evidence retried once and failed`);
 } finally {
   await harness.close();
 }
