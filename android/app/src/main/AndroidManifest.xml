@@ -87,6 +87,7 @@
         </receiver>
         <receiver android:name=".host.WakeReceiver" android:exported="false" />
         <receiver android:name=".host.PresentActionReceiver" android:exported="false" />
+        <receiver android:name=".host.NotificationPauseReceiver" android:exported="false" />
         <receiver android:name=".host.PresentExpiryReceiver" android:exported="false" />
         <receiver android:name=".host.senses.CalendarAlarmReceiver" android:exported="false" />
         <!-- adb/regression control (start, stop, restart); only holders of DUMP (shell, system) may send. -->

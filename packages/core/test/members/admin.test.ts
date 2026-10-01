@@ -18,6 +18,8 @@ const owner: TrustedRouteContext = { member: "person:owner", transport: "api", t
 const screen: TrustedRouteContext = { ...owner, transport: "web_ui", screenId: "screen:synthetic", screenLabel: "Synthetic" };
 const reflex: TrustedRouteContext = { member: "service:reflex", transport: "service", transportPrincipal: "service:reflex",
   local: true, remote: false, ownerProxy: false };
+const phone: TrustedRouteContext = { member: "device:phone", transport: "phone", transportPrincipal: "token:synthetic-phone",
+  local: true, remote: false, ownerProxy: true };
 const denied = (code: string) => (value: unknown) => Boolean(value && typeof value === "object" && "code" in value && value.code === code);
 
 async function fixture() {
@@ -97,6 +99,32 @@ test("admin source and screen restrictions reject before ledger acceptance", asy
     const afterRemote = f.ledger.lastSeq();
     await assert.rejects(f.router.send(reflex, { to: "service:admin", kind: "request", word: "pause", body: { by: remoteOwner.id } }), denied("forbidden"));
     assert.equal(f.ledger.lastSeq(), afterRemote);
+  } finally { await f.close(); }
+});
+
+test("local phone notification may pause, but cannot resume or send another admin word", async () => {
+  const f = await fixture();
+  try {
+    const command = { to: "service:admin", kind: "request" as const, word: "pause", body: {}, client_id: "notification-pause", wait: true };
+    for (const caller of [{ ...phone, ownerProxy: false }, { ...phone, local: false, remote: true }]) {
+      await assert.rejects(f.router.send(caller, command), denied("forbidden"));
+      assert.equal(f.ledger.lastSeq(), 0);
+    }
+    const result = await f.router.send(phone, command);
+    assert.deepEqual(result.reply?.body, { ok: true, result: { paused: true } });
+    assert.equal(f.ledger.byId(result.id)?.from, "person:owner");
+    assert.equal(f.ledger.byId(result.id)?.origin?.screen, "device:phone");
+    assert.equal(f.admin.journal.isPaused(), true);
+    const retry = await f.router.send(phone, command);
+    assert.equal(retry.id, result.id);
+    assert.equal(f.changes, 1);
+    const before = f.ledger.lastSeq();
+    await assert.rejects(f.router.send(phone, { to: "service:admin", kind: "request", word: "resume", body: { confirmed: true } }), denied("forbidden"));
+    await assert.rejects(f.router.send(phone, { ...command, body: { by: "forged" }, client_id: "forged" }), denied("forbidden"));
+    assert.equal(f.ledger.lastSeq(), before);
+    assert.equal(f.admin.journal.isPaused(), true);
+    const resume = await f.router.send(screen, { to: "service:admin", kind: "request", word: "resume", body: { confirmed: true }, wait: true });
+    assert.deepEqual(resume.reply?.body, { ok: true, result: { paused: false } });
   } finally { await f.close(); }
 });
 

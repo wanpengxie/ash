@@ -337,11 +337,15 @@ export class WorldRouter {
       return { from: "person:owner", origin: { screen, label: ctx.screenLabel! } };
     }
     if (ctx.transport === "phone") {
+      if (request.kind === "request" && request.to === "service:admin" && request.word === "pause") {
+        if (!ctx.ownerProxy || !ctx.local || ctx.remote) fail("forbidden", "local phone pause requires owner proxy");
+        return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
+      }
       if ((request.kind === "request" && request.to === "agent:main" && request.word === "say") || (request.kind === "response" && request.word === "ask")) {
         if (!ctx.ownerProxy) fail("forbidden", "notification proxy not authorized");
         return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
       }
-      if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses or notification replies");
+      if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses, notification replies, or pause");
     }
     return { from: ctx.member };
   }

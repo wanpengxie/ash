@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import org.json.JSONObject
+import java.util.UUID
 
 /** Starts ash after boot and after an app update (not after force-stop: Android sends nothing then). */
 class BootReceiver : BroadcastReceiver() {
@@ -30,6 +32,32 @@ object Wake {
 
 class WakeReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) = CoreService.start(ctx, CoreService.ACTION_WAKE)
+}
+
+/** The status notification pauses through the same durable Core command as Settings. It never resumes. */
+class NotificationPauseReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        if (intent.action != ACTION_PAUSE) return
+        val pending = goAsync()
+        Thread {
+            try {
+                val result = CoreClient(ctx.applicationContext).sendPresentAction(JSONObject()
+                    .put("to", "service:admin").put("kind", "request").put("word", "pause")
+                    .put("body", JSONObject()).put("client_id", UUID.randomUUID().toString()).put("wait", true))
+                val accepted = result.optString("id")
+                val reply = result.optJSONObject("reply")
+                if (accepted.isBlank() || reply?.optString("reply_to") != accepted ||
+                    reply.optString("from") != "service:admin" || reply.optString("word") != "pause" ||
+                    reply.optJSONObject("body")?.optJSONObject("result")?.optBoolean("paused") != true)
+                    Notifications.presentFailure(ctx.applicationContext, "status-pause")
+            } catch (e: Exception) {
+                Log.w("ash.pause", "notification pause was not confirmed", e)
+                Notifications.presentFailure(ctx.applicationContext, "status-pause")
+            } finally { pending.finish() }
+        }.start()
+    }
+
+    companion object { const val ACTION_PAUSE = "ai.ash.NOTIFICATION_PAUSE" }
 }
 
 /**

@@ -44,6 +44,9 @@ object Notifications {
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(openApp(ctx, 1))
+            .addAction(Notification.Action.Builder(null, "暂停", PendingIntent.getBroadcast(
+                ctx, 2, Intent(ctx, NotificationPauseReceiver::class.java).setAction(NotificationPauseReceiver.ACTION_PAUSE),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())
             .build()
 
     fun updateService(ctx: Context, text: String) {
