@@ -20,6 +20,6 @@ Scope: the production root retains the strict five-tool profile. This change add
 
 Reproduce with `ASH_TEST_DSH_ROOT=<installed-runtime-root> node --expose-internals --import tsx --test packages/core/test/world/dsh-cancel-barrier.test.ts packages/core/test/world/dsh-runtime.test.ts packages/dsh-binding/test/resume-v2.test.ts`, then `ASH_TEST_DSH_ROOT=<installed-runtime-root> npm test`, `npm run -s typecheck`, and `npm run -s build:core`.
 
-On the merged baseline used for this report: full suite 312 total, 254 passed, 58 intentional skips, 0 failures; typecheck and core build passed. The public-source term scan checked 421 files with 0 findings.
+On the merged baseline used for this report: full suite 313 total, 255 passed, 58 intentional skips, 0 failures; typecheck and core build passed. The public-source term scan checked 421 files with 0 findings.
 
 Remaining gates: production native tools and arbitrary shell remain disabled. Managed-file physical isolation and native pre-request/result accounting are not supplied by this change. A legacy root session without the new journal is intentionally blocked; it needs a separately reviewed migration path.
