@@ -4,11 +4,12 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, closeSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
 import type { Message, ResponseBody, SendRequestV2, WordSpec } from "../../sdk/src/api";
-import { SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER } from "../../sdk/src/api";
+import { POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER } from "../../sdk/src/api";
 import { wordContract } from "../../sdk/src/words";
 import { WorldMembers } from "./world/member";
 import { RouterError, WorldRouter, type TrustedRouteContext } from "./world/router";
 import { Ledger } from "./world/ledger";
+import type { PostJournal } from "./world/post-journal";
 import { AVATARS, ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
 
 export interface EdgeTokens { api: Record<string, string>; mcp: Record<string, string> }
@@ -133,6 +134,7 @@ export class ScreenRegistry {
 
 export class EdgeRouter {
   readonly screens: ScreenRegistry;
+  private postJournal: PostJournal | null = null;
   constructor(readonly ledger: Ledger, readonly world: WorldRouter, readonly members: WorldMembers, readonly tokens: EdgeTokens, readonly options: EdgeOptions = {}) {
     let installed = screenRegistries.get(world);
     if (!installed) {
@@ -145,6 +147,12 @@ export class EdgeRouter {
     }
     this.screens = installed.registry;
     members.setScreenDirectory(installed.registry.directory, installed.word);
+  }
+
+  /** Attached once during owner assembly, before the HTTP edge becomes visible. */
+  attachPostJournal(journal: PostJournal): void {
+    if (this.postJournal) throw new Error("post journal already attached");
+    this.postJournal = journal;
   }
 
   localCaller(headers: Record<string, string>): EdgeCaller | null {
@@ -258,14 +266,32 @@ export class EdgeRouter {
           (message.to !== registered!.screen || !this.screens.online(registered!.screen))) return;
         write(`id: ${message.seq}\ndata: ${JSON.stringify(message)}\n\n`);
       };
+      const writeSnapshot = (snapshot: ReturnType<PostJournal["pageSnapshot"]>["snapshot"]) => {
+        write(`event: ${POST_DELIVERY_SNAPSHOT_EVENT}\ndata: ${JSON.stringify(snapshot)}\n\n`);
+      };
       if (!follow) {
-        const page = before !== undefined ? this.ledger.list({ before, limit }) : after !== undefined ? this.ledger.list({ after, limit }) : this.ledger.list({ before: this.ledger.lastSeq() + 1, limit });
+        const query = before !== undefined ? { before, limit } : after !== undefined ? { after, limit } : { before: this.ledger.lastSeq() + 1, limit };
+        const result = this.postJournal?.pageSnapshot(query);
+        const page = result?.page ?? this.ledger.list(query);
+        if (result) writeSnapshot(result.snapshot);
         for (const message of page) send(message);
         end();
         return;
       }
-      const start = after ?? (this.ledger.list({ before: this.ledger.lastSeq() + 1, limit }).at(0)?.seq ?? 1) - 1;
-      const stop = this.world.subscribeFrom(start, send);
+      const first = after !== undefined ? { after, limit } : { before: this.ledger.lastSeq() + 1, limit };
+      const initial = this.postJournal?.pageSnapshot(first);
+      if (initial) writeSnapshot(initial.snapshot);
+      const start = after ?? (initial?.page.at(0)?.seq ?? this.ledger.list(first).at(0)?.seq ?? 1) - 1;
+      const initialIds = new Set(initial?.snapshot.items.map((item) => item.message_id) ?? []);
+      const liveSend = (message: Message) => {
+        if (this.postJournal && message.kind === "request" && message.word === "say" && message.to === "person:owner" &&
+          (message.body.kind === "offer" || message.body.kind === "heads_up") && !Object.hasOwn(message.body, "legacy") && !initialIds.has(message.id)) {
+          const { snapshot } = this.postJournal.pageSnapshot({ after: message.seq - 1, limit: 1 });
+          writeSnapshot(snapshot);
+        }
+        send(message);
+      };
+      const stop = this.world.subscribeFrom(start, liveSend);
       let closed = false;
       const cleanup = () => {
         if (closed) return;

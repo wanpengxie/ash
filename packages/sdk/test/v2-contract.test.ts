@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type ClockFiredBodyV2, type JsonSchema, type ScreenUiOpenAnswerV2, type SendRequestV2 } from "../src/api";
+import { API_VERSION, API_VERSION_V2, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type ClockFiredBodyV2, type JsonSchema, type PostDeliveryBodyV2, type PostDeliverySnapshotV2, type ScreenUiOpenAnswerV2, type SendRequestV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
 import { matchesSchema } from "../src/schema";
 import { workerResultErrors } from "../src/worker-validation";
-import { CARD_SCHEMA, cardErrors, deviceWordSpec, optionReplyErrors, WORD_CONTRACTS, wordContract } from "../src/words";
+import { CARD_SCHEMA, cardErrors, deviceWordSpec, optionReplyErrors, postDeliverySnapshotErrors, WORD_CONTRACTS, wordContract } from "../src/words";
 
 function example(schema: JsonSchema): unknown {
   if (schema.const !== undefined) return schema.const;
@@ -46,6 +46,63 @@ test("clock.fired is a closed, clock-only outbound occurrence record", () => {
     { ...valid, outcome: "completed" }, { ...valid, request_id: "" }, { ...valid, extra: true },
     { scheduled_at: valid.scheduled_at, outcome: "failed" }, null,
   ]) assert.ok(!matchesSchema(schema, invalid), `invalid clock event accepted: ${JSON.stringify(invalid)}`);
+});
+
+test("post deliver distinguishes dedupe suppression from a real presentation", () => {
+  const contract = wordContract("service:post", "deliver")!;
+  const result = contract.result_schema!;
+  for (const channel of ["inapp", "notification", "held", "dropped"])
+    assert.ok(matchesSchema(result, { channel }));
+  for (const invalid of [{ channel: "silent" }, { channel: "dropped", delivered: true }, {}, null])
+    assert.ok(!matchesSchema(result, invalid));
+});
+
+test("proactive say fixes a bounded opaque dedupe key at acceptance, without adding it to replies", () => {
+  const say = wordContract("person:owner", "say")!.input_schema!;
+  const deliver = wordContract("service:post", "deliver")!.input_schema!;
+  const base = { text: "synthetic offer", kind: "offer" };
+  for (const kind of ["offer", "heads_up"])
+    assert.ok(matchesSchema(say, { ...base, kind, dedupe_key: "job:2026-10-01_1" }));
+  for (const kind of ["reply", "due"]) {
+    assert.ok(matchesSchema(say, { ...base, kind }));
+    assert.ok(!matchesSchema(say, { ...base, kind, dedupe_key: "job:1" }));
+  }
+  assert.ok(matchesSchema(say, base));
+  assert.ok(matchesSchema(deliver, { message_id: "m_1", kind: "offer", dedupe_key: "job:1" }));
+  for (const key of ["", ".leading", "-leading", "white space", "slash/key", "é", "a".repeat(129)]) {
+    assert.ok(!matchesSchema(say, { ...base, dedupe_key: key }), `invalid say key ${key}`);
+    assert.ok(!matchesSchema(deliver, { message_id: "m_1", kind: "offer", dedupe_key: key }), `invalid deliver key ${key}`);
+  }
+  assert.ok(matchesSchema(say, { ...base, dedupe_key: "a".repeat(128) }));
+});
+
+test("post.delivery is a closed service-only visibility event, not an external notification", () => {
+  const contract = wordContract("service:post", "post.delivery")!;
+  assert.equal(contract.kind, "event");
+  assert.equal(contract.direction, "out");
+  assert.equal(wordContract("agent:main", "post.delivery"), undefined);
+  const body: PostDeliveryBodyV2 = { message_id: "m_offer", state: "released" };
+  for (const state of ["held", "released", "dropped"])
+    assert.ok(matchesSchema(contract.input_schema!, { ...body, state }));
+  for (const invalid of [{ ...body, state: "notification" }, { ...body, message_id: "" }, { ...body, host_sent: true }, null])
+    assert.ok(!matchesSchema(contract.input_schema!, invalid));
+});
+
+test("bounded post snapshot has unique IDs and real-event versions below its watermark", () => {
+  assert.equal(POST_DELIVERY_SNAPSHOT_EVENT, "post.delivery.snapshot");
+  const valid: PostDeliverySnapshotV2 = { at_seq: 25, items: [{ message_id: "m_old", state: "released", version_seq: 24 }] };
+  assert.deepEqual(postDeliverySnapshotErrors(valid), []);
+  assert.deepEqual(postDeliverySnapshotErrors({ at_seq: 0, items: [] }), []);
+  for (const invalid of [
+    { ...valid, at_seq: -1 }, { ...valid, at_seq: 1.5 }, { ...valid, at_seq: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, items: [{ ...valid.items[0], version_seq: 26 }] },
+    { ...valid, items: [{ ...valid.items[0], version_seq: 0 }] },
+    { ...valid, items: [valid.items[0], { message_id: "m_old", state: "held", version_seq: 20 }] },
+    { ...valid, items: Array.from({ length: 1001 }, (_, i) => ({ message_id: `m_${i}`, state: "held", version_seq: 1 })) },
+    { ...valid, items: [{ ...valid.items[0], state: "notification" }] },
+    { ...valid, items: [{ ...valid.items[0], seq: 24 }] },
+    { ...valid, id: 25 }, null,
+  ]) assert.notDeepEqual(postDeliverySnapshotErrors(invalid), [], `invalid snapshot accepted: ${JSON.stringify(invalid)}`);
 });
 
 test("target-screen ui.open acknowledgement uses the existing paired response and exact boolean result", () => {

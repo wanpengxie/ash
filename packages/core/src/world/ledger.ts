@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
-import type { LegacyConversationMetadata, Message, ResponseBody } from "../../../sdk/src/api";
+import type { LegacyConversationMetadata, Message, PostDeliveryBodyV2, ResponseBody } from "../../../sdk/src/api";
 
 type Row = Record<string, unknown>;
 type NewMessage = Pick<Message, "from" | "to" | "kind" | "word" | "body"> & Pick<Partial<Message>, "reply_to" | "origin" | "turn">;
@@ -361,6 +361,39 @@ export class Ledger {
     const row = this.db.prepare("SELECT message_id FROM client_retries WHERE scope_hash=? AND client_id=?")
       .get(digest(transportPrincipal), clientId) as Row | undefined;
     return row ? this.byId(String(row.message_id)) : null;
+  }
+
+  /** Post's private tables and authoritative count event commit on this one ledger connection. */
+  postRead<T>(read: (db: DatabaseSync) => T): T { return read(this.db); }
+
+  /** Page rows, status lookups and their watermark must see one SQLite snapshot. */
+  postReadSnapshot<T>(read: (db: DatabaseSync) => T): T {
+    this.db.exec("BEGIN");
+    try { const result = read(this.db); this.db.exec("COMMIT"); return result; }
+    catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  postWrite<T>(write: (db: DatabaseSync, snapshot: (held: number) => Message,
+    delivery: (body: PostDeliveryBodyV2) => Message) => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const snapshot = (held: number): Message => {
+        if (!Number.isSafeInteger(held) || held < 0) throw new TypeError("invalid held count");
+        const id = newId();
+        this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(id, Date.now(), "service:post", "person:owner", "event", "post.changed", JSON.stringify({ held }), null, null, null);
+        return this.byId(id)!;
+      };
+      const delivery = (body: PostDeliveryBodyV2): Message => {
+        const id = newId();
+        this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(id, Date.now(), "service:post", "person:owner", "event", "post.delivery", JSON.stringify(body), null, null, null);
+        return this.byId(id)!;
+      };
+      const result = write(this.db, snapshot, delivery);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
   trackedRequests(): TrackedRequest[] {

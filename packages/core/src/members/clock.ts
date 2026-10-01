@@ -183,7 +183,9 @@ export class ClockMember implements Member {
     this.closed = true;
     if (this.interval) clearInterval(this.interval);
     await Promise.allSettled([...this.handlers]);
-    await this.active;
+    // An interval tick owns and reports its own alarm failure. Shutdown must
+    // wait for it, but must not rethrow that failure and leave SQLite open.
+    if (this.active) await Promise.allSettled([this.active]);
     await this.alarmTask;
     this.journal.close();
   }
