@@ -205,6 +205,9 @@ test("target-screen ui.open acknowledgement uses the existing paired response an
 test("screen registration requires a server-minted credential scope, not just a tab token", () => {
   const frame = { screen: "screen:tab_1", token: "a".repeat(32), label: "Computer browser", auth_scope: `v1_${"b".repeat(43)}` };
   assert.ok(isScreenRegistration(frame));
+  assert.ok(isScreenRegistration({ ...frame, local_management: true }));
+  assert.ok(isScreenRegistration({ ...frame, local_management: false }));
+  assert.notEqual((frame as typeof frame & { local_management?: boolean }).local_management, true, "older registration never grants a management display hint");
   for (const bad of [
     { ...frame, auth_scope: undefined },
     { ...frame, auth_scope: "token:secret" },
@@ -212,6 +215,9 @@ test("screen registration requires a server-minted credential scope, not just a 
     { ...frame, screen: "person:owner" },
     { ...frame, token: "tiny" },
     { ...frame, label: "" },
+    { ...frame, local_management: "true" },
+    { ...frame, local_management: 1 },
+    { ...frame, local_management: null },
   ]) assert.ok(!isScreenRegistration(bad));
 });
 
