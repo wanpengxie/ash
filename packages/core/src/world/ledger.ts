@@ -518,8 +518,8 @@ export class Ledger {
   }
 
   /** Trusted answer/deadline cause is supplied by the router, never inferred from choice=deny. */
-  settleGateAsk(askId: string, choice: "once" | "deny", cause: "answer" | "deadline",
-    origin?: Message["origin"], retry?: ClientRetry): { askResponse: Message; event: Message; originalResponse: Message | null } | null {
+  settleGateAsk(askId: string, choice: "once" | "deny", cause: "answer" | "deadline" | "cancelled",
+    origin?: Message["origin"], retry?: ClientRetry): { askResponse: Message; event: Message | null; originalResponse: Message | null } | null {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.db.prepare(`SELECT c.*,s.phase AS request_phase,m."to" AS target,m.word AS request_word,
@@ -532,8 +532,10 @@ export class Ledger {
       if (cause === "answer" && at >= Number(row.expires_at)) throw new TypeError("gate ask expired before answer");
       if (cause === "deadline" && at < Number(row.expires_at)) throw new TypeError("gate deadline has not elapsed");
       const timedOut = cause === "deadline";
-      const decision = timedOut ? "timeout" : choice === "deny" ? "denied" : "allowed";
-      const askBody: ResponseBody = { ok: true, result: { choice: timedOut ? "deny" : choice } };
+      const decision = cause === "cancelled" ? "cancelled" : timedOut ? "timeout" : choice === "deny" ? "denied" : "allowed";
+      const askBody: ResponseBody = decision === "cancelled"
+        ? { ok: false, error: { code: "cancelled", message: "approval withdrawn" } }
+        : { ok: true, result: { choice: timedOut ? "deny" : choice } };
       const askResponseId = newId();
       this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
         .run(askResponseId, at, "person:owner", "service:gate", "response", "ask", JSON.stringify(askBody), askId,
@@ -543,28 +545,32 @@ export class Ledger {
         .run(digest(retry.transportPrincipal), retry.clientId,
           retryPayload({ from: "person:owner", to: "service:gate", kind: "response", word: "ask", body: askBody, reply_to: askId }), askResponseId);
       this.db.prepare("UPDATE gate_cases SET decision=?,decided_at=? WHERE ask_id=? AND decision='waiting'").run(decision, at, askId);
-      const historyDecision = decision === "allowed" ? "once" : decision === "timeout" ? "timeout" : "deny";
+      const historyDecision = decision === "allowed" ? "once" : decision === "timeout" ? "timeout" : decision === "cancelled" ? "cancelled" : "deny";
       this.db.prepare(`INSERT INTO gate_history(id,request_id,ask_id,subject,target,word,risk,decision,at)
         VALUES(?,?,?,?,?,?,?,?,?)`).run(newId(), row.request_id as string, askId, row.subject as string,
         row.target as string, row.request_word as string, row.risk as string, historyDecision, at);
-      const eventId = newId();
-      const eventWord = decision === "allowed" ? "gate.passed" : "gate.denied";
-      const eventBody = decision === "allowed"
-        ? { request_id: row.request_id, by: "answer", ask_id: askId }
-        : { request_id: row.request_id, by: decision === "timeout" ? "timeout" : "answer", ask_id: askId };
-      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .run(eventId, at, "service:gate", null, "event", eventWord, JSON.stringify(eventBody), null, null, null);
+      let eventId: string | null = null;
+      if (decision !== "cancelled") {
+        eventId = newId();
+        const eventWord = decision === "allowed" ? "gate.passed" : "gate.denied";
+        const eventBody = decision === "allowed"
+          ? { request_id: row.request_id, by: "answer", ask_id: askId }
+          : { request_id: row.request_id, by: decision === "timeout" ? "timeout" : "answer", ask_id: askId };
+        this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(eventId, at, "service:gate", null, "event", eventWord, JSON.stringify(eventBody), null, null, null);
+      }
       let originalResponseId: string | null = null;
       if (decision !== "allowed") {
         originalResponseId = newId();
-        const body: ResponseBody = { ok: false, error: { code: "denied", message: decision === "timeout" ? "approval expired" : "owner denied request" } };
+        const body: ResponseBody = { ok: false, error: { code: decision === "cancelled" ? "cancelled" : "denied",
+          message: decision === "timeout" ? "approval expired" : decision === "cancelled" ? "request cancelled" : "owner denied request" } };
         this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
           .run(originalResponseId, at, row.target as string, this.byId(String(row.request_id))!.from, "response", row.request_word as string,
             JSON.stringify(body), row.request_id as string, null, null);
         this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=? AND phase='gate_waiting'").run(at, row.request_id as string);
       }
       this.db.exec("COMMIT");
-      return { askResponse: this.byId(askResponseId)!, event: this.byId(eventId)!,
+      return { askResponse: this.byId(askResponseId)!, event: eventId ? this.byId(eventId)! : null,
         originalResponse: originalResponseId ? this.byId(originalResponseId)! : null };
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }

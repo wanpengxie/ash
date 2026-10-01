@@ -78,7 +78,7 @@ test("an allowed answer commits once and keeps the original waiting for effect-t
     const started = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!;
     const settled = ledger.settleGateAsk(started.ask.id, "once", "answer", { screen: "screen:test", label: "Test screen" });
     assert.equal(settled?.askResponse.body.ok, true);
-    assert.equal(settled?.event.word, "gate.passed");
+    assert.equal(settled?.event?.word, "gate.passed");
     assert.equal(settled?.originalResponse, null);
     assert.equal(ledger.gateCase(accepted.id)?.decision, "allowed");
     assert.equal(ledger.trackedRequests().find((item) => item.message.id === accepted.id)?.phase, "gate_waiting");
@@ -107,11 +107,25 @@ test("trusted deadline cannot fire early; at expiry it atomically denies origina
     assert.equal(ledger.gateCase(accepted.id)?.decision, "waiting");
     t.mock.method(Date, "now", () => expiry);
     const settled = ledger.settleGateAsk(started.ask.id, "deny", "deadline");
-    assert.equal(settled?.event.body.by, "timeout");
+    assert.equal(settled?.event?.body.by, "timeout");
     assert.equal(settled?.originalResponse?.body.ok, false);
     assert.equal(ledger.gateCase(accepted.id)?.decision, "timeout");
     assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer"), null);
     assert.equal(ledger.list().filter((item) => item.kind === "response" && item.reply_to === accepted.id).length, 1);
     assert.equal(ledger.trackedRequests().some((item) => item.message.id === accepted.id), false);
+  } finally { ledger.close(); }
+});
+
+test("cancelling a waiting gate withdraws the ask and settles the original atomically", async () => {
+  const { ledger, accepted } = await fixture();
+  try {
+    const started = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!;
+    const settled = ledger.settleGateAsk(started.ask.id, "deny", "cancelled");
+    assert.equal((settled?.askResponse.body.error as { code?: string } | undefined)?.code, "cancelled");
+    assert.equal((settled?.originalResponse?.body.error as { code?: string } | undefined)?.code, "cancelled");
+    assert.equal(settled?.event, null);
+    assert.equal(ledger.gateCase(accepted.id)?.decision, "cancelled");
+    assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer"), null);
+    assert.equal(ledger.gateHistoryPage().items[0]?.decision, "cancelled");
   } finally { ledger.close(); }
 });
