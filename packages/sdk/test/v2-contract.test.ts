@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type ClockFiredBodyV2, type JsonSchema, type SendRequestV2 } from "../src/api";
+import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type ClockFiredBodyV2, type JsonSchema, type ScreenUiOpenAnswerV2, type SendRequestV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
@@ -46,6 +46,20 @@ test("clock.fired is a closed, clock-only outbound occurrence record", () => {
     { ...valid, outcome: "completed" }, { ...valid, request_id: "" }, { ...valid, extra: true },
     { scheduled_at: valid.scheduled_at, outcome: "failed" }, null,
   ]) assert.ok(!matchesSchema(schema, invalid), `invalid clock event accepted: ${JSON.stringify(invalid)}`);
+});
+
+test("target-screen ui.open acknowledgement uses the existing paired response and exact boolean result", () => {
+  const word = wordContract("screen:tab-1", "ui.open")!;
+  assert.ok(matchesSchema(word.input_schema!, { target: "memory", mode: "perform" }));
+  assert.ok(matchesSchema(word.input_schema!, { target: "turn", id: "t_1", mode: "suggest" }));
+  for (const input of [{ target: "memory", mode: "broadcast" }, { target: "memory", mode: "perform", screen: "screen:other" }])
+    assert.ok(!matchesSchema(word.input_schema!, input));
+  assert.ok(matchesSchema(word.result_schema!, { opened: true }));
+  assert.ok(matchesSchema(word.result_schema!, { opened: false }));
+  for (const result of [{}, { opened: "true" }, { opened: true, screen: "screen:other" }]) assert.ok(!matchesSchema(word.result_schema!, result));
+  const answer: ScreenUiOpenAnswerV2 = { to: "agent:main", kind: "response", word: "ui.open", reply_to: "m_open", body: { ok: true, result: { opened: false } }, client_id: "screen-ack-1" };
+  assert.equal(answer.body.result.opened, false);
+  assert.equal(SCREEN_TOKEN_HEADER, "Ash-Screen");
 });
 
 test("v2 is additive to the existing client protocol", () => {

@@ -10,6 +10,7 @@ import { Ledger } from "../../src/world/ledger.ts";
 import { WorldRouter } from "../../src/world/router.ts";
 import { WorldMembers } from "../../src/world/member.ts";
 import { EdgeRouter, startEdgeServer } from "../../src/server.ts";
+import { PostPresenceMember } from "../../src/members/post.ts";
 import { wordContract } from "../../../sdk/src/words.ts";
 
 const directory = mkdtempSync(join(tmpdir(), "ash-ui-browser-"));
@@ -53,13 +54,17 @@ async function until(check, label, ms = 12_000) {
 
 try {
   const owner = { member: "person:owner", transportPrincipal: "probe", local: true, remote: false, ownerProxy: true, transport: "web_ui" };
-  const registrationResult = await edge.handle({ method: "GET", url: new URL("http://local/api/stream?follow=false"), headers: {}, body: null }, owner);
+  const registrationResult = await edge.handle({ method: "GET", url: new URL("http://local/api/stream?after=0&follow=true&label=Negative%20probe"), headers: {}, body: null }, owner);
+  assert.equal(registrationResult.status, 200);
   let control = "";
-  registrationResult.stream((chunk) => { control += chunk; }, () => {}, () => {});
-  const isolatedToken = JSON.parse(control.split("\ndata: ")[1].split("\n\n")[0]).token;
-  const absentPost = await edge.handle({ method: "POST", url: new URL("http://local/api/send"), headers: { "ash-screen": isolatedToken }, body: Buffer.from(JSON.stringify({ to: "service:post", kind: "event", word: "visible", body: {} })) }, owner);
-  assert.equal(absentPost.status, 404);
-  members.register({ id: "service:post", kind: "service", name: "Post", words: () => [wordContract("service:post", "visible")], handle: () => ({ ok: true, result: {} }) });
+  let closeNegative = () => {};
+  registrationResult.stream((chunk) => { control += chunk; }, (cleanup) => { closeNegative = cleanup; }, () => {});
+  try {
+    const isolatedToken = JSON.parse(control.split("\ndata: ")[1].split("\n\n")[0]).token;
+    const absentPost = await edge.handle({ method: "POST", url: new URL("http://local/api/send"), headers: { "ash-screen": isolatedToken }, body: Buffer.from(JSON.stringify({ to: "service:post", kind: "event", word: "visible", body: {} })) }, owner);
+    assert.equal(absentPost.status, 404);
+  } finally { closeNegative(); }
+  members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
   for (let n = 1; n <= 120; n++) await world.send({ member: "person:owner", transport: "api", transportPrincipal: "fixture", local: true, remote: false, ownerProxy: true }, { to: "agent:main", kind: "request", word: "say", body: { text: `fixture ${n}` }, client_id: `fixture-${n}` });
   server = await startEdgeServer(edge, "127.0.0.1", 0);
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -112,13 +117,30 @@ try {
   await until(async () => await evaluate("[...document.querySelectorAll('#log .msg')].some(x=>x.textContent==='from second tab')"), "first tab sees second tab");
   await until(async () => await evaluate2("[...document.querySelectorAll('#log .msg')].some(x=>x.textContent==='from second tab')"), "second tab sees own message");
   assert.equal(await evaluate("[...document.querySelectorAll('#log .from')].some(x=>x.textContent==='来自 Second tab')"), true);
+  const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+  const suggested = await world.send(agent, { to: secondVisible.origin.screen, kind: "request", word: "ui.open", body: { target: "memory", mode: "suggest" } });
+  await until(() => ledger.responseTo(suggested.id), "target tab suggestion acknowledgement");
+  const suggestionReply = ledger.responseTo(suggested.id);
+  assert.equal(suggestionReply.body.result.opened, false);
+  assert.equal(suggestionReply.from, secondVisible.origin.screen);
+  assert.equal(await evaluate2("document.querySelectorAll('#suggestions .chip').length"), 1);
+  assert.equal(await evaluate("document.querySelectorAll('#suggestions .chip').length"), 0);
+  const performed = await world.send(agent, { to: firstVisible.origin.screen, kind: "request", word: "ui.open", body: { target: "memory", mode: "perform" } });
+  await until(() => ledger.responseTo(performed.id), "unavailable perform acknowledgement");
+  const performReply = ledger.responseTo(performed.id);
+  assert.equal(performReply.body.result.opened, false);
+  assert.equal(performReply.from, firstVisible.origin.screen);
+  assert.equal(await evaluate("document.querySelectorAll('#suggestions .chip').length"), 0);
+  assert.equal(await evaluate2("document.querySelectorAll('#suggestions .chip').length"), 1);
+  assert.equal(ledger.list({ after: suggested.seq, limit: 1000 }).filter((message) => message.reply_to === suggested.id).length, 1);
+  assert.equal(ledger.list({ after: performed.seq, limit: 1000 }).filter((message) => message.reply_to === performed.id).length, 1);
   server.closeAllConnections();
   await world.send({ member: "person:owner", transport: "api", transportPrincipal: "fixture", local: true, remote: false, ownerProxy: true }, { to: "agent:main", kind: "request", word: "say", body: { text: "after reconnect" }, client_id: "after-reconnect" });
   await until(async () => await evaluate("[...document.querySelectorAll('#log .msg')].some(x => x.textContent === 'after reconnect')"), "reconnected record");
   assert.ok(streamHeaders.length >= 2);
   assert.match(String(streamHeaders.at(-1)), /^[1-9][0-9]*$/);
   assert.equal(await evaluate("[...document.querySelectorAll('#log .msg')].filter(x => x.textContent === 'after reconnect').length"), 1);
-  console.log(JSON.stringify({ browser: "Chrome", firstRenderMs, latestRecords: 200, olderRows: 20, crossTab: true, reconnectLastEventId: streamHeaders.at(-1), visibleRecorded: true, result: "PASS" }));
+  console.log(JSON.stringify({ browser: "Chrome", firstRenderMs, latestRecords: 200, olderRows: 20, crossTab: true, targetScreenOpen: true, suggestAck: false, performAck: false, reconnectLastEventId: streamHeaders.at(-1), visibleRecorded: true, result: "PASS" }));
 } finally {
   socket?.close();
   socket2?.close();

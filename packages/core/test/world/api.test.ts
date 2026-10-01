@@ -64,11 +64,12 @@ test("wait cap returns the accepted id without inventing a late reply", async ()
 
 test("screen registrations bind owner proxy sends to one principal and stamp origin", async () => {
   const { ledger, edge } = await fixture();
+  let close = () => {};
   try {
-    const stream = await edge.handle(request("GET", "/api/stream?follow=false&label=Tab%20A"), remote);
+    const stream = await edge.handle(request("GET", "/api/stream?follow=true&label=Tab%20A"), remote);
     assert.equal(stream.status, 200);
     let text = "";
-    if ("stream" in stream) stream.stream((chunk) => { text += chunk; }, () => {}, () => {});
+    if ("stream" in stream) stream.stream((chunk) => { text += chunk; }, (cleanup) => { close = cleanup; }, () => {});
     const registration = JSON.parse(text.split("\ndata: ")[1].split("\n\n")[0]) as { screen: string; token: string; label: string };
     assert.equal(registration.label, "Tab A");
     assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" })), remote)).status, 403);
@@ -80,7 +81,7 @@ test("screen registrations bind owner proxy sends to one principal and stamp ori
     assert.equal(recorded.from, "person:owner");
     assert.deepEqual(recorded.origin, { screen: registration.screen, label: "Tab A" });
     assert.equal((await edge.handle(request("POST", "/api/send", { to: "agent:main", kind: "event", word: "typing", body: {} }), owner)).status, 403);
-  } finally { ledger.close(); }
+  } finally { close(); ledger.close(); }
 });
 
 test("finite stream cursor rules and real HTTP Last-Event-ID replay exactly once", async () => {
