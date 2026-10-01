@@ -10,8 +10,12 @@ const text = (parent, tag, value, className = "") => {
 export function normalizeClockList(reply) {
   const timers = reply?.body?.ok === true ? reply.body.result?.timers : null;
   if (!Array.isArray(timers)) throw new Error("计划列表暂不可用");
-  return timers.filter((item) => item && typeof item.id === "string" && item.id && Number.isSafeInteger(item.next) && item.next >= 0)
-    .map((item) => ({ id: item.id, next: item.next, every: Number.isSafeInteger(item.every) && item.every >= 60 ? item.every : null,
+  if (timers.some((item) => !item || typeof item.id !== "string" || !item.id ||
+    !Number.isSafeInteger(item.next) || item.next < 0 || item.next > 8_640_000_000_000_000 ||
+    item.every != null && (!Number.isSafeInteger(item.every) || item.every < 60) ||
+    item.label != null && typeof item.label !== "string" ||
+    item.blocked != null && typeof item.blocked !== "string")) throw new Error("计划列表内容不完整");
+  return timers.map((item) => ({ id: item.id, next: item.next, every: Number.isSafeInteger(item.every) && item.every >= 60 ? item.every : null,
       to: typeof item.to === "string" ? item.to : null, word: typeof item.word === "string" ? item.word : null,
       label: typeof item.label === "string" ? item.label : "", blocked: typeof item.blocked === "string" ? item.blocked : null }));
 }
