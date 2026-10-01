@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DshHost } from '../../packages/dsh-binding/src/host';
+import { DshHost } from '../../packages/dsh-binding/test/legacy/host';
 
 const dshRoot = process.env.ASH_TEST_DSH_ROOT;
 assert.ok(dshRoot, 'ASH_TEST_DSH_ROOT required');
