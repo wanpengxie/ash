@@ -5,6 +5,7 @@ import android.os.Build
 import android.system.Os
 import android.system.OsConstants
 import android.util.Log
+import ai.ash.BuildConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -72,6 +73,15 @@ class CoreProcess(private val ctx: Context) {
         // The owner may override anything (more agents, policy …) in ash/config.override.json.
         if (p.configOverride.exists()) {
             runCatching { JSONObject(p.configOverride.readText()) }.getOrNull()?.let { o -> o.keys().forEach { k -> cfg.put(k, o.get(k)) } }
+        }
+        // The isolated test package must never be redirected to the installed app's ports
+        // or files by a stale override from an earlier test run.
+        if (BuildConfig.ISOLATED_PROBE) {
+            cfg.put("listen", "127.0.0.1:$PORT")
+            cfg.put("stateDir", p.state.path)
+            cfg.put("workspaces", JSONObject().put("home", p.home.path))
+            cfg.put("host", JSONObject().put("url", "http://127.0.0.1:$hostPort")
+                .put("token", secrets.hostToken).put("coreToken", secrets.coreToken))
         }
         p.config.writeText(cfg.toString(1))
     }
@@ -249,7 +259,7 @@ class CoreProcess(private val ctx: Context) {
 
     companion object {
         private const val TAG = "ash.core"
-        const val PORT = 4700
+        val PORT = BuildConfig.CORE_PORT
 
         val DEFAULT_BRIEF = """
             # Ash

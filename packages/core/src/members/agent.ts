@@ -29,6 +29,7 @@ export interface AgentMemberOptions {
   runner: AgentTurnRunner;
   name?: string;
   isPaused?: () => boolean;
+  currentAdminPauseTargets?: (requestId: unknown, turn: unknown) => boolean;
 }
 
 const say = wordContract("agent:main", "say") as WordSpec | undefined;
@@ -48,6 +49,8 @@ export class AgentMember implements Member {
   private readonly ledger: Ledger;
   private readonly router: WorldRouter;
   private readonly runner: AgentTurnRunner;
+  private readonly isPaused: () => boolean;
+  private readonly currentAdminPauseTargets: (requestId: unknown, turn: unknown) => boolean;
   private started = false;
   private closed = false;
   private draining = false;
@@ -64,6 +67,8 @@ export class AgentMember implements Member {
     this.ledger = options.ledger;
     this.router = options.router;
     this.runner = options.runner;
+    this.isPaused = options.isPaused ?? (() => false);
+    this.currentAdminPauseTargets = options.currentAdminPauseTargets ?? (() => false);
     this.inbox = new AgentInbox(options.stateDir);
     this.status = new AgentStatus(this.router, Date.now, options.isPaused);
   }
@@ -71,6 +76,8 @@ export class AgentMember implements Member {
   words(): readonly WordSpec[] { return [say!, cancelTurn!, typing!]; }
   get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
+  /** Resample the single durable admin pause fact after a committed transition. */
+  resamplePause(): void { this.status.refresh(); this.schedule(); }
   counts(): { pending: number; read: number; active: number } { return this.inbox.counts(); }
 
   handle(message: Message, _context: RouteHandlerContext): ResponseBody {
@@ -91,6 +98,9 @@ export class AgentMember implements Member {
     const reason = String(message.body.reason ?? "Stop requested");
     const by = typeof message.body.by === "string" ? message.body.by : undefined;
     const active = this.inbox.activeTurn();
+    if (message.from === "service:admin" && (!message.turn || active?.id !== message.turn ||
+      !this.currentAdminPauseTargets(message.body.by, message.turn)))
+      return { ok: true, result: { cancelled: false } };
     // Reflex captures the turn when the owner spoke. A late decision must never
     // cancel a newer turn that happened to start before this request dispatched.
     if (message.from === "service:reflex" && message.turn && active?.id !== message.turn)
@@ -106,6 +116,18 @@ export class AgentMember implements Member {
     if (this.activeTurn === receipt.turn && this.active) { this.quiescenceBlocked = true; this.active.abort(); }
     void this.turnEvents(ended).catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
     return { ok: true, result: { cancelled: true } };
+  }
+
+  /** Must run after member registration and before router.recover(), so cancelled effects cannot replay. */
+  reconcileCommittedPause(pauseRequestId: string, targetTurn: string | null): void {
+    if (this.closed || this.started || this.prepared) throw new Error("pause reconciliation must precede recovery");
+    const active = this.inbox.activeTurn();
+    if (!active) return;
+    if (!targetTurn || active.id !== targetTurn || !this.currentAdminPauseTargets(pauseRequestId, targetTurn))
+      throw new Error("active turn does not match current durable pause target");
+    const action = this.ledger.trackedRequests().filter((item) => item.message.from === this.id && item.message.turn === active.id).at(-1)?.message;
+    const fact = `The previous turn was stopped${action ? ` while ${action.to}/${action.word} was pending` : "; the exact last action is unknown"}. Reason: Paused by owner. Any external effect may be unknown.`;
+    this.inbox.recordCancel(`admin-recovery:${pauseRequestId}`, "Paused by owner", pauseRequestId, fact);
   }
 
   /** Must run after member registration and before router.recover(), so cancelled effects cannot replay. */
@@ -199,6 +221,8 @@ export class AgentMember implements Member {
 
   private schedule(): void {
     if (!this.started || this.closed || this.draining) return;
+    try { if (this.isPaused()) return; }
+    catch (error) { this.error = error instanceof Error ? error : new Error(String(error)); return; }
     this.draining = true;
     queueMicrotask(() => void this.drain());
   }
@@ -215,6 +239,7 @@ export class AgentMember implements Member {
       while (!this.closed) {
         await this.reconcile();
         if (this.closed) break;
+        if (this.isPaused()) break;
         const ids = this.inbox.pendingIds();
         if (!ids.length) break;
         const messages = ids.map((id) => this.message(id));

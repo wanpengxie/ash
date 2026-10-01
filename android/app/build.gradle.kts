@@ -33,7 +33,10 @@ android {
         targetSdk = 28
         versionCode = 10
         versionName = "0.2.0"
+        buildConfigField("int", "CORE_PORT", "4700")
+        buildConfigField("int", "HOST_PORT", "4710")
         buildConfigField("int", "SENSE_PORT", "4700")
+        buildConfigField("boolean", "ISOLATED_PROBE", "false")
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
@@ -53,7 +56,13 @@ android {
     buildTypes {
         debug {
             // Opt-in isolated package for emulator probes; never replace the owner's installed app.
-            if (providers.gradleProperty("ashIsolatedProbe").orNull == "true") applicationIdSuffix = ".probe"
+            if (providers.gradleProperty("ashIsolatedProbe").orNull == "true") {
+                applicationIdSuffix = ".probe"
+                buildConfigField("int", "CORE_PORT", "14763")
+                buildConfigField("int", "HOST_PORT", "14764")
+                buildConfigField("int", "SENSE_PORT", "14763")
+                buildConfigField("boolean", "ISOLATED_PROBE", "true")
+            }
             // A stable debug key across machines (so updates install over each other).
             val shared = System.getenv("ASH_DEBUG_KEYSTORE")
             if (shared != null) signingConfig = signingConfigs.create("sharedDebug") {
@@ -63,6 +72,9 @@ android {
         create("sensesProbe") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".sensesprobe"
+            buildConfigField("int", "CORE_PORT", "4700")
+            buildConfigField("int", "HOST_PORT", "4710")
+            buildConfigField("boolean", "ISOLATED_PROBE", "false")
             buildConfigField("int", "SENSE_PORT", "4870")
             // Isolated emulator probe only; release keeps the six-hour rolling scan.
             buildConfigField("long", "SENSE_RESCAN_MS", "90000L")
