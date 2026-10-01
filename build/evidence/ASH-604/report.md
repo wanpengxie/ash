@@ -26,6 +26,8 @@ The browser probe creates isolated synthetic ledgers, server credentials and a d
 
 At this checkpoint: full test suite **293 passed, 66 skipped, 0 failed**; typecheck and core build passed. Chrome large-file mode passed with `latestRecords=200`, `firstRenderMs=250`, `authorizedRawReads=2`; switch mode passed with `firstRenderMs=241`, `oldSeqAboveNew=true`, and `staleCursorPageDiscarded=true`. Timings are from one isolated local run, not a device performance claim. Tests also cover UTF-8 byte accounting, multi-row 4 MiB summary paging, raw over-budget HTTP 413 before headers, live oversize error without a false cursor, status snapshot folding, and malformed summary rejection.
 
+After merging the latest runtime baseline and post delivery implementation, typecheck and core build still pass. Both Chrome modes pass again: 2/19 MiB with two authorized raw reads and 243 ms first render; same-origin credential switch with stale cursor discard and 259 ms first render. The full suite passed once with **303 passed, 66 skipped, 0 failed**, but failed on two other runs with **302 passed, 66 skipped, 1 failed**. The identified failure is the preexisting clock-host lifecycle test (`production echo bootstrap confirms host alarm on set, restart, and cancel`, `host alarm acknowledgement unavailable`); its owning lane is repairing that integration race. This merged SHA is therefore a functional checkpoint, not a final green integrated baseline.
+
 ## Still pending
 
 - Non-author QA must independently replay the browser and security negatives against the fixed integrated SHA.
