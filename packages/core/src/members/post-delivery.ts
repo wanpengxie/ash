@@ -104,6 +104,10 @@ export class PostMember implements Member {
     const kind = message.body.kind as DeliveryRecord["kind"];
     const source = this.source(String(message.body.message_id), kind);
     if (!source) return error("bad_request", "delivery source and kind do not match owner ledger message");
+    if ((kind === "offer" || kind === "heads_up") &&
+      (Object.hasOwn(source.body, "dedupe_key") !== Object.hasOwn(message.body, "dedupe_key") ||
+        (Object.hasOwn(source.body, "dedupe_key") && source.body.dedupe_key !== message.body.dedupe_key)))
+      return error("bad_request", "delivery key must match the accepted owner message");
     const now = this.now(), foreground = this.foreground();
     const held = !foreground && (kind === "offer" || kind === "heads_up") && isQuiet(now, this.options.delivery.quiet, this.options.timeZone);
     const notification = !foreground && !held && (kind === "approval" || kind === "due" || kind === "reply");
@@ -136,7 +140,9 @@ export class PostMember implements Member {
     const kind = message.word === "ask" ? "approval" : message.word === "say" && ["reply", "offer", "heads_up", "due"].includes(String(message.body.kind))
       ? message.body.kind as DeliveryRecord["kind"] : null;
     if (!kind || this.journal.record(message.id)) return;
-    await this.options.router.send(service, { to: this.id, kind: "request", word: "deliver", body: { message_id: message.id, kind }, client_id: `post:${message.id}` });
+    await this.options.router.send(service, { to: this.id, kind: "request", word: "deliver", body: { message_id: message.id, kind,
+      ...((kind === "offer" || kind === "heads_up") && typeof message.body.dedupe_key === "string" ? { dedupe_key: message.body.dedupe_key } : {}) },
+    client_id: `post:${message.id}` });
   }
   private async scan(): Promise<void> {
     if (this.scanTask) return this.scanTask;

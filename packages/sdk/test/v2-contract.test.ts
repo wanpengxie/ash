@@ -57,6 +57,25 @@ test("post deliver distinguishes dedupe suppression from a real presentation", (
     assert.ok(!matchesSchema(result, invalid));
 });
 
+test("proactive say fixes a bounded opaque dedupe key at acceptance, without adding it to replies", () => {
+  const say = wordContract("person:owner", "say")!.input_schema!;
+  const deliver = wordContract("service:post", "deliver")!.input_schema!;
+  const base = { text: "synthetic offer", kind: "offer" };
+  for (const kind of ["offer", "heads_up"])
+    assert.ok(matchesSchema(say, { ...base, kind, dedupe_key: "job:2026-10-01_1" }));
+  for (const kind of ["reply", "due"]) {
+    assert.ok(matchesSchema(say, { ...base, kind }));
+    assert.ok(!matchesSchema(say, { ...base, kind, dedupe_key: "job:1" }));
+  }
+  assert.ok(matchesSchema(say, base));
+  assert.ok(matchesSchema(deliver, { message_id: "m_1", kind: "offer", dedupe_key: "job:1" }));
+  for (const key of ["", ".leading", "-leading", "white space", "slash/key", "é", "a".repeat(129)]) {
+    assert.ok(!matchesSchema(say, { ...base, dedupe_key: key }), `invalid say key ${key}`);
+    assert.ok(!matchesSchema(deliver, { message_id: "m_1", kind: "offer", dedupe_key: key }), `invalid deliver key ${key}`);
+  }
+  assert.ok(matchesSchema(say, { ...base, dedupe_key: "a".repeat(128) }));
+});
+
 test("post.delivery is a closed service-only visibility event, not an external notification", () => {
   const contract = wordContract("service:post", "post.delivery")!;
   assert.equal(contract.kind, "event");

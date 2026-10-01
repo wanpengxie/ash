@@ -226,8 +226,8 @@ test("dedupe result is dropped, bad source kind is rejected, and visible refresh
 test("a deduped proactive offer keeps its audit row but receives a dropped visibility state", async () => {
   const f = await fixture(local(1, 12), false);
   try {
-    const first = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic first", kind: "offer" }, wait: true });
-    const second = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic duplicate", kind: "offer" }, wait: true });
+    const first = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic first", kind: "offer", dedupe_key: "synthetic-thing" }, wait: true });
+    const second = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic duplicate", kind: "offer", dedupe_key: "synthetic-thing" }, wait: true });
     const deliver = (id: string) => f.router.send(service, { to: "service:post", kind: "request", word: "deliver",
       body: { message_id: id, kind: "offer", dedupe_key: "synthetic-thing" }, wait: true });
     assert.deepEqual((await deliver(first.id)).reply?.body, { ok: true, result: { channel: "inapp" } });
@@ -236,6 +236,82 @@ test("a deduped proactive offer keeps its audit row but receives a dropped visib
     assert.deepEqual(f.post.journal.pageSnapshot({ before: second.seq + 1, limit: 1 }).snapshot.items,
       [{ message_id: second.id, state: "dropped", version_seq: f.ledger.list({ after: second.seq, limit: 100 })
         .find((item) => item.word === "post.delivery" && item.body.message_id === second.id)!.seq }]);
+  } finally { await f.close(); }
+});
+
+test("proactive delivery key is rejected before acceptance for untrusted callers", async () => {
+  const f = await fixture(local(1, 12), false);
+  try {
+    const request = { to: "person:owner", kind: "request" as const, word: "say", body: { text: "synthetic", kind: "offer", dedupe_key: "job:1" } };
+    const denied: TrustedRouteContext[] = [screen,
+      { member: "person:owner", transport: "api", transportPrincipal: "token:synthetic", local: true, remote: false, ownerProxy: false },
+      { member: "device:phone", transport: "device", transportPrincipal: "device:phone", local: true, remote: false, ownerProxy: false },
+      { member: "service:post", transport: "service", transportPrincipal: "service:post", local: true, remote: false, ownerProxy: false },
+      { ...agent, local: false, remote: true }];
+    const before = f.ledger.lastSeq();
+    for (const caller of denied) {
+      await assert.rejects(f.router.send(caller, request), (error: unknown) =>
+        typeof error === "object" && error !== null && "code" in error && error.code === "forbidden");
+      assert.equal(f.ledger.lastSeq(), before, `${caller.member} must not accept a keyed message`);
+    }
+    for (const caller of [agent, service]) {
+      const accepted = await f.router.send(caller, { ...request, body: { ...request.body, dedupe_key: `job:${caller.member.replace(":", "-")}` }, wait: true });
+      assert.equal(accepted.reply?.body.ok, true);
+    }
+  } finally { await f.close(); }
+});
+
+test("automatic proactive delivery carries its accepted key across two messages and a client retry", async () => {
+  const f = await fixture();
+  try {
+    const body = { text: "synthetic offer one", kind: "offer", dedupe_key: "job:stable-1" };
+    const first = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body, client_id: "offer:one", wait: true });
+    assert.equal((await f.wait(first.id)).channel, "inapp");
+    const retry = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body, client_id: "offer:one", wait: true });
+    assert.deepEqual({ id: retry.id, seq: retry.seq }, { id: first.id, seq: first.seq });
+    const second = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say",
+      body: { ...body, text: "synthetic offer two" }, client_id: "offer:two", wait: true });
+    assert.equal((await f.wait(second.id)).channel, "dropped");
+    assert.equal(f.ledger.byId(second.id)?.body.dedupe_key, body.dedupe_key);
+    assert.equal(f.presentations.length, 0, "proactive offers never become host notifications");
+    const rows = f.ledger.list({ limit: 1000 });
+    assert.equal(rows.filter((item) => item.word === "say" && item.id === first.id).length, 1);
+    assert.equal(rows.filter((item) => item.word === "deliver" && item.body.message_id === first.id).length, 1);
+    assert.equal(rows.filter((item) => item.word === "deliver" && item.body.message_id === second.id).length, 1);
+    assert.equal(rows.filter((item) => item.word === "post.delivery" && item.body.message_id === second.id && item.body.state === "dropped").length, 1);
+  } finally { await f.close(); }
+});
+
+test("explicit proactive delivery cannot add, omit or replace a key after owner acceptance", async () => {
+  const f = await fixture(local(1, 12), false);
+  try {
+    const keyed = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say",
+      body: { text: "synthetic keyed", kind: "heads_up", dedupe_key: "job:original" }, wait: true });
+    const unkeyed = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say",
+      body: { text: "synthetic unkeyed", kind: "heads_up" }, wait: true });
+    for (const [id, key] of [[keyed.id, undefined], [keyed.id, "job:other"], [unkeyed.id, "job:injected"]] as const) {
+      const result = await f.router.send(service, { to: "service:post", kind: "request", word: "deliver",
+        body: { message_id: id, kind: "heads_up", ...(key ? { dedupe_key: key } : {}) }, wait: true });
+      assert.equal(result.reply?.body.ok, false);
+      assert.equal(f.post.journal.record(id), null);
+    }
+    const good = await f.router.send(service, { to: "service:post", kind: "request", word: "deliver",
+      body: { message_id: keyed.id, kind: "heads_up", dedupe_key: "job:original" }, wait: true });
+    assert.deepEqual(good.reply?.body, { ok: true, result: { channel: "inapp" } });
+  } finally { await f.close(); }
+});
+
+test("recovery refuses a keyed owner message with an untrusted stored source before dispatch", async () => {
+  const f = await fixture(local(1, 12), false);
+  try {
+    const stranded = f.ledger.append({ from: "person:owner", to: "person:owner", kind: "request", word: "say",
+      body: { text: "synthetic stranded", kind: "offer", dedupe_key: "job:forged" } }, undefined,
+    { deadlineAt: Date.now() + 30_000, context: { member: "person:owner", local: true, remote: false, ownerProxy: false,
+      transportPrincipal: "token:synthetic" } }).message;
+    await f.router.recover();
+    assert.deepEqual(f.ledger.responseTo(stranded.id)?.body, { ok: false,
+      error: { code: "forbidden", message: "proactive delivery key source is no longer authorized" } });
+    assert.equal(f.post.journal.record(stranded.id), null);
   } finally { await f.close(); }
 });
 
