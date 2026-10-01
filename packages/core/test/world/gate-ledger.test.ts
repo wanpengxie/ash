@@ -112,12 +112,22 @@ for (const stage of ["accepted", "asked", "answered", "dispatching", "handoff"] 
       const parent = ledger.list().find((message) => message.word === "internal.approval" && message.kind === "request")!;
       assert.ok(parent);
       const prior = ledger.responseTo(parent.id);
-      const final = ledger.failInternalApproval(parent.id)!;
+      const published: string[] = [];
+      const router = new WorldRouter(ledger, async () => true);
+      router.enableDurableGate();
+      router.subscribe((message) => published.push(message.id));
+      await router.recover();
+      const final = ledger.responseTo(parent.id)!;
       assert.equal(final.id, prior?.id ?? final.id);
       assert.equal(final.body.ok, stage === "handoff");
+      if (stage !== "handoff") assert.ok(published.includes(final.id), "recovery did not publish the parent terminal");
       assert.equal(ledger.list().filter((message) => message.reply_to === parent.id && message.kind === "response").length, 1);
       const gate = ledger.gateCase(parent.id);
-      if (gate) assert.ok(ledger.responseTo(gate.askId), "old owner ask remained actionable");
+      if (gate) {
+        const askResponse = ledger.responseTo(gate.askId);
+        assert.ok(askResponse, "old owner ask remained actionable");
+        if (stage === "asked") assert.ok(published.includes(askResponse.id), "recovery did not publish the withdrawn ask");
+      }
       assert.equal(ledger.trackedRequests().some((request) => request.message.id === parent.id || request.message.id === gate?.askId), false);
       assert.throws(() => ledger.acceptInternalApproval({ sessionId: "session-550e8400-e29b-41d4-a716-446655440000", turn: "t_synthetic",
         callId: "toolu_synthetic", toolName: "ash_describe", contractFingerprint: "a".repeat(64), deadlineAt: Date.now() + 120_000 }));

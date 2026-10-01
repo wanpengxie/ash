@@ -66,6 +66,9 @@ test("real DSH turn: ambiguous owner messages stay queued and an explicit stop c
         result_schema: { type: "object" as const, properties: { done: { type: "boolean" as const } }, required: ["done"], additionalProperties: false },
         risk: "none" as const, label: "Synthetic wait" }],
       handle: async () => { entered(); await deviceRelease; deviceSettled = true; return { ok: true, result: { done: true } }; } });
+    const access = await running.world.send(owner, { to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: "device:probe/hold" }, wait: true });
+    assert.equal(access.reply?.body.ok, true);
     const rows = () => running!.ledger.list({ limit: 1000 });
     await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "start synthetic hold" }, wait: true });
     await deviceEntered;
