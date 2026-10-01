@@ -91,6 +91,10 @@ export class AgentMember implements Member {
     const reason = String(message.body.reason ?? "Stop requested");
     const by = typeof message.body.by === "string" ? message.body.by : undefined;
     const active = this.inbox.activeTurn();
+    // Reflex captures the turn when the owner spoke. A late decision must never
+    // cancel a newer turn that happened to start before this request dispatched.
+    if (message.from === "service:reflex" && message.turn && active?.id !== message.turn)
+      return { ok: true, result: { cancelled: false } };
     const inFlight = active ? this.ledger.trackedRequests().filter((item) => item.message.from === this.id && item.message.turn === active.id) : [];
     const action = inFlight.at(-1)?.message;
     const safeReason = [...reason].slice(0, 160).join("");
