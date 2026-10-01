@@ -189,3 +189,40 @@ test("recovery past an ask deadline settles both requests before displaying or d
     assert.equal(reopened.trackedRequests().length, 0);
   } finally { reopened.close(); }
 });
+
+test("v10 owner-issued grants import once as expiring access only; confirms stay de-identified audit", async (t) => {
+  const file = join(mkdtempSync(join(tmpdir(), "ash-gate-v10-")), "ash.db");
+  const old = new DatabaseSync(file);
+  old.exec(`CREATE TABLE events(seq INTEGER PRIMARY KEY,ts INTEGER,workspace TEXT,member TEXT,type TEXT,data TEXT);
+    CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE grants(id TEXT PRIMARY KEY,member TEXT,scope TEXT,created_by TEXT,created_at INTEGER);
+    CREATE TABLE confirms(id TEXT PRIMARY KEY,asker TEXT,title TEXT,detail TEXT,kind TEXT,state TEXT,created_at INTEGER,expires_at INTEGER,answered_by TEXT);`);
+  old.prepare("INSERT INTO grants VALUES(?,?,?,?,?)").run("safe", "agent:main", "device:fake/message.send", "person:owner", 1);
+  old.prepare("INSERT INTO grants VALUES(?,?,?,?,?)").run("not-owner", "agent:main", "*", "agent:main", 2);
+  old.prepare("INSERT INTO grants VALUES(?,?,?,?,?)").run("bad-scope", "agent:main", "device:fake/../../secret", "person:owner", 3);
+  old.prepare("INSERT INTO confirms VALUES(?,?,?,?,?,?,?,?,?)").run("old-confirm", "agent:main", "private title", "private detail", "call", "approved", 4, 5, "person:owner");
+  old.close();
+  const ledger = await Ledger.open(file);
+  const first = Date.now();
+  try {
+    assert.equal(ledger.gateDeviceAccess("agent:main", "device:fake", "message.send", first), true);
+    assert.equal(ledger.gateDeviceAccess("agent:main", "device:other", "message.send", first), false);
+    assert.equal(ledger.gateDeviceAccess("agent:main", "device:fake", "message.send", first + 30 * 24 * 60 * 60_000 + 1), false);
+    assert.deepEqual(ledger.gateRulesPage().rules, []); // an old ACL never becomes an always rule
+    const history = ledger.gateHistoryPage().items;
+    assert.equal(history.filter((item) => item.decision === "legacy_access_imported").length, 1);
+    assert.equal(history.filter((item) => item.decision === "legacy_access_invalid").length, 2);
+    assert.equal(history.filter((item) => item.decision === "legacy_approved").length, 1);
+    assert.equal(JSON.stringify(history).includes("private title"), false);
+    assert.equal(JSON.stringify(history).includes("private detail"), false);
+    assert.equal(JSON.stringify(history).includes("../../secret"), false);
+    t.mock.method(Date, "now", () => first + 30 * 24 * 60 * 60_000 + 1);
+    assert.equal(ledger.gateHistoryPage().items.filter((item) => item.decision === "legacy_access_expired").length, 1);
+    t.mock.restoreAll();
+  } finally { ledger.close(); }
+  const reopened = await Ledger.open(file);
+  try {
+    assert.equal(reopened.gateHistoryPage().items.length, 4);
+    assert.equal(reopened.gateDeviceAccess("agent:main", "device:fake", "message.send", first + 30 * 24 * 60 * 60_000 + 1), false);
+  } finally { reopened.close(); }
+});

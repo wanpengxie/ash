@@ -244,9 +244,10 @@ export class Ledger {
         decided_at INTEGER);
         CREATE INDEX IF NOT EXISTS gate_cases_ask ON gate_cases(ask_id);`);
       db.exec(`CREATE TABLE IF NOT EXISTS gate_history (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, request_id TEXT NOT NULL,
-        ask_id TEXT, subject TEXT NOT NULL, target TEXT NOT NULL, word TEXT NOT NULL,
-        risk TEXT NOT NULL, decision TEXT NOT NULL, at INTEGER NOT NULL, rule_id TEXT);
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, request_id TEXT,
+        ask_id TEXT, subject TEXT, target TEXT, word TEXT,
+        risk TEXT, decision TEXT NOT NULL, at INTEGER NOT NULL, rule_id TEXT,
+        source TEXT NOT NULL CHECK(source IN ('current','legacy')), legacy_scope TEXT, legacy_source_hash TEXT);
         CREATE INDEX IF NOT EXISTS gate_history_request ON gate_history(request_id);`);
       db.exec(`CREATE TABLE IF NOT EXISTS gate_rules (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, subject TEXT NOT NULL, subject_alias TEXT NOT NULL,
@@ -254,6 +255,12 @@ export class Ledger {
         object_pattern TEXT NOT NULL, risk TEXT NOT NULL, contract_fingerprint TEXT NOT NULL,
         created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER);
         CREATE INDEX IF NOT EXISTS gate_rules_match ON gate_rules(subject,target,word,object_pattern,expires_at);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS gate_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS legacy_access (
+          id TEXT PRIMARY KEY, source_hash TEXT NOT NULL UNIQUE, member TEXT NOT NULL,
+          scope TEXT NOT NULL, migration_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS legacy_access_match ON legacy_access(member,scope,expires_at);`);
+      Ledger.migrateLegacyGate(db);
       return new Ledger(db, stats);
     } catch (error) { db.close(); throw error; }
   }
@@ -316,6 +323,43 @@ export class Ledger {
       if (db.isTransaction) db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** One-way ACL import. Old confirms are audit-only; neither table creates an approval rule. */
+  private static migrateLegacyGate(db: DatabaseSync): void {
+    if (db.prepare("SELECT 1 FROM gate_meta WHERE key='legacy_migration_at'").get()) return;
+    const at = Date.now();
+    const expires = at + 30 * 24 * 60 * 60_000;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='grants'").get()) {
+        for (const row of db.prepare("SELECT id,member,scope,created_by,created_at FROM grants ORDER BY rowid").iterate() as Iterable<Row>) {
+          const scope = String(row.scope);
+          const member = String(row.member);
+          const valid = row.created_by === "person:owner" && /^agent:[A-Za-z0-9_-]+$/.test(member) &&
+            /^(\*|device:[A-Za-z0-9_-]+\/(\*|[A-Za-z0-9_.-]+))$/.test(scope) &&
+            Number.isSafeInteger(Number(row.created_at)) && Number(row.created_at) >= 0;
+          const decision = valid ? "legacy_access_imported" : "legacy_access_invalid";
+          const sourceHash = digest({ type: "grant", id: row.id });
+          if (valid) db.prepare("INSERT INTO legacy_access(id,source_hash,member,scope,migration_at,expires_at) VALUES(?,?,?,?,?,?)")
+            .run(newId(), sourceHash, member, scope, at, expires);
+          db.prepare("INSERT INTO gate_history(id,subject,decision,at,source,legacy_scope,legacy_source_hash) VALUES(?,?,?,?,?,?,?)")
+            .run(newId(), valid ? member : null, decision, at, "legacy", valid ? scope : null, valid ? sourceHash : null);
+        }
+      }
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='confirms'").get()) {
+        for (const row of db.prepare("SELECT id,state,created_at FROM confirms ORDER BY rowid").iterate() as Iterable<Row>) {
+          const state = String(row.state);
+          const decision = state === "approved" ? "legacy_approved" : state === "denied" ? "legacy_denied"
+            : state === "expired" ? "legacy_expired" : state === "cancelled" ? "legacy_cancelled" : "legacy_unresolved";
+          const timestamp = Number(row.created_at);
+          db.prepare("INSERT INTO gate_history(id,decision,at,source) VALUES(?,?,?,?)")
+            .run(newId(), decision, Number.isSafeInteger(timestamp) && timestamp >= 0 ? timestamp : at, "legacy");
+        }
+      }
+      db.prepare("INSERT INTO gate_meta(key,value) VALUES('legacy_migration_at',?)").run(String(at));
+      db.exec("COMMIT");
+    } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
   }
 
   append(input: NewMessage, retry?: ClientRetry, tracking?: RequestTracking,
@@ -546,9 +590,9 @@ export class Ledger {
           retryPayload({ from: "person:owner", to: "service:gate", kind: "response", word: "ask", body: askBody, reply_to: askId }), askResponseId);
       this.db.prepare("UPDATE gate_cases SET decision=?,decided_at=? WHERE ask_id=? AND decision='waiting'").run(decision, at, askId);
       const historyDecision = decision === "allowed" ? "once" : decision === "timeout" ? "timeout" : decision === "cancelled" ? "cancelled" : "deny";
-      this.db.prepare(`INSERT INTO gate_history(id,request_id,ask_id,subject,target,word,risk,decision,at)
-        VALUES(?,?,?,?,?,?,?,?,?)`).run(newId(), row.request_id as string, askId, row.subject as string,
-        row.target as string, row.request_word as string, row.risk as string, historyDecision, at);
+      this.db.prepare(`INSERT INTO gate_history(id,request_id,ask_id,subject,target,word,risk,decision,at,source)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(newId(), row.request_id as string, askId, row.subject as string,
+        row.target as string, row.request_word as string, row.risk as string, historyDecision, at, "current");
       let eventId: string | null = null;
       if (decision !== "cancelled") {
         eventId = newId();
@@ -616,14 +660,29 @@ export class Ledger {
 
   gateHistoryPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { items: GateHistoryItemV2[]; next_before?: number } {
     if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new TypeError("invalid gate history page");
-    const rows = this.db.prepare(`SELECT h.*,m."from" AS caller_member FROM gate_history h
-      JOIN messages m ON m.id=h.request_id WHERE h.seq<? ORDER BY h.seq DESC LIMIT ?`).all(before, limit + 1) as Row[];
+    const rows = this.db.prepare(`SELECT h.*,m."from" AS caller_member,a.expires_at AS legacy_expires_at FROM gate_history h
+      LEFT JOIN messages m ON m.id=h.request_id LEFT JOIN legacy_access a ON a.source_hash=h.legacy_source_hash
+      WHERE h.seq<? ORDER BY h.seq DESC LIMIT ?`).all(before, limit + 1) as Row[];
     const page = rows.slice(0, limit);
-    return { items: page.map((row) => ({ id: String(row.id), request_id: String(row.request_id), ask_id: String(row.ask_id),
-      subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "outward" | "structure",
-      decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule", at: Number(row.at),
-      ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }), source: "current" as const })),
+    return { items: page.map((row): GateHistoryItemV2 => row.source === "legacy"
+      ? { id: String(row.id), decision: row.decision === "legacy_access_imported" && row.legacy_expires_at !== null &&
+          Date.now() >= Number(row.legacy_expires_at) ? "legacy_access_expired" : row.decision as Extract<GateHistoryItemV2, { source: "legacy" }>["decision"],
+        at: Number(row.at), source: "legacy", ...(row.subject === null ? {} : { subject: String(row.subject) }),
+        ...(row.legacy_scope === null ? {} : { legacy_scope: String(row.legacy_scope) }) }
+      : { id: String(row.id), request_id: String(row.request_id), ask_id: String(row.ask_id),
+        subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "outward" | "structure",
+        decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule", at: Number(row.at),
+        ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }), source: "current" }),
       ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };
+  }
+
+  /** Access ACL is separate from approval rules; owner retains direct authority. */
+  gateDeviceAccess(member: string, device: string, capability: string, at = Date.now()): boolean {
+    if (member === "person:owner") return true;
+    if (!/^agent:[A-Za-z0-9_-]+$/.test(member) || !/^device:[A-Za-z0-9_-]+$/.test(device) || !/^[A-Za-z0-9_.-]+$/.test(capability)) return false;
+    const row = this.db.prepare(`SELECT 1 FROM legacy_access WHERE member=? AND expires_at>? AND
+      scope IN ('*',?,?) LIMIT 1`).get(member, at, `${device}/*`, `${device}/${capability}`);
+    return Boolean(row);
   }
 
   revokeGateRule(id: string): boolean {
