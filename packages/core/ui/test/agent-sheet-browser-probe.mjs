@@ -232,11 +232,23 @@ try {
   assert.match(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /计划列表暂不可用/);
   assert.doesNotMatch(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /暂无计划/);
   assert.equal(await remoteEval("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), false);
-  const beforeRemote = first.ledger.lastSeq();
+  const remoteDeniedTimer = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "set",
+    body: { to: "agent:main", word: "say", body: { text: "remote deny fixture" }, label: "remote deny fixture", at: Date.now() + 3600000 }, wait: true });
+  assert.equal(remoteDeniedTimer.reply?.body?.ok, true);
+  const beforeRemoteClock = first.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:clock" && row.word === "cancel").length;
   const remoteScreen = await remoteEval("sessionStorage.getItem('ash.screen.token.v2')");
+  const deniedClock = await remoteEval(`fetch('/api/send',{method:'POST',headers:{'content-type':'application/json','Ash-Screen':${JSON.stringify(remoteScreen)}},body:JSON.stringify({to:'service:clock',kind:'request',word:'cancel',body:{id:${JSON.stringify(remoteDeniedTimer.reply.body.result.id)}},wait:true,client_id:'synthetic-remote-deny'})}).then(async r=>({status:r.status,body:(await r.json()).reply?.body}))`);
+  assert.equal(deniedClock.status, 200, "router can account for a rejected remote request");
+  assert.deepEqual({ ok: deniedClock.body?.ok, code: deniedClock.body?.error?.code }, { ok: false, code: "forbidden" });
+  assert.equal(first.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:clock" && row.word === "cancel").length, beforeRemoteClock + 1);
+  const beforeRemoteSelf = first.ledger.lastSeq();
   const denied = await remoteEval(`fetch('/api/send',{method:'POST',headers:{'content-type':'application/json','Ash-Screen':${JSON.stringify(remoteScreen)}},body:JSON.stringify({to:'service:self',kind:'request',word:'write',body:{path:'SOUL.md',content:'remote',why:'synthetic',expected_hash:null},wait:true})}).then(r=>r.status)`);
   assert.equal(denied, 403);
-  assert.equal(first.ledger.lastSeq(), beforeRemote);
+  assert.equal(first.ledger.lastSeq(), beforeRemoteSelf);
+  const stillScheduled = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "list", body: {}, wait: true });
+  assert.equal(stillScheduled.reply?.body?.result?.timers?.some((timer) => timer.id === remoteDeniedTimer.reply.body.result.id), true);
 
   await call("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await evaluate("window.dispatchEvent(new Event('offline'))");
@@ -254,7 +266,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#title').textContent"), "Ash");
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(identityText)}).value`), "");
   assert.equal(selfWrites(second).length, 0);
-  console.log("PASS: authoritative name read/write refresh, remote name/scope reset, avatar sheet, real clock list/read-only, activity work-source boundary, local SOUL/USER save/history, rollback gate unavailable, remote 403, offline and delayed reply discarded");
+  console.log("PASS: authoritative name read/write refresh, remote name/scope reset, avatar sheet, real clock cancel with lost ACK retry and failed cancel retained, activity work-source boundary, local SOUL/USER save/history, rollback gate unavailable, remote 403, offline and delayed reply discarded");
 } finally {
   remoteSocket?.close(); socket?.close();
   if (remoteServer) await new Promise((resolve) => { remoteServer.close(resolve); remoteServer.closeAllConnections(); });
