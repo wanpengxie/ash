@@ -25,6 +25,7 @@ import { GateMember } from "./members/gate";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
+import { JevReflexClient } from "./members/reflex-jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
 import { WorkMember } from "./members/work";
@@ -49,6 +50,7 @@ export interface Config {
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
   delivery?: WorldConfigV2["delivery"];
+  reflex?: WorldConfigV2["reflex"];
 }
 
 const log = (...args: unknown[]) => console.log(new Date().toISOString(), ...args);
@@ -146,7 +148,19 @@ export async function startOwner(config: Config): Promise<Running> {
       } } : {}),
       isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
-    reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null);
+    const jevKey = worldConfig.reflex.jev.key_credential === "jev" ? process.env.TYPESAFE_API_KEY : undefined;
+    const jev = worldConfig.reflex.jev.url && jevKey
+      ? new JevReflexClient(worldConfig.reflex.jev.url, jevKey, worldConfig.reflex.timeout_ms) : undefined;
+    reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null, { jev,
+      threshold: worldConfig.reflex.threshold,
+      context: (message, turn) => {
+        const first = agent!.inbox.turnIds(turn).map((id) => ledger.byId(id)).find((item) => item?.word === "say");
+        return { current_task: String(first?.body.text ?? "").slice(0, 500),
+          latest_user_message: String(message.body.text ?? "").slice(0, 500),
+          recent_messages: ledger.list({ before: message.seq, limit: 50 })
+            .filter((item) => item.word === "say" && ["person:owner", "agent:main"].includes(item.from) && typeof item.body.text === "string")
+            .slice(-2).map((item) => String(item.body.text).slice(0, 500)) };
+      } });
     members.register(reflex);
     clock = new ClockMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"),
       isPaused: () => clock!.journal.isPaused(),

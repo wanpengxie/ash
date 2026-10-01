@@ -2,6 +2,7 @@ import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import type { Member } from "../world/member";
 import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from "../world/router";
 import { judgeStopKeyword } from "./reflex-keywords";
+import type { JevReflexClient, JevReflexState } from "./reflex-jev";
 
 const context: TrustedRouteContext = { member: "service:reflex", transport: "service", transportPrincipal: "service:reflex",
   local: true, remote: false, ownerProxy: false };
@@ -17,7 +18,9 @@ export class ReflexMember implements Member {
   private readonly tasks = new Set<Promise<void>>();
   private failure: Error | null = null;
 
-  constructor(private readonly router: WorldRouter, private readonly busyTurn: () => string | null) {
+  constructor(private readonly router: WorldRouter, private readonly busyTurn: () => string | null,
+    private readonly options: { jev?: Pick<JevReflexClient, "judge">; context?: (message: Message, turn: string) => JevReflexState;
+      threshold?: number } = {}) {
     this.stop = router.subscribe((message) => this.observe(message));
   }
   words(): readonly WordSpec[] { return []; }
@@ -38,6 +41,15 @@ export class ReflexMember implements Member {
   }
 
   private async judge(message: Message, turn: string | null, judgement: ReturnType<typeof judgeStopKeyword>): Promise<void> {
+    let stage: "keyword" | "jev" = "keyword";
+    if (turn && judgement.intent === "unclear" && this.options.jev && this.options.context) {
+      try {
+        const result = await this.options.jev.judge(this.options.context(message, turn));
+        stage = "jev";
+        judgement = { intent: result.intent === "stop" && result.confidence >= (this.options.threshold ?? 0.8) ? "stop" : "unrelated",
+          confidence: result.confidence };
+      } catch { /* The no-Key keyword rule remains the fallback on timeout or failure. */ }
+    }
     let acted = false;
     if (judgement.intent === "pause" && !this.closed) {
       try {
@@ -56,7 +68,7 @@ export class ReflexMember implements Member {
     }
     if (this.closed) return;
     await this.router.send(context, { to: null, kind: "event", word: "reflex.judged",
-      body: { message_id: message.id, stage: "keyword", intent: judgement.intent, confidence: judgement.confidence, acted },
+      body: { message_id: message.id, stage, intent: judgement.intent, confidence: judgement.confidence, acted },
       client_id: `reflex:judged:${message.id}` });
   }
 
