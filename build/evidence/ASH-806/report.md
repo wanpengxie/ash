@@ -36,3 +36,5 @@ node tools/originality.mjs --target packages/core/src/prompts/workers --referenc
 定向测试检查生成文本逐字等于六份源文件、C9 固定头与章节顺序、输入数据定界转义，以及不把安静时段/授权/重复处理等可执行规则塞进提示。恶意外来指令样本 `extract-08` 最终只返回 `no_change`。两组私有参考语料分别覆盖 10 与 58 文件，六份目标的 13 字符归一化匹配数均为 0；公开汇总见 `originality-agent.json` / `originality-pack.json`，不含参考文字或路径。
 
 生产限制：当前 `verify_plan` wire 不携证据正文，只能对引用可见性如实保守判断；不可把模型给的证据通过判词视为实际证据核验。真实 DSH 装配、run 完成/失败记账与文件不变保护属于后续联合门禁，不能由这 60 条工具外模型调用证明。
+
+合入当时最新 v2 后，安装版 DSH `npm test` 自然退出：461 总、402 通过、59 跳过、0 失败；`npm run -s typecheck`、`npm run -s build:core` 均通过。`gen:ui`/`gen:worker-rules` 后 tracked 产物无差异；公开私词扫描 534 文件、0 命中。工人定向 8/8、原创性工具自测 12/12、提供私词表的最终架构门禁 0 finding。上述测试只证明本候选与当时基线兼容，不替代 502/503 的生产联验。
