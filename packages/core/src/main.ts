@@ -133,10 +133,11 @@ export async function startOwner(config: Config): Promise<Running> {
     await self?.prepareRecovery();
     await world.recover();
     if (dsh) {
+      const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
-        nativeMode: "disabled" });
+        nativeMode: "disabled", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });
     }
     await agent.start();
     await clock.start();

@@ -388,6 +388,21 @@ export class Ledger {
     return (rows as Row[]).map(decode);
   }
 
+  /** Startup-only projection: never materialize unrelated message bodies or attachments. */
+  agentTurnHistory(actor: string): { startedTurns: Set<string>; completedTurns: Set<string> } {
+    const startedTurns = new Set<string>();
+    const completedTurns = new Set<string>();
+    const rows = this.db.prepare(`SELECT word, json_extract(body, '$.turn') AS turn_id,
+      CASE WHEN word='turn.end' THEN json_extract(body, '$.reason') END AS reason
+      FROM messages WHERE "from"=? AND kind='event' AND word IN ('turn.start', 'turn.end') ORDER BY seq`).iterate(actor) as Iterable<Row>;
+    for (const row of rows) {
+      if (typeof row.turn_id !== "string") continue;
+      if (row.word === "turn.start") startedTurns.add(row.turn_id);
+      if (row.word === "turn.end" && row.reason === "completed") completedTurns.add(row.turn_id);
+    }
+    return { startedTurns, completedTurns };
+  }
+
   lastSeq(): number { return Number((this.db.prepare("SELECT MAX(seq) AS n FROM messages").get() as Row).n ?? 0); }
   close(): void { this.db.close(); }
 }
