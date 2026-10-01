@@ -356,6 +356,13 @@ export class Ledger {
     return row ? decode(row) : null;
   }
 
+  /** Internal recovery probe for a server-owned stable client ID; never exposed as a public lookup. */
+  retryMessage(transportPrincipal: string, clientId: string): Message | null {
+    const row = this.db.prepare("SELECT message_id FROM client_retries WHERE scope_hash=? AND client_id=?")
+      .get(digest(transportPrincipal), clientId) as Row | undefined;
+    return row ? this.byId(String(row.message_id)) : null;
+  }
+
   trackedRequests(): TrackedRequest[] {
     const rows = this.db.prepare(`SELECT m.*, s.phase AS tracking_phase, s.deadline_at, s.context AS tracking_context
       FROM request_state s JOIN messages m ON m.id=s.request_id WHERE s.phase!='settled' ORDER BY m.seq`).all() as Row[];
