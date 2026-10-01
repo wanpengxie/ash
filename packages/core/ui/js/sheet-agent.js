@@ -32,26 +32,45 @@ export function safeActivityView(view) {
   return { turns };
 }
 
-export async function listClockForScreen(net, current) {
+async function sendClockForScreen(net, current, word, body, clientId) {
   const token = net.token;
   const screen = net.screen;
   const scope = net.currentScope;
   const generation = net.generation;
-  if (!token || !screen || !scope || !current()) throw new Error("屏幕未连接，计划列表暂不可用。");
+  if (!token || !screen || !scope || !current()) throw new Error("屏幕未连接，计划操作暂不可用。");
   const stillCurrent = () => current() && token === net.token && screen === net.screen &&
     scope === net.currentScope && generation === net.generation;
-  const response = await net.request("/api/send", { method: "POST", credentials: "same-origin",
-    headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token },
-    body: JSON.stringify({ to: "service:clock", kind: "request", word: "list", body: {}, wait: true }) });
+  let response;
+  try {
+    response = await net.request("/api/send", { method: "POST", credentials: "same-origin",
+      headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token },
+      body: JSON.stringify({ to: "service:clock", kind: "request", word, body, wait: true,
+        ...(clientId ? { client_id: clientId } : {}) }) });
+  } catch {
+    if (!stillCurrent()) throw new Error("屏幕身份已变化，计划结果已丢弃。");
+    throw new Error("计划服务连接中断，结果未确认；可原样重试。");
+  }
   if (!stillCurrent()) throw new Error("屏幕身份已变化，计划结果已丢弃。");
-  if (!response.ok) throw new Error("计划服务未就绪。");
-  const accepted = await response.json();
+  if (!response.ok) throw new Error(response.status === 403 ? "当前屏幕无权修改计划。" : "计划服务未确认操作，可重试。" );
+  let accepted;
+  try { accepted = await response.json(); }
+  catch { throw new Error("计划服务回执无法读取，可原样重试。"); }
   if (!stillCurrent()) throw new Error("屏幕身份已变化，计划结果已丢弃。");
   const reply = accepted?.reply;
   if (typeof accepted?.id !== "string" || !accepted.id || reply?.kind !== "response" ||
     reply.reply_to !== accepted.id || reply.from !== "service:clock" || reply.to !== "person:owner" ||
-    reply.word !== "list" || reply.body?.ok !== true) throw new Error("计划服务回执未配对或未成功。");
-  return normalizeClockList(reply);
+    reply.word !== word || reply.body?.ok !== true) throw new Error("计划服务回执未配对或未成功，可原样重试。");
+  return reply;
+}
+
+export async function listClockForScreen(net, current) {
+  return normalizeClockList(await sendClockForScreen(net, current, "list", {}));
+}
+
+export async function cancelClockForScreen(net, current, id, clientId) {
+  if (typeof id !== "string" || !id || typeof clientId !== "string" || !clientId) throw new TypeError("invalid clock cancel intent");
+  const reply = await sendClockForScreen(net, current, "cancel", { id }, clientId);
+  if (reply.body.result?.cancelled !== true) throw new Error("计划未确认删除；请刷新计划后核对。");
 }
 
 const node = (tag, label) => {
@@ -64,12 +83,15 @@ const node = (tag, label) => {
 export class AgentSheet {
   constructor(root, net, { getView = () => null,
     confirmDiscard = () => globalThis.confirm?.("放弃未保存或未确认的修改并关闭人物页？") === true,
-    confirmRollback = ({ path, to_ts }) => globalThis.confirm?.(`确认将 ${path} 回滚到 ${new Date(to_ts).toLocaleString()} 的快照？`) === true } = {}) {
+    confirmRollback = ({ path, to_ts }) => globalThis.confirm?.(`确认将 ${path} 回滚到 ${new Date(to_ts).toLocaleString()} 的快照？`) === true,
+    idFactory = () => crypto.randomUUID() } = {}) {
     this.root = root;
     this.net = net;
     this.getView = getView;
     this.confirmDiscard = confirmDiscard;
     this.confirmRollback = confirmRollback;
+    this.idFactory = idFactory;
+    this.cancelIntents = new Map();
     this.tabs = root.querySelector("#agentTabs");
     this.panel = root.querySelector("#agentPanel");
     this.session = null;
@@ -106,6 +128,7 @@ export class AgentSheet {
 
   reset() {
     this.loadEpoch++;
+    this.cancelIntents.clear();
     this.activeTab = null;
     this.identity?.dispose();
     this.memory?.dispose();
@@ -132,6 +155,24 @@ export class AgentSheet {
     if (!section || !this.current()) return;
     renderActivitySheet(section, safeActivityView(this.getView()));
     section.prepend(node("p", "后台活动服务尚未接入；这里仅展示已入账的对话活动。"));
+  }
+
+  renderUpcoming(section, timers, binding, epoch) {
+    renderUpcomingSheet(section, timers, { onCancel: async (id) => {
+      if (epoch !== this.loadEpoch || this.activeTab !== "upcoming" || !this.current(binding))
+        throw new Error("屏幕身份已变化，不能删除计划。");
+      let clientId = this.cancelIntents.get(id);
+      if (!clientId) {
+        clientId = this.idFactory();
+        this.cancelIntents.set(id, clientId);
+      }
+      await cancelClockForScreen(this.net, () => this.current(binding), id, clientId);
+      const fresh = await listClockForScreen(this.net, () => this.current(binding));
+      if (epoch !== this.loadEpoch || this.activeTab !== "upcoming" || !this.current(binding)) return;
+      if (fresh.some((timer) => timer.id === id)) throw new Error("计划删除后仍在列表中，请稍后重试核对。");
+      this.cancelIntents.delete(id);
+      this.renderUpcoming(section, fresh, binding, epoch);
+    } });
   }
 
   open() {
@@ -178,7 +219,8 @@ export class AgentSheet {
       try {
         const timers = await listClockForScreen(this.net, () => this.current(binding));
         if (epoch !== this.loadEpoch || this.activeTab !== key || !this.current(binding)) return;
-        renderUpcomingSheet(section, timers);
+        for (const id of this.cancelIntents.keys()) if (!timers.some((timer) => timer.id === id)) this.cancelIntents.delete(id);
+        this.renderUpcoming(section, timers, binding, epoch);
       } catch {
         if (epoch !== this.loadEpoch || this.activeTab !== key || !this.current(binding)) return;
         section.replaceChildren(node("p", "计划列表暂不可用；不能据此判断待办为空。"));
