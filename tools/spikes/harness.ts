@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DshHost } from "../../packages/dsh-binding/src/host";
+import { DshHost } from "../../packages/dsh-binding/test/legacy/host";
 
 export type Request = { system: string; messages: { role: string; content: unknown }[]; tools: unknown[]; model: string };
 
