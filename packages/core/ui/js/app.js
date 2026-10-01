@@ -301,6 +301,7 @@ export function boot({ uiTransport } = {}) {
   });
   window.addEventListener("pagehide", () => { clearInterval(progressTimer); net.stop(); });
   window.addEventListener("offline", () => agentSheet.reset());
+  window.addEventListener("online", () => net.reconnect());
   window.addEventListener("pageshow", (event) => { if (event.persisted) void net.start(); });
   void net.start();
   return { net, timeline };

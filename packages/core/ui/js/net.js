@@ -191,6 +191,10 @@ export class ScreenNet {
     this.onState("offline");
   }
 
+  reconnect() {
+    if (this.active) this.controller?.abort();
+  }
+
   acceptScope(scope, abortLive = false) {
     if (this.currentScope === scope) return false;
     const changed = this.currentScope !== null;

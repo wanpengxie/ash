@@ -105,3 +105,21 @@ test("file, image, link and permission cards render their intended actions", asy
   const permission = page.locator("#log .card").filter({ hasText: "E2E calendar permission" });
   await expect(permission.getByRole("button", { name: "去授权" })).toBeDisabled();
 });
+
+test("an offline owner message is shown locally and delivered once after reconnect", async ({ page, context }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const text = `offline ${Date.now()}`;
+  await context.setOffline(true);
+  try {
+    await page.locator("#t").fill(text);
+    await page.locator("#send").click();
+    await expect(page.locator("#log .pending-local").filter({ hasText: text })).toHaveCount(1);
+    expect(running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)).toHaveLength(0);
+  } finally { await context.setOffline(false); }
+  await expect(page.locator("#connection")).toContainText("已连接", { timeout: 15_000 });
+  await expect.poll(() => running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text).length, { timeout: 15_000 }).toBe(1);
+  await expect(page.locator("#log .msg.me").filter({ hasText: text })).toHaveCount(1);
+  await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
+  expect(running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)).toHaveLength(1);
+});
