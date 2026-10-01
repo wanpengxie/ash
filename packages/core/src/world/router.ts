@@ -291,7 +291,8 @@ export class WorldRouter {
       if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
     }
     if (request.to === "service:work" && request.word === "run" && from !== "person:owner") fail("forbidden", "only owner may start a background run");
-    if (request.to === "service:gate" && request.word === "rules.revoke" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "rule revocation requires local owner");
+    if (request.to === "service:gate" && from !== "person:owner") fail("forbidden", "gate inspection requires owner");
+    if (request.to === "service:gate" && request.word === "rules.revoke" && (ctx.remote || !ctx.local)) fail("forbidden", "rule revocation requires local owner");
     if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
     if ((request.word === "typing" || request.word === "visible") && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
@@ -501,6 +502,14 @@ export class WorldRouter {
     if (gateOriginal?.decision === "waiting") {
       const ask = this.pending.get(gateOriginal.askId);
       if (ask) { this.settleGateAsk(ask, "deny", "deadline"); return; }
+      const outcome = this.ledger.settleGateAsk(gateOriginal.askId, "deny", "deadline");
+      if (outcome?.originalResponse) {
+        this.publish(outcome.askResponse);
+        if (outcome.event) this.publish(outcome.event);
+        this.adoptGateTerminal(pending, outcome.originalResponse, true);
+        this.publish(outcome.originalResponse);
+        return;
+      }
       // Missing owner ask is corrupt state, never a reason to execute the request.
     }
     this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
@@ -586,6 +595,17 @@ export class WorldRouter {
             if (response) settled.push(response);
             continue;
           }
+          const outcome = this.ledger.settleGateAsk(gateCase.askId, "deny", "cancelled");
+          if (outcome) {
+            this.publish(outcome.askResponse);
+            if (outcome.originalResponse) {
+              const originalPending = this.pending.get(gateCase.requestId);
+              if (originalPending) this.adoptGateTerminal(originalPending, outcome.originalResponse, true);
+              this.publish(outcome.originalResponse);
+              settled.push(id === gateCase.askId ? outcome.askResponse : outcome.originalResponse);
+            }
+            continue;
+          }
         }
       }
       const response = this.finish(pending, errors("cancelled", "request cancelled; external effect may be unknown"), pending.request.to!, true);
@@ -662,13 +682,7 @@ export class WorldRouter {
           continue;
         }
         if (Date.now() >= deadlineAt && gateCase.decision === "waiting") {
-          const outcome = this.ledger.settleGateAsk(gateCase.askId, "deny", "deadline");
-          if (outcome?.originalResponse) {
-            this.publish(outcome.askResponse);
-            if (outcome.event) this.publish(outcome.event);
-            this.adoptGateTerminal(pending, outcome.originalResponse, true);
-            this.publish(outcome.originalResponse);
-          } else this.finish(pending, errors("failed", "gate expiry could not be reconciled"), message.to!, false);
+          this.expirePending(pending);
           continue;
         }
         if (Date.now() >= deadlineAt) { this.expirePending(pending); continue; }

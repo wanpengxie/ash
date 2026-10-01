@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { Ledger } from "../../src/world/ledger";
+import { wordContract } from "../../../sdk/src/words";
 import { WorldRouter } from "../../src/world/router";
 
 const gate = (expiresAt: number) => ({ subject: "principal:exact", risk: "outward" as const,
@@ -164,5 +165,27 @@ test("pre-recovery turn cancellation withdraws a durable ask before any request 
     assert.equal(reopened.responseTo(askId)?.body.ok, false);
     assert.equal(reopened.gateCase(accepted.id)?.decision, "cancelled");
     assert.equal(router.cancelTurn("agent:main", "t_gate").length, 0);
+  } finally { reopened.close(); }
+});
+
+test("recovery past an ask deadline settles both requests before displaying or dispatching", async (t) => {
+  const { file, ledger, accepted } = await fixture();
+  const base = Date.now();
+  const askId = ledger.beginGate(accepted.id, gate(base + 20_000))!.ask.id;
+  ledger.close();
+  const reopened = await Ledger.open(file);
+  try {
+    t.mock.method(Date, "now", () => base + 21_000);
+    const router = new WorldRouter(reopened, async () => true);
+    router.register({ member: "device:fake", spec: { word: "run", kind: "request", risk: "outward", description: "Synthetic",
+      input_schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"], additionalProperties: false } },
+    handle: () => { assert.fail("expired gate dispatched device"); } });
+    router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => { assert.fail("expired gate was displayed"); } });
+    router.enableDurableGate();
+    await router.recover();
+    assert.equal(reopened.gateCase(accepted.id)?.decision, "timeout");
+    assert.equal(reopened.responseTo(askId)?.body.ok, true);
+    assert.equal(reopened.responseTo(accepted.id)?.body.error && (reopened.responseTo(accepted.id)!.body.error as { code: string }).code, "denied");
+    assert.equal(reopened.trackedRequests().length, 0);
   } finally { reopened.close(); }
 });
