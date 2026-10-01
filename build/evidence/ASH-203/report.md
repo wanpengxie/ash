@@ -16,15 +16,15 @@ From the repository root with dependencies installed:
 
 ```sh
 npm run -s typecheck
-node --expose-internals --import tsx --test packages/core/test/members/agent-cancel.test.ts packages/core/test/members/agent-cancel-kill.test.ts
+node --expose-internals --import tsx --test packages/core/test/members/agent-cancel.test.ts packages/core/test/members/agent-cancel-kill.test.ts packages/core/test/world/bootstrap.test.ts
 npm test
 npm run -s build:core
 ```
 
 The focused tests cover an uncooperative fake device and real elapsed cancellation under one second, a still-busy runner blocking a new batch, late device success suppression, unauthorized and idle/retried requests, cancellation after claim but before runner dispatch, an output delayed before router acceptance, agent-scoped settlement, and a real child-process SIGKILL after intent commit but before ledger settlement. Recovery verifies no device replay, one cancelled response and terminal, an intact unread next batch with the stop fact, then consumption of the fact after its completed turn. Separate regressions verify that an errored turn retains the fact, a second cancellation retains both facts, and only a completed turn consumes them.
 
-Observed locally: ASH-203 focused 8/8; full suite 164 passed, 57 intentional skips, 0 failed; typecheck and core build passed. Repository architecture and configured public-term checks passed with 0 findings.
+Observed after integration with the production v2 entrypoint: focused cancellation and bootstrap tests 12/12; full suite 183 passed, 57 intentional skips, 0 failed; typecheck and core build passed. Repository architecture and configured public-term checks passed with 0 findings.
 
 ## Integration boundary
 
-The production startup path must call `agent.prepareRecovery()` before `router.recover()`, then `agent.start()` before opening ingress. The future session adapter must make `runTurn` resolve only after its underlying session is idle; this fake-runner suite cannot certify that adapter. Physical file-write isolation and native-tool routing remain separate work.
+The production startup path now calls `agent.prepareRecovery()` after member registration and current authorization connection, before `router.recover()`, then `agent.start()` before opening ingress. A production bootstrap regression seeds a durable stop intent and unsettled outbound request, then verifies the request is cancelled rather than replayed and the turn ends once as cancelled. The future session adapter must make `runTurn` resolve only after its underlying session is idle; this fake-runner suite cannot certify that adapter. Physical file-write isolation and native-tool routing remain separate work.

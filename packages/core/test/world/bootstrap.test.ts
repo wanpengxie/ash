@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { startOwner } from "../../src/main";
+import { AgentInbox } from "../../src/world/agent-inbox";
 import { Ledger } from "../../src/world/ledger";
 
 test("production DSH configuration fails before migration rather than falling back to echo", async () => {
@@ -65,4 +66,31 @@ test("production recovery rechecks a stable local token digest and fails closed 
       }
     } finally { await running.close(); }
   }
+});
+
+test("production bootstrap settles a durable stop intent before router recovery", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ash-v2-stop-recovery-"));
+  const ledger = await Ledger.open(join(stateDir, "ash.db"));
+  const inbox = new AgentInbox(join(stateDir, "agent-main"));
+  const inbound = ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "before stop" } }).message;
+  inbox.accept(inbound);
+  const turn = inbox.claim([inbound.id]);
+  assert.ok(turn);
+  const pending = ledger.append({ from: "agent:main", to: "device:probe", kind: "request", word: "hold", body: {}, turn: turn.id }, undefined,
+    { deadlineAt: Date.now() + 30_000, context: { member: "agent:main", local: true, remote: false, ownerProxy: false,
+      transportPrincipal: "agent:main" } }).message;
+  assert.equal(inbox.recordCancel("stop-once", "stop before replay", "service:reflex", "Prior tool outcome may be unknown").cancelled, true);
+  inbox.close();
+  ledger.close();
+
+  const running = await startOwner({ stateDir, listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+  try {
+    const response = running.ledger.responseTo(pending.id);
+    assert.equal((response?.body.error as { code?: string } | undefined)?.code, "cancelled");
+    assert.equal(running.ledger.trackedRequests().some((item) => item.message.id === pending.id), false);
+    const ends = running.ledger.list().filter((message) => message.word === "turn.end" && message.body.turn === turn.id);
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0].body.reason, "cancelled");
+    assert.deepEqual(running.ledger.list().filter((message) => message.from === "agent:main" && message.kind === "request" && message.word === "say"), []);
+  } finally { await running.close(); }
 });
