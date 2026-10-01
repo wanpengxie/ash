@@ -249,12 +249,32 @@ export class WorldRouter {
     return { from: ctx.member };
   }
 
-  private authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): void {
+  private async reflexPauseSource(by: unknown): Promise<boolean> {
+    if (typeof by !== "string" || !by) return false;
+    const source = this.ledger.requestSource(by);
+    if (!source || source.message.seq <= this.ledger.migration.lastLegacySeq || source.message.kind !== "request" ||
+      source.message.from !== "person:owner" || source.message.to !== "agent:main" || source.message.word !== "say" ||
+      source.context.member !== "person:owner" || !source.context.local || source.context.remote || !source.context.ownerProxy ||
+      !source.context.transportPrincipal) return false;
+    return this.currentlyAuthorized(source.message, source.context);
+  }
+
+  /** Recheck the original owner provenance immediately before a reflex pause effect. */
+  async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
+
+  private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
     if (request.to === "person:owner" && request.word === "say" && Object.hasOwn(request.body, "dedupe_key") &&
       (ctx.remote || !ctx.local || !((ctx.transport === "agent" && from === "agent:main" && ctx.transportPrincipal === "agent:main") ||
         (ctx.transport === "service" && from === "service:work" && ctx.transportPrincipal === "service:work"))))
       fail("forbidden", "proactive delivery key requires trusted local agent or work service");
-    if (request.to === "service:admin" && (ctx.remote || !ctx.local || from !== "person:owner")) fail("forbidden", "administration requires local owner");
+    if (request.to === "service:admin") {
+      const reflexPause = request.word === "pause" && from === "service:reflex" && ctx.transport === "service" &&
+        ctx.transportPrincipal === "service:reflex" && ctx.local && !ctx.remote && await this.reflexPauseSource(request.body.by);
+      if (!reflexPause && (ctx.remote || !ctx.local || from !== "person:owner" || (request.word === "pause" && Object.hasOwn(request.body, "by"))))
+        fail("forbidden", "administration requires current local owner authority");
+      if (request.word === "resume" && (ctx.transport !== "web_ui" || !ctx.screenId || !ctx.ownerProxy))
+        fail("forbidden", "resume requires a verified local owner screen");
+    }
     if (request.to === "service:self" && LOCAL_SELF_MUTATIONS.has(request.word)) {
       const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan");
       if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
@@ -283,7 +303,7 @@ export class WorldRouter {
     if (signal?.aborted) fail("cancelled", "send aborted before acceptance");
     this.validateContext(ctx); this.validateRequestShape(request);
     const { from, origin } = this.stampedSender(ctx, request);
-    this.authorize(ctx, request, from);
+    await this.authorize(ctx, request, from);
     if (request.kind === "response") return this.acceptResponse(request, from, ctx, origin, signal);
     if (request.to === null && request.kind !== "event") fail("bad_request", "request needs recipient");
     const endpoint = request.to ? this.endpoint(request.to, request.word) : undefined;
@@ -311,7 +331,8 @@ export class WorldRouter {
     let accepted: ReturnType<Ledger["append"]>;
     if (signal?.aborted) fail("cancelled", "send aborted before acceptance");
     try { accepted = this.ledger.append(input, request.client_id ? { transportPrincipal: ctx.transportPrincipal, clientId: request.client_id } : undefined,
-      request.kind === "request" ? { deadlineAt, context: contextSnapshot(ctx) } : undefined); }
+      request.kind === "request" ? { deadlineAt, context: contextSnapshot(ctx) } : undefined,
+      from === "service:reflex" && request.to === "service:admin" && request.word === "pause" ? { byMessageId: String(request.body.by) } : undefined); }
     catch (error) { if (error instanceof TypeError) fail("bad_request", error.message); throw error; }
     const message = accepted.message;
     if (accepted.duplicate) {
@@ -472,6 +493,12 @@ export class WorldRouter {
         this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
         continue;
       }
+      // Screen registrations are process-local. An old screenId plus a still-valid
+      // owner token cannot prove a fresh, explicit resume confirmation after boot.
+      if (message.to === "service:admin" && message.word === "resume") {
+        this.publish(this.ledger.settle(message.id, message.to!, errors("forbidden", "resume needs a newly verified local screen confirmation")).message);
+        continue;
+      }
       if (message.to === "person:owner" && message.word === "say" && Object.hasOwn(message.body, "dedupe_key") &&
         (context.remote || !context.local || !((message.from === "agent:main" && context.member === "agent:main" && context.transportPrincipal === "agent:main") ||
           (message.from === "service:work" && context.member === "service:work" && context.transportPrincipal === "service:work")))) {
@@ -480,6 +507,9 @@ export class WorldRouter {
       }
       let authorized = false;
       try { authorized = Boolean(endpoint && await this.authorizeRecovery(detached(message), detached(context))); } catch { /* current permission cannot be verified */ }
+      if (authorized && message.from === "service:reflex" && message.to === "service:admin" && message.word === "pause")
+        authorized = context.member === "service:reflex" && context.local && !context.remote && context.transportPrincipal === "service:reflex" &&
+          await this.reflexPauseSource(message.body.by);
       if (!endpoint || !authorized) {
         this.publish(this.ledger.settle(message.id, message.to!, errors("forbidden", "authorization unavailable after restart")).message);
         continue;

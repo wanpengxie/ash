@@ -216,6 +216,8 @@ export class Ledger {
       db.exec(`CREATE TABLE IF NOT EXISTS request_state (
         request_id TEXT PRIMARY KEY, phase TEXT NOT NULL, deadline_at INTEGER NOT NULL,
         context TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS admin_pause_claims (
+        by_message_id TEXT PRIMARY KEY, pause_request_id TEXT NOT NULL UNIQUE);`);
       return new Ledger(db, stats);
     } catch (error) { db.close(); throw error; }
   }
@@ -280,7 +282,8 @@ export class Ledger {
     }
   }
 
-  append(input: NewMessage, retry?: ClientRetry, tracking?: RequestTracking): { message: Message; duplicate: boolean } {
+  append(input: NewMessage, retry?: ClientRetry, tracking?: RequestTracking,
+    pauseClaim?: { byMessageId: string }): { message: Message; duplicate: boolean } {
     if (input.kind === "response") throw new TypeError("use settle() for responses");
     if (!["request", "event"].includes(input.kind) || !input.from || !input.word || (input.kind === "request" && !input.to) || !input.body || typeof input.body !== "object" || Array.isArray(input.body)) throw new TypeError("invalid message envelope");
     if (retry && (!retry.transportPrincipal || !retry.clientId || retry.clientId.length > 128)) throw new TypeError("invalid client retry key");
@@ -311,6 +314,12 @@ export class Ledger {
         this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)").run(id, "accepted", deadlineAt, JSON.stringify(context), ts);
       }
       if (retry) this.db.prepare("INSERT INTO client_retries (scope_hash,client_id,payload_hash,message_id) VALUES (?,?,?,?)").run(scope, retry.clientId, payload, id);
+      if (pauseClaim) {
+        if (input.kind !== "request" || input.from !== "service:reflex" || input.to !== "service:admin" || input.word !== "pause" ||
+          input.body.by !== pauseClaim.byMessageId || !pauseClaim.byMessageId) throw new TypeError("invalid pause claim");
+        try { this.db.prepare("INSERT INTO admin_pause_claims(by_message_id,pause_request_id) VALUES(?,?)").run(pauseClaim.byMessageId, id); }
+        catch { throw new TypeError("owner message already consumed for pause"); }
+      }
       this.db.exec("COMMIT");
       return { message: this.byId(id)!, duplicate: false };
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
@@ -401,6 +410,21 @@ export class Ledger {
     const rows = this.db.prepare(`SELECT m.*, s.phase AS tracking_phase, s.deadline_at, s.context AS tracking_context
       FROM request_state s JOIN messages m ON m.id=s.request_id WHERE s.phase!='settled' ORDER BY m.seq`).all() as Row[];
     return rows.map((row) => ({ message: decode(row), phase: String(row.tracking_phase) as RequestPhase, deadlineAt: Number(row.deadline_at), context: JSON.parse(String(row.tracking_context)) }));
+  }
+
+  /** A settled request retains its authenticated caller snapshot for later provenance checks. */
+  requestSource(id: string): { message: Message; context: RequestContextSnapshot } | null {
+    const row = this.db.prepare(`SELECT m.*,s.context AS tracking_context FROM request_state s
+      JOIN messages m ON m.id=s.request_id WHERE s.request_id=?`).get(id) as Row | undefined;
+    if (!row) return null;
+    try {
+      const context = JSON.parse(String(row.tracking_context)) as RequestContextSnapshot;
+      if (!context || typeof context !== "object" || typeof context.member !== "string" || typeof context.local !== "boolean" ||
+        typeof context.remote !== "boolean" || typeof context.ownerProxy !== "boolean" ||
+        (context.transportPrincipal !== undefined && typeof context.transportPrincipal !== "string") ||
+        (context.screenId !== undefined && typeof context.screenId !== "string")) return null;
+      return { message: decode(row), context };
+    } catch { return null; }
   }
 
   advanceRequest(requestId: string, from: RequestPhase, to: RequestPhase): boolean {
