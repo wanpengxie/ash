@@ -13,6 +13,22 @@ node --import tsx --test packages/core/ui/test/editor.test.js packages/core/ui/t
 node --expose-internals --import tsx packages/core/ui/test/agent-sheet-browser-probe.mjs
 ```
 
-The browser probe starts two production owner services with separate temporary homes, uses an ephemeral loopback proxy and isolated Chrome profile, and verifies: avatar opens five tabs; local `SOUL.md` and `USER.md` save/readback and version listing; stale SOUL draft cannot overwrite an authorized concurrent edit; rollback rejection leaves USER unchanged; remote identity is read-only and direct remote write returns 403 with zero ledger change; offline and scope changes clear the page; an intentionally delayed old-screen file response does not repopulate it. It never reads or modifies a personal workspace or device.
+The browser probe starts two production owner services with separate temporary homes, uses an ephemeral loopback proxy and isolated Chrome profile, and verifies: avatar opens five tabs; local `SOUL.md` and `USER.md` save/readback and version listing; stale SOUL draft cannot overwrite an authorized concurrent edit; rollback rejection leaves USER unchanged; remote identity is read-only and direct remote write returns 403 with zero ledger change; a dispatched browser offline event and an authentication-scope change clear the page; an intentionally delayed old-screen file response does not repopulate it. CDP also emulates network offline, but the test explicitly dispatches the browser event rather than claiming that CDP itself raised it. It never reads or modifies a personal workspace or device.
 
 Pending: independent review; a real approval service for rollback; agent next-turn behavior after a SOUL edit; and complete activity/upcoming/approval pages. Neither related card is marked complete by this checkpoint.
+
+## Integrated author verification
+
+The source was merged with the latest `v2` containing the conversation/browser integration before verification. There was no source conflict; the generated UI was rebuilt from the combined source and a second generation produced the same SHA-256 (`f0a7eaa2eac435b9d5a461a64805d4cfa09ac23684ea6fc61fc35bf08006420b`).
+
+```sh
+ASH_TEST_DSH_ROOT=<installed runtime> npm test
+npm run -s typecheck
+npm run -s build:core
+node --expose-internals --import tsx packages/core/ui/test/browser-probe.mjs
+node --expose-internals --import tsx packages/core/ui/test/admin-browser-probe.mjs
+node --expose-internals --import tsx packages/core/ui/test/preferences-browser-probe.mjs
+node --expose-internals --import tsx packages/core/ui/test/conversation-browser-probe.mjs
+```
+
+Installed-runtime full suite: 387 pass / 59 intentional skip / 0 fail (446 tests); typecheck and core build passed. The new agent-sheet browser probe passed. Existing browser regressions passed: latest 200 records first rendered in 260 ms with two tabs synchronized; local pause/resume and remote 403; preference ACK-loss stable-ID retry; grouped conversation, delivery/read status, reaction placement, offline accepted exactly once, and isolated attachment compression/preservation. Public-term scan: 511 files, 0 findings. Browser profiles, homes, and loopback listeners were temporary and removed by each probe.
