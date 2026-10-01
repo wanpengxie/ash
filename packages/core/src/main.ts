@@ -8,6 +8,7 @@ import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember, type AgentTurnRunner } from "./members/agent";
 import { OwnerMember } from "./members/owner";
+import { PostPresenceMember } from "./members/post";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
@@ -93,7 +94,7 @@ export async function startOwner(config: Config): Promise<Running> {
       return false;
     });
     const members = new WorldMembers(world);
-    members.register(new OwnerMember(config.owner ?? "Owner"));
+    members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner: echoRunner(), name: agents[0].name });
     members.register(agent);
     if (config.workspaces?.home) {
@@ -102,6 +103,7 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces });
+    members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
     const gatewayFile = join(config.stateDir, "gateway.json");
     const gatewayUrl = existsSync(gatewayFile) ? (JSON.parse(readFileSync(gatewayFile, "utf8")) as { url?: string }).url : config.gateway?.url;
     if (gatewayUrl) {
