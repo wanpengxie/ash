@@ -21,6 +21,8 @@ The probe needs Chrome at `/opt/google/chrome/chrome`, or `ASH_PROBE_CHROME` set
 - A later turn called a controlled device operation that stayed unresolved. The browser sent a stop message; the turn had one cancelled terminal while the device was still pending. Releasing the device did not produce a second tool response or an assistant say attributed to the cancelled turn.
 - The probe passed twice. Typecheck and core build passed. The installed-runtime full suite reported 436 tests: 377 passed, 59 intentional skips, 0 failed. The public-term scan found 0 findings across 502 files.
 
+After integrating the next UI baseline, the same real-runtime browser probe, typecheck, and core build passed again. The full suite reported 442 tests: 383 passed, 59 intentional skips, 0 failed. The public-term scan found 0 findings across 507 files. The updated preference UI and generated bundle remained in the integrated baseline; this change did not edit either.
+
 ## Not established
 
 Chrome's network-offline emulation did not update the connection indicator within 20 seconds. This probe establishes reload/reconnect replay deduplication, not immediate offline-indicator timing. Existing separate browser tests cover queued offline sends. It does not exercise Android WebView, a remote screen, a physical device, unrestricted native tools, or external provider credentials. Those remain separate acceptance boundaries; this result does not complete the whole conversation card.
