@@ -8,6 +8,7 @@ import { loadAuthScopeKey } from "./auth-scope";
 import { DshHost } from "../../dsh-binding/src/host";
 import { DshMindRunner } from "../../dsh-binding/src/mind";
 import { DshTurnRunner } from "../../dsh-binding/src/runtime";
+import { dshWorkerModel } from "../../dsh-binding/src/workers";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
@@ -27,6 +28,7 @@ import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
 import { Ledger } from "./world/ledger";
 import { WorldMembers } from "./world/member";
 import { WorldRouter } from "./world/router";
+import { registerWorkerMembers } from "./workers/llm";
 
 export interface Config {
   role?: "owner" | "client";
@@ -85,7 +87,8 @@ export async function startOwner(config: Config): Promise<Running> {
   if (!host || !Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error("invalid listen address");
   // Probe before migrating: old host protocols must fail closed without modifying the DB.
   const hostLink = config.host ? await HostDeviceLink.probe(config.host) : null;
-  const delivery = resolveWorldConfigV2(config as unknown as Record<string, unknown>).delivery;
+  const worldConfig = resolveWorldConfigV2(config as unknown as Record<string, unknown>);
+  const delivery = worldConfig.delivery;
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const tokens = loadTokens(config);
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
@@ -174,6 +177,7 @@ export async function startOwner(config: Config): Promise<Running> {
     if (dsh) {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
+      registerWorkerMembers(members, dshWorkerModel(dsh, () => worldConfig.workers.model));
       if (!self) throw new Error("managed files unavailable");
       (runner as DshTurnRunner).primeManagedSnapshot(await self.promptSnapshot());
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,

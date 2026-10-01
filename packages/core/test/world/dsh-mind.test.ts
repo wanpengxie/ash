@@ -13,16 +13,17 @@ const skip = !install || !existsSync(join(install, "package.json")) ? "set ASH_T
 test("wake uses a second DSH session; only explicit ash_say reaches the owner", { skip }, async () => {
   const root = mkdtempSync(join(tmpdir(), "ash-mind-"));
   const home = join(root, "home"); mkdirSync(home);
-  const requests: { user: string; mind: boolean }[] = [];
+  const requests: { user: string; mind: boolean; worker: boolean; tools: string[] }[] = [];
   let serial = 0;
   const model = createServer(async (request, response) => {
     if (!request.url?.endsWith("/messages")) return void response.writeHead(404).end("{}");
     let raw = "";
     for await (const chunk of request) raw += chunk;
-    const input = JSON.parse(raw) as { model?: string; messages?: { role: string; content: unknown }[] };
+    const input = JSON.parse(raw) as { model?: string; messages?: { role: string; content: unknown }[]; tools?: { name: string }[] };
     const user = (input.messages ?? []).filter((item) => item.role === "user").map((item) => JSON.stringify(item.content)).join("\n");
     const mind = user.includes("MIND_WAKE_MARKER");
-    requests.push({ user, mind });
+    const worker = user.includes("worker:extract/input");
+    requests.push({ user, mind, worker, tools: (input.tools ?? []).map((item) => item.name) });
     const last = input.messages?.at(-1);
     const toolResult = JSON.stringify(last?.content ?? "").includes("tool_result");
     const callTool = mind && !toolResult;
@@ -35,7 +36,8 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
       event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: "MIND_PUBLIC_MESSAGE", kind: "heads_up" }) } });
     } else {
       event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-      event("content_block_delta", { index: 0, delta: { type: "text_delta", text: mind ? "MIND_PRIVATE_OUTPUT" : "MAIN_VISIBLE_OUTPUT" } });
+      event("content_block_delta", { index: 0, delta: { type: "text_delta", text: worker ? JSON.stringify({ no_change: { checked: [], details: "No new claims" } }) :
+        mind ? "MIND_PRIVATE_OUTPUT" : "MAIN_VISIBLE_OUTPUT" } });
     }
     event("content_block_stop", { index: 0 });
     event("message_delta", { delta: { stop_reason: callTool ? "tool_use" : "end_turn" }, usage: { output_tokens: 1 } });
@@ -73,8 +75,13 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     assert.equal(JSON.stringify(sessions.get(mainId)).includes("MIND_WAKE_MARKER"), false);
     const second = await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "MAIN_AFTER" }, wait: true });
     assert.equal(second.reply?.body.ok, true);
-    await until(() => requests.filter((item) => !item.mind).length >= 2);
-    assert.equal(requests.filter((item) => !item.mind).some((item) => item.user.includes("MIND_WAKE_MARKER")), false);
+    await until(() => requests.filter((item) => !item.mind && !item.worker).length >= 2);
+    assert.equal(requests.filter((item) => !item.mind && !item.worker).some((item) => item.user.includes("MIND_WAKE_MARKER")), false);
+    const extract = await running.world.send(owner, { to: "worker:extract", kind: "request", word: "extract",
+      body: { run: "r_production", input: { chunk: [], summary: "", known: [] } }, wait: true });
+    assert.equal(extract.reply?.body.ok, true);
+    assert.deepEqual(extract.reply?.body.result, { no_change: { checked: [], details: "No new claims" } });
+    assert.deepEqual(requests.find((item) => item.worker)?.tools, []);
     off();
   } finally {
     await running?.close();
