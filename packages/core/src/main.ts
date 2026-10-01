@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DshHost } from "../../dsh-binding/src/host";
 import { DshTurnRunner } from "../../dsh-binding/src/runtime";
+import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember, type AgentTurnRunner } from "./members/agent";
 import { ClockMember } from "./members/clock";
 import { OwnerMember } from "./members/owner";
-import { PostPresenceMember } from "./members/post";
+import { PostMember } from "./members/post";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
@@ -31,6 +32,7 @@ export interface Config {
   host?: HostConnection & { coreToken?: string };
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
+  delivery?: WorldConfigV2["delivery"];
 }
 
 const log = (...args: unknown[]) => console.log(new Date().toISOString(), ...args);
@@ -83,11 +85,13 @@ export async function startOwner(config: Config): Promise<Running> {
   if (!host || !Number.isSafeInteger(port) || port < 0 || port > 65535) throw new Error("invalid listen address");
   // Probe before migrating: old host protocols must fail closed without modifying the DB.
   const hostLink = config.host ? await HostDeviceLink.probe(config.host) : null;
+  const delivery = resolveWorldConfigV2(config as unknown as Record<string, unknown>).delivery;
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const tokens = loadTokens(config);
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
   let agent: ReturnType<typeof createAgentMember> | null = null;
   let clock: ClockMember | null = null;
+  let post: PostMember | null = null;
   let dsh: DshHost | null = null;
   let self: SelfMember | null = null;
   let link: OwnerLink | null = null;
@@ -100,6 +104,7 @@ export async function startOwner(config: Config): Promise<Running> {
       if (caller.transportPrincipal?.startsWith("token:")) return Object.entries(tokens.api).some(([key, member]) =>
         member === caller.member && `token:${createHash("sha256").update(key).digest("hex")}` === caller.transportPrincipal);
       if (caller.transportPrincipal === "agent:main" && caller.member === "agent:main") return true;
+      if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
       return false;
     });
     const members = new WorldMembers(world);
@@ -118,7 +123,8 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces });
-    members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
+    post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
+    members.register(post);
     const gatewayFile = join(config.stateDir, "gateway.json");
     const gatewayUrl = existsSync(gatewayFile) ? (JSON.parse(readFileSync(gatewayFile, "utf8")) as { url?: string }).url : config.gateway?.url;
     if (gatewayUrl) {
@@ -131,7 +137,9 @@ export async function startOwner(config: Config): Promise<Running> {
     // Reconcile durable stop intents before router recovery can replay an old tool request.
     agent.prepareRecovery();
     await self?.prepareRecovery();
+    post.prepareRecovery();
     await world.recover();
+    await post.start();
     if (dsh) {
       await dsh.boot();
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
@@ -150,12 +158,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
+      await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
+    await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

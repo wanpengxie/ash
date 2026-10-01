@@ -188,6 +188,15 @@ export class WorldRouter {
 
   setGate(gate: GateHook): void { this.gate = gate; }
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
+
+  /** Publish a post count already committed atomically with its queue transition. */
+  publishPostSnapshot(message: Message): void {
+    const stored = this.ledger.byId(message.id);
+    if (!stored || stored.seq !== message.seq || stored.from !== "service:post" || stored.to !== "person:owner" ||
+      stored.kind !== "event" || stored.word !== "post.changed" || !matchesSchema(wordContract("service:post", "post.changed")!.input_schema!, stored.body))
+      throw new TypeError("not a committed post snapshot");
+    this.publish(stored);
+  }
   private publish(message: Message): void {
     for (const listener of this.subscribers) {
       try { listener(detached(message)); } catch { /* a broken stream cannot interrupt durable routing */ }

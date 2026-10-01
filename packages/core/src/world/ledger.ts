@@ -363,6 +363,25 @@ export class Ledger {
     return row ? this.byId(String(row.message_id)) : null;
   }
 
+  /** Post's private tables and authoritative count event commit on this one ledger connection. */
+  postRead<T>(read: (db: DatabaseSync) => T): T { return read(this.db); }
+
+  postWrite<T>(write: (db: DatabaseSync, snapshot: (held: number) => Message) => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const snapshot = (held: number): Message => {
+        if (!Number.isSafeInteger(held) || held < 0) throw new TypeError("invalid held count");
+        const id = newId();
+        this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(id, Date.now(), "service:post", "person:owner", "event", "post.changed", JSON.stringify({ held }), null, null, null);
+        return this.byId(id)!;
+      };
+      const result = write(this.db, snapshot);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
   trackedRequests(): TrackedRequest[] {
     const rows = this.db.prepare(`SELECT m.*, s.phase AS tracking_phase, s.deadline_at, s.context AS tracking_context
       FROM request_state s JOIN messages m ON m.id=s.request_id WHERE s.phase!='settled' ORDER BY m.seq`).all() as Row[];
