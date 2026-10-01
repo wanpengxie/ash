@@ -538,6 +538,12 @@ export class WorldRouter {
       const gateBypass = request.to === "service:gate" && request.word === "rules.revoke" &&
         request.from === "person:owner" && pending.context.local && !pending.context.remote;
       if (this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none" && !gateBypass) {
+        const currentAuthority = await this.currentlyAuthorized(request, pending.context);
+        if (pending.settled) return;
+        if (!currentAuthority || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body) ||
+          (request.to?.startsWith("device:") && !this.ledger.gateDeviceAccess(request.from, request.to, request.word))) {
+          this.finish(pending, errors("forbidden", "risk request authority changed before gate"), request.to!, false); return;
+        }
         if (!pending.context.transportPrincipal || !this.endpoint("person:owner", "ask")) {
           this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
         }

@@ -14,10 +14,10 @@ const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", t
 const screen: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "owner-principal",
   local: true, remote: false, ownerProxy: true, screenId: "screen:approved", screenLabel: "Test screen" };
 
-async function setup() {
+async function setup(authorize: () => boolean | Promise<boolean> = () => true) {
   const file = join(mkdtempSync(join(tmpdir(), "ash-gate-router-")), "ash.db");
   const ledger = await Ledger.open(file);
-  const router = new WorldRouter(ledger, async () => true);
+  const router = new WorldRouter(ledger, async () => authorize());
   router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => {} });
   let effects = 0;
   router.register({ member: "device:fake", spec: { word: "run", kind: "request", risk: "outward", description: "Synthetic effect",
@@ -30,6 +30,7 @@ async function setup() {
 
 async function accepted(router: WorldRouter, ledger: Ledger) {
   const sent = await router.send(screen, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
+  await new Promise((resolve) => setImmediate(resolve));
   const gate = ledger.gateCase(sent.id);
   assert.ok(gate);
   const ask = ledger.byId(gate.askId);
@@ -80,6 +81,21 @@ test("cancellation withdraws the ask; a late approval cannot execute", async () 
   } finally { ledger.close(); }
 });
 
+test("permission revoked while owner is answering cannot execute the approved effect", async () => {
+  let authorized = true;
+  const { ledger, router, effects } = await setup(() => authorized);
+  try {
+    const { sent, ask } = await accepted(router, ledger);
+    authorized = false;
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: ask.id,
+      body: { ok: true, result: { choice: "once" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects(), 0);
+    assert.equal((ledger.responseTo(sent.id)?.body.error as { code?: string } | undefined)?.code, "forbidden");
+    assert.equal(ledger.list().filter((item) => item.word === "gate.passed").length, 1); // answer fact, not effect success
+  } finally { ledger.close(); }
+});
+
 test("owner can inspect gate history; local revoke never recursively asks, remote revoke is zero-ledger denied", async () => {
   const { ledger, router } = await setup();
   try {
@@ -115,6 +131,7 @@ test("reviewed isolated message recipient alone may create and reuse a 30-day ex
   const recipient = "550e8400-e29b-41d4-a716-446655440000";
   try {
     const first = await send(recipient.toUpperCase(), "hello");
+    await new Promise((resolve) => setImmediate(resolve));
     const firstCase = ledger.gateCase(first.id)!;
     assert.deepEqual((ledger.byId(firstCase.askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "always", "deny"]);
     await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: firstCase.askId,
@@ -131,16 +148,19 @@ test("reviewed isolated message recipient alone may create and reuse a 30-day ex
     assert.equal(ledger.gateCase(second.id), null);
     assert.equal(ledger.list().filter((item) => item.word === "gate.passed" && item.body.by === "rule").length, 1);
     const other = await send("550e8400-e29b-41d4-a716-446655440001", "hello");
+    await new Promise((resolve) => setImmediate(resolve));
     assert.ok(ledger.gateCase(other.id));
     assert.equal(effects, 2);
     router.cancel([other.id]);
     const otherPrincipal = await send(recipient, "hello", { ...screen, transportPrincipal: "different-owner", screenId: "screen:other" });
+    await new Promise((resolve) => setImmediate(resolve));
     assert.ok(ledger.gateCase(otherPrincipal.id));
     assert.equal(effects, 2);
     router.cancel([otherPrincipal.id]);
     router.replaceDeviceBatch("device:isolated", [{ name: "message.send", description: "Changed synthetic manifest",
       label: "Synthetic message", risk: "outward", input_schema: schema }], () => { effects++; return { ok: true, result: {} }; });
     const changed = await send(recipient, "hello");
+    await new Promise((resolve) => setImmediate(resolve));
     assert.ok(ledger.gateCase(changed.id));
     assert.equal(effects, 2);
     router.cancel([changed.id]);
@@ -160,6 +180,7 @@ test("matching real-looking device word never inherits the isolated fake always 
   try {
     const sent = await router.send(screen, { to: "device:phone", kind: "request", word: "message.send",
       body: { recipient_id: "550e8400-e29b-41d4-a716-446655440000", text: "hello" } });
+    await new Promise((resolve) => setImmediate(resolve));
     const askId = ledger.gateCase(sent.id)!.askId;
     assert.deepEqual((ledger.byId(askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "deny"]);
     await assert.rejects(router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId,
