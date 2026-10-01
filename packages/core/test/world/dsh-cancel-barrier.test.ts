@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { fork, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { zstdDecompressSync } from "node:zlib";
+import { DshHost } from "../../../dsh-binding/src/host";
 import { startOwner } from "../../src/main";
 import type { TrustedRouteContext } from "../../src/world/router";
 
@@ -136,14 +138,26 @@ test("the root session resumes its prior model history after a clean restart", {
   let running: Awaited<ReturnType<typeof startOwner>> | null = null;
   try {
     running = await startOwner(config);
+    const oldOwnerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
     await running.world.send(caller("person:owner", "api"), { to: "agent:main", kind: "request", word: "say", body: { text: "first history input" }, wait: true });
     await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.body.text === "first remembered answer"),
       `first answer (model calls=${requests.length}; rows=${JSON.stringify(running.ledger.list().map((message) => [message.from, message.word, message.body.reason, message.body.error, message.body.text]))})`);
     await running.close(); running = null;
     const journal = JSON.parse(readFileSync(join(stateDir, "dsh-main-session.json"), "utf8")) as { id: string };
     assert.match(journal.id, /^session-/);
+    const tokenFile = join(stateDir, "tokens.json");
+    const tokens = JSON.parse(readFileSync(tokenFile, "utf8")) as { api: Record<string, string> };
+    delete tokens.api[oldOwnerToken];
+    writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o600 });
     running = await startOwner(config);
-    await running.world.send(caller("person:owner", "api"), { to: "agent:main", kind: "request", word: "say", body: { text: "second history input" }, wait: true });
+    const sendAtEdge = (token: string, text: string) => fetch(`${running!.url}/api/send`, { method: "POST", headers: {
+      authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({
+        to: "agent:main", kind: "request", word: "say", body: { text }, client_id: `history-${text.replaceAll(" ", "-")}`,
+      }) });
+    assert.equal((await sendAtEdge(oldOwnerToken, "revoked input")).status, 401);
+    const newOwnerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    assert.notEqual(newOwnerToken, oldOwnerToken);
+    assert.equal((await sendAtEdge(newOwnerToken, "second history input")).status, 200);
     await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.body.text === "second remembered answer"), "second answer");
     assert.ok(requests.length >= 2);
     const resumedRequest = requests.find((request) => request.includes("second history input"));
@@ -162,6 +176,44 @@ test("the root session resumes its prior model history after a clean restart", {
       assert.equal(child.status, 1, child.stderr);
       assert.match(child.stdout, expected);
     };
+    // A valid physical tail with queued DSH input must not self-drive at resume.
+    const storageHost = new DshHost(config.dsh);
+    await storageHost.boot();
+    try {
+      const persistence = storageHost.ctx.get("sessionPersistence");
+      const writer = await persistence.open(journal.id, "write");
+      try {
+        const events = (await writer.read()).events as { seq: number }[];
+        await writer.append([{ type: "agent/inbox/spliced", seq: events.length, time: Date.now(),
+          data: { target: "next-turn", start: 0, inserted: [{ id: "untrusted-replay", role: "user", content: [{ type: "text", text: "do not replay" }], source: { kind: "user" } }] } }]);
+        await writer.flush();
+      } finally { await writer.close(); }
+    } finally { await storageHost.close(); }
+    refusal(/queued work that cannot be automatically resumed/);
+    // Keep the physical header frame but delete the event tail. A completed
+    // core turn is not evidence that DSH still has the corresponding prompt.
+    const findSessionFiles = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(directory, entry.name);
+      return entry.isDirectory() ? findSessionFiles(path) : entry.isFile() && /session(?:\.v\d+)?\.jsonl\.zstd$/.test(entry.name) ? [path] : [];
+    });
+    const files = findSessionFiles(config.dsh.home).filter((path) => path.includes(journal.id));
+    assert.equal(files.length, 1, "synthetic root must have one canonical session artifact");
+    const file = files[0];
+    const original = readFileSync(file);
+    let headerLength = 0;
+    for (let size = 4; size < original.length; size++) {
+      try {
+        const decoded = zstdDecompressSync(original.subarray(0, size)).toString("utf8");
+        if (decoded.endsWith("\n") && decoded.trim().split("\n").length === 1) { headerLength = size; break; }
+      } catch { /* incomplete frame */ }
+    }
+    assert.ok(headerLength > 0 && headerLength < original.length, "failed to locate the persisted header frame");
+    writeFileSync(file, original.subarray(0, headerLength));
+    refusal(/history missing for existing core turns|completed core turn is missing from DSH history/);
+    writeFileSync(file, Buffer.concat([original.subarray(0, headerLength), Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00])]));
+    refusal(/history|session|frame|storage|format|corrupt|truncated/i);
+    unlinkSync(file);
+    refusal(/history missing for existing core turns/);
     writeFileSync(journalFile, "{broken", { mode: 0o600 });
     refusal(/invalid DSH session journal/);
     unlinkSync(journalFile);
@@ -171,6 +223,88 @@ test("the root session resumes its prior model history after a clean restart", {
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SIGKILL in a real tool call closes uncertain history without replaying the external request", { skip }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-tool-kill-"));
+  mkdirSync(join(root, "home"));
+  let deviceCalls = 0;
+  let modelCalls = 0;
+  const deviceEntered = deferred();
+  const host = createServer((req, res) => {
+    if (req.url === "/manifest") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+      name: "Synthetic host", capabilities: [{ name: "hold", description: "Wait for a synthetic device result",
+        input_schema: { type: "object", additionalProperties: false }, risk: "none", label: "Waiting" }],
+    }));
+    if (req.url === "/alarm") return void res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+    if (req.url === "/call") { deviceCalls++; deviceEntered.resolve(); return; }
+    res.writeHead(404).end("{}");
+  });
+  const model = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (part) => { raw += part; });
+    req.on("end", () => {
+      if (!req.url?.endsWith("/messages")) return void res.writeHead(404).end("{}");
+      const request = JSON.parse(raw || "{}") as { tools?: unknown[]; model?: string };
+      const useTool = Boolean(request.tools?.length);
+      if (useTool) modelCalls++;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
+      event("message_start", { message: { id: `msg_toolkill_${modelCalls}`, type: "message", role: "assistant", model: request.model,
+        content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+      if (useTool) {
+        event("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_toolkill_1", name: "ash_send", input: {} } });
+        event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ to: "device:phone", word: "hold", body: {} }) } });
+      } else {
+        event("content_block_start", { index: 0, content_block: { type: "text", text: "title" } });
+      }
+      event("content_block_stop", { index: 0 });
+      event("message_delta", { delta: { stop_reason: useTool ? "tool_use" : "end_turn" }, usage: { output_tokens: 5 } });
+      event("message_stop", {}); res.end();
+    });
+  });
+  await Promise.all([new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve)),
+    new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve))]);
+  const childFile = fileURLToPath(new URL("./fixtures/dsh-tool-kill-child.ts", import.meta.url));
+  const launch = (phase: string) => fork(childFile, [], { execArgv: ["--expose-internals", "--import", "tsx"], stdio: ["ignore", "ignore", "pipe", "ipc"],
+    env: { ...process.env, TEST_ROOT: root, TEST_PHASE: phase, ASH_TEST_DSH_ROOT: install!,
+      TEST_HOST_URL: `http://127.0.0.1:${(host.address() as { port: number }).port}`,
+      TEST_MODEL_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/anthropic` } });
+  let child = launch("first");
+  let childError = "";
+  child.stderr?.on("data", (part) => { childError += String(part).slice(0, 1000); });
+  const timeout = async <T>(label: string, promise: Promise<T>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout: ${childError}`)), 15_000); })]); }
+    finally { if (timer) clearTimeout(timer); }
+  };
+  try {
+    const accepted = new Promise<{ type: string; status: number }>((resolve) => child.once("message", (value) => resolve(value as { type: string; status: number })));
+    assert.deepEqual(await timeout("accepted", accepted), { type: "accepted", status: 200 });
+    await timeout("device entry", deviceEntered.promise);
+    assert.equal(deviceCalls, 1);
+    child.kill("SIGKILL");
+    await timeout("first exit", new Promise<void>((resolve) => child.once("exit", () => resolve())));
+    child = launch("second");
+    child.stderr?.on("data", (part) => { childError += String(part).slice(0, 1000); });
+    const recovered = new Promise<{ type: string; holdCount: number; replyCount: number; replyCode: string; turnReasons: string[]; dshUnknownToolResults: number }>((resolve) =>
+      child.once("message", (value) => resolve(value as { type: string; holdCount: number; replyCount: number; replyCode: string; turnReasons: string[]; dshUnknownToolResults: number })));
+    const result = await timeout("recovery", recovered);
+    assert.equal(result.type, "recovered");
+    assert.equal(result.holdCount, 1);
+    assert.equal(result.replyCount, 1);
+    assert.equal(result.replyCode, "failed"); // outcome unknown, not a fabricated success
+    assert.deepEqual(result.turnReasons, ["error"]);
+    assert.ok(result.dshUnknownToolResults >= 1, "DSH history did not close the interrupted call as unknown");
+    await timeout("second exit", new Promise<void>((resolve) => child.once("exit", () => resolve())));
+    assert.equal(deviceCalls, 1, "the external device call was replayed");
+    assert.equal(modelCalls, 1, "DSH resumed an old prompt rather than waiting for a new core batch");
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    host.closeAllConnections(); model.closeAllConnections();
+    await Promise.all([new Promise<void>((resolve) => host.close(() => resolve())), new Promise<void>((resolve) => model.close(() => resolve()))]);
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -25,6 +25,8 @@ export interface SessionResume {
   file: string;
   /** Every core turn that has reached turn.start, including interrupted turns. */
   startedTurns: ReadonlySet<string>;
+  /** Completed turns must have one corresponding DSH prompt in durable history. */
+  completedTurns: ReadonlySet<string>;
 }
 
 function loadOrCreateSessionId(file: string, startedTurns: ReadonlySet<string>): string {
@@ -55,16 +57,31 @@ function loadOrCreateSessionId(file: string, startedTurns: ReadonlySet<string>):
 }
 
 /** Reject DSH-owned queued work before resume can publish an agent and drive it. */
-export function assertResumableHistory(events: readonly { type: string; data?: any }[], startedTurns: ReadonlySet<string>): void {
+export function assertResumableHistory(events: readonly { type: string; data?: any }[], startedTurns: ReadonlySet<string>, completedTurns: ReadonlySet<string> = new Set()): void {
   const pending = { "next-turn": [] as string[], "next-step": [] as string[] };
+  const seenPrompts = new Set<string>();
   for (const event of events) {
     if (event.type === "user/message") {
       const id = event.data?.id;
-      // The installed runtime adds its own bounded context snapshots as user-role
-      // history; they are not application prompts and never carry our turn id.
-      const runtimeContext = event.data?.source?.kind === "runtime-context";
+      // The installed runtime adds its own context snapshot as a user-role
+      // history item. A claimed source kind alone is insufficient provenance.
+      const source = event.data?.source;
+      const content = event.data?.content;
+      const oneText = Array.isArray(content) && content.length === 1 && content[0]?.type === "text" && typeof content[0].text === "string";
+      let runtimeContext = false;
+      if (source?.kind === "runtime-context" && typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) && oneText) {
+        const keys = Object.keys(source).sort().join(",");
+        if (keys === "kind") runtimeContext = content[0].text === "Current runtime context: none. Earlier runtime-context snapshots no longer apply.";
+        else if (keys === "form,kind,sections" && source.form === "snapshot" && Array.isArray(source.sections) && source.sections.length > 0 &&
+          source.sections.every((section: { name?: unknown; text?: unknown }) => typeof section?.name === "string" && section.name.length > 0 && typeof section?.text === "string" && section.text.length > 0))
+          runtimeContext = content[0].text === `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n${source.sections.map((section: { text: string }) => section.text).join("\n\n")}`;
+      }
       if (!runtimeContext && (typeof id !== "string" || !id.startsWith("core-") || !startedTurns.has(id.slice(5))))
         throw new Error("DSH history contains a user message without a core turn");
+      if (!runtimeContext) {
+        if (seenPrompts.has(id)) throw new Error("DSH history repeats a core prompt");
+        seenPrompts.add(id);
+      }
     }
     if (event.type !== "agent/inbox/spliced") continue;
     const splice = event.data;
@@ -79,6 +96,7 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
       return message.id;
     }));
   }
+  for (const turn of completedTurns) if (!seenPrompts.has(`core-${turn}`)) throw new Error("completed core turn is missing from DSH history");
   if (pending["next-turn"].length || pending["next-step"].length) throw new Error("DSH has queued work that cannot be automatically resumed safely");
 }
 
@@ -164,7 +182,7 @@ export class DshHost {
         if (snapshot.header.id !== sessionId || snapshot.header.cwd !== options.workspace || snapshot.header.parentSession || snapshot.header.isSeeded)
           throw new Error("DSH session header does not match the protected root session");
         const reader = await persistence.open(sessionId, "read");
-        try { assertResumableHistory((await reader.read()).events, options.resume!.startedTurns); }
+        try { assertResumableHistory((await reader.read()).events, options.resume!.startedTurns, options.resume!.completedTurns); }
         finally { await reader.close(); }
       }
       const handle = await this.ctx.get("agents")[snapshot ? "resume" : "create"]({
