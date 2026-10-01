@@ -40,9 +40,4 @@ class Paths(ctx: Context) {
     val hostPatch = File(payload, "profile/cordis.patch.yml")
     val buildMarker = File(payload, ".build")
 
-    // ---- earlier layouts (0.1.x) we migrate from
-    val legacyDshHome = File(payload, "dshhome")
-    val legacyCoreState = File(files, "ash-core/state")
-    val legacyCoreDshHome = File(files, "ash-core/dsh-home")
-    val legacyLink = File(files, "ash-link")
 }

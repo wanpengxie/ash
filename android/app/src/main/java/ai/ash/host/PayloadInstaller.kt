@@ -11,14 +11,14 @@ import java.util.zip.ZipInputStream
 
 /**
  * Installs the payload shipped in the APK (assets/payload.zip + payload-index.json, built by
- * payload/assemble.mjs) into files/payload, and migrates data from earlier app layouts.
+ * payload/assemble.mjs) into files/payload.
  *
  * The zip carries no symlinks, modes or absolute paths; the index says what to restore:
  * symlinks (Os.symlink — SELinux refuses hard links in app storage, symlinks are fine),
  * executable bits, and the `@PAYLOAD@` placeholder in shebangs/wrappers, replaced by the real
  * install path. The installed build is recorded in payload/.build; a mismatch (app update)
  * triggers a fresh install into payload.new, then an atomic directory swap — a half-extracted
- * payload is never started (the old engine once started from a partially extracted tree).
+ * payload is never started.
  */
 object PayloadInstaller {
     private const val TAG = "ash.payload"
@@ -90,9 +90,6 @@ object PayloadInstaller {
         }
         File(p.payloadStaging, ".build").writeText(build)
 
-        // Data from earlier layouts must be carried over before the old payload goes away.
-        migrate(p)
-
         p.payloadOld.deleteRecursively()
         if (p.payload.exists() && !p.payload.renameTo(p.payloadOld)) error("cannot move the old payload aside")
         if (!p.payloadStaging.renameTo(p.payload)) error("cannot activate the new payload")
@@ -100,50 +97,4 @@ object PayloadInstaller {
         Log.i(TAG, "payload $build installed ($n entries)")
     }
 
-    /**
-     * 0.1.x kept DSH's home inside the payload (payload/dshhome, credentials included), ran an
-     * experimental ash core under files/ash-core and the gateway link under files/ash-link.
-     * Everything the user owns moves to the new places once; nothing is overwritten.
-     */
-    fun migrate(p: Paths) {
-        p.state.mkdirs()
-        p.dshHome.mkdirs()
-        if (!File(p.dshHome, ".credentials.yaml").exists()) {
-            when {
-                File(p.legacyCoreDshHome, ".credentials.yaml").exists() -> copyTree(p.legacyCoreDshHome, p.dshHome)
-                p.legacyDshHome.isDirectory -> for (f in listOf(".credentials.yaml", "settings.yaml")) {
-                    val src = File(p.legacyDshHome, f)
-                    if (src.exists()) src.copyTo(File(p.dshHome, f), overwrite = false)
-                }
-            }
-        }
-        if (!File(p.state, "ash.db").exists() && File(p.legacyCoreState, "ash.db").exists()) copyTree(p.legacyCoreState, p.state)
-        val gw = File(p.state, "gateway.json")
-        val linkCfg = File(p.legacyLink, "config.json")
-        if (!gw.exists() && linkCfg.exists()) {
-            val url = runCatching { JSONObject(linkCfg.readText()).optString("gateway") }.getOrNull()
-            if (!url.isNullOrBlank()) gw.writeText(JSONObject().put("url", url.trimEnd('/')).toString())
-        }
-    }
-
-    /**
-     * Once everything was carried over, the 0.1.x leftovers go: the gateway link (its identity now
-     * lives in the Keystore), the experimental core, rish/vscreen drops, the old engine's files.
-     * Each is removed only when what it held has a new home.
-     */
-    fun cleanupLegacy(p: Paths, identityImported: Boolean) {
-        val f = p.files
-        // The key file is deleted by a successful import; while it exists (import failed), keep it.
-        if (identityImported && !File(p.legacyLink, "state/device.jwk").exists()) File(f, "ash-link").deleteRecursively()
-        if (File(p.state, "ash.db").exists()) File(f, "ash-core").deleteRecursively()
-        for (name in listOf("rish", "vscreen", "ash-launch.json", "dsh-web.log", "payload.old")) File(f, name).deleteRecursively()
-    }
-
-    private fun copyTree(from: File, to: File) {
-        from.walkTopDown().forEach { f ->
-            val rel = f.relativeTo(from)
-            val dst = File(to, rel.path)
-            if (f.isDirectory) dst.mkdirs() else if (!dst.exists()) f.copyTo(dst)
-        }
-    }
 }

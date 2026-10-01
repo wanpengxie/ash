@@ -102,7 +102,7 @@ class HostServer(private val ctx: Context, private val token: String) {
             200 to JSONObject().put("ok", true)
         }
         "GET /key" -> {
-            Keys.ensure(Paths(ctx))
+            Keys.ensure()
             200 to JSONObject().put("id", Keys.id()).put("publicKey", Keys.publicKey())
         }
         "POST /sign" -> 200 to JSONObject().put("sig", Keys.sign(Keys.unb64u(b.getString("data"))))

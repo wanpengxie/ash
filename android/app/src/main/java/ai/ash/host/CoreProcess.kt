@@ -36,7 +36,7 @@ class Secrets(ctx: Context) {
  * ash core as a child process: config, environment, start, find, stop. One instance only —
  * under load a port probe can time out while the core is alive, and a second core fighting
  * over the same event log and DSH sessions hangs both; so liveness is decided by /proc, not by
- * the port (0.1.x lesson).
+ * the port.
  */
 class CoreProcess(private val ctx: Context) {
     private val p = Paths(ctx)
@@ -182,14 +182,6 @@ class CoreProcess(private val ctx: Context) {
 
     /** The running ash core, found in /proc (our uid, our bundle on the command line). */
     fun pid(): Int? = scan { it.contains(p.coreBundle.path) || it.contains("ash-core.mjs --config ${p.config.path}") }.firstOrNull()
-
-    /** 0.1.x left a DSH web engine and a gateway link running; they hold the old payload and the gateway identity. */
-    fun killLegacy() {
-        for (pid in scan { (it.contains("/dshroot/") && it.contains(" web ")) || it.contains("ash-link.mjs") || it.contains("/ash-core/ash-core.mjs") }) {
-            Log.i(TAG, "stopping a 0.1.x process $pid")
-            kill(pid)
-        }
-    }
 
     fun stop() {
         pid()?.let { kill(it) }

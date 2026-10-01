@@ -85,7 +85,6 @@ class CoreService : Service() {
         var failures = 0
         var startedAt = 0L
         var unhealthySince = 0L
-        core.killLegacy()
         while (running) {
             try {
                 if (!PayloadInstaller.upToDate(this, paths)) {
@@ -97,9 +96,7 @@ class CoreService : Service() {
                         Notifications.updateService(this, "正在安装运行环境… ${if (total > 0) "${done * 100 / total}%" else done}")
                     }
                     installProgress = 100
-                } else PayloadInstaller.migrate(paths)
-                if (paths.legacyLink.exists()) Keys.ensure(paths)
-                PayloadInstaller.cleanupLegacy(paths, Keys.present())
+                }
 
                 val pid = core.pid()
                 if (secrets.stopped) {
