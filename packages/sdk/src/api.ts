@@ -326,12 +326,14 @@ export interface MessageSummaryV2 extends Omit<Message, "body"> {
 export const MESSAGE_SUMMARY_EVENT = "message.summary" as const;
 export const AUTH_SCOPE_EVENT = "auth.scope" as const;
 export const STREAM_PAGE_END_EVENT = "stream.page_end" as const;
+export const STREAM_ERROR_EVENT = "stream.error" as const;
 export const STREAM_SUMMARY_PAGE_BYTES = 4 * 1024 * 1024;
 export const STREAM_SUMMARY_ITEM_BYTES = 1024 * 1024;
 export const STREAM_SUMMARY_CONTROL_RESERVE_BYTES = 256 * 1024;
 export const STREAM_RAW_PAGE_BYTES = 32 * 1024 * 1024;
 export interface AuthScopeControlV2 { auth_scope: string }
 export interface StreamPageEndV2 { has_more: boolean; first_seq: number | null; last_seq: number | null }
+export interface StreamErrorV2 { code: "too_large" | "failed" }
 
 const streamObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const streamSeq = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
@@ -345,6 +347,10 @@ export function isAuthScopeControlV2(value: unknown): value is AuthScopeControlV
 export function isStreamPageEndV2(value: unknown): value is StreamPageEndV2 {
   if (!streamObject(value) || !exactKeys(value, ["has_more", "first_seq", "last_seq"]) || typeof value.has_more !== "boolean") return false;
   return value.first_seq === null && value.last_seq === null && value.has_more === false || streamSeq(value.first_seq) && streamSeq(value.last_seq) && value.first_seq <= value.last_seq;
+}
+
+export function isStreamErrorV2(value: unknown): value is StreamErrorV2 {
+  return streamObject(value) && exactKeys(value, ["code"]) && (value.code === "too_large" || value.code === "failed");
 }
 
 export function isMessageSummaryV2(value: unknown): value is MessageSummaryV2 {

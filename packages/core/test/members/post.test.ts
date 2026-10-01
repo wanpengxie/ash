@@ -146,7 +146,8 @@ test("old-page offer gets the latest released state without scanning later ledge
     assert.equal(page.status, 200);
     let output = "";
     if ("stream" in page) page.stream((chunk) => { output += chunk; }, () => {}, () => {});
-    const [snapshotFrame, messageFrame] = output.trim().split("\n\n");
+    const [scopeFrame, snapshotFrame, messageFrame] = output.trim().split("\n\n");
+    assert.match(scopeFrame, /^event: auth\.scope\n/);
     assert.match(snapshotFrame, /^event: post\.delivery\.snapshot\n/);
     assert.doesNotMatch(snapshotFrame, /(?:^|\n)id:/);
     const snapshot = JSON.parse(snapshotFrame.split("\ndata: ")[1]);
@@ -164,10 +165,10 @@ test("live registration replays a release committed after its first status snaps
     assert.equal((await f.wait(offer.id)).state, "held");
     const edge = new EdgeRouter(f.ledger, f.router, f.members, { api: {}, mcp: {} }, { authScopeKey: Buffer.alloc(32, 7) });
     edge.attachPostJournal(f.post.journal);
-    const original = f.post.journal.pageSnapshot.bind(f.post.journal);
+    const original = f.post.journal.pageSnapshotBounded.bind(f.post.journal);
     let releaseSeq = 0;
-    f.post.journal.pageSnapshot = (query) => {
-      const result = original(query);
+    f.post.journal.pageSnapshotBounded = (query, read) => {
+      const result = original(query, read);
       if (!releaseSeq) releaseSeq = f.post.journal.release(offer.id)!.visibility.seq;
       return result;
     };

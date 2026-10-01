@@ -1,5 +1,6 @@
 // Pure ledger projection. _records contains only selected display-safe facts,
 // never tool arguments, raw results, credentials, or stream control frames.
+import { isMessageSummaryV2 } from "../../../sdk/src/api.ts";
 import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
 const FACE = {
   idle: "default", resting: "resting", listening: "listening",
@@ -38,13 +39,18 @@ function safeCard(card) {
   return null;
 }
 
-function safeAttachments(value, messageId) {
+function safeAttachments(value, messageId, inline = []) {
   if (!Array.isArray(value)) return [];
   const safe = [];
   value.forEach((item, index) => {
     if (!object(item) || typeof item.name !== "string" || !item.name || typeof item.mime_type !== "string" || !item.mime_type) return;
     if (typeof item.workspace === "string" && item.workspace && typeof item.path === "string" && item.path && !item.path.startsWith("/") && !item.path.split("/").includes("..") && Number.isSafeInteger(item.size) && item.size >= 0) {
       safe.push({ workspace: item.workspace, path: item.path, name: item.name, mime_type: item.mime_type, size: item.size });
+      return;
+    }
+    const descriptor = Array.isArray(inline) ? inline.find((entry) => entry.index === index) : null;
+    if (descriptor && typeof messageId === "string" && messageId && descriptor.name === item.name && descriptor.mime_type === item.mime_type && Number.isSafeInteger(descriptor.size) && descriptor.size >= 0) {
+      safe.push({ source: "inline", message_id: messageId, index, name: item.name, mime_type: item.mime_type, size: descriptor.size });
       return;
     }
     if (typeof messageId !== "string" || !messageId || typeof item.data !== "string" || item.data.length === 0 || item.data.length > 28 * 1024 * 1024) return;
@@ -63,8 +69,8 @@ function legacyMetadata(value, m) {
 }
 
 function record(m) {
-  if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || !object(m.body)) return null;
-  const b = m.body;
+  if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || (m.summary === true ? !isMessageSummaryV2(m) : !object(m.body))) return null;
+  const b = m.summary === true ? m.body_summary : m.body;
   const base = { seq: m.seq, id: m.id, ts: number(m.ts), turn: turnId(m.turn) ? m.turn : "" };
   if (m.kind === "event" && m.from === "agent:main") {
     if (m.word === "status" && knownState(b.state)) return { ...base, type: "status", state: b.state, text: string(b.text) };
@@ -78,8 +84,8 @@ function record(m) {
       const legacy = legacyMetadata(b.legacy, m);
       return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : m.to === "person:owner" ? "agent" : "inbound", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
     }
-    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments, m.id), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
-    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments), kind: string(b.kind) };
+    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
+    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), kind: string(b.kind) };
   }
   if (m.kind === "request" && m.to === "person:owner" && ownerPublisher(m.from)) {
     if (m.word === "react" && typeof b.message_id === "string" && typeof b.emoji === "string") return { ...base, type: "react", message_id: b.message_id, emoji: b.emoji };

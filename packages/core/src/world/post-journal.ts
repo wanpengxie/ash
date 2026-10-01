@@ -1,4 +1,4 @@
-import type { Message, PostDeliveryChannel, PostDeliverySnapshotV2, PostDeliveryState } from "../../../sdk/src/api";
+import type { Message, MessageSummaryV2, PostDeliveryChannel, PostDeliverySnapshotV2, PostDeliveryState, StreamPageEndV2 } from "../../../sdk/src/api";
 import type { DatabaseSync } from "node:sqlite";
 import type { Ledger } from "./ledger";
 
@@ -64,30 +64,36 @@ export class PostJournal {
   }
   /** The bounded ledger page and current visibility for only its own IDs share one read snapshot. */
   pageSnapshot(query: { after?: number; before?: number; limit?: number }): { page: Message[]; snapshot: PostDeliverySnapshotV2 } {
+    const { page, snapshot } = this.pageSnapshotBounded(query, () => ({ page: this.ledger.list(query) }));
+    return { page, snapshot };
+  }
+  pageSnapshotBounded<T extends Message | MessageSummaryV2>(query: { after?: number; before?: number; limit?: number },
+    read: () => { page: T[]; end?: StreamPageEndV2 }): { page: T[]; snapshot: PostDeliverySnapshotV2; end?: StreamPageEndV2 } {
     return this.ledger.postReadSnapshot((db) => {
-      const page = this.ledger.list(query);
+      const { page, end } = read();
       const at_seq = this.ledger.lastSeq();
       const find = db.prepare(`SELECT e.seq,e.body,p.kind,p.state,p.channel FROM post_deliveries p
         JOIN messages e ON e.seq=p.version_seq AND e.word='post.delivery' AND e.kind='event' AND e."from"='service:post' AND e."to"='person:owner'
         WHERE p.message_id=?`);
       const items: PostDeliverySnapshotV2["items"] = [];
       for (const message of page) {
+        const body = "summary" in message ? message.body_summary : message.body;
         if (message.kind !== "request" || message.word !== "say" || message.to !== "person:owner" ||
-          message.seq <= this.ledger.migration.lastLegacySeq || Object.hasOwn(message.body, "legacy") ||
-          (message.body.kind !== "offer" && message.body.kind !== "heads_up")) continue;
+          message.seq <= this.ledger.migration.lastLegacySeq || Object.hasOwn(body, "legacy") ||
+          (body.kind !== "offer" && body.kind !== "heads_up")) continue;
         const row = find.get(message.id) as Row | undefined;
         if (!row) continue;
-        let body: { message_id?: unknown; state?: unknown } | null;
-        try { body = JSON.parse(String(row.body)) as typeof body; } catch { continue; }
-        if (!body || typeof body !== "object" || Array.isArray(body) || body.message_id !== message.id ||
-          typeof body.state !== "string" || !["held", "released", "dropped"].includes(body.state)) continue;
-        const expected = body.state === "held" ? ["held", "held"] : body.state === "dropped" ? ["dropped", "dropped"] : ["done", "inapp"];
-        if (row.kind !== message.body.kind || row.state !== expected[0] || row.channel !== expected[1]) continue;
+        let statusBody: { message_id?: unknown; state?: unknown } | null;
+        try { statusBody = JSON.parse(String(row.body)) as typeof statusBody; } catch { continue; }
+        if (!statusBody || typeof statusBody !== "object" || Array.isArray(statusBody) || statusBody.message_id !== message.id ||
+          typeof statusBody.state !== "string" || !["held", "released", "dropped"].includes(statusBody.state)) continue;
+        const expected = statusBody.state === "held" ? ["held", "held"] : statusBody.state === "dropped" ? ["dropped", "dropped"] : ["done", "inapp"];
+        if (row.kind !== body.kind || row.state !== expected[0] || row.channel !== expected[1]) continue;
         const version_seq = Number(row.seq);
         if (!Number.isSafeInteger(version_seq) || version_seq < 1 || version_seq > at_seq) continue;
-        items.push({ message_id: message.id, state: body.state as PostDeliveryState, version_seq });
+        items.push({ message_id: message.id, state: statusBody.state as PostDeliveryState, version_seq });
       }
-      return { page, snapshot: { at_seq, items } };
+      return { page, snapshot: { at_seq, items }, ...(end ? { end } : {}) };
     });
   }
   /** Persist one classification and its count event before any external presentation. */

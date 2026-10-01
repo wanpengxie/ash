@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, AUTH_SCOPE_EVENT, MESSAGE_SUMMARY_EVENT, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, STREAM_PAGE_END_EVENT, STREAM_RAW_PAGE_BYTES, STREAM_SUMMARY_CONTROL_RESERVE_BYTES, STREAM_SUMMARY_ITEM_BYTES, STREAM_SUMMARY_PAGE_BYTES, SummaryPageBudgetV2, isAuthScopeControlV2, isMessageSummaryV2, isScreenRegistration, isStreamPageEndV2, type ClockFiredBodyV2, type JsonSchema, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type PostDeliverySnapshotV2, type ScreenUiOpenAnswerV2, type SendRequestV2, type StreamQueryV2 } from "../src/api";
+import { API_VERSION, API_VERSION_V2, AUTH_SCOPE_EVENT, MESSAGE_SUMMARY_EVENT, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, STREAM_ERROR_EVENT, STREAM_PAGE_END_EVENT, STREAM_RAW_PAGE_BYTES, STREAM_SUMMARY_CONTROL_RESERVE_BYTES, STREAM_SUMMARY_ITEM_BYTES, STREAM_SUMMARY_PAGE_BYTES, SummaryPageBudgetV2, isAuthScopeControlV2, isMessageSummaryV2, isScreenRegistration, isStreamErrorV2, isStreamPageEndV2, type ClockFiredBodyV2, type JsonSchema, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type PostDeliverySnapshotV2, type ScreenUiOpenAnswerV2, type SendRequestV2, type StreamQueryV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
@@ -108,6 +108,7 @@ test("L025 summary is explicitly not an original Message or send envelope", () =
 test("L025 scope and end controls are not ledger cursor frames", () => {
   assert.equal(AUTH_SCOPE_EVENT, "auth.scope");
   assert.equal(STREAM_PAGE_END_EVENT, "stream.page_end");
+  assert.equal(STREAM_ERROR_EVENT, "stream.error");
   const scope = { auth_scope: `v1_${"z".repeat(43)}` };
   assert.ok(isAuthScopeControlV2(scope));
   for (const invalid of [{}, { ...scope, auth_scope: "token" }, { ...scope, id: 10 }, null]) assert.ok(!isAuthScopeControlV2(invalid));
@@ -118,6 +119,9 @@ test("L025 scope and end controls are not ledger cursor frames", () => {
     { has_more: true, first_seq: 0, last_seq: 1 }, { has_more: "false", first_seq: null, last_seq: null },
     { has_more: false, first_seq: null, last_seq: null, id: 9 },
   ]) assert.ok(!isStreamPageEndV2(invalid));
+  assert.ok(isStreamErrorV2({ code: "too_large" }));
+  assert.ok(isStreamErrorV2({ code: "failed" }));
+  for (const invalid of [{ code: "ok" }, { code: "failed", message: "private details" }, { code: "too_large", id: 3 }, null]) assert.ok(!isStreamErrorV2(invalid));
 });
 
 test("L025 summary budget counts UTF-8 bytes and emits a continuous page prefix", () => {

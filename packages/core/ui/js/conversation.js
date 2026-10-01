@@ -22,10 +22,12 @@ function attachment(parent, item, openInline) {
   if (item?.source === "inline" && Number.isSafeInteger(item.index) && item.index >= 0) {
     const button = text(parent, "button", name, "attachment");
     button.type = "button";
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.title = "正在读取附件";
       try {
-        const opened = openInline?.(item.message_id, item.index);
-        if (!opened) return;
+        const opened = await openInline?.(item.message_id, item.index);
+        if (!opened) throw new Error("attachment unavailable");
         if (opened.preview) {
           const image = document.createElement("img");
           image.alt = opened.name;
@@ -41,7 +43,10 @@ function attachment(parent, item, openInline) {
           download.click();
           setTimeout(opened.revoke, 1000);
         }
+        button.dataset.opened = "true";
+        button.title = "";
       } catch { button.title = "附件无法打开"; }
+      finally { button.disabled = false; }
     });
     return;
   }

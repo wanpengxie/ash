@@ -60,6 +60,67 @@ test("owner inbox accepts attachment-only say but rejects empty text without an 
   } finally { ledger.close(); }
 });
 
+test("L025 summary pages strip large inline bytes in SQLite and raw overflow is HTTP 413 before headers", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const data = Buffer.alloc(19 * 1024 * 1024, 7).toString("base64");
+    const first = ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [{ name: "a.bin", mime_type: "application/octet-stream", data }] } }).message;
+    const second = ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [{ name: "b.bin", mime_type: "application/octet-stream", data }] } }).message;
+    const summary = await edge.handle(request("GET", `/api/stream?summary=true&follow=false&before=${second.seq + 1}&limit=2`), owner);
+    assert.equal(summary.status, 200, JSON.stringify(parsed(summary)));
+    let output = "";
+    if ("stream" in summary) summary.stream((chunk) => { output += chunk; }, () => {}, () => {});
+    const frames = output.trim().split("\n\n");
+    assert.match(frames[0], /^event: auth\.scope\n/);
+    assert.equal(frames.filter((entry) => entry.includes("event: message.summary")).length, 2);
+    assert.equal(output.includes(data.slice(0, 100)), false);
+    const rows = frames.filter((entry) => entry.includes("event: message.summary")).map((entry) => JSON.parse(entry.split("\ndata: ")[1]));
+    assert.deepEqual(rows.map((row) => row.inline_attachments[0].size), [19 * 1024 * 1024, 19 * 1024 * 1024]);
+    assert.ok(rows.every((row) => row.summary === true && !Object.hasOwn(row, "body") && !Object.hasOwn(row.body_summary.attachments[0], "data")));
+    assert.ok(output.length < 2000);
+    assert.equal((await edge.handle(request("GET", `/api/stream?follow=false&before=${second.seq + 1}&limit=2`), owner)).status, 413);
+    assert.equal((await edge.handle(request("GET", `/api/stream?follow=false&before=${first.seq + 1}&limit=1`), owner)).status, 200);
+  } finally { ledger.close(); }
+});
+
+test("L025 summary byte budget returns a continuous descending selection with an exact next cursor", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const ids = [];
+    for (let i = 0; i < 12; i++) ids.push(ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "漢".repeat(150_000) } }).message.seq);
+    const response = await edge.handle(request("GET", "/api/stream?summary=true&follow=false&limit=12"), owner);
+    assert.equal(response.status, 200);
+    let output = "";
+    if ("stream" in response) response.stream((chunk) => { output += chunk; }, () => {}, () => {});
+    assert.ok(Buffer.byteLength(output) <= 4 * 1024 * 1024);
+    const frames = output.trim().split("\n\n");
+    const rows = frames.filter((entry) => entry.includes("event: message.summary")).map((entry) => Number(/^id: (\d+)/.exec(entry)?.[1]));
+    const end = JSON.parse(frames.find((entry) => entry.startsWith("event: stream.page_end"))!.split("\ndata: ")[1]);
+    assert.ok(rows.length > 0 && rows.length < ids.length);
+    assert.deepEqual(rows, ids.slice(-rows.length));
+    assert.deepEqual(end, { has_more: true, first_seq: rows[0], last_seq: rows.at(-1) });
+    const older = ledger.summaryPage({ before: end.first_seq, limit: 12 });
+    assert.deepEqual(older.page.map((row) => row.seq), ids.slice(0, -rows.length));
+    assert.equal(older.end.has_more, false);
+  } finally { ledger.close(); }
+});
+
+test("L025 late oversized live summary emits an unnumbered error without claiming delivery", async () => {
+  const { ledger, world, edge } = await fixture();
+  try {
+    const live = await edge.handle(request("GET", "/api/stream?summary=true&after=0&follow=true"), owner);
+    assert.equal(live.status, 200);
+    let output = "", ended = false, close = () => {};
+    if ("stream" in live) live.stream((chunk) => { output += chunk; }, (fn) => { close = fn; }, () => { ended = true; });
+    await world.send({ member: "person:owner", transport: "api", transportPrincipal: "owner-credential", local: true, remote: false, ownerProxy: true },
+      { to: "agent:main", kind: "request", word: "say", body: { text: "x".repeat(1_100_000) } });
+    assert.equal(ended, true);
+    assert.match(output, /event: stream\.error\ndata: \{"code":"too_large"\}/);
+    assert.doesNotMatch(output, /(?:^|\n)id: [1-9]/);
+    close();
+  } finally { ledger.close(); }
+});
+
 test("wait cap returns the accepted id without inventing a late reply", async () => {
   const { ledger, world, members } = await fixture();
   try {

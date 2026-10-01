@@ -1,4 +1,4 @@
-import { POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER, isScreenRegistration } from "../../../sdk/src/api.ts";
+import { AUTH_SCOPE_EVENT, MESSAGE_SUMMARY_EVENT, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER, STREAM_ERROR_EVENT, STREAM_PAGE_END_EVENT, isAuthScopeControlV2, isMessageSummaryV2, isScreenRegistration, isStreamErrorV2, isStreamPageEndV2 } from "../../../sdk/src/api.ts";
 import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
 import { openPendingStore } from "./pending-store.js";
 
@@ -21,36 +21,52 @@ export function parseSse(block) {
   return event;
 }
 
-export async function readSse(response, onFrame, signal) {
+export async function readSse(response, onFrame, signal, maxFrameBytes = 2_000_000) {
   if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let pending = "";
+  let parts = [];
+  let pendingBytes = 0;
+  let tail = "";
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      pending += decoder.decode(value, { stream: true });
-      let boundary;
-      while ((boundary = /\r?\n\r?\n/.exec(pending)) !== null) {
-        const block = pending.slice(0, boundary.index);
-        pending = pending.slice(boundary.index + boundary[0].length);
-        if (block) onFrame(parseSse(block));
+      const piece = decoder.decode(value, { stream: true });
+      if (!/\r?\n\r?\n/.test(tail + piece)) {
+        parts.push(piece);
+        pendingBytes += value.byteLength;
+        tail = (tail + piece).slice(-3);
+      } else {
+        let pending = parts.join("") + piece;
+        parts = [];
+        pendingBytes = 0;
+        let boundary;
+        while ((boundary = /\r?\n\r?\n/.exec(pending)) !== null) {
+          const block = pending.slice(0, boundary.index);
+          pending = pending.slice(boundary.index + boundary[0].length);
+          if (new TextEncoder().encode(block).byteLength > maxFrameBytes) throw new Error("stream frame too large");
+          if (block) onFrame(parseSse(block));
+        }
+        parts.push(pending);
+        pendingBytes = new TextEncoder().encode(pending).byteLength;
+        tail = pending.slice(-3);
       }
-      if (pending.length > 2_000_000) throw new Error("stream frame too large");
+      if (pendingBytes > maxFrameBytes) throw new Error("stream frame too large");
       if (signal?.aborted) break;
     }
   } finally { await reader.cancel().catch(() => {}); }
 }
 
 export class ScreenNet {
-  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, pendingStore = openPendingStore(), endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onSnapshot = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
+  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, pendingStore = openPendingStore(), endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onSnapshot = () => {}, onReset = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
     this.transport = fetchImpl;
     this.storage = storage;
     this.label = label;
     this.onMessage = onMessage;
     this.onHistory = onHistory;
     this.onSnapshot = onSnapshot;
+    this.onReset = onReset;
     this.onState = onState;
     this.onRegistered = onRegistered;
     this.onQueue = onQueue;
@@ -68,6 +84,7 @@ export class ScreenNet {
     this.generation = 0;
     this.flushing = false;
     this.bootstrapped = false;
+    this.scopeVersion = 0;
     storage.removeItem(TOKEN_KEY);
   }
 
@@ -79,21 +96,45 @@ export class ScreenNet {
   }
 
   async catchUp(generation, signal) {
-    const initial = !this.bootstrapped;
     let more = true;
     while (more && generation === this.generation && !signal.aborted) {
-      const query = initial && this.cursor === null ? "?follow=false&limit=200" : `?follow=false&limit=1000&after=${this.cursor ?? 0}`;
+      const initial = !this.bootstrapped;
+      const query = initial && this.cursor === null ? "?follow=false&summary=true&limit=200" : `?follow=false&summary=true&limit=1000&after=${this.cursor ?? 0}`;
       const response = await this.request(`/api/stream${query}`, { credentials: "same-origin", signal });
-      let count = 0;
       const history = [];
       const snapshots = [];
+      let scopeSeen = false;
+      let endFrame = null;
+      let scopeVersion = this.scopeVersion;
+      let staleScope = false;
       await readSse(response, (frame) => {
-        if (frame.type === SCREEN_REGISTRATION_EVENT) return;
-        if (/^[1-9][0-9]*$/.test(frame.id)) count++;
+        if (!scopeSeen) {
+          if (frame.type !== AUTH_SCOPE_EVENT || frame.id) throw new Error("history missing authentication scope");
+          let control;
+          try { control = JSON.parse(frame.data); } catch { throw new Error("invalid history scope"); }
+          if (!isAuthScopeControlV2(control)) throw new Error("invalid history scope");
+          const prior = this.currentScope;
+          this.acceptScope(control.auth_scope);
+          staleScope = prior !== null && prior !== control.auth_scope;
+          if (!staleScope) scopeVersion = this.scopeVersion;
+          scopeSeen = true;
+          return;
+        }
+        if (this.scopeVersion !== scopeVersion) return;
+        if (frame.type === STREAM_PAGE_END_EVENT) {
+          let control;
+          try { control = JSON.parse(frame.data); } catch { throw new Error("invalid page end"); }
+          if (frame.id || !isStreamPageEndV2(control)) throw new Error("invalid page end");
+          endFrame = control;
+          return;
+        }
         this.frame(frame, generation, true, history, snapshots);
       }, signal);
+      if (!scopeSeen) throw new Error("incomplete history page");
+      if (staleScope) continue;
+      if (!endFrame) throw new Error("incomplete history page");
       if (generation === this.generation && !signal.aborted && (history.length || snapshots.length)) this.onHistory(history, snapshots);
-      more = !initial && count === 1000;
+      more = !initial && endFrame.has_more;
       if (initial) this.bootstrapped = true;
       if (this.cursor === null) this.cursor = 0;
     }
@@ -114,7 +155,7 @@ export class ScreenNet {
       try {
         await this.catchUp(generation, controller.signal);
         if (controller.signal.aborted || generation !== this.generation) break;
-        const url = `/api/stream?follow=true&label=${encodeURIComponent(this.label)}`;
+        const url = `/api/stream?follow=true&summary=true&label=${encodeURIComponent(this.label)}`;
         const headers = { "Last-Event-ID": String(this.cursor ?? 0) };
         const response = await this.request(url, { headers, credentials: "same-origin", signal: controller.signal });
         await readSse(response, (frame) => this.frame(frame, generation), controller.signal);
@@ -136,7 +177,6 @@ export class ScreenNet {
     clearTimeout(this.retryTimer);
     this.token = null;
     this.screen = null;
-    this.currentScope = null;
     this.storage.removeItem(TOKEN_KEY);
     this.queue = [];
     this.outbox = [];
@@ -144,17 +184,40 @@ export class ScreenNet {
     this.onState("offline");
   }
 
+  acceptScope(scope, abortLive = false) {
+    if (this.currentScope === scope) return false;
+    const changed = this.currentScope !== null;
+    if (changed) {
+      this.sendController?.abort();
+      clearTimeout(this.retryTimer);
+      this.token = null;
+      this.screen = null;
+      this.storage.removeItem(TOKEN_KEY);
+      this.queue = []; this.outbox = []; this.publishOutbox();
+      this.seenLedgerIds.clear();
+      this.cursor = null;
+      this.bootstrapped = false;
+      this.onReset();
+      if (abortLive) this.controller?.abort();
+    }
+    this.currentScope = scope;
+    this.scopeVersion++;
+    return changed;
+  }
+
   frame(frame, generation, historical = false, history = null, snapshots = null) {
     if (generation !== this.generation) return;
+    if (frame.type === STREAM_ERROR_EVENT && frame.id === "") {
+      let error;
+      try { error = JSON.parse(frame.data); } catch { throw new Error("invalid stream error frame"); }
+      if (!isStreamErrorV2(error)) throw new Error("invalid stream error frame");
+      throw new Error(`stream ${error.code}`);
+    }
     if (frame.type === SCREEN_REGISTRATION_EVENT) {
       let registered;
       try { registered = JSON.parse(frame.data); } catch { return; }
       if (!isScreenRegistration(registered)) { this.onState("send-error", new Error("screen credential scope unavailable")); return; }
-      if (this.currentScope && this.currentScope !== registered.auth_scope) {
-        this.sendController?.abort();
-        clearTimeout(this.retryTimer);
-        this.queue = []; this.outbox = []; this.publishOutbox();
-      }
+      if (this.acceptScope(registered.auth_scope, true)) return;
       this.token = registered.token;
       this.screen = registered.screen;
       this.currentScope = registered.auth_scope;
@@ -177,7 +240,7 @@ export class ScreenNet {
     if (!Number.isSafeInteger(seq)) return;
     let message;
     try { message = JSON.parse(frame.data); } catch { return; }
-    if (message?.seq !== seq) return;
+    if (frame.type !== MESSAGE_SUMMARY_EVENT || !isMessageSummaryV2(message) || message.seq !== seq) return;
     this.cursor = Math.max(this.cursor ?? 0, seq);
     if (typeof message.id === "string") {
       this.seenLedgerIds.add(message.id);
@@ -192,19 +255,75 @@ export class ScreenNet {
 
   async page(before, signal) {
     if (!Number.isSafeInteger(before) || before < 1) throw new Error("invalid page cursor");
-    const response = await this.request(`/api/stream?before=${before}&limit=200&follow=false`, { credentials: "same-origin", signal });
+    const response = await this.request(`/api/stream?before=${before}&limit=200&follow=false&summary=true`, { credentials: "same-origin", signal });
     const records = [];
     const snapshots = [];
+    let scopeSeen = false;
+    let endFrame = null;
+    let scopeVersion = this.scopeVersion;
+    let staleScope = false;
     await readSse(response, (frame) => {
-      if (frame.type === SCREEN_REGISTRATION_EVENT) return;
+      if (!scopeSeen) {
+        if (frame.type !== AUTH_SCOPE_EVENT || frame.id) throw new Error("history missing authentication scope");
+        let control;
+        try { control = JSON.parse(frame.data); } catch { throw new Error("invalid history scope"); }
+        if (!isAuthScopeControlV2(control)) throw new Error("invalid history scope");
+        const prior = this.currentScope;
+        this.acceptScope(control.auth_scope, true);
+        staleScope = prior !== null && prior !== control.auth_scope;
+        if (!staleScope) scopeVersion = this.scopeVersion;
+        scopeSeen = true;
+        return;
+      }
+      if (this.scopeVersion !== scopeVersion) return;
+      if (frame.type === STREAM_PAGE_END_EVENT) {
+        let control;
+        try { control = JSON.parse(frame.data); } catch { throw new Error("invalid page end"); }
+        if (frame.id || !isStreamPageEndV2(control)) throw new Error("invalid page end");
+        endFrame = control;
+        return;
+      }
       if (frame.type === POST_DELIVERY_SNAPSHOT_EVENT) {
         try { const snapshot = JSON.parse(frame.data); if (!postDeliverySnapshotErrors(snapshot).length) snapshots.push(snapshot); } catch { /* ignore malformed control */ }
         return;
       }
-      if (!/^[1-9][0-9]*$/.test(frame.id)) return;
-      try { const message = JSON.parse(frame.data); if (message?.seq === Number(frame.id)) records.push(message); } catch { /* ignore malformed frame */ }
+      if (!/^[1-9][0-9]*$/.test(frame.id) || frame.type !== MESSAGE_SUMMARY_EVENT) return;
+      try { const message = JSON.parse(frame.data); if (isMessageSummaryV2(message) && message.seq === Number(frame.id)) records.push(message); } catch { /* ignore malformed frame */ }
     }, signal);
-    return { messages: records.sort((a, b) => a.seq - b.seq).filter((item, index, all) => index === 0 || item.seq !== all[index - 1].seq), snapshots };
+    if (!scopeSeen) throw new Error("incomplete history page");
+    if (staleScope) return { messages: [], snapshots: [], end: { has_more: false } };
+    if (!endFrame) throw new Error("incomplete history page");
+    return { messages: records.sort((a, b) => a.seq - b.seq).filter((item, index, all) => index === 0 || item.seq !== all[index - 1].seq), snapshots, end: endFrame };
+  }
+
+  /** One authenticated original ledger row is fetched only on an attachment click. */
+  async fetchOriginalAttachment(summary, descriptor) {
+    if (!isMessageSummaryV2(summary) || !descriptor || !Number.isSafeInteger(descriptor.index) || !this.currentScope) throw new Error("attachment reference unavailable");
+    const expectedScope = this.currentScope;
+    const response = await this.request(`/api/stream?before=${summary.seq + 1}&limit=1&follow=false`, { credentials: "same-origin" });
+    let scopeSeen = false;
+    let original = null;
+    await readSse(response, (frame) => {
+      if (!scopeSeen) {
+        if (frame.type !== AUTH_SCOPE_EVENT || frame.id) throw new Error("raw page missing authentication scope");
+        let control;
+        try { control = JSON.parse(frame.data); } catch { throw new Error("invalid raw scope"); }
+        if (!isAuthScopeControlV2(control)) throw new Error("invalid raw scope");
+        if (control.auth_scope !== expectedScope) { this.acceptScope(control.auth_scope, true); throw new Error("authentication scope changed"); }
+        scopeSeen = true;
+        return;
+      }
+      if (frame.type !== "message") return;
+      if (original) throw new Error("raw page returned multiple rows");
+      let message;
+      try { message = JSON.parse(frame.data); } catch { throw new Error("invalid raw message"); }
+      if (frame.id !== String(summary.seq) || message?.seq !== summary.seq || message?.id !== summary.id || message?.from !== summary.from || message?.to !== summary.to || message?.kind !== summary.kind || message?.word !== summary.word || message?.summary === true || !message?.body || typeof message.body !== "object") throw new Error("raw message does not match summary");
+      original = message;
+    }, undefined, 33 * 1024 * 1024);
+    if (!scopeSeen || !original) throw new Error("raw message unavailable");
+    const item = original.body.attachments?.[descriptor.index];
+    if (!item || item.name !== descriptor.name || item.mime_type !== descriptor.mime_type || typeof item.data !== "string") throw new Error("raw attachment does not match summary");
+    return item;
   }
 
   publishOutbox() {

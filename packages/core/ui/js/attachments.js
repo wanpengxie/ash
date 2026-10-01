@@ -25,8 +25,9 @@ export function decodeInlineAttachment(item) {
   return { name: safeName(item.name), bytes, mime_type: preview ? declared : "application/octet-stream", preview };
 }
 
-export function openInlineBlob(item) {
+export function openInlineBlob(item, expected = null) {
   const decoded = decodeInlineAttachment(item);
+  if (expected && (item.name !== expected.name || item.mime_type !== expected.mime_type || decoded.bytes.length !== expected.size || RASTER.has(expected.mime_type.toLowerCase()) && !decoded.preview)) throw new Error("attachment differs from ledger summary");
   const url = URL.createObjectURL(new Blob([decoded.bytes], { type: decoded.mime_type }));
   let revoked = false;
   return { url, name: decoded.name, preview: decoded.preview, revoke() { if (!revoked) { URL.revokeObjectURL(url); revoked = true; } } };

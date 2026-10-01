@@ -56,7 +56,7 @@ export class Timeline {
     try {
       const page = await this.net.page(before, controller.signal);
       if (epoch !== this.epoch) return 0;
-      if (page.messages.length < 200) this.exhausted = true;
+      if (!page.end?.has_more) this.exhausted = true;
       this.addMany(page.messages, page.snapshots);
       return page.messages.length;
     } finally {
@@ -66,9 +66,13 @@ export class Timeline {
 
   inlineAttachment(messageId, index) {
     const message = this.byId.get(messageId);
-    if (!message || message.kind !== "request" || message.word !== "say" || message.from !== "person:owner" || message.to !== "agent:main" || Object.hasOwn(message.body || {}, "legacy") || !Number.isSafeInteger(index) || index < 0) return null;
+    if (!message || message.kind !== "request" || message.word !== "say" || !((message.from === "person:owner" && message.to === "agent:main") || (message.from === "agent:main" && message.to === "person:owner")) || Object.hasOwn(message.body_summary || message.body || {}, "legacy") || !Number.isSafeInteger(index) || index < 0) return null;
+    if (message.summary === true) {
+      const descriptor = message.inline_attachments?.find((item) => item.index === index);
+      return descriptor ? { summary: message, descriptor } : null;
+    }
     const item = message.body?.attachments?.[index];
-    return item && typeof item.name === "string" && typeof item.mime_type === "string" && typeof item.data === "string" ? item : null;
+    return item && typeof item.name === "string" && typeof item.mime_type === "string" && typeof item.data === "string" ? { item } : null;
   }
 }
 
@@ -112,17 +116,20 @@ export function boot() {
   let presenceProblem = "";
   let lastTyping = 0;
   let timeline;
-  const openInline = (messageId, index) => {
-    const item = timeline.inlineAttachment(messageId, index);
-    return item ? openInlineBlob(item) : null;
+  const openInline = async (messageId, index) => {
+    const ref = timeline.inlineAttachment(messageId, index);
+    if (!ref) return null;
+    if (ref.item) return openInlineBlob(ref.item);
+    const item = await net.fetchOriginalAttachment(ref.summary, ref.descriptor);
+    return openInlineBlob(item, ref.descriptor);
   };
   const net = new ScreenNet({
     label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "Phone browser" : "Computer browser"),
     onMessage: (message, context) => {
       timeline.add(message);
       if (context?.historical || message.kind !== "request" || message.word !== "ui.open" || message.to !== net.screen) return;
-      const target = message.body?.target;
-      const mode = message.body?.mode;
+      const target = (message.body_summary || message.body)?.target;
+      const mode = (message.body_summary || message.body)?.mode;
       const targets = { activity: "活动", upcoming: "接下来", approvals: "审批", identity: "身份", memory: "记忆", settings: "设置", turn: "当前任务" };
       if (!Object.hasOwn(targets, target) || !["suggest", "perform"].includes(mode)) return;
       if (mode === "suggest") text(suggestions, "div", `建议查看${targets[target]}（页面尚未接入）`, "chip");
@@ -133,6 +140,7 @@ export function boot() {
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
+    onReset: () => { timeline.reset(); suggestions.replaceChildren(); },
     onState: (status, error) => {
       state.textContent = status === "online" ? (presenceProblem || "已连接") : status === "connecting" ? "连接中…" : status === "send-error" ? "消息未送达，等待重试" : "离线，正在重连…";
       if (error) state.title = String(error.message || error);

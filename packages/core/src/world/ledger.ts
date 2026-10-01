@@ -5,7 +5,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
-import type { LegacyConversationMetadata, Message, PostDeliveryBodyV2, ResponseBody } from "../../../sdk/src/api";
+import { STREAM_RAW_PAGE_BYTES, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2 } from "../../../sdk/src/api";
+import { readSummaryPage, type StreamPageQuery } from "./stream-page";
 
 type Row = Record<string, unknown>;
 type NewMessage = Pick<Message, "from" | "to" | "kind" | "word" | "body"> & Pick<Partial<Message>, "reply_to" | "origin" | "turn">;
@@ -412,6 +413,15 @@ export class Ledger {
     const row = this.db.prepare("SELECT * FROM messages WHERE id=?").get(id) as Row | undefined;
     return row ? decode(row) : null;
   }
+  bySeq(seq: number): Message | null {
+    const row = this.db.prepare("SELECT * FROM messages WHERE seq=?").get(seq) as Row | undefined;
+    return row ? decode(row) : null;
+  }
+  seqPage(after: number, limit = 1000): number[] {
+    const rows = this.db.prepare("SELECT seq FROM messages WHERE seq>? ORDER BY seq LIMIT ?")
+      .iterate(after, Math.min(Math.max(limit, 1), 1000)) as Iterable<Row>;
+    return Array.from(rows, (row) => Number(row.seq));
+  }
 
   list(q: { after?: number; before?: number; limit?: number } = {}): Message[] {
     const limit = Math.min(Math.max(q.limit ?? 200, 1), 1000);
@@ -419,6 +429,54 @@ export class Ledger {
       ? this.db.prepare("SELECT * FROM messages WHERE seq<? ORDER BY seq DESC LIMIT ?").all(q.before, limit).reverse()
       : this.db.prepare("SELECT * FROM messages WHERE seq>? ORDER BY seq LIMIT ?").all(q.after ?? 0, limit);
     return (rows as Row[]).map(decode);
+  }
+
+  /** Preflight raw page byte cost before HTTP headers; one row at a time. */
+  rawPage(q: StreamPageQuery = {}): Message[] {
+    const limit = Math.min(Math.max(q.limit ?? 200, 1), 1000);
+    const descending = q.before !== undefined;
+    const bound = descending ? q.before! : q.after ?? 0;
+    const predicate = descending ? "seq<?" : "seq>?";
+    const order = descending ? "DESC" : "ASC";
+    let bodyBytes = 0;
+    for (const row of this.db.prepare(`SELECT length(CAST(body AS BLOB)) + length(CAST(id AS BLOB)) +
+      length(CAST("from" AS BLOB)) + coalesce(length(CAST("to" AS BLOB)),0) +
+      length(CAST(kind AS BLOB)) + length(CAST(word AS BLOB)) +
+      coalesce(length(CAST(reply_to AS BLOB)),0) + coalesce(length(CAST(origin AS BLOB)),0) +
+      coalesce(length(CAST(turn AS BLOB)),0) AS n FROM messages WHERE ${predicate} ORDER BY seq ${order} LIMIT ?`)
+      .iterate(bound, limit) as Iterable<Row>) {
+      bodyBytes += Number(row.n);
+      if (bodyBytes > STREAM_RAW_PAGE_BYTES) throw new RangeError("raw stream page exceeds 32 MiB");
+    }
+    const rows = this.db.prepare(descending
+      ? "SELECT * FROM messages WHERE seq<? ORDER BY seq DESC LIMIT ?"
+      : "SELECT * FROM messages WHERE seq>? ORDER BY seq LIMIT ?")
+      .iterate(bound, limit) as Iterable<Row>;
+    const page: Message[] = [];
+    let bytes = 0;
+    for (const row of rows) {
+      const message = decode(row);
+      bytes += Buffer.byteLength(JSON.stringify(message)) + 64;
+      if (bytes > STREAM_RAW_PAGE_BYTES) throw new RangeError("raw stream page exceeds 32 MiB");
+      page.push(message);
+    }
+    return descending ? page.reverse() : page;
+  }
+
+  rawPageWithEnd(q: StreamPageQuery = {}): { page: Message[]; end: StreamPageEndV2 } {
+    const page = this.rawPage(q);
+    if (!page.length) return { page, end: { has_more: false, first_seq: null, last_seq: null } };
+    const first_seq = page[0].seq;
+    const last_seq = page.at(-1)!.seq;
+    const more = q.before !== undefined
+      ? this.db.prepare("SELECT 1 FROM messages WHERE seq<? LIMIT 1").get(first_seq)
+      : this.db.prepare("SELECT 1 FROM messages WHERE seq>? LIMIT 1").get(last_seq);
+    return { page, end: { has_more: Boolean(more), first_seq, last_seq } };
+  }
+
+  /** Call inside postReadSnapshot when delivery states must share this page's watermark. */
+  summaryPage(q: StreamPageQuery = {}): { page: MessageSummaryV2[]; end: StreamPageEndV2 } {
+    return readSummaryPage(this.db, q);
   }
 
   /** Startup-only projection: never materialize unrelated message bodies or attachments. */

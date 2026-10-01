@@ -29,6 +29,7 @@ class MemoryPending {
 }
 const netWith = (options = {}) => new ScreenNet({ storage: storage(), pendingStore: new MemoryPending(), ...options });
 const message = (seq) => ({ seq, id: `m${seq}`, ts: seq, kind: "request", from: "person:owner", to: "agent:main", word: "say", body: { text: `text ${seq}` } });
+const summaryOf = (row) => { const { body, ...rest } = row; return { ...rest, summary: true, body_summary: body }; };
 
 test("SSE parser handles control and bounded ledger frames", async () => {
   assert.deepEqual(parseSse("event: screen.registered\ndata: {\"token\":\"a\"}"), { type: "screen.registered", id: "", data: '{"token":"a"}' });
@@ -47,6 +48,13 @@ test("SSE reader preserves CRLF and multibyte UTF-8 across single-byte chunks", 
   await readSse(new Response(stream), (frame) => frames.push(frame));
   assert.equal(frames.length, 1);
   assert.equal(JSON.parse(frames[0].data).text, "你好");
+});
+
+test("SSE frame limit counts UTF-8 bytes rather than string characters", async () => {
+  const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("你".repeat(5))); controller.close(); } });
+  await assert.rejects(() => readSse(new Response(stream), () => {}, undefined, 14), /stream frame too large/);
+  const complete = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(`data: ${"你".repeat(5)}\n\n`)); controller.close(); } });
+  await assert.rejects(() => readSse(new Response(complete), () => {}, undefined, 14), /stream frame too large/);
 });
 
 test("registration precedes queued send and same client_id survives retry", async () => {
@@ -95,7 +103,7 @@ test("local outbox stays unsent offline, keeps one client id across retry, then 
   assert.equal(sent[1].client_id, clientId);
   assert.equal(net.queue.length, 0);
   assert.deepEqual(net.outbox.map((item) => [item.status, item.id]), [["accepted", "m_accepted"]]);
-  net.frame({ type: "message", id: "17", data: JSON.stringify({ ...message(17), id: "m_accepted" }) }, net.generation);
+  net.frame({ type: "message.summary", id: "17", data: JSON.stringify(summaryOf({ ...message(17), id: "m_accepted" })) }, net.generation);
   assert.deepEqual(net.outbox, []);
   await tick();
   assert.deepEqual((await pendingStore.list("http://local.test", SCOPE)), []);
@@ -115,11 +123,19 @@ test("missing acknowledgement cannot drop a pending message", async () => {
 test("live cursor advances only from matching id/seq and is sent as Last-Event-ID", async () => {
   const net = netWith({ fetchImpl: async () => new Response(null) });
   net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
-  net.frame({ type: "message", id: "7", data: JSON.stringify(message(6)) }, net.generation);
+  net.frame({ type: "message.summary", id: "7", data: JSON.stringify(summaryOf(message(6))) }, net.generation);
   assert.equal(net.cursor, null);
-  net.frame({ type: "message", id: "7", data: JSON.stringify(message(7)) }, net.generation);
+  net.frame({ type: "message.summary", id: "7", data: JSON.stringify(summaryOf(message(7))) }, net.generation);
   assert.equal(net.cursor, 7);
   net.stop();
+});
+
+test("a no-id stream error fails closed without advancing the cursor", () => {
+  const net = netWith();
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  assert.throws(() => net.frame({ type: "stream.error", id: "", data: JSON.stringify({ code: "too_large" }) }, net.generation), /stream too_large/);
+  assert.equal(net.cursor, null);
+  assert.throws(() => net.frame({ type: "stream.error", id: "", data: JSON.stringify({ code: "failed", detail: "secret" }) }, net.generation), /invalid stream error frame/);
 });
 
 test("unregistered presence service HTTP 404 is not a successful heartbeat", async () => {
@@ -175,7 +191,7 @@ test("finite history applies delivery snapshot and say in one render, including 
   const released = { at_seq: 9, items: [{ message_id: offer.id, state: "released", version_seq: 9 }] };
   const renders = [];
   const timeline = new Timeline(null, (view) => renders.push(view.conversation.map((bubble) => bubble.text)));
-  const sse = (snapshot, rows) => `event: post.delivery.snapshot\ndata: ${JSON.stringify(snapshot)}\n\n${rows.map((row) => `id: ${row.seq}\ndata: ${JSON.stringify(row)}\n\n`).join("")}`;
+  const sse = (snapshot, rows) => `event: auth.scope\ndata: ${JSON.stringify({ auth_scope: SCOPE })}\n\nevent: post.delivery.snapshot\ndata: ${JSON.stringify(snapshot)}\n\n${rows.map((row) => `id: ${row.seq}\nevent: message.summary\ndata: ${JSON.stringify(summaryOf(row))}\n\n`).join("")}event: stream.page_end\ndata: ${JSON.stringify({ has_more: false, first_seq: rows[0]?.seq ?? null, last_seq: rows.at(-1)?.seq ?? null })}\n\n`;
   const net = netWith({ fetchImpl: async () => new Response(sse(held, [offer, message(3)])), onHistory: (rows, snapshots) => timeline.addMany(rows, snapshots) });
   await net.catchUp(net.generation, new AbortController().signal);
   assert.deepEqual(renders.at(-1), ["text 3"]);
@@ -183,6 +199,30 @@ test("finite history applies delivery snapshot and say in one render, including 
   timeline.net = { page: async () => ({ messages: [message(1)], snapshots: [released] }) };
   await timeline.older();
   assert.deepEqual(renders.at(-1), ["text 1", "Only after release", "text 3"]);
+});
+
+test("credential scope switch discards an old high-cursor page and refetches the new low-seq history", async () => {
+  const scopeB = `v1_${"c".repeat(43)}`;
+  const old = { ...message(100), body: { text: "old account" } };
+  const fresh = { ...message(2), body: { text: "new account" } };
+  const timeline = new Timeline(null);
+  timeline.add(summaryOf(old));
+  const urls = [];
+  const sse = (scope, rows) => `event: auth.scope\ndata: ${JSON.stringify({ auth_scope: scope })}\n\n${rows.map((row) => `id: ${row.seq}\nevent: message.summary\ndata: ${JSON.stringify(summaryOf(row))}\n\n`).join("")}event: stream.page_end\ndata: ${JSON.stringify({ has_more: false, first_seq: rows[0]?.seq ?? null, last_seq: rows.at(-1)?.seq ?? null })}\n\n`;
+  const net = netWith({ fetchImpl: async (url) => {
+    urls.push(url);
+    return new Response(url.includes("after=100") ? sse(scopeB, []) : sse(scopeB, [fresh]));
+  }, onReset: () => timeline.reset(), onHistory: (rows, snapshots) => timeline.addMany(rows, snapshots) });
+  net.currentScope = SCOPE;
+  net.cursor = 100;
+  net.bootstrapped = true;
+  await net.catchUp(net.generation, new AbortController().signal);
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], /after=100/);
+  assert.match(urls[1], /limit=200/);
+  assert.equal(net.currentScope, scopeB);
+  assert.equal(net.cursor, 2);
+  assert.deepEqual(timeline.view.conversation.map((bubble) => bubble.text), ["new account"]);
 });
 
 test("legacy sources and two screen labels remain visible as inert text", () => {
