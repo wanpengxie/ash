@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,6 +138,8 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
   await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
   const port = (model.address() as { port: number }).port;
   let running: Awaited<ReturnType<typeof startOwner>> | null = null;
+  let soulWatcher: ReturnType<typeof watch> | null = null;
+  const soulChanges: string[] = [];
   try {
     running = await startOwner({ stateDir: join(root, "state"), workspaces: { home }, listen: "127.0.0.1:0",
       agents: [{ id: "agent:main", runtime: "dsh" }], dsh: { root: install!, home: join(root, "dsh"), env: {
@@ -196,6 +198,7 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.match(JSON.stringify(readResult?.body), /NATIVE_READ_FIXTURE/);
     assert.equal(readResult?.turn, readCall.turn);
     const soulBefore = readFileSync(join(home, "SOUL.md"), "utf8");
+    soulWatcher = watch(join(home, "SOUL.md"), (kind) => soulChanges.push(kind));
     const writeResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "write soul directly" }, client_id: "dsh-native-write-probe" }) });
     assert.equal(writeResponse.status, 200);
@@ -207,6 +210,8 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     while (Date.now() < writeDeadline && !running.ledger.responseTo(writeCall.id)) await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(running.ledger.responseTo(writeCall.id)?.body.ok, false);
     assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), soulBefore);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(soulChanges, [], "native write caused no managed-file change event");
     const privateResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "read core private" }, client_id: "dsh-private-read-probe" }) });
     assert.equal(privateResponse.status, 200);
@@ -222,6 +227,7 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.equal(running.ledger.responseTo(privateCall.id)?.body.ok, false);
     assert.equal(readFileSync(join(root, "state", "private-fixture.txt"), "utf8"), "PRIVATE_CORE_SECRET\n");
   } finally {
+    soulWatcher?.close();
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));
     rmSync(root, { recursive: true, force: true });

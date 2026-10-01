@@ -18,7 +18,7 @@ export interface DoorOptions {
   tools: ToolRuntime;
   members: WorldMembers;
   router: WorldRouter;
-  /** The ordinary workspace; native file tools may not write outside it. */
+  /** The ordinary workspace; native file tools may not access paths outside it. */
   workspace: string;
   /** The directory containing the self-owned files. It may equal workspace. */
   managedRoot: string;
