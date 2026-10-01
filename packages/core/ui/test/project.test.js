@@ -77,6 +77,19 @@ test("clock set/cancel responses do not synthesize a timer without list snapshot
   assert.deepEqual(state.timers, []);
 });
 
+test("pure-code work steps are visible only as bounded labels and states under their exact run turn", () => {
+  const state = replay([
+    { from: "service:work", kind: "event", word: "run.start", turn: "r_one", body: { run: "r_one", flow: "memory", trigger: "manual" } },
+    { from: "service:work", kind: "event", word: "run.step", turn: "r_one", body: { run: "r_one", step: "window.collect", state: "started" } },
+    { from: "service:work", kind: "event", word: "run.step", turn: "r_other", body: { run: "r_one", step: "wrong.turn", state: "done", raw: "SECRET" } },
+    { from: "service:work", kind: "event", word: "run.step", turn: "r_one", body: { run: "r_one", step: "window.collect", state: "done" } },
+    { from: "service:work", kind: "event", word: "run.end", turn: "r_one", body: { run: "r_one", outcome: "done", detail: "completed" } },
+  ]);
+  assert.deepEqual(state.turns.r_one.steps.map((step) => ({ label: step.label, state: step.state })), [{ label: "window.collect", state: "done" }]);
+  assert.equal(JSON.stringify(state).includes("SECRET"), false);
+  assert.equal(state.turns.r_one.outcome, "done");
+});
+
 test("gate and background messages to the owner project, with ask replies to their original asker", () => {
   const state = replay([
     { id: "gate-ask", from: "service:gate", to: "person:owner", kind: "request", word: "ask", body: { title: "Allow?", options: [{ id: "deny", label: "No" }], expires_at: 9999 } },
