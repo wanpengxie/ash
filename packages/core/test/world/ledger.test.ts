@@ -110,6 +110,29 @@ test("append and stable-transport retry claim commit atomically; response settle
   } finally { reopened.close(); }
 });
 
+test("response and retry claim roll back together when retry insertion fails", async () => {
+  const file = isolated();
+  const ledger = await Ledger.open(file);
+  try {
+    const request = ledger.append({ from: "agent:main", to: "person:owner", kind: "request", word: "ask", body: { title: "Synthetic" } }).message;
+    const control = new DatabaseSync(file);
+    try { control.exec("CREATE TRIGGER fail_response_retry BEFORE INSERT ON client_retries WHEN NEW.client_id='approval-fail' BEGIN SELECT RAISE(ABORT, 'synthetic retry insert failure'); END"); }
+    finally { control.close(); }
+    const retry = { transportPrincipal: "owner-screen", clientId: "approval-fail" };
+    const body = { ok: true as const, result: { choice: "once" } };
+    assert.throws(() => ledger.settle(request.id, "person:owner", body, undefined, retry), /synthetic retry insert failure/);
+    assert.equal(ledger.responseTo(request.id), null, "the response must not survive without its retry claim");
+    const remove = new DatabaseSync(file);
+    try { remove.exec("DROP TRIGGER fail_response_retry"); }
+    finally { remove.close(); }
+    const response = ledger.settle(request.id, "person:owner", body, undefined, retry);
+    assert.equal(response.settled, true);
+    assert.equal(ledger.responseRetry(retry, { from: "person:owner", to: "agent:main", kind: "response", word: "ask", body, reply_to: request.id })?.id, response.message.id);
+    assert.equal(ledger.settle(request.id, "person:owner", body, undefined, retry).message.id, response.message.id);
+    assert.equal(ledger.list().filter((message) => message.reply_to === request.id).length, 1);
+  } finally { ledger.close(); }
+});
+
 for (const stage of ["before-transaction", "after-schema", "after-first-row", "halfway", "before-commit", "after-commit"] as MigrationStage[]) {
   test(`SIGKILL at ${stage} recovers without missing or duplicate messages`, async () => {
     const file = isolated();

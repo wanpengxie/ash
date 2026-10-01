@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type JsonSchema } from "../src/api";
+import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type JsonSchema, type SendRequestV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
@@ -24,11 +24,17 @@ function example(schema: JsonSchema): unknown {
   }
 }
 
+test("response send contract carries a stable client id for acknowledgement-loss retries", () => {
+  const first: SendRequestV2 = { to: "agent:main", kind: "response", word: "ask", reply_to: "m_request", body: { ok: true, result: { choice: "once" } }, client_id: "approval-1" };
+  const retry: SendRequestV2 = { ...first, body: { ok: true, result: { choice: "once" } } };
+  assert.deepEqual(retry, first);
+});
+
 test("v2 is additive to the existing client protocol", () => {
   assert.equal(API_VERSION, "ash-api/1");
   assert.equal(API_VERSION_V2, "ash-api/2");
   assert.equal(SCREEN_REGISTRATION_EVENT, "screen.registered");
-  assert.equal(SCREEN_TOKEN_HEADER, "X-Ash-Screen");
+  assert.equal(SCREEN_TOKEN_HEADER, "Ash-Screen");
   assert.equal(SCREEN_REGISTRATION_TTL_MS, 86_400_000);
   assert.deepEqual(Object.keys(HOST_ROUTES_V2).sort(), ["alarm", "call", "hide", "key", "manifest", "present", "restart", "sign"]);
   assert.equal(RUNTIME_CONTRACT_V2.publicMember, "agent:main");

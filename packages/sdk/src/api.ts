@@ -402,13 +402,23 @@ export interface WorkerOutputMap {
 export type WorkerRequest<N extends WorkerName = WorkerName> = { input: WorkerInputMap[N]; run: string };
 export type WorkerResult<N extends WorkerName = WorkerName> = WorkerOutputMap[N] | NoChange;
 
-export interface SendRequestV2 { to: string | null; kind: Kind; word: string; body: Record<string, unknown>; reply_to?: string; wait?: boolean; client_id?: string }
+export interface SendRequestV2 {
+  to: string | null;
+  kind: Kind;
+  word: string;
+  body: Record<string, unknown>;
+  reply_to?: string;
+  wait?: boolean;
+  /** Stable per authenticated transport. For responses, retry the identical envelope after a lost acknowledgement. */
+  client_id?: string;
+}
 export interface SendResultV2 { id: string; seq: number; reply?: Message }
 export interface StreamQueryV2 { after?: number; before?: number; limit?: number; follow?: boolean; screen?: string; label?: string }
 /** A live stream control frame, not a ledger message or cursor-bearing SSE event. */
 export interface ScreenRegistration { screen: string; token: string; label: string }
 export const SCREEN_REGISTRATION_EVENT = "screen.registered" as const;
-export const SCREEN_TOKEN_HEADER = "X-Ash-Screen" as const;
+/** Browser proof survives the gateway's reserved x-ash-* header stripping. */
+export const SCREEN_TOKEN_HEADER = "Ash-Screen" as const;
 export const SCREEN_REGISTRATION_TTL_MS = 24 * 60 * 60 * 1000;
 /** Server-owned authentication facts; never accepted from a request body. */
 export interface AuthenticatedCallerContext {
