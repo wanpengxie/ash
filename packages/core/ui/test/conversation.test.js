@@ -64,6 +64,18 @@ test("option card sends one selected action, locks locally, and shows authoritat
   assert.equal(card.children[0].children.find((node) => node.tag === "button").disabled, true);
 });
 
+test("custom option uses the reserved id only when the card allows it", async () => {
+  const selected = [];
+  const entry = { id: "card-2", type: "card", card: { type: "options", options: [{ id: "yes", text: "Yes" }], allow_custom: true }, locked: false };
+  const card = draw([entry], { onSelect: async (_item, option) => selected.push(option) });
+  const input = card.children[0].children.find((node) => node.tag === "input");
+  input.value = "  Another answer  ";
+  const send = card.children[0].children.filter((node) => node.tag === "button").at(-1);
+  await send.listeners.click();
+  assert.deepEqual(selected, [{ id: "__custom", text: "Another answer" }]);
+  assert.equal(draw([{ ...entry, card: { ...entry.card, allow_custom: false } }]).children[0].children.some((node) => node.tag === "input"), false);
+});
+
 test("file, image, and link cards open safe references and approval buttons expire", async () => {
   const files = draw([{ type: "card", card: { type: "file", workspace: "home", path: "a.pdf", name: "a.pdf" } },
     { type: "card", card: { type: "image", workspace: "home", path: "a.png", alt: "a" } },
@@ -82,4 +94,13 @@ test("file, image, and link cards open safe references and approval buttons expi
   rendered = draw([{ type: "ask", ask: { ...ask, expires_at: Date.now() - 1 } }], { onAnswerAsk: async () => choices.push("unexpected") });
   assert.ok(rendered.children[0].children.filter((node) => node.tag === "button").every((node) => node.disabled));
   assert.match(rendered.textContent, /已过期/);
+});
+
+test("permission card delegates one owner tap to the native settings action", () => {
+  const opened = [];
+  const rendered = draw([{ type: "card", card: { type: "permission", permission: "calendar", why: "Read calendar" } }],
+    { onPermission: (permission) => opened.push(permission) });
+  const button = rendered.children[0].children.find((node) => node.tag === "button");
+  button.listeners.click();
+  assert.deepEqual(opened, ["calendar"]);
 });

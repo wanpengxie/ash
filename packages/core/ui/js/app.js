@@ -135,6 +135,10 @@ export function boot({ uiTransport } = {}) {
   const cardActions = {
     optionPending,
     askIntents,
+    onPermission: /\bAshApp\//.test(navigator.userAgent) ? (permission) => {
+      if (!/^[a-z][a-z0-9_]{0,47}$/.test(permission)) return;
+      location.href = `ash://permission/${permission}`;
+    } : undefined,
     onSelect: async (item, option) => {
       if (item.locked || optionPending.has(item.id)) return;
       optionPending.add(item.id);

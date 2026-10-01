@@ -28,6 +28,24 @@ export function renderCard(parent, item, { onSelect, onPermission, optionPending
         catch { button.disabled = false; }
       });
     }
+    if (card.allow_custom) {
+      const custom = document.createElement("input");
+      custom.type = "text";
+      custom.placeholder = "自己说…";
+      custom.className = "card-custom";
+      custom.disabled = item.locked || optionPending?.has(item.id) || typeof onSelect !== "function";
+      root.append(custom);
+      const send = text(root, "button", "发送", "btn gray");
+      send.type = "button";
+      send.disabled = custom.disabled;
+      send.addEventListener("click", async () => {
+        const value = custom.value.trim();
+        if (!value || send.disabled) return;
+        send.disabled = true;
+        try { await onSelect(item, { id: "__custom", text: value }); }
+        catch { send.disabled = false; }
+      });
+    }
     if (item.locked) text(root, "small", "已选择");
     return root;
   }

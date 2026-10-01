@@ -31,6 +31,7 @@ import ai.ash.host.CoreEndpoint
 import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.Paths
+import ai.ash.host.Permissions
 
 /**
  * Opening the app opens Ash: the ash UI (served by ash core on loopback) in a WebView. While
@@ -69,6 +70,10 @@ class HomeActivity : Activity() {
                 val u = req.url
                 if (u.scheme == "ash" && u.host == "console") {
                     startActivity(Intent(this@HomeActivity, ConsoleActivity::class.java))
+                    return true
+                }
+                if (u.scheme == "ash" && u.host == "permission") {
+                    Permissions.all.find { it.key == u.pathSegments.singleOrNull() }?.open(this@HomeActivity)
                     return true
                 }
                 if (u.host == "127.0.0.1" || u.host == "localhost") return false
