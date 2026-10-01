@@ -22,6 +22,18 @@ async function until(check, label, timeout = 45_000) {
   throw new Error(`timed out: ${label}`);
 }
 
+let sqliteBusyRetries = 0;
+const readSql = (query, label) => until(() => {
+  try { return query(); }
+  catch (error) {
+    // The disposable owner is concurrently committing to the same WAL. Retry
+    // only SQLite's transient busy/locked conditions within until's deadline.
+    if (error?.code !== "ERR_SQLITE_ERROR" || ![5, 6].includes(error.errcode)) throw error;
+    sqliteBusyRetries++;
+    return null;
+  }
+}, label);
+
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 assert.equal(targets.length, 1, "debug port must expose exactly one isolated page");
 const target = targets[0];
@@ -79,7 +91,8 @@ try {
   assert.ok(originalBytes > 1_000_000);
 
   db = new DatabaseSync(join(directory, "ash.db"), { readOnly: true });
-  const row = await until(() => db.prepare("SELECT id,body FROM messages WHERE \"from\"='person:owner' AND word='say' AND json_extract(body,'$.text')=? ORDER BY seq DESC LIMIT 1").get(marker), "durable attachment message");
+  db.exec("PRAGMA busy_timeout = 250");
+  const row = await readSql(() => db.prepare("SELECT id,body FROM messages WHERE \"from\"='person:owner' AND word='say' AND json_extract(body,'$.text')=? ORDER BY seq DESC LIMIT 1").get(marker), "durable attachment message");
   const body = JSON.parse(row.body);
   assert.equal(body.attachments.length, 2);
   const [image, file] = body.attachments;
@@ -101,10 +114,10 @@ try {
   await call("Network.setBlockedURLs", { urls: [] });
   await until(() => evaluate("document.querySelector('#connection')?.dataset.transport === 'online'"), "stream retry after unblock");
   await until(() => evaluate(`[...document.querySelectorAll('#log .msg.me')].filter(x=>x.textContent.includes(${JSON.stringify(marker)})).length===1`), "replayed attachment bubble once");
-  assert.equal(db.prepare("SELECT count(*) AS n FROM messages WHERE id=?").get(row.id).n, 1);
+  assert.equal((await readSql(() => db.prepare("SELECT count(*) AS n FROM messages WHERE id=?").get(row.id), "unique durable message")).n, 1);
   console.log(JSON.stringify({ result: "PASS", browser: "isolated Android WebView", imageOriginalBytes: originalBytes,
     imageStoredBytes: Buffer.from(image.data, "base64").length, previewDimensions: [2048, 512], fileBytesPreserved: true,
-    explicitStreamFailureIndicator: true, reconnectDeduplicated: true }));
+    explicitStreamFailureIndicator: true, reconnectDeduplicated: true, sqliteBusyRetries }));
 } finally {
   db?.close();
   socket.close();

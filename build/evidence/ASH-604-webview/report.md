@@ -18,6 +18,8 @@ The script reads only that disposable database, posts synthetic files through th
 - With `/api/stream` explicitly blocked and the page reloaded, the connection indicator became offline. Unblocking allowed automatic reconnect, and the owner attachment bubble appeared once after replay; the database contained one copy of that message id.
 - The test package, its process, its CDP forward, its 14762 reverse, the local server, the temporary database, and the generated APK were removed. The existing app process and its 4700/4710 listeners remained in place.
 
+Independent replay of the first candidate found that a live SQLite writer could make the script's read-only database query fail immediately with `SQLITE_BUSY` (errcode 5). This was a probe read race, not a demonstrated delivery failure. The probe now sets a 250 ms SQLite busy timeout and retries only busy/locked reads within a 45-second deadline; other SQL errors still fail immediately. The corrected candidate requires another independent device replay before acceptance.
+
 ## Limits
 
 The test creates `File` objects in page JavaScript; the isolated APK has no native file chooser implementation. Blocking a new stream request and reloading does not prove immediate detection of a silent failure on an already-open SSE connection. The loopback relay presents a local owner context, not a paired remote principal. None of these untested cases is counted as complete card acceptance.
