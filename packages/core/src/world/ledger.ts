@@ -6,6 +6,8 @@ import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync } from "node:fs"
 import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { STREAM_RAW_PAGE_BYTES, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2 } from "../../../sdk/src/api";
+import { matchesSchema } from "../../../sdk/src/schema";
+import { wordContract } from "../../../sdk/src/words";
 import { readSummaryPage, type StreamPageQuery } from "./stream-page";
 
 type Row = Record<string, unknown>;
@@ -27,6 +29,23 @@ export interface RequestContextSnapshot {
 }
 export interface RequestTracking { deadlineAt: number; context: RequestContextSnapshot }
 export interface TrackedRequest { message: Message; phase: RequestPhase; deadlineAt: number; context: RequestContextSnapshot }
+export interface GateCaseStart {
+  /** Stable authenticated identity, not a screen registration or bearer token. */
+  subject: string;
+  risk: "outward" | "structure";
+  contractFingerprint: string;
+  askBody: Record<string, unknown>;
+  expiresAt: number;
+}
+export interface GateCaseRecord {
+  requestId: string;
+  askId: string;
+  subject: string;
+  risk: "outward" | "structure";
+  contractFingerprint: string;
+  expiresAt: number;
+  decision: "waiting" | "allowed" | "denied" | "timeout" | "cancelled";
+}
 
 const marker = "v2:messages:migrated";
 const idFromSeq = (seq: number) => `m_${createHash("sha256").update(`v10:${seq}`).digest("base64url").slice(0, 12)}`;
@@ -218,6 +237,17 @@ export class Ledger {
         context TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
       db.exec(`CREATE TABLE IF NOT EXISTS admin_pause_claims (
         by_message_id TEXT PRIMARY KEY, pause_request_id TEXT NOT NULL UNIQUE);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS gate_cases (
+        request_id TEXT PRIMARY KEY, ask_id TEXT NOT NULL UNIQUE, subject TEXT NOT NULL,
+        risk TEXT NOT NULL, contract_fingerprint TEXT NOT NULL, expires_at INTEGER NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('waiting','allowed','denied','timeout','cancelled')),
+        decided_at INTEGER);
+        CREATE INDEX IF NOT EXISTS gate_cases_ask ON gate_cases(ask_id);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS gate_history (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, request_id TEXT NOT NULL,
+        ask_id TEXT, subject TEXT NOT NULL, target TEXT NOT NULL, word TEXT NOT NULL,
+        risk TEXT NOT NULL, decision TEXT NOT NULL, at INTEGER NOT NULL, rule_id TEXT);
+        CREATE INDEX IF NOT EXISTS gate_history_request ON gate_history(request_id);`);
       return new Ledger(db, stats);
     } catch (error) { db.close(); throw error; }
   }
@@ -431,6 +461,103 @@ export class Ledger {
     if (!((from === "accepted" && (to === "gate_waiting" || to === "dispatching")) || (from === "gate_waiting" && to === "dispatching"))) throw new TypeError("invalid request phase transition");
     const updated = this.db.prepare("UPDATE request_state SET phase=?,updated_at=? WHERE request_id=? AND phase=?").run(to, Date.now(), requestId, from);
     return Number(updated.changes) === 1;
+  }
+
+  /** Atomically enter the gate and create its single owner ask and audit event. */
+  beginGate(requestId: string, input: GateCaseStart): { ask: Message; event: Message } | null {
+    if (!input.subject || !/^[a-f0-9]{64}$/.test(input.contractFingerprint) ||
+      !["outward", "structure"].includes(input.risk) || !Number.isSafeInteger(input.expiresAt) ||
+      input.expiresAt < 0 || !matchesSchema(wordContract("person:owner", "ask")!.input_schema!,
+        { ...input.askBody, expires_at: input.expiresAt })) throw new TypeError("invalid gate case");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const tracked = this.db.prepare(`SELECT m.*,s.phase,s.deadline_at FROM messages m JOIN request_state s ON s.request_id=m.id
+        WHERE m.id=?`).get(requestId) as Row | undefined;
+      if (!tracked || tracked.kind !== "request" || tracked.phase !== "accepted" || !tracked.to ||
+        input.expiresAt > Number(tracked.deadline_at)) { this.db.exec("COMMIT"); return null; }
+      if (this.db.prepare("SELECT 1 FROM gate_cases WHERE request_id=?").get(requestId)) throw new TypeError("duplicate gate case");
+      const at = Date.now();
+      const askId = newId();
+      const askBody = { ...input.askBody, expires_at: input.expiresAt };
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(askId, at, "service:gate", "person:owner", "request", "ask", JSON.stringify(askBody), null, null, tracked.turn === null ? null : String(tracked.turn));
+      this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)")
+        .run(askId, "accepted", input.expiresAt, JSON.stringify({ member: "service:gate", local: true, remote: false, ownerProxy: false, transportPrincipal: "service:gate" }), at);
+      this.db.prepare(`INSERT INTO gate_cases(request_id,ask_id,subject,risk,contract_fingerprint,expires_at,decision)
+        VALUES(?,?,?,?,?,?,?)`).run(requestId, askId, input.subject, input.risk, input.contractFingerprint, input.expiresAt, "waiting");
+      const changed = this.db.prepare("UPDATE request_state SET phase='gate_waiting',updated_at=? WHERE request_id=? AND phase='accepted'").run(at, requestId);
+      if (Number(changed.changes) !== 1) throw new TypeError("gate phase changed");
+      const eventId = newId();
+      const body = { request_id: requestId, ask_id: askId, risk: input.risk, to: String(tracked.to), word: String(tracked.word), expires_at: input.expiresAt };
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(eventId, at, "service:gate", null, "event", "gate.asked", JSON.stringify(body), null, null, tracked.turn === null ? null : String(tracked.turn));
+      this.db.exec("COMMIT");
+      return { ask: this.byId(askId)!, event: this.byId(eventId)! };
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  gateCase(requestId: string): GateCaseRecord | null {
+    const row = this.db.prepare("SELECT * FROM gate_cases WHERE request_id=?").get(requestId) as Row | undefined;
+    if (!row) return null;
+    return { requestId: String(row.request_id), askId: String(row.ask_id), subject: String(row.subject),
+      risk: row.risk as GateCaseRecord["risk"], contractFingerprint: String(row.contract_fingerprint),
+      expiresAt: Number(row.expires_at), decision: row.decision as GateCaseRecord["decision"] };
+  }
+
+  gateCaseByAsk(askId: string): GateCaseRecord | null {
+    const row = this.db.prepare("SELECT request_id FROM gate_cases WHERE ask_id=?").get(askId) as Row | undefined;
+    return row ? this.gateCase(String(row.request_id)) : null;
+  }
+
+  /** Trusted answer/deadline cause is supplied by the router, never inferred from choice=deny. */
+  settleGateAsk(askId: string, choice: "once" | "deny", cause: "answer" | "deadline",
+    origin?: Message["origin"], retry?: ClientRetry): { askResponse: Message; event: Message; originalResponse: Message | null } | null {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare(`SELECT c.*,s.phase AS request_phase,m."to" AS target,m.word AS request_word,
+        a."from" AS ask_from,a."to" AS ask_to,a.word AS ask_word
+        FROM gate_cases c JOIN request_state s ON s.request_id=c.request_id JOIN messages m ON m.id=c.request_id
+        JOIN messages a ON a.id=c.ask_id WHERE c.ask_id=?`).get(askId) as Row | undefined;
+      if (!row || row.decision !== "waiting" || row.request_phase !== "gate_waiting" || row.ask_from !== "service:gate" ||
+        row.ask_to !== "person:owner" || row.ask_word !== "ask") { this.db.exec("COMMIT"); return null; }
+      const at = Date.now();
+      if (cause === "answer" && at >= Number(row.expires_at)) throw new TypeError("gate ask expired before answer");
+      const timedOut = cause === "deadline";
+      const decision = timedOut ? "timeout" : choice === "deny" ? "denied" : "allowed";
+      const askBody: ResponseBody = { ok: true, result: { choice: timedOut ? "deny" : choice } };
+      const askResponseId = newId();
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(askResponseId, at, "person:owner", "service:gate", "response", "ask", JSON.stringify(askBody), askId,
+          origin ? JSON.stringify(origin) : null, null);
+      this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=? AND phase!='settled'").run(at, askId);
+      if (retry) this.db.prepare("INSERT INTO client_retries(scope_hash,client_id,payload_hash,message_id) VALUES(?,?,?,?)")
+        .run(digest(retry.transportPrincipal), retry.clientId,
+          retryPayload({ from: "person:owner", to: "service:gate", kind: "response", word: "ask", body: askBody, reply_to: askId }), askResponseId);
+      this.db.prepare("UPDATE gate_cases SET decision=?,decided_at=? WHERE ask_id=? AND decision='waiting'").run(decision, at, askId);
+      const historyDecision = decision === "allowed" ? "once" : decision === "timeout" ? "timeout" : "deny";
+      this.db.prepare(`INSERT INTO gate_history(id,request_id,ask_id,subject,target,word,risk,decision,at)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(newId(), row.request_id as string, askId, row.subject as string,
+        row.target as string, row.request_word as string, row.risk as string, historyDecision, at);
+      const eventId = newId();
+      const eventWord = decision === "allowed" ? "gate.passed" : "gate.denied";
+      const eventBody = decision === "allowed"
+        ? { request_id: row.request_id, by: "answer", ask_id: askId }
+        : { request_id: row.request_id, by: decision === "timeout" ? "timeout" : "answer", ask_id: askId };
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(eventId, at, "service:gate", null, "event", eventWord, JSON.stringify(eventBody), null, null, null);
+      let originalResponseId: string | null = null;
+      if (decision !== "allowed") {
+        originalResponseId = newId();
+        const body: ResponseBody = { ok: false, error: { code: "denied", message: decision === "timeout" ? "approval expired" : "owner denied request" } };
+        this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(originalResponseId, at, row.target as string, this.byId(String(row.request_id))!.from, "response", row.request_word as string,
+            JSON.stringify(body), row.request_id as string, null, null);
+        this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=? AND phase='gate_waiting'").run(at, row.request_id as string);
+      }
+      this.db.exec("COMMIT");
+      return { askResponse: this.byId(askResponseId)!, event: this.byId(eventId)!,
+        originalResponse: originalResponseId ? this.byId(originalResponseId)! : null };
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
   byId(id: string): Message | null {
