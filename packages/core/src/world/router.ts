@@ -679,9 +679,10 @@ export class WorldRouter {
         pending.phase = "dispatching";
       }
       const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered, caller: Object.freeze(detached(pending.context)) });
+      if (pending.settled) return; // a cancellation/timeout already published its sole terminal
       const committed = this.ledger.responseTo(request.id);
       if (committed) { this.adoptGateTerminal(pending, committed, false); this.publish(committed); return; }
-      if (pending.settled || result === undefined) return;
+      if (result === undefined) return;
       if (result.ok && endpoint.validateResult && !endpoint.validateResult(result.result)) { this.finish(pending, errors("failed", "handler returned invalid result"), request.to!, false); return; }
       this.finish(pending, result, request.to!, false);
     } catch {
