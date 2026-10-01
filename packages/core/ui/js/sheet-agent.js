@@ -3,15 +3,13 @@ import { IdentitySheet } from "./sheet-identity.js";
 import { MemorySheet } from "./sheet-memory.js";
 import { renderActivitySheet } from "./sheet-activity.js";
 import { normalizeClockList, renderUpcomingSheet } from "./sheet-upcoming.js";
+import { answerGateAsk, approvalSections, renderApprovalsSheet } from "./sheet-approvals.js";
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 
 const TABS = Object.freeze([
   ["activity", "活动"], ["upcoming", "计划"], ["approvals", "审批"],
   ["identity", "身份"], ["memory", "记忆"],
 ]);
-const UNAVAILABLE = Object.freeze({
-  approvals: "审批服务尚未接入；此页不能确认操作或管理规则。",
-});
 const rawRoute = /\b(?:agent|worker|device|service|person):[A-Za-z0-9_-]+\b|\b[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+\b/i;
 
 /** Only ledger-derived, human-facing status steps enter the activity page. */
@@ -81,17 +79,19 @@ const node = (tag, label) => {
 
 /** Separate from Settings: local admin and preference drafts are never reparented. */
 export class AgentSheet {
-  constructor(root, net, { getView = () => null,
+  constructor(root, net, { getView = () => null, getLedgerMessage = () => null,
     confirmDiscard = () => globalThis.confirm?.("放弃未保存或未确认的修改并关闭人物页？") === true,
     confirmRollback = ({ path, to_ts }) => globalThis.confirm?.(`确认将 ${path} 回滚到 ${new Date(to_ts).toLocaleString()} 的快照？`) === true,
     idFactory = () => crypto.randomUUID() } = {}) {
     this.root = root;
     this.net = net;
     this.getView = getView;
+    this.getLedgerMessage = getLedgerMessage;
     this.confirmDiscard = confirmDiscard;
     this.confirmRollback = confirmRollback;
     this.idFactory = idFactory;
     this.cancelIntents = new Map();
+    this.answerIntents = new Map();
     this.tabs = root.querySelector("#agentTabs");
     this.panel = root.querySelector("#agentPanel");
     this.session = null;
@@ -129,6 +129,8 @@ export class AgentSheet {
   reset() {
     this.loadEpoch++;
     this.cancelIntents.clear();
+    this.answerIntents.clear();
+    this.approvalStatus = "";
     this.activeTab = null;
     this.identity?.dispose();
     this.memory?.dispose();
@@ -148,6 +150,43 @@ export class AgentSheet {
 
   update() {
     if (this.activeTab === "activity" && this.current()) this.renderActivity();
+    if (this.activeTab === "approvals" && this.current()) this.renderApprovals();
+  }
+
+  renderApprovals() {
+    const section = this.panels.get("approvals");
+    if (!section || !this.current()) return;
+    const binding = this.session;
+    const epoch = this.loadEpoch;
+    renderApprovalsSheet(section, this.getView(), { answerState: this.answerIntents,
+      onAnswer: (ask, choice) => this.answerApproval(ask, choice, binding, epoch) });
+    if (this.approvalStatus) section.prepend(node("p", this.approvalStatus));
+  }
+
+  async answerApproval(ask, choice, binding, epoch) {
+    if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+    const fresh = approvalSections(this.getView()).pending.find((item) => item.id === ask.id);
+    if (!fresh || fresh.seq !== ask.seq || !fresh.options.some((option) => option.id === choice)) return;
+    let intent = this.answerIntents.get(ask.id);
+    if (intent && (intent.choice !== choice || intent.status === "pending" || intent.status === "confirmed" || intent.status === "rejected")) return;
+    if (!intent) {
+      intent = { choice, clientId: this.idFactory(), status: "pending" };
+      this.answerIntents.set(ask.id, intent);
+    } else intent.status = "pending";
+    this.approvalStatus = "";
+    this.renderApprovals();
+    try {
+      await answerGateAsk(this.net, () => this.current(binding) && this.activeTab === "approvals" && epoch === this.loadEpoch,
+        fresh, choice, intent.clientId, (id) => this.getLedgerMessage(id));
+      if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+      intent.status = "confirmed";
+      this.approvalStatus = "回答已在记录中确认；这不代表外部操作已经完成。";
+    } catch (error) {
+      if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+      intent.status = /无权|被拒绝|已失效|不可用/.test(error?.message || "") ? "rejected" : "uncertain";
+      this.approvalStatus = error instanceof Error ? error.message : "回答结果未知；只能原样重试。";
+    }
+    this.renderApprovals();
   }
 
   renderActivity() {
@@ -204,15 +243,12 @@ export class AgentSheet {
     for (const [name, section] of this.panels) section.hidden = name !== key;
     for (const button of this.tabs.children) button.setAttribute("aria-selected", String(button.dataset.tab === key));
     const section = this.panels.get(key);
-    if (Object.hasOwn(UNAVAILABLE, key)) {
-      section.replaceChildren(node("p", UNAVAILABLE[key]));
-      return;
-    }
     if (!this.current()) {
       section.replaceChildren(node("p", "屏幕未连接或身份已变化；请重新连接后查看。"));
       return;
     }
     if (key === "activity") { this.renderActivity(); return; }
+    if (key === "approvals") { this.renderApprovals(); return; }
     if (key === "upcoming") {
       section.replaceChildren(node("p", "正在读取时钟计划…"));
       const binding = this.session;

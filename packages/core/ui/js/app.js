@@ -175,7 +175,8 @@ export function boot({ uiTransport } = {}) {
     document.querySelector("#agentSheetHeader h2").textContent = name;
   });
   settings = new SettingsControls(document.querySelector("#panel"), net);
-  agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view });
+  agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view,
+    getLedgerMessage: (id) => timeline.byId.get(id) });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
