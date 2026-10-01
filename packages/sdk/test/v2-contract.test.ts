@@ -119,6 +119,27 @@ test("normal say inputs reject migration-only legacy provenance", () => {
   assert.ok(!matchesSchema(outbound, { text: "hello", kind: "reply", legacy: oldMarker }));
 });
 
+test("agent say allows attachment-only input but never an empty message", () => {
+  const inbound = wordContract("agent:main", "say")!.input_schema!;
+  const outbound = wordContract("person:owner", "say")!.input_schema!;
+  const file = { name: "notes.txt", mime_type: "text/plain", data: "eA==" };
+  for (const body of [
+    { text: "hello" },
+    { text: "hello", attachments: [] },
+    { text: "hello", attachments: [file], in_reply_to: "m1", option_id: "choice" },
+    { text: "", attachments: [file] },
+  ]) assert.ok(matchesSchema(inbound, body), JSON.stringify(body));
+  for (const body of [
+    {}, { text: "" }, { text: "", attachments: [] },
+    { text: "", attachments: [{}] },
+    { text: "", attachments: [{ ...file, data: "" }] },
+    { text: 1, attachments: [file] },
+    { attachments: [file] },
+    { text: "", attachments: [file], legacy: { seq: 1 } },
+  ]) assert.ok(!matchesSchema(inbound, body), JSON.stringify(body));
+  assert.ok(!matchesSchema(outbound, { text: "", kind: "reply", attachments: [file] }));
+});
+
 test("card variants and dynamic device descriptions reject malformed contracts", () => {
   assert.ok(matchesSchema(CARD_SCHEMA, { type: "options", options: [{ id: "yes", text: "Yes" }] }));
   assert.ok(matchesSchema(CARD_SCHEMA, { type: "file", workspace: "w", path: "p", name: "n", mime_type: "text/plain", size: 0 }));

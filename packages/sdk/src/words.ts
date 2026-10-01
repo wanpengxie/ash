@@ -15,6 +15,8 @@ const choice = (...values: string[]): JsonSchema => ({ type: "string", enum: val
 const id = nonempty;
 const empty = obj();
 const accepted = obj({ accepted: bool }, ["accepted"]);
+const attachmentInput = obj({ name: nonempty, mime_type: nonempty, data: nonempty }, ["name", "mime_type", "data"]);
+const sayExtras = { attachments: array(attachmentInput), in_reply_to: id, option_id: id };
 const askChoice = choice("once", "always", "deny");
 const askOption = obj({ id: askChoice, label: nonempty }, ["id", "label"]);
 const origin = obj({ screen: nonempty, label: str }, ["screen", "label"]);
@@ -63,7 +65,10 @@ function add(member: string, word: string, kind: "request" | "event", input_sche
 }
 
 // Main agent: a queued conversation and a separately driven secondary session.
-add("agent:main", "say", "request", obj({ text: nonempty, attachments: array(obj({ name: nonempty, mime_type: nonempty, data: nonempty }, ["name", "mime_type", "data"])), in_reply_to: id, option_id: id }, ["text"]), accepted, { label: "Reading your message", description: "Use to speak to the agent; accepted immediately and queued." });
+add("agent:main", "say", "request", { oneOf: [
+  obj({ text: nonempty, ...sayExtras }, ["text"]),
+  obj({ text: { const: "" }, attachments: { type: "array", items: attachmentInput, minItems: 1 }, in_reply_to: id, option_id: id }, ["text", "attachments"]),
+] }, accepted, { label: "Reading your message", description: "Use to speak to the agent or send attachments; accepted immediately and queued." });
 add("agent:main", "cancel_turn", "request", obj({ reason: nonempty, by: id }, ["reason"]), obj({ cancelled: bool }, ["cancelled"]), { audience: "owner", description: "Control only; stop the current turn and settle pending requests." });
 add("agent:main", "wake", "request", obj({ reason: nonempty, context: obj({}, [], true) }, ["reason", "context"]), accepted, { audience: "owner", description: "Internal wake for the secondary session." });
 add("agent:main", "typing", "event", empty, undefined, { audience: "owner", description: "Current authenticated screen is composing a message." });
