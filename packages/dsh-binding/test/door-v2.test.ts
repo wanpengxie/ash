@@ -97,7 +97,7 @@ test("production DSH host fails before an unbound session and mounts only the v2
       } } });
     assert.equal(attached, true);
     const names = host.ctx.tools.schemas(started.agent).map((item: { name: string }) => item.name);
-    assert.deepEqual(names.filter((name: string) => name.startsWith("ash_")).sort(), ["ash_describe", "ash_react", "ash_say", "ash_send", "ash_show"]);
+    assert.deepEqual(names.sort(), ["ash_describe", "ash_react", "ash_say", "ash_send", "ash_show"]);
     assert.equal(names.includes("bash"), false);
     assert.equal(names.includes("ash_whoami"), false);
     const done = new Promise<void>((resolve, reject) => {
@@ -167,7 +167,7 @@ test("v2 door uses five owned tools, routes through the world, and denies inheri
     const { agent, sessionId } = await h.host.agent(port as never, workspace);
     const scope = await h.host.imp("@deepseek-ai/dsh-scope");
     door = createDshDoor({ tools: h.host.ctx.tools, members, router, workspace, managedRoot: workspace,
-      protectedRoots: [coreState], scopeChainOf: scope.scopeChainOf });
+      protectedRoots: [coreState], scopeChainOf: scope.scopeChainOf, nativeMode: "audited" });
     door.bind(agent as never);
     const visible = h.host.ctx.tools.schemas(agent).map((tool: { name: string }) => tool.name);
     assert.deepEqual(visible.filter((name: string) => name.startsWith("ash_")).sort(), ["ash_describe", "ash_react", "ash_say", "ash_send", "ash_show"]);

@@ -8,7 +8,13 @@ import type { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, type DoorAgent, type DoorOptions, type DshDoor } from "./door";
 
 export interface DshHostOptions { root: string; home: string; env?: Record<string, string> }
-export interface DshRootAgent extends DoorAgent { id: string; whenIdle(): Promise<void> }
+export interface DshRootAgent extends DoorAgent {
+  id: string;
+  followup(message: { id: string; role: "user"; content: unknown[]; source: { kind: "user" } }): void;
+  cancel(cause?: unknown): void;
+  whenIdle(): Promise<void>;
+}
+export interface DshSessionEvent { type: string; data?: Record<string, any> }
 export interface DoorTurnAdapter {
   /** Attach the 206 turn lifecycle before this session receives any application input. */
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void;
@@ -21,6 +27,7 @@ export class DshHost {
   private shutdownHandle: any;
   private requireFromInstall: NodeRequire;
   private main: MainSession | null = null;
+  private readonly listeners = new Set<(sessionId: string, event: DshSessionEvent) => void>();
 
   constructor(private readonly options: DshHostOptions) {
     this.requireFromInstall = createRequire(join(options.root, "package.json"));
@@ -42,7 +49,9 @@ export class DshHost {
     } else writeFileSync(packageFile, JSON.stringify({ name: "dsh-profile-ash-v2", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base"] } } }), { mode: 0o600 });
     for (const file of ["cordis.yml", "cordis.patch.yml"]) {
       const path = join(profile, file);
-      if (existsSync(path) && readFileSync(path, "utf8").trim() !== "[]") throw new Error("ash-v2 DSH profile has unreviewed plugins or patches");
+      // The runtime rewrites an empty root with explanatory YAML comments on first boot.
+      const entries = existsSync(path) ? readFileSync(path, "utf8").split(/\r?\n/).filter((line) => !/^\s*(?:#.*)?$/.test(line)).join("\n").trim() : "[]";
+      if (entries !== "[]") throw new Error("ash-v2 DSH profile has unreviewed plugins or patches");
       if (!existsSync(path)) writeFileSync(path, "[]\n", { mode: 0o600 });
     }
     process.env.DSH_HOME = home;
@@ -52,6 +61,15 @@ export class DshHost {
     const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash-v2", patchFiles: [], args: [] });
     this.ctx = ctx;
     this.shutdownHandle = shutdown;
+    ctx.on("session/event", (session: { id?: string; header?: { id?: string } }, event: DshSessionEvent) => {
+      const id = session?.id ?? session?.header?.id ?? "";
+      for (const listener of this.listeners) listener(id, event);
+    });
+  }
+
+  onSessionEvent(listener: (sessionId: string, event: DshSessionEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   /** The worker's non-session llm service remains available without creating a model agent. */
@@ -73,7 +91,7 @@ export class DshHost {
       const agentOptions = this.agentOptions();
       door = createDshDoor({ tools: this.ctx.tools, members: options.members, router: options.router,
         workspace: options.workspace, managedRoot: options.managedRoot, protectedRoots: options.protectedRoots,
-        scopeChainOf: scope.scopeChainOf });
+        scopeChainOf: scope.scopeChainOf, nativeMode: options.nativeMode ?? "disabled" });
       const preparedDoor = door;
       const handle = await this.ctx.get("agents").create({ sessionId, meta: { cwd: options.workspace }, agentOptions,
         setup: (_agentCtx: unknown, rawAgent: DshRootAgent) => {
@@ -99,5 +117,6 @@ export class DshHost {
     this.main = null;
     await this.shutdownHandle?.shutdown?.(0);
     this.ctx = null;
+    this.listeners.clear();
   }
 }
