@@ -13,6 +13,8 @@ npm test
 npm run -s build:core
 ```
 
+For the installed-runtime run, set `ASH_TEST_DSH_ROOT` to an installed DSH package directory containing `package.json` when invoking `npm test`. No provider credentials or real model are used by these tests.
+
 The SDK tests use a controlled HTTP server with fragmented CRLF SSE, disconnects, incomplete frames, 205-row initial-gap replay, duplicate replay, scope change, 401, finite summary controls, send and describe. The production test starts the real owner entrypoint in a temporary state directory and checks authenticated describe/send/SSE, screen origin, durable inbox receipts and turn boundaries, echo output, disconnect resume, same-`client_id` acceptance, not-found and invalid-schema rejection. No model, user device or outward action is used.
 
-Observed: focused 6 pass/0 fail; full suite 321 pass/67 existing skips/0 fail; typecheck and core build pass; public-term scan 464 files/0 findings. Independent review and any real-device/browser integration remain separate acceptance gates.
+After merging the current v2 baseline (which includes the activity/upcoming and approval projections), the combined focused run with an installed DSH package passed 66/66. The full suite with `ASH_TEST_DSH_ROOT` set to an installed package exited naturally with 333 pass/59 intentional skips/0 fail. Typecheck and core build passed; public-term scan: 472 files/0 findings. The merge had no overlapping source conflict; generated UI and approval files were retained unchanged. Independent review and any real-device/browser integration remain separate acceptance gates.
