@@ -11,6 +11,7 @@ import { WorldRouter } from "../../src/world/router.ts";
 import { WorldMembers } from "../../src/world/member.ts";
 import { EdgeRouter, startEdgeServer } from "../../src/server.ts";
 import { PostPresenceMember } from "../../src/members/post.ts";
+import { AgentStatus } from "../../src/members/agent-status.ts";
 import { wordContract } from "../../../sdk/src/words.ts";
 
 const directory = mkdtempSync(join(tmpdir(), "ash-ui-browser-"));
@@ -24,6 +25,8 @@ let browser;
 let socket;
 let socket2;
 let server;
+let agentStatus;
+const presenceLatencyMs = {};
 
 function cdp(websocket) {
   let next = 1;
@@ -116,6 +119,45 @@ try {
   console.log("latest-ready", firstRenderMs);
   await until(() => ledger.list({ after: 240 }).some((entry) => entry.word === "visible"), "registered visible event");
   console.log("visible-ready");
+  if (process.env.ASH_PROBE_PRESENCE === "1") {
+    let paused = false;
+    agentStatus = new AgentStatus(world, Date.now, () => paused);
+    await agentStatus.start();
+    const actor = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+    const cases = [
+      ["listening", "在听", "listening"], ["thinking", "在想", "thinking"],
+      ["working", "在看文件", "focused"], ["waiting_you", "等你一句话", "listening"],
+      ["done", "", "success"], ["idle", "在线", "default"],
+    ];
+    const shown = (state, label, face) => evaluate(`(() => {
+      const bar = document.querySelector('#presence');
+      const status = document.querySelector('#state');
+      const avatar = document.querySelector('#face img');
+      return bar?.dataset.state === ${JSON.stringify(state)} && status?.textContent === ${JSON.stringify(label)} &&
+        avatar?.getAttribute('src') === ${JSON.stringify(`/avatars/${face}.webp`)};
+    })()`);
+    for (const [state, label, face] of cases) {
+      const started = Date.now();
+      await world.send(actor, { to: null, kind: "event", word: "status", body: { state, text: label } });
+      await until(() => shown(state, label, face), `live presence ${state}`, 500);
+      presenceLatencyMs[state] = Date.now() - started;
+      assert.ok(presenceLatencyMs[state] <= 500, `${state} exceeded 500 ms`);
+    }
+    paused = true;
+    const pausedAt = Date.now();
+    agentStatus.refresh();
+    await agentStatus.settled();
+    await until(() => shown("resting", "休息中", "resting"), "paused resting presence", 500);
+    presenceLatencyMs.pause = Date.now() - pausedAt;
+    assert.ok(presenceLatencyMs.pause <= 500, "pause exceeded 500 ms");
+    paused = false;
+    const resumedAt = Date.now();
+    agentStatus.refresh();
+    await agentStatus.settled();
+    await until(() => shown("idle", "在线", "default"), "resumed idle presence", 500);
+    presenceLatencyMs.resume = Date.now() - resumedAt;
+    assert.ok(presenceLatencyMs.resume <= 500, "resume exceeded 500 ms");
+  }
   assert.equal(await evaluate("document.querySelector('#log .msg')?.textContent"), "fixture 21");
   await evaluate("document.querySelector('#log').scrollTop = 0; document.querySelector('#log').dispatchEvent(new Event('scroll'))");
   await until(async () => await evaluate("document.querySelectorAll('#log .msg').length") === 120, "older finite page");
@@ -129,7 +171,7 @@ try {
   await call2("Runtime.enable");
   await call2("Page.bringToFront");
   const evaluate2 = async (expression) => (await call2("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
-  await until(async () => await evaluate2("document.querySelector('#state')?.textContent") === "已连接", "second tab registration");
+  await until(async () => await evaluate2("document.querySelector('#connection')?.textContent") === "已连接", "second tab registration");
   await evaluate2("sessionStorage.setItem('ash.screen.label.v2','Second tab')");
   await call2("Page.reload");
   await until(() => ledger.list({ after: 240, limit: 1000 }).some((entry) => entry.word === "visible" && entry.origin?.label === "Second tab"), "second tab visible");
@@ -163,6 +205,11 @@ try {
   server.closeAllConnections();
   await world.send({ member: "person:owner", transport: "api", transportPrincipal: "fixture", local: true, remote: false, ownerProxy: true }, { to: "agent:main", kind: "request", word: "say", body: { text: "after reconnect" }, client_id: "after-reconnect" });
   await until(async () => await evaluate("[...document.querySelectorAll('#log .msg')].some(x => x.textContent === 'after reconnect')"), "reconnected record");
+  if (process.env.ASH_PROBE_PRESENCE === "1") {
+    const actor = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+    await world.send(actor, { to: null, kind: "event", word: "status", body: { state: "thinking", text: "在想" } });
+    await until(async () => await evaluate("document.querySelector('#presence')?.dataset.state === 'thinking' && document.querySelector('#state')?.textContent === '在想'"), "reconnected authoritative presence");
+  }
   assert.ok(streamHeaders.length >= 2);
   assert.match(String(streamHeaders.at(-1)), /^[1-9][0-9]*$/);
   assert.equal(await evaluate("[...document.querySelectorAll('#log .msg')].filter(x => x.textContent === 'after reconnect').length"), 1);
@@ -191,8 +238,10 @@ try {
   }
   console.log(JSON.stringify({ browser: "Chrome", firstRenderMs, latestRecords: 200, olderRows: 20, crossTab: true, targetScreenOpen: true, suggestAck: false, performAck: false, reconnectLastEventId: streamHeaders.at(-1), visibleRecorded: true,
     ...(process.env.ASH_PROBE_LARGE === "1" ? { largeAttachmentsMiB: [2, 19], authorizedRawReads: rawReads.length } : {}),
-    ...(process.env.ASH_PROBE_SWITCH === "1" ? { sameOriginCredentialSwitch: true, oldSeqAboveNew: ledger.lastSeq() > alternateLedger.lastSeq(), staleCursorPageDiscarded: true } : {}), result: "PASS" }));
+    ...(process.env.ASH_PROBE_SWITCH === "1" ? { sameOriginCredentialSwitch: true, oldSeqAboveNew: ledger.lastSeq() > alternateLedger.lastSeq(), staleCursorPageDiscarded: true } : {}),
+    ...(process.env.ASH_PROBE_PRESENCE === "1" ? { authoritativePresence: true, pauseAndResume: true, reconnectPresence: true, presenceLatencyMs } : {}), result: "PASS" }));
 } finally {
+  agentStatus?.close();
   socket?.close();
   socket2?.close();
   if (browser?.pid) { try { process.kill(-browser.pid, "SIGKILL"); } catch { /* already exited */ } }

@@ -2,6 +2,7 @@ import { fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
+import { PresenceBar } from "./presence.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -84,7 +85,7 @@ function text(parent, tag, value, className = "") {
   return node;
 }
 
-export function render(view, outbox = [], openInline) {
+export function render(view, outbox = [], openInline, presenceBar) {
   const log = document.querySelector("#log");
   const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const oldHeight = log.scrollHeight;
@@ -95,17 +96,15 @@ export function render(view, outbox = [], openInline) {
   log.replaceChildren(fragment);
   if (nearEnd) log.scrollTop = log.scrollHeight;
   else log.scrollTop = oldTop + Math.max(0, log.scrollHeight - oldHeight);
-  const state = document.querySelector("#state");
-  if (view.presence.text) state.title = view.presence.text;
-  const avatar = document.querySelector("#face img");
-  avatar.src = `/avatars/${view.presence.avatar}.webp`;
+  presenceBar?.render(view.presence);
 }
 
 export function boot() {
   performance.mark("shell.boot");
   const form = document.querySelector("#f");
   const input = document.querySelector("#t");
-  const state = document.querySelector("#state");
+  const presenceBar = new PresenceBar(document);
+  const connection = document.querySelector("#connection");
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
   const suggestions = document.querySelector("#suggestions");
@@ -136,22 +135,22 @@ export function boot() {
       // None of these destinations has a working page in the shell yet.
       // A suggestion is acknowledged only after it is rendered; an unavailable
       // perform target is explicitly reported as unopened.
-      void net.respondOpen(message, false).then((sent) => { if (!sent) state.textContent = "页面请求回执未送达"; }).catch(() => { state.textContent = "页面请求回执未送达"; });
+      void net.respondOpen(message, false).then((sent) => { if (!sent) connection.textContent = "页面请求回执未送达"; }).catch(() => { connection.textContent = "页面请求回执未送达"; });
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
     onReset: () => { timeline.reset(); suggestions.replaceChildren(); },
     onState: (status, error) => {
-      state.textContent = status === "online" ? (presenceProblem || "已连接") : status === "connecting" ? "连接中…" : status === "send-error" ? "消息未送达，等待重试" : "离线，正在重连…";
-      if (error) state.title = String(error.message || error);
+      presenceBar.network(status, status === "online" ? presenceProblem : "");
+      if (error) connection.title = String(error.message || error);
     },
     onRegistered: () => { if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
-      if (timeline) render(timeline.view, outbox, openInline);
+      if (timeline) render(timeline.view, outbox, openInline, presenceBar);
     },
   });
-  timeline = new Timeline(net, (view) => render(view, net.outbox, openInline));
+  timeline = new Timeline(net, (view) => render(view, net.outbox, openInline, presenceBar));
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
@@ -159,7 +158,7 @@ export function boot() {
     const result = await net.sendEvent("service:post", "visible");
     // A missing service is a pending integration, not proof of presence.
     presenceProblem = result.ok ? "" : result.reason === "HTTP 404" ? "在场服务未就绪" : "在场更新未送达";
-    if (net.token) state.textContent = presenceProblem || "已连接";
+    if (net.token) presenceBar.network("online", presenceProblem);
   }
   async function typing() {
     if (document.hidden || !net.token || !input.value.trim()) return;
@@ -181,7 +180,7 @@ export function boot() {
       fileInput.value = "";
       selected.textContent = "";
       log.scrollTop = log.scrollHeight;
-    } catch (error) { state.textContent = `未发送：${error.message || "无法保存待发送消息"}`; }
+    } catch (error) { connection.textContent = `未发送：${error.message || "无法保存待发送消息"}`; }
     finally { sendButton.disabled = false; }
   });
   input.addEventListener("input", () => { void typing(); });
@@ -195,7 +194,7 @@ export function boot() {
     const height = log.scrollHeight;
     const top = log.scrollTop;
     try { if (await timeline.older()) log.scrollTop = top + log.scrollHeight - height; }
-    catch { state.textContent = "更早记录暂时无法加载"; }
+    catch { connection.textContent = "更早记录暂时无法加载"; }
   });
   attachButton.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
