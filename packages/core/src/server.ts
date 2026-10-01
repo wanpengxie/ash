@@ -3,13 +3,14 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, closeSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
-import type { Message, ResponseBody, SendRequestV2, WordSpec } from "../../sdk/src/api";
+import type { Message, ResponseBody, ScreenRegistration, SendRequestV2, WordSpec } from "../../sdk/src/api";
 import { SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER } from "../../sdk/src/api";
 import { wordContract } from "../../sdk/src/words";
 import { WorldMembers } from "./world/member";
 import { RouterError, WorldRouter, type TrustedRouteContext } from "./world/router";
 import { Ledger } from "./world/ledger";
 import { AVATARS, ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
+import { authScope } from "./auth-scope";
 
 export interface EdgeTokens { api: Record<string, string>; mcp: Record<string, string> }
 export interface EdgeCaller {
@@ -24,7 +25,7 @@ export interface EdgeCaller {
 export interface EdgeRequest { method: string; url: URL; headers: Record<string, string>; body: Buffer | null }
 export type EdgeResponse = { status: number; headers?: Record<string, string>; body?: string | Buffer } |
   { status: number; headers?: Record<string, string>; stream: (write: (chunk: string) => void, onClose: (fn: () => void) => void, end: () => void) => void };
-export interface EdgeOptions { workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
+export interface EdgeOptions { authScopeKey: Buffer; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
 
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
@@ -65,14 +66,14 @@ export class ScreenRegistry {
       if (at >= entry.expiresAt && entry.connections === 0 && !this.pending.get(entry.screen)?.size) this.registrations.delete(token);
     }
   }
-  register(caller: EdgeCaller, labelHint?: string): { screen: string; token: string; label: string } {
+  register(caller: EdgeCaller, auth_scope: string, labelHint?: string): ScreenRegistration {
     if (!caller.ownerProxy || caller.member !== "person:owner") fail(403, "forbidden", "owner screen permission required");
     this.sweep();
     const token = randomBytes(24).toString("base64url");
     const screen = `screen:${randomBytes(9).toString("base64url")}`;
     const label = typeof labelHint === "string" && labelHint.trim() ? labelHint.trim().slice(0, 80) : "Screen";
     this.registrations.set(token, { screen, principal: caller.transportPrincipal, label, expiresAt: this.now() + SCREEN_REGISTRATION_TTL_MS, connections: 0, visibleAt: null });
-    return { screen, token, label };
+    return { screen, token, label, auth_scope };
   }
   verify(caller: EdgeCaller, token: string): Registration {
     this.sweep();
@@ -133,7 +134,8 @@ export class ScreenRegistry {
 
 export class EdgeRouter {
   readonly screens: ScreenRegistry;
-  constructor(readonly ledger: Ledger, readonly world: WorldRouter, readonly members: WorldMembers, readonly tokens: EdgeTokens, readonly options: EdgeOptions = {}) {
+  constructor(readonly ledger: Ledger, readonly world: WorldRouter, readonly members: WorldMembers, readonly tokens: EdgeTokens, readonly options: EdgeOptions) {
+    if (options.authScopeKey.length !== 32) throw new Error("screen auth scope key required");
     let installed = screenRegistries.get(world);
     if (!installed) {
       const screens = new ScreenRegistry(world, options.clock ?? Date.now, options.screenAckMs ?? OPEN_ACK_WAIT_MS);
@@ -245,7 +247,7 @@ export class EdgeRouter {
     if (before !== undefined && (afterQuery !== undefined || afterHeader !== undefined || follow)) fail(400, "bad_request", "before requires finite standalone pagination");
     const after = afterQuery ?? afterHeader;
     // A finite history page is an audit read, not a live tab. It has no screen identity.
-    const registered = follow ? this.screens.register(caller, params.get("label") ?? undefined) : null;
+    const registered = follow ? this.screens.register(caller, authScope(this.options.authScopeKey, caller.transportPrincipal), params.get("label") ?? undefined) : null;
     return { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" }, stream: (write, onClose, end) => {
       if (registered) {
         write(`event: ${SCREEN_REGISTRATION_EVENT}\ndata: ${JSON.stringify(registered)}\n\n`);

@@ -27,7 +27,7 @@ async function fixture() {
   const members = new WorldMembers(world);
   members.register({ id: "agent:main", kind: "agent", name: "Main", words: () => [wordContract("agent:main", "say")!, wordContract("agent:main", "typing")!], handle: () => ({ ok: true, result: { accepted: true } }) });
   members.register({ id: "service:admin", kind: "service", name: "Admin", words: () => [wordContract("service:admin", "settings.get")!], handle: () => ({ ok: true, result: {} }) });
-  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: { "agent:main": "agent-token" } }, { workspaces: { home: workspace } });
+  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: { "agent:main": "agent-token" } }, { workspaces: { home: workspace }, authScopeKey: Buffer.alloc(32, 1) });
   return { dir, workspace, ledger, world, members, edge };
 }
 
@@ -51,7 +51,7 @@ test("wait cap returns the accepted id without inventing a late reply", async ()
   const { ledger, world, members } = await fixture();
   try {
     members.register({ id: "service:slow", kind: "service", name: "Slow", words: () => [{ word: "run", kind: "request", description: "Wait for a synthetic slow result.", input_schema: { type: "object", additionalProperties: false }, timeout_ms: 5_000 }], handle: () => new Promise(() => {}) });
-    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { waitMs: 20 });
+    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { waitMs: 20, authScopeKey: Buffer.alloc(32, 1) });
     const response = await edge.handle(request("POST", "/api/send", send("service:slow", "run", {}, true)), owner);
     assert.equal(response.status, 200);
     assert.equal(typeof parsed(response).id, "string");
@@ -153,7 +153,7 @@ test("workspace bytes preserve local-only writes and reject managed, symlink and
     assert.equal((await put("ordinary-copy.txt", owner)).status, 200);
     assert.equal(readFileSync(join(workspace, "ordinary-copy.txt"), "utf8"), "safe");
     assert.equal(readFileSync(join(workspace, "MEMORY.md"), "utf8"), "protected");
-    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory, ancestor: dir, versions } });
+    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory, ancestor: dir, versions }, authScopeKey: Buffer.alloc(32, 1) });
     assert.equal((await aliased.handle({ ...request("PUT", "/api/workspaces/diary/files?path=2026-10-01.md"), body: Buffer.from("unsafe") }, owner)).status, 403);
     for (const [alias, path] of [["ancestor", "home/MEMORY.md"], ["ancestor", "home/memory/2026-10-01.md"], ["versions", "snap"]])
       assert.equal((await aliased.handle({ ...request("PUT", `/api/workspaces/${alias}/files?path=${path}`), body: Buffer.from("unsafe") }, owner)).status, 403);
@@ -314,7 +314,7 @@ test("a delayed old host failure cannot offline a replacement or resurrect after
 test("gateway refresh serializes dirty revocation and fences stale connection manifests", async () => {
   for (const reconnect of [false, true]) {
     const { ledger, world, members } = await fixture();
-    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} });
+    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
     const link = new OwnerLink("http://127.0.0.1:1", { id: "synthetic", publicKey: "synthetic", sign: async () => "synthetic" }, edge, () => {});
     const active = [{ id: "synthetic", name: "Synthetic", permissions: ["expose_capability"], revoked: false, online: true }];
     const revoked = [{ ...active[0], permissions: [], revoked: true, online: false }];
