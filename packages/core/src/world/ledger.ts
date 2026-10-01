@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
-import { STREAM_RAW_PAGE_BYTES, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2 } from "../../../sdk/src/api";
+import { STREAM_RAW_PAGE_BYTES, type GateHistoryItemV2, type GateRuleItemV2, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2 } from "../../../sdk/src/api";
 import { matchesSchema } from "../../../sdk/src/schema";
 import { wordContract } from "../../../sdk/src/words";
 import { readSummaryPage, type StreamPageQuery } from "./stream-page";
@@ -248,6 +248,12 @@ export class Ledger {
         ask_id TEXT, subject TEXT NOT NULL, target TEXT NOT NULL, word TEXT NOT NULL,
         risk TEXT NOT NULL, decision TEXT NOT NULL, at INTEGER NOT NULL, rule_id TEXT);
         CREATE INDEX IF NOT EXISTS gate_history_request ON gate_history(request_id);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS gate_rules (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, subject TEXT NOT NULL,
+        device_id TEXT, capability_id TEXT, target TEXT NOT NULL, word TEXT NOT NULL,
+        object_pattern TEXT NOT NULL, risk TEXT NOT NULL, contract_fingerprint TEXT NOT NULL,
+        created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER);
+        CREATE INDEX IF NOT EXISTS gate_rules_match ON gate_rules(subject,target,word,object_pattern,expires_at);`);
       return new Ledger(db, stats);
     } catch (error) { db.close(); throw error; }
   }
@@ -475,6 +481,8 @@ export class Ledger {
         WHERE m.id=?`).get(requestId) as Row | undefined;
       if (!tracked || tracked.kind !== "request" || tracked.phase !== "accepted" || !tracked.to ||
         input.expiresAt > Number(tracked.deadline_at)) { this.db.exec("COMMIT"); return null; }
+      const source = obj(input.askBody.source);
+      if (source.word !== tracked.word || source.to !== tracked.to) throw new TypeError("gate ask source does not match accepted request");
       if (this.db.prepare("SELECT 1 FROM gate_cases WHERE request_id=?").get(requestId)) throw new TypeError("duplicate gate case");
       const at = Date.now();
       const askId = newId();
@@ -522,6 +530,7 @@ export class Ledger {
         row.ask_to !== "person:owner" || row.ask_word !== "ask") { this.db.exec("COMMIT"); return null; }
       const at = Date.now();
       if (cause === "answer" && at >= Number(row.expires_at)) throw new TypeError("gate ask expired before answer");
+      if (cause === "deadline" && at < Number(row.expires_at)) throw new TypeError("gate deadline has not elapsed");
       const timedOut = cause === "deadline";
       const decision = timedOut ? "timeout" : choice === "deny" ? "denied" : "allowed";
       const askBody: ResponseBody = { ok: true, result: { choice: timedOut ? "deny" : choice } };
@@ -558,6 +567,62 @@ export class Ledger {
       return { askResponse: this.byId(askResponseId)!, event: this.byId(eventId)!,
         originalResponse: originalResponseId ? this.byId(originalResponseId)! : null };
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** Called only after current authority and endpoint contract are revalidated. */
+  dispatchAllowedGate(requestId: string, subject: string, contractFingerprint: string): boolean {
+    if (!subject || !/^[a-f0-9]{64}$/.test(contractFingerprint)) return false;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare(`SELECT c.decision,c.subject,c.contract_fingerprint,c.expires_at,s.phase,s.deadline_at,
+        a.kind AS ask_kind,a.word AS ask_word,r.body AS answer_body
+        FROM gate_cases c JOIN request_state s ON s.request_id=c.request_id
+        JOIN messages a ON a.id=c.ask_id
+        LEFT JOIN messages r ON r.reply_to=c.ask_id AND r.kind='response'
+        WHERE c.request_id=?`).get(requestId) as Row | undefined;
+      if (!row || row.decision !== "allowed" || row.phase !== "gate_waiting" || row.subject !== subject ||
+        row.contract_fingerprint !== contractFingerprint || row.ask_kind !== "request" || row.ask_word !== "ask" ||
+        typeof row.answer_body !== "string" || Date.now() >= Math.min(Number(row.deadline_at), Number(row.expires_at))) {
+        this.db.exec("COMMIT"); return false;
+      }
+      const answer = JSON.parse(row.answer_body) as ResponseBody;
+      if (answer.ok !== true || obj(answer.result).choice !== "once") { this.db.exec("COMMIT"); return false; }
+      const changed = this.db.prepare("UPDATE request_state SET phase='dispatching',updated_at=? WHERE request_id=? AND phase='gate_waiting'")
+        .run(Date.now(), requestId);
+      this.db.exec("COMMIT");
+      return Number(changed.changes) === 1;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  gateRulesPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { rules: GateRuleItemV2[]; next_before?: number } {
+    if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid gate rules page");
+    const rows = this.db.prepare("SELECT * FROM gate_rules WHERE seq<? ORDER BY seq DESC LIMIT ?").all(before, limit + 1) as Row[];
+    const page = rows.slice(0, limit);
+    return { rules: page.map((row) => ({ id: String(row.id), subject: String(row.subject),
+      ...(row.device_id === null ? {} : { device_id: String(row.device_id) }),
+      ...(row.capability_id === null ? {} : { capability_id: String(row.capability_id) }),
+      to: String(row.target), word: String(row.word), object_pattern: String(row.object_pattern),
+      risk: row.risk as GateRuleItemV2["risk"], contract_fingerprint: String(row.contract_fingerprint),
+      created_at: Number(row.created_at), expires_at: Number(row.expires_at),
+      ...(row.revoked_at === null ? {} : { revoked_at: Number(row.revoked_at) }) })),
+      ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };
+  }
+
+  gateHistoryPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { items: GateHistoryItemV2[]; next_before?: number } {
+    if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new TypeError("invalid gate history page");
+    const rows = this.db.prepare("SELECT * FROM gate_history WHERE seq<? ORDER BY seq DESC LIMIT ?").all(before, limit + 1) as Row[];
+    const page = rows.slice(0, limit);
+    return { items: page.map((row) => ({ id: String(row.id), request_id: String(row.request_id), ask_id: String(row.ask_id),
+      subject: String(row.subject), to: String(row.target), word: String(row.word), risk: row.risk as "outward" | "structure",
+      decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule", at: Number(row.at),
+      ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }), source: "current" as const })),
+      ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };
+  }
+
+  revokeGateRule(id: string): boolean {
+    if (!id) throw new TypeError("invalid gate rule id");
+    const changed = this.db.prepare("UPDATE gate_rules SET revoked_at=? WHERE id=? AND revoked_at IS NULL").run(Date.now(), id);
+    return Number(changed.changes) === 1;
   }
 
   byId(id: string): Message | null {

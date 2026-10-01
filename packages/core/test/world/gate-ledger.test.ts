@@ -61,6 +61,10 @@ test("gate rejects an invalid ask or expiry beyond the original accepted deadlin
   try {
     const valid = gate(Date.now() + 20_000);
     assert.throws(() => ledger.beginGate(accepted.id, { ...valid, askBody: { ...valid.askBody, options: [{ id: "always", label: 3 }] } }));
+    assert.throws(() => ledger.beginGate(accepted.id, { ...valid, askBody: { ...valid.askBody,
+      source: { word: "different", to: "device:fake", body_preview: "Wrong action" } } }));
+    assert.throws(() => ledger.beginGate(accepted.id, { ...valid, askBody: { ...valid.askBody,
+      source: { word: "run", to: "device:other", body_preview: "Wrong device" } } }));
     assert.equal(ledger.beginGate(accepted.id, gate(Date.now() + 120_000)), null);
     assert.equal(ledger.gateCase(accepted.id), null);
     assert.deepEqual(ledger.list().map((item) => item.word), ["run"]);
@@ -85,13 +89,23 @@ test("an allowed answer commits once and keeps the original waiting for effect-t
     assert.equal(reopened.gateCase(accepted.id)?.decision, "allowed");
     assert.equal(reopened.list().filter((item) => item.word === "gate.passed").length, 1);
     assert.equal(reopened.responseTo(accepted.id), null);
+    assert.equal(reopened.dispatchAllowedGate(accepted.id, "principal:wrong", "a".repeat(64)), false);
+    assert.equal(reopened.dispatchAllowedGate(accepted.id, "principal:exact", "b".repeat(64)), false);
+    assert.equal(reopened.trackedRequests().find((item) => item.message.id === accepted.id)?.phase, "gate_waiting");
+    assert.equal(reopened.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), true);
+    assert.equal(reopened.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), false);
+    assert.equal(reopened.trackedRequests().find((item) => item.message.id === accepted.id)?.phase, "dispatching");
   } finally { reopened.close(); }
 });
 
-test("trusted deadline beats answer and atomically denies original request only once", async () => {
+test("trusted deadline cannot fire early; at expiry it atomically denies original request only once", async (t) => {
   const { ledger, accepted } = await fixture();
   try {
-    const started = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!;
+    const expiry = Date.now() + 20_000;
+    const started = ledger.beginGate(accepted.id, gate(expiry))!;
+    assert.throws(() => ledger.settleGateAsk(started.ask.id, "deny", "deadline"));
+    assert.equal(ledger.gateCase(accepted.id)?.decision, "waiting");
+    t.mock.method(Date, "now", () => expiry);
     const settled = ledger.settleGateAsk(started.ask.id, "deny", "deadline");
     assert.equal(settled?.event.body.by, "timeout");
     assert.equal(settled?.originalResponse?.body.ok, false);
