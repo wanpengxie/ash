@@ -63,7 +63,7 @@ test("legacy USER.md is read-only until an exact-hash authorized upgrade and pre
     assert.deepEqual(read.reply?.body.result, { content: original, hash: oldHash });
     assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), original);
     const stale = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: "0".repeat(64) });
-    assert.equal(stale.reply?.body.error?.message, "stale");
+    assert.equal((stale.reply?.body.error as { message: string }).message, "stale");
     const upgraded = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: oldHash }, owner, "legacy-upgrade");
     assert.equal(upgraded.reply?.body.ok, true);
     const after = readFileSync(join(f.home, "USER.md"), "utf8");
@@ -72,13 +72,13 @@ test("legacy USER.md is read-only until an exact-hash authorized upgrade and pre
     assert.equal(retry.id, upgraded.id);
     assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), after);
     const oldAgain = await f.send("write", { path: "USER.md", content: original, why: "test", expected_hash: oldHash });
-    assert.equal(oldAgain.reply?.body.error?.message, "stale");
+    assert.equal((oldAgain.reply?.body.error as { message: string }).message, "stale");
     const versions = readdirSync(join(f.home, ".ash", "versions", "USER.md"));
     assert.equal(versions.length, 1);
     assert.equal(readFileSync(join(f.home, ".ash", "versions", "USER.md", versions[0]), "utf8"), original);
     writeFileSync(join(f.home, "USER.md"), "---\nversion: nope\n---\nMalformed\n");
     const malformed = await f.send("write", { path: "USER.md", content: "replace", why: "test", expected_hash: createHash("sha256").update("---\nversion: nope\n---\nMalformed\n").digest("hex") });
-    assert.equal(malformed.reply?.body.error?.code, "bad_request");
+    assert.equal((malformed.reply?.body.error as { code: string }).code, "bad_request");
   } finally { await f.self.close(); f.ledger.close(); }
 });
 
@@ -90,7 +90,7 @@ test("legacy USER.md apply_plan requires exact hash and original-line guard", as
     const oldHash = createHash("sha256").update(original).digest("hex");
     const edit = { op: "replace", start: 1, end: 1, guard: "Old line", text: "New line", reason: "correct", evidence: [] };
     const wrong = await f.send("apply_plan", { path: "USER.md", expected_hash: oldHash, edits: [{ ...edit, guard: "wrong" }] });
-    assert.equal(wrong.reply?.body.error?.message, "stale");
+    assert.equal((wrong.reply?.body.error as { message: string }).message, "stale");
     assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), original);
     const good = await f.send("apply_plan", { path: "USER.md", expected_hash: oldHash, edits: [edit] }, owner, "legacy-plan");
     assert.equal(good.reply?.body.ok, true);
@@ -107,14 +107,14 @@ test("USER version and snapshot timestamp exhaustion fail before write or event"
     const huge = `---\nversion: ${Number.MAX_SAFE_INTEGER}\nupdated: 2026-10-01T00:00:00.000Z\n---\nNotes\n`;
     writeFileSync(join(f.home, "USER.md"), huge);
     const badVersion = await f.send("write", { path: "USER.md", content: huge, why: "test", expected_hash: createHash("sha256").update(huge).digest("hex") });
-    assert.equal(badVersion.reply?.body.error?.code, "bad_request");
+    assert.equal((badVersion.reply?.body.error as { code: string }).code, "bad_request");
     assert.equal(readFileSync(join(f.home, "USER.md"), "utf8"), huge);
     writeFileSync(join(f.home, "MEMORY.md"), "before\n");
     const snapshots = join(f.home, ".ash", "versions", "MEMORY.md");
     mkdirSync(snapshots, { recursive: true });
     writeFileSync(join(snapshots, "999999999999999999999999999999.md"), "synthetic\n");
     const badTimestamp = await f.send("write", { path: "MEMORY.md", content: "after\n", why: "test", expected_hash: createHash("sha256").update("before\n").digest("hex") });
-    assert.equal(badTimestamp.reply?.body.error?.code, "bad_request");
+    assert.equal((badTimestamp.reply?.body.error as { code: string }).code, "bad_request");
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "before\n");
     assert.equal(f.ledger.list().filter((m) => m.word === "self.changed").length, 0);
   } finally { await f.self.close(); f.ledger.close(); }
