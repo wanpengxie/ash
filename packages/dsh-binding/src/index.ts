@@ -6,3 +6,4 @@ export { DshHost, type DshHostOptions, userMessage } from "./host";
 export { DshRuntime, DSH_CAPABILITIES, originLine } from "./runtime";
 export { dshSettings } from "./settings";
 export { dshPlugins, type PluginOps } from "./plugins";
+export { dshWorkerModel } from "./workers";
