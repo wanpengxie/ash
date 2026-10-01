@@ -679,6 +679,15 @@ export class WorldRouter {
       const { message, phase, context, deadlineAt } = tracked;
       if (this.ledger.responseTo(message.id)) continue;
       if (this.pending.has(message.id)) continue;
+      if (this.durableGate && message.from === "service:gate" && message.to === "person:owner" && message.word === "ask") {
+        const gateCase = this.ledger.gateCaseByAsk(message.id);
+        const original = gateCase && this.ledger.trackedRequests().find((item) => item.message.id === gateCase.requestId);
+        if (!gateCase || gateCase.decision !== "waiting" || !original || original.phase !== "gate_waiting" ||
+          this.ledger.responseTo(gateCase.requestId)) {
+          this.publish(this.ledger.settle(message.id, "person:owner", errors("failed", "orphaned gate ask after restart")).message);
+          continue;
+        }
+      }
       const endpoint = this.endpoint(message.to!, message.word);
       let contractValid = false;
       try { contractValid = Boolean(endpoint && endpoint.direction !== "out" && endpoint.spec.kind === "request" && endpoint.validateInput(message.body)); } catch { /* changed or invalid endpoint contract */ }

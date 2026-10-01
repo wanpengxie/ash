@@ -68,6 +68,22 @@ test("fresh agent has no implicit device ACL, even though a gate could ask the o
   } finally { ledger.close(); }
 });
 
+test("recovery fails closed on a tracked owner ask without its original gate case", async () => {
+  const { ledger, router } = await setup();
+  try {
+    const ask = ledger.append({ from: "service:gate", to: "person:owner", kind: "request", word: "ask",
+      body: { title: "Orphaned question", detail: "No parent case", expires_at: Date.now() + 30_000,
+        options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+        source: { word: "run", to: "device:fake", body_preview: "Synthetic action" } } }, undefined,
+    { deadlineAt: Date.now() + 30_000, context: { member: "service:gate", local: true, remote: false,
+      ownerProxy: false, transportPrincipal: "service:gate" } }).message;
+    await router.recover();
+    assert.equal(ledger.responseTo(ask.id)?.body.ok, false);
+    assert.equal(ledger.trackedRequests().some((item) => item.message.id === ask.id), false);
+    assert.equal(ledger.list().filter((item) => item.word === "gate.asked").length, 0);
+  } finally { ledger.close(); }
+});
+
 test("cancellation withdraws the ask; a late approval cannot execute", async () => {
   const { ledger, router, effects } = await setup();
   try {
