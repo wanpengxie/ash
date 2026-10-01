@@ -94,6 +94,7 @@ export function appendOutbox(fragment, outbox) {
     if (!item || typeof item.client_id !== "string" || typeof item.text !== "string" || !Object.hasOwn(labels, item.status)) continue;
     const bubble = text(fragment, "div", item.text, "msg me pending-local");
     bubble.dataset.clientId = item.client_id;
+    for (const file of item.attachments || []) if (typeof file?.name === "string") text(bubble, "div", `${file.name} · ${Math.ceil((file.size || 0) / 1024)} KiB`, "attachment");
     text(fragment, "span", labels[item.status], `delivery r${item.status === "rejected" || item.status === "unsent" ? " error" : ""}`);
   }
 }

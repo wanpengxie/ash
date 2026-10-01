@@ -76,6 +76,19 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.equal(reacts.length, 2);
     assert.deepEqual(reacts.map((message) => running!.ledger.responseTo(message.id)?.body.ok), [true, false]);
     assert.equal(running.ledger.list().filter((message) => message.word === "turn.end" && message.body.reason === "completed").length, 1);
+    const inline = { name: "fixture.txt", mime_type: "text/plain", data: Buffer.from("SYNTHETIC_FILE_BYTES").toString("base64") };
+    const onlyAttachment = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [inline] }, client_id: "dsh-attachment-only" }) });
+    assert.equal(onlyAttachment.status, 200);
+    const accepted = await onlyAttachment.json() as { id: string };
+    assert.deepEqual(running.ledger.byId(accepted.id)?.body, { text: "", attachments: [inline] });
+    const nextDeadline = Date.now() + 15_000;
+    while (Date.now() < nextDeadline && captured.length < 5) await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(captured.length, 5);
+    assert.match(captured[4].user, /fixture\.txt/);
+    assert.match(captured[4].user, /attachment source id=/);
+    assert.ok(!captured[4].user.includes("SYNTHETIC_FILE_BYTES"));
+    assert.ok(!captured[4].user.includes(inline.data));
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));

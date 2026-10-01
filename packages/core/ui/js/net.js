@@ -1,7 +1,6 @@
-import { SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
+import { SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER, isScreenRegistration } from "../../../sdk/src/api.ts";
+import { openPendingStore } from "./pending-store.js";
 
-const QUEUE_KEY = "ash.screen.outbox.v2";
-const OUTBOX_VIEW_KEY = "ash.screen.outbox-view.v2";
 const TOKEN_KEY = "ash.screen.token.v2";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -43,25 +42,8 @@ export async function readSse(response, onFrame, signal) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-function readQueue(storage) {
-  try {
-    const parsed = JSON.parse(storage.getItem(QUEUE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((x) => x && typeof x.client_id === "string" && x.kind === "request" && x.word === "say" && x.to === "agent:main" && typeof x.body?.text === "string") : [];
-  } catch { return []; }
-}
-
-function readOutbox(storage, queue) {
-  let saved = [];
-  try { const value = JSON.parse(storage.getItem(OUTBOX_VIEW_KEY) || "[]"); if (Array.isArray(value)) saved = value; } catch { /* recover from queue */ }
-  const valid = saved.filter((item) => item && typeof item.client_id === "string" && typeof item.text === "string" && ["unsent", "sending", "accepted", "rejected"].includes(item.status))
-    .map((item) => ({ client_id: item.client_id, text: item.text, status: item.status === "sending" ? "unsent" : item.status, id: typeof item.id === "string" ? item.id : null, seq: Number.isSafeInteger(item.seq) ? item.seq : null }));
-  const ids = new Set(valid.map((item) => item.client_id));
-  for (const wire of queue) if (!ids.has(wire.client_id)) valid.push({ client_id: wire.client_id, text: wire.body.text, status: "unsent", id: null, seq: null });
-  return valid;
-}
-
 export class ScreenNet {
-  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, label = "Web", onMessage = () => {}, onHistory = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
+  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, pendingStore = openPendingStore(), endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
     this.transport = fetchImpl;
     this.storage = storage;
     this.label = label;
@@ -70,8 +52,12 @@ export class ScreenNet {
     this.onState = onState;
     this.onRegistered = onRegistered;
     this.onQueue = onQueue;
-    this.queue = readQueue(storage);
-    this.outbox = readOutbox(storage, this.queue);
+    this.endpoint = endpoint;
+    this.pendingReady = Promise.resolve(pendingStore).catch(() => null);
+    this.tabOwner = crypto.randomUUID();
+    this.currentScope = null;
+    this.queue = [];
+    this.outbox = [];
     this.seenLedgerIds = new Set();
     this.cursor = null;
     this.token = null;
@@ -143,10 +129,14 @@ export class ScreenNet {
     this.active = false;
     this.generation++;
     this.controller?.abort();
+    this.sendController?.abort();
+    clearTimeout(this.retryTimer);
     this.token = null;
     this.screen = null;
+    this.currentScope = null;
     this.storage.removeItem(TOKEN_KEY);
-    for (const item of this.outbox) if (item.status === "sending") item.status = "unsent";
+    this.queue = [];
+    this.outbox = [];
     this.publishOutbox();
     this.onState("offline");
   }
@@ -156,13 +146,19 @@ export class ScreenNet {
     if (frame.type === SCREEN_REGISTRATION_EVENT) {
       let registered;
       try { registered = JSON.parse(frame.data); } catch { return; }
-      if (!registered || typeof registered.token !== "string" || typeof registered.screen !== "string" || typeof registered.label !== "string") return;
+      if (!isScreenRegistration(registered)) { this.onState("send-error", new Error("screen credential scope unavailable")); return; }
+      if (this.currentScope && this.currentScope !== registered.auth_scope) {
+        this.sendController?.abort();
+        clearTimeout(this.retryTimer);
+        this.queue = []; this.outbox = []; this.publishOutbox();
+      }
       this.token = registered.token;
       this.screen = registered.screen;
+      this.currentScope = registered.auth_scope;
       this.storage.setItem(TOKEN_KEY, registered.token);
       this.onRegistered(registered);
       this.onState("online");
-      void this.flush();
+      void this.restorePending(registered.auth_scope).then(() => this.flush());
       return;
     }
     if ((!this.token && !historical) || !/^[1-9][0-9]*$/.test(frame.id)) return;
@@ -177,6 +173,7 @@ export class ScreenNet {
       const oldLength = this.outbox.length;
       this.outbox = this.outbox.filter((item) => item.id !== message.id);
       if (this.outbox.length !== oldLength) this.publishOutbox();
+      if (this.currentScope) void this.pendingReady.then((store) => store?.removeAccepted(this.endpoint, this.currentScope, message.id)).catch(() => {});
     }
     if (history) history.push(message);
     else this.onMessage(message, { historical });
@@ -195,8 +192,21 @@ export class ScreenNet {
   }
 
   publishOutbox() {
-    this.storage.setItem(OUTBOX_VIEW_KEY, JSON.stringify(this.outbox));
     this.onQueue(this.queue.length, this.outbox.map((item) => ({ ...item })));
+  }
+
+  async restorePending(scope) {
+    const store = await this.pendingReady;
+    if (!store) { this.onState("send-error", new Error("pending storage unavailable")); return; }
+    const items = (await store.list(this.endpoint, scope)).filter((item) => {
+      if (!item.id || !this.seenLedgerIds.has(item.id)) return true;
+      void store.removeAccepted(this.endpoint, scope, item.id).catch(() => {});
+      return false;
+    });
+    if (scope !== this.currentScope) return;
+    this.queue = items.filter((item) => item.wire && !item.id).map((item) => item.wire);
+    this.outbox = items.map((item) => ({ client_id: item.client_id, text: item.text, attachments: item.attachments, status: item.status === "sending" && item.leaseUntil <= Date.now() ? "unsent" : item.status, id: item.id, seq: item.seq }));
+    this.publishOutbox();
   }
 
   setOutbox(clientId, patch) {
@@ -206,14 +216,17 @@ export class ScreenNet {
     this.publishOutbox();
   }
 
-  enqueueSay(text, attachments = []) {
+  async enqueueSay(text, attachments = []) {
+    const scope = this.currentScope;
+    if (!scope) throw new Error("connect once before storing an offline message");
+    const store = await this.pendingReady;
+    if (!store) throw new Error("pending storage unavailable");
+    if (typeof text !== "string" || (!text.trim() && !attachments.length)) throw new Error("empty message");
     const body = { text, ...(attachments.length ? { attachments } : {}) };
     const message = { to: "agent:main", kind: "request", word: "say", body, client_id: crypto.randomUUID() };
-    this.queue.push(message);
-    this.storage.setItem(QUEUE_KEY, JSON.stringify(this.queue));
-    this.outbox.push({ client_id: message.client_id, text, status: this.token ? "sending" : "unsent", id: null, seq: null });
-    this.publishOutbox();
-    void this.flush();
+    await store.enqueue(this.endpoint, scope, message);
+    await this.restorePending(scope);
+    if (scope === this.currentScope) void this.flush();
     return message.client_id;
   }
 
@@ -232,36 +245,61 @@ export class ScreenNet {
   }
 
   async flush() {
-    if (this.flushing || !this.token) return;
+    if (this.flushing || !this.token || !this.currentScope) return;
     this.flushing = true;
     const startingToken = this.token;
+    const startingScope = this.currentScope;
+    const retry = (ms) => {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = setTimeout(() => {
+        if (this.token && this.currentScope === startingScope) {
+          void this.restorePending(startingScope).then(() => this.flush()).catch(() => this.onState("send-error", new Error("pending storage unavailable")));
+        }
+      }, Math.max(100, ms));
+      this.retryTimer.unref?.();
+    };
     try {
-      while (this.token && this.queue.length) {
+      const store = await this.pendingReady;
+      if (!store) { this.onState("send-error", new Error("pending storage unavailable")); return; }
+      while (this.token && this.currentScope === startingScope) {
         const token = this.token;
-        const queued = this.queue[0];
+        const queued = await store.claim(this.endpoint, startingScope, this.tabOwner);
+        if (!queued) break;
+        if (queued.blockedUntil) { retry(queued.blockedUntil - Date.now() + 20); break; }
         this.setOutbox(queued.client_id, { status: "sending" });
         let response;
+        const sending = new AbortController();
+        this.sendController = sending;
+        const leaseTimer = setInterval(() => { void store.renew(queued, this.tabOwner).catch(() => sending.abort()); }, 10_000);
         try {
-          response = await this.request("/api/send", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token }, body: JSON.stringify(this.queue[0]) });
-        } catch { this.setOutbox(queued.client_id, { status: "unsent" }); this.onState("offline"); break; }
-        if (response.status === 403 && token === this.token) { this.setOutbox(queued.client_id, { status: "unsent" }); this.controller?.abort(); break; }
-        if (!response.ok) { this.setOutbox(queued.client_id, { status: response.status < 500 ? "rejected" : "unsent" }); this.onState("send-error", new Error(`send HTTP ${response.status}`)); break; }
-        let acknowledgement;
-        try { acknowledgement = await response.json(); } catch { /* retry the same client_id */ }
-        if (typeof acknowledgement?.id !== "string" || !Number.isSafeInteger(acknowledgement.seq)) {
-          this.setOutbox(queued.client_id, { status: "unsent" });
-          this.onState("send-error", new Error("send acknowledgement invalid"));
+          response = await this.request("/api/send", { method: "POST", credentials: "same-origin", signal: sending.signal, headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token }, body: JSON.stringify(queued.wire) });
+        } catch { await store.release(queued, this.tabOwner, "unsent"); this.setOutbox(queued.client_id, { status: "unsent" }); this.onState("offline"); retry(5_000); break; }
+        finally { clearInterval(leaseTimer); if (this.sendController === sending) this.sendController = null; }
+        if (response.status === 403 && token === this.token) { await store.release(queued, this.tabOwner, "unsent"); this.setOutbox(queued.client_id, { status: "unsent" }); this.controller?.abort(); break; }
+        if (!response.ok) {
+          const status = response.status < 500 ? "rejected" : "unsent";
+          await store.release(queued, this.tabOwner, status);
+          this.setOutbox(queued.client_id, { status }); this.onState("send-error", new Error(`send HTTP ${response.status}`));
+          if (status === "unsent") retry(5_000);
           break;
         }
-        if (this.queue.length) this.queue.shift();
-        this.storage.setItem(QUEUE_KEY, JSON.stringify(this.queue));
-        if (this.seenLedgerIds.has(acknowledgement.id)) this.outbox = this.outbox.filter((item) => item.client_id !== queued.client_id);
-        else this.setOutbox(queued.client_id, { status: "accepted", id: acknowledgement.id, seq: acknowledgement.seq });
-        this.publishOutbox();
+        let acknowledgement;
+        try { acknowledgement = await response.json(); } catch { /* retry the same client_id */ }
+        if (typeof acknowledgement?.id !== "string" || !Number.isSafeInteger(acknowledgement.seq) || acknowledgement.seq < 1) {
+          await store.release(queued, this.tabOwner, "unsent");
+          this.setOutbox(queued.client_id, { status: "unsent" });
+          this.onState("send-error", new Error("send acknowledgement invalid"));
+          retry(5_000);
+          break;
+        }
+        await store.accept(queued, this.tabOwner, acknowledgement.id, acknowledgement.seq);
+        if (this.seenLedgerIds.has(acknowledgement.id)) await store.removeAccepted(this.endpoint, startingScope, acknowledgement.id);
+        await this.restorePending(startingScope);
       }
-    } finally {
+    } catch { this.onState("send-error", new Error("pending storage unavailable")); }
+    finally {
       this.flushing = false;
-      if (this.token && this.token !== startingToken && this.queue.length) queueMicrotask(() => { void this.flush(); });
+      if (this.token && this.token !== startingToken && this.currentScope === startingScope) queueMicrotask(() => { void this.flush(); });
     }
   }
 }

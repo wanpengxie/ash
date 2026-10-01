@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeInlineAttachment, openInlineBlob } from "../js/attachments.js";
+import { decodeInlineAttachment, openInlineBlob, prepareUploads } from "../js/attachments.js";
 
 const wire = (name, mime_type, bytes) => ({ name, mime_type, data: Buffer.from(bytes).toString("base64") });
 
@@ -38,4 +38,20 @@ test("temporary object URL revokes once", () => {
     opened.revoke();
     assert.equal(revoked, 1);
   } finally { URL.createObjectURL = originalCreate; URL.revokeObjectURL = originalRevoke; }
+});
+
+test("upload keeps original file and animated media bytes, with attachment-only input", async () => {
+  const file = new File(["<svg onload='x'>"], "a/b.svg", { type: "image/svg+xml" });
+  const gif = new File(["GIF89aoriginal"], "moving.gif", { type: "image/gif" });
+  const attachments = await prepareUploads([file, gif], "");
+  assert.deepEqual(attachments.map(({ name, mime_type }) => [name, mime_type]), [["a_b.svg", "image/svg+xml"], ["moving.gif", "image/gif"]]);
+  assert.equal(Buffer.from(attachments[0].data, "base64").toString(), "<svg onload='x'>");
+  assert.equal(Buffer.from(attachments[1].data, "base64").toString(), "GIF89aoriginal");
+});
+
+test("upload rejects oversized original files and UTF-8 JSON/base64 request overflow", async () => {
+  const tooLarge = new File([new Uint8Array(20 * 1024 * 1024 + 1)], "too-large.bin", { type: "application/octet-stream" });
+  await assert.rejects(() => prepareUploads([tooLarge], ""), /20 MiB/);
+  const file = new File([new Uint8Array(11 * 1024 * 1024)], "bounded.bin", { type: "application/octet-stream" });
+  await assert.rejects(() => prepareUploads([file, file], ""), /request limit/);
 });

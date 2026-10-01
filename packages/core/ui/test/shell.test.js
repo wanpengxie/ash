@@ -7,6 +7,27 @@ const storage = () => {
   const data = new Map();
   return { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) };
 };
+const SCOPE = `v1_${"b".repeat(43)}`;
+const registration = (screen = "screen:a", scope = SCOPE) => ({ screen, token: "a".repeat(32), label: "Tab", auth_scope: scope });
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+class MemoryPending {
+  constructor() { this.items = new Map(); }
+  async list(endpoint, scope) { return [...this.items.values()].filter((item) => item.endpoint === endpoint && item.scope === scope); }
+  async enqueue(endpoint, scope, wire) {
+    const item = { endpoint, scope, wire, client_id: wire.client_id, text: wire.body.text, attachments: [], status: "unsent", id: null, seq: null, leaseOwner: null, leaseUntil: 0 };
+    this.items.set(wire.client_id, item); return item;
+  }
+  async claim(endpoint, scope, owner) {
+    const item = [...this.items.values()].find((value) => value.endpoint === endpoint && value.scope === scope && value.wire && !value.id && value.status !== "rejected" && !value.leaseOwner);
+    if (!item) return null;
+    item.leaseOwner = owner; item.status = "sending"; return { ...item };
+  }
+  async renew() {}
+  async release(item, owner, status) { const saved = this.items.get(item.client_id); if (saved?.leaseOwner === owner) { saved.leaseOwner = null; saved.status = status; } }
+  async accept(item, owner, id, seq) { const saved = this.items.get(item.client_id); if (saved?.leaseOwner === owner) { saved.id = id; saved.seq = seq; saved.status = "accepted"; saved.wire = null; saved.leaseOwner = null; } }
+  async removeAccepted(_endpoint, _scope, id) { for (const [key, value] of this.items) if (value.id === id) this.items.delete(key); }
+}
+const netWith = (options = {}) => new ScreenNet({ storage: storage(), pendingStore: new MemoryPending(), ...options });
 const message = (seq) => ({ seq, id: `m${seq}`, ts: seq, kind: "request", from: "person:owner", to: "agent:main", word: "say", body: { text: `text ${seq}` } });
 
 test("SSE parser handles control and bounded ledger frames", async () => {
@@ -31,20 +52,22 @@ test("SSE reader preserves CRLF and multibyte UTF-8 across single-byte chunks", 
 test("registration precedes queued send and same client_id survives retry", async () => {
   const calls = [];
   let fail = true;
-  const net = new ScreenNet({ storage: storage(), fetchImpl: async (url, init) => {
+  const net = netWith({ fetchImpl: async (url, init) => {
     calls.push({ url, init });
     if (fail) { fail = false; throw new Error("offline"); }
     return new Response(JSON.stringify({ id: "m1", seq: 1 }), { status: 200 });
   } });
-  net.enqueueSay("queued");
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  net.token = null;
+  await net.enqueueSay("queued");
   assert.equal(calls.length, 0);
-  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "secret", label: "Tab" }) }, net.generation);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  await tick();
   assert.equal(calls.length, 1);
   assert.equal(net.queue.length, 1);
   await net.flush();
   assert.equal(calls.length, 2);
-  assert.equal(calls[0].init.headers["Ash-Screen"], "secret");
+  assert.equal(calls[0].init.headers["Ash-Screen"], "a".repeat(32));
   assert.equal(JSON.parse(calls[0].init.body).client_id, JSON.parse(calls[1].init.body).client_id);
   assert.equal(net.queue.length, 0);
 });
@@ -53,15 +76,18 @@ test("local outbox stays unsent offline, keeps one client id across retry, then 
   const saved = storage();
   const sent = [];
   let fail = true;
-  const net = new ScreenNet({ storage: saved, fetchImpl: async (_url, init) => {
+  const pendingStore = new MemoryPending();
+  const net = netWith({ storage: saved, pendingStore, fetchImpl: async (_url, init) => {
     sent.push(JSON.parse(init.body));
     if (fail) { fail = false; throw new Error("offline"); }
     return new Response(JSON.stringify({ id: "m_accepted", seq: 17 }), { status: 200 });
   } });
-  const clientId = net.enqueueSay("hello while offline");
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  net.token = null;
+  const clientId = await net.enqueueSay("hello while offline");
   assert.deepEqual(net.outbox.map((item) => item.status), ["unsent"]);
-  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "proof", label: "Tab" }) }, net.generation);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  await tick();
   assert.deepEqual(net.outbox.map((item) => item.status), ["unsent"]);
   await net.flush();
   assert.equal(sent.length, 2);
@@ -71,21 +97,24 @@ test("local outbox stays unsent offline, keeps one client id across retry, then 
   assert.deepEqual(net.outbox.map((item) => [item.status, item.id]), [["accepted", "m_accepted"]]);
   net.frame({ type: "message", id: "17", data: JSON.stringify({ ...message(17), id: "m_accepted" }) }, net.generation);
   assert.deepEqual(net.outbox, []);
-  assert.deepEqual(new ScreenNet({ storage: saved, fetchImpl: async () => new Response("{}") }).outbox, []);
+  await tick();
+  assert.deepEqual((await pendingStore.list("http://local.test", SCOPE)), []);
 });
 
 test("missing acknowledgement cannot drop a pending message", async () => {
-  const net = new ScreenNet({ storage: storage(), fetchImpl: async () => new Response("{}", { status: 200 }) });
-  const id = net.enqueueSay("must retry");
-  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "proof", label: "Tab" }) }, net.generation);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  const net = netWith({ fetchImpl: async () => new Response("{}", { status: 200 }) });
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  net.token = null;
+  const id = await net.enqueueSay("must retry");
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  await tick();
   assert.equal(net.queue[0].client_id, id);
   assert.equal(net.outbox[0].status, "unsent");
 });
 
 test("live cursor advances only from matching id/seq and is sent as Last-Event-ID", async () => {
-  const net = new ScreenNet({ storage: storage(), fetchImpl: async () => new Response(null) });
-  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "a", label: "Tab" }) }, net.generation);
+  const net = netWith({ fetchImpl: async () => new Response(null) });
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
   net.frame({ type: "message", id: "7", data: JSON.stringify(message(6)) }, net.generation);
   assert.equal(net.cursor, null);
   net.frame({ type: "message", id: "7", data: JSON.stringify(message(7)) }, net.generation);
@@ -94,14 +123,14 @@ test("live cursor advances only from matching id/seq and is sent as Last-Event-I
 });
 
 test("unregistered presence service HTTP 404 is not a successful heartbeat", async () => {
-  const net = new ScreenNet({ storage: storage(), fetchImpl: async () => new Response('{"error":"not_found"}', { status: 404 }) });
-  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "a", label: "Tab" }) }, net.generation);
+  const net = netWith({ fetchImpl: async () => new Response('{"error":"not_found"}', { status: 404 }) });
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
   assert.deepEqual(await net.sendEvent("service:post", "visible"), { ok: false, reason: "HTTP 404" });
 });
 
 test("UI transport rejects routes outside the documented stream/send pair", () => {
   const calls = [];
-  const net = new ScreenNet({ storage: storage(), fetchImpl: async (url) => { calls.push(url); return new Response("{}"); } });
+  const net = netWith({ fetchImpl: async (url) => { calls.push(url); return new Response("{}"); } });
   assert.throws(() => net.request("/api/settings"), /unapproved/);
   assert.throws(() => net.request("https://elsewhere.example/api/stream"), /unapproved/);
   assert.throws(() => net.request("/api/send", { method: "GET" }), /unapproved/);
@@ -110,8 +139,8 @@ test("UI transport rejects routes outside the documented stream/send pair", () =
 
 test("ui.open reply is restricted to the registered target and uses stable response identity", async () => {
   const calls = [];
-  const net = new ScreenNet({ storage: storage(), fetchImpl: async (url, init) => { calls.push({ url, init }); return new Response("{}", { status: 200 }); } });
-  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:one", token: "proof", label: "One" }) }, net.generation);
+  const net = netWith({ fetchImpl: async (url, init) => { calls.push({ url, init }); return new Response("{}", { status: 200 }); } });
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration("screen:one")) }, net.generation);
   const request = { id: "m_123", kind: "request", word: "ui.open", from: "agent:main", to: "screen:other" };
   assert.equal(await net.respondOpen(request, true), false);
   assert.equal(calls.length, 0);
@@ -120,7 +149,7 @@ test("ui.open reply is restricted to the registered target and uses stable respo
   const sent = JSON.parse(calls[0].init.body);
   assert.deepEqual({ to: sent.to, kind: sent.kind, word: sent.word, reply_to: sent.reply_to, body: sent.body, client_id: sent.client_id },
     { to: "agent:main", kind: "response", word: "ui.open", reply_to: "m_123", body: { ok: true, result: { opened: false } }, client_id: "ui-open:m_123" });
-  assert.equal(calls[0].init.headers["Ash-Screen"], "proof");
+  assert.equal(calls[0].init.headers["Ash-Screen"], "a".repeat(32));
 });
 
 test("older pagination sorts/deduplicates and drops a late prior-session page", async () => {

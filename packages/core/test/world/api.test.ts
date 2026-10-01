@@ -47,6 +47,19 @@ test("edge authenticates before send, allows bounded wait, and exposes only decl
   } finally { ledger.close(); }
 });
 
+test("owner inbox accepts attachment-only say but rejects empty text without an attachment", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const attachment = { name: "note.txt", mime_type: "text/plain", data: Buffer.from("fixture").toString("base64") };
+    const accepted = await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "", attachments: [attachment] })), owner);
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(ledger.byId(parsed(accepted).id)?.body, { text: "", attachments: [attachment] });
+    for (const body of [{ text: "" }, { text: "", attachments: [] }])
+      assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", body)), owner)).status, 400);
+    assert.equal(ledger.list().filter((entry) => entry.word === "say" && entry.kind === "request").length, 1);
+  } finally { ledger.close(); }
+});
+
 test("wait cap returns the accepted id without inventing a late reply", async () => {
   const { ledger, world, members } = await fixture();
   try {

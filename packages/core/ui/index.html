@@ -57,6 +57,7 @@ textarea{flex:1;resize:none;border:1px solid var(--line);background:var(--card);
 footer button{border:0;background:var(--me);color:#fff;border-radius:12px;padding:0 1rem;font-size:1rem;cursor:pointer}
 footer button.stop{background:var(--err)}
 #attach{background:var(--chip);color:var(--fg);padding:0 .8rem;font-size:1.15rem}
+.pending-note,#selected{display:block;color:var(--mute);font-size:.72rem;padding:.1rem .5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #pending{display:flex;gap:.4rem;flex-wrap:wrap;max-width:760px;margin:0 auto .4rem}#pending:empty{display:none}
 .pa{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.25rem .5rem;font-size:.8rem;display:flex;align-items:center;gap:.3rem;max-width:12rem}
 .pa img{width:3rem;height:3rem;object-fit:cover;border-radius:6px}.pa span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -87,7 +88,7 @@ code.k{background:var(--chip);padding:.15rem .4rem;border-radius:5px;word-break:
   <button id="menu" title="设备与设置">☰<span id="badge"></span></button>
 </header>
 <main id="log"></main>
-<footer><div id="suggestions"></div><div id="pending"></div><form id="f"><button type="button" id="attach" title="图片或文件">📎</button><input type="file" id="file" multiple hidden><textarea id="t" rows="1" placeholder="跟 Ash 说点什么…"></textarea><button id="send">发送</button></form></footer>
+<footer><div id="suggestions"></div><div id="pending"></div><div id="selected"></div><form id="f"><button type="button" id="attach" title="图片或文件">📎</button><input type="file" id="file" multiple hidden><textarea id="t" rows="1" placeholder="跟 Ash 说点什么…"></textarea><button id="send">发送</button></form><small class="pending-note">未发送的文字和附件暂存在此浏览器，最多保留 7 天；仅送达确认后才移除附件副本。</small></footer>
 <aside id="drawer"><div id="tabs"></div><div id="panel"></div></aside>
 <!-- ui-app -->
 </body>

@@ -17,10 +17,16 @@ function readKey(path: string): Buffer {
   } finally { closeSync(fd); }
 }
 
+function durableDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); }
+  finally { closeSync(fd); }
+}
+
 /** Create once, atomically; corrupt or inaccessible existing keys never rotate silently. */
 export function loadAuthScopeKey(stateDir: string): Buffer {
   const target = join(stateDir, KEY_FILE);
-  try { return readKey(target); }
+  try { const existing = readKey(target); durableDirectory(stateDir); return existing; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const temporary = join(stateDir, `${KEY_FILE}.${randomBytes(12).toString("hex")}.tmp`);
   const key = randomBytes(KEY_BYTES);
@@ -32,7 +38,9 @@ export function loadAuthScopeKey(stateDir: string): Buffer {
     closeSync(fd); fd = null;
     try { linkSync(temporary, target); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-    return readKey(target);
+    const installed = readKey(target);
+    durableDirectory(stateDir);
+    return installed;
   } finally {
     if (fd !== null) closeSync(fd);
     try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

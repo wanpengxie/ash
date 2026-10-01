@@ -1,7 +1,7 @@
 import { fold, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
-import { openInlineBlob } from "./attachments.js";
+import { openInlineBlob, prepareUploads } from "./attachments.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -97,6 +97,10 @@ export function boot() {
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
   const suggestions = document.querySelector("#suggestions");
+  const fileInput = document.querySelector("#file");
+  const attachButton = document.querySelector("#attach");
+  const selected = document.querySelector("#selected");
+  const sendButton = document.querySelector("#send");
   let presenceProblem = "";
   let lastTyping = 0;
   let timeline;
@@ -147,13 +151,21 @@ export function boot() {
     lastTyping = now;
     await net.sendEvent("agent:main", "typing");
   }
-  form.addEventListener("submit", (event) => {
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const value = input.value.trim();
-    if (!value) return;
-    net.enqueueSay(value);
-    input.value = "";
-    log.scrollTop = log.scrollHeight;
+    const files = [...fileInput.files];
+    if (!value && !files.length) return;
+    sendButton.disabled = true;
+    try {
+      const attachments = await prepareUploads(files, value);
+      await net.enqueueSay(value, attachments);
+      input.value = "";
+      fileInput.value = "";
+      selected.textContent = "";
+      log.scrollTop = log.scrollHeight;
+    } catch (error) { state.textContent = `未发送：${error.message || "无法保存待发送消息"}`; }
+    finally { sendButton.disabled = false; }
   });
   input.addEventListener("input", () => { void typing(); });
   document.addEventListener("visibilitychange", () => {
@@ -168,8 +180,11 @@ export function boot() {
     try { if (await timeline.older()) log.scrollTop = top + log.scrollHeight - height; }
     catch { state.textContent = "更早记录暂时无法加载"; }
   });
-  document.querySelector("#attach").disabled = true;
-  document.querySelector("#attach").title = "附件入口待接入";
+  attachButton.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const files = [...fileInput.files];
+    selected.textContent = files.length ? `${files.length} 个附件，${files.map((file) => file.name).join("、").slice(0, 120)}` : "";
+  });
   document.querySelector("#menu").addEventListener("click", () => document.querySelector("#drawer").classList.toggle("open"));
   text(document.querySelector("#panel"), "p", "更多页面正在接入。", "muted");
   window.addEventListener("pagehide", () => net.stop());

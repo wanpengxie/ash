@@ -18,7 +18,7 @@ const ledger = await Ledger.open(join(directory, "ledger.db"));
 const world = new WorldRouter(ledger, async () => true);
 const members = new WorldMembers(world);
 members.register({ id: "agent:main", kind: "agent", name: "Main", words: () => [wordContract("agent:main", "say"), wordContract("agent:main", "typing")], handle: () => ({ ok: true, result: { accepted: true } }) });
-const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} });
+const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
 let browser;
 let socket;
 let socket2;

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { authScope, loadAuthScopeKey } from "../../src/auth-scope";
 
 function fixture(run: (dir: string, path: string) => void): void {
@@ -42,4 +45,17 @@ test("existing malformed, world-readable, or symlink key fails closed without ro
     symlinkSync(other, path);
     assert.throws(() => loadAuthScopeKey(dir));
   });
+});
+
+test("two real processes starting together publish one durable credential scope", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-auth-scope-race-"));
+  const modulePath = fileURLToPath(new URL("../../src/auth-scope.ts", import.meta.url));
+  const command = `import { loadAuthScopeKey, authScope } from ${JSON.stringify(modulePath)}; process.stdout.write(authScope(loadAuthScopeKey(process.argv[1]), 'token:one'));`;
+  const launch = () => promisify(execFile)(process.execPath, ["--import", "tsx", "--input-type=module", "-e", command, dir], { cwd: process.cwd() });
+  try {
+    const [a, b] = await Promise.all([launch(), launch()]);
+    assert.equal(a.stdout, b.stdout);
+    assert.equal(a.stdout, authScope(loadAuthScopeKey(dir), "token:one"));
+    assert.equal(statSync(join(dir, "screen-auth-scope.key")).mode & 0o777, 0o600);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
