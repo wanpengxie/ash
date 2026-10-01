@@ -4,7 +4,8 @@ const safeText = (value, max = 240) => typeof value === "string" ? value.slice(0
 const validId = (value) => typeof value === "string" && value.length > 0 && value.length <= 256;
 const validTime = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
 const choices = new Set(["once", "always", "deny"]);
-const actionLabel = (item) => item?.word === "message.send" ? "发送消息" :
+const actionLabel = (item) => item?.word === "calendar.create" ? "创建日历事件" :
+  item?.word === "message.send" ? "发送消息" :
   item?.risk === "outward" ? "对外操作" : item?.risk === "structure" ? "修改资料" : "受保护操作";
 export function approvalSections(view, now = Date.now()) {
   const pending = [];
@@ -84,7 +85,9 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
   else for (const rule of rules) {
     if (!rule || !validId(rule.id) || rule.revoked_at || !validTime(rule.expires_at) || rule.expires_at <= now) continue;
     const row = text(fragment, "article", "", "sheet-rule");
-    text(row, "p", `${actionLabel(rule)} · 截止 ${new Date(rule.expires_at).toLocaleString()}`);
+    const objectLabel = rule.word === "calendar.create" ? `日历 ${safeText(rule.object_pattern, 80)}` :
+      rule.word === "message.send" ? `收件人 ${safeText(rule.object_pattern, 80)}` : safeText(rule.object_pattern, 80);
+    text(row, "p", `${actionLabel(rule)} · ${objectLabel} · 截止 ${new Date(rule.expires_at).toLocaleString()}`);
     if (typeof onRevoke === "function") {
       const button = text(row, "button", "撤销规则", "sheet-choice");
       button.type = "button";

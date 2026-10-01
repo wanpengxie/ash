@@ -245,3 +245,56 @@ test("recent history paints promptly and upward scroll loads the earlier page", 
   await page.locator("#log").evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
   await expect(page.locator("#log .msg.me").filter({ hasText: `${batch} item 0` })).toHaveCount(1);
 });
+
+test("the approval page saves an exact calendar rule and revokes it", async ({ page }) => {
+  let effects = 0;
+  const device = "device:calendar_e2e";
+  running.members.registerDevice({ id: device, kind: "device", name: "Calendar probe", online: true,
+    capabilities: () => [{ name: "calendar.create", description: "Add an event", label: "Adding a calendar event", risk: "outward",
+      input_schema: { type: "object", properties: { calendar_id: { type: "integer" }, title: { type: "string" } },
+        required: ["calendar_id", "title"], additionalProperties: false } }],
+    handle: () => { effects++; return { ok: true, result: {} }; } });
+  const grantResponse = await fetch(`${running.url}/api/send`, { method: "POST",
+    headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: `${device}/calendar.create` }, wait: true }) });
+  expect(grantResponse.status).toBe(200);
+  const grant = await grantResponse.json();
+  expect(grant.reply?.body.ok).toBe(true);
+  const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false };
+  const create = (calendar_id, title) => running.world.send(agent,
+    { to: device, kind: "request", word: "calendar.create", body: { calendar_id, title } });
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const first = await create(7, "first event");
+  await page.locator("#presence").click();
+  await page.locator("#agentTabs [data-tab=approvals]").click();
+  await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
+  await expect(page.locator("#agentPanel .sheet-approval.pending")).toContainText("first event");
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Allow this calendar for 30 days" }).click();
+  await expect.poll(() => effects).toBe(1);
+  expect(running.ledger.responseTo(first.id)?.body.ok).toBe(true);
+
+  await page.locator("#agentTabs [data-tab=activity]").click();
+  await page.locator("#agentTabs [data-tab=approvals]").click();
+  await expect(page.locator("#agentPanel .sheet-rule")).toHaveCount(1);
+  await expect(page.locator("#agentPanel .sheet-rule")).toContainText("日历 7");
+  await expect(page.locator("#agentPanel .sheet-history").filter({ hasText: "以后都允许" })).toHaveCount(1);
+  const same = await create(7, "another event");
+  await expect.poll(() => effects).toBe(2);
+  expect(running.ledger.gateCase(same.id)).toBe(null);
+  const other = await create(8, "different calendar");
+  await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
+  expect(effects).toBe(2);
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
+  await expect.poll(() => running.ledger.responseTo(other.id)?.body.ok).toBe(false);
+
+  await page.locator("#agentPanel .sheet-rule").getByRole("button", { name: "撤销规则" }).click();
+  await expect(page.locator("#agentPanel .sheet-rule")).toHaveCount(0);
+  const revoked = await create(7, "after revoke");
+  await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
+  expect(effects).toBe(2);
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
+  await expect.poll(() => running.ledger.responseTo(revoked.id)?.body.ok).toBe(false);
+});

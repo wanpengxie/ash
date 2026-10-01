@@ -123,7 +123,8 @@ test("calendar reads proceed while calendar writes wait for the owner's decision
         { name: "calendar.search", description: "Find calendar events", label: "Checking your calendar", risk: "none",
           input_schema: { type: "object", properties: {}, additionalProperties: false } },
         { name: "calendar.create", description: "Add a calendar event", label: "Adding a calendar event", risk: "outward",
-          input_schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false } },
+          input_schema: { type: "object", properties: { calendar_id: { type: "integer" }, title: { type: "string" } },
+            required: ["calendar_id", "title"], additionalProperties: false } },
       ],
       handle: (message) => { calls.push(message.word); return { ok: true, result: {} }; } });
     const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
@@ -147,24 +148,44 @@ test("calendar reads proceed while calendar writes wait for the owner's decision
 
     const screen = running.edge.screens.register({ member: "person:owner", transport: "api", local: true, remote: false,
       ownerProxy: true, transportPrincipal: `token:${createHash("sha256").update(token).digest("hex")}` }, "calendar-scope", "Phone screen");
-    const decide = async (requestId: string, choice: "once" | "deny") => {
+    const decide = async (requestId: string, choice: "once" | "always" | "deny", before: number) => {
       const until = Date.now() + 2_000;
       while (!running.ledger.gateCase(requestId) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
       const gate = running.ledger.gateCase(requestId);
       assert.ok(gate);
-      assert.deepEqual(calls, ["calendar.search"]);
+      assert.match(String(running.ledger.byId(gate.askId)?.body.detail), /日历 7|日历 8/);
+      assert.equal(calls.length, before);
       await owner({ to: "service:gate", kind: "response", word: "ask", reply_to: gate.askId,
         body: { ok: true, result: { choice } } }, screen.token);
       while (!running.ledger.responseTo(requestId) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
       assert.ok(running.ledger.responseTo(requestId));
     };
-    const denied = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { title: "No write" } });
-    await decide(denied.id, "deny");
+    const denied = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { calendar_id: 7, title: "No write" } });
+    await decide(denied.id, "deny", 1);
     assert.deepEqual(calls, ["calendar.search"]);
     assert.equal(running.ledger.responseTo(denied.id)?.body.ok, false);
-    const allowed = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { title: "Write once" } });
-    await decide(allowed.id, "once");
+    const allowed = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { calendar_id: 7, title: "Write once" } });
+    await decide(allowed.id, "once", 1);
     assert.deepEqual(calls, ["calendar.search", "calendar.create"]);
     assert.equal(running.ledger.responseTo(allowed.id)?.body.ok, true);
+    const always = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { calendar_id: 7, title: "Remember this calendar" } });
+    await decide(always.id, "always", 2);
+    assert.equal(calls.length, 3);
+    const rule = running.ledger.gateRulesPage().rules[0];
+    assert.equal(rule?.object_pattern, "7");
+    const repeated = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { calendar_id: 7, title: "Another event" } });
+    const until = Date.now() + 2_000;
+    while (!running.ledger.responseTo(repeated.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(running.ledger.gateCase(repeated.id), null);
+    assert.equal(calls.length, 4);
+    const other = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { calendar_id: 8, title: "Other calendar" } });
+    await decide(other.id, "deny", 4);
+    assert.equal(calls.length, 4);
+    const revoke = await owner({ to: "service:gate", kind: "request", word: "rules.revoke", body: { id: rule!.id }, wait: true }, screen.token);
+    assert.equal(revoke.reply?.body.ok, true);
+    assert.ok(running.ledger.gateRulesPage().rules[0]?.revoked_at);
+    const afterRevoke = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { calendar_id: 7, title: "No longer automatic" } });
+    await decide(afterRevoke.id, "deny", 4);
+    assert.equal(calls.length, 4);
   } finally { await running.close(); }
 });

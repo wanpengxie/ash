@@ -554,6 +554,10 @@ export class WorldRouter {
 
   private reviewedObject(pending: Pending): string | null {
     const { request, endpoint } = pending;
+    if (request.to?.startsWith("device:") && request.word === "calendar.create" && endpoint.spec.risk === "outward") {
+      const calendarId = request.body.calendar_id;
+      return Number.isSafeInteger(calendarId) && (calendarId as number) > 0 ? String(calendarId) : null;
+    }
     if (!this.isolatedFakeAlways || request.to !== "device:isolated" || request.word !== "message.send" ||
       endpoint.spec.risk !== "outward" || canonical(endpoint.spec.input_schema) !== canonical(ISOLATED_MESSAGE_SCHEMA)) return null;
     const recipient = request.body.recipient_id;
@@ -647,12 +651,19 @@ export class WorldRouter {
           this.publish(ruleEvent);
         } else {
         const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
+        const calendarAsk = request.word === "calendar.create" && objectPattern !== null;
+        const eventTitle = typeof request.body.title === "string" ? request.body.title.slice(0, 100) : "未命名事件";
+        const eventStart = request.body.start_ms;
+        const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
+          ? `，开始时间 ${new Date(eventStart).toLocaleString("zh-CN")}` : "";
+        const detail = calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。` : "A protected action is waiting for approval.";
         const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
           contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
-          askBody: { title: "Confirm action", detail: "A protected action is waiting for approval.",
-            options: [{ id: "once", label: "Allow once" }, ...(objectPattern ? [{ id: "always", label: "Allow this recipient for 30 days" }] : []),
+          askBody: { title: calendarAsk ? "创建日历事件" : "Confirm action", detail,
+            options: [{ id: "once", label: "Allow once" }, ...(objectPattern ? [{ id: "always", label: request.word === "calendar.create"
+              ? "Allow this calendar for 30 days" : "Allow this recipient for 30 days" }] : []),
               { id: "deny", label: "Deny" }],
-            source: { word: request.word, to: request.to!, body_preview: "Protected action" } } });
+            source: { word: request.word, to: request.to!, body_preview: calendarAsk ? detail : "Protected action" } } });
         if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
         pending.phase = "gate_waiting";
         this.publish(started.ask);

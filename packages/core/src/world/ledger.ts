@@ -61,6 +61,18 @@ const str = (value: unknown, fallback = "") => typeof value === "string" ? value
 const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Row)[key])}`).join(",")}}` : JSON.stringify(value);
 const digest = (value: unknown) => createHash("sha256").update(stable(value)).digest("hex");
 const retryPayload = (input: NewMessage) => digest({ to: input.to, kind: input.kind, word: input.word, body: input.body, reply_to: input.reply_to ?? null });
+const gateObject = (target: string, word: string, body: Record<string, unknown>): string | null => {
+  if (target.startsWith("device:") && word === "calendar.create") {
+    const id = body.calendar_id;
+    return Number.isSafeInteger(id) && (id as number) > 0 ? String(id) : null;
+  }
+  if (target === "device:isolated" && word === "message.send") {
+    const recipient = body.recipient_id;
+    return typeof recipient === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(recipient.toLowerCase())
+      ? recipient.toLowerCase() : null;
+  }
+  return null;
+};
 
 function integrity(db: DatabaseSync): void {
   const result = db.prepare("PRAGMA integrity_check").get() as Row | undefined;
@@ -761,10 +773,8 @@ export class Ledger {
       const source = obj(input.askBody.source);
       if (source.word !== tracked.word || source.to !== tracked.to) throw new TypeError("gate ask source does not match accepted request");
       const optionIds = (input.askBody.options as { id?: unknown }[]).map((option) => option.id);
-      const recipient = obj(JSON.parse(String(tracked.body))).recipient_id;
-      const reviewedObject = tracked.to === "device:isolated" && tracked.word === "message.send" &&
-        typeof input.objectPattern === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(input.objectPattern) &&
-        typeof recipient === "string" && recipient.toLowerCase() === input.objectPattern;
+      const reviewedObject = typeof input.objectPattern === "string" &&
+        gateObject(String(tracked.to), String(tracked.word), obj(JSON.parse(String(tracked.body)))) === input.objectPattern;
       if (input.objectPattern !== undefined && !reviewedObject) throw new TypeError("unreviewed approval object");
       if (optionIds.join(",") !== (reviewedObject ? "once,always,deny" : "once,deny")) throw new TypeError("gate choices do not match reviewed object policy");
       if (this.db.prepare("SELECT 1 FROM gate_cases WHERE request_id=?").get(requestId)) throw new TypeError("duplicate gate case");
@@ -791,22 +801,20 @@ export class Ledger {
 
   /** A reviewed exact-object rule may pass a new request without an owner ask. */
   passGateByRule(requestId: string, subject: string, contractFingerprint: string, objectPattern: string): Message | null {
-    if (!subject || !/^[a-f0-9]{64}$/.test(contractFingerprint) ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(objectPattern)) return null;
+    if (!subject || !/^[a-f0-9]{64}$/.test(contractFingerprint) || !objectPattern) return null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const request = this.db.prepare(`SELECT m.*,s.phase,s.deadline_at FROM messages m JOIN request_state s ON s.request_id=m.id
         WHERE m.id=?`).get(requestId) as Row | undefined;
-      const recipient = request ? obj(JSON.parse(String(request.body))).recipient_id : null;
-      if (!request || request.phase !== "accepted" || request.to !== "device:isolated" || request.word !== "message.send" ||
-        Date.now() >= Number(request.deadline_at) || typeof recipient !== "string" || recipient.toLowerCase() !== objectPattern ||
+      if (!request || request.phase !== "accepted" || typeof request.to !== "string" ||
+        Date.now() >= Number(request.deadline_at) || gateObject(request.to, String(request.word), obj(JSON.parse(String(request.body)))) !== objectPattern ||
         !this.gateDeviceAccess(String(request.from), String(request.to), String(request.word))) {
         this.db.exec("COMMIT"); return null;
       }
       const now = Date.now();
       const rule = this.db.prepare(`SELECT id,risk FROM gate_rules WHERE subject=? AND target=? AND word=? AND object_pattern=?
         AND contract_fingerprint=? AND expires_at>? AND revoked_at IS NULL ORDER BY seq DESC LIMIT 1`)
-        .get(subject, request.to, request.word, objectPattern, contractFingerprint, now) as Row | undefined;
+        .get(subject, String(request.to), String(request.word), objectPattern, contractFingerprint, now) as Row | undefined;
       if (!rule) { this.db.exec("COMMIT"); return null; }
       const changed = this.db.prepare("UPDATE request_state SET phase='dispatching',updated_at=? WHERE request_id=? AND phase='accepted'")
         .run(now, requestId);
@@ -852,8 +860,8 @@ export class Ledger {
       const at = Date.now();
       if (cause === "answer" && at >= Number(row.expires_at)) throw new TypeError("gate ask expired before answer");
       if (cause === "deadline" && at < Number(row.expires_at)) throw new TypeError("gate deadline has not elapsed");
-      if (cause === "answer" && choice === "always" && (row.target !== "device:isolated" || row.request_word !== "message.send" ||
-        typeof row.object_pattern !== "string")) throw new TypeError("always not available for this capability");
+      if (cause === "answer" && choice === "always" && typeof row.object_pattern !== "string")
+        throw new TypeError("always not available for this capability");
       const timedOut = cause === "deadline";
       const decision = cause === "cancelled" ? "cancelled" : timedOut ? "timeout" : choice === "deny" ? "denied" : "allowed";
       const askBody: ResponseBody = decision === "cancelled"
