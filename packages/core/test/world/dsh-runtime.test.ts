@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,6 +92,7 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
   const root = mkdtempSync(join(tmpdir(), "dsh-main-"));
   const home = join(root, "home"); mkdirSync(home);
   writeFileSync(join(home, "fixture.txt"), "NATIVE_READ_FIXTURE\n");
+  writeFileSync(join(home, "SOUL.md"), "SOUL_ORIGINAL\n");
   const captured: { tools: string[]; user: string; toolResult: boolean; resultText: string }[] = [];
   const model = createServer((req, res) => {
     let raw = "";
@@ -109,15 +110,17 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
       if (tools.length && !isMind)
         captured.push({ tools, user, toolResult, resultText: JSON.stringify(last?.content ?? "") });
       const step = captured.length;
-      const nativeRead = tools.length > 0 && !isMind && user.includes("read my fixture") && !toolResult;
-      const toolUse = Boolean(tools.length && !isMind && (step <= 3 || nativeRead));
+      const nativeWrite = tools.length > 0 && !isMind && user.includes("write soul directly") && !toolResult;
+      const nativeRead = tools.length > 0 && !isMind && !nativeWrite && user.includes("read my fixture") && !toolResult;
+      const toolUse = Boolean(tools.length && !isMind && (step <= 3 || nativeRead || nativeWrite));
       const messageId = /\bid=([A-Za-z0-9_-]+)/.exec(user)?.[1] ?? "missing";
       res.writeHead(200, { "content-type": "text/event-stream" });
       const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
       event("message_start", { message: { id: "msg_main", type: "message", role: "assistant", model: request.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
       if (toolUse) {
-        const tool = nativeRead ? "read" : step === 1 ? "ash_say" : "ash_react";
-        const input = nativeRead ? { file_path: "fixture.txt" } : step === 1 ? { text: "tool said" } : { message_id: step === 2 ? messageId : "missing", emoji: "❤" };
+        const tool = nativeRead ? "read" : nativeWrite ? "write" : step === 1 ? "ash_say" : "ash_react";
+        const input = nativeRead ? { file_path: "fixture.txt" } : nativeWrite ? { file_path: "SOUL.md", content: "WRONG\n" }
+          : step === 1 ? { text: "tool said" } : { message_id: step === 2 ? messageId : "missing", emoji: "❤" };
         event("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_main_${step}`, name: tool, input: {} } });
         event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
       } else {
@@ -189,6 +192,18 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.equal(readResult?.body.ok, true);
     assert.match(JSON.stringify(readResult?.body), /NATIVE_READ_FIXTURE/);
     assert.equal(readResult?.turn, readCall.turn);
+    const soulBefore = readFileSync(join(home, "SOUL.md"), "utf8");
+    const writeResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "write soul directly" }, client_id: "dsh-native-write-probe" }) });
+    assert.equal(writeResponse.status, 200);
+    const writeDeadline = Date.now() + 15_000;
+    while (Date.now() < writeDeadline && !running.ledger.list().some((message) => message.to === "service:dsh-tool" && message.word === "write"))
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    const writeCall = running.ledger.list().find((message) => message.to === "service:dsh-tool" && message.word === "write");
+    assert.ok(writeCall, "native write attempt entered the core ledger");
+    while (Date.now() < writeDeadline && !running.ledger.responseTo(writeCall.id)) await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(running.ledger.responseTo(writeCall.id)?.body.ok, false);
+    assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), soulBefore);
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));
