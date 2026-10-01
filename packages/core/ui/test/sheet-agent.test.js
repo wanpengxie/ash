@@ -266,6 +266,64 @@ function clockResponse(word, result) {
   } }) };
 }
 
+function gateResponse(word, result) {
+  return { ok: true, json: async () => ({ id: `gate-${word}`, reply: {
+    kind: "response", reply_to: `gate-${word}`, from: "service:gate", to: "person:owner", word,
+    body: { ok: true, result },
+  } }) };
+}
+
+function findAll(element, predicate) {
+  return [ ...(predicate(element) ? [element] : []), ...element.children.flatMap((child) => findAll(child, predicate)) ];
+}
+
+test("approval page loads gate history and rules, then removes a revoked rule after the authoritative reload", async () => {
+  const rule = { id: "rule-a", to: "device:fixture", word: "send", expires_at: Date.now() + 60_000 };
+  const history = { id: "history-a", source: "current", to: "device:fixture", word: "send", decision: "once", at: Date.now() };
+  const calls = [];
+  let revoked = false;
+  const f = fixture({ request: async (_path, options) => {
+    const wire = JSON.parse(options.body);
+    if (wire.to === "service:self") return clockResponse("read", {});
+    calls.push(wire);
+    if (wire.word === "history") return gateResponse(wire.word, { items: [history] });
+    if (wire.word === "rules.list") return gateResponse(wire.word, { rules: revoked ? [] : [rule] });
+    if (wire.word === "rules.revoke") { revoked = true; return gateResponse(wire.word, { revoked: true }); }
+    throw new Error(`unexpected ${wire.word}`);
+  } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("approvals");
+    await new Promise((resolve) => setImmediate(resolve));
+    const panel = f.sheet.panels.get("approvals");
+    assert.match(panel.textContent, /历史.*仅这一次.*以后都允许的规则.*撤销规则/s);
+    const button = findAll(panel, (item) => item.tag === "button" && item.textContent === "撤销规则")[0];
+    assert.ok(button);
+    button.listeners.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls.map((item) => item.word), ["history", "rules.list", "rules.revoke", "history", "rules.list"]);
+    assert.match(panel.textContent, /当前没有生效的规则/);
+    assert.equal(findAll(panel, (item) => item.tag === "button" && item.textContent === "撤销规则").length, 0);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+test("remote approval page can inspect rules but cannot offer a revoke button", async () => {
+  const f = fixture({ localManagement: false, request: async (_path, options) => {
+    const wire = JSON.parse(options.body);
+    if (wire.to === "service:self") return clockResponse("read", {});
+    return gateResponse(wire.word, wire.word === "history" ? { items: [] } : { rules: [
+      { id: "rule-remote", to: "device:fixture", word: "send", expires_at: Date.now() + 60_000 },
+    ] });
+  } });
+  try {
+    f.sheet.open();
+    await f.sheet.show("approvals");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(f.sheet.panels.get("approvals").textContent, /以后都允许的规则/);
+    assert.doesNotMatch(f.sheet.panels.get("approvals").textContent, /撤销规则/);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
 const pendingGateAsk = () => ({ id: "gate-ask", seq: 7, from: "service:gate", state: "pending",
   options_valid: true, title: "发送一条测试消息？", detail: "仅合成内容", expires_at: Date.now() + 60_000,
   options: [{ id: "once", label: "仅这次" }, { id: "deny", label: "拒绝" }] });
@@ -280,6 +338,8 @@ test("remote approval double click is single-flight; unknown ACK retries only th
     request: async (_path, options) => {
       const wire = JSON.parse(options.body);
       if (wire.to === "service:self") return clockResponse("read", {});
+      if (wire.kind === "request" && wire.to === "service:gate")
+        return gateResponse(wire.word, wire.word === "history" ? { items: [] } : { rules: [] });
       calls.push(wire);
       if (calls.length === 1) return new Promise((_resolve, reject) => { releaseFirst = () => reject(new Error("synthetic lost ACK")); });
       ledgerResponse = { id: "answer-1", seq: 8, from: "person:owner", to: "service:gate", kind: "response",

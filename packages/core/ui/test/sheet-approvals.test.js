@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fold, initialView } from "../js/project.js";
-import { answerGateAsk, approvalSections, renderApprovalsSheet } from "../js/sheet-approvals.js";
+import { answerGateAsk, approvalSections, gatePageRequest, renderApprovalsSheet } from "../js/sheet-approvals.js";
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.className = ""; this.value = ""; this.listeners = {}; }
@@ -23,6 +23,28 @@ const gateAsk = (id, seq, from = "service:gate", expires_at = 9000) => ({ seq, i
     options: [{ id: "once", label: "Only once" }, { id: "deny", label: "No" }],
     source: { to: "device:fixture", word: "send", body_preview: "synthetic" } } });
 
+test("gate page accepts only paired current-screen replies", async () => {
+  const net = { token: "screen-token", screen: "screen:local", currentScope: "scope-a", generation: 1,
+    request: async (_path, options) => {
+      const wire = JSON.parse(options.body);
+      assert.equal(options.headers["Ash-Screen"], "screen-token");
+      assert.equal(wire.to, "service:gate");
+      return { ok: true, json: async () => ({ id: "request-a", reply: { kind: "response", reply_to: "request-a",
+        from: "service:gate", to: "person:owner", word: wire.word, body: { ok: true, result: { rules: [] } } } }) };
+    } };
+  assert.deepEqual(await gatePageRequest(net, () => true, "rules.list", {}), { rules: [] });
+  net.request = async () => ({ ok: true, json: async () => ({ id: "request-a", reply: { kind: "response",
+    reply_to: "different", from: "service:gate", to: "person:owner", word: "rules.list", body: { ok: true, result: { rules: [] } } } }) });
+  await assert.rejects(gatePageRequest(net, () => true, "rules.list", {}), /未配对/);
+  let release;
+  net.request = async () => new Promise((resolve) => { release = resolve; });
+  const pending = gatePageRequest(net, () => true, "history", {});
+  net.currentScope = "scope-b";
+  release({ ok: true, json: async () => ({ id: "request-a", reply: { kind: "response", reply_to: "request-a",
+    from: "service:gate", to: "person:owner", word: "history", body: { ok: true, result: { items: [] } } } }) });
+  await assert.rejects(pending, /屏幕身份已变化/);
+});
+
 test("only a live gate ask from trusted ledger origin appears; other asks and old answers do not", () => {
   let view = initialView();
   view = fold(view, gateAsk("gate-live", 1));
@@ -35,7 +57,7 @@ test("only a live gate ask from trusted ledger origin appears; other asks and ol
   assert.deepEqual(sections.pending.map((ask) => ask.id), ["gate-live"]);
   assert.deepEqual(nodes.filter((node) => node.tag === "article").map((node) => node.dataset.askId), ["gate-live"]);
   assert.equal(nodes.some((node) => node.tag === "button"), false);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /完整审批历史尚未连接/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /审批历史暂不可用/);
   assert.match(nodes.map((node) => node.textContent).join(" "), /不能据此判断没有规则/);
 });
 
@@ -47,7 +69,7 @@ test("missing or body-spoofed source fails closed and empty state never claims r
   const { nodes } = draw({ asks: [{ id: "legacy", seq: 3, state: "pending", title: "Legacy", expires_at: 9000, options: [{ id: "deny", label: "No" }] }] });
   assert.equal(nodes.some((node) => node.tag === "article"), false);
   assert.match(nodes.map((node) => node.textContent).join(" "), /缺少可验证来源/);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /尚未连接/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂不可用/);
 });
 
 test("malformed raw options cannot be laundered into a valid approval by projection", () => {

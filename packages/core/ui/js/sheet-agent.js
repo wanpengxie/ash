@@ -3,7 +3,7 @@ import { IdentitySheet } from "./sheet-identity.js";
 import { MemorySheet } from "./sheet-memory.js";
 import { renderActivitySheet } from "./sheet-activity.js";
 import { normalizeClockList, renderUpcomingSheet } from "./sheet-upcoming.js";
-import { answerGateAsk, approvalSections, renderApprovalsSheet } from "./sheet-approvals.js";
+import { answerGateAsk, approvalSections, gatePageRequest, renderApprovalsSheet } from "./sheet-approvals.js";
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 
 const TABS = Object.freeze([
@@ -98,6 +98,7 @@ export class AgentSheet {
     this.idFactory = idFactory;
     this.cancelIntents = new Map();
     this.answerIntents = new Map();
+    this.revokeIntents = new Map();
     this.tabs = root.querySelector("#agentTabs");
     this.panel = root.querySelector("#agentPanel");
     this.session = null;
@@ -136,7 +137,10 @@ export class AgentSheet {
     this.loadEpoch++;
     this.cancelIntents.clear();
     this.answerIntents.clear();
+    this.revokeIntents.clear();
     this.approvalStatus = "";
+    this.approvalHistory = null;
+    this.approvalRules = null;
     this.activeTab = null;
     this.identity?.dispose();
     this.memory?.dispose();
@@ -165,8 +169,49 @@ export class AgentSheet {
     const binding = this.session;
     const epoch = this.loadEpoch;
     renderApprovalsSheet(section, this.getView(), { answerState: this.answerIntents,
-      onAnswer: (ask, choice) => this.answerApproval(ask, choice, binding, epoch) });
+      onAnswer: (ask, choice) => this.answerApproval(ask, choice, binding, epoch),
+      history: this.approvalHistory, rules: this.approvalRules,
+      onRevoke: binding.localManagement ? (id) => this.revokeApprovalRule(id, binding, epoch) : undefined });
     if (this.approvalStatus) section.prepend(node("p", this.approvalStatus));
+  }
+
+  async loadApprovalData(binding, epoch) {
+    try {
+      const [history, rules] = await Promise.all([
+        gatePageRequest(this.net, () => this.current(binding), "history", { limit: 100 }),
+        gatePageRequest(this.net, () => this.current(binding), "rules.list", { limit: 100 }),
+      ]);
+      if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+      if (!Array.isArray(history?.items) || !Array.isArray(rules?.rules)) throw new Error("审批列表格式无效");
+      this.approvalHistory = history.items;
+      this.approvalRules = rules.rules;
+      this.approvalStatus = "";
+    } catch {
+      if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+      this.approvalHistory = null;
+      this.approvalRules = null;
+      this.approvalStatus = "审批历史或规则暂不可用，请重试。";
+    }
+    this.renderApprovals();
+  }
+
+  async revokeApprovalRule(id, binding, epoch) {
+    if (!binding.localManagement || !this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+    const clientId = this.revokeIntents.get(id) ?? crypto.randomUUID();
+    this.revokeIntents.set(id, clientId);
+    try {
+      const result = await gatePageRequest(this.net, () => this.current(binding), "rules.revoke", { id }, clientId);
+      if (result?.revoked !== true) throw new Error("rule was not revoked");
+      if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch) return;
+      this.revokeIntents.delete(id);
+      await this.loadApprovalData(binding, epoch);
+    } catch {
+      if (this.current(binding) && this.activeTab === "approvals" && epoch === this.loadEpoch) {
+        this.approvalStatus = "撤销结果未确认；请用同一按钮重试。";
+        this.renderApprovals();
+      }
+      throw new Error("rule revocation unconfirmed");
+    }
   }
 
   async answerApproval(ask, choice, binding, epoch) {
@@ -253,7 +298,7 @@ export class AgentSheet {
       return;
     }
     if (key === "activity") { this.renderActivity(); return; }
-    if (key === "approvals") { this.renderApprovals(); return; }
+    if (key === "approvals") { this.renderApprovals(); void this.loadApprovalData(this.session, epoch); return; }
     if (key === "upcoming") {
       section.replaceChildren(node("p", "正在读取时钟计划…"));
       const binding = this.session;

@@ -154,7 +154,6 @@ try {
   await until(() => first.ledger.list({ limit: 1000 }).some((row) => row.from === "agent:main" && row.word === "turn.start"), "real turn recorded");
   await clickTab("activity");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent.includes('Synthetic weather task')"), "real turn shown in activity");
-  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent"), /后台活动服务尚未接入/);
   assert.doesNotMatch(await evaluate("document.querySelector('#agentPanel section[data-tab=activity]').textContent"), /service:|device:|calendar\.list/);
   const clockSet = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
     local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "set",
@@ -192,7 +191,8 @@ try {
   await clickTab("activity"); await clickTab("upcoming");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('暂无计划')"), "fresh list sees externally removed timer");
   await clickTab("approvals");
-  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /规则清单和撤销功能尚未连接/);
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent.includes('已拒绝')"), "real gate history visible");
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /当前没有生效的规则/);
 
   await clickTab("identity");
   holdNextRead = true;

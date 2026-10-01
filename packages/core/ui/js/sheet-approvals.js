@@ -1,9 +1,11 @@
-// Pending gate answers use the registered screen; rule mutation and history remain unavailable.
+// All approval-page operations use the current registered screen and gate member.
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 const safeText = (value, max = 240) => typeof value === "string" ? value.slice(0, max) : "";
 const validId = (value) => typeof value === "string" && value.length > 0 && value.length <= 256;
 const validTime = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
 const choices = new Set(["once", "always", "deny"]);
+const actionLabel = (item) => item?.word === "message.send" ? "发送消息" :
+  item?.risk === "outward" ? "对外操作" : item?.risk === "structure" ? "修改资料" : "受保护操作";
 export function approvalSections(view, now = Date.now()) {
   const pending = [];
   let unknownSource = 0;
@@ -37,7 +39,8 @@ function text(parent, tag, value, className = "") {
 }
 
 /** Only authenticated ledger projections are shown; no optimistic approval or fake rule rows. */
-export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, answerState = new Map() } = {}) {
+export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, answerState = new Map(),
+  history, rules, onRevoke } = {}) {
   const sections = approvalSections(view, now);
   const fragment = document.createDocumentFragment();
   text(fragment, "h2", "审批", "sheet-title");
@@ -65,11 +68,51 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
     else if (state?.status === "rejected") text(card, "p", "回答被拒绝；请重新载入审批记录。", "sheet-warning");
   }
   text(fragment, "h3", "历史", "sheet-heading");
-  text(fragment, "p", "完整审批历史尚未连接。", "sheet-unavailable");
+  if (!history) text(fragment, "p", "审批历史暂不可用。", "sheet-unavailable");
+  else if (!history.length) text(fragment, "p", "暂无审批记录。", "sheet-empty");
+  else for (const item of history) {
+    if (!item || !validId(item.id) || !validTime(item.at)) continue;
+    const label = item.source === "current" ? actionLabel(item) : "旧审批记录";
+    const decision = { once: "仅这一次", always: "以后都允许", deny: "已拒绝", timeout: "已过期",
+      cancelled: "已取消", rule: "按规则放行" }[item.decision] || "只读记录";
+    text(fragment, "p", `${safeText(label, 80)} · ${decision} · ${new Date(item.at).toLocaleString()}`, "sheet-history");
+  }
   text(fragment, "h3", "以后都允许的规则", "sheet-heading");
-  text(fragment, "p", "规则清单和撤销功能尚未连接；不能据此判断没有规则。", "sheet-unavailable");
+  if (!rules) text(fragment, "p", "规则清单暂不可用；不能据此判断没有规则。", "sheet-unavailable");
+  else if (!rules.some((item) => item && !item.revoked_at && item.expires_at > now))
+    text(fragment, "p", "当前没有生效的规则。", "sheet-empty");
+  else for (const rule of rules) {
+    if (!rule || !validId(rule.id) || rule.revoked_at || !validTime(rule.expires_at) || rule.expires_at <= now) continue;
+    const row = text(fragment, "article", "", "sheet-rule");
+    text(row, "p", `${actionLabel(rule)} · 截止 ${new Date(rule.expires_at).toLocaleString()}`);
+    if (typeof onRevoke === "function") {
+      const button = text(row, "button", "撤销规则", "sheet-choice");
+      button.type = "button";
+      button.addEventListener("click", () => { button.disabled = true; void onRevoke(rule.id).catch(() => { button.disabled = false; }); });
+    }
+  }
   root.replaceChildren(fragment);
   return sections;
+}
+
+/** Current-screen request with a paired gate response; callers never trust a bare HTTP 200. */
+export async function gatePageRequest(net, current, word, body, clientId = crypto.randomUUID()) {
+  const binding = { token: net.token, screen: net.screen, scope: net.currentScope, generation: net.generation };
+  const same = () => current() && binding.token && binding.screen && binding.scope &&
+    binding.token === net.token && binding.screen === net.screen && binding.scope === net.currentScope &&
+    binding.generation === net.generation;
+  if (!same()) throw new Error("屏幕未连接。");
+  const response = await net.request("/api/send", { method: "POST", credentials: "same-origin",
+    headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: binding.token },
+    body: JSON.stringify({ to: "service:gate", kind: "request", word, body, client_id: clientId, wait: true }) });
+  if (!same()) throw new Error("屏幕身份已变化。");
+  if (!response.ok) throw new Error("审批服务未确认操作。");
+  const accepted = await response.json();
+  const reply = accepted?.reply;
+  if (!same() || typeof accepted?.id !== "string" || reply?.kind !== "response" || reply.reply_to !== accepted.id ||
+    reply.from !== "service:gate" || reply.to !== "person:owner" || reply.word !== word || reply.body?.ok !== true)
+    throw new Error("审批服务回执未配对。");
+  return reply.body.result;
 }
 
 /** An HTTP ACK alone is not displayed as an answered approval. The matching ledger response must be seen. */
