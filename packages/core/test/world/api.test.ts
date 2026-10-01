@@ -48,6 +48,15 @@ test("edge authenticates before send, allows bounded wait, and exposes only decl
   } finally { ledger.close(); }
 });
 
+test("owner UI restricts form submissions to its own origin", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const page = await edge.handle(request("GET", "/"), owner);
+    assert.equal(page.status, 200);
+    assert.match(page.headers?.["content-security-policy"] ?? "", /(?:^|;)\s*form-action 'self'(?:;|$)/);
+  } finally { ledger.close(); }
+});
+
 test("owner inbox accepts attachment-only say but rejects empty text without an attachment", async () => {
   const { ledger, edge } = await fixture();
   try {

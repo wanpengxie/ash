@@ -19,7 +19,7 @@ class IsolatedProbePortsTest {
 
     @Test fun isolatedWebViewRejectsOtherPortsAndOrigins() {
         val own = "http://127.0.0.1:14763/?token=synthetic"
-        assertTrue(CoreEndpoint.acceptsUiUrl(own, 14763, true))
+        assertTrue(CoreEndpoint.acceptsUiUrl(own, 14763))
         for (url in listOf(
             "http://127.0.0.1:4700/?token=synthetic",
             "http://localhost:14763/?token=synthetic",
@@ -27,8 +27,12 @@ class IsolatedProbePortsTest {
             "https://127.0.0.1:14763/?token=synthetic",
             "http://127.0.0.1:14763/other?token=synthetic",
             "not a URL",
-        )) assertFalse(CoreEndpoint.acceptsUiUrl(url, 14763, true))
-        assertTrue("production keeps its prior URL behavior",
-            CoreEndpoint.acceptsUiUrl("http://127.0.0.1:4700/", 14763, false))
+        )) assertFalse(CoreEndpoint.acceptsUiUrl(url, 14763))
+        assertFalse(CoreEndpoint.acceptsUiUrl("http://127.0.0.1:4700/", 14763))
+        assertTrue(CoreEndpoint.acceptsResourceUrl("http://127.0.0.1:14763/api/stream", 14763))
+        for (url in listOf("http://127.0.0.1:4700/api/send", "http://localhost:14763/icon.svg",
+            "https://127.0.0.1:14763/", "http://user@127.0.0.1:14763/")) {
+            assertFalse(CoreEndpoint.acceptsResourceUrl(url, 14763))
+        }
     }
 }

@@ -18,6 +18,7 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -32,6 +33,7 @@ import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.Paths
 import ai.ash.host.Permissions
+import java.io.ByteArrayInputStream
 
 /**
  * Opening the app opens Ash: the ash UI (served by ash core on loopback) in a WebView. While
@@ -76,9 +78,15 @@ class HomeActivity : Activity() {
                     Permissions.all.find { it.key == u.pathSegments.singleOrNull() }?.open(this@HomeActivity)
                     return true
                 }
-                if (u.host == "127.0.0.1" || u.host == "localhost") return false
-                runCatching { startActivity(Intent(Intent.ACTION_VIEW, u)) }
+                if (CoreEndpoint.acceptsResourceUrl(u.toString(), BuildConfig.CORE_PORT)) return false
+                if ((u.scheme == "http" || u.scheme == "https") && u.host != "127.0.0.1" && u.host != "localhost")
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, u)) }
                 return true
+            }
+
+            override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
+                if (CoreEndpoint.acceptsResourceUrl(req.url.toString(), BuildConfig.CORE_PORT)) return null
+                return WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
             }
 
             override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
@@ -146,8 +154,8 @@ class HomeActivity : Activity() {
 
     private fun load(url: String) {
         if (loaded) return
-        if (!CoreEndpoint.acceptsUiUrl(url, BuildConfig.CORE_PORT, BuildConfig.ISOLATED_PROBE)) {
-            status.text = "测试包核心地址不匹配"
+        if (!CoreEndpoint.acceptsUiUrl(url, BuildConfig.CORE_PORT)) {
+            status.text = "核心地址不匹配"
             cover.visibility = View.VISIBLE
             return
         }

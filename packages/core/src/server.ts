@@ -196,7 +196,7 @@ export class EdgeRouter {
           return { status: 303, headers: { location: "./", "set-cookie": `ash_ui=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`, "cache-control": "no-store" } };
         }
         if (!caller?.ownerProxy) fail(401, "unauthorized", "owner authentication required");
-        return { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:" }, body: UI_HTML };
+        return { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; form-action 'self'" }, body: UI_HTML };
       }
       if (path.startsWith("/mcp/")) return await this.mcp(req, caller);
       if (!caller) fail(401, "unauthorized", "missing or invalid token");
