@@ -65,6 +65,10 @@ const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.m
   : value && typeof value === "object" ? `{${Object.keys(value).sort().filter((key) => (value as Record<string, unknown>)[key] !== undefined)
     .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : JSON.stringify(value);
 const hash = (value: unknown): string => createHash("sha256").update(canonical(value)).digest("hex");
+const ISOLATED_MESSAGE_SCHEMA: JsonSchema = { type: "object", properties: {
+  recipient_id: { type: "string", format: "uuid" }, text: { type: "string", minLength: 1 },
+}, required: ["recipient_id", "text"], additionalProperties: false } as unknown as JsonSchema;
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   transportPrincipal: ctx.transportPrincipal,
@@ -100,6 +104,7 @@ export class WorldRouter {
   private readonly subscribers = new Set<Subscriber>();
   private gate: GateHook | null = null;
   private durableGate = false;
+  private isolatedFakeAlways = false;
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
 
@@ -205,9 +210,10 @@ export class WorldRouter {
 
   setGate(gate: GateHook): void { this.gate = gate; }
   /** Production gate is ledger-backed; fake GateHook remains only for isolated router tests. */
-  enableDurableGate(): void {
+  enableDurableGate(options: { reviewedIsolatedFakeMessageSend?: boolean } = {}): void {
     if (this.gate) throw new TypeError("cannot combine durable gate with fake gate hook");
     this.durableGate = true;
+    this.isolatedFakeAlways = options.reviewedIsolatedFakeMessageSend === true;
   }
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
 
@@ -336,6 +342,8 @@ export class WorldRouter {
     if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
+    if (this.durableGate && request.kind === "request" && request.to?.startsWith("device:") &&
+      !this.ledger.gateDeviceAccess(from, request.to, request.word)) fail("forbidden", "current device access grant unavailable");
     // A risky request and its owner approval share one persisted total budget.
     // Explicit endpoint deadlines remain authoritative, even when shorter.
     const timeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint?.spec.risk && endpoint.spec.risk !== "none" ? 600_000 : 60_000);
@@ -403,7 +411,7 @@ export class WorldRouter {
     const gateCase = this.durableGate && original.from === "service:gate" ? this.ledger.gateCaseByAsk(original.id) : null;
     if (gateCase) {
       const choice = body.ok && plainObject(body.result) ? body.result.choice : undefined;
-      if (choice !== "once" && choice !== "deny") throw new RouterError("bad_request", "gate choice is not available");
+      if (choice !== "once" && choice !== "always" && choice !== "deny") throw new RouterError("bad_request", "gate choice is not available");
       const response = this.settleGateAsk(pending, choice, "answer", origin, retry);
       if (!response) throw new RouterError("bad_request", "gate ask already settled");
       return { id: response.id, seq: response.seq };
@@ -455,6 +463,14 @@ export class WorldRouter {
     };
   }
 
+  private reviewedObject(pending: Pending): string | null {
+    const { request, endpoint } = pending;
+    if (!this.isolatedFakeAlways || request.to !== "device:isolated" || request.word !== "message.send" ||
+      endpoint.spec.risk !== "outward" || canonical(endpoint.spec.input_schema) !== canonical(ISOLATED_MESSAGE_SCHEMA)) return null;
+    const recipient = request.body.recipient_id;
+    return typeof recipient === "string" && CANONICAL_UUID.test(recipient.toLowerCase()) ? recipient.toLowerCase() : null;
+  }
+
   private activateGateAsk(ask: Message): void {
     const endpoint = this.endpoint("person:owner", "ask");
     const tracked = this.ledger.trackedRequests().find((item) => item.message.id === ask.id);
@@ -478,7 +494,7 @@ export class WorldRouter {
     pending.resolve(response);
   }
 
-  private settleGateAsk(pending: Pending, choice: "once" | "deny", cause: "answer" | "deadline" | "cancelled",
+  private settleGateAsk(pending: Pending, choice: "once" | "always" | "deny", cause: "answer" | "deadline" | "cancelled",
     origin?: Message["origin"], retry?: { transportPrincipal: string; clientId: string }): Message | null {
     const outcome = this.ledger.settleGateAsk(pending.request.id, choice, cause, origin, retry);
     if (!outcome) return null;
@@ -526,11 +542,18 @@ export class WorldRouter {
           this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
         }
         const identity = this.gateIdentity(pending);
+        const objectPattern = this.reviewedObject(pending);
+        const ruleEvent = objectPattern ? this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint, objectPattern) : null;
+        if (ruleEvent) {
+          pending.phase = "dispatching";
+          this.publish(ruleEvent);
+        } else {
         const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
         const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
-          contractFingerprint: identity.fingerprint, expiresAt,
+          contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
           askBody: { title: "Confirm action", detail: "A protected action is waiting for approval.",
-            options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+            options: [{ id: "once", label: "Allow once" }, ...(objectPattern ? [{ id: "always", label: "Allow this recipient for 30 days" }] : []),
+              { id: "deny", label: "Deny" }],
             source: { word: request.word, to: request.to!, body_preview: "Protected action" } } });
         if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
         pending.phase = "gate_waiting";
@@ -538,6 +561,7 @@ export class WorldRouter {
         this.publish(started.event);
         this.activateGateAsk(started.ask);
         return;
+        }
       }
       if (!this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
@@ -565,6 +589,10 @@ export class WorldRouter {
         pending.phase = "dispatching";
       }
       if (pending.settled) return;
+      if (this.durableGate && request.to?.startsWith("device:") &&
+        !this.ledger.gateDeviceAccess(request.from, request.to, request.word)) {
+        this.finish(pending, errors("forbidden", "device access changed before effect"), request.to, false); return;
+      }
       if (pending.phase === "accepted" || pending.phase === "gate_waiting") {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
         pending.phase = "dispatching";
@@ -650,6 +678,11 @@ export class WorldRouter {
       try { contractValid = Boolean(endpoint && endpoint.direction !== "out" && endpoint.spec.kind === "request" && endpoint.validateInput(message.body)); } catch { /* changed or invalid endpoint contract */ }
       if (!contractValid) {
         this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
+        continue;
+      }
+      if (this.durableGate && message.to?.startsWith("device:") &&
+        !this.ledger.gateDeviceAccess(message.from, message.to, message.word)) {
+        this.publish(this.ledger.settle(message.id, message.to, errors("forbidden", "device access unavailable after restart")).message);
         continue;
       }
       // Screen registrations are process-local. An old screenId plus a still-valid

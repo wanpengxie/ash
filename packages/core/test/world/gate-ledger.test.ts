@@ -14,12 +14,21 @@ const gate = (expiresAt: number) => ({ subject: "principal:exact", risk: "outwar
     { id: "once", label: "Only now" }, { id: "deny", label: "Deny" }],
     source: { word: "run", to: "device:fake", body_preview: "Synthetic action" } } });
 
-async function fixture(deadlineMs = 60_000) {
+async function fixture(deadlineMs = 60_000, agentActor = false) {
   const file = join(mkdtempSync(join(tmpdir(), "ash-gate-ledger-")), "ash.db");
+  if (agentActor) {
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE events(seq INTEGER PRIMARY KEY,ts INTEGER,workspace TEXT,member TEXT,type TEXT,data TEXT);
+      CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE TABLE grants(id TEXT PRIMARY KEY,member TEXT,scope TEXT,created_by TEXT,created_at INTEGER);`);
+    old.prepare("INSERT INTO grants VALUES(?,?,?,?,?)").run("synthetic", "agent:main", "device:fake/run", "person:owner", 1);
+    old.close();
+  }
   const ledger = await Ledger.open(file);
-  const accepted = ledger.append({ from: "agent:main", to: "device:fake", kind: "request", word: "run", body: { n: 1 }, turn: "t_gate" },
-    undefined, { deadlineAt: Date.now() + deadlineMs, context: { member: "agent:main", local: true, remote: false,
-      ownerProxy: false, transportPrincipal: "agent:main" } }).message;
+  const actor = agentActor ? "agent:main" : "person:owner";
+  const accepted = ledger.append({ from: actor, to: "device:fake", kind: "request", word: "run", body: { n: 1 }, turn: "t_gate" },
+    undefined, { deadlineAt: Date.now() + deadlineMs, context: { member: actor, local: true, remote: false,
+      ownerProxy: false, transportPrincipal: actor } }).message;
   return { file, ledger, accepted };
 }
 
@@ -129,7 +138,7 @@ test("trusted deadline cannot fire early; at expiry it atomically denies origina
     assert.equal(ledger.gateCase(accepted.id)?.decision, "timeout");
     assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer"), null);
     const history = ledger.gateHistoryPage().items[0];
-    assert.equal(history?.subject, "agent:main");
+    assert.equal(history?.subject, "person:owner");
     assert.equal(JSON.stringify(ledger.gateHistoryPage()).includes("principal:exact"), false);
     assert.equal(JSON.stringify(ledger.gateHistoryPage()).includes("a".repeat(64)), false);
     assert.equal(ledger.list().filter((item) => item.kind === "response" && item.reply_to === accepted.id).length, 1);
@@ -152,7 +161,7 @@ test("cancelling a waiting gate withdraws the ask and settles the original atomi
 });
 
 test("pre-recovery turn cancellation withdraws a durable ask before any request replay", async () => {
-  const { file, ledger, accepted } = await fixture();
+  const { file, ledger, accepted } = await fixture(60_000, true);
   const askId = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!.ask.id;
   ledger.close();
   const reopened = await Ledger.open(file);

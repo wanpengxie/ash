@@ -29,7 +29,7 @@ async function setup() {
 }
 
 async function accepted(router: WorldRouter, ledger: Ledger) {
-  const sent = await router.send(agent, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
+  const sent = await router.send(screen, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
   const gate = ledger.gateCase(sent.id);
   assert.ok(gate);
   const ask = ledger.byId(gate.askId);
@@ -54,6 +54,17 @@ test("durable gate waits for owner choice then runs one synthetic effect", async
     assert.equal(retry.id, answer.id);
     assert.equal(effects(), 1);
   } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
+});
+
+test("fresh agent has no implicit device ACL, even though a gate could ask the owner", async () => {
+  const { ledger, router, effects } = await setup();
+  try {
+    const before = ledger.lastSeq();
+    await assert.rejects(router.send(agent, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } }),
+      (error) => error instanceof RouterError && error.code === "forbidden");
+    assert.equal(ledger.lastSeq(), before);
+    assert.equal(effects(), 0);
+  } finally { ledger.close(); }
 });
 
 test("cancellation withdraws the ask; a late approval cannot execute", async () => {
@@ -88,5 +99,73 @@ test("owner can inspect gate history; local revoke never recursively asks, remot
     const revoked = await router.send(screen, { to: "service:gate", kind: "request", word: "rules.revoke", body: { id: "missing" }, wait: true });
     assert.deepEqual(revoked.reply?.body, { ok: true, result: { revoked: false } });
     assert.equal(ledger.list().filter((item) => item.word === "ask").length, 2); // one request + one response, no recursive ask
+  } finally { ledger.close(); }
+});
+
+test("reviewed isolated message recipient alone may create and reuse a 30-day exact rule", async () => {
+  const { ledger, router } = await setup();
+  let effects = 0;
+  const schema = { type: "object" as const, properties: { recipient_id: { type: "string" as const, format: "uuid" },
+    text: { type: "string" as const, minLength: 1 } }, required: ["recipient_id", "text"], additionalProperties: false };
+  router.registerDevice("device:isolated", { name: "message.send", description: "Synthetic message", label: "Synthetic message",
+    risk: "outward", input_schema: schema }, () => { effects++; return { ok: true, result: {} }; });
+  router.enableDurableGate({ reviewedIsolatedFakeMessageSend: true });
+  const send = (recipient_id: string, text: string, ctx = screen) => router.send(ctx, { to: "device:isolated", kind: "request",
+    word: "message.send", body: { recipient_id, text } });
+  const recipient = "550e8400-e29b-41d4-a716-446655440000";
+  try {
+    const first = await send(recipient.toUpperCase(), "hello");
+    const firstCase = ledger.gateCase(first.id)!;
+    assert.deepEqual((ledger.byId(firstCase.askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "always", "deny"]);
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: firstCase.askId,
+      body: { ok: true, result: { choice: "always" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects, 1);
+    const rules = ledger.gateRulesPage().rules;
+    assert.equal(rules.length, 1);
+    assert.equal(rules[0]?.object_pattern, recipient);
+    assert.equal(rules[0]?.subject, "person:owner");
+    const second = await send(recipient, "different text");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects, 2);
+    assert.equal(ledger.gateCase(second.id), null);
+    assert.equal(ledger.list().filter((item) => item.word === "gate.passed" && item.body.by === "rule").length, 1);
+    const other = await send("550e8400-e29b-41d4-a716-446655440001", "hello");
+    assert.ok(ledger.gateCase(other.id));
+    assert.equal(effects, 2);
+    router.cancel([other.id]);
+    const otherPrincipal = await send(recipient, "hello", { ...screen, transportPrincipal: "different-owner", screenId: "screen:other" });
+    assert.ok(ledger.gateCase(otherPrincipal.id));
+    assert.equal(effects, 2);
+    router.cancel([otherPrincipal.id]);
+    router.replaceDeviceBatch("device:isolated", [{ name: "message.send", description: "Changed synthetic manifest",
+      label: "Synthetic message", risk: "outward", input_schema: schema }], () => { effects++; return { ok: true, result: {} }; });
+    const changed = await send(recipient, "hello");
+    assert.ok(ledger.gateCase(changed.id));
+    assert.equal(effects, 2);
+    router.cancel([changed.id]);
+    assert.equal(ledger.revokeGateRule(rules[0]!.id), true);
+    assert.equal(ledger.revokeGateRule(rules[0]!.id), false);
+  } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
+});
+
+test("matching real-looking device word never inherits the isolated fake always extractor", async () => {
+  const { ledger, router } = await setup();
+  const schema = { type: "object" as const, properties: { recipient_id: { type: "string" as const, format: "uuid" },
+    text: { type: "string" as const, minLength: 1 } }, required: ["recipient_id", "text"], additionalProperties: false };
+  let effects = 0;
+  router.registerDevice("device:phone", { name: "message.send", description: "Synthetic phone-like word", label: "Message",
+    risk: "outward", input_schema: schema }, () => { effects++; return { ok: true, result: {} }; });
+  router.enableDurableGate({ reviewedIsolatedFakeMessageSend: true });
+  try {
+    const sent = await router.send(screen, { to: "device:phone", kind: "request", word: "message.send",
+      body: { recipient_id: "550e8400-e29b-41d4-a716-446655440000", text: "hello" } });
+    const askId = ledger.gateCase(sent.id)!.askId;
+    assert.deepEqual((ledger.byId(askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "deny"]);
+    await assert.rejects(router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId,
+      body: { ok: true, result: { choice: "always" } } }), (error) => error instanceof RouterError && error.code === "bad_request");
+    assert.equal(effects, 0);
+    assert.equal(ledger.gateRulesPage().rules.length, 0);
+    router.cancel([sent.id]);
   } finally { ledger.close(); }
 });
