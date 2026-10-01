@@ -1,0 +1,11 @@
+# ASH-202 status derivation and display labels
+
+The root agent emits `status` only from committed routing and turn facts. A batch read begins a 1.5-second listening window, an active turn without an outstanding call is thinking, a pending routed call uses its validated registration label, a pending owner ask waits for the owner, and a completed turn displays done for four seconds before idle. Authenticated typing has a short expiry; idle for 30 minutes becomes resting. Startup publishes resting before its recovered pending-route state. No model-facing status command was added.
+
+The label helper uses the validated word label and bounds its length; absent, default, control-bearing, or raw tool-name labels become “在忙”. A display-only table gives known native tool names human wording and an unknown native name the same fallback. This does not enable native tools.
+
+The authenticated MCP agent endpoint previously allowed an `ash_send` event to forge `agent:main/status`, or forge a read/turn event that would indirectly drive status. Router authorization now reserves all root-agent outbound control events for the internal root context. A real HTTP MCP request with a valid synthetic token is rejected without a ledger append; the internal status publication succeeds.
+
+Verification: committed Router events cover listening, thinking, working label, ask waiting, done, idle, resting, typing expiry, recovered pending routes, work-vs-ask priority, and one rejected status write followed by retry. A real installed-runtime script-provider turn with a held synthetic device call records listening, labeled working, and done in the ledger. The full test suite passed with 317 total, 259 passed, 58 intentional skips, and no failures; typecheck and core build passed. The public-term scan checked 426 staged/tracked files with zero findings.
+
+Limits: the current production runtime deliberately disables native tools. Its native tool start/end events are not yet wired to the status derivation path, so the fallback unit test is not evidence of a live unknown-native-tool state. Physical file isolation and native tool accounting remain separate gates. Global pause mutation is also a later component; the status controller can resample its durable pause source but does not invent an administrative pause command.

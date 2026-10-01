@@ -110,6 +110,17 @@ export class WorldRouter {
     catch { return false; }
   }
 
+  /** Internal status inputs only: no body, credential, or handler escapes this projection. */
+  pendingStatusInputs(actor: string): { id: string; from: string; to: string; word: string; turn?: string }[] {
+    return [...this.pending.values()].filter((item) => item.request.to &&
+      (item.request.from === actor || (item.request.to === "person:owner" && item.request.word === "ask")))
+      .map(({ request }) => ({ id: request.id, from: request.from, to: request.to!, word: request.word,
+        ...(request.turn ? { turn: request.turn } : {}) }));
+  }
+
+  /** Return the validated registration snapshot, not a caller- or model-supplied label. */
+  registeredLabel(to: string, word: string): string | undefined { return this.endpoint(to, word)?.spec.label; }
+
   register(endpoint: RouteEndpoint): void {
     this.registerBatch([endpoint]);
   }
@@ -278,6 +289,10 @@ export class WorldRouter {
     const endpoint = request.to ? this.endpoint(request.to, request.word) : undefined;
     const outbound = request.kind === "event" ? wordContract(from, request.word) : undefined;
     const sourceEvent = outbound?.kind === "event" && outbound.direction === "out";
+    // Model-facing MCP/API agent credentials may request work, but cannot forge
+    // the agent's code-derived receipt, turn, or status control events.
+    if (sourceEvent && from === "agent:main" && (ctx.transport !== "agent" || ctx.transportPrincipal !== "agent:main"))
+      fail("forbidden", "agent control events require the internal agent context");
     const senseContract = request.kind === "event" && ctx.transport === "phone" && from === "device:phone" && request.to === null ? wordContract("service:senses", request.word) : undefined;
     const phoneSense = senseContract?.kind === "event" && senseContract.direction === "in" && request.word.startsWith("sense.");
     if (request.to && !endpoint && !sourceEvent) fail("not_found", "recipient word not found");

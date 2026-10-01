@@ -63,7 +63,8 @@ test("one say is durably accepted before ACK and yields ordered received/read/st
     assert.deepEqual(sent.reply?.body.result, { accepted: true });
     assert.equal(f.member.counts().pending + f.member.counts().read, 1);
     const rows = await f.waitFor((list) => list.some((m) => m.word === "turn.end"));
-    const names = rows.filter((m) => (m.from === "agent:main" && (m.kind === "event" || (m.kind === "request" && m.to === "person:owner")))).map((m) => m.word);
+    const names = rows.filter((m) => (m.from === "agent:main" && m.word !== "status" &&
+      (m.kind === "event" || (m.kind === "request" && m.to === "person:owner")))).map((m) => m.word);
     assert.deepEqual(names, ["received", "read", "turn.start", "say", "turn.end"]);
     assert.deepEqual((rows.find((m) => m.word === "read")?.body.ids as string[]), [sent.id]);
     assert.equal(seen[0].messages[0].id, sent.id);
