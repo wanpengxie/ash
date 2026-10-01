@@ -8,7 +8,7 @@ import java.net.URL
 /** HTTP boundary shared by phone sensors; the token never appears in event data. */
 internal class SenseTransport(private val endpoint: String, private val token: String) {
     fun send(word: String, body: JSONObject, clientId: String) {
-        require(word in setOf("sense.calendar", "sense.battery", "sense.screen"))
+        require(word in setOf("sense.calendar", "sense.battery", "sense.screen", "sense.notification"))
         require(clientId.isNotBlank())
         val request = JSONObject()
             .put("to", JSONObject.NULL)

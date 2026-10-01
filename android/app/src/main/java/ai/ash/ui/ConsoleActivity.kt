@@ -1,12 +1,14 @@
 package ai.ash.ui
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -20,6 +22,7 @@ import ai.ash.host.LogShareProvider
 import ai.ash.host.PayloadInstaller
 import ai.ash.host.Paths
 import ai.ash.host.Permissions
+import ai.ash.host.senses.NotificationSenseSettings
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -27,6 +30,8 @@ import java.io.RandomAccessFile
 class ConsoleActivity : Activity() {
     private lateinit var info: TextView
     private lateinit var perms: LinearLayout
+    private lateinit var notificationState: TextView
+    private lateinit var notificationToggle: Button
     private lateinit var logView: TextView
     private val ui = Handler(Looper.getMainLooper())
 
@@ -49,6 +54,31 @@ class ConsoleActivity : Activity() {
         perms = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(perms)
         row("权限引导" to { startActivity(Intent(this, OnboardingActivity::class.java)) }, "显示虚拟屏预览" to { showPreview() })
+
+        h("通知读取（可选，默认关闭）")
+        notificationState = TextView(this).apply { textSize = 13f }
+        root.addView(notificationState)
+        notificationToggle = Button(this).apply {
+            isAllCaps = false
+            setOnClickListener {
+                if (NotificationSenseSettings.enabled(this@ConsoleActivity)) {
+                    if (!NotificationSenseSettings.setEnabled(this@ConsoleActivity, false)) Toast.makeText(context, "保存失败", Toast.LENGTH_SHORT).show()
+                    renderNotificationSense()
+                } else {
+                    AlertDialog.Builder(this@ConsoleActivity)
+                        .setTitle("开启通知读取？")
+                        .setMessage("仅在你开启本开关并授予系统访问权后，Ash 才会读取新通知的应用、标题和正文并发送给本机服务。关闭本开关或撤销系统权限后停止；不会补读已有通知。")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("继续") { _, _ ->
+                            if (!NotificationSenseSettings.setEnabled(this@ConsoleActivity, true)) Toast.makeText(context, "保存失败", Toast.LENGTH_SHORT).show()
+                            renderNotificationSense()
+                            if (NotificationSenseSettings.enabled(this@ConsoleActivity) && !NotificationSenseSettings.granted(this@ConsoleActivity)) openNotificationAccess()
+                        }.show()
+                }
+            }
+        }
+        root.addView(notificationToggle)
+        row("系统读取权限" to { openNotificationAccess() })
 
         h("日志")
         row("刷新" to { showLog() }, "分享日志" to { shareLogs() })
@@ -81,7 +111,7 @@ class ConsoleActivity : Activity() {
                 PayloadInstaller.shippedBuild(this@ConsoleActivity)?.let { if (it != PayloadInstaller.installedBuild(p)) append("（待安装 $it）") }
                 append("\nApp：${packageManager.getPackageInfo(packageName, 0).versionName}  Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）")
             }
-            ui.post { info.text = text; renderPerms() }
+            ui.post { info.text = text; renderPerms(); renderNotificationSense() }
         }.start()
         ui.postDelayed({ refresh() }, 3000)
     }
@@ -96,6 +126,26 @@ class ConsoleActivity : Activity() {
                 addView(TextView(context).apply { text = "${if (ok) "✅" else "⚪️"} ${item.title}\n${item.why}$extra"; textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
                 if (!ok) addView(Button(context).apply { text = "去开启"; isAllCaps = false; setOnClickListener { item.open(this@ConsoleActivity) } })
             })
+        }
+    }
+
+    private fun renderNotificationSense() {
+        val enabled = NotificationSenseSettings.enabled(this)
+        val granted = NotificationSenseSettings.granted(this)
+        notificationState.text = when {
+            !enabled -> "本机开关：关闭。系统授权：${if (granted) "已授权，但不会读取" else "未授权"}。"
+            !granted -> "本机开关：开启；等待系统读取权限，不会发送通知内容。"
+            else -> "本机开关与系统权限均已开启：仅发送之后新到的通知。"
+        }
+        notificationToggle.text = if (enabled) "关闭通知读取" else "开启通知读取"
+    }
+
+    private fun openNotificationAccess() {
+        try {
+            startActivity(NotificationSenseSettings.accessIntent(this))
+        } catch (_: Exception) {
+            try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            catch (_: Exception) { Toast.makeText(this, "无法打开系统通知读取设置", Toast.LENGTH_SHORT).show() }
         }
     }
 
