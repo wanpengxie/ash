@@ -107,6 +107,30 @@ test("fresh agent has no implicit device ACL, even though a gate could ask the o
   } finally { ledger.close(); }
 });
 
+test("trusted paired remote owner retains device access but not local access administration", async () => {
+  const { ledger, router, effects } = await setup();
+  const pairedRemote: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "paired:synthetic",
+    pairedDeviceId: "paired:synthetic", local: false, remote: true, ownerProxy: true,
+    screenId: "screen:remote-synthetic", screenLabel: "Synthetic remote" };
+  try {
+    const members = new WorldMembers(router);
+    members.register(new GateMember(ledger, router, members));
+    const before = ledger.lastSeq();
+    await assert.rejects(router.send(pairedRemote, { to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: "device:fake/run" } }), (error) => error instanceof RouterError && error.code === "forbidden");
+    assert.equal(ledger.lastSeq(), before);
+    const sent = await router.send(pairedRemote, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
+    await new Promise((resolve) => setImmediate(resolve));
+    const gate = ledger.gateCase(sent.id);
+    assert.ok(gate, "remote owner device action must still ask");
+    assert.equal(effects(), 0);
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: gate.askId,
+      body: { ok: true, result: { choice: "once" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects(), 1);
+  } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
+});
+
 test("recovery fails closed on a tracked owner ask without its original gate case", async () => {
   const { ledger, router } = await setup();
   try {
