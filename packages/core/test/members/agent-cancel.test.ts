@@ -102,7 +102,7 @@ test("unbound admin cannot cancel; idle noop retry cannot cancel a later turn", 
     const old = f.ledger.byId(idle.id)!;
     await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "new turn" }, wait: true });
     await entered.promise;
-    const retry = f.member.handle(old, { signal: new AbortController().signal, recovered: true });
+    const retry = await f.member.handle(old, { signal: new AbortController().signal, recovered: true });
     assert.equal(retry.ok, true);
     if (retry.ok) assert.deepEqual(retry.result, { cancelled: false });
     assert.equal(f.member.waitingForQuiescence, false);

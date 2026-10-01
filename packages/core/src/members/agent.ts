@@ -6,7 +6,7 @@ import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from 
 import { AgentInbox, type StoredTurn } from "../world/agent-inbox";
 import { DEFAULT_TURN_TEXT_BUDGET, TurnTextBudgetError, renderTurnBatch } from "./agent-render";
 import { AgentStatus } from "./agent-status";
-import type { ManagedPromptSnapshot } from "./self";
+import type { AgentMind, MindSnapshot } from "./agent-mind";
 
 /** Full messages are control data. A model adapter must inject only `rendered`, never stringify `messages`. */
 export interface AgentTurnInput {
@@ -14,7 +14,7 @@ export interface AgentTurnInput {
   messages: readonly Message[];
   rendered: string;
   stopFacts: readonly string[];
-  managedSnapshot?: ManagedPromptSnapshot;
+  managedSnapshot?: MindSnapshot;
 }
 export interface AgentTurnOutput { id: string; text: string }
 export interface AgentTurnRunner {
@@ -32,20 +32,22 @@ export interface AgentMemberOptions {
   name?: string;
   isPaused?: () => boolean;
   currentAdminPauseTargets?: (requestId: unknown, turn: unknown) => boolean;
-  managedSnapshot?: () => Promise<ManagedPromptSnapshot>;
+  managedSnapshot?: () => Promise<MindSnapshot>;
+  mind?: () => AgentMind | null;
 }
 
 const say = wordContract("agent:main", "say") as WordSpec | undefined;
 const cancelTurn = wordContract("agent:main", "cancel_turn") as WordSpec | undefined;
 const typing = wordContract("agent:main", "typing") as WordSpec | undefined;
-if (!say || say.kind !== "request" || !cancelTurn || cancelTurn.kind !== "request" || !typing || typing.kind !== "event") throw new Error("agent contract unavailable");
+const wake = wordContract("agent:main", "wake") as WordSpec | undefined;
+if (!say || say.kind !== "request" || !cancelTurn || cancelTurn.kind !== "request" || !typing || typing.kind !== "event" || !wake || wake.kind !== "request") throw new Error("agent contract unavailable");
 
 /** Durable one-at-a-time intake. The secondary session is added by later work. */
 export class AgentMember implements Member {
   readonly id = "agent:main";
   readonly kind = "agent" as const;
   readonly online = true;
-  readonly idempotentRecovery = ["say", "cancel_turn"] as const;
+  readonly idempotentRecovery = ["say", "cancel_turn", "wake"] as const;
   readonly name: string;
   readonly inbox: AgentInbox;
   readonly status: AgentStatus;
@@ -54,7 +56,8 @@ export class AgentMember implements Member {
   private readonly runner: AgentTurnRunner;
   private readonly isPaused: () => boolean;
   private readonly currentAdminPauseTargets: (requestId: unknown, turn: unknown) => boolean;
-  private readonly managedSnapshot?: () => Promise<ManagedPromptSnapshot>;
+  private readonly managedSnapshot?: () => Promise<MindSnapshot>;
+  private readonly mind?: () => AgentMind | null;
   private lastManagedSeq: number;
   private started = false;
   private closed = false;
@@ -75,22 +78,27 @@ export class AgentMember implements Member {
     this.isPaused = options.isPaused ?? (() => false);
     this.currentAdminPauseTargets = options.currentAdminPauseTargets ?? (() => false);
     this.managedSnapshot = options.managedSnapshot;
+    this.mind = options.mind;
     this.lastManagedSeq = options.ledger.list({ before: Number.MAX_SAFE_INTEGER, limit: 1 }).at(-1)?.seq ?? 0;
     this.inbox = new AgentInbox(options.stateDir);
     this.status = new AgentStatus(this.router, Date.now, options.isPaused);
   }
 
-  words(): readonly WordSpec[] { return [say!, cancelTurn!, typing!]; }
+  words(): readonly WordSpec[] { return this.mind ? [say!, cancelTurn!, wake!, typing!] : [say!, cancelTurn!, typing!]; }
   get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
   /** Resample the single durable admin pause fact after a committed transition. */
   resamplePause(): void { this.status.refresh(); this.schedule(); }
   counts(): { pending: number; read: number; active: number } { return this.inbox.counts(); }
 
-  handle(message: Message, _context: RouteHandlerContext): ResponseBody {
+  handle(message: Message, context: RouteHandlerContext): ResponseBody | Promise<ResponseBody> {
     if (this.closed) return { ok: false, error: { code: "offline", message: "agent inbox is closed" } };
     if (message.word === "typing" && message.kind === "event") return { ok: true };
     if (message.word === "cancel_turn") return this.handleCancel(message);
+    if (message.word === "wake") {
+      const mind = this.mind?.();
+      return mind ? mind.handleWake(message, context.signal) : { ok: false, error: { code: "offline", message: "mind unavailable" } };
+    }
     if (message.word !== "say") return { ok: false, error: { code: "not_found", message: "agent word not available" } };
     this.inbox.accept(message); // sync durable commit before acknowledging the route
     if (this.started) void this.receipts().catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });

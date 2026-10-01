@@ -21,6 +21,7 @@ export interface DoorTurnAdapter {
   attachManagedPrompt?(agentContext: unknown): () => void;
 }
 export interface MainSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
+export interface MindSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
 export interface SessionResume {
   /** Private core-state journal, never a path supplied by the model or client. */
   file: string;
@@ -129,6 +130,7 @@ export class DshHost {
   private shutdownHandle: any;
   private requireFromInstall: NodeRequire;
   private main: MainSession | null = null;
+  private mind: MindSession | null = null;
   private managedPromptCleanup: (() => void) | null = null;
   private readonly listeners = new Set<(sessionId: string, event: DshSessionEvent) => void>();
 
@@ -232,11 +234,33 @@ export class DshHost {
     }
   }
 
+  async startMind(options: Omit<DoorOptions, "tools" | "scopeChainOf" | "sessionId"> & {
+    adapter: { attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void };
+  }): Promise<MindSession> {
+    if (!this.ctx || !this.main || this.mind) throw new Error("main session must start before the mind session");
+    const scope = await this.imp("@deepseek-ai/dsh-scope");
+    const sessionId = `session-${randomUUID()}`;
+    const door = createDshDoor({ ...options, tools: this.ctx.tools, scopeChainOf: scope.scopeChainOf,
+      nativeMode: "disabled" });
+    try {
+      const handle = await this.ctx.get("agents").create({ sessionId, meta: { cwd: options.workspace }, agentOptions: this.agentOptions(),
+        setup: (_context: unknown, agent: DshRootAgent) => {
+          door.bind(agent);
+          options.adapter.attach(agent, door, sessionId);
+          return { commit() { door.assertReady(); } };
+        } });
+      this.mind = { agent: handle.agent as DshRootAgent, door, sessionId };
+      return this.mind;
+    } catch (error) { door.close(); throw error; }
+  }
+
   async close(): Promise<void> {
     this.managedPromptCleanup?.();
     this.managedPromptCleanup = null;
     this.main?.door.close();
+    this.mind?.door.close();
     this.main = null;
+    this.mind = null;
     await this.shutdownHandle?.shutdown?.(0);
     this.ctx = null;
     this.listeners.clear();

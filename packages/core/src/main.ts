@@ -6,11 +6,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAuthScopeKey } from "./auth-scope";
 import { DshHost } from "../../dsh-binding/src/host";
+import { DshMindRunner } from "../../dsh-binding/src/mind";
 import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember } from "./members/agent";
+import { AgentMind } from "./members/agent-mind";
 import { AdminMember } from "./members/admin";
 import { ClockMember } from "./members/clock";
 import { GateMember } from "./members/gate";
@@ -88,6 +90,7 @@ export async function startOwner(config: Config): Promise<Running> {
   const tokens = loadTokens(config);
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
   let agent: ReturnType<typeof createAgentMember> | null = null;
+  let mind: AgentMind | null = null;
   let clock: ClockMember | null = null;
   let admin: AdminMember | null = null;
   let post: PostMember | null = null;
@@ -120,7 +123,9 @@ export async function startOwner(config: Config): Promise<Running> {
     world.enableDurableGate();
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
+    const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
+      ...(dsh ? { mind: () => mind } : {}),
       ...(dsh ? { managedSnapshot: async () => {
         if (!self) throw new Error("managed files unavailable");
         return self.promptSnapshot();
@@ -166,8 +171,6 @@ export async function startOwner(config: Config): Promise<Running> {
     post.prepareRecovery();
     admin.prepareRecovery();
     work.prepareRecovery();
-    await world.recover();
-    await post.start();
     if (dsh) {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
@@ -176,7 +179,12 @@ export async function startOwner(config: Config): Promise<Running> {
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
         nativeMode: "disabled", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });
+      await dsh.startMind({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
+        protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], nativeMode: "disabled", adapter: mindRunner! });
+      mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
     }
+    await world.recover();
+    await post.start();
     await agent.start();
     await clock.start();
     work.start();
@@ -190,12 +198,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }
