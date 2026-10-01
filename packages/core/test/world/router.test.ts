@@ -46,6 +46,34 @@ test("request/reply, stable client retry, and atomic one-response pairing", asyn
   } finally { ledger.close(); }
 });
 
+test("response ACK loss retries the same durable answer after restart without a second terminal", async () => {
+  const { file, ledger, router } = await setup();
+  const ask = wordContract("person:owner", "ask")!;
+  const question = { to: "person:owner", kind: "request" as const, word: "ask", body: { title: "Approve?", detail: "Synthetic", options: [{ id: "once", label: "Only now" }, { id: "deny", label: "No" }], expires_at: Date.now() + 60_000, source: { word: "run", to: "device:fake", body_preview: "Synthetic" } } };
+  const answer = { to: "agent:main", kind: "response" as const, word: "ask", body: { ok: true, result: { choice: "once" } }, client_id: "approval-ack-lost", reply_to: "" };
+  let received: { id: string; seq: number };
+  try {
+    router.register({ member: "person:owner", spec: ask, handle: () => undefined });
+    const sent = await router.send(agent, question);
+    answer.reply_to = sent.id;
+    received = await router.send(screen, answer);
+    assert.equal(ledger.responseTo(sent.id)?.id, received.id);
+    assert.equal(ledger.list().filter((m) => m.kind === "response").length, 1);
+  } finally { ledger.close(); }
+  const reopened = await Ledger.open(file);
+  const restarted = new WorldRouter(reopened, async () => true);
+  try {
+    // The lost HTTP acknowledgement must not become a second approval or a false rejection.
+    assert.deepEqual(await restarted.send(screen, { ...answer, body: { ok: true, result: { choice: "once" } } }), received);
+    await assert.rejects(restarted.send(screen, { ...answer, body: { ok: true, result: { choice: "deny" } } }), code("bad_request"));
+    await assert.rejects(restarted.send(screen, { ...answer, client_id: "new-attempt" }), code("bad_request"));
+    await assert.rejects(restarted.send(screen, { ...answer, client_id: undefined }), code("bad_request"));
+    await assert.rejects(restarted.send(owner, answer), code("forbidden"));
+    await assert.rejects(restarted.send({ ...screen, transportPrincipal: "revoked-other-principal" }, answer), code("bad_request"));
+    assert.equal(reopened.list().filter((m) => m.kind === "response").length, 1);
+  } finally { reopened.close(); }
+});
+
 test("unknown word and malformed device schema/body fail before ledger or device", async () => {
   const { ledger, router } = await setup();
   try {
@@ -282,7 +310,7 @@ test("durable caller snapshot stores minimal authorization facts, never a transp
     try {
       const rows = db.prepare("SELECT context FROM request_state").all() as { context: string }[];
       assert.equal(rows.length, 1);
-      assert.deepEqual(JSON.parse(rows[0].context), { member: "person:owner", local: true, remote: false, ownerProxy: false });
+      assert.deepEqual(JSON.parse(rows[0].context), { member: "person:owner", local: true, remote: false, ownerProxy: false, transportPrincipal: "owner-login" });
       assert.equal(rows[0].context.includes("synthetic-token"), false);
       assert.equal(rows[0].context.includes("synthetic-cookie"), false);
     } finally { db.close(); }

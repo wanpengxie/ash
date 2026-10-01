@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { request, type IncomingMessage, type Server } from "node:http";
 import { afterEach, test } from "node:test";
-import { type Res, type Router, startServer } from "../src/server";
+import { type Res, type Router, startServer } from "./legacy/server";
 
 const servers = new Set<Server>();
 const intervals = new Set<NodeJS.Timeout>();
