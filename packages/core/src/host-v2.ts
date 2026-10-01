@@ -1,5 +1,6 @@
 import type { CallResult } from "../../sdk/src/api";
 import type { HostManifestV2 } from "../../sdk/src/host";
+import { hostPresentationErrors, type HostPresentationV2 } from "../../sdk/src/host";
 import { DeviceMember } from "./members/device";
 import type { Signer } from "./gateway/link";
 import type { DeviceCapability } from "./world/router";
@@ -94,6 +95,17 @@ export class HostDeviceLink {
     if (this.closed || (at !== null && (!Number.isSafeInteger(at) || at < 0))) throw new TypeError("invalid host alarm time");
     const result = await this.request("POST", "/alarm", { at }) as { ok?: unknown };
     if (!result || result.ok !== true) throw new Error("host alarm acknowledgement unavailable");
+  }
+  /** Acknowledged host presentation. A lost acknowledgement is not proof of non-delivery. */
+  async present(presentation: HostPresentationV2): Promise<void> {
+    if (this.closed || hostPresentationErrors(presentation).length) throw new TypeError("invalid host presentation");
+    const result = await this.request("POST", "/present", presentation) as { ok?: unknown };
+    if (!result || result.ok !== true) throw new Error("host presentation acknowledgement unavailable");
+  }
+  async hidePresentation(id: string): Promise<void> {
+    if (this.closed || !id) throw new TypeError("invalid presentation id");
+    const result = await this.request("POST", "/present/hide", { id }) as { ok?: unknown };
+    if (!result || result.ok !== true) throw new Error("host hide acknowledgement unavailable");
   }
   async signer(): Promise<Signer> {
     const key = await this.request("GET", "/key") as { id: string; publicKey: string };

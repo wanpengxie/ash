@@ -188,6 +188,17 @@ export class WorldRouter {
 
   setGate(gate: GateHook): void { this.gate = gate; }
   subscribe(listener: Subscriber): () => void { this.subscribers.add(listener); return () => this.subscribers.delete(listener); }
+
+  /** Publish a post event only after its journal transition and event have committed. */
+  publishPostEvent(message: Message): void {
+    const stored = this.ledger.byId(message.id);
+    const schema = stored && ["post.changed", "post.delivery"].includes(stored.word)
+      ? wordContract("service:post", stored.word)?.input_schema : null;
+    if (!stored || stored.seq !== message.seq || stored.from !== "service:post" || stored.to !== "person:owner" ||
+      stored.kind !== "event" || !schema || !matchesSchema(schema, stored.body))
+      throw new TypeError("not a committed post event");
+    this.publish(stored);
+  }
   private publish(message: Message): void {
     for (const listener of this.subscribers) {
       try { listener(detached(message)); } catch { /* a broken stream cannot interrupt durable routing */ }
