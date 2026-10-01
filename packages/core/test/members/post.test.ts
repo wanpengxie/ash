@@ -186,6 +186,18 @@ test("live registration replays a release committed after its first status snaps
   } finally { await f.close(); }
 });
 
+test("malformed status rows are omitted from bounded snapshots instead of exposing an offer", async () => {
+  const f = await fixture(local(1, 22));
+  try {
+    const offer = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic hidden offer", kind: "offer" }, wait: true });
+    assert.equal((await f.wait(offer.id)).state, "held");
+    const status = f.ledger.list({ after: offer.seq, limit: 100 }).find((item) => item.word === "post.delivery")!;
+    f.ledger.postWrite((db) => { db.prepare("UPDATE messages SET body='null' WHERE seq=?").run(status.seq); });
+    const { snapshot } = f.post.journal.pageSnapshot({ before: offer.seq + 1, limit: 1 });
+    assert.deepEqual(snapshot.items, []);
+  } finally { await f.close(); }
+});
+
 test("dedupe result is dropped, bad source kind is rejected, and visible refresh emits a count snapshot", async () => {
   const f = await fixture(local(1, 12), false);
   try {

@@ -77,9 +77,10 @@ export class PostJournal {
           (message.body.kind !== "offer" && message.body.kind !== "heads_up")) continue;
         const row = find.get(message.id) as Row | undefined;
         if (!row) continue;
-        let body: { message_id?: unknown; state?: unknown };
+        let body: { message_id?: unknown; state?: unknown } | null;
         try { body = JSON.parse(String(row.body)) as typeof body; } catch { continue; }
-        if (body.message_id !== message.id || !["held", "released", "dropped"].includes(String(body.state))) continue;
+        if (!body || typeof body !== "object" || Array.isArray(body) || body.message_id !== message.id ||
+          typeof body.state !== "string" || !["held", "released", "dropped"].includes(body.state)) continue;
         const version_seq = Number(row.seq);
         if (!Number.isSafeInteger(version_seq) || version_seq < 1 || version_seq > at_seq) continue;
         items.push({ message_id: message.id, state: body.state as PostDeliveryState, version_seq });

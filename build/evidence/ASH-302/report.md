@@ -27,4 +27,4 @@ ASH_TEST_DSH_ROOT="$INSTALLED_DSH_PACKAGE" npm test
 npm run -s typecheck
 ```
 
-The focused post suites currently pass 11/11 with zero skips/fails. The full suite after the visibility additions exits naturally with 322 total, 259 pass, 63 intentional skips, and zero failures without `ASH_TEST_DSH_ROOT`; an earlier real-DSH run before the additions had 317 total, 259 pass and 58 skips. The synthetic SIGKILL unknown-recovery probe passes. Current-code real-DSH rerun, independent QA, and UI/browser integration remain pending, so the card is not marked complete.
+The focused post suites currently pass 12/12 with zero skips/fails. The full suite with the installed DSH runtime exits naturally with 323 total, 264 pass, 59 intentional skips, and zero failures. Without `ASH_TEST_DSH_ROOT`, an earlier run had four additional environment skips. The synthetic SIGKILL unknown-recovery probe passes. Independent QA and UI/browser integration remain pending, so the card is not marked complete.
