@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createAgentMember } from "../../src/members/agent.ts";
+import { GateMember } from "../../src/members/gate.ts";
 import { OwnerMember } from "../../src/members/owner.ts";
 import { PostPresenceMember } from "../../src/members/post.ts";
 import { EdgeRouter, startEdgeServer } from "../../src/server.ts";
@@ -78,6 +79,13 @@ const agent = createAgentMember({ ledger, router: world, stateDir: join(director
 } });
 members.register(new OwnerMember("Owner", ledger));
 members.register(agent);
+members.register(new GateMember(ledger, world, members));
+let approvedEffects = 0;
+world.registerDevice("device:isolated", { name: "message.send", description: "Synthetic message", label: "Synthetic message",
+  risk: "outward", input_schema: { type: "object", properties: { recipient_id: { type: "string", format: "uuid" },
+    text: { type: "string", minLength: 1 } }, required: ["recipient_id", "text"], additionalProperties: false } },
+  () => { approvedEffects++; return { ok: true, result: {} }; });
+world.enableDurableGate({ reviewedIsolatedFakeMessageSend: true });
 const edge = new EdgeRouter(ledger, world, members, { api: { "probe-owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 7), workspaces: { home: join(directory, "workspace") } });
 members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
 const originalHandle = edge.handle.bind(edge);
@@ -221,8 +229,31 @@ try {
   await until(() => evaluate("[...document.querySelectorAll('#log .card a')].some(x=>x.textContent==='card.txt') && [...document.querySelectorAll('#log .card img')].some(x=>x.alt==='one pixel'&&x.naturalWidth===1) && [...document.querySelectorAll('#log .card a')].some(x=>x.textContent==='Example')"), "file image and link cards rendered");
   const openedCards = await evaluate("(async()=>{const links=[...document.querySelectorAll('#log .card a')];const file=links.find(x=>x.textContent==='card.txt');const external=links.find(x=>x.textContent==='Example');return {bytes:await(await fetch(file.href)).text(),link:external.href,target:external.target}})()");
   assert.deepEqual(openedCards, { bytes: "card file bytes", link: "https://example.com/path", target: "_blank" });
+  const owner = edge.localCaller({ authorization: "Bearer probe-owner-token" });
+  assert.ok(owner);
+  for (const [choice, suffix] of [["once", "1"], ["deny", "2"], ["always", "3"]]) {
+    const action = await world.send(owner, { to: "device:isolated", kind: "request", word: "message.send",
+      body: { recipient_id: `550e8400-e29b-41d4-a716-44665544000${suffix}`, text: `approval ${choice}` } });
+    const gateCase = await until(() => ledger.gateCase(action.id), `gate case ${choice}`);
+    const ask = ledger.byId(gateCase.askId);
+    assert.deepEqual(ask.body.options.map((option) => option.id), ["once", "always", "deny"]);
+    await until(() => evaluate(`([...document.querySelectorAll('#log .card.ask')].find(x=>x.textContent.includes('approval ${choice}')) ?? [...document.querySelectorAll('#log .card.ask')].at(-1))?.querySelectorAll('button').length===3`), `approval card ${choice}`);
+    await evaluate(`([...document.querySelectorAll('#log .card.ask')].at(-1)).querySelectorAll('button')[${{ once: 0, always: 1, deny: 2 }[choice]}].click()`);
+    await until(() => ledger.responseTo(ask.id)?.body?.result?.choice === choice, `approval answer ${choice}`);
+    await until(() => ledger.responseTo(action.id), `gated action settled ${choice}`);
+  }
+  assert.equal(approvedEffects, 2);
+  const shortAsk = await world.send({ member: "service:gate", transport: "service", transportPrincipal: "service:gate", local: true, remote: false, ownerProxy: false },
+    { to: "person:owner", kind: "request", word: "ask", body: { title: "Short approval", detail: "Expires quickly",
+      options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }], expires_at: Date.now() + 1500,
+      source: { word: "message.send", to: "device:isolated", body_preview: "Synthetic request" } } });
+  await until(() => evaluate("[...document.querySelectorAll('#log .card.ask')].some(x=>x.textContent.includes('Short approval'))"), "short approval visible");
+  await until(() => evaluate("(()=>{const x=[...document.querySelectorAll('#log .card.ask')].find(x=>x.textContent.includes('Short approval'));return x?.textContent.includes('已过期')&&[...x.querySelectorAll('button')].every(b=>b.disabled)})()"), "expired approval disabled", 10_000).catch(async (error) => {
+    console.error("expiry state", await evaluate("(()=>{const x=[...document.querySelectorAll('#log .card.ask')].find(x=>x.textContent.includes('Short approval'));return {text:x?.textContent,disabled:[...x.querySelectorAll('button')].map(b=>b.disabled),connection:document.querySelector('#connection')?.textContent}})()"), ledger.responseTo(shortAsk.id));
+    throw error;
+  });
   console.log(JSON.stringify({ result: "PASS", browser: "Chrome", sendingDeliveredRead: true, groupedReplies: 2, reactionOnOwnerBubble: true, offlineAccepted: 1, offlineRunnerReceipts: 1,
-    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked", crossScreenOptionAccepted: 1, fileImageLinkCards: true }));
+    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked", crossScreenOptionAccepted: 1, fileImageLinkCards: true, approvalChoices: ["once", "deny", "always"], expiredApprovalDisabled: true }));
 } finally {
   firstSendRelease();
   readRelease();

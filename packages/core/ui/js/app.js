@@ -283,7 +283,12 @@ export function boot({ uiTransport } = {}) {
   });
   const visibleTimer = setInterval(() => { if (!document.hidden) void visible(); }, 30_000);
   const typingTimer = setInterval(() => { if (!document.hidden) void typing(); }, 3_000);
-  const progressTimer = setInterval(() => { if (!document.hidden && !progressRoot.hidden) progress(); }, 1_000);
+  const progressTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (!progressRoot.hidden) progress();
+    if (timeline.view.asks.some((ask) => ask.state === "pending" && ask.expires_at <= Date.now()))
+      render(timeline.view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
+  }, 1_000);
   log.addEventListener("scroll", async () => {
     if (log.scrollTop > 80 || timeline.loading) return;
     const height = log.scrollHeight;

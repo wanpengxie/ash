@@ -115,6 +115,15 @@ test("ask settles only with the first valid response addressed to its original a
   assert.equal(replay([ask, answer("wrong-choice", "service:gate", "always")]).asks[0].state, "pending");
 });
 
+test("a deadline-generated deny is displayed as expired, not a user's refusal", () => {
+  const ask = { seq: 1, id: "deadline-ask", ts: 100, from: "service:gate", to: "person:owner", kind: "request", word: "ask",
+    body: { title: "Time limited", detail: "", options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }], expires_at: 200 } };
+  const deniedAtDeadline = { seq: 2, id: "deadline-answer", ts: 200, from: "person:owner", to: "service:gate", kind: "response", word: "ask",
+    reply_to: "deadline-ask", body: { ok: true, result: { choice: "deny" } } };
+  assert.equal(replay([ask, deniedAtDeadline]).asks[0].state, "expired");
+  assert.equal(replay([ask, { ...deniedAtDeadline, ts: 150 }]).asks[0].state, "answered");
+});
+
 test("option card locks when the first valid owner answer enters the ledger", () => {
   const card = { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }, { id: "no", text: "No" }] } } };
   const choose = (id, option_id, text) => ({ id, from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text, in_reply_to: "card", option_id } });

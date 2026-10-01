@@ -100,7 +100,7 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
     } else if (item.type === "ask") {
       const card = text(fragment, "div", item.ask.title, "card ask");
       text(card, "small", item.ask.detail);
-      const expired = item.ask.state === "pending" && item.ask.expires_at <= Date.now();
+      const expired = item.ask.state === "expired" || item.ask.state === "pending" && item.ask.expires_at <= Date.now();
       if (expired) text(card, "small", "已过期");
       const answer = askIntents?.get(item.ask.id);
       for (const option of item.ask.options || []) {

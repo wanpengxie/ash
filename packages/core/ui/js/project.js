@@ -171,7 +171,8 @@ function project(records, snapshots = new Map()) {
     else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), selected_option_id: optionReplies.get(r.id) || null, reactions: reactions.get(r.id) || [] });
     else if (r.type === "ask") {
       const answer = answers.get(r.id);
-      const state = !answer ? "pending" : answer.choice ? "answered" : answer.error === "timeout" ? "expired" : "closed";
+      const state = !answer ? "pending" : answer.error === "timeout" || answer.choice === "deny" && answer.ts >= r.expires_at
+        ? "expired" : answer.choice ? "answered" : "closed";
       const ask = { id: r.id, seq: r.seq, ts: r.ts, from: r.from, title: r.title, detail: r.detail, options: r.options, options_valid: r.options_valid, expires_at: r.expires_at, state, choice: answer?.choice || null };
       view.asks.push(ask);
       view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "ask", side: "agent", ask, reactions: reactions.get(r.id) || [] });
