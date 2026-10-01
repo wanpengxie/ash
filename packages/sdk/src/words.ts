@@ -54,6 +54,9 @@ const guidance: Record<string, string> = {
   "service:gate/rules.list": "Use to inspect current approval rules, not to assume a risky action is already allowed.",
   "service:gate/rules.revoke": "Use to remove a known rule with local owner authority; this changes future decisions, not past actions.",
   "service:gate/history": "Use to review earlier gate decisions; this is read-only.",
+  "service:gate/access.list": "Inspect device access grants; access alone never approves a protected action.",
+  "service:gate/access.grant": "As the local owner, grant one exact agent and device capability for 30 days; risk approval remains separate.",
+  "service:gate/access.revoke": "As the local owner, revoke one device access grant; already executed actions cannot be undone.",
   "service:self/read": "Use to read an allowed managed file and its hash before editing. Do not infer a stable baseline from stale conversation context.",
   "service:self/write": "Use for a complete managed-file replacement with the exact baseline hash; null creates only a missing file. Do not use native file tools for managed writes.",
   "service:self/append": "Use to atomically add text to an allowed dated log, including an older date. No baseline hash is required.",
@@ -131,12 +134,23 @@ const gateLegacyHistory = obj({ id, subject: nonempty, to: id, word: id, risk: g
   decision: choice("legacy_unresolved", "legacy_approved", "legacy_denied", "legacy_expired", "legacy_cancelled",
     "legacy_access_imported", "legacy_access_expired", "legacy_access_invalid"), at: nonnegativeSafe,
   legacy_scope: gateLegacyScope, source: { const: "legacy" } }, ["id", "decision", "at", "source"]);
+const gateAccessScope: JsonSchema = { type: "string", pattern: "^device:[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$" };
+const gateAccessItem = obj({ id, member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateLegacyScope,
+  source: choice("current", "legacy"), created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
+["id", "member", "scope", "source", "created_at", "expires_at"]);
 // A current case always names its accepted request; a migrated row is never an actionable ask.
 add("service:gate", "rules.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe }, ["rules"]), { audience: "owner" });
 add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure" });
 add("service:gate", "history", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 1000 } }),
   obj({ items: { type: "array", items: { oneOf: [gateCurrentHistory, gateLegacyHistory] }, maxItems: 1000 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
+add("service:gate", "access.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
+  obj({ items: { type: "array", items: gateAccessItem, maxItems: 100 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
+add("service:gate", "access.grant", "request", obj({ member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope }, ["member", "scope"]),
+  obj({ id, member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope, expires_at: nonnegativeSafe }, ["id", "member", "scope", "expires_at"]),
+  { audience: "owner", risk: "structure" });
+add("service:gate", "access.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]),
+  { audience: "owner", risk: "structure" });
 add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: gateRisk, to: id, word: id,
   expires_at: nonnegativeSafe }, ["request_id", "ask_id", "risk", "to", "word", "expires_at"]), undefined, { direction: "out" });
 add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer"), rule_id: id, ask_id: id },

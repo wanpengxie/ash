@@ -414,6 +414,16 @@ export interface GateRuleItemV2 {
   expires_at: number;
   revoked_at?: number;
 }
+/** Device access is distinct from an approval rule and never waives a risk ask. */
+export interface GateAccessItemV2 {
+  id: string;
+  member: string;
+  scope: string;
+  source: "current" | "legacy";
+  created_at: number;
+  expires_at: number;
+  revoked_at?: number;
+}
 export type GateHistoryDecisionV2 =
   | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule"
   | "legacy_unresolved" | "legacy_approved" | "legacy_denied" | "legacy_expired" | "legacy_cancelled"
