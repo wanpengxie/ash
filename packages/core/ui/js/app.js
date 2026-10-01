@@ -1,6 +1,7 @@
 import { fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
+import { renderProgress } from "./progress.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
@@ -91,6 +92,7 @@ function text(parent, tag, value, className = "") {
 
 export function render(view, outbox = [], openInline, presenceBar, openWorkspaceFile) {
   const log = document.querySelector("#log");
+  const progressRoot = document.querySelector("#progress");
   const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const oldHeight = log.scrollHeight;
   const oldTop = log.scrollTop;
@@ -125,6 +127,9 @@ export function boot({ uiTransport } = {}) {
   let lastTyping = 0;
   let timeline;
   let settings;
+  const progress = () => renderProgress(progressRoot, timeline?.view, { onOpen: () => {
+    if (agentSheet?.open()) void agentSheet.show("activity");
+  } });
   const openInline = async (messageId, index) => {
     const ref = timeline.inlineAttachment(messageId, index);
     if (!ref) return null;
@@ -168,6 +173,7 @@ export function boot({ uiTransport } = {}) {
   });
   timeline = new Timeline(net, (view) => {
     render(view, net.outbox, openInline, presenceBar, openWorkspaceFile);
+    progress();
     agentSheet?.update();
   });
   identityName = new IdentityName(net, (name) => {
@@ -215,6 +221,7 @@ export function boot({ uiTransport } = {}) {
   });
   const visibleTimer = setInterval(() => { if (!document.hidden) void visible(); }, 30_000);
   const typingTimer = setInterval(() => { if (!document.hidden) void typing(); }, 3_000);
+  const progressTimer = setInterval(() => { if (!document.hidden && !progressRoot.hidden) progress(); }, 1_000);
   log.addEventListener("scroll", async () => {
     if (log.scrollTop > 80 || timeline.loading) return;
     const height = log.scrollHeight;
@@ -231,7 +238,7 @@ export function boot({ uiTransport } = {}) {
     if (!agentSheet.close()) return;
     document.querySelector("#drawer").classList.toggle("open");
   });
-  window.addEventListener("pagehide", () => net.stop());
+  window.addEventListener("pagehide", () => { clearInterval(progressTimer); net.stop(); });
   window.addEventListener("offline", () => agentSheet.reset());
   window.addEventListener("pageshow", (event) => { if (event.persisted) void net.start(); });
   void net.start();
