@@ -20,7 +20,7 @@ From `android/` with JDK 21 and Android SDK configured:
 
 The isolated APK must have application ID `ai.ash.agent.probe`; do not install the ordinary debug APK over an existing app. Grant `POST_NOTIFICATIONS` to the probe package before checking visible notices on Android 13+. All calendar permission toggles must target only the probe package. The probe must be removed after testing. No test needs an existing personal calendar event or writes to a user's calendar.
 
-The JVM checks cover approval choice/routing/expiry, stable queued payload across retries, untrusted action extras excluded from URI identity, RemoteInput mutable flags on API 24–30 and 31+, retired presentation IDs, no restart resurrection after dismissal, and malformed calendar arguments rejected before a provider callback. The manifest checker covers every module named by the actual registry, rejects an unclassified newly registered module, and rejects dynamic capability construction.
+The JVM checks cover approval choice/routing/expiry, stable queued payload across retries, untrusted action extras excluded from URI identity, RemoteInput mutable flags on API 24–30 and 31+, retired presentation IDs, no restart resurrection after dismissal, deterministic render/hide interleavings, and malformed calendar arguments rejected before a provider callback. The manifest checker covers every module named by the actual registry, rejects an unclassified newly registered module, and rejects dynamic capability construction.
 
 ## Observed author probe
 
