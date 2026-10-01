@@ -67,7 +67,9 @@ test("memory flow verifies two claims, appends dated log, applies only approved 
     if (name === "reconcile") return input.file === "MEMORY.md" ? { edits: [
       { op: "replace", start: 1, end: 1, guard: "Lives in London", text: "Lives in Singapore", reason: "correct", evidence: [(input.claims as Claim[])[1].evidence[0]] },
       { op: "replace", start: 2, end: 2, guard: "Keep this", text: "Bad edit", reason: "condense", evidence: [(input.claims as Claim[])[0].evidence[0]] },
-    ] } : { edits: [] };
+    ] } : { edits: [
+      { op: "replace", start: 1, end: 1, guard: "Style: unknown", text: "Style: short answers", reason: "promote", evidence: [(input.claims as Claim[])[0].evidence[0]] },
+    ] };
     if (name === "verify_plan") return { verdicts: (input.edits as unknown[]).flatMap((_, i) => [
       { i, lens: "evidence", pass: true, why: "supported" }, { i, lens: "temporal", pass: true, why: "current" },
       { i, lens: "preservation", pass: i === 0, why: i === 0 ? "preserved" : "destroys unrelated text" },
@@ -77,15 +79,17 @@ test("memory flow verifies two claims, appends dated log, applies only approved 
   const f = await fixture(model);
   try {
     writeFileSync(join(f.home, "MEMORY.md"), "Lives in London\nKeep this\n");
+    writeFileSync(join(f.home, "USER.md"), "Style: unknown\n");
     f.add("I prefer short answers"); f.add("I live in Singapore now");
     const first = await f.run(); assert.equal(first.state, "done", JSON.stringify({ calls: model.calls, errors: f.errors.map(String) }));
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "Lives in Singapore\nKeep this\n");
+    assert.match(readFileSync(join(f.home, "USER.md"), "utf8"), /^---\nversion: 1\nupdated: .*\n---\nStyle: short answers\n$/);
     const log = readFileSync(join(f.home, "memory", `${new Date().toISOString().slice(0, 10)}.md`), "utf8");
     assert.equal(log.trim().split("\n").length, 2);
     assert.match(log, /"quote":"I prefer short answers"/);
     assert.match(log, /"supersedes":"Lives in London"/);
     assert.deepEqual(f.ledger.list({ limit: 1000 }).filter((m) => m.turn === first.id && m.from === "service:work" && m.kind === "request").map((m) => m.word),
-      ["extract", "verify_claims", "read", "reconcile", "verify_plan", "read", "append", "apply_plan"]);
+      ["extract", "verify_claims", "read", "reconcile", "verify_plan", "read", "reconcile", "verify_plan", "read", "append", "apply_plan", "apply_plan"]);
     const second = await f.run(); assert.equal(second.state, "no_change");
     assert.equal(readFileSync(join(f.home, "memory", `${new Date().toISOString().slice(0, 10)}.md`), "utf8"), log);
   } finally { await f.close(); }
@@ -126,5 +130,42 @@ test("a refuting verifier rejects its claim before any file effect", async () =>
     assert.deepEqual(model.calls, ["extract", "verify_claims"]);
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "original\n");
     assert.equal(existsSync(join(f.home, "memory")), false);
+  } finally { await f.close(); }
+});
+
+test("a failed plan can be retried without duplicating an already appended claim", async () => {
+  let plans = 0;
+  const model = scripted((name, input) => {
+    if (name === "extract") {
+      const message = (input.chunk as Message[])[0];
+      return { claims: [{ text: "Prefers short answers", type: "preference", salience: "medium",
+        evidence: [message.id], quote: "I prefer short answers" }] };
+    }
+    if (name === "verify_claims") return { verdicts: [
+      { i: 0, lens: "refute", pass: true, confidence: 1, why: "clear" },
+      { i: 0, lens: "grounded", pass: true, confidence: 1, why: "quoted" },
+    ] };
+    if (name === "reconcile") return input.file === "MEMORY.md" ? { edits: [
+      { op: "replace", start: 1, end: 1, guard: ++plans === 1 ? "wrong guard" : "Style: unknown",
+        text: "Style: short answers", reason: "promote", evidence: [(input.claims as Claim[])[0].evidence[0]] },
+    ] } : { edits: [] };
+    if (name === "verify_plan") return { verdicts: [
+      { i: 0, lens: "evidence", pass: true, why: "supported" },
+      { i: 0, lens: "temporal", pass: true, why: "current" },
+      { i: 0, lens: "preservation", pass: true, why: "preserved" },
+    ] };
+    throw new Error(`unexpected ${name}`);
+  });
+  const f = await fixture(model);
+  try {
+    writeFileSync(join(f.home, "MEMORY.md"), "Style: unknown\n");
+    f.add("I prefer short answers");
+    assert.equal((await f.run()).state, "failed");
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "Style: unknown\n");
+    const logPath = join(f.home, "memory", `${new Date().toISOString().slice(0, 10)}.md`);
+    const firstLog = readFileSync(logPath, "utf8"); assert.equal(firstLog.trim().split("\n").length, 1);
+    assert.equal((await f.run()).state, "done");
+    assert.equal(readFileSync(logPath, "utf8"), firstLog);
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "Style: short answers\n");
   } finally { await f.close(); }
 });

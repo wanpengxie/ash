@@ -57,9 +57,14 @@ export function memoryFlow(ledger: Ledger): WorkFlow {
     }
 
     const date = new Date().toISOString().slice(0, 10);
-    const text = accepted.map((claim) => `- ${JSON.stringify(claim)}\n`).join("");
+    const logPath = `memory/${date}.md`;
     await ctx.step("append_log", async () => {
-      result(await ctx.send({ to: "service:self", word: "append", body: { path: `memory/${date}.md`, text }, client_id: "append_log" }));
+      const read = await ctx.send({ to: "service:self", word: "read", body: { path: logPath }, client_id: "read_log" });
+      if (!read.ok && read.error.code !== "not_found") throw new Error(`memory log read failed: ${read.error.code}`);
+      const prior = read.ok ? result<{ content: string }>(read).content : "";
+      const lines = new Set(prior.split("\n"));
+      const text = accepted.map((claim) => `- ${JSON.stringify(claim)}`).filter((line) => !lines.has(line)).map((line) => `${line}\n`).join("");
+      if (text) result(await ctx.send({ to: "service:self", word: "append", body: { path: logPath, text }, client_id: "append_log" }));
     });
     for (const plan of plans) {
       const key = plan.path === "MEMORY.md" ? "memory" : "user";
