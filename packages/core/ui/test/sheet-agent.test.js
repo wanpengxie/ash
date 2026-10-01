@@ -115,6 +115,29 @@ test("clock reply mismatch and malformed timer cannot produce a false empty list
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
+test("clock labels and blocked reasons cannot expose raw route names", async () => {
+  let label = "带伞";
+  let blocked = "service:clock list failed";
+  const f = fixture({ request: async (_path, options) => {
+    const wire = JSON.parse(options.body);
+    if (wire.to === "service:self") return { ok: true, json: async () => ({ id: "self", reply: { kind: "response", reply_to: "self", from: "service:self", to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
+    return { ok: true, json: async () => ({ id: "clock", reply: { kind: "response", reply_to: "clock",
+      from: "service:clock", to: "person:owner", word: "list", body: { ok: true, result: { timers: [{ id: "tmr_a", next: 1000, label, blocked }] } } } }) };
+  } });
+  try {
+    f.sheet.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    await f.sheet.show("upcoming");
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂不可用/);
+    assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /service:clock/);
+    blocked = null;
+    label = "calendar.search";
+    await f.sheet.show("upcoming");
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂不可用/);
+    assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /calendar.search/);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
 test("remote identity is read-only; scope loss discards draft and delayed read", async () => {
   let release;
   const f = fixture({ localManagement: false, request: async (_path, options) => new Promise((resolve) => {
