@@ -14,6 +14,7 @@ export function faceForStatus(state) { return Object.hasOwn(FACE, state) ? FACE[
 export class PresenceBar {
   constructor(root = document, { onOpen } = {}) {
     this.bar = root.querySelector("#presence");
+    this.title = root.querySelector("#title");
     this.state = root.querySelector("#state");
     this.avatar = root.querySelector("#face img");
     this.dot = root.querySelector("#dot");
@@ -23,6 +24,11 @@ export class PresenceBar {
       if (typeof onOpen === "function") onOpen();
       else this.notice.textContent = "人物页尚未接入";
     });
+  }
+
+  setName(name) {
+    this.title.textContent = name;
+    this.bar.setAttribute("aria-label", `打开 ${name} 人物页`);
   }
 
   render(presence) {

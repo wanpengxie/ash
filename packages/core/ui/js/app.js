@@ -5,6 +5,7 @@ import { openInlineBlob, prepareUploads } from "./attachments.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
 import { AgentSheet } from "./sheet-agent.js";
+import { IdentityName } from "./identity-name.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -106,6 +107,7 @@ export function boot() {
   const form = document.querySelector("#f");
   const input = document.querySelector("#t");
   let agentSheet;
+  let identityName;
   const presenceBar = new PresenceBar(document, { onOpen: () => {
     document.querySelector("#drawer").classList.remove("open");
     agentSheet?.open();
@@ -133,6 +135,7 @@ export function boot() {
     label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "Phone browser" : "Computer browser"),
     onMessage: (message, context) => {
       timeline.add(message);
+      identityName?.changed(message, context?.historical);
       if (context?.historical || message.kind !== "request" || message.word !== "ui.open" || message.to !== net.screen) return;
       const target = (message.body_summary || message.body)?.target;
       const mode = (message.body_summary || message.body)?.mode;
@@ -146,14 +149,15 @@ export function boot() {
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
-    onReset: () => { timeline.reset(); suggestions.replaceChildren(); settings?.reset(); agentSheet?.reset(); },
+    onReset: () => { timeline.reset(); suggestions.replaceChildren(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
     onState: (status, error) => {
       settings?.network(status);
       agentSheet?.network(status);
+      if (status !== "online") identityName?.reset();
       presenceBar.network(status, status === "online" ? presenceProblem : "");
       if (error) connection.title = String(error.message || error);
     },
-    onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); if (!document.hidden) void visible(); },
+    onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
       if (timeline) render(timeline.view, outbox, openInline, presenceBar);
@@ -162,6 +166,10 @@ export function boot() {
   timeline = new Timeline(net, (view) => {
     render(view, net.outbox, openInline, presenceBar);
     agentSheet?.update();
+  });
+  identityName = new IdentityName(net, (name) => {
+    presenceBar.setName(name);
+    document.querySelector("#agentSheetHeader h2").textContent = name;
   });
   settings = new SettingsControls(document.querySelector("#panel"), net);
   agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view });
