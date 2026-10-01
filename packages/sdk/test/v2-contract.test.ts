@@ -76,6 +76,25 @@ test("proactive say fixes a bounded opaque dedupe key at acceptance, without add
   assert.ok(matchesSchema(say, { ...base, dedupe_key: "a".repeat(128) }));
 });
 
+test("pause and resume require exact management bodies and truthful paused results", () => {
+  const pause = wordContract("service:admin", "pause")!;
+  const resume = wordContract("service:admin", "resume")!;
+  assert.equal(pause.kind, "request");
+  assert.equal(resume.kind, "request");
+  assert.equal(pause.audience, "owner");
+  assert.equal(resume.audience, "owner");
+  for (const body of [{}, { by: "m_owner_1" }]) assert.ok(matchesSchema(pause.input_schema!, body));
+  for (const body of [{ by: "" }, { by: 4 }, { by: "m_1", extra: true }, { confirmed: true }, null])
+    assert.ok(!matchesSchema(pause.input_schema!, body), `invalid pause input ${JSON.stringify(body)}`);
+  assert.ok(matchesSchema(resume.input_schema!, { confirmed: true }));
+  for (const body of [{}, { confirmed: false }, { confirmed: "true" }, { confirmed: true, by: "m_1" }, null])
+    assert.ok(!matchesSchema(resume.input_schema!, body), `invalid resume input ${JSON.stringify(body)}`);
+  assert.ok(matchesSchema(pause.result_schema!, { paused: true }));
+  assert.ok(matchesSchema(resume.result_schema!, { paused: false }));
+  for (const result of [{ paused: false }, {}, { paused: true, accepted: true }]) assert.ok(!matchesSchema(pause.result_schema!, result));
+  for (const result of [{ paused: true }, {}, { paused: false, accepted: true }]) assert.ok(!matchesSchema(resume.result_schema!, result));
+});
+
 test("post.delivery is a closed service-only visibility event, not an external notification", () => {
   const contract = wordContract("service:post", "post.delivery")!;
   assert.equal(contract.kind, "event");

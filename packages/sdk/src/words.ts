@@ -148,9 +148,12 @@ for (const [word, input, result] of [
   ["settings.get", empty, obj({}, [], true)], ["settings.set", obj({}, [], true), obj({}, [], true)],
   ["plugins.list", empty, obj({}, [], true)], ["plugins.op", obj({}, [], true), obj({}, [], true)],
   ["gateway.state", empty, obj({}, [], true)], ["gateway.op", obj({}, [], true), obj({}, [], true)],
-  ["pause", empty, obj({}, [], true)], ["resume", empty, obj({}, [], true)],
   ["model.set", obj({}, [], true), obj({}, [], true)],
 ] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", risk: word === "plugins.op" || word === "gateway.op" ? "structure" : "none", description: "Local owner administration; never available to a remote screen." });
+add("service:admin", "pause", "request", { oneOf: [empty, obj({ by: id }, ["by"]) ] },
+  obj({ paused: { const: true } }, ["paused"]), { audience: "owner", description: "Durably pause activity; a trusted local reflex may cite one authenticated owner message once." });
+add("service:admin", "resume", "request", obj({ confirmed: { const: true } }, ["confirmed"]),
+  obj({ paused: { const: false } }, ["paused"]), { audience: "owner", description: "Resume only after explicit confirmation on a verified local owner screen." });
 
 export const WORD_CONTRACTS: readonly WordContract[] = Object.freeze(entries);
 export function wordContract(member: string, word: string): WordContract | undefined {
