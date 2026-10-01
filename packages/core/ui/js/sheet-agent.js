@@ -84,6 +84,7 @@ const node = (tag, label) => {
 /** Separate from Settings: local admin and preference drafts are never reparented. */
 export class AgentSheet {
   constructor(root, net, { getView = () => null, getLedgerMessage = () => null,
+    onAskAbout = () => {},
     confirmDiscard = () => globalThis.confirm?.("放弃未保存或未确认的修改并关闭人物页？") === true,
     confirmRollback = ({ path, to_ts }) => globalThis.confirm?.(`确认将 ${path} 回滚到 ${new Date(to_ts).toLocaleString()} 的快照？`) === true,
     idFactory = () => crypto.randomUUID() } = {}) {
@@ -91,6 +92,7 @@ export class AgentSheet {
     this.net = net;
     this.getView = getView;
     this.getLedgerMessage = getLedgerMessage;
+    this.onAskAbout = onAskAbout;
     this.confirmDiscard = confirmDiscard;
     this.confirmRollback = confirmRollback;
     this.idFactory = idFactory;
@@ -196,7 +198,7 @@ export class AgentSheet {
   renderActivity() {
     const section = this.panels.get("activity");
     if (!section || !this.current()) return;
-    renderActivitySheet(section, safeActivityView(this.getView()));
+    renderActivitySheet(section, safeActivityView(this.getView()), { askAbout: this.onAskAbout });
   }
 
   renderUpcoming(section, timers, binding, epoch) {

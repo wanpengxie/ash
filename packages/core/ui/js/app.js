@@ -2,6 +2,7 @@ import { fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
 import { renderProgress } from "./progress.js";
+import { presentUiOpen } from "./suggestions.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
@@ -119,6 +120,7 @@ export function boot({ uiTransport } = {}) {
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
   const suggestions = document.querySelector("#suggestions");
+  const contextRoot = document.querySelector("#context");
   const fileInput = document.querySelector("#file");
   const attachButton = document.querySelector("#attach");
   const selected = document.querySelector("#selected");
@@ -127,9 +129,24 @@ export function boot({ uiTransport } = {}) {
   let lastTyping = 0;
   let timeline;
   let settings;
+  const clearContext = () => { contextRoot.replaceChildren(); contextRoot.hidden = true; };
   const progress = () => renderProgress(progressRoot, timeline?.view, { onOpen: () => {
     if (agentSheet?.open()) void agentSheet.show("activity");
   } });
+  const openUiTarget = async (target) => {
+    if (!net.token || !net.screen) return false;
+    if (target === "settings") {
+      if (!net.localManagement) return false;
+      if (!agentSheet.close()) return false;
+      document.querySelector("#drawer").classList.add("open");
+      return true;
+    }
+    const tab = target === "turn" ? "activity" : target;
+    if (!agentSheet.open()) return false;
+    document.querySelector("#drawer").classList.remove("open");
+    await agentSheet.show(tab);
+    return agentSheet.activeTab === tab;
+  };
   const openInline = async (messageId, index) => {
     const ref = timeline.inlineAttachment(messageId, index);
     if (!ref) return null;
@@ -145,19 +162,14 @@ export function boot({ uiTransport } = {}) {
       timeline.add(message);
       identityName?.changed(message, context?.historical);
       if (context?.historical || message.kind !== "request" || message.word !== "ui.open" || message.to !== net.screen) return;
-      const target = (message.body_summary || message.body)?.target;
-      const mode = (message.body_summary || message.body)?.mode;
-      const targets = { activity: "活动", upcoming: "接下来", approvals: "审批", identity: "身份", memory: "记忆", settings: "设置", turn: "当前任务" };
-      if (!Object.hasOwn(targets, target) || !["suggest", "perform"].includes(mode)) return;
-      if (mode === "suggest") text(suggestions, "div", `建议查看${targets[target]}（页面尚未接入）`, "chip");
-      // None of these destinations has a working page in the shell yet.
-      // A suggestion is acknowledged only after it is rendered; an unavailable
-      // perform target is explicitly reported as unopened.
-      void net.respondOpen(message, false).then((sent) => { if (!sent) connection.textContent = "页面请求回执未送达"; }).catch(() => { connection.textContent = "页面请求回执未送达"; });
+      void presentUiOpen(suggestions, message, { open: openUiTarget,
+        respond: async (request, opened) => {
+          if (!await net.respondOpen(request, opened)) connection.textContent = "页面请求回执未送达";
+        } }).catch(() => { connection.textContent = "页面请求回执未送达"; });
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
-    onReset: () => { timeline.reset(); suggestions.replaceChildren(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
+    onReset: () => { timeline.reset(); suggestions.replaceChildren(); clearContext(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
     onState: (status, error) => {
       settings?.network(status);
       agentSheet?.network(status);
@@ -182,7 +194,18 @@ export function boot({ uiTransport } = {}) {
   });
   settings = new SettingsControls(document.querySelector("#panel"), net);
   agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view,
-    getLedgerMessage: (id) => timeline.byId.get(id) });
+    getLedgerMessage: (id) => timeline.byId.get(id), onAskAbout: ({ turn, text: prefill }) => {
+      if (!agentSheet.close()) return;
+      input.value = prefill;
+      clearContext();
+      contextRoot.hidden = false;
+      const chip = text(contextRoot, "div", "关于这件事", "context-chip");
+      chip.dataset.turn = turn;
+      const remove = text(chip, "button", "移除", "context-remove");
+      remove.type = "button";
+      remove.addEventListener("click", clearContext);
+      input.focus();
+    } });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
@@ -209,6 +232,7 @@ export function boot({ uiTransport } = {}) {
       const attachments = await prepareUploads(files, value);
       await net.enqueueSay(value, attachments);
       input.value = "";
+      clearContext();
       fileInput.value = "";
       selected.textContent = "";
       log.scrollTop = log.scrollHeight;

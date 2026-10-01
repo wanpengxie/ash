@@ -19,7 +19,7 @@ class Element {
   querySelector(selector) { return this.named?.[selector]; }
 }
 
-function fixture({ localManagement = true, request, getView = () => ({ turns: {} }), getLedgerMessage = () => null, idFactory = () => "cancel-client-one" } = {}) {
+function fixture({ localManagement = true, request, getView = () => ({ turns: {} }), getLedgerMessage = () => null, onAskAbout = () => {}, idFactory = () => "cancel-client-one" } = {}) {
   globalThis.document = { createElement: (tag) => new Element(tag), createDocumentFragment: () => new Element("fragment") };
   const root = new Element("aside");
   root.named = { "#agentTabs": new Element("nav"), "#agentPanel": new Element("div"), "#agentClose": new Element("button") };
@@ -29,7 +29,7 @@ function fixture({ localManagement = true, request, getView = () => ({ turns: {}
       return { ok: true, json: async () => ({ id: "id", reply: { kind: "response", reply_to: "id", from: "service:self",
         to: "person:owner", word: wire.word, body: { ok: false, error: { code: "not_found" } } } }) };
     }) };
-  const sheet = new AgentSheet(root, net, { confirmDiscard: () => false, getView, getLedgerMessage, idFactory });
+  const sheet = new AgentSheet(root, net, { confirmDiscard: () => false, getView, getLedgerMessage, onAskAbout, idFactory });
   return { root, net, sheet };
 }
 
@@ -47,6 +47,20 @@ test("five tabs show safe activity, and failed clock never claims empty", async 
     await f.sheet.show("approvals");
     assert.match(f.sheet.panels.get("approvals").textContent, /当前没有可确认的待批请求/);
     assert.match(f.sheet.panels.get("approvals").textContent, /不能据此判断没有规则/);
+  } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+test("activity question passes a turn-linked prefill to the composer callback", async () => {
+  let asked = null;
+  const f = fixture({ getView: () => ({ turns: { t_one: { title: "查天气", started: 1000, steps: [] } } }), onAskAbout: (value) => { asked = value; } });
+  try {
+    f.sheet.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    await f.sheet.show("activity");
+    const section = f.sheet.panels.get("activity");
+    const button = section.children.find((child) => child.dataset.turn === "t_one").children.find((child) => child.tag === "button");
+    button.listeners.click();
+    assert.deepEqual(asked, { turn: "t_one", text: "关于查天气，" });
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 

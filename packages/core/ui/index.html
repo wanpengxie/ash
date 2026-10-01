@@ -84,6 +84,8 @@ footer button.stop{background:var(--err)}
 .activity-turn{padding:.65rem .75rem;margin:.55rem 0;background:var(--card);border:1px solid var(--line);border-radius:10px}.activity-turn.background{border-left:3px solid var(--me)}.activity-turn h3{margin:0;font-size:.9rem}.activity-time{color:var(--mute)}.activity-step{margin:.3rem 0;color:var(--mute);font-size:.82rem}
 .activity-group{margin:.9rem 0 .35rem;color:var(--mute);font-size:.8rem;font-weight:600}
 #progress{padding:.35rem 1rem;border-top:1px solid var(--line);background:var(--bg)}#progress[hidden]{display:none}.progress-button{display:block;width:min(760px,100%);margin:auto;padding:.2rem .4rem;border:0;background:transparent;color:var(--mute);font:inherit;font-size:.8rem;text-align:left;cursor:pointer}
+.suggestion{display:flex;align-items:center;gap:.4rem;max-width:760px;margin:0 auto .4rem;padding:.35rem .55rem;border-radius:9px;background:var(--chip);font-size:.82rem}.suggestion span{flex:1}.suggestion button{border:0;background:var(--card);color:var(--fg);border-radius:6px;padding:.2rem .5rem;font:inherit;cursor:pointer}
+#context{padding:.35rem 1rem;background:var(--bg)}#context[hidden]{display:none}.context-chip{display:flex;align-items:center;gap:.4rem;max-width:760px;margin:auto;color:var(--mute);font-size:.78rem}.context-chip button{border:0;background:var(--chip);color:var(--fg);border-radius:6px;padding:.1rem .4rem;cursor:pointer}
 #agentPanel .markdown-source{display:block;width:100%;min-height:12rem;resize:vertical;margin:.5rem 0}
 #agentPanel button{margin:.2rem .3rem .2rem 0}#agentPanel .editor-warning{color:var(--err)}
 #tabs{display:flex;gap:.2rem;position:sticky;top:0;background:var(--bg);padding:.7rem 0 .5rem;border-bottom:1px solid var(--line);z-index:1}
@@ -108,6 +110,7 @@ code.k{background:var(--chip);padding:.15rem .4rem;border-radius:5px;word-break:
 </header>
 <main id="log"></main>
 <div id="progress" hidden aria-live="polite"></div>
+<div id="context" hidden></div>
 <footer><div id="suggestions"></div><div id="pending"></div><div id="selected"></div><form id="f"><button type="button" id="attach" title="图片或文件">📎</button><input type="file" id="file" multiple hidden><textarea id="t" rows="1" placeholder="跟 Ash 说点什么…"></textarea><button id="send">发送</button></form><small class="pending-note">未发送的文字和附件暂存在此浏览器，最多保留 7 天；仅送达确认后才移除附件副本。</small></footer>
 <aside id="drawer"><div id="tabs"></div><div id="panel"></div></aside>
 <aside id="agentSheet" aria-hidden="true"><div id="agentSheetHeader"><h2>Ash</h2><button id="agentClose" type="button" aria-label="关闭人物页">关闭</button></div><nav id="agentTabs" aria-label="人物页标签"></nav><div id="agentPanel"></div></aside>
