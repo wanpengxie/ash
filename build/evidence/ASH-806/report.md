@@ -38,3 +38,7 @@ node tools/originality.mjs --target packages/core/src/prompts/workers --referenc
 生产限制：当前 `verify_plan` wire 不携证据正文，只能对引用可见性如实保守判断；不可把模型给的证据通过判词视为实际证据核验。真实 DSH 装配、run 完成/失败记账与文件不变保护属于后续联合门禁，不能由这 60 条工具外模型调用证明。
 
 合入当时最新 v2 后，安装版 DSH `npm test` 自然退出：461 总、402 通过、59 跳过、0 失败；`npm run -s typecheck`、`npm run -s build:core` 均通过。`gen:ui`/`gen:worker-rules` 后 tracked 产物无差异；公开私词扫描 534 文件、0 命中。工人定向 8/8、原创性工具自测 12/12、提供私词表的最终架构门禁 0 finding。上述测试只证明本候选与当时基线兼容，不替代 502/503 的生产联验。
+
+## PR53 基线合入后的复验边界
+
+本分支随后无冲突合入 v2 gate 增量；工人/UI 生成产物仍无差异，工人定向 8/8、typecheck、build:core 均通过，私词扫描 541 文件、0 命中。安装版 DSH 并发全套两轮**未通过**：第一轮 504 总/441 过/62 跳/1 败，第二轮 504 总/440 过/62 跳/2 败。第二轮唯一失败类型是未修改的反射严格时限：`members/reflex.test.ts` 的“keyword stop waited beyond one second”和 `world/reflex-dsh.test.ts` 的“reflex waited for the non-cooperative device”。随后在本候选与干净 v2 分别仅跑这两文件，各 4/4 通过。此对照不能把并发全套红例消去；新基线全套保持待独立复验，不把报告前一段的旧基线绿误称为 PR53 后的绿。
