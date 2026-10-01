@@ -53,12 +53,16 @@ async function until(check, label, ms = 12_000) {
 
 try {
   const owner = { member: "person:owner", transportPrincipal: "probe", local: true, remote: false, ownerProxy: true, transport: "web_ui" };
-  const registrationResult = await edge.handle({ method: "GET", url: new URL("http://local/api/stream?follow=false"), headers: {}, body: null }, owner);
+  const registrationResult = await edge.handle({ method: "GET", url: new URL("http://local/api/stream?after=0&follow=true&label=Negative%20probe"), headers: {}, body: null }, owner);
+  assert.equal(registrationResult.status, 200);
   let control = "";
-  registrationResult.stream((chunk) => { control += chunk; }, () => {}, () => {});
-  const isolatedToken = JSON.parse(control.split("\ndata: ")[1].split("\n\n")[0]).token;
-  const absentPost = await edge.handle({ method: "POST", url: new URL("http://local/api/send"), headers: { "ash-screen": isolatedToken }, body: Buffer.from(JSON.stringify({ to: "service:post", kind: "event", word: "visible", body: {} })) }, owner);
-  assert.equal(absentPost.status, 404);
+  let closeNegative = () => {};
+  registrationResult.stream((chunk) => { control += chunk; }, (cleanup) => { closeNegative = cleanup; }, () => {});
+  try {
+    const isolatedToken = JSON.parse(control.split("\ndata: ")[1].split("\n\n")[0]).token;
+    const absentPost = await edge.handle({ method: "POST", url: new URL("http://local/api/send"), headers: { "ash-screen": isolatedToken }, body: Buffer.from(JSON.stringify({ to: "service:post", kind: "event", word: "visible", body: {} })) }, owner);
+    assert.equal(absentPost.status, 404);
+  } finally { closeNegative(); }
   members.register({ id: "service:post", kind: "service", name: "Post", words: () => [wordContract("service:post", "visible")], handle: () => ({ ok: true, result: {} }) });
   for (let n = 1; n <= 120; n++) await world.send({ member: "person:owner", transport: "api", transportPrincipal: "fixture", local: true, remote: false, ownerProxy: true }, { to: "agent:main", kind: "request", word: "say", body: { text: `fixture ${n}` }, client_id: `fixture-${n}` });
   server = await startEdgeServer(edge, "127.0.0.1", 0);
