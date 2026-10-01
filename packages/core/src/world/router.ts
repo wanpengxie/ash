@@ -378,8 +378,6 @@ export class WorldRouter {
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
       fail("forbidden", "only owner may inspect or start background work");
-    if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
-      fail("forbidden", "only owner may inspect or start background work");
     if (request.to === "service:gate" && from !== "person:owner") fail("forbidden", "gate inspection requires owner");
     if (request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
       (ctx.remote || !ctx.local || !ctx.ownerProxy || (request.word.startsWith("access.") && !["api", "web_ui"].includes(ctx.transport))))

@@ -45,7 +45,9 @@ test("unregistered production flow fails clearly without a synthetic success run
     assert.deepEqual(sent.reply?.body, { ok: false, error: { code: "not_found", message: "flow unavailable" } });
     assert.equal(f.ledger.workRuns().length, 0);
     assert.equal(f.ledger.list().filter((row) => row.word === "run.start").length, 0);
+    await assert.rejects(f.router.send(agent, { to: "service:work", kind: "request", word: "run", body: { flow: "fixture" } }), /owner/);
     await assert.rejects(f.router.send(agent, { to: "service:work", kind: "request", word: "runs", body: {} }), /owner/);
+    assert.equal(f.ledger.list().filter((row) => row.from === "agent:main" && row.to === "service:work").length, 0);
   } finally { f.close(); }
 });
 
