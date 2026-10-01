@@ -231,7 +231,7 @@ export class AgentMember implements Member {
         } finally { emitOpen = false; controller.abort(); this.active = null; this.activeTurn = null; this.quiescenceBlocked = false; }
         if (this.closed) break; // an interrupted turn is closed and explained on restart
         const ended = this.inbox.finish(turn.id, result.reason, result.error);
-        this.inbox.consumeStopFacts(stopFacts.map((fact) => fact.turn));
+        if (ended.reason === "completed") this.inbox.consumeStopFacts(stopFacts.map((fact) => fact.turn));
         currentTurn = null;
         await this.turnEvents(ended);
         this.error = null;

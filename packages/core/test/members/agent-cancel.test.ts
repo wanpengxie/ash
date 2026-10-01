@@ -173,3 +173,62 @@ test("turn settlement is restricted to the named agent's own requests", async ()
     assert.equal(f.router.cancel([request.id]).length, 1);
   } finally { await f.close(); }
 });
+
+test("an errored turn keeps its stop fact until a durably completed turn consumes it", async () => {
+  const entered = deferred();
+  const release = deferred();
+  const batches: AgentTurnInput[] = [];
+  const f = await fixture({ async runTurn(input) {
+    batches.push(input);
+    if (batches.length === 1) { entered.resolve(); await release.promise; }
+    return batches.length === 2 ? { reason: "error", error: "model failed" } : { reason: "completed" };
+  } });
+  try {
+    await f.member.start();
+    await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "first" }, wait: true });
+    await entered.promise;
+    await f.router.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "first stop" }, wait: true });
+    release.resolve();
+    await f.waitFor(() => !f.member.waitingForQuiescence);
+    for (const text of ["error turn", "completed turn", "later turn"]) {
+      await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text }, wait: true });
+      const expected = text === "error turn" ? 2 : text === "completed turn" ? 3 : 4;
+      await f.waitFor(() => f.rows().filter((message) => message.word === "turn.end").length === expected);
+    }
+    assert.equal(batches[1].stopFacts.length, 1);
+    assert.equal(batches[2].stopFacts.length, 1, "error turn consumed the fact");
+    assert.deepEqual(batches[3].stopFacts, [], "completed turn failed to consume the fact");
+    assert.deepEqual(f.rows().filter((message) => message.word === "turn.end").map((message) => message.body.reason), ["cancelled", "error", "completed", "completed"]);
+  } finally { release.resolve(); await f.close(); }
+});
+
+test("a second cancellation retains both stop facts for the next completed turn", async () => {
+  const firstEntered = deferred(); const secondEntered = deferred();
+  const firstRelease = deferred(); const secondRelease = deferred();
+  const batches: AgentTurnInput[] = [];
+  const f = await fixture({ async runTurn(input) {
+    batches.push(input);
+    if (batches.length === 1) { firstEntered.resolve(); await firstRelease.promise; }
+    if (batches.length === 2) { secondEntered.resolve(); await secondRelease.promise; }
+    return { reason: "completed" };
+  } });
+  try {
+    await f.member.start();
+    await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "one" }, wait: true });
+    await firstEntered.promise;
+    await f.router.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "first stop" }, wait: true });
+    firstRelease.resolve();
+    await f.waitFor(() => !f.member.waitingForQuiescence);
+    await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "two" }, wait: true });
+    await secondEntered.promise;
+    assert.equal(batches[1].stopFacts.length, 1);
+    await f.router.send(admin, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "second stop" }, wait: true });
+    secondRelease.resolve();
+    await f.waitFor(() => !f.member.waitingForQuiescence);
+    await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "three" }, wait: true });
+    await f.waitFor(() => batches.length === 3);
+    assert.equal(batches[2].stopFacts.length, 2);
+    assert.match(batches[2].rendered, /first stop/);
+    assert.match(batches[2].rendered, /second stop/);
+  } finally { firstRelease.resolve(); secondRelease.resolve(); await f.close(); }
+});
