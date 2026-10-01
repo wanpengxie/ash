@@ -42,6 +42,11 @@ export class SettingsControls {
     this.preferences?.dispose();
     this.preferences = null;
     this.panel.replaceChildren(node("h2", "设置"));
+    if (globalThis.location?.origin === "https://appassets.androidplatform.net") {
+      const diagnostics = node("a", "手机权限与诊断");
+      diagnostics.href = "ash://console";
+      this.panel.append(diagnostics);
+    }
     this.section = null;
     this.sectionContext = null;
     if (!usable) {
