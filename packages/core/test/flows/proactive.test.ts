@@ -75,6 +75,20 @@ test("a just-said fact returns no_change instead of waking Ash", async () => {
   } finally { await f.close(); }
 });
 
+test("upcoming calendar event can nominate a cited fact without MEMORY.md", async () => {
+  const provider = model(candidate);
+  const f = await fixture(provider);
+  try {
+    f.ledger.append({ from: "device:phone", to: null, kind: "event", word: "sense.calendar", body: {
+      kind: "upcoming", event: { id: "appointment", title: "Passport renewal", start: Date.now() + 3_600_000,
+        end: Date.now() + 7_200_000, important: true },
+    } });
+    assert.equal(await f.run(), "done");
+    assert.equal(f.wakes.length, 1);
+    assert.match(provider.prompts[0], /Passport renewal/);
+  } finally { await f.close(); }
+});
+
 test("worker no_change stays silent and invalid citations fail before wake", async () => {
   for (const [output, state] of [[{ no_change: { checked: [], details: "nothing timely" } }, "no_change"],
     [{ suggestion: { ...candidate.suggestion, facts: [99] } }, "failed"]] as const) {

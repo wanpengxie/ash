@@ -22,7 +22,9 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     for await (const chunk of request) raw += chunk;
     const input = JSON.parse(raw) as { model?: string; messages?: { role: string; content: unknown }[]; tools?: { name: string }[] };
     const user = (input.messages ?? []).filter((item) => item.role === "user").map((item) => JSON.stringify(item.content)).join("\n");
-    const mind = user.includes("MIND_WAKE_MARKER");
+    const current = JSON.stringify((input.messages ?? []).filter((item) => item.role === "user").at(-1)?.content ?? "");
+    const tour = current.includes("Reason: first_week_tour");
+    const mind = user.includes("This is your private mind space");
     const proactive = user.includes("worker:proactive/input");
     const worker = user.includes("worker:extract/input") || proactive;
     requests.push({ user, mind, worker, tools: (input.tools ?? []).map((item) => item.name) });
@@ -35,7 +37,7 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
       content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } });
     if (callTool) {
       event("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_mind_say_1", name: "ash_say", input: {} } });
-      event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: "MIND_PUBLIC_MESSAGE", kind: "heads_up" }) } });
+      event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: tour ? "TOUR_PUBLIC_MESSAGE" : "MIND_PUBLIC_MESSAGE", kind: "heads_up" }) } });
     } else {
       event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
       event("content_block_delta", { index: 0, delta: { type: "text_delta", text: proactive ? JSON.stringify({ suggestion: {
@@ -69,11 +71,14 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
       assert.equal(check(), true, "timed out waiting for a DSH turn");
     };
     await until(() => running!.ledger.list().some((item) => item.word === "turn.end" && item.body.reason === "completed"));
+    await until(() => running!.ledger.workRuns("tour").some((item) => item.state === "done"));
+    assert.equal(requests.some((item) => item.user.includes("Reason: first_week_tour") && item.tools.includes("ash_say")), true);
     const wake = await running.world.send(clock, { to: "agent:main", kind: "request", word: "wake",
       body: { reason: "calendar", context: { marker: "MIND_WAKE_MARKER" } }, wait: true });
     assert.equal(wake.reply?.body.ok, true);
     const publicSays = running.ledger.list().filter((item) => item.from === "agent:main" && item.to === "person:owner" && item.kind === "request" && item.word === "say");
-    assert.deepEqual(publicSays.map((item) => [item.body.text, item.body.kind]), [["MAIN_VISIBLE_OUTPUT", "reply"], ["MIND_PUBLIC_MESSAGE", "heads_up"]]);
+    assert.deepEqual(publicSays.map((item) => [item.body.text, item.body.kind]), [["MAIN_VISIBLE_OUTPUT", "reply"],
+      ["TOUR_PUBLIC_MESSAGE", "heads_up"], ["MIND_PUBLIC_MESSAGE", "heads_up"]]);
     assert.equal(JSON.stringify(running.ledger.list()).includes("MIND_PRIVATE_OUTPUT"), false);
     const mainId = [...sessions].find(([, events]) => events.some((event) => JSON.stringify(event).includes(`core-`)))?.[0];
     const mindId = [...sessions].find(([, events]) => events.some((event) => JSON.stringify(event).includes(`wake-${wake.id}`)))?.[0];
@@ -102,9 +107,9 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     assert.deepEqual(requests.find((item) => item.user.includes("worker:proactive/input"))?.tools, []);
     const headsUp = running.ledger.list({ limit: 1000 }).filter((item) => item.from === "agent:main" && item.to === "person:owner" &&
       item.word === "say" && item.body.kind === "heads_up");
-    assert.equal(headsUp.length, 2);
+    assert.equal(headsUp.length, 3);
     await until(() => running!.ledger.list({ limit: 1000 }).some((item) => item.from === "service:post" && item.word === "post.delivery" &&
-      item.body.message_id === headsUp[1].id));
+      item.body.message_id === headsUp[2].id));
     off();
   } finally {
     await running?.close();

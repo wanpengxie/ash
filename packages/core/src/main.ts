@@ -12,8 +12,11 @@ import { dshWorkerModel } from "../../dsh-binding/src/workers";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
+import { heartbeatFlow } from "./flows/heartbeat";
 import { memoryFlow } from "./flows/memory";
+import { openerFlow } from "./flows/opener";
 import { proactiveFlow } from "./flows/proactive";
+import { tourFlow } from "./flows/tour";
 import { createAgentMember } from "./members/agent";
 import { AgentMind } from "./members/agent-mind";
 import { AdminMember } from "./members/admin";
@@ -103,6 +106,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let dsh: DshHost | null = null;
   let self: SelfMember | null = null;
   let work: WorkMember | null = null;
+  let stopSenseTriggers: (() => void) | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
   try {
@@ -146,8 +150,19 @@ export async function startOwner(config: Config): Promise<Running> {
     work = new WorkMember({ ledger, router: world, isPaused: () => clock!.journal.isPaused(),
       flows: dsh && config.workspaces?.home ? [memoryFlow(ledger, (run) => {
         try { work!.trigger("proactive", "event", `memory:${run}`); } catch { /* a suggestion cannot undo committed memory */ }
-      }), proactiveFlow(ledger)] : [] });
+      }), proactiveFlow(ledger), heartbeatFlow(), openerFlow(ledger), tourFlow(ledger)] : [] });
     members.register(work);
+    if (dsh) stopSenseTriggers = world.subscribe((message) => {
+      try {
+        const slot = createHash("sha256").update(message.id).digest("hex").slice(0, 32);
+        if (message.from === "agent:main" && message.to === "person:owner" && message.kind === "request" && message.word === "say")
+          work!.trigger("tour", "event", `reply:${slot}`);
+        if (message.from !== "device:phone" || message.kind !== "event") return;
+        if (message.word === "sense.screen" && message.body.state === "app_open" && Number(message.body.away_ms) >= 6 * 3_600_000)
+          work!.trigger("opener", "event", `screen:${slot}`);
+        if (message.word === "sense.calendar") work!.trigger("proactive", "event", `calendar:${slot}`);
+      } catch { /* paused work keeps the sense fact but creates no false run */ }
+    });
     if (config.workspaces?.home) {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
       members.register(self);
@@ -204,11 +219,13 @@ export async function startOwner(config: Config): Promise<Running> {
     hostLink?.startHealthChecks(members);
     link?.enable();
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
+      stopSenseTriggers?.();
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
       await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
+    stopSenseTriggers?.();
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
     await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();

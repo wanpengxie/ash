@@ -103,9 +103,12 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
       const toolResult = Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === "tool_result");
       const user = (request.messages ?? []).filter((message) => message.role === "user").flatMap((message) =>
         Array.isArray(message.content) ? message.content.filter((part: { type?: string }) => part.type === "text").map((part: { text?: string }) => part.text ?? "") : []).join("\n");
-      if (tools.length) captured.push({ tools, user, toolResult, resultText: JSON.stringify(last?.content ?? "") });
+      // The first main say may independently wake the first-week tour mind; it is not a main turn step.
+      const isMind = user.includes("This is your private mind space");
+      if (tools.length && !isMind)
+        captured.push({ tools, user, toolResult, resultText: JSON.stringify(last?.content ?? "") });
       const step = captured.length;
-      const toolUse = Boolean(tools.length && step <= 3);
+      const toolUse = Boolean(tools.length && !isMind && step <= 3);
       const messageId = /\bid=([A-Za-z0-9_-]+)/.exec(user)?.[1] ?? "missing";
       res.writeHead(200, { "content-type": "text/event-stream" });
       const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);

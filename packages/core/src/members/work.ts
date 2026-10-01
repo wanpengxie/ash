@@ -28,6 +28,8 @@ export interface WorkRunContext {
 export interface WorkFlow {
   name: string;
   triggers: readonly Trigger[];
+  /** Period for the existing periodic trigger; defaults to one hour. */
+  periodMinutes?: number;
   execute(context: WorkRunContext): Promise<Outcome>;
 }
 export interface WorkOptions { ledger: Ledger; router: WorldRouter; isPaused: () => boolean; flows?: readonly WorkFlow[]; now?: () => number; scanMs?: number }
@@ -47,6 +49,7 @@ export class WorkMember implements Member {
     for (const flow of options.flows ?? []) {
       if (!matchesSchema(runSpec.input_schema!, { flow: flow.name }) || this.flows.has(flow.name) ||
         !Array.isArray(flow.triggers) || flow.triggers.some((trigger) => !["manual", "cooldown", "hourly", "event"].includes(trigger)) ||
+        (flow.periodMinutes !== undefined && (!Number.isSafeInteger(flow.periodMinutes) || flow.periodMinutes < 1 || flow.periodMinutes > 1440)) ||
         typeof flow.execute !== "function") throw new TypeError("invalid work flow registration");
       this.flows.set(flow.name, flow);
     }
@@ -91,7 +94,8 @@ export class WorkMember implements Member {
     const cooldown = this.options.ledger.workCooldownCandidate(now);
     for (const flow of this.flows.values()) {
       if (flow.triggers.includes("hourly")) {
-        try { this.trigger(flow.name, "hourly", `hourly:${flow.name}:${Math.floor(now / 3_600_000)}`); }
+        const period = (flow.periodMinutes ?? 60) * 60_000;
+        try { this.trigger(flow.name, "hourly", `hourly:${flow.name}:${Math.floor(now / period)}`); }
         catch { /* active-flow mutex or bad pause state: never manufacture success */ }
       }
       if (cooldown && flow.triggers.includes("cooldown")) {

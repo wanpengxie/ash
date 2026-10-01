@@ -19,15 +19,24 @@ export function proactiveFlow(ledger: Ledger): WorkFlow {
     ]));
     const facts = memory.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"))
       .slice(-100).map((text, index) => ({ n: index + 1, text }));
-    if (!facts.length) return "no_change";
     const history = ledger.list({ before: ledger.lastSeq() + 1, limit: 1000 });
     const recent = history.filter((message) => message.kind === "request" && message.word === "say" &&
       ((message.from === "person:owner" && message.to === "agent:main") || (message.from === "agent:main" && message.to === "person:owner"))).slice(-50);
     const delivered = history.filter((message) => message.kind === "request" && message.from === "agent:main" &&
       message.to === "person:owner" && message.word === "say" && ["offer", "heads_up"].includes(String(message.body.kind)))
       .slice(-50).map((message) => ({ id: message.id, ts: message.ts, text: message.body.text }));
+    const now = Date.now();
+    const upcoming = history.filter((message) => message.kind === "event" && message.from === "device:phone" &&
+      message.word === "sense.calendar" && typeof (message.body.event as { start?: unknown } | undefined)?.start === "number" &&
+      Number((message.body.event as { start: number }).start) >= now && Number((message.body.event as { start: number }).start) <= now + 7 * 86_400_000)
+      .slice(-50).map((message) => message.body.event);
+    for (const event of upcoming) {
+      const entry = event as { title?: unknown; start?: unknown };
+      facts.push({ n: facts.length + 1, text: `${String(entry.title ?? "Calendar event")} at ${new Date(Number(entry.start)).toISOString()}` });
+    }
+    if (!facts.length) return "no_change";
     const response = await ctx.step("candidate", () => ctx.send({ to: "worker:proactive", word: "proactive",
-      body: { run: ctx.run, input: { prefs, recent, facts, upcoming: [], delivered } }, client_id: "candidate" }));
+      body: { run: ctx.run, input: { prefs, recent, facts, upcoming, delivered } }, client_id: "candidate" }));
     if (!response.ok) throw new Error(`proactive worker failed: ${response.error.code}`);
     const candidate = response.result as WorkerResult<"proactive">;
     if ("no_change" in candidate) return "no_change";
