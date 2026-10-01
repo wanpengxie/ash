@@ -104,6 +104,11 @@ try {
   const tab = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((entry) => entry.type === "page");
   assert.ok(tab?.webSocketDebuggerUrl);
   socket = new WebSocket(tab.webSocketDebuggerUrl);
+  const browserErrors = [];
+  socket.addEventListener("message", (event) => {
+    const packet = JSON.parse(event.data);
+    if (packet.method === "Runtime.exceptionThrown") browserErrors.push(packet.params?.exceptionDetails?.text + ": " + packet.params?.exceptionDetails?.exception?.description);
+  });
   await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); });
   const call = cdp(socket);
   await call("Page.enable");
@@ -111,7 +116,10 @@ try {
   await call("Network.enable");
   const evaluate = async (expression) => (await call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
   await call("Page.navigate", { url: `${base}/?token=probe-owner-token` });
-  await until(() => evaluate("document.querySelector('#connection')?.textContent === '已连接'"), "registered browser screen");
+  await until(() => evaluate("document.querySelector('#connection')?.textContent === '已连接'"), "registered browser screen").catch(async (error) => {
+    console.error("registration state", await evaluate("({url:location.href,connection:document.querySelector('#connection')?.textContent,transport:document.querySelector('#connection')?.dataset.transport,error:document.querySelector('#connection')?.title,body:document.body?.textContent.slice(0,160)})"), browserErrors);
+    throw error;
+  });
   await evaluate("document.querySelector('#t').value='first synthetic message';document.querySelector('#f').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))");
   await until(() => firstSendHeld, "first request held before acceptance");
   await until(() => evaluate("document.querySelector('.pending-local + .delivery')?.textContent === '发送中'"), "sending stage");
@@ -171,8 +179,16 @@ try {
   await until(() => evaluate("[...document.querySelectorAll('#log .msg')].some(x=>x.textContent.includes('synthetic-photo.jpg')&&x.textContent.includes('note.txt'))"), "compressed image and original document projected", 30_000);
   await evaluate("[...document.querySelectorAll('#log button.attachment')].find(x=>x.textContent==='synthetic-photo.jpg').click()");
   await until(() => evaluate("[...document.querySelectorAll('#log .atts img')].some(x=>x.naturalWidth===2048&&x.naturalHeight===512)"), "authorized 2048-pixel JPEG preview", 30_000);
+  const optionCard = (await world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false },
+    { to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", prompt: "Pick one", options: [{ id: "yes", text: "Yes" }, { id: "no", text: "No" }] } } })).id;
+  await until(() => evaluate("[...document.querySelectorAll('#log .card')].some(x=>x.textContent.includes('Pick one'))"), "option card visible");
+  await evaluate("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Pick one')).querySelector('button').click()");
+  await until(() => ledger.list({ limit: 1000 }).some((message) => message.from === "person:owner" && message.word === "say" && message.body?.in_reply_to === optionCard), "option reply accepted");
+  await until(() => evaluate("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Pick one'))?.textContent.includes('已选择')"), "option card locked");
+  const answer = ledger.list({ limit: 1000 }).find((message) => message.from === "person:owner" && message.word === "say" && message.body?.in_reply_to === optionCard);
+  assert.deepEqual({ text: answer.body.text, option_id: answer.body.option_id }, { text: "Yes", option_id: "yes" });
   console.log(JSON.stringify({ result: "PASS", browser: "Chrome", sendingDeliveredRead: true, groupedReplies: 2, reactionOnOwnerBubble: true, offlineAccepted: 1, offlineRunnerReceipts: 1,
-    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true }));
+    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked" }));
 } finally {
   firstSendRelease();
   readRelease();

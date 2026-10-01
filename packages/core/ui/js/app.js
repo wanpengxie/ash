@@ -118,6 +118,7 @@ export function boot({ uiTransport } = {}) {
     agentSheet?.open();
   } });
   const connection = document.querySelector("#connection");
+  const progressRoot = document.querySelector("#progress");
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
   const suggestions = document.querySelector("#suggestions");
