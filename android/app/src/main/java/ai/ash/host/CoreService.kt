@@ -34,7 +34,7 @@ class CoreService : Service() {
         Present.restore(this)
         running = true
         val h = HostServer(this, Secrets(this).hostToken)
-        h.start(HostServer.PORT)
+        h.start(BuildConfig.HOST_PORT)
         host = h
         calendarSense = CalendarSense(this, BuildConfig.SENSE_RESCAN_MS).also { it.start() }
         deviceSense = DeviceSense(this).also { it.start() }

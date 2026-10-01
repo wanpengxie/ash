@@ -2,6 +2,7 @@ import { fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
+import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
 
 export class Timeline {
@@ -115,6 +116,7 @@ export function boot() {
   let presenceProblem = "";
   let lastTyping = 0;
   let timeline;
+  let settings;
   const openInline = async (messageId, index) => {
     const ref = timeline.inlineAttachment(messageId, index);
     if (!ref) return null;
@@ -139,18 +141,20 @@ export function boot() {
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
-    onReset: () => { timeline.reset(); suggestions.replaceChildren(); },
+    onReset: () => { timeline.reset(); suggestions.replaceChildren(); settings?.reset(); },
     onState: (status, error) => {
+      settings?.network(status);
       presenceBar.network(status, status === "online" ? presenceProblem : "");
       if (error) connection.title = String(error.message || error);
     },
-    onRegistered: () => { if (!document.hidden) void visible(); },
+    onRegistered: (frame) => { settings?.registration(frame); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
       if (timeline) render(timeline.view, outbox, openInline, presenceBar);
     },
   });
   timeline = new Timeline(net, (view) => render(view, net.outbox, openInline, presenceBar));
+  settings = new SettingsControls(document.querySelector("#panel"), net);
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
@@ -202,7 +206,6 @@ export function boot() {
     selected.textContent = files.length ? `${files.length} 个附件，${files.map((file) => file.name).join("、").slice(0, 120)}` : "";
   });
   document.querySelector("#menu").addEventListener("click", () => document.querySelector("#drawer").classList.toggle("open"));
-  text(document.querySelector("#panel"), "p", "更多页面正在接入。", "muted");
   window.addEventListener("pagehide", () => net.stop());
   window.addEventListener("pageshow", (event) => { if (event.persisted) void net.start(); });
   void net.start();

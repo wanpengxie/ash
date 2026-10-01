@@ -86,7 +86,7 @@ test("cancel settles an uncooperative device in under one second, but waits for 
   } finally { deviceRelease.resolve(); runnerRelease.resolve(); await f.close(); }
 });
 
-test("only reflex and admin can cancel; idle noop retry cannot cancel a later turn", async () => {
+test("unbound admin cannot cancel; idle noop retry cannot cancel a later turn", async () => {
   const gate = deferred();
   const entered = deferred();
   let calls = 0;
@@ -108,7 +108,9 @@ test("only reflex and admin can cancel; idle noop retry cannot cancel a later tu
     assert.equal(f.member.waitingForQuiescence, false);
     assert.equal(f.member.counts().active, 1);
     assert.equal(calls, 1);
-    const current = await f.router.send(admin, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "actual stop" }, wait: true });
+    const unbound = await f.router.send(admin, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "unbound stop" }, wait: true });
+    assert.deepEqual(unbound.reply?.body.result, { cancelled: false });
+    const current = await f.router.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "actual stop" }, wait: true });
     assert.deepEqual(current.reply?.body.result, { cancelled: true });
   } finally { gate.resolve(); await f.close(); }
 });
@@ -153,7 +155,7 @@ test("cancel fences an outbound reply delayed before router acceptance", async (
     await f.member.start();
     await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "go" }, wait: true });
     await entered.promise;
-    const stopped = await f.router.send(admin, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "stop delayed reply" }, wait: true });
+    const stopped = await f.router.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "stop delayed reply" }, wait: true });
     assert.deepEqual(stopped.reply?.body.result, { cancelled: true });
     release.resolve();
     await f.waitFor(() => f.rows().some((message) => message.word === "turn.end" && message.body.reason === "cancelled"));
@@ -222,7 +224,7 @@ test("a second cancellation retains both stop facts for the next completed turn"
     await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "two" }, wait: true });
     await secondEntered.promise;
     assert.equal(batches[1].stopFacts.length, 1);
-    await f.router.send(admin, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "second stop" }, wait: true });
+    await f.router.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "second stop" }, wait: true });
     secondRelease.resolve();
     await f.waitFor(() => !f.member.waitingForQuiescence);
     await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "three" }, wait: true });

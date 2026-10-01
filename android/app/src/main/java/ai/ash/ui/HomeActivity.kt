@@ -26,6 +26,8 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import ai.ash.R
+import ai.ash.BuildConfig
+import ai.ash.host.CoreEndpoint
 import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.Paths
@@ -118,7 +120,7 @@ class HomeActivity : Activity() {
             else -> "正在启动…"
         }
         action.visibility = if (st == "stopped" || st.startsWith("error")) View.VISIBLE else View.GONE
-        if (!loaded && p.uiUrl.exists()) {
+        if (!loaded && p.uiUrl.exists() && (!BuildConfig.ISOLATED_PROBE || st == "running")) {
             Thread {
                 val ok = CoreProcess(this).portOpen(1000)
                 if (ok) ui.post { load(p.uiUrl.readText().trim()) }
@@ -139,6 +141,11 @@ class HomeActivity : Activity() {
 
     private fun load(url: String) {
         if (loaded) return
+        if (!CoreEndpoint.acceptsUiUrl(url, BuildConfig.CORE_PORT, BuildConfig.ISOLATED_PROBE)) {
+            status.text = "测试包核心地址不匹配"
+            cover.visibility = View.VISIBLE
+            return
+        }
         loaded = true
         web.loadUrl(url) // /?token=… → the core answers with an HttpOnly cookie and redirects to /
         ui.postDelayed({ cover.visibility = View.GONE }, 400)

@@ -80,6 +80,8 @@ export class ScreenNet {
     this.cursor = null;
     this.token = null;
     this.screen = null;
+    this.localManagement = false;
+    this.adminIntent = null;
     this.active = false;
     this.generation = 0;
     this.flushing = false;
@@ -150,6 +152,8 @@ export class ScreenNet {
       this.controller = controller;
       this.token = null;
       this.screen = null;
+      this.localManagement = false;
+      this.adminIntent = null;
       this.storage.removeItem(TOKEN_KEY);
       this.onState("connecting");
       try {
@@ -177,6 +181,8 @@ export class ScreenNet {
     clearTimeout(this.retryTimer);
     this.token = null;
     this.screen = null;
+    this.localManagement = false;
+    this.adminIntent = null;
     this.storage.removeItem(TOKEN_KEY);
     this.queue = [];
     this.outbox = [];
@@ -192,6 +198,8 @@ export class ScreenNet {
       clearTimeout(this.retryTimer);
       this.token = null;
       this.screen = null;
+      this.localManagement = false;
+      this.adminIntent = null;
       this.storage.removeItem(TOKEN_KEY);
       this.queue = []; this.outbox = []; this.publishOutbox();
       this.seenLedgerIds.clear();
@@ -216,10 +224,12 @@ export class ScreenNet {
     if (frame.type === SCREEN_REGISTRATION_EVENT) {
       let registered;
       try { registered = JSON.parse(frame.data); } catch { return; }
-      if (!isScreenRegistration(registered)) { this.onState("send-error", new Error("screen credential scope unavailable")); return; }
+      if (!isScreenRegistration(registered)) { this.localManagement = false; this.adminIntent = null; this.onState("send-error", new Error("screen credential scope unavailable")); return; }
       if (this.acceptScope(registered.auth_scope, true)) return;
+      if (this.token !== registered.token || this.screen !== registered.screen || this.localManagement !== (registered.local_management === true)) this.adminIntent = null;
       this.token = registered.token;
       this.screen = registered.screen;
+      this.localManagement = registered.local_management === true;
       this.currentScope = registered.auth_scope;
       this.storage.setItem(TOKEN_KEY, registered.token);
       this.onRegistered(registered);
@@ -370,6 +380,41 @@ export class ScreenNet {
     try {
       const response = await this.request("/api/send", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: this.token }, body: JSON.stringify({ to, kind: "event", word, body: {}, client_id: crypto.randomUUID() }) });
       return response.ok ? { ok: true } : { ok: false, reason: `HTTP ${response.status}` };
+    } catch { return { ok: false, reason: "offline" }; }
+  }
+
+  /** A confirmed local-screen action; no offline queue or optimistic success. */
+  async sendAdmin(word) {
+    if (!this.localManagement || !this.token || !this.screen || !this.currentScope || !["pause", "resume"].includes(word))
+      return { ok: false, reason: "unregistered" };
+    const token = this.token;
+    const screen = this.screen;
+    const scope = this.currentScope;
+    if (this.adminIntent?.word !== word || this.adminIntent?.token !== token || this.adminIntent?.screen !== screen || this.adminIntent?.scope !== scope)
+      this.adminIntent = { word, token, screen, scope, clientId: crypto.randomUUID() };
+    const client_id = this.adminIntent.clientId;
+    try {
+      const response = await this.request("/api/send", { method: "POST", credentials: "same-origin",
+        headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token },
+        body: JSON.stringify({ to: "service:admin", kind: "request", word,
+          body: word === "resume" ? { confirmed: true } : {}, client_id, wait: true }) });
+      if (this.token !== token || this.screen !== screen || this.currentScope !== scope || !this.localManagement)
+        return { ok: false, reason: "screen-changed" };
+      if (!response.ok) {
+        if (response.status === 403 && this.adminIntent?.clientId === client_id) this.adminIntent = null;
+        return { ok: false, reason: `HTTP ${response.status}` };
+      }
+      const accepted = await response.json();
+      const reply = accepted?.reply;
+      const paused = word === "pause";
+      if (typeof accepted?.id !== "string" || reply?.kind !== "response" || reply?.reply_to !== accepted.id ||
+        reply?.from !== "service:admin" || reply?.to !== "person:owner" || reply?.word !== word ||
+        reply?.body?.ok !== true || reply?.body?.result?.paused !== paused)
+        return { ok: false, reason: "unconfirmed" };
+      if (this.token !== token || this.screen !== screen || this.currentScope !== scope || !this.localManagement)
+        return { ok: false, reason: "screen-changed" };
+      if (this.adminIntent?.clientId === client_id) this.adminIntent = null;
+      return { ok: true, paused };
     } catch { return { ok: false, reason: "offline" }; }
   }
 
