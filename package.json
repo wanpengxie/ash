@@ -9,6 +9,7 @@
     "gen:worker-rules": "node tools/gen-worker-rules.mjs",
     "typecheck": "npm run -s gen:ui && npm run -s gen:worker-rules && tsc --noEmit -p .",
     "test": "npm run -s gen:ui && npm run -s gen:worker-rules && node --expose-internals --import tsx --test packages/*/test/*.test.ts packages/core/test/arch/*.test.ts packages/core/test/contract/*.test.ts packages/core/test/fixtures/*.test.ts packages/core/test/flows/*.test.ts packages/core/test/members/*.test.ts packages/core/test/world/*.test.ts packages/core/ui/test/*.test.js",
+    "test:ui:e2e": "npm run -s build:core && playwright test packages/core/ui/test/e2e",
     "test:arch:final": "node --import tsx tools/arch-gate.ts",
     "test:originality": "node --test tools/originality.test.mjs",
     "test:public-terms": "node tools/originality.mjs --ci-terms",
@@ -17,6 +18,7 @@
     "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.20.4",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",

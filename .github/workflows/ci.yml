@@ -21,6 +21,8 @@ jobs:
           npm install -g --prefix "$RUNNER_TEMP/dsh" "@deepseek-ai/dsh@$V" --no-audit --no-fund
           echo "ASH_TEST_DSH_ROOT=$RUNNER_TEMP/dsh/lib/node_modules/@deepseek-ai/dsh" >> "$GITHUB_ENV"
       - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui:e2e
       - run: npm run test:originality
       - run: npm run test:public-terms
         env:

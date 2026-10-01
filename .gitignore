@@ -21,6 +21,8 @@ android-app/out-ash/
 # ash packages
 node_modules/
 packages/*/dist/
+test-results/
+playwright-report/
 
 # build outputs (payload, android)
 build/
