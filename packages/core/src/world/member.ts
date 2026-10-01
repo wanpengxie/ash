@@ -43,6 +43,15 @@ export class WorldMembers {
   private screenWord: WordSpec | null = null;
   constructor(readonly router: WorldRouter) {}
 
+  /** A stored validated manifest may be offline, but never absent or inferred from an old wildcard. */
+  canGrantDeviceAccess(agentId: string, deviceId: string, capability: string): boolean {
+    const agent = this.members.get(agentId);
+    const device = this.members.get(deviceId);
+    return agent?.info.kind === "agent" && device?.info.kind === "device" &&
+      device.words.some((word) => word.word === capability && word.kind === "request" &&
+        (word as WordSpec & { direction?: string }).direction !== "out");
+  }
+
   /** Ephemeral screen information is projected from the authenticated registry; routing uses its one validated wildcard word. */
   setScreenDirectory(list: () => { id: string; name: string; online: boolean }[], word: WordSpec): void {
     if (this.screenDirectory && this.screenDirectory !== list) throw new TypeError("screen directory already installed");

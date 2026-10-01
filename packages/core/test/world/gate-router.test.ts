@@ -115,7 +115,8 @@ test("permission revoked while owner is answering cannot execute the approved ef
 test("owner can inspect gate history; local revoke never recursively asks, remote revoke is zero-ledger denied", async () => {
   const { ledger, router } = await setup();
   try {
-    new WorldMembers(router).register(new GateMember(ledger, router));
+    const members = new WorldMembers(router);
+    members.register(new GateMember(ledger, router, members));
     const { ask } = await accepted(router, ledger);
     await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: ask.id,
       body: { ok: true, result: { choice: "deny" } } });

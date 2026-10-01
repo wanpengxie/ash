@@ -54,6 +54,34 @@ test("gate start commits one case, owner ask, phase and strict audit event toget
   } finally { reopened.close(); }
 });
 
+test("an access grant, audit and response roll back together on an injected SQLite failure", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "ash-gate-access-atomic-")), "ash.db");
+  const ledger = await Ledger.open(file);
+  const blocker = new DatabaseSync(file);
+  try {
+    const request = ledger.append({ from: "person:owner", to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: "device:fake/run" } }, undefined,
+    { deadlineAt: Date.now() + 30_000, context: { member: "person:owner", local: true, remote: false,
+      ownerProxy: true, transportPrincipal: "owner:test" } }).message;
+    assert.equal(ledger.advanceRequest(request.id, "accepted", "dispatching"), true);
+    blocker.exec(`CREATE TRIGGER test_access_audit_abort BEFORE INSERT ON gate_access_audit
+      BEGIN SELECT RAISE(ABORT,'injected access audit failure'); END;`);
+    assert.throws(() => ledger.gateAccessGrant(request.id, "agent:main", "device:fake/run"));
+    assert.equal(ledger.gateAccessPage().items.length, 0);
+    assert.equal(ledger.responseTo(request.id), null);
+    blocker.exec("DROP TRIGGER test_access_audit_abort");
+    const response = ledger.gateAccessGrant(request.id, "agent:main", "device:fake/run");
+    assert.equal(response.body.ok, true);
+    assert.equal(ledger.responseTo(request.id)?.id, response.id);
+    assert.equal(ledger.gateAccessPage().items.length, 1);
+    assert.throws(() => ledger.gateAccessGrant(request.id, "agent:main", "device:fake/run"));
+    assert.equal(ledger.gateAccessPage().items.length, 1);
+  } finally { blocker.close(); ledger.close(); }
+  const reopened = await Ledger.open(file);
+  try { assert.equal(reopened.gateAccessPage().items.length, 1); }
+  finally { reopened.close(); }
+});
+
 test("an answer before ask expiry remains valid for dispatch after ask expiry but before original deadline", async (t) => {
   const { ledger, accepted } = await fixture(900_000);
   try {

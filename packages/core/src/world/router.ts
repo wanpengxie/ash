@@ -298,7 +298,9 @@ export class WorldRouter {
     }
     if (request.to === "service:work" && request.word === "run" && from !== "person:owner") fail("forbidden", "only owner may start a background run");
     if (request.to === "service:gate" && from !== "person:owner") fail("forbidden", "gate inspection requires owner");
-    if (request.to === "service:gate" && request.word === "rules.revoke" && (ctx.remote || !ctx.local)) fail("forbidden", "rule revocation requires local owner");
+    if (request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
+      (ctx.remote || !ctx.local || !ctx.ownerProxy || (request.word.startsWith("access.") && !["api", "web_ui"].includes(ctx.transport))))
+      fail("forbidden", "gate change requires current local owner");
     if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
     if ((request.word === "typing" || request.word === "visible") && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
@@ -535,7 +537,7 @@ export class WorldRouter {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
-      const gateBypass = request.to === "service:gate" && request.word === "rules.revoke" &&
+      const gateBypass = request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
         request.from === "person:owner" && pending.context.local && !pending.context.remote;
       if (this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
@@ -604,11 +606,15 @@ export class WorldRouter {
         pending.phase = "dispatching";
       }
       const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered, caller: Object.freeze(detached(pending.context)) });
+      const committed = this.ledger.responseTo(request.id);
+      if (committed) { this.adoptGateTerminal(pending, committed, false); this.publish(committed); return; }
       if (pending.settled || result === undefined) return;
       if (result.ok && endpoint.validateResult && !endpoint.validateResult(result.result)) { this.finish(pending, errors("failed", "handler returned invalid result"), request.to!, false); return; }
       this.finish(pending, result, request.to!, false);
     } catch {
       if (pending.settled) return;
+      const committed = this.ledger.responseTo(request.id);
+      if (committed) { this.adoptGateTerminal(pending, committed, false); this.publish(committed); return; }
       this.finish(pending, errors("failed", "handler or gate failed"), request.to!, false);
     }
   }
