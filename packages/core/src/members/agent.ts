@@ -48,6 +48,7 @@ export class AgentMember implements Member {
   private readonly ledger: Ledger;
   private readonly router: WorldRouter;
   private readonly runner: AgentTurnRunner;
+  private readonly isPaused: () => boolean;
   private started = false;
   private closed = false;
   private draining = false;
@@ -64,6 +65,7 @@ export class AgentMember implements Member {
     this.ledger = options.ledger;
     this.router = options.router;
     this.runner = options.runner;
+    this.isPaused = options.isPaused ?? (() => false);
     this.inbox = new AgentInbox(options.stateDir);
     this.status = new AgentStatus(this.router, Date.now, options.isPaused);
   }
@@ -71,6 +73,8 @@ export class AgentMember implements Member {
   words(): readonly WordSpec[] { return [say!, cancelTurn!, typing!]; }
   get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
+  /** Resample the single durable admin pause fact after a committed transition. */
+  resamplePause(): void { this.status.refresh(); this.schedule(); }
   counts(): { pending: number; read: number; active: number } { return this.inbox.counts(); }
 
   handle(message: Message, _context: RouteHandlerContext): ResponseBody {
@@ -195,6 +199,8 @@ export class AgentMember implements Member {
 
   private schedule(): void {
     if (!this.started || this.closed || this.draining) return;
+    try { if (this.isPaused()) return; }
+    catch (error) { this.error = error instanceof Error ? error : new Error(String(error)); return; }
     this.draining = true;
     queueMicrotask(() => void this.drain());
   }
@@ -211,6 +217,7 @@ export class AgentMember implements Member {
       while (!this.closed) {
         await this.reconcile();
         if (this.closed) break;
+        if (this.isPaused()) break;
         const ids = this.inbox.pendingIds();
         if (!ids.length) break;
         const messages = ids.map((id) => this.message(id));

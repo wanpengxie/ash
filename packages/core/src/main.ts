@@ -10,6 +10,7 @@ import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember, type AgentTurnRunner } from "./members/agent";
+import { AdminMember } from "./members/admin";
 import { ClockMember } from "./members/clock";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
@@ -91,6 +92,7 @@ export async function startOwner(config: Config): Promise<Running> {
   const ledger = await Ledger.open(join(config.stateDir, "ash.db"));
   let agent: ReturnType<typeof createAgentMember> | null = null;
   let clock: ClockMember | null = null;
+  let admin: AdminMember | null = null;
   let post: PostMember | null = null;
   let dsh: DshHost | null = null;
   let self: SelfMember | null = null;
@@ -104,6 +106,7 @@ export async function startOwner(config: Config): Promise<Running> {
       if (caller.transportPrincipal?.startsWith("token:")) return Object.entries(tokens.api).some(([key, member]) =>
         member === caller.member && `token:${createHash("sha256").update(key).digest("hex")}` === caller.transportPrincipal);
       if (caller.transportPrincipal === "agent:main" && caller.member === "agent:main") return true;
+      if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
       return false;
     });
@@ -124,6 +127,9 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces });
+    admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), onPauseChanged: () => agent!.resamplePause(),
+      currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });
+    members.register(admin);
     post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
     members.register(post);
     edge.attachPostJournal(post.journal);
@@ -161,12 +167,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
+      await post?.close(); await clock?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
+    await post?.close(); await clock?.close(); await agent?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

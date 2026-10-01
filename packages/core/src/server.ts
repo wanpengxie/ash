@@ -93,6 +93,8 @@ export class ScreenRegistry {
     this.sweep();
   }
   private find(screen: string): Registration | undefined { this.sweep(); return [...this.registrations.values()].find((entry) => entry.screen === screen && this.now() < entry.expiresAt); }
+  /** A durable request's screen ID is not proof after acceptance; recheck the live binding at effect time. */
+  currentBinding(screen: string, principal: string): boolean { return Boolean(principal && this.find(screen)?.principal === principal); }
   online(screen: string): boolean { return (this.find(screen)?.connections ?? 0) > 0; }
   visible(screen: string): boolean { const entry = this.find(screen); return Boolean(entry && entry.connections > 0 && entry.visibleAt !== null && this.now() - entry.visibleAt <= VISIBLE_WINDOW_MS); }
   list(): { id: string; name: string; online: boolean }[] {
