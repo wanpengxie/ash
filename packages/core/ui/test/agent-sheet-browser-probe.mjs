@@ -12,6 +12,8 @@ const dir = mkdtempSync(join(tmpdir(), "ash-agent-sheet-"));
 let first, second, targetOwner, proxy, remoteServer, browser, socket, remoteSocket;
 let holdNextRead = false;
 let releaseHeldRead = null;
+let holdNextCancel = false;
+let releaseHeldCancel = null;
 const until = async (check, label) => {
   const deadline = Date.now() + 12_000;
   while (Date.now() < deadline) {
@@ -50,9 +52,10 @@ try {
         if (held) {
           const chunks = [];
           result.on("data", (chunk) => chunks.push(chunk));
-          result.on("end", () => { releaseHeldRead = () => {
+          result.on("end", () => { const release = (drop = false) => {
+            if (drop) { outgoing.writeHead(502); outgoing.end(); return; }
             if (!outgoing.destroyed) { outgoing.writeHead(result.statusCode, result.headers); outgoing.end(Buffer.concat(chunks)); }
-          }; });
+          }; if (held === "cancel") releaseHeldCancel = release; else releaseHeldRead = release; });
         } else { outgoing.writeHead(result.statusCode, result.headers); result.pipe(outgoing); }
       });
       upstream.on("error", () => { if (!outgoing.headersSent) outgoing.writeHead(502); outgoing.end(); });
@@ -65,9 +68,14 @@ try {
     incoming.on("end", () => {
       const body = Buffer.concat(chunks);
       let held = false;
-      try { const wire = JSON.parse(body.toString("utf8")); held = holdNextRead && wire.to === "service:self" && wire.word === "read"; }
+      try {
+        const wire = JSON.parse(body.toString("utf8"));
+        if (holdNextRead && wire.to === "service:self" && wire.word === "read") held = "read";
+        if (holdNextCancel && wire.to === "service:clock" && wire.word === "cancel") held = "cancel";
+      }
       catch { /* edge still validates malformed requests */ }
-      if (held) holdNextRead = false;
+      if (held === "read") holdNextRead = false;
+      if (held === "cancel") holdNextCancel = false;
       sendUpstream(body, held);
     });
   });
@@ -149,7 +157,35 @@ try {
   assert.equal(clockSet.reply?.body?.ok, true, `clock set rejected: ${clockSet.reply?.body?.error?.code || "unknown"}`);
   await clickTab("upcoming");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('synthetic umbrella')"), "authoritative clock timer visible");
-  assert.equal(await evaluate("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), false);
+  assert.equal(await evaluate("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), true);
+  holdNextCancel = true;
+  await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
+  await until(() => Boolean(releaseHeldCancel), "clock cancel response held after durable effect");
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /synthetic umbrella/, "no optimistic removal");
+  const clockCancelRows = () => first.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:clock" && row.word === "cancel");
+  assert.equal(clockCancelRows().length, 1);
+  releaseHeldCancel(true); releaseHeldCancel = null;
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .sheet-error')?.textContent"), "lost cancel acknowledgement is visible");
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /synthetic umbrella/);
+  await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('暂无计划')"), "same-client retry then authoritative list");
+  assert.equal(clockCancelRows().length, 1, "acknowledgement retry cannot create a second clock command");
+
+  const alreadyGone = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "set",
+    body: { to: "agent:main", word: "say", body: { text: "synthetic stale timer" }, label: "synthetic stale", at: Date.now() + 3600000 }, wait: true });
+  assert.equal(alreadyGone.reply?.body?.ok, true);
+  await clickTab("activity"); await clickTab("upcoming");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('synthetic stale')"), "second timer visible");
+  const externalCancel = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "cancel",
+    body: { id: alreadyGone.reply.body.result.id }, wait: true });
+  assert.equal(externalCancel.reply?.body?.result?.cancelled, true);
+  await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .sheet-error')?.textContent"), "cancelled false shown as not confirmed");
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /synthetic stale/, "failed cancel does not remove a row");
+  await clickTab("activity"); await clickTab("upcoming");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('暂无计划')"), "fresh list sees externally removed timer");
   await clickTab("approvals");
   assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /不能确认操作/);
 
@@ -196,11 +232,23 @@ try {
   assert.match(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /计划列表暂不可用/);
   assert.doesNotMatch(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /暂无计划/);
   assert.equal(await remoteEval("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), false);
-  const beforeRemote = first.ledger.lastSeq();
+  const remoteDeniedTimer = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "set",
+    body: { to: "agent:main", word: "say", body: { text: "remote deny fixture" }, label: "remote deny fixture", at: Date.now() + 3600000 }, wait: true });
+  assert.equal(remoteDeniedTimer.reply?.body?.ok, true);
+  const beforeRemoteClock = first.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:clock" && row.word === "cancel").length;
   const remoteScreen = await remoteEval("sessionStorage.getItem('ash.screen.token.v2')");
+  const deniedClock = await remoteEval(`fetch('/api/send',{method:'POST',headers:{'content-type':'application/json','Ash-Screen':${JSON.stringify(remoteScreen)}},body:JSON.stringify({to:'service:clock',kind:'request',word:'cancel',body:{id:${JSON.stringify(remoteDeniedTimer.reply.body.result.id)}},wait:true,client_id:'synthetic-remote-deny'})}).then(async r=>({status:r.status,body:(await r.json()).reply?.body}))`);
+  assert.equal(deniedClock.status, 200, "router can account for a rejected remote request");
+  assert.deepEqual({ ok: deniedClock.body?.ok, code: deniedClock.body?.error?.code }, { ok: false, code: "forbidden" });
+  assert.equal(first.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:clock" && row.word === "cancel").length, beforeRemoteClock + 1);
+  const beforeRemoteSelf = first.ledger.lastSeq();
   const denied = await remoteEval(`fetch('/api/send',{method:'POST',headers:{'content-type':'application/json','Ash-Screen':${JSON.stringify(remoteScreen)}},body:JSON.stringify({to:'service:self',kind:'request',word:'write',body:{path:'SOUL.md',content:'remote',why:'synthetic',expected_hash:null},wait:true})}).then(r=>r.status)`);
   assert.equal(denied, 403);
-  assert.equal(first.ledger.lastSeq(), beforeRemote);
+  assert.equal(first.ledger.lastSeq(), beforeRemoteSelf);
+  const stillScheduled = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false }, { to: "service:clock", kind: "request", word: "list", body: {}, wait: true });
+  assert.equal(stillScheduled.reply?.body?.result?.timers?.some((timer) => timer.id === remoteDeniedTimer.reply.body.result.id), true);
 
   await call("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await evaluate("window.dispatchEvent(new Event('offline'))");
@@ -218,7 +266,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#title').textContent"), "Ash");
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(identityText)}).value`), "");
   assert.equal(selfWrites(second).length, 0);
-  console.log("PASS: authoritative name read/write refresh, remote name/scope reset, avatar sheet, real clock list/read-only, activity work-source boundary, local SOUL/USER save/history, rollback gate unavailable, remote 403, offline and delayed reply discarded");
+  console.log("PASS: authoritative name read/write refresh, remote name/scope reset, avatar sheet, real clock cancel with lost ACK retry and failed cancel retained, activity work-source boundary, local SOUL/USER save/history, rollback gate unavailable, remote 403, offline and delayed reply discarded");
 } finally {
   remoteSocket?.close(); socket?.close();
   if (remoteServer) await new Promise((resolve) => { remoteServer.close(resolve); remoteServer.closeAllConnections(); });
