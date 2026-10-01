@@ -49,6 +49,40 @@ test("registration precedes queued send and same client_id survives retry", asyn
   assert.equal(net.queue.length, 0);
 });
 
+test("local outbox stays unsent offline, keeps one client id across retry, then yields to its ledger id", async () => {
+  const saved = storage();
+  const sent = [];
+  let fail = true;
+  const net = new ScreenNet({ storage: saved, fetchImpl: async (_url, init) => {
+    sent.push(JSON.parse(init.body));
+    if (fail) { fail = false; throw new Error("offline"); }
+    return new Response(JSON.stringify({ id: "m_accepted", seq: 17 }), { status: 200 });
+  } });
+  const clientId = net.enqueueSay("hello while offline");
+  assert.deepEqual(net.outbox.map((item) => item.status), ["unsent"]);
+  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "proof", label: "Tab" }) }, net.generation);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(net.outbox.map((item) => item.status), ["unsent"]);
+  await net.flush();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].client_id, clientId);
+  assert.equal(sent[1].client_id, clientId);
+  assert.equal(net.queue.length, 0);
+  assert.deepEqual(net.outbox.map((item) => [item.status, item.id]), [["accepted", "m_accepted"]]);
+  net.frame({ type: "message", id: "17", data: JSON.stringify({ ...message(17), id: "m_accepted" }) }, net.generation);
+  assert.deepEqual(net.outbox, []);
+  assert.deepEqual(new ScreenNet({ storage: saved, fetchImpl: async () => new Response("{}") }).outbox, []);
+});
+
+test("missing acknowledgement cannot drop a pending message", async () => {
+  const net = new ScreenNet({ storage: storage(), fetchImpl: async () => new Response("{}", { status: 200 }) });
+  const id = net.enqueueSay("must retry");
+  net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "proof", label: "Tab" }) }, net.generation);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(net.queue[0].client_id, id);
+  assert.equal(net.outbox[0].status, "unsent");
+});
+
 test("live cursor advances only from matching id/seq and is sent as Last-Event-ID", async () => {
   const net = new ScreenNet({ storage: storage(), fetchImpl: async () => new Response(null) });
   net.frame({ type: "screen.registered", data: JSON.stringify({ screen: "screen:a", token: "a", label: "Tab" }) }, net.generation);

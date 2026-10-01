@@ -1,5 +1,7 @@
 import { fold, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
+import { appendConversation, appendOutbox } from "./conversation.js";
+import { openInlineBlob } from "./attachments.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -11,6 +13,7 @@ export class Timeline {
     this.epoch = (this.epoch ?? 0) + 1;
     this.pageAbort?.abort();
     this.records = new Map();
+    this.byId = new Map();
     this.view = initialView();
     this.loading = false;
     this.exhausted = false;
@@ -20,6 +23,7 @@ export class Timeline {
     if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string") return;
     if (this.records.has(message.seq)) return;
     this.records.set(message.seq, message);
+    this.byId.set(message.id, message);
     this.view = fold(this.view, message);
     this.onChange(this.view);
   }
@@ -28,6 +32,7 @@ export class Timeline {
     for (const message of messages.sort((a, b) => a.seq - b.seq)) {
       if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string" || this.records.has(message.seq)) continue;
       this.records.set(message.seq, message);
+      this.byId.set(message.id, message);
       this.view = fold(this.view, message);
       changed = true;
     }
@@ -50,6 +55,13 @@ export class Timeline {
       if (epoch === this.epoch) this.loading = false;
     }
   }
+
+  inlineAttachment(messageId, index) {
+    const message = this.byId.get(messageId);
+    if (!message || message.kind !== "request" || message.word !== "say" || message.from !== "person:owner" || message.to !== "agent:main" || Object.hasOwn(message.body || {}, "legacy") || !Number.isSafeInteger(index) || index < 0) return null;
+    const item = message.body?.attachments?.[index];
+    return item && typeof item.name === "string" && typeof item.mime_type === "string" && typeof item.data === "string" ? item : null;
+  }
 }
 
 function text(parent, tag, value, className = "") {
@@ -60,33 +72,14 @@ function text(parent, tag, value, className = "") {
   return node;
 }
 
-export function render(view) {
+export function render(view, outbox = [], openInline) {
   const log = document.querySelector("#log");
   const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const oldHeight = log.scrollHeight;
   const oldTop = log.scrollTop;
   const fragment = document.createDocumentFragment();
-  if (!view.conversation.length) text(fragment, "div", "还没有对话。", "hello");
-  for (const entry of view.conversation) {
-    if (entry.type === "say") {
-      const side = entry.side === "owner" ? "me" : "ai";
-      if (entry.legacy) {
-        text(fragment, "small", `历史记录 · ${entry.legacy.workspace} · ${entry.legacy.member} · 只读`, `from ${side === "me" ? "r" : "l"}`);
-      } else if (entry.side === "owner" && entry.origin?.label) {
-        text(fragment, "small", `来自 ${entry.origin.label}`, "from r");
-      } else if (entry.side === "inbound") {
-        text(fragment, "small", `来自 ${entry.from || "未知来源"}`, "from l");
-      }
-      const bubble = text(fragment, "div", entry.text, `msg ${side}`);
-      bubble.dataset.seq = String(entry.seq);
-      if (entry.legacy) bubble.dataset.readonly = "true";
-    } else if (entry.type === "ask") {
-      const card = text(fragment, "div", entry.ask.title, "card ask");
-      text(card, "small", entry.ask.detail);
-    } else if (entry.type === "card") {
-      text(fragment, "div", entry.card.prompt || entry.card.title || entry.card.name || "卡片", "card");
-    }
-  }
+  appendConversation(fragment, view.conversation, { openInline });
+  appendOutbox(fragment, outbox);
   log.replaceChildren(fragment);
   if (nearEnd) log.scrollTop = log.scrollHeight;
   else log.scrollTop = oldTop + Math.max(0, log.scrollHeight - oldHeight);
@@ -107,6 +100,10 @@ export function boot() {
   let presenceProblem = "";
   let lastTyping = 0;
   let timeline;
+  const openInline = (messageId, index) => {
+    const item = timeline.inlineAttachment(messageId, index);
+    return item ? openInlineBlob(item) : null;
+  };
   const net = new ScreenNet({
     label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "Phone browser" : "Computer browser"),
     onMessage: (message, context) => {
@@ -128,9 +125,12 @@ export function boot() {
       if (error) state.title = String(error.message || error);
     },
     onRegistered: () => { if (!document.hidden) void visible(); },
-    onQueue: (count) => { pending.textContent = count ? `${count} 条消息等待送达` : ""; },
+    onQueue: (count, outbox) => {
+      pending.textContent = count ? `${count} 条消息等待送达` : "";
+      if (timeline) render(timeline.view, outbox, openInline);
+    },
   });
-  timeline = new Timeline(net, render);
+  timeline = new Timeline(net, (view) => render(view, net.outbox, openInline));
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {

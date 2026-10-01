@@ -1,6 +1,7 @@
 import { SCREEN_REGISTRATION_EVENT, SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 
 const QUEUE_KEY = "ash.screen.outbox.v2";
+const OUTBOX_VIEW_KEY = "ash.screen.outbox-view.v2";
 const TOKEN_KEY = "ash.screen.token.v2";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -49,6 +50,16 @@ function readQueue(storage) {
   } catch { return []; }
 }
 
+function readOutbox(storage, queue) {
+  let saved = [];
+  try { const value = JSON.parse(storage.getItem(OUTBOX_VIEW_KEY) || "[]"); if (Array.isArray(value)) saved = value; } catch { /* recover from queue */ }
+  const valid = saved.filter((item) => item && typeof item.client_id === "string" && typeof item.text === "string" && ["unsent", "sending", "accepted", "rejected"].includes(item.status))
+    .map((item) => ({ client_id: item.client_id, text: item.text, status: item.status === "sending" ? "unsent" : item.status, id: typeof item.id === "string" ? item.id : null, seq: Number.isSafeInteger(item.seq) ? item.seq : null }));
+  const ids = new Set(valid.map((item) => item.client_id));
+  for (const wire of queue) if (!ids.has(wire.client_id)) valid.push({ client_id: wire.client_id, text: wire.body.text, status: "unsent", id: null, seq: null });
+  return valid;
+}
+
 export class ScreenNet {
   constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = sessionStorage, label = "Web", onMessage = () => {}, onHistory = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
     this.transport = fetchImpl;
@@ -60,6 +71,8 @@ export class ScreenNet {
     this.onRegistered = onRegistered;
     this.onQueue = onQueue;
     this.queue = readQueue(storage);
+    this.outbox = readOutbox(storage, this.queue);
+    this.seenLedgerIds = new Set();
     this.cursor = null;
     this.token = null;
     this.screen = null;
@@ -133,6 +146,8 @@ export class ScreenNet {
     this.token = null;
     this.screen = null;
     this.storage.removeItem(TOKEN_KEY);
+    for (const item of this.outbox) if (item.status === "sending") item.status = "unsent";
+    this.publishOutbox();
     this.onState("offline");
   }
 
@@ -157,6 +172,12 @@ export class ScreenNet {
     try { message = JSON.parse(frame.data); } catch { return; }
     if (message?.seq !== seq) return;
     this.cursor = Math.max(this.cursor ?? 0, seq);
+    if (typeof message.id === "string") {
+      this.seenLedgerIds.add(message.id);
+      const oldLength = this.outbox.length;
+      this.outbox = this.outbox.filter((item) => item.id !== message.id);
+      if (this.outbox.length !== oldLength) this.publishOutbox();
+    }
     if (history) history.push(message);
     else this.onMessage(message, { historical });
   }
@@ -173,11 +194,25 @@ export class ScreenNet {
     return records.sort((a, b) => a.seq - b.seq).filter((item, index, all) => index === 0 || item.seq !== all[index - 1].seq);
   }
 
-  enqueueSay(text) {
-    const message = { to: "agent:main", kind: "request", word: "say", body: { text }, client_id: crypto.randomUUID() };
+  publishOutbox() {
+    this.storage.setItem(OUTBOX_VIEW_KEY, JSON.stringify(this.outbox));
+    this.onQueue(this.queue.length, this.outbox.map((item) => ({ ...item })));
+  }
+
+  setOutbox(clientId, patch) {
+    const item = this.outbox.find((entry) => entry.client_id === clientId);
+    if (!item) return;
+    Object.assign(item, patch);
+    this.publishOutbox();
+  }
+
+  enqueueSay(text, attachments = []) {
+    const body = { text, ...(attachments.length ? { attachments } : {}) };
+    const message = { to: "agent:main", kind: "request", word: "say", body, client_id: crypto.randomUUID() };
     this.queue.push(message);
     this.storage.setItem(QUEUE_KEY, JSON.stringify(this.queue));
-    this.onQueue(this.queue.length);
+    this.outbox.push({ client_id: message.client_id, text, status: this.token ? "sending" : "unsent", id: null, seq: null });
+    this.publishOutbox();
     void this.flush();
     return message.client_id;
   }
@@ -203,15 +238,26 @@ export class ScreenNet {
     try {
       while (this.token && this.queue.length) {
         const token = this.token;
+        const queued = this.queue[0];
+        this.setOutbox(queued.client_id, { status: "sending" });
         let response;
         try {
           response = await this.request("/api/send", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token }, body: JSON.stringify(this.queue[0]) });
-        } catch { this.onState("offline"); break; }
-        if (response.status === 403 && token === this.token) { this.controller?.abort(); break; }
-        if (!response.ok) { this.onState("send-error", new Error(`send HTTP ${response.status}`)); break; }
+        } catch { this.setOutbox(queued.client_id, { status: "unsent" }); this.onState("offline"); break; }
+        if (response.status === 403 && token === this.token) { this.setOutbox(queued.client_id, { status: "unsent" }); this.controller?.abort(); break; }
+        if (!response.ok) { this.setOutbox(queued.client_id, { status: response.status < 500 ? "rejected" : "unsent" }); this.onState("send-error", new Error(`send HTTP ${response.status}`)); break; }
+        let acknowledgement;
+        try { acknowledgement = await response.json(); } catch { /* retry the same client_id */ }
+        if (typeof acknowledgement?.id !== "string" || !Number.isSafeInteger(acknowledgement.seq)) {
+          this.setOutbox(queued.client_id, { status: "unsent" });
+          this.onState("send-error", new Error("send acknowledgement invalid"));
+          break;
+        }
         if (this.queue.length) this.queue.shift();
         this.storage.setItem(QUEUE_KEY, JSON.stringify(this.queue));
-        this.onQueue(this.queue.length);
+        if (this.seenLedgerIds.has(acknowledgement.id)) this.outbox = this.outbox.filter((item) => item.client_id !== queued.client_id);
+        else this.setOutbox(queued.client_id, { status: "accepted", id: acknowledgement.id, seq: acknowledgement.seq });
+        this.publishOutbox();
       }
     } finally {
       this.flushing = false;

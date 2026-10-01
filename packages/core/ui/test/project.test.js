@@ -130,6 +130,20 @@ test("only allowlisted attachment references survive; inline bytes and unknown f
   assert.equal(JSON.stringify(state).includes("INLINE_ONLY"), false);
 });
 
+test("attachment-only owner say projects index and metadata, never inline bytes", () => {
+  const state = replay([{ id: "m_inline", from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [
+    { name: "one.txt", mime_type: "text/plain", data: "eA==" },
+    { name: "bad.txt", mime_type: "text/plain", data: "not-base64!" },
+    { name: "two.txt", mime_type: "text/plain", data: "eXk=" },
+  ] } }]);
+  assert.deepEqual(state.conversation[0].attachments, [
+    { source: "inline", message_id: "m_inline", index: 0, name: "one.txt", mime_type: "text/plain", size: 1 },
+    { source: "inline", message_id: "m_inline", index: 2, name: "two.txt", mime_type: "text/plain", size: 2 },
+  ]);
+  assert.equal(state.conversation[0].text, "");
+  assert.equal(JSON.stringify(state).includes("eXk="), false);
+});
+
 test("valid migrated chat is read-only and cannot lock a current option card", () => {
   const state = replay([
     { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }] } } },

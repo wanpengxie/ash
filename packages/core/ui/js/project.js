@@ -36,10 +36,21 @@ function safeCard(card) {
   return null;
 }
 
-function safeAttachments(value) {
+function safeAttachments(value, messageId) {
   if (!Array.isArray(value)) return [];
-  return value.filter((item) => object(item) && typeof item.workspace === "string" && item.workspace && typeof item.path === "string" && item.path && !item.path.startsWith("/") && !item.path.split("/").includes("..") && typeof item.name === "string" && item.name && typeof item.mime_type === "string" && item.mime_type && Number.isSafeInteger(item.size) && item.size >= 0)
-    .map((item) => ({ workspace: item.workspace, path: item.path, name: item.name, mime_type: item.mime_type, size: item.size }));
+  const safe = [];
+  value.forEach((item, index) => {
+    if (!object(item) || typeof item.name !== "string" || !item.name || typeof item.mime_type !== "string" || !item.mime_type) return;
+    if (typeof item.workspace === "string" && item.workspace && typeof item.path === "string" && item.path && !item.path.startsWith("/") && !item.path.split("/").includes("..") && Number.isSafeInteger(item.size) && item.size >= 0) {
+      safe.push({ workspace: item.workspace, path: item.path, name: item.name, mime_type: item.mime_type, size: item.size });
+      return;
+    }
+    if (typeof messageId !== "string" || !messageId || typeof item.data !== "string" || item.data.length === 0 || item.data.length > 28 * 1024 * 1024) return;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(item.data) || item.data.length % 4 !== 0) return;
+    const size = item.data.length / 4 * 3 - (item.data.endsWith("==") ? 2 : item.data.endsWith("=") ? 1 : 0);
+    safe.push({ source: "inline", message_id: messageId, index, name: item.name, mime_type: item.mime_type, size });
+  });
+  return safe;
 }
 
 function legacyMetadata(value, m) {
@@ -65,7 +76,7 @@ function record(m) {
       const legacy = legacyMetadata(b.legacy, m);
       return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : m.to === "person:owner" ? "agent" : "inbound", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
     }
-    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
+    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments, m.id), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
     if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments), kind: string(b.kind) };
   }
   if (m.kind === "request" && m.to === "person:owner" && ownerPublisher(m.from)) {
