@@ -153,6 +153,7 @@ export class ScreenNet {
       this.token = null;
       this.screen = null;
       this.localManagement = false;
+      this.adminIntent = null;
       this.storage.removeItem(TOKEN_KEY);
       this.onState("connecting");
       try {
@@ -181,6 +182,7 @@ export class ScreenNet {
     this.token = null;
     this.screen = null;
     this.localManagement = false;
+    this.adminIntent = null;
     this.storage.removeItem(TOKEN_KEY);
     this.queue = [];
     this.outbox = [];
@@ -222,8 +224,9 @@ export class ScreenNet {
     if (frame.type === SCREEN_REGISTRATION_EVENT) {
       let registered;
       try { registered = JSON.parse(frame.data); } catch { return; }
-      if (!isScreenRegistration(registered)) { this.localManagement = false; this.onState("send-error", new Error("screen credential scope unavailable")); return; }
+      if (!isScreenRegistration(registered)) { this.localManagement = false; this.adminIntent = null; this.onState("send-error", new Error("screen credential scope unavailable")); return; }
       if (this.acceptScope(registered.auth_scope, true)) return;
+      if (this.token !== registered.token || this.screen !== registered.screen || this.localManagement !== (registered.local_management === true)) this.adminIntent = null;
       this.token = registered.token;
       this.screen = registered.screen;
       this.localManagement = registered.local_management === true;
@@ -387,7 +390,8 @@ export class ScreenNet {
     const token = this.token;
     const screen = this.screen;
     const scope = this.currentScope;
-    if (this.adminIntent?.word !== word) this.adminIntent = { word, clientId: crypto.randomUUID() };
+    if (this.adminIntent?.word !== word || this.adminIntent?.token !== token || this.adminIntent?.screen !== screen || this.adminIntent?.scope !== scope)
+      this.adminIntent = { word, token, screen, scope, clientId: crypto.randomUUID() };
     const client_id = this.adminIntent.clientId;
     try {
       const response = await this.request("/api/send", { method: "POST", credentials: "same-origin",
@@ -396,7 +400,10 @@ export class ScreenNet {
           body: word === "resume" ? { confirmed: true } : {}, client_id, wait: true }) });
       if (this.token !== token || this.screen !== screen || this.currentScope !== scope || !this.localManagement)
         return { ok: false, reason: "screen-changed" };
-      if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+      if (!response.ok) {
+        if (response.status === 403 && this.adminIntent?.clientId === client_id) this.adminIntent = null;
+        return { ok: false, reason: `HTTP ${response.status}` };
+      }
       const accepted = await response.json();
       const reply = accepted?.reply;
       const paused = word === "pause";
@@ -406,7 +413,7 @@ export class ScreenNet {
         return { ok: false, reason: "unconfirmed" };
       if (this.token !== token || this.screen !== screen || this.currentScope !== scope || !this.localManagement)
         return { ok: false, reason: "screen-changed" };
-      this.adminIntent = null;
+      if (this.adminIntent?.clientId === client_id) this.adminIntent = null;
       return { ok: true, paused };
     } catch { return { ok: false, reason: "offline" }; }
   }

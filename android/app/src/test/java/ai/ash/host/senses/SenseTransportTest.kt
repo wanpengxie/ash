@@ -54,6 +54,42 @@ class SenseTransportTest {
         assertThrows(IllegalArgumentException::class.java) { transport.send("sense.screen", JSONObject(), "") }
     }
 
+    @Test fun notificationEventUsesExistingAuthenticatedSenseEnvelope() {
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
+            val received = AtomicReference<JSONObject>()
+            val worker = Thread {
+                server.accept().use { socket ->
+                    val input = socket.getInputStream().bufferedReader()
+                    assertEquals("POST /api/send HTTP/1.1", input.readLine())
+                    var count = 0
+                    while (true) {
+                        val line = input.readLine()
+                        if (line.isEmpty()) break
+                        if (line.startsWith("Content-Length:", ignoreCase = true)) count = line.substringAfter(':').trim().toInt()
+                    }
+                    val chars = CharArray(count)
+                    var offset = 0
+                    while (offset < count) offset += input.read(chars, offset, count - offset)
+                    received.set(JSONObject(String(chars)))
+                    val response = "{\"id\":\"message-2\",\"seq\":2}"
+                    socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: ${response.length}\r\n\r\n$response".toByteArray())
+                }
+            }
+            worker.start()
+            SenseTransport("http://127.0.0.1:${server.localPort}", "synthetic-token")
+                .send("sense.notification", JSONObject().put("app", "test.sender").put("title", "Hello").put("text", "Body"), "notification-1")
+            worker.join(2_000)
+            assertFalse(worker.isAlive)
+            val request = received.get()
+            assertTrue(request.isNull("to"))
+            assertEquals("event", request.getString("kind"))
+            assertEquals("sense.notification", request.getString("word"))
+            assertEquals("notification-1", request.getString("client_id"))
+            assertEquals("test.sender", request.getJSONObject("body").getString("app"))
+            assertFalse(request.has("from"))
+        }
+    }
+
     @Test fun fakeHostRejectsWithoutLeakingToken() {
         ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
             val worker = Thread {

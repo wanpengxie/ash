@@ -67,10 +67,43 @@ test("resume uses the current Ash-Screen, wait and stable retry id; only a paire
   assert.deepEqual(await net.sendAdmin("resume"), { ok: true, paused: false });
   const wires = calls.map((call) => JSON.parse(call.body));
   assert.ok(wires.every((wire) => wire.to === "service:admin" && wire.kind === "request" && wire.word === "resume" && wire.wait === true && wire.body.confirmed === true));
-  assert.ok(wires.every((wire) => wire.client_id === wires[0].client_id));
+  assert.equal(wires[0].client_id, wires[1].client_id, "unknown acknowledgement permits an explicit same-screen retry");
+  assert.equal(wires[2].client_id, wires[3].client_id);
+  assert.notEqual(wires[1].client_id, wires[2].client_id, "a definitive 403 retires the intent");
   assert.ok(calls.every((call) => call.headers["Ash-Screen"] === registration().token));
   net.stop();
   assert.equal((await net.sendAdmin("resume")).ok, false);
+});
+
+test("management retry identity is confined to one scope, screen, and registration", async () => {
+  const sent = [];
+  const net = netWith({ fetchImpl: async (_url, init) => {
+    sent.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ id: "accepted" }), { status: 200 });
+  } });
+  const register = (screen, scope, token) => net.frame({ type: "screen.registered", data: JSON.stringify({
+    ...registration(screen, scope), token, local_management: true,
+  }) }, net.generation);
+  register("screen:one", SCOPE, "a".repeat(32));
+  await net.sendAdmin("resume");
+  await net.sendAdmin("resume");
+  assert.equal(sent[0].client_id, sent[1].client_id);
+  register("screen:two", SCOPE, "b".repeat(32));
+  await net.sendAdmin("resume");
+  assert.notEqual(sent[1].client_id, sent[2].client_id);
+  register("screen:two", SCOPE, "c".repeat(32));
+  await net.sendAdmin("resume");
+  assert.notEqual(sent[2].client_id, sent[3].client_id);
+  register("screen:three", `v1_${"c".repeat(43)}`, "d".repeat(32));
+  assert.equal(net.localManagement, false, "scope replacement must re-register before management");
+  register("screen:three", `v1_${"c".repeat(43)}`, "d".repeat(32));
+  await net.sendAdmin("resume");
+  assert.notEqual(sent[3].client_id, sent[4].client_id);
+  net.stop();
+  assert.equal(net.adminIntent, null);
+  register("screen:four", `v1_${"c".repeat(43)}`, "e".repeat(32));
+  await net.sendAdmin("resume");
+  assert.notEqual(sent[4].client_id, sent[5].client_id);
 });
 
 test("SSE parser handles control and bounded ledger frames", async () => {
