@@ -11,11 +11,13 @@ export interface AgentTurnInput {
   turn: string;
   messages: readonly Message[];
   rendered: string;
+  stopFacts: readonly string[];
 }
 export interface AgentTurnOutput { id: string; text: string }
 export interface AgentTurnRunner {
   /** Optional lower text cap; not a claim about the provider's total context window. */
   renderBudgetBytes?: number;
+  /** Settlement must prove the underlying session is idle, including after abort. A turn/end event alone is insufficient. */
   runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<{ reason: "completed" | "error"; error?: string }>;
 }
 
@@ -28,14 +30,15 @@ export interface AgentMemberOptions {
 }
 
 const say = wordContract("agent:main", "say") as WordSpec | undefined;
-if (!say || say.kind !== "request") throw new Error("agent say contract unavailable");
+const cancelTurn = wordContract("agent:main", "cancel_turn") as WordSpec | undefined;
+if (!say || say.kind !== "request" || !cancelTurn || cancelTurn.kind !== "request") throw new Error("agent contract unavailable");
 
-/** Durable one-at-a-time intake. Cancellation and secondary-session words are added by later work. */
+/** Durable one-at-a-time intake. The secondary session is added by later work. */
 export class AgentMember implements Member {
   readonly id = "agent:main";
   readonly kind = "agent" as const;
   readonly online = true;
-  readonly idempotentRecovery = ["say"] as const;
+  readonly idempotentRecovery = ["say", "cancel_turn"] as const;
   readonly name: string;
   readonly inbox: AgentInbox;
   private readonly ledger: Ledger;
@@ -45,6 +48,9 @@ export class AgentMember implements Member {
   private closed = false;
   private draining = false;
   private active: AbortController | null = null;
+  private activeTurn: string | null = null;
+  private prepared = false;
+  private quiescenceBlocked = false;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private receiptTask: Promise<void> | null = null;
   private error: Error | null = null;
@@ -57,21 +63,54 @@ export class AgentMember implements Member {
     this.inbox = new AgentInbox(options.stateDir);
   }
 
-  words(): readonly WordSpec[] { return [say!]; }
+  words(): readonly WordSpec[] { return [say!, cancelTurn!]; }
   get lastError(): Error | null { return this.error; }
+  get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
   counts(): { pending: number; read: number; active: number } { return this.inbox.counts(); }
 
   handle(message: Message, _context: RouteHandlerContext): ResponseBody {
     if (this.closed) return { ok: false, error: { code: "offline", message: "agent inbox is closed" } };
+    if (message.word === "cancel_turn") return this.handleCancel(message);
     this.inbox.accept(message); // sync durable commit before acknowledging the route
     if (this.started) void this.receipts().catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
     this.schedule();
     return { ok: true, result: { accepted: true } };
   }
 
+  private handleCancel(message: Message): ResponseBody {
+    if (message.to !== this.id || message.kind !== "request" || !["service:reflex", "service:admin"].includes(message.from)) {
+      return { ok: false, error: { code: "forbidden", message: "internal cancellation only" } };
+    }
+    const reason = String(message.body.reason ?? "Stop requested");
+    const by = typeof message.body.by === "string" ? message.body.by : undefined;
+    const active = this.inbox.activeTurn();
+    const inFlight = active ? this.ledger.trackedRequests().filter((item) => item.message.from === this.id && item.message.turn === active.id) : [];
+    const action = inFlight.at(-1)?.message;
+    const safeReason = [...reason].slice(0, 160).join("");
+    const fact = `The previous turn was stopped${action ? ` while ${action.to}/${action.word} was pending` : "; the exact last action is unknown"}. Reason: ${safeReason}. Any external effect may be unknown.`;
+    const receipt = this.inbox.recordCancel(message.id, reason, by, fact); // durable before cross-database settlement or abort
+    if (!receipt.cancelled || !receipt.turn) return { ok: true, result: { cancelled: false } };
+    this.router.cancelTurn(this.id, receipt.turn); // wake pending tool promises before aborting the runtime
+    const ended = this.inbox.finish(receipt.turn, "cancelled", "External effect may be unknown; waiting for runner to become idle");
+    if (this.activeTurn === receipt.turn && this.active) { this.quiescenceBlocked = true; this.active.abort(); }
+    void this.turnEvents(ended).catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
+    return { ok: true, result: { cancelled: true } };
+  }
+
+  /** Must run after member registration and before router.recover(), so cancelled effects cannot replay. */
+  prepareRecovery(): void {
+    if (this.closed || this.started) throw new Error("cancellation recovery must precede start");
+    for (const turn of this.inbox.cancelIntents()) {
+      this.router.cancelTurn(this.id, turn);
+      this.inbox.finish(turn, "cancelled", "Interrupted during cancellation; external effect may be unknown");
+    }
+    this.prepared = true;
+  }
+
   /** Register with WorldMembers first; call after router recovery and all real endpoints exist. */
   async start(): Promise<void> {
     if (this.closed || this.started) throw new Error("agent member cannot start twice");
+    if (!this.prepared) throw new Error("prepareRecovery must run before router recovery and start");
     this.inbox.interruptActive();
     await this.reconcile();
     if (this.closed) return;
@@ -167,18 +206,21 @@ export class AgentMember implements Member {
         if (!ids.length) break;
         const messages = ids.map((id) => this.message(id));
         const budget = this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET;
-        const rendered = renderTurnBatch(messages, budget); // failure leaves all pending
+        const stopFacts = this.inbox.stopFacts();
+        const rendered = renderTurnBatch(messages, budget, stopFacts.map((fact) => fact.text)); // failure leaves all pending
         const turn = this.inbox.claim(ids);
         if (!turn) break;
         currentTurn = turn.id;
         await this.turnEvents(turn);
         if (this.closed) break; // close during read/start must not dispatch a fresh runner
+        if (this.inbox.turn(turn.id).status !== "active") { currentTurn = null; continue; }
         const controller = new AbortController();
         this.active = controller;
+        this.activeTurn = turn.id;
         let emitOpen = true;
         let result: { reason: "completed" | "error"; error?: string };
         try {
-          result = await this.runner.runTurn({ turn: turn.id, messages, rendered }, async (output) => {
+          result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text) }, async (output) => {
             if (!emitOpen || this.closed || controller.signal.aborted || this.active !== controller) return;
             if (!output.id || output.id.length > 80 || !output.text.trim()) throw new TypeError("invalid agent output");
             await this.router.send(this.context(turn.id), { to: "person:owner", kind: "request", word: "say",
@@ -186,9 +228,10 @@ export class AgentMember implements Member {
           }, controller.signal);
         } catch (error) {
           result = { reason: "error", error: error instanceof Error ? error.message : "runner failed" };
-        } finally { emitOpen = false; controller.abort(); this.active = null; }
+        } finally { emitOpen = false; controller.abort(); this.active = null; this.activeTurn = null; this.quiescenceBlocked = false; }
         if (this.closed) break; // an interrupted turn is closed and explained on restart
         const ended = this.inbox.finish(turn.id, result.reason, result.error);
+        if (ended.reason === "completed") this.inbox.consumeStopFacts(stopFacts.map((fact) => fact.turn));
         currentTurn = null;
         await this.turnEvents(ended);
         this.error = null;

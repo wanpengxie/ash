@@ -25,6 +25,7 @@ const agent = createAgentMember({ ledger, router, stateDir: join(dir, "member"),
 } });
 new WorldMembers(router).register(agent);
 router.register({ member: "person:owner", spec: wordContract("person:owner", "say")!, handle: () => ({ ok: true, result: { accepted: true } }) });
+agent.prepareRecovery();
 await router.recover();
 await agent.start();
 if (mode === "victim") await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "first" }, wait: true });

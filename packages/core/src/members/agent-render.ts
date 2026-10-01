@@ -64,8 +64,9 @@ function fairAllocations(needs: readonly number[], available: number): number[] 
 }
 
 /** This is the only text a runtime may serialize into its model request; messages remain control data. */
-export function renderTurnBatch(messages: readonly Message[], budgetBytes = DEFAULT_TURN_TEXT_BUDGET): string {
+export function renderTurnBatch(messages: readonly Message[], budgetBytes = DEFAULT_TURN_TEXT_BUDGET, stopFacts: readonly string[] = []): string {
   if (!Number.isSafeInteger(budgetBytes) || budgetBytes <= 0) throw new TypeError("turn text budget must be a positive integer");
+  const factSection = stopFacts.map((fact) => `[prior-turn stop fact] ${JSON.stringify(fact)}\n`).join("");
   const ordered = [...messages].sort((a, b) => a.seq - b.seq);
   const records = ordered.map((message, index) => {
     const origin = message.origin ? JSON.stringify(message.origin) : "none";
@@ -76,14 +77,14 @@ export function renderTurnBatch(messages: readonly Message[], budgetBytes = DEFA
     const text = typeof message.body.text === "string" ? message.body.text : "";
     return { prefix, text, full: JSON.stringify(text), rawBytes: bytes(text) };
   });
-  const full = header + records.map((record) => `${record.prefix}${record.full}\n`).join("");
+  const full = header + factSection + records.map((record) => `${record.prefix}${record.full}\n`).join("");
   if (bytes(full) <= budgetBytes) return full;
   const reserve = records.map((record) => ` [excerpt; omitted ${record.rawBytes} UTF-8 bytes]`);
-  const minimum = bytes(header) + records.reduce((sum, record, index) => sum + bytes(record.prefix) + 2 + bytes(reserve[index]) + 1, 0);
+  const minimum = bytes(header + factSection) + records.reduce((sum, record, index) => sum + bytes(record.prefix) + 2 + bytes(reserve[index]) + 1, 0);
   if (minimum > budgetBytes) throw new TurnTextBudgetError(minimum, budgetBytes);
   const needs = records.map((record) => bytes(record.full) - 2);
   const allocations = fairAllocations(needs, budgetBytes - minimum);
-  const rendered = header + records.map((record, index) => {
+  const rendered = header + factSection + records.map((record, index) => {
     if (allocations[index] >= needs[index]) return `${record.prefix}${record.full}\n`;
     const prefix = bodyPrefix(record.text, allocations[index]);
     const omitted = record.rawBytes - bytes(prefix);
