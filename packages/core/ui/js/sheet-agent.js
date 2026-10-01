@@ -26,7 +26,7 @@ export function safeActivityView(view) {
       background: turn.background === true, started: turn.started,
       ended: Number.isFinite(turn.ended) ? turn.ended : undefined,
       outcome: ["completed", "cancelled", "error"].includes(turn.outcome) ? turn.outcome : undefined,
-      steps: Array.isArray(turn.steps) ? turn.steps.filter((step) => !step.requestId &&
+      steps: Array.isArray(turn.steps) ? turn.steps.filter((step) => (!step.requestId || step.native === true) &&
         typeof step.label === "string" && step.label.length <= 160 && (turn.background ? Boolean(backgroundStep(step.label)) : !rawRoute.test(step.label)))
         .map((step) => ({ label: turn.background ? backgroundStep(step.label) : step.label, ts: step.ts, state: step.state })) : [],
     };

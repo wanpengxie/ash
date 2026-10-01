@@ -77,6 +77,25 @@ test("status follows committed turn, tool, ask, typing and idle facts without a 
   }
 });
 
+test("native DSH tool activity uses a human label and falls back for unknown tools", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-native-status-"));
+  const ledger = await Ledger.open(join(root, "ledger.db"));
+  const router = new WorldRouter(ledger, () => true);
+  const status = new AgentStatus(router);
+  try {
+    await status.start();
+    const read = router.recordDshToolCall("t_native", "call-read", "read", '{"file_path":"fixture.txt"}');
+    await status.settled();
+    assert.deepEqual(status.snapshot, { state: "working", text: "在看文件" });
+    router.recordDshToolResult(read.id, true, "fixture");
+    await status.settled();
+    const unknown = router.recordDshToolCall("t_native", "call-other", "unlisted_tool", "{}");
+    await status.settled();
+    assert.deepEqual(status.snapshot, { state: "working", text: "在忙" });
+    router.recordDshToolResult(unknown.id, false, "failed");
+  } finally { status.close(); ledger.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("status seeds recovered pending routes, prioritizes work, then waits for the owner", async () => {
   const root = mkdtempSync(join(tmpdir(), "agent-status-recover-"));
   const ledger = await Ledger.open(join(root, "ledger.db"));

@@ -47,6 +47,23 @@ test("committed service:work run reaches the visible background activity group",
   } finally { work.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
 }));
 
+test("native DSH request and response appear in activity without raw arguments or tool names", async () => withDom(async () => {
+  const view = replay([
+    message(1, { from: "agent:main", word: "turn.start", body: { turn: "t_native", ids: [] } }),
+    message(2, { id: "native-call", kind: "request", from: "agent:main", to: "service:dsh-tool", word: "read", turn: "t_native",
+      body: { arguments: "SECRET_FILE_PATH" } }),
+    message(3, { kind: "response", from: "service:dsh-tool", to: "agent:main", word: "read", reply_to: "native-call",
+      body: { ok: true, result: { preview: "SECRET_RESULT" } } }),
+    message(4, { from: "agent:main", word: "turn.end", body: { turn: "t_native", reason: "completed" } }),
+  ]);
+  const safe = safeActivityView(view);
+  assert.deepEqual(safe.turns.t_native.steps.map((step) => ({ label: step.label, state: step.state })), [{ label: "在看文件", state: "ok" }]);
+  const root = new Node("root");
+  renderActivitySheet(root, safe);
+  assert.match(root.textContent, /在看文件/);
+  assert.doesNotMatch(root.textContent, /service:dsh-tool|SECRET_|\bread\b/);
+}));
+
 test("activity groups a real batch by turn, separates background, and omits tool bodies", async () => withDom(async () => {
   const view = replay([
     message(1, { id: "a", kind: "request", from: "person:owner", to: "agent:main", word: "say", body: { text: "查一下天气" } }),

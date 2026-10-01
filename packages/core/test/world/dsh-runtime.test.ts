@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,6 +91,7 @@ test("an accepted send with a lost HTTP acknowledgement retries without a second
 test("production DSH main uses one bounded followup, routes its tool once, and splits only assistant text", { skip }, async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-main-"));
   const home = join(root, "home"); mkdirSync(home);
+  writeFileSync(join(home, "fixture.txt"), "NATIVE_READ_FIXTURE\n");
   const captured: { tools: string[]; user: string; toolResult: boolean; resultText: string }[] = [];
   const model = createServer((req, res) => {
     let raw = "";
@@ -108,14 +109,15 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
       if (tools.length && !isMind)
         captured.push({ tools, user, toolResult, resultText: JSON.stringify(last?.content ?? "") });
       const step = captured.length;
-      const toolUse = Boolean(tools.length && !isMind && step <= 3);
+      const nativeRead = tools.length > 0 && !isMind && user.includes("read my fixture") && !toolResult;
+      const toolUse = Boolean(tools.length && !isMind && (step <= 3 || nativeRead));
       const messageId = /\bid=([A-Za-z0-9_-]+)/.exec(user)?.[1] ?? "missing";
       res.writeHead(200, { "content-type": "text/event-stream" });
       const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
       event("message_start", { message: { id: "msg_main", type: "message", role: "assistant", model: request.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
       if (toolUse) {
-        const tool = step === 1 ? "ash_say" : "ash_react";
-        const input = step === 1 ? { text: "tool said" } : { message_id: step === 2 ? messageId : "missing", emoji: "❤" };
+        const tool = nativeRead ? "read" : step === 1 ? "ash_say" : "ash_react";
+        const input = nativeRead ? { file_path: "fixture.txt" } : step === 1 ? { text: "tool said" } : { message_id: step === 2 ? messageId : "missing", emoji: "❤" };
         event("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_main_${step}`, name: tool, input: {} } });
         event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
       } else {
@@ -145,7 +147,8 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     while (Date.now() < deadline && running.ledger.list().filter((message) => message.from === "agent:main" && message.to === "person:owner" && message.kind === "request" && message.word === "say").length < 4)
       await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(captured.length, 4);
-    assert.deepEqual(captured[0].tools.sort(), ["ash_describe", "ash_react", "ash_say", "ash_send", "ash_show"]);
+    assert.deepEqual(captured[0].tools.sort(), ["ash_describe", "ash_react", "ash_say", "ash_send", "ash_show",
+      "edit", "glob", "grep", "read", "read_image", "web_fetch", "web_search", "write"]);
     assert.equal(captured[1].toolResult, true);
     assert.match(captured[3].resultText, /not_found/);
     assert.match(captured[0].user, /synthetic input/);
@@ -173,6 +176,19 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.match(captured[4].user, /attachment source id=/);
     assert.ok(!captured[4].user.includes("SYNTHETIC_FILE_BYTES"));
     assert.ok(!captured[4].user.includes(inline.data));
+    const readResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "read my fixture" }, client_id: "dsh-native-read" }) });
+    assert.equal(readResponse.status, 200);
+    const readDeadline = Date.now() + 15_000;
+    while (Date.now() < readDeadline && !running.ledger.list().some((message) => message.to === "service:dsh-tool" && message.word === "read"))
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    const readCall = running.ledger.list().find((message) => message.to === "service:dsh-tool" && message.word === "read");
+    assert.ok(readCall, "native DSH read entered the core ledger");
+    while (Date.now() < readDeadline && !running.ledger.responseTo(readCall.id)) await new Promise((resolve) => setTimeout(resolve, 30));
+    const readResult = running.ledger.responseTo(readCall.id);
+    assert.equal(readResult?.body.ok, true);
+    assert.match(JSON.stringify(readResult?.body), /NATIVE_READ_FIXTURE/);
+    assert.equal(readResult?.turn, readCall.turn);
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));

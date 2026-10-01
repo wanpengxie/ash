@@ -24,7 +24,7 @@ export interface DoorOptions {
   managedRoot: string;
   /** Core ledger, inbox, credentials, and configuration roots, even if nested in workspace. */
   protectedRoots: readonly string[];
-  /** Production first stage exposes only the five owned tools. Audited native mode remains test-only pending full routing. */
+  /** The main session keeps its five owned tools plus the audited DSH-native set. */
   nativeMode?: "disabled" | "audited";
   /** The installed runtime's scope chain; no guessed agent-id inheritance. */
   scopeChainOf(agent: object): readonly object[];

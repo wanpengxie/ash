@@ -2,6 +2,7 @@
 // never tool arguments, raw results, credentials, or stream control frames.
 import { isMessageSummaryV2 } from "../../../sdk/src/api.ts";
 import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
+import { statusLabel } from "../../../sdk/src/labels.ts";
 import { faceForStatus } from "./presence.js";
 
 export function initialView() {
@@ -190,7 +191,9 @@ function project(records, snapshots = new Map()) {
       if (pending) pending.state = r.state;
       else steps.push({ seq: r.seq, ts: r.ts, label: r.step, step: r.step, state: r.state === "started" ? "pending" : r.state });
     }
-    else if (r.type === "activity.request" && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: `${r.to} · ${r.word}`, requestId: r.id, state: "pending" });
+    else if (r.type === "activity.request" && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts,
+      label: r.to === "service:dsh-tool" ? statusLabel("native", r.word) : `${r.to} · ${r.word}`,
+      native: r.to === "service:dsh-tool", requestId: r.id, state: "pending" });
     else if (r.type === "activity.response") {
       const request = activityRequests.get(r.reply_to);
       const step = request && view.turns[request.turn]?.steps.find((item) => item.requestId === request.id);

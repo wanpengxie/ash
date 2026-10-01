@@ -8,6 +8,7 @@ import { renderMainContext } from "./context";
 import type { DoorTurnAdapter, DshRootAgent, DshSessionEvent } from "./host";
 import type { DshDoor } from "./door";
 import { DshHost } from "./host";
+import type { WorldRouter } from "../../core/src/world/router";
 
 const IMAGE = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -201,7 +202,8 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
   private session: { agent: DshRootAgent; door: DshDoor; id: string } | null = null;
   private busy = false;
   private currentManagedPrompt: string | null = null;
-  constructor(private readonly host: DshHost, private readonly attachmentRoot: string, private readonly workspaceRoot: string) {}
+  constructor(private readonly host: DshHost, private readonly attachmentRoot: string, private readonly workspaceRoot: string,
+    private readonly router?: WorldRouter) {}
   primeManagedSnapshot(snapshot: ManagedPromptSnapshot): void { this.currentManagedPrompt = renderMainContext(snapshot); }
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void {
     if (this.session) throw new Error("runner already attached");
@@ -225,6 +227,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     // An interrupted core turn is never re-followed-up after restart.
     const messageId = `core-${input.turn}`;
     const seen = new Set<string>();
+    const toolCalls = new Map<string, string>();
     let pending = Promise.resolve();
     let emitError: unknown;
     let finish!: (value: { reason: "completed" | "error"; error?: string }) => void;
@@ -255,6 +258,24 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
           pending = pending.then(() => signal.aborted || emitError ? undefined : emit({ id: `${key}:${index}`, text: part }))
             .catch((error) => { emitError ??= error; });
         }
+      } else if (event.type === "tool/call" && this.router) {
+        try {
+          const callId = event.data?.callId;
+          const name = event.data?.name;
+          const args = event.data?.arguments;
+          if (typeof callId !== "string" || typeof name !== "string" || typeof args !== "string") throw new TypeError("invalid DSH tool call");
+          toolCalls.set(callId, this.router.recordDshToolCall(input.turn, callId, name, args).id);
+        } catch (error) { emitError ??= error; }
+      } else if (event.type === "tool/result" && this.router) {
+        try {
+          const message = event.data?.message;
+          const requestId = toolCalls.get(message?.toolCallId);
+          if (!requestId) throw new TypeError("unmatched DSH tool result");
+          const preview = Array.isArray(message?.content) ? message.content.filter((block: { type?: string }) => block?.type === "text")
+            .map((block: { text?: string }) => block.text ?? "").join("") : "";
+          this.router.recordDshToolResult(requestId, !message.isError && !event.data?.error, preview);
+          toolCalls.delete(message.toolCallId);
+        } catch (error) { emitError ??= error; }
       } else if (event.type === "turn/end") {
         const reason = event.data?.reason?.kind;
         settle(reason === "completed" ? { reason: "completed" } : { reason: "error", error: `DSH turn ${String(reason ?? "unknown")}` });

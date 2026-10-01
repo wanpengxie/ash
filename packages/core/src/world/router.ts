@@ -307,6 +307,25 @@ export class WorldRouter {
       throw new TypeError("not a committed work event");
     this.publish(stored);
   }
+  /** The bound DSH session reports its own tool events; these are audit facts, not dispatch requests. */
+  recordDshToolCall(turn: string, callId: string, name: string, argumentsText: string): Message {
+    if (!/^t_[A-Za-z0-9_-]+$/.test(turn) || !/^[A-Za-z0-9_-]{1,128}$/.test(callId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(name) || typeof argumentsText !== "string") throw new TypeError("invalid DSH tool event");
+    const stored = this.ledger.append({ from: "agent:main", to: "service:dsh-tool", kind: "request", word: name,
+      body: { call_id: callId, arguments: argumentsText }, turn }, { transportPrincipal: `dsh:${turn}`, clientId: callId });
+    if (!stored.duplicate) this.publish(stored.message);
+    return stored.message;
+  }
+  recordDshToolResult(requestId: string, ok: boolean, preview: string): Message {
+    const request = this.ledger.byId(requestId);
+    if (!request || request.from !== "agent:main" || request.to !== "service:dsh-tool" || request.kind !== "request")
+      throw new TypeError("unknown DSH tool call");
+    const body: ResponseBody = ok ? { ok: true, result: { preview: preview.slice(0, 1000) } }
+      : { ok: false, error: { code: "failed", message: "DSH tool failed" } };
+    const settled = this.ledger.settle(requestId, "service:dsh-tool", body);
+    if (settled.settled) this.publish(settled.message);
+    return settled.message;
+  }
   private publish(message: Message): void {
     for (const listener of this.subscribers) {
       try { listener(detached(message)); } catch { /* a broken stream cannot interrupt durable routing */ }
@@ -802,6 +821,10 @@ export class WorldRouter {
       const { message, phase, context, deadlineAt } = tracked;
       if (this.ledger.responseTo(message.id)) continue;
       if (this.pending.has(message.id)) continue;
+      if (message.to === "service:dsh-tool" && message.from === "agent:main") {
+        this.publish(this.ledger.settle(message.id, "service:dsh-tool", errors("failed", "DSH tool result unknown after restart")).message);
+        continue;
+      }
       if (message.from === "agent:main" && message.to === "service:gate" && message.word === "internal.approval") {
         const askId = this.ledger.gateCase(message.id)?.askId;
         const priorAskResponse = askId ? this.ledger.responseTo(askId) : null;

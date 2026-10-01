@@ -78,7 +78,8 @@ export class AgentStatus {
     if (this.isPaused() || (this.activeTurn === null && this.pending.size === 0 && now - this.lastActivity >= REST_MS))
       return { state: "resting", text: DEFAULT_TEXT.resting };
     const tool = [...this.pending.values()].reverse().find((item) => item.from === "agent:main" && !(item.to === "person:owner" && item.word === "ask"));
-    if (tool) return { state: "working", text: statusLabel(tool.to, tool.word, this.router.registeredLabel(tool.to, tool.word)) };
+    if (tool) return { state: "working", text: statusLabel(tool.to === "service:dsh-tool" ? "native" : tool.to,
+      tool.word, this.router.registeredLabel(tool.to, tool.word)) };
     if ([...this.pending.values()].some((item) => item.to === "person:owner" && item.word === "ask"))
       return { state: "waiting_you", text: DEFAULT_TEXT.waiting_you };
     if (now < this.listeningUntil || now < this.typingUntil) return { state: "listening", text: DEFAULT_TEXT.listening };

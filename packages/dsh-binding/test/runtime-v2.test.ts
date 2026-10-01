@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentTurnInput } from "../../core/src/members/agent";
+import { Ledger } from "../../core/src/world/ledger";
+import { WorldRouter } from "../../core/src/world/router";
 import type { DshDoor } from "../src/door";
 import type { DshHost, DshRootAgent, DshSessionEvent } from "../src/host";
 import { DshTurnRunner, materializeFile, splitAssistantText, turnContent } from "../src/runtime";
@@ -126,4 +128,39 @@ test("runner uses followup once, waits for real idle outside listener, and suppr
     assert.equal((await second).reason, "error");
     assert.deepEqual(outputs, ["first", "second", "first", "second"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("DSH session tool call and result enter the core ledger under the current turn", async () => {
+  const root = mkdtempSync(join(tmpdir(), "runtime-tool-ledger-"));
+  const ledger = await Ledger.open(join(root, "ash.db"));
+  const router = new WorldRouter(ledger, () => true);
+  const listeners = new Set<(id: string, event: DshSessionEvent) => void>();
+  const events = (event: DshSessionEvent) => { for (const listener of listeners) listener("session-test", event); };
+  const host = { ctx: { get() { return undefined; } }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) {
+    listeners.add(listener); return () => listeners.delete(listener);
+  } } as unknown as DshHost;
+  const agent = { id: "root", followup(message: { id: string }) {
+    events({ type: "user/message", data: { id: message.id } });
+    events({ type: "tool/call", data: { callId: "call-1", name: "read", arguments: '{"file_path":"note.txt"}' } });
+    events({ type: "tool/result", data: { message: { toolCallId: "call-1", content: [{ type: "text", text: "read ok" }] } } });
+    events({ type: "turn/end", data: { reason: { kind: "completed" } } });
+  }, cancel() {}, async whenIdle() {} } as unknown as DshRootAgent;
+  const door = { beginTurn() {}, endTurn() {} } as unknown as DshDoor;
+  const runner = new DshTurnRunner(host, join(root, "inbox"), root, router);
+  runner.attach(agent, door, "session-test");
+  try {
+    const result = await runner.runTurn({ turn: "t_audit", messages: [], rendered: "read note", stopFacts: [] }, async () => {}, new AbortController().signal);
+    assert.deepEqual(result, { reason: "completed" });
+    const call = ledger.list().find((item) => item.to === "service:dsh-tool" && item.kind === "request");
+    assert.ok(call);
+    assert.equal(call.turn, "t_audit");
+    assert.equal(call.word, "read");
+    assert.equal(call.body.arguments, '{"file_path":"note.txt"}');
+    const reply = ledger.responseTo(call.id);
+    assert.equal(reply?.body.ok, true);
+    assert.equal(reply?.turn, "t_audit");
+    const orphan = router.recordDshToolCall("t_audit", "call-2", "write", '{"file_path":"other.txt"}');
+    await router.recover();
+    assert.equal((ledger.responseTo(orphan.id)?.body.error as { code?: string } | undefined)?.code, "failed");
+  } finally { ledger.close(); rmSync(root, { recursive: true, force: true }); }
 });

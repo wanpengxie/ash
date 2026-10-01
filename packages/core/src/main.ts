@@ -138,7 +138,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new GateMember(ledger, world, members));
     world.enableDurableGate();
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, env: config.dsh!.env });
-    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
       ...(dsh ? { mind: () => mind } : {}),
@@ -228,7 +228,7 @@ export async function startOwner(config: Config): Promise<Running> {
       (runner as DshTurnRunner).primeManagedSnapshot(await self.promptSnapshot());
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
-        nativeMode: "disabled", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });
+        nativeMode: "audited", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });
       await dsh.startMind({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], nativeMode: "disabled", adapter: mindRunner! });
       mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
