@@ -11,6 +11,7 @@ import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type Ed
 import { wordContract } from "../../../sdk/src/words";
 import { HostDeviceLink } from "../../src/host-v2";
 import { DeviceMember } from "../../src/members/device";
+import { OwnerLink } from "../../src/gateway/link";
 
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-credential", local: true, remote: false, ownerProxy: true, transport: "api" };
 const remote: EdgeCaller = { member: "person:owner", transportPrincipal: "paired-browser", pairedDeviceId: "paired-browser", local: false, remote: true, ownerProxy: true, transport: "web_ui" };
@@ -139,6 +140,8 @@ test("workspace bytes preserve local-only writes and reject managed, symlink and
     copyFileSync(join(workspace, "MEMORY.md"), join(workspace, "ordinary-copy.txt"));
     const memory = join(workspace, "memory"); mkdirSync(memory);
     writeFileSync(join(memory, "2026-10-01.md"), "managed date");
+    const versions = join(workspace, ".ash", "versions"); mkdirSync(versions, { recursive: true });
+    writeFileSync(join(versions, "snap"), "protected version");
     const put = (path: string, caller: EdgeCaller) => edge.handle({ ...request("PUT", `/api/workspaces/home/files?path=${encodeURIComponent(path)}`), body: Buffer.from("safe") }, caller);
     assert.equal((await put("notes.txt", remote)).status, 403);
     assert.equal((await put("SOUL.md", owner)).status, 403);
@@ -149,9 +152,13 @@ test("workspace bytes preserve local-only writes and reject managed, symlink and
     assert.equal((await put("ordinary-copy.txt", owner)).status, 200);
     assert.equal(readFileSync(join(workspace, "ordinary-copy.txt"), "utf8"), "safe");
     assert.equal(readFileSync(join(workspace, "MEMORY.md"), "utf8"), "protected");
-    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory } });
+    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory, ancestor: dir, versions } });
     assert.equal((await aliased.handle({ ...request("PUT", "/api/workspaces/diary/files?path=2026-10-01.md"), body: Buffer.from("unsafe") }, owner)).status, 403);
+    for (const [alias, path] of [["ancestor", "home/MEMORY.md"], ["ancestor", "home/memory/2026-10-01.md"], ["versions", "snap"]])
+      assert.equal((await aliased.handle({ ...request("PUT", `/api/workspaces/${alias}/files?path=${path}`), body: Buffer.from("unsafe") }, owner)).status, 403);
     assert.equal(readFileSync(join(memory, "2026-10-01.md"), "utf8"), "managed date");
+    assert.equal(readFileSync(join(workspace, "MEMORY.md"), "utf8"), "protected");
+    assert.equal(readFileSync(join(versions, "snap"), "utf8"), "protected version");
     const listed = parsed(await edge.handle(request("GET", "/api/workspaces/home/files?path="), owner));
     assert.equal(JSON.stringify(listed).includes("alias"), false);
     assert.equal((await put("notes.txt", owner)).status, 200);
@@ -271,4 +278,60 @@ test("observer revocation between durable request publication and dispatch never
     assert.equal((sent.reply?.body.error as { code: string }).code, "cancelled");
     assert.equal(ledger.list().filter((message) => message.reply_to === sent.id).length, 1);
   } finally { ledger.close(); }
+});
+
+test("a delayed old host failure cannot offline a replacement or resurrect after close", async () => {
+  const { ledger, members } = await fixture();
+  let name = "old";
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredCall = new Promise<void>((resolve) => { entered = resolve; });
+  const releaseCall = new Promise<void>((resolve) => { release = resolve; });
+  const host = createServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/manifest") res.end(JSON.stringify({ name: "Controlled", capabilities: [{ name, description: "Synthetic", input_schema: { type: "object", additionalProperties: false }, risk: "none", label: "Synthetic" }] }));
+    else if (req.url === "/call") { entered(); await releaseCall; res.writeHead(500).end("{}"); }
+    else res.writeHead(404).end("{}");
+  });
+  await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+  const link = await HostDeviceLink.probe({ url: `http://127.0.0.1:${(host.address() as { port: number }).port}`, token: "synthetic" });
+  try {
+    const old = link.device(); members.registerDevice(old);
+    const call = Promise.resolve(old.handle({ id: "old", seq: 1, ts: Date.now(), from: "person:owner", to: "device:phone", kind: "request", word: "old", body: {} }, { signal: new AbortController().signal, recovered: false }));
+    await enteredCall;
+    name = "new";
+    await link.refreshManifest(members);
+    assert.deepEqual(members.describe("owner", "device:phone").members[0].words.map((word) => word.word), ["new"]);
+    release(); await call;
+    assert.equal(members.describe("owner", "device:phone").members[0].online, true);
+    link.close();
+    await link.refreshManifest(members);
+    assert.equal(members.describe("owner", "device:phone").members[0].online, false);
+  } finally { release(); link.close(); ledger.close(); await new Promise<void>((resolve) => { host.close(() => resolve()); host.closeAllConnections(); }); }
+});
+
+test("gateway refresh serializes dirty revocation and fences stale connection manifests", async () => {
+  for (const reconnect of [false, true]) {
+    const { ledger, world, members } = await fixture();
+    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} });
+    const link = new OwnerLink("http://127.0.0.1:1", { id: "synthetic", publicKey: "synthetic", sign: async () => "synthetic" }, edge, () => {});
+    const active = [{ id: "synthetic", name: "Synthetic", permissions: ["expose_capability"], revoked: false, online: true }];
+    const revoked = [{ ...active[0], permissions: [], revoked: true, online: false }];
+    let current = active;
+    let entered!: () => void;
+    let release!: () => void;
+    const manifestEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const manifestRelease = new Promise<void>((resolve) => { release = resolve; });
+    const injected = link as unknown as { conn: { request: () => Promise<{ devices: typeof active }> } | null; connected: boolean; onDisconnected: () => void; requestDevice: () => Promise<{ status: number; body: Buffer }> };
+    injected.conn = { request: async () => ({ devices: current }) }; injected.connected = true;
+    injected.requestDevice = async () => { entered(); await manifestRelease; return { status: 200, body: Buffer.from(JSON.stringify({ name: "Synthetic", capabilities: [{ name: "run", description: "Synthetic", input_schema: { type: "object" }, risk: "none", label: "Synthetic" }] })) }; };
+    try {
+      const first = link.refreshDevices(); await manifestEntered;
+      if (reconnect) { injected.onDisconnected(); injected.conn = { request: async () => ({ devices: revoked }) }; injected.connected = true; }
+      else current = revoked;
+      const second = link.refreshDevices(); release();
+      await Promise.all([first, second]);
+      assert.equal(members.describe("owner").members.some((member) => member.id === "device:synthetic"), false, reconnect ? "reconnect" : "same connection");
+    } finally { release(); ledger.close(); }
+  }
 });

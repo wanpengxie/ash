@@ -2,7 +2,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, closeSync } from "node:fs";
-import { extname, join, resolve, sep } from "node:path";
+import { extname, join, relative, resolve, sep } from "node:path";
 import type { Message, SendRequestV2 } from "../../sdk/src/api";
 import { SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER } from "../../sdk/src/api";
 import { WorldMembers } from "./world/member";
@@ -197,10 +197,7 @@ export class EdgeRouter {
     if (rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || rel.split("/").some((part) => part === "." || part === "..") || rel.includes("//")) fail(400, "bad_path", "invalid workspace path");
     const parts = rel.split("/").filter(Boolean);
     const homeRoot = this.options.workspaces?.home && existsSync(this.options.workspaces.home) ? realpathSync(this.options.workspaces.home) : null;
-    const homeMemory = homeRoot && existsSync(join(homeRoot, "memory")) ? realpathSync(join(homeRoot, "memory")) : null;
     const dated = /^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$/;
-    if (req.method === "PUT" && (!parts.length || managed.has(rel) || /^memory\/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$/.test(rel) ||
-      (homeMemory === realRoot && dated.test(rel)) || parts.includes(".ash") || parts.includes("versions") || parts.includes("staging"))) fail(403, "forbidden", "managed path requires its member");
     let current = realRoot;
     for (const part of parts) {
       current = join(current, part);
@@ -208,6 +205,12 @@ export class EdgeRouter {
     }
     const full = resolve(realRoot, ...parts);
     if (full !== realRoot && !full.startsWith(realRoot + sep)) fail(400, "bad_path", "path escapes workspace");
+    const homeRelative = homeRoot ? relative(homeRoot, full) : null;
+    const withinHome = homeRelative !== null && homeRelative !== ".." && !homeRelative.startsWith(`..${sep}`) && !homeRelative.startsWith(sep);
+    const homeParts = withinHome ? homeRelative!.split(sep) : [];
+    if (req.method === "PUT" && (!parts.length || managed.has(rel) || parts.includes(".ash") || parts.includes("versions") || parts.includes("staging") ||
+      (withinHome && (managed.has(homeRelative!) || homeParts.includes(".ash") || homeParts.includes("versions") || homeParts.includes("staging") ||
+        (homeParts.length === 2 && homeParts[0] === "memory" && dated.test(homeParts[1])))))) fail(403, "forbidden", "managed path requires its member");
     if (req.method === "GET") {
       if (!existsSync(full)) fail(404, "not_found", "file not found");
       const real = realpathSync(full);

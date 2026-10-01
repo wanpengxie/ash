@@ -94,7 +94,8 @@ export class OwnerLink extends Link {
   private serving = false;
   private ready = false;
   private syncTimer: ReturnType<typeof setInterval> | null = null;
-  private syncTask: Promise<void> | null = null;
+  private syncTail: Promise<void> = Promise.resolve();
+  private epoch = 0;
   readonly pending = new Map<string, PendingPairing>();
   constructor(url: string, signer: Signer, private readonly edge: EdgeRouter, log: (...args: unknown[]) => void) { super(url, signer, log); }
   enable(): void { this.serving = true; }
@@ -118,13 +119,17 @@ export class OwnerLink extends Link {
   }
 
   protected async onConnected(conn: Connection): Promise<void> {
+    const epoch = ++this.epoch;
     const pending = await conn.request({ op: "pair.pending" }).catch(() => null);
+    if (epoch !== this.epoch || this.conn !== conn) return;
     for (const item of (pending?.requests as Record<string, string>[] | undefined) ?? []) await this.addPending(item);
-    await this.syncDevices();
+    await this.refreshDevices();
+    if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
     this.ready = true;
-    this.syncTimer = setInterval(() => void this.syncDevices().catch(() => {}), 30_000);
+    this.syncTimer = setInterval(() => void this.refreshDevices().catch(() => {}), 30_000);
   }
   protected onDisconnected(): void {
+    this.epoch++;
     this.ready = false;
     if (this.syncTimer) clearInterval(this.syncTimer);
     this.syncTimer = null;
@@ -142,7 +147,7 @@ export class OwnerLink extends Link {
     if (frame.t === "tun" && typeof frame.sid === "string" && this.outbound.has(frame.sid)) { this.onOutbound(frame); return; }
     if (frame.t === "gw") {
       if (frame.op === "pair.request") void this.addPending(frame as Record<string, string>);
-      if (frame.op === "device.presence") { void this.revalidateStreams(); void this.syncDevices().catch(() => {}); }
+      if (frame.op === "device.presence") { void this.revalidateStreams(); void this.refreshDevices().catch(() => {}); }
       return;
     }
     if (frame.t !== "tun" || typeof frame.sid !== "string") return;
@@ -187,24 +192,24 @@ export class OwnerLink extends Link {
     });
   }
 
-  private async syncDevices(): Promise<void> {
-    if (this.syncTask) return this.syncTask;
-    const task = this.syncDevicesOnce();
-    this.syncTask = task;
-    try { await task; } finally { if (this.syncTask === task) this.syncTask = null; }
+  /** Every presence/grant change queues a fresh list; no update is discarded behind an older sync. */
+  refreshDevices(): Promise<void> {
+    const epoch = this.epoch;
+    const task = this.syncTail.catch(() => {}).then(() => this.syncDevicesOnce(epoch));
+    this.syncTail = task;
+    return task;
   }
 
-  /** Explicit refresh for owner pairing flows and deterministic integration checks. */
-  refreshDevices(): Promise<void> { return this.syncDevices(); }
-
-  private async syncDevicesOnce(): Promise<void> {
+  private async syncDevicesOnce(epoch: number): Promise<void> {
     const conn = this.conn;
-    if (!conn) return;
+    if (!conn || epoch !== this.epoch || !this.connected) return;
     const result = await conn.request({ op: "device.list" });
+    if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
     const list = result.devices as { id: string; name: string; permissions: string[]; revoked: boolean; online: boolean }[];
     if (!Array.isArray(list)) throw new Error("gateway device list unavailable");
     const seen = new Set<string>();
     for (const item of list) {
+      if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
       if (typeof item.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(item.id)) continue;
       const memberId = `device:${item.id}`;
       if (item.revoked || !item.permissions?.includes("expose_capability")) {
@@ -217,6 +222,7 @@ export class OwnerLink extends Link {
       if (!item.online) { previous?.member.setOnline(false); continue; }
       try {
         const response = await this.requestDevice(item.id, "GET", "/ash/manifest", undefined, 20_000);
+        if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
         if (response.status !== 200) throw new Error("remote manifest unavailable");
         const raw = JSON.parse(response.body.toString("utf8")) as { name?: unknown; capabilities?: unknown };
         if (!raw || !Array.isArray(raw.capabilities) || typeof raw.name !== "string" || !raw.name.trim()) throw new TypeError("invalid remote manifest");
@@ -241,8 +247,9 @@ export class OwnerLink extends Link {
         });
         this.edge.members.replaceDevice(member);
         this.remoteDevices.set(item.id, { member, manifest });
-      } catch { previous?.member.setOnline(false); }
+      } catch { if (epoch === this.epoch && this.conn === conn && this.connected) previous?.member.setOnline(false); }
     }
+    if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
     for (const id of this.remoteDevices.keys()) if (!seen.has(id)) {
       this.edge.members.removeDevice(`device:${id}`);
       this.remoteDevices.delete(id);

@@ -11,6 +11,8 @@ export interface HostConnection { url: string; token: string }
 export class HostDeviceLink {
   private refresh: ReturnType<typeof setInterval> | null = null;
   private member: DeviceMember | null = null;
+  private refreshEpoch = 0;
+  private closed = false;
   private constructor(readonly config: HostConnection, private currentManifest: HostManifestV2) {}
 
   get manifest(): HostManifestV2 { return structuredClone(this.currentManifest); }
@@ -42,23 +44,31 @@ export class HostDeviceLink {
   private request(method: string, path: string, body?: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<unknown> { return HostDeviceLink.request(this.config, method, path, body, timeoutMs, signal); }
 
   device(): DeviceMember {
+    if (this.closed) throw new Error("device host is closed");
     if (this.member) return this.member;
     const capabilities: DeviceCapability[] = this.currentManifest.capabilities.map((item) => ({ name: item.name, description: item.description, input_schema: item.input_schema, risk: item.risk, label: item.label }));
-    this.member = new DeviceMember("device:phone", this.currentManifest.name, capabilities, async (message, context) => {
+    const member = new DeviceMember("device:phone", this.currentManifest.name, capabilities, async (message, context) => {
       try {
         const result = await this.request("POST", "/call", { capability: message.word, args: message.body, caller: message.from }, 180_000, context.signal) as CallResult;
         if (!result || typeof result.ok !== "boolean") throw new Error("invalid host result");
         return result.ok ? { ok: true, result: { content: result.content, ...(result.data === undefined ? {} : { data: result.data }) } }
           : { ok: false, error: { code: "failed", message: result.error ?? "device call failed" } };
-      } catch { this.member?.setOnline(false); return { ok: false, error: { code: "offline", message: "device host unavailable" } }; }
+      } catch {
+        if (!this.closed && this.member === member) member.setOnline(false);
+        return { ok: false, error: { code: "offline", message: "device host unavailable" } };
+      }
     });
-    return this.member;
+    this.member = member;
+    return member;
   }
 
   /** Invalid/partial updates leave the last snapshot describable but offline. */
   async refreshManifest(members: WorldMembers): Promise<void> {
+    if (this.closed) return;
+    const epoch = ++this.refreshEpoch;
     try {
       const next = HostDeviceLink.validatedManifest(await this.request("GET", "/manifest"));
+      if (this.closed || epoch !== this.refreshEpoch) return;
       if (JSON.stringify(next) === JSON.stringify(this.currentManifest)) { this.member?.setOnline(true); return; }
       const old = this.member;
       const previousManifest = this.currentManifest;
@@ -72,11 +82,11 @@ export class HostDeviceLink {
         old?.setOnline(false);
         throw error;
       }
-    } catch { this.member?.setOnline(false); }
+    } catch { if (!this.closed && epoch === this.refreshEpoch) this.member?.setOnline(false); }
   }
 
   startHealthChecks(members: WorldMembers): void {
-    if (this.refresh) return;
+    if (this.closed || this.refresh) return;
     this.refresh = setInterval(() => void this.refreshManifest(members), 60_000);
   }
   async signer(): Promise<Signer> {
@@ -87,5 +97,5 @@ export class HostDeviceLink {
       return response.sig;
     } };
   }
-  close(): void { if (this.refresh) clearInterval(this.refresh); this.refresh = null; this.member?.setOnline(false); }
+  close(): void { this.closed = true; this.refreshEpoch++; if (this.refresh) clearInterval(this.refresh); this.refresh = null; this.member?.setOnline(false); }
 }

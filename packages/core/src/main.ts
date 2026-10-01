@@ -147,7 +147,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (index < 0 || !process.argv[index + 1]) throw new Error("usage: ash-core --config ash.json [--pair code]");
   const config = JSON.parse(readFileSync(process.argv[index + 1], "utf8")) as Config;
   const role = config.role ?? "owner";
-  const running = role === "client" ? await startClient(config, process.argv[process.argv.indexOf("--pair") + 1]) : await startOwner(config);
+  const pairIndex = process.argv.indexOf("--pair");
+  const pairCode = pairIndex >= 0 ? process.argv[pairIndex + 1] : undefined;
+  const running = role === "client" ? await startClient(config, pairCode) : await startOwner(config);
   const stop = () => { void Promise.resolve(running.close()).then(() => process.exit(0)); };
   process.on("SIGINT", stop); process.on("SIGTERM", stop);
 }
