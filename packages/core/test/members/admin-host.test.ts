@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import type { ResponseBody } from "../../../sdk/src/api";
 import { startOwner } from "../../src/main";
 
 test("production pause queues a new owner message until verified local screen confirmation resumes", async () => {
@@ -70,4 +73,38 @@ test("production pause queues a new owner message until verified local screen co
     await running?.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+for (const revoke of [false, true]) test(`production recovery ${revoke ? "rejects" : "accepts"} uncommitted reflex pause according to current original owner grant`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-admin-reflex-recover-"));
+  const stateDir = join(dir, "state");
+  let running: Awaited<ReturnType<typeof startOwner>> | null = null;
+  try {
+    running = await startOwner({ stateDir, listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+    const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const owner = { member: "person:owner", transport: "api" as const, transportPrincipal: `token:${createHash("sha256").update(token).digest("hex")}`,
+      local: true, remote: false, ownerProxy: true };
+    const source = await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "synthetic source" }, wait: true });
+    const stranded = running.ledger.append({ from: "service:reflex", to: "service:admin", kind: "request", word: "pause", body: { by: source.id } },
+      { transportPrincipal: "service:reflex", clientId: "reflex:recovery" },
+      { deadlineAt: Date.now() + 30_000, context: { member: "service:reflex", local: true, remote: false, ownerProxy: false, transportPrincipal: "service:reflex" } },
+      { byMessageId: source.id }).message;
+    await running.close(); running = null;
+    if (revoke) {
+      const file = join(stateDir, "tokens.json");
+      const tokens = JSON.parse(readFileSync(file, "utf8")) as { api: Record<string, string> };
+      for (const [key, member] of Object.entries(tokens.api)) if (member === "person:owner") delete tokens.api[key];
+      writeFileSync(file, JSON.stringify(tokens), { mode: 0o600 });
+    }
+    running = await startOwner({ stateDir, listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+    const until = Date.now() + 5000;
+    while (!running.ledger.responseTo(stranded.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
+    const reply = running.ledger.responseTo(stranded.id)?.body as ResponseBody | undefined;
+    assert.equal(reply?.ok, !revoke);
+    if (revoke) assert.equal(reply?.ok === false ? reply.error.code : null, "forbidden");
+    else assert.deepEqual(reply, { ok: true, result: { paused: true } });
+    const db = new DatabaseSync(join(stateDir, "ash.db"), { readOnly: true });
+    try { assert.equal((db.prepare("SELECT COUNT(*) AS n FROM admin_pause_commands").get() as { n: number }).n, revoke ? 0 : 1); }
+    finally { db.close(); }
+  } finally { await running?.close(); rmSync(dir, { recursive: true, force: true }); }
 });

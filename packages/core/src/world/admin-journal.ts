@@ -24,6 +24,18 @@ export class AdminJournal {
     throw new TypeError("invalid durable pause state");
   }
 
+  /** A committed fact is evidence of a past effect, not permission to run the request again. */
+  committedFact(message: Message): { paused: boolean; current: boolean } | null {
+    if (message.kind !== "request" || message.to !== "service:admin" || !["pause", "resume"].includes(message.word)) return null;
+    const row = this.db.prepare("SELECT seq,paused FROM admin_pause_commands WHERE request_id=?").get(message.id) as Row | undefined;
+    if (!row) return null;
+    const paused = message.word === "pause";
+    if (Number(row.seq) !== message.seq || Boolean(row.paused) !== paused) throw new TypeError("admin committed fact conflicts with accepted request");
+    const latest = this.db.prepare("SELECT seq,paused FROM admin_pause_commands ORDER BY seq DESC LIMIT 1").get() as Row | undefined;
+    if (!latest || this.isPaused() !== Boolean(latest.paused)) throw new TypeError("admin durable state conflicts with latest command");
+    return { paused, current: Number(latest.seq) === message.seq };
+  }
+
   /** An older accepted command cannot undo a newer one, including after a restart. */
   apply(message: Message, paused: boolean): { applied: boolean; paused: boolean } {
     if (message.kind !== "request" || message.to !== "service:admin" || !["pause", "resume"].includes(message.word) ||

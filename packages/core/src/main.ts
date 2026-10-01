@@ -110,6 +110,7 @@ export async function startOwner(config: Config): Promise<Running> {
         member === caller.member && `token:${createHash("sha256").update(key).digest("hex")}` === caller.transportPrincipal);
       if (caller.transportPrincipal === "agent:main" && caller.member === "agent:main") return true;
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
+      if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
       return false;
     });
@@ -151,6 +152,7 @@ export async function startOwner(config: Config): Promise<Running> {
     agent.prepareRecovery();
     await self?.prepareRecovery();
     post.prepareRecovery();
+    admin.prepareRecovery();
     await world.recover();
     await post.start();
     if (dsh) {

@@ -26,6 +26,17 @@ export class AdminMember implements Member {
   constructor(private readonly options: AdminOptions) { this.journal = new AdminJournal(options.dbFile); }
   words(): readonly WordSpec[] { return [pause, resume]; }
 
+  /** Settle already committed effects before router recovery rechecks permission or replays handlers. */
+  prepareRecovery(): void {
+    for (const { message } of this.options.ledger.trackedRequests()) {
+      const fact = this.journal.committedFact(message);
+      if (!fact) continue;
+      const body: ResponseBody = fact.current ? { ok: true, result: { paused: fact.paused } }
+        : { ok: false, error: { code: "failed", message: "admin command committed but superseded by a newer state" } };
+      this.options.ledger.settle(message.id, this.id, body);
+    }
+  }
+
   async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
     if (this.closed || !context.caller || message.to !== this.id || message.kind !== "request")
       return { ok: false, error: { code: "offline", message: "admin unavailable" } };
@@ -33,12 +44,16 @@ export class AdminMember implements Member {
       return { ok: false, error: { code: "forbidden", message: "current admin authority unavailable" } };
     const paused = message.word === "pause" ? true : message.word === "resume" ? false : null;
     if (paused === null) return { ok: false, error: { code: "not_found", message: "admin word unavailable" } };
+    if (paused && message.from === "service:reflex" && !await this.options.router.currentlyAuthorizedReflexPause(message.body.by))
+      return { ok: false, error: { code: "forbidden", message: "original owner authority unavailable" } };
     // No await between this check and the durable effect. A screen accepted earlier
     // may have expired or changed principal while authorization was pending.
     if (!paused && (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !context.caller.ownerProxy ||
       !context.caller.screenId || !context.caller.transportPrincipal ||
       !this.options.currentScreenBinding(context.caller.screenId, context.caller.transportPrincipal)))
       return { ok: false, error: { code: "forbidden", message: "current local owner screen confirmation unavailable" } };
+    if (context.signal.aborted)
+      return { ok: false, error: { code: "cancelled", message: "admin request settled before effect" } };
     let applied: ReturnType<AdminJournal["apply"]>;
     try { applied = this.journal.apply(message, paused); }
     catch { return { ok: false, error: { code: "failed", message: "durable pause state unavailable" } }; }
@@ -51,6 +66,8 @@ export class AdminMember implements Member {
         if (cancel.reply?.body.ok !== true) return { ok: false, error: { code: "failed", message: "paused, but current turn cancellation was not acknowledged" } };
       } catch { return { ok: false, error: { code: "failed", message: "paused, but current turn cancellation was not acknowledged" } }; }
     }
+    if (!this.journal.committedFact(message)?.current)
+      return { ok: false, error: { code: "failed", message: "admin command committed but superseded by a newer state" } };
     return { ok: true, result: { paused } };
   }
 

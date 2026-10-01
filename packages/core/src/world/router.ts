@@ -259,6 +259,9 @@ export class WorldRouter {
     return this.currentlyAuthorized(source.message, source.context);
   }
 
+  /** Recheck the original owner provenance immediately before a reflex pause effect. */
+  async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
+
   private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
     if (request.to === "person:owner" && request.word === "say" && Object.hasOwn(request.body, "dedupe_key") &&
       (ctx.remote || !ctx.local || !((ctx.transport === "agent" && from === "agent:main" && ctx.transportPrincipal === "agent:main") ||
