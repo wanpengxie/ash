@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -66,6 +66,24 @@ test("production recovery rechecks a stable local token digest and fails closed 
       }
     } finally { await running.close(); }
   }
+});
+
+test("production bootstrap registers real self only for a configured home", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ash-v2-self-boot-"));
+  const home = join(root, "home"); mkdirSync(home);
+  const running = await startOwner({ stateDir: join(root, "state"), workspaces: { home }, listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+  try {
+    const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const described = await fetch(`${running.url}/api/describe?member=service:self`, { headers });
+    assert.equal(described.status, 200);
+    assert.equal(((await described.json()) as { members: { words: { word: string }[] }[] }).members[0].words.some((item) => item.word === "write"), true);
+    const written = await fetch(`${running.url}/api/send`, { method: "POST", headers, body: JSON.stringify({ to: "service:self", kind: "request", word: "write", body: { path: "MEMORY.md", content: "synthetic\n", why: "test", expected_hash: null }, wait: true }) });
+    assert.equal(written.status, 200);
+    assert.equal(((await written.json()) as { reply: { body: { ok: boolean } } }).reply.body.ok, true);
+    assert.equal(readFileSync(join(home, "MEMORY.md"), "utf8"), "synthetic\n");
+    assert.equal(existsSync(join(root, "state", "self", "self-operations.db")), true);
+  } finally { await running.close(); }
 });
 
 test("production bootstrap settles a durable stop intent before router recovery", async () => {
