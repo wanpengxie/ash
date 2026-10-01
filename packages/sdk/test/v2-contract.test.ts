@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, type JsonSchema, type ScreenUiOpenAnswerV2, type SendRequestV2 } from "../src/api";
+import { API_VERSION, API_VERSION_V2, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, isScreenRegistration, type JsonSchema, type ScreenUiOpenAnswerV2, type SendRequestV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
@@ -42,6 +42,19 @@ test("target-screen ui.open acknowledgement uses the existing paired response an
   const answer: ScreenUiOpenAnswerV2 = { to: "agent:main", kind: "response", word: "ui.open", reply_to: "m_open", body: { ok: true, result: { opened: false } }, client_id: "screen-ack-1" };
   assert.equal(answer.body.result.opened, false);
   assert.equal(SCREEN_TOKEN_HEADER, "Ash-Screen");
+});
+
+test("screen registration requires a server-minted credential scope, not just a tab token", () => {
+  const frame = { screen: "screen:tab_1", token: "a".repeat(32), label: "Computer browser", auth_scope: `v1_${"b".repeat(43)}` };
+  assert.ok(isScreenRegistration(frame));
+  for (const bad of [
+    { ...frame, auth_scope: undefined },
+    { ...frame, auth_scope: "token:secret" },
+    { ...frame, auth_scope: "v1_short" },
+    { ...frame, screen: "person:owner" },
+    { ...frame, token: "tiny" },
+    { ...frame, label: "" },
+  ]) assert.ok(!isScreenRegistration(bad));
 });
 
 test("v2 is additive to the existing client protocol", () => {

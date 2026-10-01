@@ -422,7 +422,16 @@ export type ScreenUiOpenAnswerV2 = SendRequestV2 & {
 };
 export interface StreamQueryV2 { after?: number; before?: number; limit?: number; follow?: boolean; screen?: string; label?: string }
 /** A live stream control frame, not a ledger message or cursor-bearing SSE event. */
-export interface ScreenRegistration { screen: string; token: string; label: string }
+/** Opaque credential scope for browser-local pending data; never an authorization proof. */
+export interface ScreenRegistration { screen: string; token: string; label: string; auth_scope: string }
+export function isScreenRegistration(value: unknown): value is ScreenRegistration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const frame = value as Record<string, unknown>;
+  return typeof frame.screen === "string" && /^screen:[A-Za-z0-9_-]+$/.test(frame.screen) &&
+    typeof frame.token === "string" && /^[A-Za-z0-9_-]{32,}$/.test(frame.token) &&
+    typeof frame.label === "string" && frame.label.length > 0 && frame.label.length <= 80 &&
+    typeof frame.auth_scope === "string" && /^v1_[A-Za-z0-9_-]{43}$/.test(frame.auth_scope);
+}
 export const SCREEN_REGISTRATION_EVENT = "screen.registered" as const;
 /** Browser proof survives the gateway's reserved x-ash-* header stripping. */
 export const SCREEN_TOKEN_HEADER = "Ash-Screen" as const;
