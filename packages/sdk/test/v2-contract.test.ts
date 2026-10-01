@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { API_VERSION, API_VERSION_V2, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, isScreenRegistration, type ClockFiredBodyV2, type JsonSchema, type PostDeliveryBodyV2, type PostDeliverySnapshotV2, type ScreenUiOpenAnswerV2, type SendRequestV2 } from "../src/api";
+import { API_VERSION, API_VERSION_V2, AUTH_SCOPE_EVENT, MESSAGE_SUMMARY_EVENT, POST_DELIVERY_SNAPSHOT_EVENT, SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER, STREAM_PAGE_END_EVENT, STREAM_RAW_PAGE_BYTES, STREAM_SUMMARY_CONTROL_RESERVE_BYTES, STREAM_SUMMARY_ITEM_BYTES, STREAM_SUMMARY_PAGE_BYTES, SummaryPageBudgetV2, isAuthScopeControlV2, isMessageSummaryV2, isScreenRegistration, isStreamPageEndV2, type ClockFiredBodyV2, type JsonSchema, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type PostDeliverySnapshotV2, type ScreenUiOpenAnswerV2, type SendRequestV2, type StreamQueryV2 } from "../src/api";
 import { DEFAULT_WORLD_CONFIG_V2, resolveWorldConfigV2, WORLD_CONFIG_SCHEMA_V2 } from "../src/config";
 import { HOST_ROUTES_V2 } from "../src/host";
 import { RUNTIME_CONTRACT_V2 } from "../src/runtime-contract";
@@ -84,6 +84,58 @@ test("bounded post snapshot has unique IDs and real-event versions below its wat
     { ...valid, items: [{ ...valid.items[0], seq: 24 }] },
     { ...valid, id: 25 }, null,
   ]) assert.notDeepEqual(postDeliverySnapshotErrors(invalid), [], `invalid snapshot accepted: ${JSON.stringify(invalid)}`);
+});
+
+test("L025 summary is explicitly not an original Message or send envelope", () => {
+  assert.equal(MESSAGE_SUMMARY_EVENT, "message.summary");
+  const summary: MessageSummaryV2 = { seq: 7, id: "m_7", ts: 123, from: "person:owner", to: "agent:main", kind: "request", word: "say", summary: true,
+    body_summary: { text: "", attachments: [{ name: "photo.png", mime_type: "image/png" }] },
+    inline_attachments: [{ index: 0, name: "photo.png", mime_type: "image/png", size: 5 }] };
+  assert.ok(isMessageSummaryV2(summary));
+  assert.equal(Object.hasOwn(summary, "body"), false);
+  const original: Message = { seq: 7, id: "m_7", ts: 123, from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [{ name: "photo.png", mime_type: "image/png", data: "aGVsbG8=" }] } };
+  assert.ok(!isMessageSummaryV2(original));
+  for (const invalid of [
+    { ...summary, body: original.body }, { ...summary, summary: false }, { ...summary, seq: 1.5 },
+    { ...summary, inline_attachments: [{ ...summary.inline_attachments![0], data: "aGVsbG8=" }] },
+    { ...summary, inline_attachments: [summary.inline_attachments![0], summary.inline_attachments![0]] },
+    { ...summary, body_summary: original.body }, { ...summary, body_summary: { text: "", attachments: [{ data: "aGVsbG8=" }] } },
+  ]) assert.ok(!isMessageSummaryV2(invalid));
+  const query: StreamQueryV2 = { summary: true, after: 1, limit: 200, follow: false };
+  assert.equal(query.summary, true);
+});
+
+test("L025 scope and end controls are not ledger cursor frames", () => {
+  assert.equal(AUTH_SCOPE_EVENT, "auth.scope");
+  assert.equal(STREAM_PAGE_END_EVENT, "stream.page_end");
+  const scope = { auth_scope: `v1_${"z".repeat(43)}` };
+  assert.ok(isAuthScopeControlV2(scope));
+  for (const invalid of [{}, { ...scope, auth_scope: "token" }, { ...scope, id: 10 }, null]) assert.ok(!isAuthScopeControlV2(invalid));
+  assert.ok(isStreamPageEndV2({ has_more: false, first_seq: null, last_seq: null }));
+  assert.ok(isStreamPageEndV2({ has_more: true, first_seq: 2, last_seq: 5 }));
+  for (const invalid of [
+    { has_more: false, first_seq: null, last_seq: 1 }, { has_more: true, first_seq: null, last_seq: null }, { has_more: true, first_seq: 5, last_seq: 2 },
+    { has_more: true, first_seq: 0, last_seq: 1 }, { has_more: "false", first_seq: null, last_seq: null },
+    { has_more: false, first_seq: null, last_seq: null, id: 9 },
+  ]) assert.ok(!isStreamPageEndV2(invalid));
+});
+
+test("L025 summary budget counts UTF-8 bytes and emits a continuous page prefix", () => {
+  assert.equal(STREAM_SUMMARY_PAGE_BYTES, 4 * 1024 * 1024);
+  assert.equal(STREAM_SUMMARY_ITEM_BYTES, 1024 * 1024);
+  assert.equal(STREAM_RAW_PAGE_BYTES, 32 * 1024 * 1024);
+  assert.ok(STREAM_SUMMARY_CONTROL_RESERVE_BYTES >= 128 * 1024);
+  const budget = new SummaryPageBudgetV2();
+  assert.deepEqual(budget.end(false), { has_more: false, first_seq: null, last_seq: null });
+  assert.equal(budget.tryInclude(10, 900_000), true);
+  assert.equal(budget.tryInclude(9, 900_000), true);
+  assert.equal(budget.tryInclude(8, 900_000), true);
+  assert.equal(budget.tryInclude(7, 900_000), true);
+  assert.equal(budget.tryInclude(6, 900_000), false);
+  assert.deepEqual(budget.end(true), { has_more: true, first_seq: 7, last_seq: 10 });
+  assert.throws(() => budget.tryInclude(6, STREAM_SUMMARY_ITEM_BYTES + 1), RangeError);
+  assert.throws(() => budget.tryInclude(0, 1), TypeError);
+  assert.throws(() => budget.tryInclude(6, -1), TypeError);
 });
 
 test("target-screen ui.open acknowledgement uses the existing paired response and exact boolean result", () => {
