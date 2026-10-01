@@ -102,6 +102,12 @@ try {
       result_schema: { type: "object", properties: { done: { type: "boolean" } }, required: ["done"], additionalProperties: false },
       risk: "none", label: "Synthetic wait" }],
     handle: async () => { deviceEntered = true; await deviceGate; deviceSettled = true; return { ok: true, result: { done: true } }; } });
+  const ownerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")[0];
+  const access = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${ownerToken}`,
+    "content-type": "application/json" }, body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: "device:probe/hold" }, wait: true }) });
+  assert.equal(access.status, 200);
+  assert.equal((await access.json()).reply?.body?.ok, true);
 
   let sendHeld = false;
   let readHeld = false;
@@ -141,8 +147,7 @@ try {
   await call("Runtime.enable");
   await call("Network.enable");
   const evaluate = async (expression) => (await call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
-  const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")[0];
-  await call("Page.navigate", { url: `${running.url}/?token=${token}` });
+  await call("Page.navigate", { url: `${running.url}/?token=${ownerToken}` });
   await until(() => evaluate("document.querySelector('#connection')?.textContent === '已连接'"), "registered browser screen");
   await evaluate("document.querySelector('#t').value='synthetic runtime input';document.querySelector('#f').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))");
   await until(() => sendHeld, "held HTTP send");
