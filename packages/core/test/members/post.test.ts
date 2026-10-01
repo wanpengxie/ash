@@ -222,6 +222,22 @@ test("dedupe result is dropped, bad source kind is rejected, and visible refresh
   } finally { await f.close(); }
 });
 
+test("a deduped proactive offer keeps its audit row but receives a dropped visibility state", async () => {
+  const f = await fixture(local(1, 12), false);
+  try {
+    const first = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic first", kind: "offer" }, wait: true });
+    const second = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic duplicate", kind: "offer" }, wait: true });
+    const deliver = (id: string) => f.router.send(service, { to: "service:post", kind: "request", word: "deliver",
+      body: { message_id: id, kind: "offer", dedupe_key: "synthetic-thing" }, wait: true });
+    assert.deepEqual((await deliver(first.id)).reply?.body, { ok: true, result: { channel: "inapp" } });
+    assert.deepEqual((await deliver(second.id)).reply?.body, { ok: true, result: { channel: "dropped" } });
+    assert.equal(f.ledger.byId(second.id)?.body.text, "synthetic duplicate");
+    assert.deepEqual(f.post.journal.pageSnapshot({ before: second.seq + 1, limit: 1 }).snapshot.items,
+      [{ message_id: second.id, state: "dropped", version_seq: f.ledger.list({ after: second.seq, limit: 100 })
+        .find((item) => item.word === "post.delivery" && item.body.message_id === second.id)!.seq }]);
+  } finally { await f.close(); }
+});
+
 test("held row and changed-count event roll back together when an internal transaction fails", async () => {
   const f = await fixture();
   try {
