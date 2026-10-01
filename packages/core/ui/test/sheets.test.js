@@ -74,6 +74,9 @@ test("failed cancel leaves timer visible; failed list gives error, not stale suc
   await sheet.load();
   await assert.rejects(sheet.cancel("t"), /未能删除/);
   assert.match(root.textContent, /later/);
+  await root.children[0].children.find((child) => child.tag === "button").listeners.click();
+  assert.match(root.textContent, /未能删除计划/);
+  assert.match(root.textContent, /later/);
   const offline = new UpcomingSheet(root, async () => ({ reply: { body: { ok: false, error: { code: "offline" } } } }));
   await assert.rejects(offline.load(), /暂不可用/);
   assert.match(root.textContent, /暂不可用/);

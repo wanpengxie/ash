@@ -33,6 +33,7 @@ export function renderUpcomingSheet(root, timers, { onCancel } = {}) {
         if (button.disabled) return;
         button.disabled = true;
         try { await onCancel(timer.id); }
+        catch (error) { text(section, "p", error instanceof Error ? error.message : "未能删除计划", "sheet-error"); }
         finally { button.disabled = false; }
       });
     }
