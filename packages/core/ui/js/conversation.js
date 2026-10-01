@@ -17,7 +17,7 @@ export function workspaceFileUrl(ref) {
   return `/api/workspaces/${ref.workspace}/files?path=${encodeURIComponent(ref.path)}`;
 }
 
-function attachment(parent, item, openInline) {
+function attachment(parent, item, openInline, openWorkspaceFile) {
   const name = typeof item?.name === "string" ? item.name : "附件";
   if (item?.source === "inline" && Number.isSafeInteger(item.index) && item.index >= 0) {
     const button = text(parent, "button", name, "attachment");
@@ -52,6 +52,24 @@ function attachment(parent, item, openInline) {
   }
   const url = workspaceFileUrl(item);
   if (!url) return;
+  if (openWorkspaceFile) {
+    const button = text(parent, "button", name, "attachment");
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const blob = await openWorkspaceFile(item);
+        const objectUrl = URL.createObjectURL(blob);
+        const download = document.createElement("a");
+        download.href = objectUrl;
+        download.download = name;
+        download.click();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      } catch { button.title = "附件无法打开"; }
+      finally { button.disabled = false; }
+    });
+    return;
+  }
   const link = text(parent, "a", name, "attachment");
   link.href = url;
   link.download = name;
@@ -59,7 +77,7 @@ function attachment(parent, item, openInline) {
 }
 
 /** Append a stable ledger conversation without inventing an approval or option action. */
-export function appendConversation(fragment, entries, { openInline } = {}) {
+export function appendConversation(fragment, entries, { openInline, openWorkspaceFile } = {}) {
   if (!entries.length) text(fragment, "div", "还没有对话。", "hello");
   for (let index = 0; index < entries.length; index++) {
     const item = entries[index];
@@ -76,7 +94,7 @@ export function appendConversation(fragment, entries, { openInline } = {}) {
       if (item.legacy) bubble.dataset.readonly = "true";
       if (Array.isArray(item.attachments) && item.attachments.length) {
         const attachments = text(bubble, "div", "", "atts");
-        for (const ref of item.attachments) attachment(attachments, ref, openInline);
+        for (const ref of item.attachments) attachment(attachments, ref, openInline, openWorkspaceFile);
       }
       if (Array.isArray(item.reactions) && item.reactions.length) {
         const reactions = text(bubble, "span", "", "reactions");
