@@ -67,7 +67,7 @@ export class PostJournal {
     return this.ledger.postReadSnapshot((db) => {
       const page = this.ledger.list(query);
       const at_seq = this.ledger.lastSeq();
-      const find = db.prepare(`SELECT e.seq,e.body FROM post_deliveries p
+      const find = db.prepare(`SELECT e.seq,e.body,p.kind,p.state,p.channel FROM post_deliveries p
         JOIN messages e ON e.seq=p.version_seq AND e.word='post.delivery' AND e.kind='event' AND e."from"='service:post' AND e."to"='person:owner'
         WHERE p.message_id=?`);
       const items: PostDeliverySnapshotV2["items"] = [];
@@ -81,6 +81,8 @@ export class PostJournal {
         try { body = JSON.parse(String(row.body)) as typeof body; } catch { continue; }
         if (!body || typeof body !== "object" || Array.isArray(body) || body.message_id !== message.id ||
           typeof body.state !== "string" || !["held", "released", "dropped"].includes(body.state)) continue;
+        const expected = body.state === "held" ? ["held", "held"] : body.state === "dropped" ? ["dropped", "dropped"] : ["done", "inapp"];
+        if (row.kind !== message.body.kind || row.state !== expected[0] || row.channel !== expected[1]) continue;
         const version_seq = Number(row.seq);
         if (!Number.isSafeInteger(version_seq) || version_seq < 1 || version_seq > at_seq) continue;
         items.push({ message_id: message.id, state: body.state as PostDeliveryState, version_seq });
