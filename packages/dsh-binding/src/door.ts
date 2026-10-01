@@ -101,9 +101,11 @@ const OUTPUT = Object.freeze({
 });
 const shape = (properties: object, required: string[] = []) => Object.freeze({ type: "object", properties, required, additionalProperties: false });
 
+interface ApprovalFact { toolName: string; turn: string; definition: ToolDefinition; fingerprint: string; signal: AbortSignal; policyStamp: string }
+interface ExecutionFact extends ApprovalFact { active: NonNullable<Binding["active"]>; sessionId: string; approvalSignal?: AbortSignal }
 interface Binding { agent: DoorAgent; definitions: Map<string, ToolDefinition>; natives: Map<string, ToolDefinition>; active: { turn: string; signal: AbortSignal; controller: AbortController } | null;
-  disposers: (() => void)[]; approvalFacts: Map<string, { toolName: string; turn: string; definition: ToolDefinition; fingerprint: string; signal: AbortSignal; policyStamp: string }>;
-  seenApprovalCalls: Set<string> }
+  disposers: (() => void)[]; approvalFacts: Map<string, ApprovalFact>; executionFacts: Map<string, ExecutionFact>;
+  validateExecution: (fact: ExecutionFact, exec: ToolCall) => boolean; seenPreExecuteCalls: Set<string>; invalidatedCalls: Set<string> }
 
 /** Bind only an explicitly registered root; descendants receive no inherited authority. */
 export class DshDoor {
@@ -126,7 +128,8 @@ export class DshDoor {
       if (definition) natives.set(name, definition);
     }
     if (this.options.nativeMode === "audited") for (const name of REQUIRED) if (!natives.has(name)) throw new Error(`required native tool unavailable: ${name}`);
-    const binding: Binding = { agent, natives, definitions: new Map(), active: null, disposers: [], approvalFacts: new Map(), seenApprovalCalls: new Set() };
+    const binding: Binding = { agent, natives, definitions: new Map(), active: null, disposers: [], approvalFacts: new Map(),
+      executionFacts: new Map(), validateExecution: () => false, seenPreExecuteCalls: new Set(), invalidatedCalls: new Set() };
     try {
       for (const definition of this.definitions()) {
         // Definition identity and executable closure must not be mutable in place.
@@ -154,7 +157,7 @@ export class DshDoor {
   }
   endTurn(turn: string): void {
     if (this.binding?.active?.turn === turn) { this.binding.active.controller.abort(); this.binding.active = null;
-      this.binding.approvalFacts.clear(); this.binding.seenApprovalCalls.clear(); }
+      this.binding.approvalFacts.clear(); this.binding.executionFacts.clear(); this.binding.seenPreExecuteCalls.clear(); this.binding.invalidatedCalls.clear(); }
   }
 
   private bindApproval(binding: Binding): void {
@@ -180,38 +183,63 @@ export class DshDoor {
     const fingerprint = (name: string, definition: ToolDefinition, currentPolicy: string): string => createHash("sha256").update(JSON.stringify({
       name, description: definition.description, parameters: definition.parameters, output: definition.output.schema, risk: "structure", policy: currentPolicy,
     })).digest("hex");
+    binding.validateExecution = (fact, exec) => {
+      const currentPolicy = policyStamp();
+      return binding.active === fact.active && fact.active.turn === fact.turn && !fact.active.signal.aborted &&
+        exec.agent === binding.agent && exec.name === fact.toolName && !fact.signal.aborted && !fact.approvalSignal?.aborted && !exec.signal.aborted &&
+        this.options.sessionId === fact.sessionId && this.options.tools.get(exec.name, binding.agent) === fact.definition &&
+        currentPolicy === fact.policyStamp && currentPolicy !== null &&
+        fingerprint(exec.name, fact.definition, currentPolicy) === fact.fingerprint;
+    };
     binding.disposers.push(ctx.on!("tools/pre-execute", async (exec: ToolCall, next: () => Promise<{ kind: string }>) => {
       const activeAtEntry = binding.active;
+      const policyAtEntry = policyStamp();
+      const definitionAtEntry = binding.definitions.get(exec.name) ?? binding.natives.get(exec.name);
+      const trustedAtEntry = exec.agent === binding.agent && activeAtEntry && !activeAtEntry.signal.aborted && !exec.signal.aborted &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(exec.callId) && definitionAtEntry && this.options.tools.get(exec.name, binding.agent) === definitionAtEntry;
+      const fresh = Boolean(trustedAtEntry && !binding.seenPreExecuteCalls.has(exec.callId));
+      if (trustedAtEntry) {
+        if (!fresh) binding.invalidatedCalls.add(exec.callId);
+        binding.seenPreExecuteCalls.add(exec.callId);
+      }
       const result = await next();
       const active = binding.active === activeAtEntry ? activeAtEntry : null;
       const definition = binding.definitions.get(exec.name) ?? binding.natives.get(exec.name);
       const currentPolicy = policyStamp();
-      if (result.kind === "ask" && exec.agent === binding.agent && active && !active.signal.aborted && !exec.signal.aborted &&
-        currentPolicy && /^[A-Za-z0-9_-]{1,128}$/.test(exec.callId) && definition && this.options.tools.get(exec.name, binding.agent) === definition) {
-        if (binding.seenApprovalCalls.has(exec.callId)) binding.approvalFacts.delete(exec.callId);
-        else {
-          binding.seenApprovalCalls.add(exec.callId);
-          binding.approvalFacts.set(exec.callId, { toolName: exec.name, turn: active.turn, definition,
-            fingerprint: fingerprint(exec.name, definition, currentPolicy), signal: exec.signal, policyStamp: currentPolicy });
-        }
+      if (fresh && !binding.invalidatedCalls.has(exec.callId) && (result.kind === "allow" || result.kind === "ask") &&
+        active && !active.signal.aborted && !exec.signal.aborted && policyAtEntry && currentPolicy === policyAtEntry && definition === definitionAtEntry &&
+        definition && this.options.tools.get(exec.name, binding.agent) === definition) {
+        const fact: ApprovalFact = { toolName: exec.name, turn: active.turn, definition,
+          fingerprint: fingerprint(exec.name, definition, currentPolicy), signal: exec.signal, policyStamp: currentPolicy };
+        if (result.kind === "ask") binding.approvalFacts.set(exec.callId, fact);
+        else binding.executionFacts.set(exec.callId, { ...fact, active, sessionId: this.options.sessionId! });
       }
+      if (binding.invalidatedCalls.has(exec.callId)) { binding.approvalFacts.delete(exec.callId); binding.executionFacts.delete(exec.callId); }
       return result;
     }));
     binding.disposers.push(ctx.on!("approval/request", async (request: ToolCall & { toolName: string }, _next: () => Promise<string>) => {
       const active = binding.active;
       const fact = binding.approvalFacts.get(request.callId);
-      if (!fact || request.agent !== binding.agent || request.toolName !== fact.toolName || !active ||
+      binding.approvalFacts.delete(request.callId); // an invalid first request cannot retry with corrected identity
+      if (!fact || binding.invalidatedCalls.has(request.callId) || request.agent !== binding.agent || request.toolName !== fact.toolName ||
+        (request.name !== undefined && request.name !== fact.toolName) || !active ||
         active.turn !== fact.turn || active.signal.aborted || request.signal?.aborted || request.signal !== fact.signal ||
         policyStamp() !== fact.policyStamp ||
         this.options.tools.get(fact.toolName, binding.agent) !== fact.definition ||
         fingerprint(fact.toolName, fact.definition, fact.policyStamp) !== fact.fingerprint) return "unavailable";
-      binding.approvalFacts.delete(request.callId);
-      try { return await this.options.router.requestInternalApproval({ sessionId: this.options.sessionId!, turn: fact.turn,
+      try { const outcome = await this.options.router.requestInternalApproval({ sessionId: this.options.sessionId!, turn: fact.turn,
         callId: request.callId, toolName: fact.toolName, contractFingerprint: fact.fingerprint,
         signal: AbortSignal.any([active.signal, request.signal]), stillValid: () => binding.active === active &&
           !active.signal.aborted && !request.signal.aborted && policyStamp() === fact.policyStamp &&
           this.options.tools.get(fact.toolName, binding.agent) === fact.definition &&
-          fingerprint(fact.toolName, fact.definition, fact.policyStamp) === fact.fingerprint }); }
+          fingerprint(fact.toolName, fact.definition, fact.policyStamp) === fact.fingerprint });
+        if (outcome === "allowed-once") {
+          const handoff: ExecutionFact = { ...fact, active, sessionId: this.options.sessionId!, approvalSignal: request.signal };
+          if (!binding.validateExecution(handoff, { ...request, name: fact.toolName })) return "unavailable";
+          binding.executionFacts.set(request.callId, handoff);
+        }
+        return outcome;
+      }
       catch { return "unavailable"; }
     }));
   }
@@ -249,9 +277,17 @@ export class DshDoor {
       name, description, parameters, output: OUTPUT,
       execute: async (args, exec) => {
         const binding = this.binding;
-        if (!binding || exec.agent !== binding.agent || this.options.tools.get(name, exec.agent) !== binding.definitions.get(name)) throw new Error("door tool source changed");
+        if (!binding) throw new Error("door tool source changed");
+        const fact = this.options.sessionId ? binding.executionFacts.get(exec.callId) : undefined;
+        if (this.options.sessionId) binding.executionFacts.delete(exec.callId); // even a changed source cannot reuse it
+        if (exec.agent !== binding.agent || this.options.tools.get(name, exec.agent) !== binding.definitions.get(name)) throw new Error("door tool source changed");
         const active = binding.active;
         if (!active || active.signal.aborted || exec.signal.aborted) throw new Error("turn cancelled");
+        // A DSH allowed-once response is a handoff, not a durable exemption
+        // from a later policy/definition revocation before actual execution.
+        if (this.options.sessionId) {
+          if (!fact || !binding.validateExecution(fact, exec)) throw new Error("tool pre-execute approval no longer valid");
+        }
         try { return { text: JSON.stringify(await action(args as Record<string, unknown>, exec)) }; }
         catch (error) { throw new Error(errorText(error)); }
       },
@@ -283,7 +319,9 @@ export class DshDoor {
     bound?.active?.controller.abort();
     this.binding = null;
     bound?.approvalFacts.clear();
-    bound?.seenApprovalCalls.clear();
+    bound?.executionFacts.clear();
+    bound?.seenPreExecuteCalls.clear();
+    bound?.invalidatedCalls.clear();
     if (bound) for (const dispose of bound.disposers.reverse()) dispose();
     this.guardDispose();
   }
