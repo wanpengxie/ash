@@ -69,12 +69,15 @@ test("real session becomes idle after cancelling a tool while its external devic
     running.members.registerDevice({ id: "device:probe", kind: "device", name: "Synthetic probe", online: true,
       capabilities: () => [{ name: "hold", description: "Wait for a synthetic device result",
         input_schema: { type: "object" as const, additionalProperties: false }, result_schema: { type: "object" as const,
-          properties: { done: { type: "boolean" as const } }, required: ["done"], additionalProperties: false }, risk: "none" as const, label: "Waiting" }],
+          properties: { done: { type: "boolean" as const } }, required: ["done"], additionalProperties: false }, risk: "none" as const, label: "在等设备" }],
       handle: async () => { deviceEntered.resolve(); await deviceRelease.promise; deviceSettled = true; return { ok: true, result: { done: true } }; } });
     const owner = caller("person:owner", "api");
     const reflex = caller("service:reflex", "service");
     await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "start hold" }, wait: true });
     await deviceEntered.promise;
+    await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.word === "status" &&
+      message.body.state === "working" && message.body.text === "在等设备"), "routed tool working status");
+    assert.ok(running.ledger.list().some((message) => message.from === "agent:main" && message.word === "status" && message.body.state === "listening"));
     const hold = running.ledger.list().find((message) => message.from === "agent:main" && message.word === "hold" && message.kind === "request");
     assert.ok(hold?.turn);
     const modelCallsBeforeCancel = modelRequests.length;
@@ -96,6 +99,7 @@ test("real session becomes idle after cancelling a tool while its external devic
     assert.match(nextModelRequest, /stop synthetic hold/, "the next actual model input omitted the stop reason");
     assert.match(nextModelRequest, /device:probe\/hold/, "the next actual model input omitted the stopped action");
     await until(() => running!.ledger.list().some((message) => message.word === "turn.end" && message.body.reason === "completed"), "second completed turn");
+    await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.word === "status" && message.body.state === "done"), "completed status");
     const modelCallsBeforeIdleCancel = modelRequests.length;
     const idle = await running.world.send(reflex, { to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "idle retry" }, wait: true });
     assert.deepEqual(idle.reply?.body.result, { cancelled: false });
