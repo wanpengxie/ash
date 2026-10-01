@@ -25,7 +25,7 @@ function numbered(content: string): string {
 }
 
 /** Existing WorkMember owns scheduling and the ledger; this flow only connects its six existing words. */
-export function memoryFlow(ledger: Ledger): WorkFlow {
+export function memoryFlow(ledger: Ledger, afterApplied?: (run: string) => void): WorkFlow {
   return { name: "memory", triggers: ["cooldown", "hourly"], async execute(ctx) {
     const window = await ctx.step("evidence", () => ledger.memoryEvidenceWindow(ctx.run));
     if (!window.some((message) => message.from === "person:owner")) return "no_change";
@@ -72,6 +72,7 @@ export function memoryFlow(ledger: Ledger): WorkFlow {
         result(await ctx.send({ to: "service:self", word: "apply_plan", body: { path: plan.path, expected_hash: plan.hash, edits: plan.edits }, client_id: `apply_${key}` }));
       });
     }
+    afterApplied?.(ctx.run);
     return "done";
   } };
 }

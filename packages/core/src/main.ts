@@ -13,6 +13,7 @@ import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { memoryFlow } from "./flows/memory";
+import { proactiveFlow } from "./flows/proactive";
 import { createAgentMember } from "./members/agent";
 import { AgentMind } from "./members/agent-mind";
 import { AdminMember } from "./members/admin";
@@ -143,7 +144,9 @@ export async function startOwner(config: Config): Promise<Running> {
       ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
     members.register(clock);
     work = new WorkMember({ ledger, router: world, isPaused: () => clock!.journal.isPaused(),
-      flows: dsh && config.workspaces?.home ? [memoryFlow(ledger)] : [] });
+      flows: dsh && config.workspaces?.home ? [memoryFlow(ledger, (run) => {
+        try { work!.trigger("proactive", "event", `memory:${run}`); } catch { /* a suggestion cannot undo committed memory */ }
+      }), proactiveFlow(ledger)] : [] });
     members.register(work);
     if (config.workspaces?.home) {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });

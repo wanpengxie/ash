@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +23,8 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     const input = JSON.parse(raw) as { model?: string; messages?: { role: string; content: unknown }[]; tools?: { name: string }[] };
     const user = (input.messages ?? []).filter((item) => item.role === "user").map((item) => JSON.stringify(item.content)).join("\n");
     const mind = user.includes("MIND_WAKE_MARKER");
-    const worker = user.includes("worker:extract/input");
+    const proactive = user.includes("worker:proactive/input");
+    const worker = user.includes("worker:extract/input") || proactive;
     requests.push({ user, mind, worker, tools: (input.tools ?? []).map((item) => item.name) });
     const last = input.messages?.at(-1);
     const toolResult = JSON.stringify(last?.content ?? "").includes("tool_result");
@@ -37,7 +38,9 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
       event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: "MIND_PUBLIC_MESSAGE", kind: "heads_up" }) } });
     } else {
       event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-      event("content_block_delta", { index: 0, delta: { type: "text_delta", text: worker ? JSON.stringify({ no_change: { checked: [], details: "No new claims" } }) :
+      event("content_block_delta", { index: 0, delta: { type: "text_delta", text: proactive ? JSON.stringify({ suggestion: {
+        kind: "heads_up", title: "Passport", text: "Passport renewal is due soon.", urgency: "regular", facts: [1],
+      } }) : worker ? JSON.stringify({ no_change: { checked: [], details: "No new claims" } }) :
         mind ? "MIND_PRIVATE_OUTPUT" : "MAIN_VISIBLE_OUTPUT" } });
     }
     event("content_block_stop", { index: 0 });
@@ -90,6 +93,18 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     const memoryRun = (memory.reply?.body.result as { run: string }).run;
     await until(() => running!.ledger.workRuns("memory").some((item) => item.run === memoryRun && item.state !== "running"));
     assert.equal(running.ledger.workRuns("memory").find((item) => item.run === memoryRun)?.state, "no_change");
+    writeFileSync(join(home, "MEMORY.md"), "Passport expires on 2026-11-01\n");
+    const suggestion = await running.world.send(owner, { to: "service:work", kind: "request", word: "run", body: { flow: "proactive" }, wait: true });
+    assert.equal(suggestion.reply?.body.ok, true);
+    const suggestionRun = (suggestion.reply?.body.result as { run: string }).run;
+    await until(() => running!.ledger.workRuns("proactive").some((item) => item.run === suggestionRun && item.state !== "running"));
+    assert.equal(running.ledger.workRuns("proactive").find((item) => item.run === suggestionRun)?.state, "done");
+    assert.deepEqual(requests.find((item) => item.user.includes("worker:proactive/input"))?.tools, []);
+    const headsUp = running.ledger.list({ limit: 1000 }).filter((item) => item.from === "agent:main" && item.to === "person:owner" &&
+      item.word === "say" && item.body.kind === "heads_up");
+    assert.equal(headsUp.length, 2);
+    await until(() => running!.ledger.list({ limit: 1000 }).some((item) => item.from === "service:post" && item.word === "post.delivery" &&
+      item.body.message_id === headsUp[1].id));
     off();
   } finally {
     await running?.close();

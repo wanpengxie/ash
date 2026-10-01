@@ -29,7 +29,7 @@ function scripted(reply: (name: string, input: Record<string, unknown>) => unkno
   } };
 }
 
-async function fixture(model: WorkerModel) {
+async function fixture(model: WorkerModel, afterApplied?: (run: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), "ash-memory-flow-"));
   const home = join(dir, "home"); mkdirSync(home);
   const ledger = await Ledger.open(join(dir, "ash.db"));
@@ -39,7 +39,7 @@ async function fixture(model: WorkerModel) {
   registerWorkerMembers(members, model);
   const self = createSelfMember({ home, stateDir: join(dir, "self"), ledger, router }); members.register(self);
   const errors: unknown[] = [];
-  const flow = memoryFlow(ledger);
+  const flow = memoryFlow(ledger, afterApplied);
   const work = new WorkMember({ ledger, router, isPaused: () => false, flows: [{ ...flow, async execute(ctx) { try { return await flow.execute(ctx); } catch (error) { errors.push(error); throw error; } } }] }); members.register(work);
   const add = (text: string): Message => ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text } }).message;
   const run = async () => {
@@ -76,12 +76,14 @@ test("memory flow verifies two claims, appends dated log, applies only approved 
     ]) };
     throw new Error(`unexpected ${name}`);
   });
-  const f = await fixture(model);
+  const handoffs: string[] = [];
+  const f = await fixture(model, (run) => { handoffs.push(run); });
   try {
     writeFileSync(join(f.home, "MEMORY.md"), "Lives in London\nKeep this\n");
     writeFileSync(join(f.home, "USER.md"), "Style: unknown\n");
     f.add("I prefer short answers"); f.add("I live in Singapore now");
     const first = await f.run(); assert.equal(first.state, "done", JSON.stringify({ calls: model.calls, errors: f.errors.map(String) }));
+    assert.deepEqual(handoffs, [first.id]);
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "Lives in Singapore\nKeep this\n");
     assert.match(readFileSync(join(f.home, "USER.md"), "utf8"), /^---\nversion: 1\nupdated: .*\n---\nStyle: short answers\n$/);
     const log = readFileSync(join(f.home, "memory", `${new Date().toISOString().slice(0, 10)}.md`), "utf8");
@@ -91,6 +93,7 @@ test("memory flow verifies two claims, appends dated log, applies only approved 
     assert.deepEqual(f.ledger.list({ limit: 1000 }).filter((m) => m.turn === first.id && m.from === "service:work" && m.kind === "request").map((m) => m.word),
       ["extract", "verify_claims", "read", "reconcile", "verify_plan", "read", "reconcile", "verify_plan", "read", "append", "apply_plan", "apply_plan"]);
     const second = await f.run(); assert.equal(second.state, "no_change");
+    assert.deepEqual(handoffs, [first.id]);
     assert.equal(readFileSync(join(f.home, "memory", `${new Date().toISOString().slice(0, 10)}.md`), "utf8"), log);
   } finally { await f.close(); }
 });
