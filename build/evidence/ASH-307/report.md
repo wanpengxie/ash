@@ -14,6 +14,7 @@ npm run -s typecheck
 npm run -s build:core
 npm test
 npm run -s test:public-terms -- --terms-file "$PRIVATE_TERMS_FILE"
+node --import tsx tools/spikes/v2-screen-presence.ts  # real 60-second foreground expiry
 ```
 
-At this source candidate, the focused screen suite passes 9/9 and the complete test suite exits naturally with 216 pass, 57 intentional skips, and 0 failures. Typecheck and core build pass; the external private-term scanner finds 0 issues in 383 public files. All tests use synthetic local identities and records. ASH-302 delivery behavior and ASH-602 live UI ACK remain separate joint acceptance gates.
+At this source candidate, the focused screen suite passes 9/9 and the complete test suite exits naturally with 216 pass, 57 intentional skips, and 0 failures. Typecheck and core build pass; the external private-term scanner finds 0 issues in 386 public files. The real-time probe used production `startOwner` with explicit echo, a live local HTTP/SSE connection, two authenticated visible heartbeats, then stopped heartbeats: after 60,251 ms without a new heartbeat, foreground state was false, with exactly two ledger heartbeat events. All tests use synthetic local identities and records. ASH-302 delivery behavior and ASH-602 live UI ACK remain separate joint acceptance gates.
