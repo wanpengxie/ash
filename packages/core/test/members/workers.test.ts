@@ -125,3 +125,19 @@ test("all six worker members register their frozen words without a model call", 
     assert.equal(m.prompts.length, 0);
   } finally { ledger.close(); }
 });
+
+test("each paid worker attempt records measured usage, including an invalid first answer", async () => {
+  const ledger = await Ledger.open(join(mkdtempSync(join(tmpdir(), "ash-worker-cost-")), "ledger.db"));
+  try {
+    const m = model(
+      { ...completion("not JSON"), usage: { provider: "test", model: "small", inputTokens: 12, outputTokens: 4 } },
+      { ...completion({ claims: [claim] }), usage: { provider: "test", model: "small", inputTokens: 13, outputTokens: 5 } },
+    );
+    const result = await new WorkerMember("extract", m, ledger).handle(message(), context);
+    assert.equal(result.ok, true);
+    const usage = ledger.list({ after: 0, limit: 10 }).filter((item) => item.word === "worker.usage");
+    assert.deepEqual(usage.map((item) => ({ attempt: item.body.attempt, input: item.body.input_tokens, output: item.body.output_tokens, cost: item.body.cost_usd })), [
+      { attempt: 1, input: 12, output: 4, cost: null }, { attempt: 2, input: 13, output: 5, cost: null },
+    ]);
+  } finally { ledger.close(); }
+});

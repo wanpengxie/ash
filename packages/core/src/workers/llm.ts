@@ -5,16 +5,18 @@ import type { RouteHandlerContext } from "../world/router";
 import { compileWorker } from "./compile";
 import { parseWorkerJson } from "./schema";
 import { validateWorkerResult, workerInputErrors } from "./validate";
+import { recordWorkerUsage, type WorkerUsage } from "./cost";
+import type { Ledger } from "../world/ledger";
 
 export const WORKER_NAMES = ["extract", "verify_claims", "reconcile", "verify_plan", "proactive", "opener"] as const satisfies readonly WorkerName[];
-export interface WorkerCompletion { text: string; finish: "stop" | "incomplete" }
+export interface WorkerCompletion { text: string; finish: "stop" | "incomplete"; usage?: WorkerUsage }
 export interface WorkerModel {
   complete(prompt: { system: string; user: string }, signal: AbortSignal): Promise<WorkerCompletion>;
 }
 
 /** Call during owner startup before router recovery; never register a placeholder model. */
-export function registerWorkerMembers(members: WorldMembers, model: WorkerModel): void {
-  for (const name of WORKER_NAMES) members.register(new WorkerMember(name, model));
+export function registerWorkerMembers(members: WorldMembers, model: WorkerModel, ledger?: Ledger): void {
+  for (const name of WORKER_NAMES) members.register(new WorkerMember(name, model, ledger));
 }
 
 /** One member per worker word; the model has no router or file-write authority. */
@@ -25,7 +27,7 @@ export class WorkerMember<N extends WorkerName> implements Member {
   readonly name: string;
   private readonly spec: WordSpec;
 
-  constructor(readonly worker: N, private readonly model: WorkerModel) {
+  constructor(readonly worker: N, private readonly model: WorkerModel, private readonly ledger?: Ledger) {
     this.id = `worker:${worker}`;
     this.name = worker;
     const spec = wordContract(this.id, worker);
@@ -49,6 +51,7 @@ export class WorkerMember<N extends WorkerName> implements Member {
         if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "worker cancelled" } };
         return { ok: false, error: { code: "failed", message: "worker model call failed" } };
       }
+      if (completed.usage && this.ledger) recordWorkerUsage(this.ledger, this.worker, message.id, attempt + 1, completed.usage);
       if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "worker cancelled" } };
       try {
         if (completed.finish !== "stop") throw new Error("model output incomplete");

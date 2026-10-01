@@ -50,3 +50,17 @@ test("missing config and unavailable explicit override fail closed without defau
   await assert.rejects(model.complete(prompt, new AbortController().signal), /model not configured/);
   assert.deepEqual(calls, ["unavailable"], "the default model must not be tried as fallback");
 });
+
+test("worker returns provider-reported token usage with the selected model", async () => {
+  const host = {
+    agentOptions: () => ({ provider: "default", model: "base" }),
+    ctx: { get: () => ({ async *stream() {
+      yield { type: "usage", usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 3 } };
+      yield { type: "text-delta", text: "{}" };
+      yield { type: "finish", reason: { kind: "stop" } };
+    } }) },
+  } as unknown as DshHost;
+  assert.deepEqual(await dshWorkerModel(host, () => ({ provider: "selected", model: "small" })).complete(prompt, new AbortController().signal), {
+    text: "{}", finish: "stop", usage: { provider: "selected", model: "small", inputTokens: 12, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 0 },
+  });
+});

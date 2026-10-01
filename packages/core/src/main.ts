@@ -199,7 +199,7 @@ export async function startOwner(config: Config): Promise<Running> {
     if (dsh) {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
-      registerWorkerMembers(members, dshWorkerModel(dsh, () => worldConfig.workers.model));
+    registerWorkerMembers(members, dshWorkerModel(dsh, () => worldConfig.workers.model), ledger);
       if (!self) throw new Error("managed files unavailable");
       (runner as DshTurnRunner).primeManagedSnapshot(await self.promptSnapshot());
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
