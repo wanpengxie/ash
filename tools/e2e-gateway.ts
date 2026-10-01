@@ -49,7 +49,7 @@ try {
   const request = { to: "agent:main", kind: "request", word: "say", body: { text: "controlled tunnel message" }, client_id: "gateway-e2e-say" };
   const denied = await fetch(`${base}/api/send`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(request) });
   check(denied.status === 403, "unregistered browser send rejected");
-  const sent = await fetch(`${base}/api/send`, { method: "POST", headers: { ...headers, "content-type": "application/json", "x-ash-screen": registration!.token }, body: JSON.stringify(request) });
+  const sent = await fetch(`${base}/api/send`, { method: "POST", headers: { ...headers, "content-type": "application/json", "ash-screen": registration!.token }, body: JSON.stringify(request) });
   check(sent.status === 200, "registered browser send accepted");
   const accepted = await sent.json() as { id: string; seq: number };
   const describe = await fetch(`${base}/api/describe?member=agent:main`, { headers });

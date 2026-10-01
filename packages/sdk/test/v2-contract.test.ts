@@ -34,7 +34,7 @@ test("v2 is additive to the existing client protocol", () => {
   assert.equal(API_VERSION, "ash-api/1");
   assert.equal(API_VERSION_V2, "ash-api/2");
   assert.equal(SCREEN_REGISTRATION_EVENT, "screen.registered");
-  assert.equal(SCREEN_TOKEN_HEADER, "X-Ash-Screen");
+  assert.equal(SCREEN_TOKEN_HEADER, "Ash-Screen");
   assert.equal(SCREEN_REGISTRATION_TTL_MS, 86_400_000);
   assert.deepEqual(Object.keys(HOST_ROUTES_V2).sort(), ["alarm", "call", "hide", "key", "manifest", "present", "restart", "sign"]);
   assert.equal(RUNTIME_CONTRACT_V2.publicMember, "agent:main");

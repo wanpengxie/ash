@@ -98,18 +98,12 @@ export class OwnerLink extends Link {
   }
 
   async claimIfNeeded(secretFile: string, name: string): Promise<void> {
-    for (;;) {
-      try {
-        await this.gateway.health();
-        return;
-      } catch {
-        if (!existsSync(secretFile)) throw new Error("gateway is unclaimed and no bootstrap secret is available");
-        const result = await this.gateway.claim(readFileSync(secretFile, "utf8").trim(), name);
-        unlinkSync(secretFile);
-        this.log("gateway claimed", result.owner_id);
-        return;
-      }
-    }
+    const health = await this.gateway.health();
+    if (health.claimed === true) return;
+    if (health.claimed !== false || !existsSync(secretFile)) throw new Error("gateway claim status unavailable or bootstrap secret missing");
+    const result = await this.gateway.claim(readFileSync(secretFile, "utf8").trim(), name);
+    unlinkSync(secretFile);
+    this.log("gateway claimed", result.owner_id);
   }
 
   protected async onConnected(conn: Connection): Promise<void> {

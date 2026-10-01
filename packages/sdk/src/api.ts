@@ -417,7 +417,8 @@ export interface StreamQueryV2 { after?: number; before?: number; limit?: number
 /** A live stream control frame, not a ledger message or cursor-bearing SSE event. */
 export interface ScreenRegistration { screen: string; token: string; label: string }
 export const SCREEN_REGISTRATION_EVENT = "screen.registered" as const;
-export const SCREEN_TOKEN_HEADER = "X-Ash-Screen" as const;
+/** Browser proof survives the gateway's reserved x-ash-* header stripping. */
+export const SCREEN_TOKEN_HEADER = "Ash-Screen" as const;
 export const SCREEN_REGISTRATION_TTL_MS = 24 * 60 * 60 * 1000;
 /** Server-owned authentication facts; never accepted from a request body. */
 export interface AuthenticatedCallerContext {

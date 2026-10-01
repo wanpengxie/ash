@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync } from "node:fs";
+import { copyFileSync, linkSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,7 +15,7 @@ const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-c
 const remote: EdgeCaller = { member: "person:owner", transportPrincipal: "paired-browser", pairedDeviceId: "paired-browser", local: false, remote: true, ownerProxy: true, transport: "web_ui" };
 const request = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}): EdgeRequest => ({ method, url: new URL(path, "http://ash"), headers, body: body === undefined ? null : Buffer.from(JSON.stringify(body)) });
 const parsed = (res: EdgeResponse): Record<string, any> => JSON.parse("body" in res ? String(res.body) : "{}");
-const send = (to: string, word: string, body: Record<string, unknown>, wait = false) => ({ to, kind: "request", word, body, wait });
+const send = (to: string, word: string, body: Record<string, unknown>, wait = false) => ({ to, kind: "request" as const, word, body, wait });
 
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ash-edge-"));
@@ -70,8 +70,9 @@ test("screen registrations bind owner proxy sends to one principal and stamp ori
     const registration = JSON.parse(text.split("\ndata: ")[1].split("\n\n")[0]) as { screen: string; token: string; label: string };
     assert.equal(registration.label, "Tab A");
     assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" })), remote)).status, 403);
-    assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" }), { "x-ash-screen": registration.token }), { ...remote, transportPrincipal: "other-browser" })).status, 403);
-    const sent = await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" }), { "x-ash-screen": registration.token }), remote);
+    assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" }), { "ash-screen": registration.token }), { ...remote, transportPrincipal: "other-browser" })).status, 403);
+    assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" }), { "x-ash-screen": registration.token }), remote)).status, 403);
+    const sent = await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "hello" }), { "ash-screen": registration.token }), remote);
     assert.equal(sent.status, 200);
     const recorded = ledger.byId(parsed(sent).id)!;
     assert.equal(recorded.from, "person:owner");
@@ -87,6 +88,11 @@ test("finite stream cursor rules and real HTTP Last-Event-ID replay exactly once
     const port = (server.address() as { port: number }).port;
     const base = `http://127.0.0.1:${port}`;
     const auth = { authorization: "Bearer owner-token" };
+    for (const malformed of ["null", "[]"]) {
+      const rejected = await fetch(`${base}/api/send`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: malformed });
+      assert.equal(rejected.status, 400);
+      assert.equal((await rejected.json() as { error: string }).error, "bad_request");
+    }
     const sent = await fetch(`${base}/api/send`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(send("agent:main", "say", { text: "one" })) });
     assert.equal(sent.status, 200);
     const all = ledger.list();
@@ -123,15 +129,28 @@ test("live stream replays through its high-water mark and then emits each new me
 });
 
 test("workspace bytes preserve local-only writes and reject managed, symlink and alias paths", async () => {
-  const { dir, workspace, ledger, edge } = await fixture();
+  const { dir, workspace, ledger, world, members, edge } = await fixture();
   try {
     const outside = join(dir, "outside"); mkdirSync(outside);
     symlinkSync(outside, join(workspace, "alias"));
+    writeFileSync(join(workspace, "MEMORY.md"), "protected");
+    linkSync(join(workspace, "MEMORY.md"), join(workspace, "hardlink.txt"));
+    copyFileSync(join(workspace, "MEMORY.md"), join(workspace, "ordinary-copy.txt"));
+    const memory = join(workspace, "memory"); mkdirSync(memory);
+    writeFileSync(join(memory, "2026-10-01.md"), "managed date");
     const put = (path: string, caller: EdgeCaller) => edge.handle({ ...request("PUT", `/api/workspaces/home/files?path=${encodeURIComponent(path)}`), body: Buffer.from("safe") }, caller);
     assert.equal((await put("notes.txt", remote)).status, 403);
     assert.equal((await put("SOUL.md", owner)).status, 403);
     assert.equal((await put("memory//2026-10-01.md", owner)).status, 400);
     assert.equal((await put("alias/exfiltrate.txt", owner)).status, 403);
+    assert.equal((await put("hardlink.txt", owner)).status, 403);
+    assert.equal(readFileSync(join(workspace, "MEMORY.md"), "utf8"), "protected");
+    assert.equal((await put("ordinary-copy.txt", owner)).status, 200);
+    assert.equal(readFileSync(join(workspace, "ordinary-copy.txt"), "utf8"), "safe");
+    assert.equal(readFileSync(join(workspace, "MEMORY.md"), "utf8"), "protected");
+    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory } });
+    assert.equal((await aliased.handle({ ...request("PUT", "/api/workspaces/diary/files?path=2026-10-01.md"), body: Buffer.from("unsafe") }, owner)).status, 403);
+    assert.equal(readFileSync(join(memory, "2026-10-01.md"), "utf8"), "managed date");
     const listed = parsed(await edge.handle(request("GET", "/api/workspaces/home/files?path="), owner));
     assert.equal(JSON.stringify(listed).includes("alias"), false);
     assert.equal((await put("notes.txt", owner)).status, 200);

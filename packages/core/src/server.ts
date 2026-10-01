@@ -1,7 +1,7 @@
 // The only production HTTP edge. The ash-api/1 test harness lives under test/legacy.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, statSync, writeSync, closeSync } from "node:fs";
+import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, closeSync } from "node:fs";
 import { extname, join, resolve, sep } from "node:path";
 import type { Message, SendRequestV2 } from "../../sdk/src/api";
 import { SCREEN_REGISTRATION_EVENT, SCREEN_REGISTRATION_TTL_MS, SCREEN_TOKEN_HEADER } from "../../sdk/src/api";
@@ -115,7 +115,9 @@ export class EdgeRouter {
       if (!caller) fail(401, "unauthorized", "missing or invalid token");
       switch (`${req.method} ${path}`) {
       case "POST /api/send": {
-        const body = jsonBody(req.body) as SendRequestV2;
+        const parsed = jsonBody(req.body);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail(400, "bad_request", "send body must be an object");
+        const body = parsed as SendRequestV2;
         if (body.kind === "request" && body.wait !== undefined && typeof body.wait !== "boolean") fail(400, "bad_request", "wait must be boolean");
         const context = this.context(caller!, req);
         const sent = await this.world.send(context, { ...body, ...(body.kind === "request" ? { wait: false } : {}) });
@@ -194,7 +196,11 @@ export class EdgeRouter {
     const rel = req.url.searchParams.get("path") ?? "";
     if (rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || rel.split("/").some((part) => part === "." || part === "..") || rel.includes("//")) fail(400, "bad_path", "invalid workspace path");
     const parts = rel.split("/").filter(Boolean);
-    if (req.method === "PUT" && (!parts.length || managed.has(rel) || /^memory\/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$/.test(rel) || parts.includes(".ash") || parts.includes("versions") || parts.includes("staging"))) fail(403, "forbidden", "managed path requires its member");
+    const homeRoot = this.options.workspaces?.home && existsSync(this.options.workspaces.home) ? realpathSync(this.options.workspaces.home) : null;
+    const homeMemory = homeRoot && existsSync(join(homeRoot, "memory")) ? realpathSync(join(homeRoot, "memory")) : null;
+    const dated = /^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$/;
+    if (req.method === "PUT" && (!parts.length || managed.has(rel) || /^memory\/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$/.test(rel) ||
+      (homeMemory === realRoot && dated.test(rel)) || parts.includes(".ash") || parts.includes("versions") || parts.includes("staging"))) fail(403, "forbidden", "managed path requires its member");
     let current = realRoot;
     for (const part of parts) {
       current = join(current, part);
@@ -217,8 +223,17 @@ export class EdgeRouter {
     const parent = resolve(full, "..");
     if (parts.length > 1) mkdirSync(parent, { recursive: true });
     if (realpathSync(parent) !== parent) fail(403, "forbidden", "directory alias forbidden");
-    const fd = openSync(full, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600);
-    try { if (req.body) writeSync(fd, req.body); } finally { closeSync(fd); }
+    // Hard links have no pathname provenance; reject existing multi-link inodes.
+    // Atomic replacement also prevents a late alias swap from truncating its target.
+    if (existsSync(full) && statSync(full).nlink > 1) fail(403, "forbidden", "hard-linked file cannot be replaced");
+    const temporary = join(parent, `.ash-put-${randomBytes(12).toString("hex")}`);
+    try {
+      const fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+      try {
+        for (let offset = 0; req.body && offset < req.body.length;) offset += writeSync(fd, req.body, offset);
+      } finally { closeSync(fd); }
+      renameSync(temporary, full);
+    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
     return encode(200, { ok: true, size: req.body?.length ?? 0 });
   }
 
