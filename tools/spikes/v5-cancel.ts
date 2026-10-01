@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AshClient } from '../../packages/sdk/src/client';
+import { AshClient } from '../../packages/core/test/legacy/client';
 import { OWNER } from '../../packages/core/src/core';
 import { startOwner } from '../../packages/core/test/legacy/main';
 

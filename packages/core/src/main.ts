@@ -10,13 +10,14 @@ import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
-import { createAgentMember, type AgentTurnRunner } from "./members/agent";
+import { createAgentMember } from "./members/agent";
 import { ClockMember } from "./members/clock";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
+import { EchoTurnRunner } from "./runtimes/echo";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
 import { Ledger } from "./world/ledger";
 import { WorldMembers } from "./world/member";
@@ -51,14 +52,6 @@ function loadTokens(config: Config): EdgeTokens {
   tokens.mcp["agent:main"] ??= token();
   writeFileSync(file, JSON.stringify(tokens, null, 1), { mode: 0o600 });
   return tokens;
-}
-
-function echoRunner(): AgentTurnRunner {
-  return { async runTurn({ rendered }, emit, signal) {
-    if (signal.aborted) return { reason: "error", error: "cancelled" };
-    await emit({ id: token(), text: `echo: ${rendered}` });
-    return { reason: "completed" };
-  } };
 }
 
 export interface Running {
@@ -113,7 +106,7 @@ export async function startOwner(config: Config): Promise<Running> {
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
-    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : echoRunner();
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
       isPaused: () => clock!.journal.isPaused() });
     members.register(agent);
