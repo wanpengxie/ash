@@ -21,6 +21,7 @@ const number = (x) => typeof x === "number" && Number.isFinite(x) ? x : null;
 const strings = (x) => Array.isArray(x) ? x.filter((v) => typeof v === "string") : [];
 const knownState = (x) => faceForStatus(x) !== null;
 const turnId = (x) => typeof x === "string" && /^[tr]_[A-Za-z0-9_-]+$/.test(x);
+const memberId = (x) => typeof x === "string" && /^(agent|worker|device|service|person):[A-Za-z0-9_-]+$/.test(x);
 const ownerPublisher = (from) => ["agent:main", "service:gate", "service:work"].includes(from);
 
 function safeCard(card) {
@@ -102,17 +103,24 @@ function record(m) {
     ...base, type: "say.result", reply_to: m.reply_to, accepted: b.ok === true && object(b.result) && b.result.accepted === true,
   };
   if (m.kind === "response" && m.from === "service:clock" && m.word === "list" && b.ok === true && object(b.result) && Array.isArray(b.result.timers)) return {
-    ...base, type: "clock.list", timers: b.result.timers.filter(object).map((t) => ({ id: string(t.id), text: string(t.text), fire_at: number(t.fire_at), repeat_seconds: number(t.repeat_seconds) })),
+    ...base, type: "clock.list", timers: b.result.timers.filter((t) => object(t) && typeof t.id === "string" && t.id && Number.isSafeInteger(t.next) && t.next >= 0)
+      .map((t) => ({ id: t.id, next: t.next, every: Number.isSafeInteger(t.every) && t.every >= 60 ? t.every : null,
+        to: memberId(t.to) ? t.to : null, word: string(t.word), label: string(t.label), blocked: string(t.blocked) || null })),
   };
   if (m.kind === "event" && m.from === "service:post" && m.to === "person:owner" && m.word === "post.changed" && Number.isSafeInteger(b.held) && b.held >= 0) return { ...base, type: "post.changed", held: b.held };
   if (m.kind === "event" && m.from === "service:post" && m.to === "person:owner" && m.word === "post.delivery" && typeof b.message_id === "string" && b.message_id && ["held", "released", "dropped"].includes(b.state))
     return { ...base, type: "post.delivery", message_id: b.message_id, state: b.state };
   if (m.kind === "event" && m.from === "service:self" && m.word === "self.changed" && typeof b.path === "string") return { ...base, type: "self.changed", path: b.path, by: string(b.by), summary: string(b.summary), version: number(b.version) };
   if (m.kind === "event" && m.from === "service:work") {
-    if (m.word === "run.start" && turnId(b.run)) return { ...base, type: "run.start", turn: b.run };
+    if (m.word === "run.start" && turnId(b.run)) return { ...base, type: "run.start", turn: b.run, flow: string(b.flow), trigger: string(b.trigger) };
     if (m.word === "run.end" && turnId(b.run)) return { ...base, type: "run.end", turn: b.run, outcome: string(b.outcome) };
   }
   if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word };
+  // Activity uses only routing metadata, never request arguments or tool results.
+  if (m.kind === "request" && turnId(m.turn) && (m.from === "agent:main" || m.from === "service:work") && memberId(m.to) && m.to !== "person:owner")
+    return { ...base, type: "activity.request", to: m.to, word: m.word };
+  if (m.kind === "response" && typeof m.reply_to === "string" && object(b) && typeof b.ok === "boolean")
+    return { ...base, type: "activity.response", reply_to: m.reply_to, ok: b.ok, error: b.ok === false && object(b.error) ? string(b.error.code) : "" };
   return null;
 }
 
@@ -128,6 +136,8 @@ function project(records, snapshots = new Map()) {
   const optionReplies = new Map();
   const sayOutcomes = new Map();
   const reactions = new Map();
+  const ownerTitles = new Map(records.filter((r) => r.type === "owner.say").map((r) => [r.id, r.text]));
+  const activityRequests = new Map(records.filter((r) => r.type === "activity.request").map((r) => [r.id, r]));
   const postStates = new Map(snapshots);
   for (const r of records) {
     if (r.type === "post.delivery" && (r.state === "dropped" || postStates.get(r.message_id)?.state !== "dropped" && (!postStates.has(r.message_id) || postStates.get(r.message_id).version_seq <= r.seq)))
@@ -167,10 +177,19 @@ function project(records, snapshots = new Map()) {
       view.asks.push(ask);
       view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "ask", side: "agent", ask, reactions: reactions.get(r.id) || [] });
     } else if (r.type === "turn.start" || r.type === "run.start") {
-      view.turns[r.turn] = { title: r.type === "run.start" ? "后台任务" : "对话", started: r.ts, steps: [] };
+      const batch = r.type === "turn.start" ? r.ids.map((id) => ownerTitles.get(id)).filter(Boolean) : [];
+      const excerpt = batch.length ? [...batch[0]].slice(0, 48).join("") : "";
+      const title = r.type === "run.start" ? r.flow || "后台任务" : excerpt ? `${excerpt}${batch.length > 1 ? ` · ${batch.length} 条` : ""}` : "对话";
+      view.turns[r.turn] = { title, background: r.type === "run.start", started: r.ts, steps: [] };
     } else if (r.type === "turn.end" || r.type === "run.end") {
       if (view.turns[r.turn]) { view.turns[r.turn].ended = r.ts; view.turns[r.turn].outcome = r.reason || r.outcome; }
     } else if (r.type === "clock.list") view.timers = r.timers;
+    else if (r.type === "activity.request" && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: `${r.to} · ${r.word}`, requestId: r.id, state: "pending" });
+    else if (r.type === "activity.response") {
+      const request = activityRequests.get(r.reply_to);
+      const step = request && view.turns[request.turn]?.steps.find((item) => item.requestId === request.id);
+      if (step) step.state = r.ok ? "ok" : r.error || "failed";
+    }
     else if (r.type === "post.changed") view.held = r.held;
     else if (r.type === "self.changed") view.self.changed.push({ path: r.path, by: r.by, ts: r.ts, summary: r.summary, version: r.version });
     else if (r.type.startsWith("gate.") && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.type === "gate.asked" ? "等待确认" : r.type === "gate.passed" ? "已确认" : "未获确认" });
