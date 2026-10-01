@@ -1,5 +1,6 @@
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const RASTER = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const COMPACTABLE = new Set(["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "image/bmp"]);
 const MAX_REQUEST_BYTES = 28 * 1024 * 1024;
 
 function safeName(name) {
@@ -11,6 +12,8 @@ function rasterBytes(type, bytes) {
   if (type === "image/jpeg") return bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
   if (type === "image/gif") return bytes.length >= 6 && ["GIF87a", "GIF89a"].includes(String.fromCharCode(...bytes.slice(0, 6)));
   if (type === "image/webp") return bytes.length >= 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+  if (type === "image/bmp") return bytes.length >= 2 && bytes[0] === 66 && bytes[1] === 77;
+  if (type === "image/heic" || type === "image/heif") return bytes.length >= 12 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp";
   return false;
 }
 
@@ -33,21 +36,26 @@ export function openInlineBlob(item, expected = null) {
   return { url, name: decoded.name, preview: decoded.preview, revoke() { if (!revoked) { URL.revokeObjectURL(url); revoked = true; } } };
 }
 
-async function compactJpeg(file) {
-  if (file.type !== "image/jpeg" || file.size < 2 * 1024 * 1024 || typeof createImageBitmap !== "function" || typeof document === "undefined") return file;
+async function compactImage(file) {
+  if (!COMPACTABLE.has(file.type) || typeof createImageBitmap !== "function" || typeof document === "undefined") return { selected: file, name: file.name };
   let image;
   try {
     image = await createImageBitmap(file);
+    if (!Number.isSafeInteger(image.width) || !Number.isSafeInteger(image.height) || image.width < 1 || image.height < 1 || image.width > 32768 || image.height > 32768) throw new Error("image dimensions unsupported");
     const scale = Math.min(1, 2048 / Math.max(image.width, image.height));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(image.width * scale));
     canvas.height = Math.max(1, Math.round(image.height * scale));
     const context = canvas.getContext("2d");
     if (!context) throw new Error("image canvas unavailable");
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const compacted = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
-    return compacted?.size && compacted.size < file.size ? compacted : file;
-  } catch { return file; }
+    const compacted = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    if (compacted?.type !== "image/jpeg" || !compacted.size || compacted.size >= file.size) return { selected: file, name: file.name };
+    const stem = file.name.replace(/\.[^./\\]+$/, "") || "image";
+    return { selected: compacted, name: `${stem}.jpg` };
+  } catch { return { selected: file, name: file.name }; }
   finally { image?.close(); }
 }
 
@@ -57,17 +65,17 @@ function base64(bytes) {
   return btoa(binary);
 }
 
-/** Keep files and animated/non-JPEG media original; only large static JPEGs may shrink. */
+/** Preserve files and animation; shrink decodable static images only when the result is smaller. */
 export async function prepareUploads(files, text = "") {
   if (files.length > 32) throw new Error("too many attachments");
   const attachments = [];
   for (const file of files) {
     if (!file || typeof file.arrayBuffer !== "function" || file.size > 80 * 1024 * 1024) throw new Error("attachment too large");
-    const original = new Uint8Array(await file.slice(0, 3).arrayBuffer());
-    const jpeg = file.type === "image/jpeg" && rasterBytes("image/jpeg", original);
-    const selected = jpeg ? await compactJpeg(file) : file;
+    const original = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    const image = COMPACTABLE.has(file.type) && rasterBytes(file.type, original);
+    const { selected, name } = image ? await compactImage(file) : { selected: file, name: file.name };
     if (selected.size < 1 || selected.size > MAX_FILE_BYTES) throw new Error("attachment exceeds 20 MiB");
-    attachments.push({ name: safeName(file.name), mime_type: typeof selected.type === "string" && selected.type ? selected.type : "application/octet-stream", data: base64(new Uint8Array(await selected.arrayBuffer())) });
+    attachments.push({ name: safeName(name), mime_type: typeof selected.type === "string" && selected.type ? selected.type : "application/octet-stream", data: base64(new Uint8Array(await selected.arrayBuffer())) });
   }
   const body = { text, ...(attachments.length ? { attachments } : {}) };
   const wire = { to: "agent:main", kind: "request", word: "say", body, client_id: "0".repeat(36) };
