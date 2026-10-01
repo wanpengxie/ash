@@ -122,8 +122,8 @@ test("real HTTP SSE delivers ui.open only to its target tab and rejects the byst
   }
 });
 
-async function tab(edge: EdgeRouter, label: string) {
-  const response = await edge.handle(req("GET", `/api/stream?after=0&follow=true&label=${encodeURIComponent(label)}`), owner);
+async function tab(edge: EdgeRouter, label: string, caller: EdgeCaller = owner) {
+  const response = await edge.handle(req("GET", `/api/stream?after=0&follow=true&label=${encodeURIComponent(label)}`), caller);
   assert.equal(response.status, 200);
   assert.ok("stream" in response);
   let output = "";
@@ -131,7 +131,7 @@ async function tab(edge: EdgeRouter, label: string) {
   response.stream((chunk) => { output += chunk; }, (cleanup) => { close = cleanup; }, () => {});
   const match = /^event: screen\.registered\ndata: (.+)\n\n/.exec(output);
   assert.ok(match);
-  const registration = JSON.parse(match[1]) as { screen: string; token: string; label: string; auth_scope: string };
+  const registration = JSON.parse(match[1]) as { screen: string; token: string; label: string; auth_scope: string; local_management?: boolean };
   return { ...registration, output: () => output, close };
 }
 
@@ -142,6 +142,11 @@ test("authenticated live frames expose a stable opaque credential scope, not a t
     const b = await tab(f.edge, "Two");
     assert.ok(isScreenRegistration(a));
     assert.ok(isScreenRegistration(b));
+    assert.equal(a.local_management, true);
+    assert.equal(b.local_management, true);
+    const remote = await tab(f.edge, "Remote URL cannot grant management", { ...owner, transportPrincipal: "gateway:synthetic", local: false, remote: true, transport: "web_ui" });
+    assert.equal(remote.local_management, false);
+    remote.close();
     assert.notEqual(a.token, b.token);
     assert.equal(a.auth_scope, b.auth_scope);
     assert.ok(!a.auth_scope.includes("owner-test"));
