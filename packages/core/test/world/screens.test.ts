@@ -6,7 +6,7 @@ import test from "node:test";
 import { Ledger } from "../../src/world/ledger";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 import { WorldMembers } from "../../src/world/member";
-import { EdgeRouter, type EdgeCaller, type EdgeRequest, type EdgeResponse } from "../../src/server";
+import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type EdgeResponse } from "../../src/server";
 import { OwnerMember } from "../../src/members/owner";
 import { PostPresenceMember } from "../../src/members/post";
 
@@ -22,10 +22,49 @@ async function fixture(clock?: () => number, ackMs = 100) {
   const world = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(world);
   members.register(new OwnerMember("Owner", ledger));
-  const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { clock, screenAckMs: ackMs });
+  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: {} }, { clock, screenAckMs: ackMs });
   members.register(new PostPresenceMember((screen) => edge.screens.markVisible(screen)));
   return { ledger, world, members, edge };
 }
+
+test("real HTTP SSE delivers ui.open only to its target tab and rejects the bystander ACK", async () => {
+  const f = await fixture(undefined, 2_000);
+  const server = await startEdgeServer(f.edge, "127.0.0.1", 0);
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const auth = { authorization: "Bearer owner-token" };
+  const live = async (label: string) => {
+    const controller = new AbortController();
+    const response = await fetch(`${base}/api/stream?after=0&follow=true&label=${label}`, { headers: auth, signal: controller.signal });
+    assert.equal(response.status, 200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let output = "";
+    while (!output.includes("\n\n")) {
+      const chunk = await reader.read(); assert.equal(chunk.done, false); output += decoder.decode(chunk.value);
+    }
+    const registration = JSON.parse(/^event: screen\.registered\ndata: (.+)\n\n/.exec(output)![1]) as { screen: string; token: string };
+    void (async () => { try { while (true) { const chunk = await reader.read(); if (chunk.done) break; output += decoder.decode(chunk.value); } } catch { /* aborted fixture stream */ } })();
+    return { ...registration, output: () => output, close: () => controller.abort() };
+  };
+  const a = await live("A");
+  const b = await live("B");
+  try {
+    const sent = await f.world.send(agent, { to: a.screen, kind: "request", word: "ui.open", body: { target: "memory", mode: "perform" } });
+    const until = Date.now() + 1000;
+    while (!a.output().includes(`"id":"${sent.id}"`) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(a.output().includes(`"id":"${sent.id}"`));
+    assert.ok(!b.output().includes(`"id":"${sent.id}"`));
+    const reply = { to: "agent:main", kind: "response", word: "ui.open", reply_to: sent.id, body: { ok: true, result: { opened: true } } };
+    const post = (token: string) => fetch(`${base}/api/send`, { method: "POST", headers: { ...auth, "content-type": "application/json", "Ash-Screen": token }, body: JSON.stringify(reply) });
+    assert.equal((await post(b.token)).status, 400);
+    assert.equal((await post(a.token)).status, 200);
+    assert.equal(f.ledger.responseTo(sent.id)?.from, a.screen);
+  } finally {
+    a.close(); b.close();
+    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
+    f.ledger.close();
+  }
+});
 
 async function tab(edge: EdgeRouter, label: string) {
   const response = await edge.handle(req("GET", `/api/stream?after=0&follow=true&label=${encodeURIComponent(label)}`), owner);
