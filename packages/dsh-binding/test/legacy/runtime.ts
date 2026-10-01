@@ -7,8 +7,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { RuntimeCapabilities } from "../../sdk/src/api";
-import type { AgentRuntime, InboundMessage, Origin, RuntimeContext, RuntimeEvent, TurnResult } from "../../core/src/runtime";
+import type { RuntimeCapabilities } from "../../../sdk/src/api";
+import type { AgentRuntime, InboundMessage, Origin, RuntimeContext, RuntimeEvent, TurnResult } from "../../../core/src/runtime";
 import { type DshAgent, type DshHost, userMessage } from "./host";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
