@@ -82,6 +82,9 @@ add("screen:*", "ui.open", "request", obj({ target: choice("activity", "upcoming
 add("service:clock", "set", "request", obj({ at: num, every: { type: "integer", minimum: 60 }, to: id, word: id, body: obj({}, [], true), label: nonempty }, ["to", "word", "body", "label"]), obj({ id, next: num }, ["id", "next"]));
 add("service:clock", "cancel", "request", obj({ id }, ["id"]), obj({ cancelled: bool }, ["cancelled"]));
 add("service:clock", "list", "request", empty, obj({ timers: array(any) }, ["timers"]));
+add("service:clock", "clock.fired", "event", obj({ timer_id: id, scheduled_at: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+  outcome: choice("dispatched", "skipped", "failed"), reason: str, request_id: id }, ["timer_id", "scheduled_at", "outcome"]), undefined,
+{ direction: "out", description: "Durable scheduled occurrence outcome; dispatched records router acceptance, not external completion." });
 add("service:post", "deliver", "request", obj({ message_id: id, kind: choice("reply", "offer", "heads_up", "approval", "due"), dedupe_key: str }, ["message_id", "kind"]), obj({ channel: choice("inapp", "notification", "held") }, ["channel"]), { audience: "owner" });
 add("service:post", "visible", "event", empty, undefined, { audience: "owner", description: "Presence from the authenticated screen only." });
 add("service:post", "post.changed", "event", obj({ held: { type: "integer", minimum: 0 } }, ["held"]), undefined, { direction: "out", audience: "owner", label: "Updating deliveries", description: "Authoritative current held-delivery count for the owner; never infer a count from deliver results." });

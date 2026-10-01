@@ -402,6 +402,15 @@ export interface WorkerOutputMap {
 export type WorkerRequest<N extends WorkerName = WorkerName> = { input: WorkerInputMap[N]; run: string };
 export type WorkerResult<N extends WorkerName = WorkerName> = WorkerOutputMap[N] | NoChange;
 
+/** One durable scheduled occurrence; dispatched means accepted by the router, not completed externally. */
+export interface ClockFiredBodyV2 {
+  timer_id: string;
+  scheduled_at: number;
+  outcome: "dispatched" | "skipped" | "failed";
+  reason?: string;
+  request_id?: string;
+}
+
 export interface SendRequestV2 {
   to: string | null;
   kind: Kind;
