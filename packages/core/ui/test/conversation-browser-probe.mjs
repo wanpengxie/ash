@@ -92,6 +92,7 @@ edge.handle = async (request, caller) => {
 let server;
 let browser;
 let socket;
+let secondSocket;
 try {
   agent.prepareRecovery();
   await world.recover();
@@ -187,12 +188,34 @@ try {
   await until(() => evaluate("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Pick one'))?.textContent.includes('已选择')"), "option card locked");
   const answer = ledger.list({ limit: 1000 }).find((message) => message.from === "person:owner" && message.word === "say" && message.body?.in_reply_to === optionCard);
   assert.deepEqual({ text: answer.body.text, option_id: answer.body.option_id }, { text: "Yes", option_id: "yes" });
+  const created = await call("Target.createTarget", { url: base });
+  const secondTab = await until(async () => (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((entry) => entry.id === created.targetId), "second browser tab");
+  secondSocket = new WebSocket(secondTab.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => { secondSocket.addEventListener("open", resolve, { once: true }); secondSocket.addEventListener("error", reject, { once: true }); });
+  const secondCall = cdp(secondSocket);
+  await secondCall("Page.enable");
+  await secondCall("Runtime.enable");
+  const evaluateSecond = async (expression) => (await secondCall("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
+  await until(() => evaluateSecond("document.querySelector('#connection')?.textContent === '已连接'"), "second registered browser screen");
+  const racedCard = (await world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false },
+    { to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", prompt: "Race choice", options: [{ id: "a", text: "A" }, { id: "b", text: "B" }] } } })).id;
+  const hasRacedCard = "[...document.querySelectorAll('#log .card')].some(x=>x.textContent.includes('Race choice'))";
+  await until(async () => await evaluate(hasRacedCard) && await evaluateSecond(hasRacedCard), "both screens see option card");
+  await Promise.all([
+    evaluate("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Race choice')).querySelectorAll('button')[0].click()"),
+    evaluateSecond("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Race choice')).querySelectorAll('button')[1].click()"),
+  ]);
+  await until(() => ledger.list({ limit: 1000 }).some((message) => message.from === "person:owner" && message.word === "say" && message.body?.in_reply_to === racedCard), "first cross-screen option accepted");
+  await until(async () => await evaluate("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Race choice'))?.textContent.includes('已选择')") &&
+    await evaluateSecond("[...document.querySelectorAll('#log .card')].find(x=>x.textContent.includes('Race choice'))?.textContent.includes('已选择')"), "both screens show locked card");
+  assert.equal(ledger.list({ limit: 1000 }).filter((message) => message.from === "person:owner" && message.word === "say" && message.body?.in_reply_to === racedCard).length, 1);
   console.log(JSON.stringify({ result: "PASS", browser: "Chrome", sendingDeliveredRead: true, groupedReplies: 2, reactionOnOwnerBubble: true, offlineAccepted: 1, offlineRunnerReceipts: 1,
-    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked" }));
+    staticImageConverted: "PNG→JPEG", originalImageBytes, compressedImageBytes: jpegBytes.length, previewDimensions: [2048, 512], documentBytesPreserved: true, optionReply: "locked", crossScreenOptionAccepted: 1 }));
 } finally {
   firstSendRelease();
   readRelease();
   socket?.close();
+  secondSocket?.close();
   if (browser?.pid) { try { process.kill(-browser.pid, "SIGKILL"); } catch { /* already exited */ } }
   if (browser && browser.exitCode === null && browser.signalCode === null) await new Promise((resolve) => browser.once("exit", resolve));
   await agent.close();
