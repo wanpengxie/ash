@@ -45,9 +45,15 @@ const until = async (check: () => boolean) => {
   throw new Error("isolated state did not arrive");
 };
 if (mode === "victim") {
-  running.world.register({ member: "device:probe", spec: { word: "hold", kind: "request", description: "Isolated held effect",
-    input_schema: { type: "object", additionalProperties: false }, risk: "none", label: "Held" },
-  handle: () => { writeSync(1, "TOOL\n"); return new Promise(() => {}); } });
+  running.members.registerDevice({ id: "device:probe", kind: "device", name: "Synthetic probe", online: true,
+    capabilities: () => [{ name: "hold", description: "Isolated held effect", input_schema: { type: "object", additionalProperties: false },
+      risk: "none", label: "Held" }],
+    handle: () => { writeSync(1, "TOOL\n"); return new Promise(() => {}); } });
+  const access = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`,
+    "content-type": "application/json" }, body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: "device:probe/hold" }, wait: true }) });
+  if (access.status !== 200 || !(await access.json() as { reply?: { body?: { ok?: boolean } } }).reply?.body?.ok)
+    throw new Error("synthetic device access grant failed");
   await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "synthetic active turn" }, wait: true });
   await until(() => rows().some((row) => row.to === "device:probe" && row.word === "hold"));
   await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "synthetic queued turn" }, wait: true });

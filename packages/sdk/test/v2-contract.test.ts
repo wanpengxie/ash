@@ -15,7 +15,11 @@ function example(schema: JsonSchema): unknown {
   if (schema.anyOf) return example(schema.anyOf[0]);
   switch (schema.type) {
     case "null": return null;
-    case "string": return schema.pattern?.includes("[0-9a-f]{64}") ? "a".repeat(64) : schema.pattern?.includes("memory/") ? "memory/2020-01-01.md" : "value";
+    case "string": return schema.pattern?.includes("[0-9a-f]{64}") ? "a".repeat(64)
+      : schema.pattern?.startsWith("^agent:") ? "agent:main"
+      : schema.pattern?.startsWith("^device:") ? "device:phone/calendar.create"
+      : schema.pattern?.startsWith("^(\\*|device:") ? "*"
+      : schema.pattern?.includes("memory/") ? "memory/2020-01-01.md" : "value";
     case "number": case "integer": return schema.minimum ?? 1;
     case "boolean": return true;
     case "array": return Array.from({ length: schema.minItems ?? 0 }, () => example(schema.items ?? {}));
@@ -28,6 +32,33 @@ test("response send contract carries a stable client id for acknowledgement-loss
   const first: SendRequestV2 = { to: "agent:main", kind: "response", word: "ask", reply_to: "m_request", body: { ok: true, result: { choice: "once" } }, client_id: "approval-1" };
   const retry: SendRequestV2 = { ...first, body: { ok: true, result: { choice: "once" } } };
   assert.deepEqual(retry, first);
+});
+
+test("gate access words are strict owner-only exact grants, separate from approval rules", () => {
+  const list = wordContract("service:gate", "access.list")!;
+  const grant = wordContract("service:gate", "access.grant")!;
+  const revoke = wordContract("service:gate", "access.revoke")!;
+  assert.equal(list.audience, "owner");
+  assert.equal(grant.risk, "structure");
+  assert.equal(revoke.risk, "structure");
+  const input = { member: "agent:main", scope: "device:phone/calendar.create" };
+  assert.ok(matchesSchema(grant.input_schema!, input));
+  for (const bad of [
+    { ...input, scope: "*" }, { ...input, scope: "device:phone/*" },
+    { ...input, scope: "device:phone/calendar.create", expires_at: Date.now() + 1 },
+    { ...input, member: "person:owner" }, { ...input, member: "agent:main/other" },
+    { ...input, scope: "device:phone/calendar.create/other" },
+  ]) assert.ok(!matchesSchema(grant.input_schema!, bad), JSON.stringify(bad));
+  assert.ok(matchesSchema(grant.result_schema!, { id: "acl-1", ...input, expires_at: 1 }));
+  assert.ok(!matchesSchema(grant.result_schema!, { id: "acl-1", ...input, expires_at: 1, token: "secret" }));
+  assert.ok(matchesSchema(list.result_schema!, { items: [
+    { id: "old", member: "agent:main", scope: "*", source: "legacy", created_at: 1, expires_at: 2, revoked_at: 3 },
+    { id: "new", ...input, source: "current", created_at: 1, expires_at: 2 },
+  ] }));
+  assert.ok(!matchesSchema(list.result_schema!, { items: [{ id: "bad", ...input, source: "approval", created_at: 1, expires_at: 2 }] }));
+  assert.ok(!matchesSchema(list.input_schema!, { limit: 101 }));
+  assert.ok(!matchesSchema(revoke.input_schema!, { id: "old", member: "agent:main" }));
+  assert.ok(!matchesSchema(revoke.result_schema!, { revoked: true, token: "secret" }));
 });
 
 test("clock.fired is a closed, clock-only outbound occurrence record", () => {

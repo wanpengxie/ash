@@ -140,6 +140,25 @@ test("gate sees durable request first; denial never dispatches and is journaled"
   } finally { ledger.close(); }
 });
 
+test("risky request without explicit timeout receives one persisted ten-minute total deadline", async () => {
+  const { ledger, router } = await setup();
+  try {
+    const risky = { ...spec("run", "outward") };
+    delete risky.timeout_ms;
+    router.register({ member: "device:fake", spec: risky, handle: () => ({ ok: true, result: { value: 1 } }) });
+    router.setGate(async (_message, _spec, _caller, signal) => new Promise((resolve) => {
+      signal.addEventListener("abort", () => resolve({ allow: false }), { once: true });
+    }));
+    const before = Date.now();
+    const sent = await router.send(agent, request());
+    try {
+      const tracked = ledger.trackedRequests().find((item) => item.message.id === sent.id)!;
+      assert.ok(tracked.deadlineAt >= before + 600_000);
+      assert.ok(tracked.deadlineAt <= Date.now() + 600_000);
+    } finally { assert.equal(router.cancel([sent.id]).length, 1); }
+  } finally { ledger.close(); }
+});
+
 test("risk gate also runs for owner requests and records approval before device effect", async () => {
   const { ledger, router } = await setup();
   try {

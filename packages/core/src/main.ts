@@ -13,6 +13,7 @@ import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { createAgentMember } from "./members/agent";
 import { AdminMember } from "./members/admin";
 import { ClockMember } from "./members/clock";
+import { GateMember } from "./members/gate";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
@@ -95,7 +96,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
   try {
-    const world = new WorldRouter(ledger, async (_request, caller) => {
+    const world = new WorldRouter(ledger, async (request, caller) => {
       if (caller.remote) return Boolean(caller.pairedDeviceId && link && await link.isBrowserAuthorized(caller.pairedDeviceId));
       // A high-entropy token's digest identifies a credential without persisting it.
       // Current token membership, not a stale snapshot permission, decides recovery.
@@ -105,10 +106,14 @@ export async function startOwner(config: Config): Promise<Running> {
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
+      if (caller.transportPrincipal === "service:gate" && caller.member === "service:gate" && caller.local && !caller.remote &&
+        request.from === "service:gate" && request.to === "person:owner" && request.word === "ask") return true;
       return false;
     });
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
+    members.register(new GateMember(ledger, world, members));
+    world.enableDurableGate();
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,

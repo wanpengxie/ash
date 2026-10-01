@@ -10,6 +10,11 @@ const running = await startOwner({ stateDir: join(root, "state"), workspaces: { 
 
 if (process.env.TEST_PHASE === "first") {
   const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+  const access = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: "device:phone/hold" }, wait: true }) });
+  if (access.status !== 200 || !(await access.json() as { reply?: { body?: { ok?: boolean } } }).reply?.body?.ok)
+    throw new Error("synthetic device access grant failed");
   const sent = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "call synthetic device once" }, client_id: "tool-kill-1" }) });
   process.send?.({ type: "accepted", status: sent.status });
