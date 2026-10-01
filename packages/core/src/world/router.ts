@@ -6,7 +6,7 @@ import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
 import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema, schemaErrors } from "../../../sdk/src/schema";
-import { deviceWordSpec, wordContract } from "../../../sdk/src/words";
+import { deviceWordSpec, optionReplyErrors, wordContract } from "../../../sdk/src/words";
 import { Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
 type Transport = "web_ui" | "api" | "phone" | "agent" | "device" | "service";
@@ -419,6 +419,8 @@ export class WorldRouter {
     if (request.to && !endpoint && !sourceEvent) fail("not_found", "recipient word not found");
     if (endpoint && (endpoint.direction === "out" || endpoint.spec.kind !== request.kind)) fail("forbidden", "word cannot be sent in this direction");
     if (endpoint && !endpoint.validateInput(request.body)) fail("bad_request", "body does not match word schema");
+    if (from === "person:owner" && request.to === "agent:main" && request.word === "say" && optionReplyErrors(request.body).length)
+      fail("bad_request", "invalid option answer fields");
     if (request.kind === "event" && !endpoint && !sourceEvent && !phoneSense) fail("not_found", "event word not found");
     if (sourceEvent && !matchesSchema(outbound.input_schema!, request.body)) fail("bad_request", "event body does not match schema");
     if (phoneSense && !matchesSchema(senseContract.input_schema!, request.body)) fail("bad_request", "sense body does not match schema");

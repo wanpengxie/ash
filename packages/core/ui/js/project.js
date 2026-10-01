@@ -133,10 +133,8 @@ function project(records, snapshots = new Map()) {
   const delivery = new Map();
   const asksById = new Map(records.filter((r) => r.type === "ask").map((r) => [r.id, r]));
   const cardsById = new Map(records.filter((r) => r.type === "show" && r.card.type === "options").map((r) => [r.id, r]));
-  const ownerSaysById = new Map(records.filter((r) => r.type === "owner.say").map((r) => [r.id, r]));
   const answers = new Map();
   const optionReplies = new Map();
-  const sayOutcomes = new Map();
   const reactions = new Map();
   const ownerTitles = new Map(records.filter((r) => r.type === "owner.say").map((r) => [r.id, r.text]));
   const activityRequests = new Map(records.filter((r) => r.type === "activity.request").map((r) => [r.id, r]));
@@ -149,10 +147,9 @@ function project(records, snapshots = new Map()) {
       const ask = asksById.get(r.reply_to);
       if (ask && r.seq > ask.seq && r.to === ask.from && !answers.has(ask.id) && (ask.options.some((option) => option.id === r.choice) || ["timeout", "cancelled"].includes(r.error))) answers.set(ask.id, r);
     }
-    if (r.type === "say.result" && ownerSaysById.has(r.reply_to) && r.seq > ownerSaysById.get(r.reply_to).seq && !sayOutcomes.has(r.reply_to)) sayOutcomes.set(r.reply_to, r.accepted);
     if (r.type === "react") reactions.set(r.message_id, [...(reactions.get(r.message_id) || []), { id: r.id, emoji: r.emoji }]);
   }
-  for (const r of records) if (r.type === "owner.say" && r.in_reply_to && r.option_id && sayOutcomes.get(r.id) === true) {
+  for (const r of records) if (r.type === "owner.say" && r.in_reply_to && r.option_id) {
     const card = cardsById.get(r.in_reply_to);
     if (!card || r.seq <= card.seq || optionReplies.has(card.id)) continue;
     const options = card.card.options;

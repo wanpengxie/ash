@@ -351,7 +351,9 @@ export class ScreenNet {
     });
     if (scope !== this.currentScope) return;
     this.queue = items.filter((item) => item.wire && !item.id).map((item) => item.wire);
-    this.outbox = items.map((item) => ({ client_id: item.client_id, text: item.text, attachments: item.attachments, status: item.status === "sending" && item.leaseUntil <= Date.now() ? "unsent" : item.status, id: item.id, seq: item.seq }));
+    this.outbox = items.map((item) => ({ client_id: item.client_id, text: item.text, attachments: item.attachments,
+      in_reply_to: item.wire?.body?.in_reply_to, option_id: item.wire?.body?.option_id,
+      status: item.status === "sending" && item.leaseUntil <= Date.now() ? "unsent" : item.status, id: item.id, seq: item.seq }));
     this.publishOutbox();
   }
 
@@ -362,14 +364,16 @@ export class ScreenNet {
     this.publishOutbox();
   }
 
-  async enqueueSay(text, attachments = []) {
+  async enqueueSay(text, attachments = [], option = null) {
     if (!this.uiTransport.isReady()) throw new Error("native transport not ready");
     const scope = this.currentScope;
     if (!scope) throw new Error("connect once before storing an offline message");
     const store = await this.pendingReady;
     if (!store) throw new Error("pending storage unavailable");
     if (typeof text !== "string" || (!text.trim() && !attachments.length)) throw new Error("empty message");
-    const body = { text, ...(attachments.length ? { attachments } : {}) };
+    if (option && (typeof option.in_reply_to !== "string" || !option.in_reply_to || typeof option.option_id !== "string" || !option.option_id || attachments.length))
+      throw new Error("invalid option reply");
+    const body = { text, ...(attachments.length ? { attachments } : {}), ...(option ? { in_reply_to: option.in_reply_to, option_id: option.option_id } : {}) };
     const message = { to: "agent:main", kind: "request", word: "say", body, client_id: crypto.randomUUID() };
     await store.enqueue(this.endpoint, scope, message);
     await this.restorePending(scope);

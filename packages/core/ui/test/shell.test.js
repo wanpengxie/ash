@@ -155,6 +155,28 @@ test("registration precedes queued send and same client_id survives retry", asyn
   assert.equal(net.queue.length, 0);
 });
 
+test("an option click keeps card identity in the same persisted say across offline retry", async () => {
+  const sent = [];
+  let fail = true;
+  const net = netWith({ fetchImpl: async (_url, init) => {
+    sent.push(JSON.parse(init.body));
+    if (fail) { fail = false; throw new Error("offline"); }
+    return new Response(JSON.stringify({ id: "answer", seq: 2 }), { status: 200 });
+  } });
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  net.token = null;
+  const id = await net.enqueueSay("Yes", [], { in_reply_to: "card", option_id: "yes" });
+  assert.equal(net.outbox[0].in_reply_to, "card");
+  net.frame({ type: "screen.registered", data: JSON.stringify(registration()) }, net.generation);
+  await tick();
+  await net.flush();
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent.map((wire) => [wire.client_id, wire.body]), [
+    [id, { text: "Yes", in_reply_to: "card", option_id: "yes" }],
+    [id, { text: "Yes", in_reply_to: "card", option_id: "yes" }],
+  ]);
+});
+
 test("local outbox stays unsent offline, keeps one client id across retry, then yields to its ledger id", async () => {
   const saved = storage();
   const sent = [];

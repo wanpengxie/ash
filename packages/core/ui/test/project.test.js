@@ -115,15 +115,14 @@ test("ask settles only with the first valid response addressed to its original a
   assert.equal(replay([ask, answer("wrong-choice", "service:gate", "always")]).asks[0].state, "pending");
 });
 
-test("option card locks only after a valid accepted answer; first accepted option wins", () => {
+test("option card locks when the first valid owner answer enters the ledger", () => {
   const card = { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }, { id: "no", text: "No" }] } } };
   const choose = (id, option_id, text) => ({ id, from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text, in_reply_to: "card", option_id } });
   const result = (id, reply_to, accepted) => ({ id, from: "agent:main", to: "person:owner", kind: "response", word: "say", reply_to, body: accepted ? { ok: true, result: { accepted: true } } : { ok: false, error: { code: "bad_request", message: "invalid option" } } });
   const selected = (events) => replay(events).conversation.find((bubble) => bubble.id === "card");
   assert.equal(selected([card, choose("bad", "other", "Other"), result("bad-ack", "bad", true)]).locked, false);
   assert.equal(selected([card, choose("wrong-text", "yes", "No"), result("text-ack", "wrong-text", true)]).locked, false);
-  assert.equal(selected([card, choose("rejected", "yes", "Yes"), result("reject-ack", "rejected", false)]).locked, false);
-  assert.equal(selected([card, choose("pending", "yes", "Yes")]).locked, false);
+  assert.equal(selected([card, choose("pending", "yes", "Yes")]).locked, true);
   const valid = selected([card, choose("bad", "other", "Other"), result("bad-ack", "bad", true), choose("first", "yes", "Yes"), result("first-ack", "first", true), choose("second", "no", "No"), result("second-ack", "second", true)]);
   assert.equal(valid.locked, true);
   assert.equal(valid.selected_option_id, "yes");

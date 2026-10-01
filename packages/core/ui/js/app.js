@@ -7,6 +7,7 @@ import { openInlineBlob, prepareUploads } from "./attachments.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
 import { AgentSheet } from "./sheet-agent.js";
+import { answerGateAsk, approvalSections } from "./sheet-approvals.js";
 import { IdentityName } from "./identity-name.js";
 import { readWorkspaceFile } from "./ui-transport.js";
 
@@ -91,14 +92,14 @@ function text(parent, tag, value, className = "") {
   return node;
 }
 
-export function render(view, outbox = [], openInline, presenceBar, openWorkspaceFile) {
+export function render(view, outbox = [], openInline, presenceBar, openWorkspaceFile, cardActions) {
   const log = document.querySelector("#log");
   const progressRoot = document.querySelector("#progress");
   const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const oldHeight = log.scrollHeight;
   const oldTop = log.scrollTop;
   const fragment = document.createDocumentFragment();
-  appendConversation(fragment, view.conversation, { openInline, openWorkspaceFile });
+  appendConversation(fragment, view.conversation, { openInline, openWorkspaceFile, ...cardActions });
   appendOutbox(fragment, outbox);
   log.replaceChildren(fragment);
   if (nearEnd) log.scrollTop = log.scrollHeight;
@@ -129,6 +130,36 @@ export function boot({ uiTransport } = {}) {
   let lastTyping = 0;
   let timeline;
   let settings;
+  const askIntents = new Map();
+  const optionPending = new Set();
+  const cardActions = {
+    optionPending,
+    askIntents,
+    onSelect: async (item, option) => {
+      if (item.locked || optionPending.has(item.id)) return;
+      optionPending.add(item.id);
+      try { await net.enqueueSay(option.text, [], { in_reply_to: item.id, option_id: option.id }); }
+      catch (error) { optionPending.delete(item.id); throw error; }
+    },
+    onAnswerAsk: async (ask, choice) => {
+      const fresh = approvalSections(timeline.view).pending.find((item) => item.id === ask.id);
+      if (!fresh || fresh.seq !== ask.seq) throw new Error("待批请求已失效。");
+      let intent = askIntents.get(ask.id);
+      if (intent && (intent.choice !== choice || intent.status === "pending" || intent.status === "confirmed" || intent.status === "rejected")) return;
+      if (!intent) { intent = { choice, clientId: crypto.randomUUID(), status: "pending" }; askIntents.set(ask.id, intent); }
+      else intent.status = "pending";
+      const binding = { token: net.token, screen: net.screen, scope: net.currentScope, generation: net.generation };
+      const current = () => binding.token === net.token && binding.screen === net.screen && binding.scope === net.currentScope && binding.generation === net.generation;
+      try {
+        await answerGateAsk(net, current, fresh, choice, intent.clientId, (id) => timeline.byId.get(id));
+        intent.status = "confirmed";
+      } catch (error) {
+        intent.status = /无权|被拒绝|已失效|不可用/.test(error?.message || "") ? "rejected" : "uncertain";
+        connection.textContent = error instanceof Error ? error.message : "审批结果未知；只能原样重试。";
+      }
+      render(timeline.view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
+    },
+  };
   const clearContext = () => { contextRoot.replaceChildren(); contextRoot.hidden = true; };
   const progress = () => renderProgress(progressRoot, timeline?.view, { onOpen: () => {
     if (agentSheet?.open()) void agentSheet.show("activity");
@@ -169,7 +200,7 @@ export function boot({ uiTransport } = {}) {
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
-    onReset: () => { timeline.reset(); suggestions.replaceChildren(); clearContext(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
+    onReset: () => { askIntents.clear(); optionPending.clear(); timeline.reset(); suggestions.replaceChildren(); clearContext(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
     onState: (status, error) => {
       settings?.network(status);
       agentSheet?.network(status);
@@ -180,11 +211,13 @@ export function boot({ uiTransport } = {}) {
     onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
-      if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile);
+      for (const item of outbox) if (item.in_reply_to && item.status === "rejected") optionPending.delete(item.in_reply_to);
+      for (const item of outbox) if (item.in_reply_to && item.status !== "rejected") optionPending.add(item.in_reply_to);
+      if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     },
   });
   timeline = new Timeline(net, (view) => {
-    render(view, net.outbox, openInline, presenceBar, openWorkspaceFile);
+    render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     progress();
     agentSheet?.update();
   });

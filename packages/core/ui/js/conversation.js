@@ -1,4 +1,6 @@
 // Render only selected conversation facts. The projection never contains raw tool data.
+import { renderCard, workspaceFileUrl } from "./cards.js";
+export { workspaceFileUrl } from "./cards.js";
 const text = (parent, tag, value, className = "") => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -10,12 +12,6 @@ const text = (parent, tag, value, className = "") => {
 const say = (item) => item?.type === "say";
 const grouped = (item, neighbor) => say(item) && say(neighbor) && item.side === "agent" && neighbor.side === "agent" && !!item.group && item.group === neighbor.group && !item.legacy && !neighbor.legacy;
 const deliveryText = { sent: "发送中", delivered: "已送达", read: "已读" };
-
-/** A legacy workspace reference; the server still enforces owner auth and realpath. */
-export function workspaceFileUrl(ref) {
-  if (!ref || typeof ref.workspace !== "string" || !/^[a-z0-9_-]+$/.test(ref.workspace) || typeof ref.path !== "string" || !ref.path || ref.path.startsWith("/") || ref.path.includes("\\") || ref.path.includes("\0") || ref.path.includes("//") || ref.path.split("/").some((part) => !part || part === "." || part === "..")) return null;
-  return `/api/workspaces/${ref.workspace}/files?path=${encodeURIComponent(ref.path)}`;
-}
 
 function attachment(parent, item, openInline, openWorkspaceFile) {
   const name = typeof item?.name === "string" ? item.name : "附件";
@@ -77,7 +73,7 @@ function attachment(parent, item, openInline, openWorkspaceFile) {
 }
 
 /** Append a stable ledger conversation without inventing an approval or option action. */
-export function appendConversation(fragment, entries, { openInline, openWorkspaceFile } = {}) {
+export function appendConversation(fragment, entries, { openInline, openWorkspaceFile, onSelect, onAnswerAsk, onPermission, optionPending, askIntents } = {}) {
   if (!entries.length) text(fragment, "div", "还没有对话。", "hello");
   for (let index = 0; index < entries.length; index++) {
     const item = entries[index];
@@ -104,8 +100,24 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
     } else if (item.type === "ask") {
       const card = text(fragment, "div", item.ask.title, "card ask");
       text(card, "small", item.ask.detail);
+      const expired = item.ask.state === "pending" && item.ask.expires_at <= Date.now();
+      if (expired) text(card, "small", "已过期");
+      const answer = askIntents?.get(item.ask.id);
+      for (const option of item.ask.options || []) {
+        const button = text(card, "button", option.label, "btn gray");
+        button.type = "button";
+        button.disabled = expired || item.ask.state !== "pending" || item.ask.from !== "service:gate" || typeof onAnswerAsk !== "function" ||
+          answer?.status === "pending" || answer?.status === "confirmed" || answer?.status === "rejected" || Boolean(answer?.choice && answer.choice !== option.id);
+        button.addEventListener("click", async () => {
+          if (button.disabled) return;
+          button.disabled = true;
+          try { await onAnswerAsk(item.ask, option.id); }
+          catch { button.disabled = false; }
+        });
+      }
+      if (answer?.status === "uncertain") text(card, "small", "结果尚未确认；只能原样重试");
     } else if (item.type === "card") {
-      text(fragment, "div", item.card.prompt || item.card.title || item.card.name || "卡片", "card");
+      renderCard(fragment, item, { onSelect, onPermission, optionPending, openWorkspaceFile });
     }
   }
 }

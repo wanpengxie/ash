@@ -51,3 +51,35 @@ test("legacy text remains inert and only bounded workspace references get downlo
   assert.equal(bubble.children[0].children.length, 1);
   assert.equal(bubble.children[0].children[0].href, "/api/workspaces/home/files?path=inbox%2Fa%20b.png");
 });
+
+test("option card sends one selected action, locks locally, and shows authoritative cross-screen lock", async () => {
+  const selected = [];
+  const entry = { id: "card-1", type: "card", card: { type: "options", prompt: "Choose", options: [{ id: "yes", text: "Yes" }] }, locked: false };
+  let card = draw([entry], { onSelect: async (item, option) => selected.push([item.id, option.id, option.text]) });
+  const button = card.children[0].children.find((node) => node.tag === "button");
+  await button.listeners.click();
+  await button.listeners.click();
+  assert.deepEqual(selected, [["card-1", "yes", "Yes"]]);
+  card = draw([{ ...entry, locked: true }], { onSelect: async () => selected.push("unexpected") });
+  assert.equal(card.children[0].children.find((node) => node.tag === "button").disabled, true);
+});
+
+test("file, image, and link cards open safe references and approval buttons expire", async () => {
+  const files = draw([{ type: "card", card: { type: "file", workspace: "home", path: "a.pdf", name: "a.pdf" } },
+    { type: "card", card: { type: "image", workspace: "home", path: "a.png", alt: "a" } },
+    { type: "card", card: { type: "link", url: "https://example.com/a", title: "Example" } }]);
+  assert.equal(files.children[0].children[0].href, "/api/workspaces/home/files?path=a.pdf");
+  assert.equal(files.children[1].children[0].src, "/api/workspaces/home/files?path=a.png");
+  assert.equal(files.children[2].children[0].href, "https://example.com/a");
+  const ask = { id: "ask-1", seq: 1, from: "service:gate", title: "Confirm", detail: "Do it?", state: "pending",
+    expires_at: Date.now() + 60_000, options: ["once", "always", "deny"].map((id) => ({ id, label: id })) };
+  const choices = [];
+  let rendered = draw([{ type: "ask", ask }], { onAnswerAsk: async (_ask, choice) => choices.push(choice) });
+  const buttons = rendered.children[0].children.filter((node) => node.tag === "button");
+  assert.equal(buttons.length, 3);
+  await buttons[1].listeners.click();
+  assert.deepEqual(choices, ["always"]);
+  rendered = draw([{ type: "ask", ask: { ...ask, expires_at: Date.now() - 1 } }], { onAnswerAsk: async () => choices.push("unexpected") });
+  assert.ok(rendered.children[0].children.filter((node) => node.tag === "button").every((node) => node.disabled));
+  assert.match(rendered.textContent, /已过期/);
+});

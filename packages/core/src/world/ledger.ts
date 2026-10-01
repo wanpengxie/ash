@@ -243,6 +243,8 @@ export class Ledger {
         context TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
       db.exec(`CREATE TABLE IF NOT EXISTS admin_pause_claims (
         by_message_id TEXT PRIMARY KEY, pause_request_id TEXT NOT NULL UNIQUE);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS option_answers (
+        card_id TEXT PRIMARY KEY, message_id TEXT NOT NULL UNIQUE);`);
       db.exec(`CREATE TABLE IF NOT EXISTS work_runs (
         run TEXT PRIMARY KEY, request_id TEXT UNIQUE, flow TEXT NOT NULL, trigger TEXT NOT NULL,
         state TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, detail TEXT NOT NULL);
@@ -403,9 +405,24 @@ export class Ledger {
           return { message, duplicate: true };
         }
       }
+      const optionCardId = input.from === "person:owner" && input.to === "agent:main" && input.word === "say" &&
+        typeof input.body.in_reply_to === "string" ? input.body.in_reply_to : null;
+      if (optionCardId) {
+        const card = this.byId(optionCardId);
+        const value = card?.body.card as { type?: unknown; options?: { id?: unknown; text?: unknown }[]; allow_custom?: unknown } | undefined;
+        const optionId = input.body.option_id;
+        const selected = value?.options?.find((option) => option.id === optionId);
+        if (!card || card.kind !== "request" || card.word !== "show" || card.to !== "person:owner" ||
+          !["agent:main", "service:work"].includes(card.from) || value?.type !== "options" ||
+          !Array.isArray(value.options) || new Set(value.options.map((option) => option.id)).size !== value.options.length ||
+          (selected ? selected.text !== input.body.text : !(optionId === "__custom" && value.allow_custom === true && typeof input.body.text === "string" && input.body.text.length > 0)))
+          throw new TypeError("invalid option answer");
+        if (this.db.prepare("SELECT 1 FROM option_answers WHERE card_id=?").get(optionCardId)) throw new TypeError("option already answered");
+      }
       const id = newId();
       const ts = Date.now();
       this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, input.from, input.to, input.kind, input.word, JSON.stringify(input.body), input.reply_to ?? null, input.origin ? JSON.stringify(input.origin) : null, input.turn ?? null);
+      if (optionCardId) this.db.prepare("INSERT INTO option_answers(card_id,message_id) VALUES(?,?)").run(optionCardId, id);
       if (input.kind === "request") {
         const deadlineAt = tracking?.deadlineAt ?? ts + 60_000;
         const supplied = tracking?.context ?? { member: input.from, local: true, remote: false, ownerProxy: false };
