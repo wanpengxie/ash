@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fold, initialView } from "../js/project.js";
 import { renderActivitySheet } from "../js/sheet-activity.js";
-import { normalizeClockList, UpcomingSheet } from "../js/sheet-upcoming.js";
+import { normalizeClockList, renderUpcomingSheet, UpcomingSheet } from "../js/sheet-upcoming.js";
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {}; }
@@ -80,4 +80,14 @@ test("failed cancel leaves timer visible; failed list gives error, not stale suc
   const offline = new UpcomingSheet(root, async () => ({ reply: { body: { ok: false, error: { code: "offline" } } } }));
   await assert.rejects(offline.load(), /暂不可用/);
   assert.match(root.textContent, /暂不可用/);
+}));
+
+test("clock blocked diagnostic is rendered as a fixed human message", async () => withDom(async () => {
+  const timers = normalizeClockList({ body: { ok: true, result: { timers: [
+    { id: "tmr_x", next: 1000, label: "带伞", blocked: "internal_adapter_timeout" },
+  ] } } });
+  const root = new Node("root");
+  renderUpcomingSheet(root, timers);
+  assert.match(root.textContent, /无法执行：请稍后查看/);
+  assert.doesNotMatch(root.textContent, /internal_adapter_timeout/);
 }));
