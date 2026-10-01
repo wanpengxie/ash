@@ -26,16 +26,18 @@ async function fixture() {
   let pauseReader = () => paused;
   let time = 1000;
   const alarms: (number | null)[] = [];
+  let alarmImpl: (at: number | null) => Promise<void> = async () => {};
   const world = new WorldRouter(ledger, async () => authorized);
   const members = new WorldMembers(world);
   members.register(new OwnerMember("Owner", ledger));
   members.register({ id: "agent:main", kind: "agent", name: "Main", words: () => [wordContract("agent:main", "say")!, wordContract("agent:main", "wake")!],
     handle: () => ({ ok: true, result: { accepted: true } }) });
   const clock = new ClockMember({ ledger, router: world, dbFile: file, isPaused: () => pauseReader(),
-    alarm: async (at) => { alarms.push(at); }, now: () => time });
+    alarm: async (at) => { alarms.push(at); await alarmImpl(at); }, now: () => time, scanMs: 60_000 });
   members.register(clock);
   return { dir, file, ledger, world, clock, alarms, setTime: (value: number) => { time = value; },
     setPaused: (value: boolean) => { paused = value; }, setPauseReader: (reader: () => boolean) => { pauseReader = reader; },
+    setAlarm: (handler: (at: number | null) => Promise<void>) => { alarmImpl = handler; },
     setAuthorized: (value: boolean) => { authorized = value; },
     async close(keep = false) { await clock.close(); ledger.close(); if (!keep) rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -58,6 +60,33 @@ test("clock set, due dispatch, durable occurrence event and repeat tick stay sin
     assert.deepEqual(events[0].body, { timer_id: timer.id, scheduled_at: 2000, outcome: "dispatched", request_id: requests[0].id });
     assert.equal(f.clock.journal.list().length, 0);
     assert.equal(f.alarms.at(-1), null);
+  } finally { await f.close(); }
+});
+
+test("close waits for a failing background alarm retry and always closes the journal", async () => {
+  const f = await fixture();
+  let release!: (error: Error) => void;
+  let entered!: () => void;
+  const retryEntered = new Promise<void>((resolve) => { entered = resolve; });
+  const heldRetry = new Promise<void>((_resolve, reject) => { release = reject; });
+  try {
+    await f.clock.start(); // first host ack(null) succeeds
+    f.setAlarm(async (at) => { if (at !== null) throw new Error("synthetic first alarm failure"); });
+    const set = await f.world.send(agent, { to: "service:clock", kind: "request", word: "set", body: scheduled(), wait: true });
+    assert.deepEqual(set.reply?.body, { ok: false, error: { code: "offline", message: "host alarm acknowledgement unavailable; timer is durably pending" } });
+    assert.equal(f.clock.journal.list().length, 1, "failed host ack does not discard the durable timer");
+    f.setAlarm(async (at) => { if (at !== null) { entered(); await heldRetry; } });
+    const tick = f.clock.tick().then(() => null, (error: unknown) => error);
+    await retryEntered;
+    let closed = false;
+    const closing = f.clock.close().then(() => { closed = true; });
+    await Promise.resolve();
+    assert.equal(closed, false, "shutdown waits for the in-flight host alarm");
+    release(new Error("synthetic retry failure"));
+    assert.match(String(await tick), /synthetic retry failure/);
+    await closing;
+    assert.equal(closed, true);
+    assert.throws(() => f.clock.journal.list(), /closed|not open/i, "shutdown closes SQLite even when background tick fails");
   } finally { await f.close(); }
 });
 
