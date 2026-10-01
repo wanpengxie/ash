@@ -172,19 +172,21 @@ export class AgentMember implements Member {
         if (!turn) break;
         currentTurn = turn.id;
         await this.turnEvents(turn);
+        if (this.closed) break; // close during read/start must not dispatch a fresh runner
         const controller = new AbortController();
         this.active = controller;
+        let emitOpen = true;
         let result: { reason: "completed" | "error"; error?: string };
         try {
           result = await this.runner.runTurn({ turn: turn.id, messages, rendered }, async (output) => {
-            if (this.closed || controller.signal.aborted) return;
+            if (!emitOpen || this.closed || controller.signal.aborted || this.active !== controller) return;
             if (!output.id || output.id.length > 80 || !output.text.trim()) throw new TypeError("invalid agent output");
             await this.router.send(this.context(turn.id), { to: "person:owner", kind: "request", word: "say",
-              body: { text: output.text, kind: "reply" }, client_id: `reply:${turn.id}:${output.id}` });
+              body: { text: output.text, kind: "reply" }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
           }, controller.signal);
         } catch (error) {
           result = { reason: "error", error: error instanceof Error ? error.message : "runner failed" };
-        } finally { this.active = null; }
+        } finally { emitOpen = false; controller.abort(); this.active = null; }
         if (this.closed) break; // an interrupted turn is closed and explained on restart
         const ended = this.inbox.finish(turn.id, result.reason, result.error);
         currentTurn = null;

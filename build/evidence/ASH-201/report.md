@@ -8,7 +8,7 @@ Status: implementation submitted for independent review; card acceptance is not 
 - A private SQLite WAL/FULL inbox records pending/read state and turn boundaries. Before runner dispatch, every accepted message receives a `received` event; an entire pending batch is claimed atomically in sequence order; `read` and `turn.start` precede the runner. Event client IDs are stable across repair. Completion records `turn.end`.
 - On restart, a claimed active turn is ended with an explicit interruption error and never blindly rerun. Unread messages remain pending and form the next batch. Successful output has a stable per-turn/output client ID; a changed body under the same output ID is rejected.
 - The runner receives full control records and a separately bounded text rendering. The default text cap is 32 KiB UTF-8, not a guarantee about a model's total context. The index and excerpt markers are budgeted first; body space is fairly shared. Truncation states exact omitted UTF-8 bytes. If the index cannot fit, the turn fails visibly without claiming messages or hot retrying.
-- Close cancels cooperative work, does not wait forever for a non-cooperative runner, and prevents delayed lifecycle sends from touching a closed inbox or late runner emits from publishing reply text.
+- Close cancels cooperative work, does not wait forever for a non-cooperative runner, and prevents delayed lifecycle sends from touching a closed inbox or starting a new runner. A retained emit callback cannot publish after its turn ends. An internal abort signal is checked at the router's append boundary, so an output delayed before acceptance cannot publish after close; already accepted messages or external effects are not undone by this check.
 
 ## Reproduction
 
@@ -21,9 +21,9 @@ npm test
 npm run -s build:core
 ```
 
-The focused suite includes a real child-process SIGKILL after the first reply and three durable unread messages. Recovery verifies the old turn ends in error, the three unread messages run once in sequence, no first reply is replayed, and received IDs remain unique. It also covers delayed receipt/read/start sends during close and a non-cooperative runner's late emit.
+The focused suite includes a real child-process SIGKILL after the first reply and three durable unread messages. Recovery verifies the old turn ends in error, the three unread messages run once in sequence, no first reply is replayed, and received IDs remain unique. It also covers delayed receipt/read/start sends during close (zero new runner calls), a retained emit after turn completion, a non-cooperative runner's late emit, and an outbound reply held before router acceptance while close occurs.
 
-Observed locally: focused 8/8; full suite 153 passed, 57 intentional skips, 0 failed; typecheck and core build passed. Repository architecture and configured public-term checks passed (0 findings).
+Observed locally: focused 11/11; full suite 156 passed, 57 intentional skips, 0 failed; typecheck and core build passed. Repository architecture and configured public-term checks passed (0 findings).
 
 ## Boundaries
 

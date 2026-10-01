@@ -215,11 +215,13 @@ export class WorldRouter {
     if (request.kind === "response" ? !request.reply_to || typeof request.reply_to !== "string" : request.reply_to !== undefined) fail("bad_request", "invalid reply_to");
   }
 
-  async send(ctx: TrustedRouteContext, request: SendRequestV2): Promise<{ id: string; seq: number; reply?: Message }> {
+  /** Internal cancellation fence: abort before acceptance prevents a delayed caller from committing. It cannot undo an accepted message or external effect. */
+  async send(ctx: TrustedRouteContext, request: SendRequestV2, signal?: AbortSignal): Promise<{ id: string; seq: number; reply?: Message }> {
+    if (signal?.aborted) fail("cancelled", "send aborted before acceptance");
     this.validateContext(ctx); this.validateRequestShape(request);
     const { from, origin } = this.stampedSender(ctx, request);
     this.authorize(ctx, request, from);
-    if (request.kind === "response") return this.acceptResponse(request, from, ctx, origin);
+    if (request.kind === "response") return this.acceptResponse(request, from, ctx, origin, signal);
     if (request.to === null && request.kind !== "event") fail("bad_request", "request needs recipient");
     const endpoint = request.to ? this.endpoint(request.to, request.word) : undefined;
     const outbound = request.kind === "event" ? wordContract(from, request.word) : undefined;
@@ -240,6 +242,7 @@ export class WorldRouter {
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
     const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
     let accepted: ReturnType<Ledger["append"]>;
+    if (signal?.aborted) fail("cancelled", "send aborted before acceptance");
     try { accepted = this.ledger.append(input, request.client_id ? { transportPrincipal: ctx.transportPrincipal, clientId: request.client_id } : undefined,
       request.kind === "request" ? { deadlineAt, context: contextSnapshot(ctx) } : undefined); }
     catch (error) { if (error instanceof TypeError) fail("bad_request", error.message); throw error; }
@@ -263,7 +266,7 @@ export class WorldRouter {
     return { id: message.id, seq: message.seq, ...(reply ? { reply } : {}) };
   }
 
-  private async acceptResponse(request: SendRequestV2, from: string, ctx: TrustedRouteContext, origin?: Message["origin"]): Promise<{ id: string; seq: number }> {
+  private async acceptResponse(request: SendRequestV2, from: string, ctx: TrustedRouteContext, origin?: Message["origin"], signal?: AbortSignal): Promise<{ id: string; seq: number }> {
     const original = this.ledger.byId(request.reply_to!);
     if (!original || original.kind !== "request" || original.seq <= this.ledger.migration.lastLegacySeq || original.to !== from || original.from !== request.to || original.word !== request.word) throw new RouterError("bad_request", "response does not match an active request");
     if (original.to === "person:owner" && original.word === "ask" && !(ctx.transport === "web_ui" || (ctx.transport === "phone" && ctx.ownerProxy))) fail("forbidden", "ask requires a verified screen or notification proxy");
@@ -289,6 +292,7 @@ export class WorldRouter {
       const options = original.body.options;
       if (typeof choice !== "string" || !Array.isArray(options) || !options.some((option) => plainObject(option) && option.id === choice)) fail("bad_request", "ask choice was not offered");
     }
+    if (signal?.aborted) fail("cancelled", "send aborted before settlement");
     const result = this.finish(pending, body, from, false, origin, retry);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
