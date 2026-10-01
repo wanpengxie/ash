@@ -11,6 +11,7 @@ import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type Ed
 import { wordContract } from "../../../sdk/src/words";
 import { HostDeviceLink } from "../../src/host-v2";
 import { DeviceMember } from "../../src/members/device";
+import { OwnerMember } from "../../src/members/owner";
 import { OwnerLink } from "../../src/gateway/link";
 
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-credential", local: true, remote: false, ownerProxy: true, transport: "api" };
@@ -245,8 +246,9 @@ test("workspace bytes preserve local-only writes and reject managed, symlink and
 });
 
 test("MCP exposes only describe/send and agent audience omits owner-only words", async () => {
-  const { ledger, world, edge } = await fixture();
+  const { ledger, world, members, edge } = await fixture();
   try {
+    members.register(new OwnerMember("Owner", ledger));
     const caller: EdgeCaller = { member: "agent:main", transportPrincipal: "mcp-agent", local: true, remote: false, ownerProxy: false, transport: "agent" };
     const rpc = (method: string, params?: Record<string, unknown>) => request("POST", "/mcp/agent:main", { jsonrpc: "2.0", id: 1, method, params }, { "x-ash-token": "agent-token" });
     assert.equal((await edge.handle(rpc("tools/list"), null)).status, 401);
@@ -254,6 +256,12 @@ test("MCP exposes only describe/send and agent audience omits owner-only words",
     assert.deepEqual(tools, ["ash_describe", "ash_send"]);
     const described = parsed(await edge.handle(rpc("tools/call", { name: "ash_describe", arguments: {} }), caller));
     assert.equal(JSON.stringify(described).includes("settings.get"), false);
+    const sent = parsed(await edge.handle(rpc("tools/call", { name: "ash_send", arguments: {
+      to: "person:owner", kind: "request", word: "say", body: { text: "MCP says hello", kind: "reply" }, wait: true,
+    } }), caller));
+    assert.equal(sent.result.isError, undefined);
+    assert.equal(sent.result.structuredContent.reply.body.result.accepted, true);
+    assert.equal(ledger.list().some((item) => item.from === "agent:main" && item.to === "person:owner" && item.word === "say" && item.body.text === "MCP says hello"), true);
     const beforeControl = ledger.lastSeq();
     for (const [word, body] of [["status", { state: "working", text: "forged" }],
       ["read", { ids: ["forged"], turn: "t_forged" }], ["turn.start", { ids: ["forged"], turn: "t_forged" }],
@@ -271,6 +279,11 @@ test("MCP exposes only describe/send and agent audience omits owner-only words",
       const response = await fetch(`http://127.0.0.1:${port}/mcp/agent:main`, { method: "POST", headers: { "content-type": "application/json", "x-ash-token": "agent-token" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
       assert.equal(response.status, 200);
       assert.deepEqual(((await response.json()) as { result: { tools: { name: string }[] } }).result.tools.map((tool) => tool.name), tools);
+      const called = await fetch(`http://127.0.0.1:${port}/mcp/agent:main`, { method: "POST", headers: { "content-type": "application/json", "x-ash-token": "agent-token" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "ash_send",
+          arguments: { to: "person:owner", kind: "request", word: "say", body: { text: "HTTP MCP hello", kind: "reply" }, wait: true } } }) });
+      assert.equal(called.status, 200);
+      assert.equal(((await called.json()) as { result: { structuredContent: { reply: { body: { result: { accepted: boolean } } } } } }).result.structuredContent.reply.body.result.accepted, true);
       const beforeHttpForgery = ledger.lastSeq();
       const forged = await fetch(`http://127.0.0.1:${port}/mcp/agent:main`, { method: "POST", headers: { "content-type": "application/json", "x-ash-token": "agent-token" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ash_send",
