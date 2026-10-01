@@ -10,6 +10,12 @@ import { DshTurnRunner, materializeFile, splitAssistantText, turnContent } from 
 
 test("paragraph splitting preserves fenced code, and materialization is atomic and name-independent", () => {
   assert.deepEqual(splitAssistantText("one\n\ntwo\n\n```ts\na()\n\nb()\n```\n\nlast"), ["one", "two", "```ts\na()\n\nb()\n```", "last"]);
+  assert.deepEqual(splitAssistantText("one\n\n````md\n```js\na()\n\nb()\n```\n\nstill fenced\n````\n\nlast"),
+    ["one", "````md\n```js\na()\n\nb()\n```\n\nstill fenced\n````", "last"]);
+  assert.deepEqual(splitAssistantText("~~~text\nline\n\n~~~ not closed\n\nstill fenced\n~~~  \n\nlast"),
+    ["~~~text\nline\n\n~~~ not closed\n\nstill fenced\n~~~  ", "last"]);
+  assert.deepEqual(splitAssistantText("   ```js\na()\n\n   ```  \n\nlast"), ["   ```js\na()\n\n   ```  ", "last"]);
+  assert.deepEqual(splitAssistantText("    ```\n    a()\n\n    b()\n    ```\n\nlast"), ["    ```\n    a()\n\n    b()\n    ```", "last"]);
   const root = mkdtempSync(join(tmpdir(), "runtime-files-"));
   try {
     const directory = join(root, "inbox");
@@ -56,6 +62,19 @@ test("batch content sends bounded rendered text, image block, and sourced file p
     assert.equal(existsSync(overflowRoot), false);
     const longName = "x".repeat(250);
     await assert.rejects(turnContent(host, { turn: "t_5", messages: [{ ...message, body: { text: "", attachments: Array.from({ length: 20 }, () => ({ name: longName, mime_type: "text/plain", data: Buffer.from("x").toString("base64") })) } }], rendered: "", stopFacts: [] }, overflowRoot, root), /attachment batch exceeds/);
+    assert.equal(existsSync(overflowRoot), false);
+    const pathImage = join(root, "legacy.png");
+    writeFileSync(pathImage, Buffer.from("89504e470d0a1a0a", "hex"));
+    const pathContent = await turnContent(host, { turn: "t_6", messages: [{ ...message, body: { text: "", attachments: [{ name: "old.png", mime_type: "image/png", workspace: "home", path: "legacy.png" }] } }], rendered: "", stopFacts: [] }, overflowRoot, root);
+    assert.equal((pathContent[1] as { type: string }).type, "image");
+    assert.match((pathContent[2] as { text: string }).text, /workspace="home" path="legacy.png"/);
+    assert.equal(existsSync(overflowRoot), false);
+    const largeImage = join(root, "large.png");
+    writeFileSync(largeImage, Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(1_100_000)]));
+    const previousSaves = saved.length;
+    const repeated = Array.from({ length: 32 }, () => ({ name: "x", mime_type: "image/png", workspace: "home", path: "large.png" }));
+    await assert.rejects(turnContent(host, { turn: "t_7", messages: [{ ...message, body: { text: "", attachments: repeated } }], rendered: "", stopFacts: [] }, overflowRoot, root), /byte budget/);
+    assert.equal(saved.length, previousSaves);
     assert.equal(existsSync(overflowRoot), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

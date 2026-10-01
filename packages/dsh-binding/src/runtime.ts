@@ -73,14 +73,34 @@ export function materializeFile(root: string, id: string, index: number, data: B
 export function splitAssistantText(text: string): string[] {
   const parts: string[] = [];
   let lines: string[] = [];
-  let fence: string | null = null;
-  const flush = () => { const value = lines.join("\n").trim(); if (value) parts.push(value); lines = []; };
-  for (const line of text.split("\n")) {
-    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
-    if (!fence && marker) fence = marker[0];
-    else if (fence && marker && marker[0] === fence && marker.length >= 3) fence = null;
-    if (!fence && !line.trim()) flush();
-    else lines.push(line);
+  let fence: { marker: string; length: number } | null = null;
+  let indentedCode = false;
+  const source = text.split("\n");
+  const flush = () => { const value = lines.join("\n").replace(/^\n+|\n+$/g, ""); if (value.trim()) parts.push(value); lines = []; };
+  for (let index = 0; index < source.length; index++) {
+    const line = source[index];
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      // A closing fence has the same marker, at least the opener's length, and no info text.
+      if (marker && marker[1][0] === fence.marker && marker[1].length >= fence.length && /^[ \t]*$/.test(marker[2])) fence = null;
+      lines.push(line);
+      continue;
+    }
+    if (marker && (marker[1][0] !== "`" || !marker[2].includes("`"))) {
+      fence = { marker: marker[1][0], length: marker[1].length };
+      indentedCode = false;
+      lines.push(line);
+      continue;
+    }
+    if (/^(?: {4}|\t)/.test(line)) { indentedCode = true; lines.push(line); continue; }
+    if (!line.trim()) {
+      const next = source.slice(index + 1).find((item) => item.trim());
+      if (indentedCode && next && /^(?: {4}|\t)/.test(next)) lines.push(line);
+      else { flush(); indentedCode = false; }
+      continue;
+    }
+    indentedCode = false;
+    lines.push(line);
   }
   flush();
   return parts;
@@ -114,42 +134,51 @@ export async function turnContent(host: DshHost, input: AgentTurnInput, attachme
   const rows = attachmentRows(input.messages);
   if (rows.length > MAX_ATTACHMENTS) throw new Error("too many attachments for one turn");
   let totalBytes = 0;
-  const estimatedRefs = rows.map((row) => {
+  // Resolve and read every path image before any attachment store or inbox write is touched.
+  // The same referenced file counts on every occurrence because the model loads it each time.
+  const prepared = rows.map((row) => {
+    let data: Buffer | undefined;
     if (row.data !== undefined) {
-      if (!BASE64.test(row.data)) throw new TypeError("invalid attachment base64");
-      const size = row.data.length * 3 / 4 - (row.data.endsWith("==") ? 2 : row.data.endsWith("=") ? 1 : 0);
-      if (size > MAX_ATTACHMENT_BYTES) throw new Error("attachment exceeds size limit");
-      totalBytes += size;
+      data = decodeData(row.data);
+      if (!IMAGE.has(row.mime) && !/^[A-Za-z0-9_-]{1,100}$/.test(row.id)) throw new TypeError("invalid attachment identity");
+    } else if (IMAGE.has(row.mime)) {
+      if (!row.path || row.workspace !== "home") throw new Error("image reference is not in the configured workspace");
+      const root = realpathSync(workspaceRoot);
+      const target = realpathSync(join(root, row.path));
+      if (!inside(root, target)) throw new Error("image reference escapes its workspace");
+      const before = statSync(target);
+      if (!before.isFile() || before.size > MAX_ATTACHMENT_BYTES) throw new Error("image attachment exceeds size limit");
+      data = readFileSync(target);
+      const after = statSync(target);
+      if (realpathSync(join(root, row.path)) !== target || before.dev !== after.dev || before.ino !== after.ino ||
+        before.size !== after.size || before.mtimeMs !== after.mtimeMs || data.length !== before.size) throw new Error("image reference changed while loading");
     }
+    if (IMAGE.has(row.mime) && (!data || !validImage(row.mime, data))) throw new Error("image attachment cannot be safely loaded");
+    if (data) totalBytes += data.length;
+    if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) throw new Error("attachment batch exceeds its byte budget");
+    return { row, data };
+  });
+  const estimatedRefs = prepared.map(({ row }) => {
     const base = `${IMAGE.has(row.mime) ? "image" : "attachment"} source id=${row.id} index=${row.index} name=${JSON.stringify(row.name)} type=${row.mime}`;
     const hash = "0".repeat(64);
     if (IMAGE.has(row.mime)) return `[${base} sha256=${hash}${row.path ? ` workspace=${JSON.stringify(row.workspace)} path=${JSON.stringify(row.path)}` : ""}]`;
     return `[${base}${row.data !== undefined ? ` sha256=${hash} path=${JSON.stringify(join(resolve(attachmentRoot), `${row.id}-${row.index}-${hash}`))}` :
       ` workspace=${JSON.stringify(row.workspace)} path=${JSON.stringify(row.path)}`}]`;
   }).join("\n");
-  if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES || Buffer.byteLength(estimatedRefs) > MAX_SOURCE_BYTES ||
+  if (Buffer.byteLength(estimatedRefs) > MAX_SOURCE_BYTES ||
     Buffer.byteLength(prefix + input.rendered + estimatedRefs) > TOTAL_TEXT_BYTES) throw new Error("attachment batch exceeds its budget");
   const refs: string[] = [];
   const store = host.ctx?.get("attachments");
-  for (const row of rows) {
+  if (rows.some((row) => IMAGE.has(row.mime)) && !store?.saveImage) throw new Error("image attachment store unavailable");
+  for (const { row, data } of prepared) {
     if (IMAGE.has(row.mime)) {
-      let data: Buffer;
-      if (row.data !== undefined) data = decodeData(row.data);
-      else {
-        if (!row.path || row.workspace !== "home") throw new Error("image reference is not in the configured workspace");
-        const root = realpathSync(workspaceRoot);
-        const target = realpathSync(join(root, row.path));
-        if (!inside(root, target)) throw new Error("image reference escapes its workspace");
-        if (statSync(target).size > MAX_ATTACHMENT_BYTES) throw new Error("image attachment exceeds size limit");
-        data = readFileSync(target);
-      }
-      if (data.length > MAX_ATTACHMENT_BYTES || !validImage(row.mime, data) || !store?.saveImage) throw new Error("image attachment cannot be safely loaded");
+      if (!data || !store?.saveImage) throw new Error("image attachment cannot be safely loaded");
       const ref = await store.saveImage({ data: new Uint8Array(data), mediaType: row.mime, name: row.name });
       content.push({ type: "image", attachment: ref });
       refs.push(`[image source id=${row.id} index=${row.index} name=${JSON.stringify(row.name)} type=${row.mime} sha256=${createHash("sha256").update(data).digest("hex")}` +
         (row.path ? ` workspace=${JSON.stringify(row.workspace)} path=${JSON.stringify(row.path)}` : "") + "]");
     } else {
-      const stored = row.data === undefined ? null : materializeFile(attachmentRoot, row.id, row.index, decodeData(row.data));
+      const stored = data === undefined ? null : materializeFile(attachmentRoot, row.id, row.index, data);
       refs.push(`[attachment source id=${row.id} index=${row.index} name=${JSON.stringify(row.name)} type=${row.mime}` +
         (stored ? ` sha256=${stored.hash} path=${JSON.stringify(stored.path)}` : ` workspace=${JSON.stringify(row.workspace)} path=${JSON.stringify(row.path)}`) + "]");
     }
