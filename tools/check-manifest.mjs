@@ -5,15 +5,23 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const capDir = join(root, 'android/app/src/main/java/ai/ash/host/cap');
-const modules = ['SystemCapabilities.kt', 'ScreenCapabilities.kt', 'ShellCapabilities.kt', 'VScreenCapabilities.kt', 'CalendarCapabilities.kt'];
+const capDir = process.argv[3] || join(root, 'android/app/src/main/java/ai/ash/host/cap');
 const policy = readFileSync(process.argv[2] || join(capDir, 'CapabilityPolicy.kt'), 'utf8');
 const declared = [...policy.matchAll(/"([a-z]+\.[a-z_]+)"\s+to\s+CapabilityPolicy\("(none|outward|structure)",\s*"([^"]+)"\)/g)]
   .map((match) => ({ name: match[1], risk: match[2], label: match[3] }));
 const names = [];
 const errors = [];
+const registry = readFileSync(join(capDir, 'Capabilities.kt'), 'utf8');
+const registryBody = registry.match(/val\s+all\s*:\s*List<Capability>\s+by\s+lazy\s*\{([^{}]+)\}/)?.[1];
+const entries = registryBody?.split('+').map((entry) => entry.trim()) || [];
+if (!entries.length || entries.some((entry) => !/^[A-Z][A-Za-z0-9_]*\.list$/.test(entry)))
+  errors.push('capability registry has dynamic or unrecognized module list');
+const modules = entries.filter((entry) => /^[A-Z][A-Za-z0-9_]*\.list$/.test(entry)).map((entry) => `${entry.slice(0, -5)}.kt`);
+if (modules.length !== new Set(modules).size) errors.push('duplicate capability registry module');
 for (const file of modules) {
-  const source = readFileSync(join(capDir, file), 'utf8');
+  let source;
+  try { source = readFileSync(join(capDir, file), 'utf8'); }
+  catch { errors.push(`${file}: registered module file missing`); continue; }
   const literal = [...source.matchAll(/\b(?:Cap|vcap)\s*\(\s*(?:name\s*=\s*)?"([a-z]+\.[a-z_]+)"/g)].map((match) => match[1]);
   names.push(...literal);
   const allCalls = [...source.matchAll(/\b(?:Cap|vcap)\s*\(/g)].length;
@@ -32,6 +40,5 @@ if (errors.length) { for (const error of errors) process.stderr.write(`${error}\
 else process.stdout.write(`manifest policy complete: ${names.length} capabilities, ${declared.length} explicit classifications\n`);
 
 function sourceHasFailClosed() {
-  const source = readFileSync(join(capDir, 'Capabilities.kt'), 'utf8');
-  return source.includes('CapabilityPolicies.require(c.name)') && policy.includes('requireNotNull(byName[name])');
+  return registry.includes('CapabilityPolicies.require(c.name)') && policy.includes('requireNotNull(byName[name])');
 }

@@ -19,6 +19,7 @@ object Present {
     private const val ITEM = "item:"
     private const val ACTION = "action:"
     private const val CONSUMED = "consumed:"
+    private const val RETIRED = "retired:"
     private val kinds = setOf("reply", "approval", "due", "offer", "heads_up")
     private val choices = setOf("once", "always", "deny")
     private val lock = Any()
@@ -65,21 +66,26 @@ object Present {
         var duplicate = false
         synchronized(lock) {
             val prior = item(ctx, id)
-            if (prior == null && prefs(ctx).getBoolean(CONSUMED + id, false))
-                return 409 to JSONObject().put("error", "presentation_id_consumed")
-            if (prior != null && prior.toString() != record.toString()) return 409 to JSONObject().put("error", "presentation_id_reused")
-            duplicate = prior != null
+            when (PresentLifecycle.admission(prior?.toString(), record.toString(), prefs(ctx).getBoolean(RETIRED + id, false))) {
+                PresentAdmission.RETIRED -> return 409 to JSONObject().put("error", "presentation_id_retired")
+                PresentAdmission.CONFLICT -> return 409 to JSONObject().put("error", "presentation_id_reused")
+                PresentAdmission.DUPLICATE -> duplicate = true
+                PresentAdmission.NEW -> {
+                    if (prefs(ctx).getBoolean(CONSUMED + id, false))
+                        return 409 to JSONObject().put("error", "presentation_id_consumed")
+                }
+            }
             if (!duplicate && !prefs(ctx).edit().putString(ITEM + id, record.toString()).commit())
                 return 500 to JSONObject().put("error", "store_failed")
         }
         if (expired(record)) { hide(ctx, id); return 200 to JSONObject().put("ok", true).put("expired", true) }
-        if (!prefs(ctx).getBoolean(CONSUMED + id, false)) Notifications.present(ctx, record)
+        if (PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false))) Notifications.present(ctx, record)
         if (record.has("expires_at")) scheduleExpiry(ctx, id, record.optLong("expires_at"))
         return 200 to JSONObject().put("ok", true).apply { if (duplicate) put("duplicate", true) }
     }
 
     fun hide(ctx: Context, id: String): Boolean {
-        val stored = synchronized(lock) { prefs(ctx).edit().remove(ITEM + id).commit() }
+        val stored = synchronized(lock) { prefs(ctx).edit().remove(ITEM + id).putBoolean(RETIRED + id, true).commit() }
         if (!stored) return false
         Notifications.hidePresent(ctx, id)
         cancelExpiry(ctx, id)
@@ -93,7 +99,7 @@ object Present {
             val id = record.optString("id")
             if (id.isBlank()) continue
             if (expired(record)) hide(ctx, id)
-            else if (prefs(ctx).getBoolean(CONSUMED + id, false)) Notifications.hidePresent(ctx, id)
+            else if (!PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false))) Notifications.hidePresent(ctx, id)
             else {
                 Notifications.present(ctx, record)
                 if (record.has("expires_at")) scheduleExpiry(ctx, id, record.optLong("expires_at"))
@@ -206,7 +212,12 @@ class PresentActionReceiver : BroadcastReceiver() {
         val action = PresentActionIdentity.fromUriParts(uri.scheme, uri.authority, uri.pathSegments) ?: return
         val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence("reply")?.toString()
         val pending = goAsync()
-        Thread { try { Present.act(ctx.applicationContext, action.id, action.choice, text) } finally { pending.finish() } }.start()
+        Thread {
+            try {
+                if (action.choice == "dismiss") Present.hide(ctx.applicationContext, action.id)
+                else Present.act(ctx.applicationContext, action.id, action.choice, text)
+            } finally { pending.finish() }
+        }.start()
     }
 }
 

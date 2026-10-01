@@ -52,7 +52,8 @@ object Notifications {
 
     private fun action(ctx: Context, id: String, choice: String, mutable: Boolean = false): PendingIntent {
         val uri = Uri.Builder().scheme("ash").authority("present-action").appendPath(id).appendPath(choice).build()
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (mutable && Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
+        val flags = PresentPendingIntentFlags.action(Build.VERSION.SDK_INT, mutable,
+            PendingIntent.FLAG_UPDATE_CURRENT, PendingIntent.FLAG_IMMUTABLE, PendingIntent.FLAG_MUTABLE)
         return PendingIntent.getBroadcast(ctx, 0, Intent(ctx, PresentActionReceiver::class.java).setData(uri), flags)
     }
 
@@ -80,7 +81,7 @@ object Notifications {
                 b.addAction(Notification.Action.Builder(null, option.getString("label"), action(ctx, id, option.getString("id"))).build())
             }
             b.setDeleteIntent(action(ctx, id, "deny"))
-        }
+        } else b.setDeleteIntent(action(ctx, id, "dismiss"))
         if (Build.VERSION.SDK_INT < 26 && (kind == "approval" || kind == "due")) b.setPriority(Notification.PRIORITY_HIGH)
         ctx.getSystemService(NotificationManager::class.java).notify("present:$id", 0, b.build())
     }

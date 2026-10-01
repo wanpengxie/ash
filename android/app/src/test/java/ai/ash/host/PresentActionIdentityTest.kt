@@ -11,6 +11,8 @@ class PresentActionIdentityTest {
             PresentActionIdentity.fromUriParts("ash", "present-action", listOf("reply-id", "reply")))
         assertEquals(PresentActionIdentity("approval-id", "deny"),
             PresentActionIdentity.fromUriParts("ash", "present-action", listOf("approval-id", "deny")))
+        assertEquals(PresentActionIdentity("reply-id", "dismiss"),
+            PresentActionIdentity.fromUriParts("ash", "present-action", listOf("reply-id", "dismiss")))
     }
 
     @Test fun malformedOrForeignUrisCannotSelectAnAction() {

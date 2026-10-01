@@ -6,7 +6,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.CalendarContract
-import java.util.TimeZone
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,28 +25,26 @@ object CalendarCapabilities {
         ),
         availableIf = ::canRead,
     ) { ctx, args ->
-        val start = args.optLong("start_ms", System.currentTimeMillis())
-        val end = args.optLong("end_ms", start + 7L * 24 * 60 * 60 * 1000)
-        if (end <= start || end - start > 366L * 24 * 60 * 60 * 1000) return@Cap CapResult.fail("calendar.search needs a positive window of at most 366 days")
-        val limit = args.optInt("limit", 20)
-        if (limit !in 1..50) return@Cap CapResult.fail("calendar.search limit must be 1–50")
-        val query = args.optString("query").trim().lowercase()
-        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also { ContentUris.appendId(it, start); ContentUris.appendId(it, end) }.build()
-        val columns = arrayOf(CalendarContract.Instances.EVENT_ID, CalendarContract.Instances.TITLE,
-            CalendarContract.Instances.BEGIN, CalendarContract.Instances.END, CalendarContract.Instances.EVENT_LOCATION,
-            CalendarContract.Instances.CALENDAR_ID)
-        val events = JSONArray()
-        ctx.contentResolver.query(uri, columns, null, null, "${CalendarContract.Instances.BEGIN} ASC")?.use { cursor ->
-            while (cursor.moveToNext() && events.length() < limit) {
-                val title = cursor.getString(1) ?: ""
-                val location = cursor.getString(4) ?: ""
-                if (query.isNotEmpty() && !title.lowercase().contains(query) && !location.lowercase().contains(query)) continue
-                events.put(JSONObject().put("id", cursor.getLong(0)).put("title", title)
-                    .put("start_ms", cursor.getLong(2)).put("end_ms", cursor.getLong(3))
-                    .put("location", location).put("calendar_id", cursor.getLong(5)))
+        CalendarArguments.search(args, System.currentTimeMillis(), provider@{ input ->
+            val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also { ContentUris.appendId(it, input.start); ContentUris.appendId(it, input.end) }.build()
+            val columns = arrayOf(CalendarContract.Instances.EVENT_ID, CalendarContract.Instances.TITLE,
+                CalendarContract.Instances.BEGIN, CalendarContract.Instances.END, CalendarContract.Instances.EVENT_LOCATION,
+                CalendarContract.Instances.CALENDAR_ID)
+            val events = JSONArray()
+            val cursor = ctx.contentResolver.query(uri, columns, null, null, "${CalendarContract.Instances.BEGIN} ASC")
+                ?: return@provider CapResult.fail("calendar provider unavailable")
+            cursor.use {
+                while (it.moveToNext() && events.length() < input.limit) {
+                    val title = it.getString(1) ?: ""
+                    val location = it.getString(4) ?: ""
+                    if (input.query.isNotEmpty() && !title.lowercase().contains(input.query) && !location.lowercase().contains(input.query)) continue
+                    events.put(JSONObject().put("id", it.getLong(0)).put("title", title)
+                        .put("start_ms", it.getLong(2)).put("end_ms", it.getLong(3))
+                        .put("location", location).put("calendar_id", it.getLong(5)))
+                }
             }
-        } ?: return@Cap CapResult.fail("calendar provider unavailable")
-        CapResult.json(JSONObject().put("events", events).put("count", events.length()))
+            CapResult.json(JSONObject().put("events", events).put("count", events.length()))
+        }, CapResult::fail)
     }
 
     private val create = Cap(
@@ -64,30 +61,25 @@ object CalendarCapabilities {
         ),
         availableIf = { canRead(it) && canWrite(it) },
     ) { ctx, args ->
-        val calendarId = args.optLong("calendar_id", -1)
-        val title = args.optString("title").trim()
-        val start = args.optLong("start_ms", -1)
-        val end = args.optLong("end_ms", -1)
-        if (calendarId < 0 || title.isEmpty() || start < 0 || end <= start) return@Cap CapResult.fail("calendar.create needs calendar_id, title and valid start/end")
-        val zone = args.optString("time_zone").ifBlank { TimeZone.getDefault().id }
-        if (zone !in TimeZone.getAvailableIDs()) return@Cap CapResult.fail("calendar.create time_zone is unknown")
-        val writable = ctx.contentResolver.query(CalendarContract.Calendars.CONTENT_URI,
-            arrayOf(CalendarContract.Calendars._ID),
-            "${CalendarContract.Calendars._ID}=? AND ${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL}>=?",
-            arrayOf(calendarId.toString(), CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString()), null)?.use { it.moveToFirst() } ?: false
-        if (!writable) return@Cap CapResult.fail("selected calendar is unavailable or read-only")
-        val values = ContentValues().apply {
-            put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DTSTART, start)
-            put(CalendarContract.Events.DTEND, end)
-            put(CalendarContract.Events.EVENT_TIMEZONE, zone)
-            if (args.has("description")) put(CalendarContract.Events.DESCRIPTION, args.optString("description"))
-            if (args.has("location")) put(CalendarContract.Events.EVENT_LOCATION, args.optString("location"))
-        }
-        val uri = ctx.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
-            ?: return@Cap CapResult.fail("calendar provider did not create the event")
-        CapResult.json(JSONObject().put("id", ContentUris.parseId(uri)).put("calendar_id", calendarId))
+        CalendarArguments.create(args, provider@{ input ->
+            val writable = ctx.contentResolver.query(CalendarContract.Calendars.CONTENT_URI,
+                arrayOf(CalendarContract.Calendars._ID),
+                "${CalendarContract.Calendars._ID}=? AND ${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL}>=?",
+                arrayOf(input.calendarId.toString(), CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString()), null)?.use { it.moveToFirst() } ?: false
+            if (!writable) return@provider CapResult.fail("selected calendar is unavailable or read-only")
+            val values = ContentValues().apply {
+                put(CalendarContract.Events.CALENDAR_ID, input.calendarId)
+                put(CalendarContract.Events.TITLE, input.title)
+                put(CalendarContract.Events.DTSTART, input.start)
+                put(CalendarContract.Events.DTEND, input.end)
+                put(CalendarContract.Events.EVENT_TIMEZONE, input.zone)
+                if (input.description != null) put(CalendarContract.Events.DESCRIPTION, input.description)
+                if (input.location != null) put(CalendarContract.Events.EVENT_LOCATION, input.location)
+            }
+            val uri = ctx.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
+                ?: return@provider CapResult.fail("calendar provider did not create the event")
+            CapResult.json(JSONObject().put("id", ContentUris.parseId(uri)).put("calendar_id", input.calendarId))
+        }, CapResult::fail)
     }
 
     val list: List<Capability> = listOf(search, create)
