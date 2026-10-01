@@ -12,6 +12,8 @@ import { WorldMembers } from "../../core/src/world/member";
 import { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, NativeFilePolicy } from "../src/door";
 import { DshHost } from "../src/host";
+// @ts-expect-error The browser's pure JavaScript projection has no TypeScript declaration.
+import { fold, initialView } from "../../core/ui/js/project.js";
 import { requestText, startHarness, type ScriptedReply, waitForTurn } from "../../../tools/spikes/harness";
 
 const root = process.env.ASH_TEST_DSH_ROOT;
@@ -133,7 +135,7 @@ test("v2 door uses five owned tools, routes through the world, and denies inheri
   const h = await startHarness((request) => {
     if (!request.tools.length) return "title";
     const last = request.messages.at(-1);
-    if (Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === "tool_result")) return "done";
+    if (Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === "tool_result") && !plans.length) return "done";
     const plan = plans.shift();
     assert.ok(plan, `unexpected model call: ${requestText(request).slice(-100)}`);
     return plan;
@@ -175,29 +177,43 @@ test("v2 door uses five owned tools, routes through the world, and denies inheri
     assert.equal(visible.includes("edit"), true);
 
     let n = 0;
-    const run = async (tool: string, input: Record<string, unknown>) => {
+    const runMany = async (calls: Extract<ScriptedReply, { tool: string }>[]) => {
       const turn = `t_door_${++n}`;
       const controller = new AbortController();
       door!.beginTurn(turn, controller.signal);
-      plans.push({ tool, input });
+      plans.push(...calls);
       try {
-        const result = await waitForTurn(h.host, sessionId, () => agent.followup({ id: `door-message-${n}`, role: "user", content: [{ type: "text", text: `call ${tool}` }], source: { kind: "user" } }));
+        const result = await waitForTurn(h.host, sessionId, () => agent.followup({ id: `door-message-${n}`, role: "user", content: [{ type: "text", text: `call ${calls.map((call) => call.tool).join(", ")}` }], source: { kind: "user" } }));
         assert.equal(result.text, "done");
       } finally { door!.endTurn(turn); }
     };
+    const run = (tool: string, input: Record<string, unknown>) => runMany([{ tool, input }]);
     await run("ash_describe", { member: "device:probe" });
     await run("ash_send", { to: "device:probe", word: "inspect", body: { value: "probe" } });
-    await run("ash_say", { text: "first" });
-    await run("ash_say", { text: "second" });
+    await runMany([{ tool: "ash_say", input: { text: "first" } }, { tool: "ash_say", input: { text: "second" } }]);
     await run("ash_react", { message_id: "missing", emoji: "❤" });
-    await run("ash_show", { card: { type: "permission", permission: "calendar", why: "Test card" } });
+    for (const card of [
+      { type: "options", prompt: "Choose", options: [{ id: "yes", text: "Yes" }] },
+      { type: "file", workspace: "home", path: "notes.txt", name: "Notes", mime_type: "text/plain", size: 8 },
+      { type: "image", workspace: "home", path: "photo.png", alt: "Photo" },
+      { type: "link", url: "https://example.invalid", title: "Example", summary: "Synthetic" },
+      { type: "permission", permission: "calendar", why: "Test card" },
+    ]) await run("ash_show", { card });
     device.setOnline(false);
     await run("ash_send", { to: "device:probe", word: "inspect", body: { value: "offline" } });
     assert.equal(ledger.list().filter((message) => message.from === "agent:main" && message.word === "say" && message.kind === "request").length, 2);
-    assert.equal(ledger.list().filter((message) => message.from === "agent:main" && message.word === "show").length, 1);
+    const says = ledger.list().filter((message) => message.from === "agent:main" && message.word === "say" && message.kind === "request");
+    assert.deepEqual(says.map((message) => message.turn), ["t_door_3", "t_door_3"]);
+    const show = ledger.list().filter((message) => message.from === "agent:main" && message.word === "show" && message.kind === "request");
+    assert.deepEqual(show.map((message) => (message.body.card as { type?: string } | undefined)?.type), ["options", "file", "image", "link", "permission"]);
+    const view = ledger.list().reduce((state, message) => fold(state, message), initialView()) as {
+      conversation: { type: string; side?: string; group?: string | null; card?: { type: string } }[] };
+    assert.deepEqual(view.conversation.filter((bubble) => bubble.type === "say" && bubble.side === "agent").map((bubble) => bubble.group), ["t_door_3", "t_door_3"]);
+    assert.deepEqual(view.conversation.filter((bubble) => bubble.type === "card").map((bubble) => bubble.card?.type), ["options", "file", "image", "link", "permission"]);
     assert.equal(ledger.list().filter((message) => message.from === "agent:main" && message.word === "react").length, 1);
     assert.equal(ledger.list().some((message) => message.from === "agent:main" && message.word === "inspect" && message.turn === "t_door_2"), true);
     assert.deepEqual(ledger.list().filter((message) => message.word === "inspect" && message.kind === "response").map((message) => message.body.ok), [true, false]);
+    assert.equal(JSON.stringify(h.requests.at(-1)?.messages).includes("offline"), true);
     assert.equal((ledger.list().find((message) => message.word === "react" && message.kind === "response")?.body.error as { code?: string } | undefined)?.code, "not_found");
 
     await run("write", { file_path: protectedFile, content: "wrong\n" });

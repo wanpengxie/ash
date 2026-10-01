@@ -23,7 +23,9 @@ npm run -s build:core
 
 The scripted provider and temporary workspace use no real model key or user files. The installed DSH runtime was 0.2.0-rc.2. Direct production-host startup was tested: missing turn adapter failed before session creation; with an adapter, the model saw exactly five owned tools, called `ash_say`, and a real world request/response was recorded. The separate door test covered two consecutive `ash_say` calls, device `ash_send` success and offline response, `ash_describe`, `ash_react` missing-message response, a permission `ash_show` card, ordinary native write, denied managed writes/edits and shell, child-agent denial, and definition mutation/duplicate-registration negatives. A synthetic path test covered dated-log hard links, snapshots/staging, core-state files, and cross-workspace aliases.
 
-Observed locally with real DSH enabled: focused door tests 3/3; full suite 186 passed, 57 intentional skips, 0 failed; typecheck and core build passed. The configured public-term scan is run after the moved legacy files are staged because its tracked-file walker requires every indexed path to exist.
+Observed locally with real DSH enabled after merging the current v2 baseline: focused door and worker-model tests 5/5; full suite 209 passed, 57 intentional skips, 0 failed; typecheck and core build passed. The configured public-term scan is run after the moved legacy files are staged because its tracked-file walker requires every indexed path to exist.
+
+The integrated component test now sends all five card variants through `ash_show` and verifies their pure conversation projection. Two `ash_say` calls in one DSH turn retain the same turn group. An offline device response is present in the subsequent model tool-result input. These are component observations: browser rendering of every card, the model's explanatory reply to an offline result, and the real production turn adapter remain unverified. The merged non-session worker model export and current-model selection remain available; the merged file-service member and recovery order are unchanged.
 
 ## Boundaries
 

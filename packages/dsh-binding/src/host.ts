@@ -56,6 +56,10 @@ export class DshHost {
 
   /** The worker's non-session llm service remains available without creating a model agent. */
   llm(): unknown { if (!this.ctx) throw new Error("DSH host not booted"); return this.ctx.get("llm"); }
+  agentOptions(): { provider: string; model: string } | undefined {
+    const selection = this.ctx?.get("agentDefaultModel")?.currentSelection?.();
+    return selection ? { provider: selection.provider, model: selection.model } : undefined;
+  }
 
   async startMain(options: Omit<DoorOptions, "tools" | "scopeChainOf"> & { workspace: string; adapter?: DoorTurnAdapter }): Promise<MainSession> {
     if (!this.ctx) throw new Error("DSH host not booted");
@@ -66,8 +70,7 @@ export class DshHost {
     let door: DshDoor | null = null;
     try {
       const sessionId = `session-${randomUUID()}`;
-      const selection = this.ctx.get("agentDefaultModel")?.currentSelection?.();
-      const agentOptions = selection ? { provider: selection.provider, model: selection.model } : undefined;
+      const agentOptions = this.agentOptions();
       door = createDshDoor({ tools: this.ctx.tools, members: options.members, router: options.router,
         workspace: options.workspace, managedRoot: options.managedRoot, protectedRoots: options.protectedRoots,
         scopeChainOf: scope.scopeChainOf });
