@@ -73,6 +73,12 @@ test("real session becomes idle after cancelling a tool while its external devic
       handle: async () => { deviceEntered.resolve(); await deviceRelease.promise; deviceSettled = true; return { ok: true, result: { done: true } }; } });
     const owner = caller("person:owner", "api");
     const reflex = caller("service:reflex", "service");
+    const ownerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const access = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${ownerToken}`,
+      "content-type": "application/json" }, body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+        body: { member: "agent:main", scope: "device:probe/hold" }, wait: true }) });
+    assert.equal(access.status, 200);
+    assert.equal((await access.json() as { reply?: { body?: { ok?: boolean } } }).reply?.body?.ok, true);
     await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "start hold" }, wait: true });
     await deviceEntered.promise;
     await until(() => running!.ledger.list().some((message) => message.from === "agent:main" && message.word === "status" &&
