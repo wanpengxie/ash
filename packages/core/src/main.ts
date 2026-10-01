@@ -196,9 +196,11 @@ export async function startOwner(config: Config): Promise<Running> {
     });
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
-    admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
+    admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
+      onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       currentAgentTurn: () => agent!.inbox.activeTurn()?.id ?? null,
       currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });
+    delivery.quiet = admin.journal.quietHours() ?? delivery.quiet;
     members.register(admin);
     post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
     members.register(post);

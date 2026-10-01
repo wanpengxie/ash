@@ -298,3 +298,24 @@ test("the approval page saves an exact calendar rule and revokes it", async ({ p
   await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
   await expect.poll(() => running.ledger.responseTo(revoked.id)?.body.ok).toBe(false);
 });
+
+test("local settings change quiet hours through the live admin word", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await page.locator("#menu").click();
+  await expect(page.locator("#settingsQuiet")).toBeVisible();
+  await page.locator("#settingsQuiet").getByRole("button", { name: "读取时段" }).click();
+  await expect(page.locator("#settingsQuietStatus")).toHaveText("已读取当前时段。");
+  await page.locator("#settingsQuietStart").fill("22:00");
+  await page.locator("#settingsQuietEnd").fill("08:00");
+  await page.locator("#settingsQuietSave").click();
+  await expect(page.locator("#settingsQuietStatus")).toHaveText("已保存免打扰时段。");
+  const saved = running.ledger.list({ limit: 1000 }).findLast((message) =>
+    message.to === "service:admin" && message.word === "settings.set");
+  expect(saved?.body).toEqual({ delivery: { quiet: "22:00-08:00" } });
+  await page.reload();
+  await page.locator("#menu").click();
+  await page.locator("#settingsQuiet").getByRole("button", { name: "读取时段" }).click();
+  await expect(page.locator("#settingsQuietStart")).toHaveValue("22:00");
+  await expect(page.locator("#settingsQuietEnd")).toHaveValue("08:00");
+});

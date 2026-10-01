@@ -1,3 +1,6 @@
+import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
+import { ProactivePreferences } from "./settings-preferences.js";
+
 function node(tag, label, className = "") {
   const element = document.createElement(tag);
   element.textContent = label;
@@ -95,6 +98,60 @@ export class SettingsControls {
     yes.addEventListener("click", () => { confirmation.hidden = true; void run("resume"); });
     no.addEventListener("click", () => { confirmation.hidden = true; });
     section.append(heading, pause, resume, confirmation, feedback);
+    const quietSection = document.createElement("section");
+    quietSection.id = "settingsQuiet";
+    const quietHeading = node("h2", "免打扰时段");
+    const start = document.createElement("input");
+    start.id = "settingsQuietStart";
+    start.type = "time";
+    start.value = "21:30";
+    const end = document.createElement("input");
+    end.id = "settingsQuietEnd";
+    end.type = "time";
+    end.value = "09:00";
+    const load = node("button", "读取时段", "btn gray");
+    load.type = "button";
+    const save = node("button", "保存时段", "btn");
+    save.type = "button";
+    save.id = "settingsQuietSave";
+    const quietStatus = node("p", "尚未读取当前时段。", "muted");
+    quietStatus.id = "settingsQuietStatus";
+    quietStatus.setAttribute("role", "status");
+    const requestSetting = async (word, body) => {
+      const token = this.net.token, screen = this.net.screen, scope = this.net.currentScope;
+      if (this.section !== section || !this.connected || !this.allowed || !this.net.localManagement || !token || !screen || !scope) return null;
+      const response = await this.net.request("/api/send", { method: "POST", credentials: "same-origin",
+        headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token },
+        body: JSON.stringify({ to: "service:admin", kind: "request", word, body, wait: true, client_id: crypto.randomUUID() }) });
+      if (this.section !== section || !this.connected || !this.allowed || token !== this.net.token ||
+        screen !== this.net.screen || scope !== this.net.currentScope || !this.net.localManagement || !response.ok) return null;
+      const accepted = await response.json();
+      const reply = accepted?.reply;
+      return reply?.kind === "response" && reply.reply_to === accepted.id && reply.from === "service:admin" &&
+        reply.to === "person:owner" && reply.word === word ? reply.body : null;
+    };
+    load.addEventListener("click", () => { void (async () => {
+      quietStatus.textContent = "正在读取…";
+      try {
+        const reply = await requestSetting("settings.get", {});
+        const quiet = reply?.ok === true ? reply.result?.delivery?.quiet : null;
+        if (typeof quiet !== "string" || !/^\d\d:\d\d-\d\d:\d\d$/.test(quiet)) throw new Error("unavailable");
+        [start.value, end.value] = quiet.split("-");
+        quietStatus.textContent = "已读取当前时段。";
+      } catch { if (this.section === section) quietStatus.textContent = "读取失败；请重试。"; }
+    })(); });
+    save.addEventListener("click", () => { void (async () => {
+      quietStatus.textContent = "正在保存…";
+      try {
+        const quiet = `${start.value}-${end.value}`;
+        if (!/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(quiet)) throw new Error("invalid");
+        const reply = await requestSetting("settings.set", { delivery: { quiet } });
+        if (reply?.ok !== true || reply.result?.delivery?.quiet !== quiet) throw new Error("unconfirmed");
+        quietStatus.textContent = "已保存免打扰时段。";
+      } catch { if (this.section === section) quietStatus.textContent = "保存未确认；请重试。"; }
+    })(); });
+    quietSection.append(quietHeading, start, end, load, save, quietStatus);
+    section.append(quietSection);
     const preferencesRoot = document.createElement("section");
     preferencesRoot.id = "settingsProactive";
     section.append(preferencesRoot);
@@ -105,4 +162,3 @@ export class SettingsControls {
       () => this.section === section && this.connected && this.allowed);
   }
 }
-import { ProactivePreferences } from "./settings-preferences.js";

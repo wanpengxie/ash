@@ -26,6 +26,16 @@ export class AdminJournal {
     throw new TypeError("invalid durable pause state");
   }
 
+  quietHours(): string | null {
+    const row = this.db.prepare("SELECT value FROM kv WHERE key='v2:delivery:quiet'").get() as Row | undefined;
+    return row ? String(row.value) : null;
+  }
+
+  setQuietHours(value: string): void {
+    this.db.prepare("INSERT INTO kv(key,value) VALUES('v2:delivery:quiet',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(value);
+  }
+
   /** The latest command and KV must agree before a pause can affect restart reconciliation. */
   currentCommand(): { requestId: string; seq: number; paused: boolean; targetTurn: string | null } | null {
     const row = this.db.prepare("SELECT request_id,seq,paused,target_turn FROM admin_pause_commands ORDER BY seq DESC LIMIT 1").get() as Row | undefined;

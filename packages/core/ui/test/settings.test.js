@@ -55,3 +55,33 @@ test("resume requires a second explicit click and never labels an unpaired resul
     assert.equal(panel.find("settingsFeedback").textContent, "已恢复 Ash");
   } finally { delete globalThis.document; }
 });
+
+test("quiet hours load and save only after a paired local settings reply", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    const sent = [];
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request(_path, init) {
+        const wire = JSON.parse(init.body);
+        sent.push(wire);
+        return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
+          from: "service:admin", to: "person:owner", word: wire.word,
+          body: { ok: true, result: { delivery: { quiet: wire.word === "settings.get" ? "22:00-08:00" : wire.body.delivery.quiet } } } } }), { status: 200 });
+      } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsQuiet").children.find((item) => item.textContent === "读取时段").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsQuietStart").value, "22:00");
+    assert.equal(panel.find("settingsQuietEnd").value, "08:00");
+    panel.find("settingsQuietStart").value = "23:00";
+    panel.find("settingsQuietSave").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.map((item) => [item.word, item.body]), [
+      ["settings.get", {}], ["settings.set", { delivery: { quiet: "23:00-08:00" } }]]);
+    assert.equal(panel.find("settingsQuietStatus").textContent, "已保存免打扰时段。");
+    settings.network("offline");
+    assert.equal(panel.find("settingsQuiet"), undefined);
+  } finally { delete globalThis.document; }
+});

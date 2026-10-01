@@ -7,10 +7,13 @@ import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from 
 
 const pause = wordContract("service:admin", "pause")!;
 const resume = wordContract("service:admin", "resume")!;
+const settingsGet = wordContract("service:admin", "settings.get")!;
+const settingsSet = wordContract("service:admin", "settings.set")!;
 const service: TrustedRouteContext = { member: "service:admin", transport: "service", transportPrincipal: "service:admin",
   local: true, remote: false, ownerProxy: false };
 
 export interface AdminOptions { ledger: Ledger; router: WorldRouter; dbFile: string; onPauseChanged: () => void;
+  delivery?: { quiet: string };
   currentAgentTurn?: () => string | null;
   /** Current server-owned registration, not the screen name persisted with the request. */
   currentScreenBinding: (screen: string, principal: string) => boolean }
@@ -21,11 +24,11 @@ export class AdminMember implements Member {
   readonly kind = "service" as const;
   readonly name = "Administration";
   readonly online = true;
-  readonly idempotentRecovery = ["pause", "resume"] as const;
+  readonly idempotentRecovery = ["pause", "resume", "settings.get", "settings.set"] as const;
   readonly journal: AdminJournal;
   private closed = false;
   constructor(private readonly options: AdminOptions) { this.journal = new AdminJournal(options.dbFile); }
-  words(): readonly WordSpec[] { return [pause, resume]; }
+  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet]; }
 
   /** A current durable pause may have crashed before it reached agent cancellation. */
   currentCommittedPause(): { requestId: string; targetTurn: string | null } | null {
@@ -61,6 +64,22 @@ export class AdminMember implements Member {
       return { ok: false, error: { code: "offline", message: "admin unavailable" } };
     if (!await this.options.router.currentlyAuthorized(message, context.caller))
       return { ok: false, error: { code: "forbidden", message: "current admin authority unavailable" } };
+    if (message.word === "settings.get" || message.word === "settings.set") {
+      if (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !this.options.delivery)
+        return { ok: false, error: { code: "forbidden", message: "local settings unavailable" } };
+      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet } } };
+      const body = message.body;
+      const section = body.delivery;
+      const quiet = section && typeof section === "object" && !Array.isArray(section) ? (section as Record<string, unknown>).quiet : undefined;
+      if (Object.keys(body).length !== 1 || !section || typeof section !== "object" || Array.isArray(section) ||
+        Object.keys(section).length !== 1 || typeof quiet !== "string" ||
+        !/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(quiet))
+        return { ok: false, error: { code: "bad_request", message: "expected delivery.quiet as HH:MM-HH:MM" } };
+      if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "settings request settled" } };
+      this.journal.setQuietHours(quiet);
+      this.options.delivery.quiet = quiet;
+      return { ok: true, result: { delivery: { quiet } } };
+    }
     const paused = message.word === "pause" ? true : message.word === "resume" ? false : null;
     if (paused === null) return { ok: false, error: { code: "not_found", message: "admin word unavailable" } };
     if (paused && message.from === "service:reflex" && !await this.options.router.currentlyAuthorizedReflexPause(message.body.by))
