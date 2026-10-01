@@ -41,6 +41,13 @@ test("native file policy rejects snapshots, temporary state, hard-link aliases a
     assert.equal(policy.denial({ file_path: "notes.txt" }), undefined);
     assert.equal(policy.denial({ file_path: join(home, "notes.txt") }), undefined);
     assert.ok(policy.denial({ file_path: 12 }));
+    assert.equal(policy.readDenial({ file_path: "SOUL.md" }), undefined);
+    assert.equal(policy.readDenial({ file_path: "notes.txt" }), undefined);
+    assert.ok(policy.readDenial({ file_path: join(state, "tokens.json") }));
+    assert.ok(policy.readDenial({ file_path: "../other-workspace/file.txt" }));
+    assert.ok(policy.readDenial({ file_path: "other-alias/file.txt" }));
+    assert.equal(policy.readDenial({}, "path", true), undefined);
+    assert.ok(policy.readDenial({ path: state }, "path", true));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

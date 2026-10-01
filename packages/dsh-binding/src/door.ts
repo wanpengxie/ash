@@ -93,6 +93,17 @@ export class NativeFilePolicy {
     catch { return "File identity could not be safely checked."; }
     return undefined;
   }
+
+  readDenial(args: unknown, field = "file_path", optional = false): string | undefined {
+    const raw = object(args) ? args[field] : undefined;
+    if (optional && raw === undefined) return undefined;
+    if (typeof raw !== "string" || !raw.trim()) return "File path is required.";
+    let target: string | null;
+    try { target = targetPath(raw, this.workspace); } catch { return "File path could not be safely resolved."; }
+    if (!target || !inside(this.workspace, target) || this.protectedRoots.some((root) => inside(root, target)))
+      return "Native file reads require a workspace path.";
+    return undefined;
+  }
 }
 
 const OUTPUT = Object.freeze({
@@ -269,6 +280,8 @@ export class DshDoor {
     const definition = bound.definitions.get(exec.name) ?? bound.natives.get(exec.name);
     if (!definition || this.options.tools.get(exec.name, exec.agent) !== definition) return "Tool is not in the audited source set.";
     if (exec.name === "write" || exec.name === "edit") return this.files.denial(exec.arguments);
+    if (exec.name === "read" || exec.name === "read_image") return this.files.readDenial(exec.arguments);
+    if (exec.name === "glob" || exec.name === "grep") return this.files.readDenial(exec.arguments, "path", true);
     return undefined;
   }
 

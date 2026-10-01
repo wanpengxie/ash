@@ -30,7 +30,8 @@ async function fixture(failpoint?: (stage: SelfStage) => void) {
 test("self enforces canonical paths, byte hashes, USER frontmatter and authentic by", async () => {
   const f = await fixture();
   try {
-    await assert.rejects(f.send("write", { path: "../outside", content: "bad", why: "test", expected_hash: null }), /schema/); // rejected before member
+    for (const path of ["../outside", "SOUL.md.bak"])
+      await assert.rejects(f.send("write", { path, content: "bad", why: "test", expected_hash: null }), /schema/);
     const created = await f.send("write", { path: "USER.md", content: "Notes\n", why: "test", expected_hash: null }, agent);
     assert.equal(created.reply?.body.ok, true);
     const written = readFileSync(join(f.home, "USER.md"), "utf8");

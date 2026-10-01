@@ -110,16 +110,18 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
       if (tools.length && !isMind)
         captured.push({ tools, user, toolResult, resultText: JSON.stringify(last?.content ?? "") });
       const step = captured.length;
-      const nativeWrite = tools.length > 0 && !isMind && user.includes("write soul directly") && !toolResult;
-      const nativeRead = tools.length > 0 && !isMind && !nativeWrite && user.includes("read my fixture") && !toolResult;
-      const toolUse = Boolean(tools.length && !isMind && (step <= 3 || nativeRead || nativeWrite));
+      const privateRead = tools.length > 0 && !isMind && user.includes("read core private") && !toolResult;
+      const nativeWrite = tools.length > 0 && !isMind && !privateRead && user.includes("write soul directly") && !toolResult;
+      const nativeRead = tools.length > 0 && !isMind && !privateRead && !nativeWrite && user.includes("read my fixture") && !toolResult;
+      const toolUse = Boolean(tools.length && !isMind && (step <= 3 || nativeRead || nativeWrite || privateRead));
       const messageId = /\bid=([A-Za-z0-9_-]+)/.exec(user)?.[1] ?? "missing";
       res.writeHead(200, { "content-type": "text/event-stream" });
       const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
       event("message_start", { message: { id: "msg_main", type: "message", role: "assistant", model: request.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
       if (toolUse) {
-        const tool = nativeRead ? "read" : nativeWrite ? "write" : step === 1 ? "ash_say" : "ash_react";
-        const input = nativeRead ? { file_path: "fixture.txt" } : nativeWrite ? { file_path: "SOUL.md", content: "WRONG\n" }
+        const tool = privateRead || nativeRead ? "read" : nativeWrite ? "write" : step === 1 ? "ash_say" : "ash_react";
+        const input = privateRead ? { file_path: join(root, "state", "private-fixture.txt") }
+          : nativeRead ? { file_path: "fixture.txt" } : nativeWrite ? { file_path: "SOUL.md", content: "WRONG\n" }
           : step === 1 ? { text: "tool said" } : { message_id: step === 2 ? messageId : "missing", emoji: "❤" };
         event("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_main_${step}`, name: tool, input: {} } });
         event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
@@ -141,6 +143,7 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
       agents: [{ id: "agent:main", runtime: "dsh" }], dsh: { root: install!, home: join(root, "dsh"), env: {
         DSH_TELEMETRY_DISABLED: "1", DEEPSEEK_API_KEY: "sk-synthetic", DEEPSEEK_BASE_URL: `http://127.0.0.1:${port}/anthropic`,
       } } });
+    writeFileSync(join(root, "state", "private-fixture.txt"), "PRIVATE_CORE_SECRET\n");
     const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
     const response = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "synthetic input" }, client_id: "dsh-main-input" }) });
@@ -204,6 +207,20 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     while (Date.now() < writeDeadline && !running.ledger.responseTo(writeCall.id)) await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(running.ledger.responseTo(writeCall.id)?.body.ok, false);
     assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), soulBefore);
+    const privateResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "read core private" }, client_id: "dsh-private-read-probe" }) });
+    assert.equal(privateResponse.status, 200);
+    const privateDeadline = Date.now() + 15_000;
+    let privateCall;
+    while (Date.now() < privateDeadline && !privateCall) {
+      privateCall = running.ledger.list().find((message) => message.to === "service:dsh-tool" && message.word === "read" &&
+        String(message.body.arguments).includes("private-fixture.txt"));
+      if (!privateCall) await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    assert.ok(privateCall, "private read attempt entered the core ledger");
+    while (Date.now() < privateDeadline && !running.ledger.responseTo(privateCall.id)) await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(running.ledger.responseTo(privateCall.id)?.body.ok, false);
+    assert.equal(readFileSync(join(root, "state", "private-fixture.txt"), "utf8"), "PRIVATE_CORE_SECRET\n");
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));
