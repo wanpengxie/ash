@@ -219,6 +219,7 @@ export class SelfMember implements Member {
       result = { applied: body.edits.length };
     } else if (message.word === "rollback") {
       if (!Number.isSafeInteger(body.to_ts) || old === null) throw new SelfFailure("bad_request", "invalid rollback target");
+      if (body.expected_hash !== hash(old)) throw new SelfFailure("bad_request", "stale");
       if (path === "USER.md" && userVersion(old) === null) throw new SelfFailure("bad_request", "legacy USER.md requires a hash-guarded write");
       const file = join(this.versions(path), `${body.to_ts}.md`);
       if (!existsSync(file)) throw new SelfFailure("not_found", "snapshot not found");

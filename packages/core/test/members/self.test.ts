@@ -174,10 +174,78 @@ test("self applies all guards against original lines, rejects stale batch and de
     assert.equal(f.ledger.list().filter((m) => m.word === "self.changed").length, 3);
     const history = await f.send("history", { path: "MEMORY.md" });
     const ts = (history.reply?.body.result as { versions: { ts: number }[] }).versions[0].ts;
-    const rolled = await f.send("rollback", { path: "MEMORY.md", to_ts: ts });
+    const prior = createHash("sha256").update("ONE\ntwo\nthree\nfour\n").digest("hex");
+    const rolled = await f.send("rollback", { path: "MEMORY.md", to_ts: ts, expected_hash: prior });
     assert.equal(rolled.reply?.body.ok, true);
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "one\ntwo\nthree\n");
   } finally { await f.self.close(); f.ledger.close(); }
+});
+
+test("rollback requires current hash; stale and missing guards cannot change a snapshot target", async () => {
+  const f = await fixture();
+  try {
+    const before = await f.send("write", { path: "MEMORY.md", content: "before\n", why: "synthetic", expected_hash: null });
+    const beforeHash = (before.reply?.body.result as { hash: string }).hash;
+    const after = await f.send("write", { path: "MEMORY.md", content: "after\n", why: "synthetic", expected_hash: beforeHash });
+    const afterHash = (after.reply?.body.result as { hash: string }).hash;
+    const history = await f.send("history", { path: "MEMORY.md" });
+    const ts = (history.reply?.body.result as { versions: { ts: number }[] }).versions[0].ts;
+    const acceptedBefore = f.ledger.list().length;
+    await assert.rejects(f.send("rollback", { path: "MEMORY.md", to_ts: ts }), /schema/);
+    assert.equal(f.ledger.list().length, acceptedBefore, "missing guard is rejected before ledger acceptance");
+    const stale = await f.send("rollback", { path: "MEMORY.md", to_ts: ts, expected_hash: beforeHash });
+    assert.equal((stale.reply?.body.error as { code: string }).code, "bad_request");
+    assert.equal((stale.reply?.body.error as { message: string }).message, "stale");
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "after\n");
+    assert.equal(f.ledger.list().filter((m) => m.word === "self.changed").length, 2);
+    const [write, rollback] = await Promise.all([
+      f.send("write", { path: "MEMORY.md", content: "new\n", why: "synthetic", expected_hash: afterHash }),
+      f.send("rollback", { path: "MEMORY.md", to_ts: ts, expected_hash: afterHash }),
+    ]);
+    assert.equal([write.reply?.body.ok, rollback.reply?.body.ok].filter(Boolean).length, 1, "serial queue allows only one mutation against a baseline");
+    assert.equal([(write.reply?.body.error as { message?: string } | undefined)?.message, (rollback.reply?.body.error as { message?: string } | undefined)?.message].filter((item) => item === "stale").length, 1);
+    assert.equal(f.ledger.list().filter((m) => m.word === "self.changed").length, 3);
+    assert.equal(["new\n", "before\n"].includes(readFileSync(join(f.home, "MEMORY.md"), "utf8")), true);
+  } finally { await f.self.close(); f.ledger.close(); }
+});
+
+test("guarded rollback recovers once across process termination", async () => {
+  const child = fileURLToPath(new URL("../fixtures/self-crash-child.ts", import.meta.url));
+  for (const stage of ["after-intent", "after-rename", "after-event"] as SelfStage[]) {
+    const dir = mkdtempSync(join(tmpdir(), `ash-rollback-kill-${stage}-`));
+    const home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "MEMORY.md"), "before\n");
+    {
+      const ledger = await Ledger.open(join(dir, "ash.db"));
+      const world = new WorldRouter(ledger, async () => true);
+      const members = new WorldMembers(world);
+      const self = createSelfMember({ home, stateDir: join(dir, "self"), ledger, router: world }); members.register(self);
+      try {
+        const beforeHash = createHash("sha256").update("before\n").digest("hex");
+        const prepared = await world.send(owner, { to: "service:self", kind: "request", word: "write", body: { path: "MEMORY.md", content: "after\n", why: "synthetic", expected_hash: beforeHash }, wait: true });
+        assert.equal(prepared.reply?.body.ok, true);
+      } finally { await self.close(); ledger.close(); }
+    }
+    const killed = spawnSync(process.execPath, ["--import", "tsx", child, dir, stage, "rollback"], { cwd: process.cwd(), timeout: 10_000, encoding: "utf8" });
+    assert.equal(killed.signal, "SIGKILL", `${stage}: ${killed.stderr}`);
+    const ledger = await Ledger.open(join(dir, "ash.db"));
+    const world = new WorldRouter(ledger, async () => true);
+    const members = new WorldMembers(world);
+    const self = createSelfMember({ home, stateDir: join(dir, "self"), ledger, router: world }); members.register(self);
+    try {
+      await self.prepareRecovery(); await world.recover();
+      const request = ledger.list().find((m) => m.word === "rollback" && m.to === "service:self");
+      assert.ok(request);
+      const deadline = Date.now() + 2_000;
+      while (!ledger.responseTo(request.id) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(ledger.responseTo(request.id)?.body.ok, true, stage);
+      assert.equal(readFileSync(join(home, "MEMORY.md"), "utf8"), "before\n", stage);
+      assert.equal(ledger.list().filter((m) => m.word === "self.changed").length, 2, stage);
+      assert.equal(ledger.list().filter((m) => m.reply_to === request.id).length, 1, stage);
+      const retry = await world.send(owner, { to: "service:self", kind: "request", word: "rollback", body: request.body, wait: true, client_id: "crash-rollback" });
+      assert.equal(retry.id, request.id, stage);
+      assert.equal(ledger.list().filter((m) => m.word === "self.changed").length, 2, stage);
+    } finally { await self.close(); ledger.close(); }
+  }
 });
 
 test("SIGKILL at every durable self-write boundary recovers one file effect and one event", async () => {
