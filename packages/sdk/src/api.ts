@@ -413,6 +413,13 @@ export interface SendRequestV2 {
   client_id?: string;
 }
 export interface SendResultV2 { id: string; seq: number; reply?: Message }
+/** Existing send response wire for the one registered target screen; identity comes from Ash-Screen, never this body. */
+export type ScreenUiOpenAnswerV2 = SendRequestV2 & {
+  kind: "response";
+  word: "ui.open";
+  reply_to: string;
+  body: { ok: true; result: { opened: boolean } };
+};
 export interface StreamQueryV2 { after?: number; before?: number; limit?: number; follow?: boolean; screen?: string; label?: string }
 /** A live stream control frame, not a ledger message or cursor-bearing SSE event. */
 export interface ScreenRegistration { screen: string; token: string; label: string }

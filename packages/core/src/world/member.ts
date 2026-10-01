@@ -25,11 +25,11 @@ interface RegisteredMember {
   words: readonly WordSpec[];
 }
 
-const memberId = /^(person|screen|agent|device|service|worker):[A-Za-z0-9_-]+$/;
+const memberIdPattern = /^(person|screen|agent|device|service|worker):[A-Za-z0-9_-]+$/;
 const clone = <T>(value: T): T => structuredClone(value);
 
 function validInfo(member: MemberInfo): Omit<MemberInfo, "online"> {
-  if (!member || typeof member.id !== "string" || !memberId.test(member.id) || member.id.split(":")[0] !== member.kind ||
+  if (!member || typeof member.id !== "string" || !memberIdPattern.test(member.id) || member.id.split(":")[0] !== member.kind ||
     typeof member.name !== "string" || !member.name.trim() || (member.online !== undefined && typeof member.online !== "boolean")) {
     throw new TypeError("invalid member information");
   }
@@ -39,7 +39,15 @@ function validInfo(member: MemberInfo): Omit<MemberInfo, "online"> {
 /** Directory and router share the same validated word snapshots. Registration has one publish point. */
 export class WorldMembers {
   private readonly members = new Map<string, RegisteredMember>();
+  private screenDirectory: (() => { id: string; name: string; online: boolean }[]) | null = null;
+  private screenWord: WordSpec | null = null;
   constructor(readonly router: WorldRouter) {}
+
+  /** Ephemeral screen information is projected from the authenticated registry; routing uses its one validated wildcard word. */
+  setScreenDirectory(list: () => { id: string; name: string; online: boolean }[], word: WordSpec): void {
+    if (this.screenDirectory && this.screenDirectory !== list) throw new TypeError("screen directory already installed");
+    this.screenDirectory = list; this.screenWord = clone(word);
+  }
 
   register(member: Member): void {
     const info = validInfo(member);
@@ -102,12 +110,18 @@ export class WorldMembers {
       const online = item.online();
       return { ...item.info, ...(online === undefined ? {} : { online }) };
     };
+    const screens = this.screenDirectory?.().filter((screen) => memberIdPattern.test(screen.id)) ?? [];
+    if (memberId !== undefined && screens.some((screen) => screen.id === memberId)) {
+      const screen = screens.find((item) => item.id === memberId)!;
+      return { members: [{ ...screen, kind: "screen", words: [clone(this.screenWord!)] }] };
+    }
     if (memberId !== undefined) {
       const item = this.members.get(memberId);
       if (!item || !visible(item).length) throw new RouterError("not_found", "member not found");
       return { members: [{ ...info(item), words: visible(item).map(clone) }] };
     }
-    return { members: [...this.members.values()].filter((item) => visible(item).length).sort((a, b) => a.info.id.localeCompare(b.info.id))
-      .map((item) => ({ ...info(item), words: visible(item).map((word) => word.word).sort() })) };
+    return { members: [...this.members.values()].filter((item) => visible(item).length > 0).map((item) => ({ ...info(item), words: visible(item).map((word) => word.word).sort() }))
+      .concat(screens.map((screen) => ({ ...screen, kind: "screen" as const, words: [this.screenWord!.word] })))
+      .sort((a, b) => a.id.localeCompare(b.id)) };
   }
 }

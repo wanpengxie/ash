@@ -15,7 +15,7 @@ const skip = !install || !existsSync(join(install, "package.json")) ? "set ASH_T
 test("production DSH main uses one bounded followup, routes its tool once, and splits only assistant text", { skip }, async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-main-"));
   const home = join(root, "home"); mkdirSync(home);
-  const captured: { tools: string[]; user: string; toolResult: boolean }[] = [];
+  const captured: { tools: string[]; user: string; toolResult: boolean; resultText: string }[] = [];
   const model = createServer((req, res) => {
     let raw = "";
     req.on("data", (part) => { raw += part; });
@@ -27,19 +27,24 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
       const toolResult = Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === "tool_result");
       const user = (request.messages ?? []).filter((message) => message.role === "user").flatMap((message) =>
         Array.isArray(message.content) ? message.content.filter((part: { type?: string }) => part.type === "text").map((part: { text?: string }) => part.text ?? "") : []).join("\n");
-      if (tools.length) captured.push({ tools, user, toolResult });
+      if (tools.length) captured.push({ tools, user, toolResult, resultText: JSON.stringify(last?.content ?? "") });
+      const step = captured.length;
+      const toolUse = Boolean(tools.length && step <= 3);
+      const messageId = /\bid=([A-Za-z0-9_-]+)/.exec(user)?.[1] ?? "missing";
       res.writeHead(200, { "content-type": "text/event-stream" });
       const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
       event("message_start", { message: { id: "msg_main", type: "message", role: "assistant", model: request.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } });
-      if (tools.length && !toolResult) {
-        event("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_main", name: "ash_say", input: {} } });
-        event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: "tool said" }) } });
+      if (toolUse) {
+        const tool = step === 1 ? "ash_say" : "ash_react";
+        const input = step === 1 ? { text: "tool said" } : { message_id: step === 2 ? messageId : "missing", emoji: "❤" };
+        event("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_main_${step}`, name: tool, input: {} } });
+        event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
       } else {
         event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
         event("content_block_delta", { index: 0, delta: { type: "text_delta", text: "first\n\nsecond\n\n```js\na()\n\nb()\n```" } });
       }
       event("content_block_stop", { index: 0 });
-      event("message_delta", { delta: { stop_reason: tools.length && !toolResult ? "tool_use" : "end_turn" }, usage: { output_tokens: 5 } });
+      event("message_delta", { delta: { stop_reason: toolUse ? "tool_use" : "end_turn" }, usage: { output_tokens: 5 } });
       event("message_stop", {});
       res.end();
     });
@@ -59,13 +64,17 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline && running.ledger.list().filter((message) => message.from === "agent:main" && message.to === "person:owner" && message.kind === "request" && message.word === "say").length < 4)
       await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(captured.length, 2);
+    assert.equal(captured.length, 4);
     assert.deepEqual(captured[0].tools.sort(), ["ash_describe", "ash_react", "ash_say", "ash_send", "ash_show"]);
     assert.equal(captured[1].toolResult, true);
+    assert.match(captured[3].resultText, /not_found/);
     assert.match(captured[0].user, /synthetic input/);
     const says = running.ledger.list().filter((message) => message.from === "agent:main" && message.to === "person:owner" && message.word === "say" && message.kind === "request");
     assert.deepEqual(says.map((message) => message.body.text), ["tool said", "first", "second", "```js\na()\n\nb()\n```"]);
     assert.equal(new Set(says.map((message) => message.turn)).size, 1);
+    const reacts = running.ledger.list().filter((message) => message.from === "agent:main" && message.to === "person:owner" && message.word === "react" && message.kind === "request");
+    assert.equal(reacts.length, 2);
+    assert.deepEqual(reacts.map((message) => running!.ledger.responseTo(message.id)?.body.ok), [true, false]);
     assert.equal(running.ledger.list().filter((message) => message.word === "turn.end" && message.body.reason === "completed").length, 1);
   } finally {
     await running?.close();

@@ -208,7 +208,8 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
         const id = typeof message?.id === "string" ? message.id : `unidentified-${seen.size}`;
         const text = Array.isArray(message?.content) ? message.content.filter((block: { type?: string }) => block.type === "text")
           .map((block: { text?: string }) => block.text ?? "").join("") : "";
-        const key = createHash("sha256").update(id).update("\0").update(text).digest("hex").slice(0, 24);
+        if (!text.trim()) return; // tool-only messages do not consume a text identity
+        const key = createHash("sha256").update(id).digest("hex").slice(0, 24);
         if (seen.has(key)) return;
         seen.add(key);
         for (const [index, part] of splitAssistantText(text).entries()) {

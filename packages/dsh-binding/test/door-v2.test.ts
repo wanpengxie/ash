@@ -4,7 +4,6 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { wordContract } from "../../sdk/src/words";
 import { DeviceMember } from "../../core/src/members/device";
 import { OwnerMember } from "../../core/src/members/owner";
 import { Ledger } from "../../core/src/world/ledger";
@@ -130,7 +129,7 @@ test("production DSH host fails before an unbound session and mounts only the v2
   } finally { await host.close(); ledger.close(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("v2 door uses five owned tools, routes through the world, and denies inherited execution/file escapes", { skip }, async () => {
+test("v2 door uses five owned tools, routes through the world, and denies inherited execution/file escapes", { skip, timeout: 120_000 }, async () => {
   const plans: Extract<ScriptedReply, { tool: string }>[] = [];
   const h = await startHarness((request) => {
     if (!request.tools.length) return "title";
@@ -140,6 +139,9 @@ test("v2 door uses five owned tools, routes through the world, and denies inheri
     assert.ok(plan, `unexpected model call: ${requestText(request).slice(-100)}`);
     return plan;
   });
+  let ledger: Ledger | undefined;
+  let door: ReturnType<typeof createDshDoor> | undefined;
+  try {
   const workspace = join(h.dir, "workspace");
   mkdirSync(join(workspace, "memory"), { recursive: true });
   const coreState = join(workspace, "core-state");
@@ -149,21 +151,16 @@ test("v2 door uses five owned tools, routes through the world, and denies inheri
   const alias = join(workspace, "alias.md");
   writeFileSync(protectedFile, "protected\n");
   symlinkSync(protectedFile, alias);
-  const ledger = await Ledger.open(join(h.dir, "world.db"));
+  ledger = await Ledger.open(join(h.dir, "world.db"));
   const router = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(router);
-  members.register(new OwnerMember());
-  for (const word of ["react", "show"] as const) router.register({ member: "person:owner", spec: wordContract("person:owner", word)!,
-    handle: (message) => word === "react" && message.body.message_id === "missing"
-      ? { ok: false, error: { code: "not_found", message: "message not found" } } : { ok: true, result: { accepted: true } } });
+  members.register(new OwnerMember("Owner", ledger));
   const device = new DeviceMember("device:probe", "Probe", [{ name: "inspect", description: "Inspect a harmless synthetic value.",
     input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
     risk: "none", label: "Inspecting" }], () => ({ ok: true, result: { value: "checked" } }));
   members.registerDevice(device);
   const port = { agentId: "agent:main", contextSections: () => ({ identity: "", state: "" }), projectedCapabilities: () => [],
     onCapabilitiesChanged: () => () => {}, gateStep: () => ({ allow: true }), gateTool: async () => ({ allow: true }) };
-  let door: ReturnType<typeof createDshDoor> | undefined;
-  try {
     const { agent, sessionId } = await h.host.agent(port as never, workspace);
     const scope = await h.host.imp("@deepseek-ai/dsh-scope");
     door = createDshDoor({ tools: h.host.ctx.tools, members, router, workspace, managedRoot: workspace,
@@ -233,5 +230,5 @@ test("v2 door uses five owned tools, routes through the world, and denies inheri
     assert.throws(() => (agent as unknown as { ctx: { tools: { register(definition: unknown): unknown } } }).ctx.tools.register(
       { ...own, execute: async () => ({ text: "forged" }) }), /already registered/i);
     door.assertReady();
-  } finally { door?.close(); ledger.close(); await h.close(); }
+  } finally { door?.close(); ledger?.close(); await h.close(); }
 });

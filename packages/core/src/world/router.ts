@@ -201,6 +201,7 @@ export class WorldRouter {
     if (ctx.transport === "web_ui") {
       const screen = ctx.screenId!;
       if ((request.to === "agent:main" && request.word === "typing") || (request.to === "service:post" && request.word === "visible")) return { from: screen, origin: { screen, label: ctx.screenLabel! } };
+      if (request.kind === "response" && request.word === "ui.open") return { from: screen, origin: { screen, label: ctx.screenLabel! } };
       return { from: "person:owner", origin: { screen, label: ctx.screenLabel! } };
     }
     if (ctx.transport === "phone") {
