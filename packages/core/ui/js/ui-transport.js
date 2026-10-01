@@ -44,7 +44,7 @@ export function browserUiTransport(fetchImpl = globalThis.fetch.bind(globalThis)
   };
 }
 
-/** Only a trusted native bootstrap may release this latch after migration and auth checks. */
+/** Only the trusted native asset page bootstrap releases this latch. */
 export function embeddedUiTransport({ request, endpoint }) {
   if (typeof request !== "function") throw new Error("native transport required");
   const logicalEndpoint = validateCoreEndpoint(endpoint);
@@ -55,8 +55,7 @@ export function embeddedUiTransport({ request, endpoint }) {
     embedded: true,
     endpoint: logicalEndpoint,
     isReady: () => state === "ready",
-    // The separate migration/authorization gate is not implemented in this slice.
-    allowsQueueFlush: () => false,
+    allowsQueueFlush: () => state === "ready",
     whenReady: () => ready,
     authorizeReady() { if (state !== "waiting") throw new Error("transport latch already settled"); state = "ready"; release(); },
     hold() { if (state === "ready") throw new Error("ready transport cannot return to hold"); state = "held"; },

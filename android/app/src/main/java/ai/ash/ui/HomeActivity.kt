@@ -10,10 +10,12 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.MimeTypeMap
+import android.webkit.CookieManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -33,10 +35,19 @@ import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.Paths
 import ai.ash.host.Permissions
+import ai.ash.ui.transport.CoreCancellation
+import ai.ash.ui.transport.CoreUiRequest
+import ai.ash.ui.transport.FixedCoreClient
+import ai.ash.ui.transport.ownerBearerFromPrivateUiUrl
+import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Opening the app opens Ash: the ash UI (served by ash core on loopback) in a WebView. While
+ * Opening the app opens Ash: the packaged UI in a WebView; native code talks to core. While
  * the core is installing or starting, a native status screen shows what is happening.
  */
 class HomeActivity : Activity() {
@@ -46,6 +57,9 @@ class HomeActivity : Activity() {
     private lateinit var action: Button
     private val ui = Handler(Looper.getMainLooper())
     private var loaded = false
+    private var pageEpoch = 0L
+    private var coreUi: FixedCoreClient? = null
+    private val requests = ConcurrentHashMap<String, CoreCancellation>()
     /** The web page's pending <input type=file> request; answered exactly once (null = cancelled). */
     private var fileCallback: ValueCallback<Array<Uri>>? = null
 
@@ -59,6 +73,9 @@ class HomeActivity : Activity() {
         super.onCreate(savedInstanceState)
         CoreService.start(this)
 
+        // Browser cookies are not port-scoped. This WebView never receives the core owner token.
+        CookieManager.getInstance().setAcceptCookie(false)
+        if (BuildConfig.ISOLATED_PROBE) WebView.setWebContentsDebuggingEnabled(true)
         web = WebView(this)
         web.settings.apply {
             javaScriptEnabled = true
@@ -67,6 +84,9 @@ class HomeActivity : Activity() {
             userAgentString = "$userAgentString AshApp/0.2"
         }
         web.setBackgroundColor(if (night) 0xFF141415.toInt() else 0xFFF7F7F5.toInt())
+        val assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
@@ -78,21 +98,49 @@ class HomeActivity : Activity() {
                     Permissions.all.find { it.key == u.pathSegments.singleOrNull() }?.open(this@HomeActivity)
                     return true
                 }
-                if (CoreEndpoint.acceptsResourceUrl(u.toString(), BuildConfig.CORE_PORT)) return false
+                if (u.toString() == UI_ASSET_URL) return false
                 if ((u.scheme == "http" || u.scheme == "https") && u.host != "127.0.0.1" && u.host != "localhost")
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, u)) }
                 return true
             }
 
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
-                if (CoreEndpoint.acceptsResourceUrl(req.url.toString(), BuildConfig.CORE_PORT)) return null
-                return WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                val u = req.url
+                if (u.scheme == "https" && u.host == "appassets.androidplatform.net" && u.port == -1 &&
+                    u.encodedPath?.startsWith("/assets/ash-ui/") == true && u.encodedPath?.contains("..") != true &&
+                    u.query == null && u.fragment == null) {
+                    assetLoader.shouldInterceptRequest(u)?.let { return it }
+                }
+                return forbidden()
+            }
+
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                requests.values.forEach { it.cancel() }
+                requests.clear()
+                coreUi?.invalidate()
+                pageEpoch = if (url == UI_ASSET_URL) coreUi?.beginPage(true) ?: 0L else 0L
+                if (pageEpoch == 0L) { loaded = false; cover.visibility = View.VISIBLE; view.stopLoading() }
             }
 
             override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
                 if (req.isForMainFrame) {
                     loaded = false
                     cover.visibility = View.VISIBLE
+                }
+            }
+        }
+
+        val bridgeSupported = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+        if (bridgeSupported) {
+            WebViewCompat.addWebMessageListener(web, "AshNative", setOf(UI_ASSET_ORIGIN)) { _, message, origin, mainFrame, reply ->
+                if (!mainFrame || origin.toString() != UI_ASSET_ORIGIN || pageEpoch == 0L) return@addWebMessageListener
+                val input = runCatching { JSONObject(message.data ?: "") }.getOrNull() ?: return@addWebMessageListener
+                when (input.optString("type")) {
+                    "hello" -> reply.postMessage(JSONObject().put("type", "ready")
+                        .put("endpoint", "http://127.0.0.1:${BuildConfig.CORE_PORT}").toString())
+                    "cancel" -> requests.remove(input.optString("id"))?.cancel()
+                    "request" -> handleNativeRequest(input, reply)
                 }
             }
         }
@@ -118,6 +166,7 @@ class HomeActivity : Activity() {
             addView(web, FrameLayout.LayoutParams(-1, -1))
             addView(cover, FrameLayout.LayoutParams(-1, -1))
         })
+        if (!bridgeSupported) { status.text = "当前 WebView 不支持 Ash 安全通信"; return }
         poll()
         OnboardingActivity.showOnce(this)
     }
@@ -159,10 +208,53 @@ class HomeActivity : Activity() {
             cover.visibility = View.VISIBLE
             return
         }
+        val token = try { ownerBearerFromPrivateUiUrl(url, BuildConfig.CORE_PORT) }
+            catch (_: Exception) { status.text = "核心凭据不可用"; return }
+        coreUi = FixedCoreClient(BuildConfig.CORE_PORT, bearer = { token })
         loaded = true
-        web.loadUrl(url) // /?token=… → the core answers with an HttpOnly cookie and redirects to /
+        web.loadUrl(UI_ASSET_URL)
         ui.postDelayed({ cover.visibility = View.GONE }, 400)
     }
+
+    private fun handleNativeRequest(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
+        val client = coreUi ?: return
+        val epoch = pageEpoch
+        val id = input.optString("id")
+        if (!Regex("[1-9][0-9]{0,11}").matches(id) || requests.containsKey(id)) return
+        val path = input.optString("path")
+        val operation = input.optString("operation")
+        val method = input.optString("method")
+        if (operation !in setOf("send", "stream", "file") || path.length > 1024 ||
+            !(operation == "send" && method == "POST" && path == "/api/send" ||
+              operation == "stream" && method == "GET" && path.startsWith("/api/stream?") ||
+              operation == "file" && method == "GET" && path.startsWith("/api/workspaces/"))) return
+        val headersJson = input.optJSONObject("headers") ?: JSONObject()
+        val headers = headersJson.keys().asSequence().associateWith { headersJson.optString(it) }
+        val rawBody = input.opt("body")
+        if (rawBody != JSONObject.NULL && rawBody != null && rawBody !is String) return
+        if (rawBody is String && rawBody.length > 28 * 1024 * 1024) return
+        val request = CoreUiRequest(method, path, headers, (rawBody as? String)?.toByteArray(Charsets.UTF_8))
+        val cancellation = CoreCancellation()
+        requests[id] = cancellation
+        val live = operation == "stream" && path.contains("follow=true")
+        fun respond(message: JSONObject) {
+            ui.post { if (pageEpoch == epoch && !cancellation.cancelled) runCatching { reply.postMessage(message.put("id", id).toString()) } }
+        }
+        if (live) respond(JSONObject().put("type", "started"))
+        Thread {
+            try {
+                val result = client.execute(epoch, request, cancellation) { chunk ->
+                    respond(JSONObject().put("type", "chunk").put("body", Base64.encodeToString(chunk, Base64.NO_WRAP)))
+                }
+                respond(JSONObject().put("type", "done").put("status", result.status)
+                    .put("content_type", result.contentType)
+                    .put("body", Base64.encodeToString(result.body, Base64.NO_WRAP)))
+            } catch (_: Exception) { respond(JSONObject().put("type", "error")) }
+            finally { requests.remove(id, cancellation) }
+        }.start()
+    }
+
+    private fun forbidden() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
 
     /** Opens the system picker for the web UI's attachment button (images or any file, several at once). */
     private fun chooseFiles(cb: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean {
@@ -216,6 +308,9 @@ class HomeActivity : Activity() {
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
+        requests.values.forEach { it.cancel() }
+        requests.clear()
+        coreUi?.invalidate()
         answerFiles(null)
         web.destroy()
         super.onDestroy()
@@ -225,6 +320,8 @@ class HomeActivity : Activity() {
     private fun open(u: String) = startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
 
     companion object {
+        private const val UI_ASSET_ORIGIN = "https://appassets.androidplatform.net"
+        private const val UI_ASSET_URL = "$UI_ASSET_ORIGIN/assets/ash-ui/index.html"
         private const val REQ_FILES = 7101
     }
 }

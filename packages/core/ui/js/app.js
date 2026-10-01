@@ -9,7 +9,7 @@ import { PresenceBar } from "./presence.js";
 import { AgentSheet } from "./sheet-agent.js";
 import { answerGateAsk, approvalSections } from "./sheet-approvals.js";
 import { IdentityName } from "./identity-name.js";
-import { readWorkspaceFile } from "./ui-transport.js";
+import { embeddedUiTransport, readWorkspaceFile } from "./ui-transport.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -315,3 +315,10 @@ export function boot({ uiTransport } = {}) {
 // A packaged asset page must wait for an explicitly injected native transport.
 if (typeof document !== "undefined" && globalThis.location?.origin !== "https://appassets.androidplatform.net" &&
     !document.documentElement?.hasAttribute("data-native-transport")) boot();
+else if (typeof document !== "undefined" && globalThis.location?.origin === "https://appassets.androidplatform.net") {
+  globalThis.__ashNativeBoot = (request, endpoint) => {
+    const transport = embeddedUiTransport({ request, endpoint });
+    transport.authorizeReady();
+    return boot({ uiTransport: transport });
+  };
+}

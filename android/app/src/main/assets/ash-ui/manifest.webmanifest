@@ -1,0 +1,11 @@
+{
+  "name": "Ash",
+  "short_name": "Ash",
+  "description": "Your personal agent",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#141415",
+  "theme_color": "#141415",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

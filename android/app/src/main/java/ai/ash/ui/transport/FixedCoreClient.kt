@@ -6,7 +6,7 @@ import java.net.Proxy
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** A constrained native boundary, not installed in any Activity or WebView yet. */
+/** Native-only owner transport for the packaged UI. */
 internal class FixedCoreClient(
     corePort: Int,
     private val bearer: () -> String,
@@ -30,9 +30,8 @@ internal class FixedCoreClient(
         active.clear()
     }
 
-    fun execute(pageEpoch: Long, input: CoreUiRequest, onChunk: (ByteArray) -> Unit = {}): CoreUiReply {
+    fun execute(pageEpoch: Long, input: CoreUiRequest, cancellation: CoreCancellation = CoreCancellation(), onChunk: (ByteArray) -> Unit = {}): CoreUiReply {
         val route = try { coreRoute(input) } catch (_: Exception) { throw IOException("core request unavailable") }
-        val cancellation = CoreCancellation()
         synchronized(this) {
             if (pageEpoch != epoch || pageEpoch == 0L) throw IOException("page no longer active")
             active.add(cancellation)

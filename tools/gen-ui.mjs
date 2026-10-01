@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// packages/core/ui/* → packages/core/src/ui.ts (one bundle file ships the UI; no assets to copy).
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+// The same UI source produces the core-served page and the Android packaged page.
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -12,6 +12,16 @@ const app = bundled.outputFiles[0].text.replaceAll("</script", "<\\/script");
 const html = readFileSync(join(ui, "index.html"), "utf8");
 if (!html.includes("<!-- ui-app -->")) throw new Error("UI app marker missing");
 const generatedHtml = html.replace("<!-- ui-app -->", `<script>${app}</script>`);
+const assetRoot = join(ui, "../../../android/app/src/main/assets/ash-ui");
+const nativeBootstrap = readFileSync(join(ui, "js/native-bootstrap.js"), "utf8").replaceAll("</script", "<\\/script");
+const assetHtml = generatedHtml.replace("<head>", `<head>\n<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'">`)
+  .replace("</body>", `<script>${nativeBootstrap}</script>\n</body>`);
+mkdirSync(join(assetRoot, "avatars"), { recursive: true });
+writeFileSync(join(assetRoot, "index.html"), assetHtml);
+writeFileSync(join(assetRoot, "manifest.webmanifest"), readFileSync(join(ui, "manifest.webmanifest")));
+writeFileSync(join(assetRoot, "icon.svg"), readFileSync(join(ui, "icon.svg")));
+for (const face of readdirSync(join(ui, "avatars")).filter((f) => f.endsWith(".webp")))
+  writeFileSync(join(assetRoot, "avatars", face), readFileSync(join(ui, "avatars", face)));
 // Ash's faces, one per state (ui/avatars/<state>.webp), shipped as base64.
 const avatars = Object.fromEntries(readdirSync(join(ui, "avatars")).filter((f) => f.endsWith(".webp")).sort().map((f) => [f.slice(0, -5), readFileSync(join(ui, "avatars", f)).toString("base64")]));
 writeFileSync(

@@ -7,6 +7,7 @@ const DEFAULT_TEXT = Object.freeze({
   idle: "在线", resting: "休息中", listening: "在听", thinking: "在想",
   working: "在忙", done: "", waiting_you: "等你一句话",
 });
+const AVATAR_ROOT = globalThis.location?.origin === "https://appassets.androidplatform.net" ? "/assets/ash-ui/avatars" : "/avatars";
 
 export function faceForStatus(state) { return Object.hasOwn(FACE, state) ? FACE[state] : null; }
 
@@ -37,7 +38,7 @@ export class PresenceBar {
       this.bar.dataset.state = "unknown";
       this.state.textContent = "状态待同步";
       this.state.title = "";
-      this.avatar.src = "/avatars/default.webp";
+      this.avatar.src = `${AVATAR_ROOT}/default.webp`;
       this.dot.className = "";
       return;
     }
@@ -45,7 +46,7 @@ export class PresenceBar {
     this.bar.dataset.state = presence.state;
     this.state.textContent = value;
     this.state.title = value;
-    this.avatar.src = `/avatars/${face}.webp`;
+    this.avatar.src = `${AVATAR_ROOT}/${face}.webp`;
     this.dot.className = ["listening", "thinking", "working", "waiting_you"].includes(presence.state) ? "running" :
       ["idle", "done"].includes(presence.state) ? "idle" : "";
   }

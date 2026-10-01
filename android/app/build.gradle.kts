@@ -107,6 +107,7 @@ tasks.named("preBuild") { dependsOn(copyPayload) }
 
 dependencies {
     implementation(files("libs/shizuku-api.aar", "libs/shizuku-provider.aar", "libs/shizuku-aidl.aar"))
+    implementation("androidx.webkit:webkit:1.17.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

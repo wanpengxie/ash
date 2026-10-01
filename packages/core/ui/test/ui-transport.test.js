@@ -6,7 +6,7 @@ import { browserUiTransport, embeddedUiTransport, readWorkspaceFile, validateCor
 const storage = { removeItem() {}, setItem() {}, getItem() { return null; } };
 const emptyStore = Promise.resolve(null);
 
-test("embedded transport keeps the old exact endpoint and waits for explicit READY", async () => {
+test("embedded transport uses the exact core endpoint and waits for native READY", async () => {
   const calls = [];
   const transport = embeddedUiTransport({ endpoint: "http://127.0.0.1:4700", request: (op, path) => { calls.push([op, path]); return Promise.resolve(new Response("")); } });
   const net = new ScreenNet({ uiTransport: transport, storage, pendingStore: emptyStore });
@@ -18,6 +18,7 @@ test("embedded transport keeps the old exact endpoint and waits for explicit REA
   assert.throws(() => net.request("/api/send", { method: "POST" }), /not ready/);
   net.stop();
   transport.authorizeReady();
+  assert.equal(transport.allowsQueueFlush(), true);
   await running;
   assert.deepEqual(calls, []);
   net.token = "synthetic-screen";
