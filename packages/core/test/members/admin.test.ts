@@ -160,6 +160,7 @@ test("recovery reports a committed pause superseded by a later committed resume"
       body: { confirmed: true }, origin: { screen: screen.screenId!, label: "Synthetic" } }, undefined,
       { deadlineAt: Date.now() + 30_000, context }).message;
     assert.equal(f.admin.journal.apply(second, false).applied, true);
+    assert.equal(f.admin.currentCommittedPause(), null, "a superseded pause cannot cancel a newer active turn on restart");
     f.admin.prepareRecovery();
     assert.deepEqual(f.ledger.responseTo(first.id)?.body, { ok: false,
       error: { code: "failed", message: "admin command committed but superseded by a newer state" } });

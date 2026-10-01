@@ -26,6 +26,17 @@ export class AdminMember implements Member {
   constructor(private readonly options: AdminOptions) { this.journal = new AdminJournal(options.dbFile); }
   words(): readonly WordSpec[] { return [pause, resume]; }
 
+  /** A current durable pause may have crashed before it reached agent cancellation. */
+  currentCommittedPause(): string | null {
+    const latest = this.journal.currentCommand();
+    if (!latest?.paused) return null;
+    const message = this.options.ledger.byId(latest.requestId);
+    if (!message || message.seq !== latest.seq || message.word !== "pause" || message.to !== this.id ||
+      message.kind !== "request" || !this.journal.committedFact(message)?.current)
+      throw new TypeError("current pause has no matching accepted request");
+    return message.id;
+  }
+
   /** Settle already committed effects before router recovery rechecks permission or replays handlers. */
   prepareRecovery(): void {
     for (const { message } of this.options.ledger.trackedRequests()) {

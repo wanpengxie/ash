@@ -24,6 +24,20 @@ export class AdminJournal {
     throw new TypeError("invalid durable pause state");
   }
 
+  /** The latest command and KV must agree before a pause can affect restart reconciliation. */
+  currentCommand(): { requestId: string; seq: number; paused: boolean } | null {
+    const row = this.db.prepare("SELECT request_id,seq,paused FROM admin_pause_commands ORDER BY seq DESC LIMIT 1").get() as Row | undefined;
+    const state = this.isPaused();
+    if (!row) {
+      if (state) throw new TypeError("admin pause state has no committed command");
+      return null;
+    }
+    const seq = Number(row.seq);
+    if (!Number.isSafeInteger(seq) || seq <= 0 || typeof row.request_id !== "string" || Boolean(row.paused) !== state)
+      throw new TypeError("admin durable state conflicts with latest command");
+    return { requestId: row.request_id, seq, paused: state };
+  }
+
   /** A committed fact is evidence of a past effect, not permission to run the request again. */
   committedFact(message: Message): { paused: boolean; current: boolean } | null {
     if (message.kind !== "request" || message.to !== "service:admin" || !["pause", "resume"].includes(message.word)) return null;
@@ -31,9 +45,9 @@ export class AdminJournal {
     if (!row) return null;
     const paused = message.word === "pause";
     if (Number(row.seq) !== message.seq || Boolean(row.paused) !== paused) throw new TypeError("admin committed fact conflicts with accepted request");
-    const latest = this.db.prepare("SELECT seq,paused FROM admin_pause_commands ORDER BY seq DESC LIMIT 1").get() as Row | undefined;
-    if (!latest || this.isPaused() !== Boolean(latest.paused)) throw new TypeError("admin durable state conflicts with latest command");
-    return { paused, current: Number(latest.seq) === message.seq };
+    const latest = this.currentCommand();
+    if (!latest) throw new TypeError("admin committed fact has no latest command");
+    return { paused, current: latest.seq === message.seq };
   }
 
   /** An older accepted command cannot undo a newer one, including after a restart. */

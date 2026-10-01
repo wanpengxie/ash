@@ -113,6 +113,16 @@ export class AgentMember implements Member {
   }
 
   /** Must run after member registration and before router.recover(), so cancelled effects cannot replay. */
+  reconcileCommittedPause(pauseRequestId: string): void {
+    if (this.closed || this.started || this.prepared) throw new Error("pause reconciliation must precede recovery");
+    const active = this.inbox.activeTurn();
+    if (!active) return;
+    const action = this.ledger.trackedRequests().filter((item) => item.message.from === this.id && item.message.turn === active.id).at(-1)?.message;
+    const fact = `The previous turn was stopped${action ? ` while ${action.to}/${action.word} was pending` : "; the exact last action is unknown"}. Reason: Paused by owner. Any external effect may be unknown.`;
+    this.inbox.recordCancel(`admin-recovery:${pauseRequestId}`, "Paused by owner", pauseRequestId, fact);
+  }
+
+  /** Must run after member registration and before router.recover(), so cancelled effects cannot replay. */
   prepareRecovery(): void {
     if (this.closed || this.started) throw new Error("cancellation recovery must precede start");
     for (const turn of this.inbox.cancelIntents()) {
