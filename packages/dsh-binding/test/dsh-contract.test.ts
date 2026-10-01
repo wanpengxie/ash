@@ -14,7 +14,7 @@ import { after, before, test } from "node:test";
 import type { AshEvent } from "../../sdk/src/api";
 import { AshClient } from "../../sdk/src/client";
 import { OWNER } from "../../core/src/core";
-import { type Running, startOwner } from "../../core/src/main";
+import { type Running, startOwner } from "../../core/test/legacy/main";
 
 const ROOT = process.env.ASH_TEST_DSH_ROOT ?? join(homedir(), "ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh");
 const skip = !existsSync(join(ROOT, "package.json")) ? "no DSH install (set ASH_TEST_DSH_ROOT)" : !process.execArgv.includes("--expose-internals") ? "needs node --expose-internals" : false;

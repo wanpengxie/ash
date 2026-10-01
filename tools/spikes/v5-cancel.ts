@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AshClient } from '../../packages/sdk/src/client';
 import { OWNER } from '../../packages/core/src/core';
-import { startOwner } from '../../packages/core/src/main';
+import { startOwner } from '../../packages/core/test/legacy/main';
 
 const root = process.env.ASH_TEST_DSH_ROOT ?? join(homedir(), 'ashwork/dsh020/linux/lib/node_modules/@deepseek-ai/dsh');
 const evidence = join(process.cwd(), 'build/evidence/ASH-005');

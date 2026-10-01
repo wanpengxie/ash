@@ -62,6 +62,7 @@ const errors = (code: MessageErrorCode, message: string): ResponseBody => ({ ok:
 const detached = <T>(value: T): T => structuredClone(value);
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
+  transportPrincipal: ctx.transportPrincipal,
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
 const askExpiry = (message: Pick<Message, "to" | "word" | "body">): number | null =>
   message.to === "person:owner" && message.word === "ask" && typeof message.body.expires_at === "number" && Number.isFinite(message.body.expires_at)
@@ -266,6 +267,13 @@ export class WorldRouter {
     const original = this.ledger.byId(request.reply_to!);
     if (!original || original.kind !== "request" || original.seq <= this.ledger.migration.lastLegacySeq || original.to !== from || original.from !== request.to || original.word !== request.word) throw new RouterError("bad_request", "response does not match an active request");
     if (original.to === "person:owner" && original.word === "ask" && !(ctx.transport === "web_ui" || (ctx.transport === "phone" && ctx.ownerProxy))) fail("forbidden", "ask requires a verified screen or notification proxy");
+    const retry = request.client_id ? { transportPrincipal: ctx.transportPrincipal, clientId: request.client_id } : undefined;
+    if (retry) {
+      let previous: Message | null;
+      try { previous = this.ledger.responseRetry(retry, { from, to: request.to, kind: "response", word: request.word, body: request.body, reply_to: request.reply_to, ...(origin ? { origin } : {}) }); }
+      catch (error) { if (error instanceof TypeError) fail("bad_request", error.message); throw error; }
+      if (previous) return { id: previous.id, seq: previous.seq };
+    }
     const endpoint = this.endpoint(original.to!, original.word);
     if (!endpoint || this.ledger.responseTo(original.id)) throw new RouterError("bad_request", "request already settled or unavailable");
     const body = request.body as ResponseBody;
@@ -281,7 +289,7 @@ export class WorldRouter {
       const options = original.body.options;
       if (typeof choice !== "string" || !Array.isArray(options) || !options.some((option) => plainObject(option) && option.id === choice)) fail("bad_request", "ask choice was not offered");
     }
-    const result = this.finish(pending, body, from, false, origin);
+    const result = this.finish(pending, body, from, false, origin, retry);
     if (!result) throw new RouterError("bad_request", "request already settled");
     return { id: result.id, seq: result.seq };
   }
@@ -300,9 +308,9 @@ export class WorldRouter {
     }, remaining);
   }
 
-  private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean, origin?: Message["origin"]): Message | null {
+  private finish(pending: Pending, body: ResponseBody, from: string, abort: boolean, origin?: Message["origin"], retry?: { transportPrincipal: string; clientId: string }): Message | null {
     if (pending.settled) return null;
-    const result = this.ledger.settle(pending.request.id, from, body, origin);
+    const result = this.ledger.settle(pending.request.id, from, body, origin, retry);
     pending.settled = true;
     if (pending.timer) clearTimeout(pending.timer);
     this.pending.delete(pending.request.id);
