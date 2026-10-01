@@ -14,9 +14,12 @@ export function renderActivitySheet(root, view, { askAbout } = {}) {
   root.replaceChildren();
   const turns = Object.entries(view?.turns ?? {})
     .filter(([id, item]) => /^[tr]_[A-Za-z0-9_-]+$/.test(id) && item && Number.isFinite(item.started))
-    .sort((a, b) => b[1].started - a[1].started);
+    .sort((a, b) => Number(a[1].background === true) - Number(b[1].background === true) || b[1].started - a[1].started);
   if (!turns.length) return text(root, "p", "还没有活动记录。", "sheet-empty");
+  let group = null;
   for (const [id, turn] of turns) {
+    const nextGroup = turn.background ? "后台任务" : "对话";
+    if (nextGroup !== group) { text(root, "h4", nextGroup, "activity-group"); group = nextGroup; }
     const section = text(root, "section", "", `activity-turn${turn.background ? " background" : ""}`);
     section.dataset.turn = id;
     text(section, "h3", turn.title || (turn.background ? "后台任务" : "对话"));

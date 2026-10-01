@@ -40,7 +40,7 @@ test("five tabs show safe activity, and failed clock never claims empty", async 
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(f.root.named["#agentTabs"].children.length, 5);
     await f.sheet.show("activity");
-    assert.match(f.sheet.panels.get("activity").textContent, /后台活动服务尚未接入/);
+    assert.match(f.sheet.panels.get("activity").textContent, /还没有活动记录/);
     assert.doesNotMatch(f.sheet.panels.get("activity").textContent, /service:|bash|web_search/);
     await f.sheet.show("upcoming");
     assert.match(f.sheet.panels.get("upcoming").textContent, /不能据此判断待办为空/);
@@ -54,7 +54,9 @@ test("activity strips raw route words; a paired live clock list offers cancellat
   const view = { turns: { t_one: { title: "查天气", started: 1000, steps: [
     { label: "service:self · write", requestId: "raw" }, { label: "calendar.search", ts: 1000 },
     { label: "正在查找", ts: 1001 },
-  ] }, r_one: { title: "secret flow", background: true, started: 2000, steps: [] } } };
+  ] }, r_one: { title: "memory", background: true, started: 2000, steps: [
+    { label: "extract", state: "done", ts: 2000 }, { label: "service:self", ts: 2001 },
+  ] } } };
   assert.equal(JSON.stringify(safeActivityView(view)).includes("service:self"), false);
   const f = fixture({ getView: () => view, request: async (_path, options) => {
     const wire = JSON.parse(options.body);
@@ -68,7 +70,7 @@ test("activity strips raw route words; a paired live clock list offers cancellat
     await f.sheet.show("activity");
     const activity = f.sheet.panels.get("activity").textContent;
     assert.match(activity, /查天气.*正在查找/s);
-    assert.match(activity, /后台活动服务尚未接入/);
+    assert.match(activity, /整理记忆.*提取记忆/s);
     assert.doesNotMatch(activity, /service:self|secret flow|write/);
     await f.sheet.show("upcoming");
     assert.match(f.sheet.panels.get("upcoming").textContent, /带伞/);

@@ -11,6 +11,10 @@ const TABS = Object.freeze([
   ["identity", "身份"], ["memory", "记忆"],
 ]);
 const rawRoute = /\b(?:agent|worker|device|service|person):[A-Za-z0-9_-]+\b|\b[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+\b/i;
+const flowLabels = Object.freeze({ memory: "整理记忆", proactive: "寻找值得提醒的事", heartbeat: "查看托付事项", opener: "见面问候", tour: "使用提示" });
+const stepLabels = Object.freeze({ evidence: "查看对话", extract: "提取记忆", verify_claims: "核对记忆", append_log: "记下新发现",
+  sources: "查看线索", candidate: "判断是否提醒", handoff: "交给 Ash", read_heartbeat: "查看托付清单", wake: "通知 Ash", judge: "判断是否问候" });
+const backgroundStep = (step) => stepLabels[step] || (/^(?:read|reconcile|verify_plan|apply)_(?:memory|user)$/.test(step) ? "整理记忆" : null);
 
 /** Only ledger-derived, human-facing status steps enter the activity page. */
 export function safeActivityView(view) {
@@ -18,13 +22,13 @@ export function safeActivityView(view) {
   for (const [id, turn] of Object.entries(view?.turns ?? {})) {
     if (!/^[tr]_[A-Za-z0-9_-]+$/.test(id) || !turn || !Number.isFinite(turn.started)) continue;
     turns[id] = {
-      title: turn.background ? "后台任务" : typeof turn.title === "string" ? turn.title : "对话",
+      title: turn.background ? flowLabels[turn.title] || "后台任务" : typeof turn.title === "string" ? turn.title : "对话",
       background: turn.background === true, started: turn.started,
       ended: Number.isFinite(turn.ended) ? turn.ended : undefined,
       outcome: ["completed", "cancelled", "error"].includes(turn.outcome) ? turn.outcome : undefined,
       steps: Array.isArray(turn.steps) ? turn.steps.filter((step) => !step.requestId &&
-        typeof step.label === "string" && step.label.length <= 160 && !rawRoute.test(step.label))
-        .map((step) => ({ label: step.label, ts: step.ts })) : [],
+        typeof step.label === "string" && step.label.length <= 160 && (turn.background ? Boolean(backgroundStep(step.label)) : !rawRoute.test(step.label)))
+        .map((step) => ({ label: turn.background ? backgroundStep(step.label) : step.label, ts: step.ts, state: step.state })) : [],
     };
   }
   return { turns };
@@ -193,7 +197,6 @@ export class AgentSheet {
     const section = this.panels.get("activity");
     if (!section || !this.current()) return;
     renderActivitySheet(section, safeActivityView(this.getView()));
-    section.prepend(node("p", "后台活动服务尚未接入；这里仅展示已入账的对话活动。"));
   }
 
   renderUpcoming(section, timers, binding, epoch) {

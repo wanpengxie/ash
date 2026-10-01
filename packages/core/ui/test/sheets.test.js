@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { fold, initialView } from "../js/project.js";
 import { renderActivitySheet } from "../js/sheet-activity.js";
+import { safeActivityView } from "../js/sheet-agent.js";
 import { normalizeClockList, renderUpcomingSheet, UpcomingSheet } from "../js/sheet-upcoming.js";
+import { WorkMember } from "../../src/members/work.ts";
+import { Ledger } from "../../src/world/ledger.ts";
+import { WorldMembers } from "../../src/world/member.ts";
+import { WorldRouter } from "../../src/world/router.ts";
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {}; }
@@ -15,6 +23,29 @@ class Node {
 const withDom = async (fn) => { globalThis.document = { createElement: (tag) => new Node(tag) }; try { await fn(); } finally { delete globalThis.document; } };
 const message = (seq, fields) => ({ seq, ts: seq * 1000, id: `m${seq}`, kind: "event", to: null, body: {}, ...fields });
 const replay = (messages) => messages.reduce((view, item) => fold(view, item), initialView());
+
+test("committed service:work run reaches the visible background activity group", async () => withDom(async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-activity-work-"));
+  const ledger = await Ledger.open(join(dir, "ash.db"));
+  const router = new WorldRouter(ledger, async () => true);
+  const members = new WorldMembers(router);
+  const work = new WorkMember({ ledger, router, isPaused: () => false, flows: [{ name: "memory", triggers: ["manual"], async execute(ctx) {
+    await ctx.step("extract", () => undefined);
+    return "done";
+  } }] });
+  members.register(work);
+  try {
+    const owner = { member: "person:owner", transport: "api", transportPrincipal: "test-owner", local: true, remote: false, ownerProxy: true };
+    const started = await router.send(owner, { to: "service:work", kind: "request", word: "run", body: { flow: "memory" }, wait: true });
+    assert.equal(started.reply?.body.ok, true);
+    for (let i = 0; i < 100 && ledger.workRuns("memory")[0]?.state !== "done"; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(ledger.workRuns("memory")[0]?.state, "done");
+    const root = new Node("root");
+    renderActivitySheet(root, safeActivityView(replay(ledger.list({ limit: 1000 }))));
+    assert.match(root.textContent, /后台任务.*整理记忆.*提取记忆/s);
+    assert.doesNotMatch(root.textContent, /service:work|worker:|extract/);
+  } finally { work.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+}));
 
 test("activity groups a real batch by turn, separates background, and omits tool bodies", async () => withDom(async () => {
   const view = replay([
@@ -30,10 +61,12 @@ test("activity groups a real batch by turn, separates background, and omits tool
   const root = new Node("root");
   let prefill;
   renderActivitySheet(root, view, { askAbout: (value) => { prefill = value; } });
-  assert.equal(root.children.length, 2);
-  assert.equal(root.children[0].dataset.turn, "r_one");
+  assert.equal(root.children.length, 4);
+  assert.equal(root.children[0].textContent, "对话");
   assert.match(root.children[1].textContent, /查一下天气 · 2 条/);
   assert.match(root.children[1].textContent, /device:phone · calendar.list/);
+  assert.equal(root.children[2].textContent, "后台任务");
+  assert.equal(root.children[3].dataset.turn, "r_one");
   assert.equal(JSON.stringify(view).includes("SECRET_"), false);
   assert.equal(root.textContent.includes("SECRET_"), false);
   root.children[1].children.find((child) => child.tag === "button").listeners.click();
