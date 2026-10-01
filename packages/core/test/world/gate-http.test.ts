@@ -112,3 +112,59 @@ test("local owner grants one exact device capability without waiving the agent's
     assert.equal((running.ledger.responseTo(requested.id)?.body.error as { code?: string } | undefined)?.code, "forbidden");
   } finally { await running.close(); }
 });
+
+test("calendar reads proceed while calendar writes wait for the owner's decision", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ash-calendar-gate-"));
+  const running = await startOwner({ stateDir, listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+  const calls: string[] = [];
+  try {
+    running.members.registerDevice({ id: "device:phone", kind: "device", name: "Phone", online: true,
+      capabilities: () => [
+        { name: "calendar.search", description: "Find calendar events", label: "Checking your calendar", risk: "none",
+          input_schema: { type: "object", properties: {}, additionalProperties: false } },
+        { name: "calendar.create", description: "Add a calendar event", label: "Adding a calendar event", risk: "outward",
+          input_schema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false } },
+      ],
+      handle: (message) => { calls.push(message.word); return { ok: true, result: {} }; } });
+    const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const owner = async (wire: object, screenToken?: string) => {
+      const response = await fetch(`${running.url}/api/send`, { method: "POST",
+        headers: { ...headers, ...(screenToken ? { "Ash-Screen": screenToken } : {}) }, body: JSON.stringify(wire) });
+      assert.equal(response.status, 200);
+      return response.json() as Promise<{ id: string; reply?: { body: { ok: boolean } } }>;
+    };
+    for (const word of ["calendar.search", "calendar.create"]) {
+      const grant = await owner({ to: "service:gate", kind: "request", word: "access.grant",
+        body: { member: "agent:main", scope: `device:phone/${word}` }, wait: true });
+      assert.equal(grant.reply?.body.ok, true);
+    }
+    const agent = { transport: "agent" as const, member: "agent:main", transportPrincipal: "agent:main",
+      local: true, remote: false, ownerProxy: false };
+    const read = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.search", body: {} });
+    assert.equal(running.ledger.gateCase(read.id), null);
+    assert.deepEqual(calls, ["calendar.search"]);
+
+    const screen = running.edge.screens.register({ member: "person:owner", transport: "api", local: true, remote: false,
+      ownerProxy: true, transportPrincipal: `token:${createHash("sha256").update(token).digest("hex")}` }, "calendar-scope", "Phone screen");
+    const decide = async (requestId: string, choice: "once" | "deny") => {
+      const until = Date.now() + 2_000;
+      while (!running.ledger.gateCase(requestId) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+      const gate = running.ledger.gateCase(requestId);
+      assert.ok(gate);
+      assert.deepEqual(calls, ["calendar.search"]);
+      await owner({ to: "service:gate", kind: "response", word: "ask", reply_to: gate.askId,
+        body: { ok: true, result: { choice } } }, screen.token);
+      while (!running.ledger.responseTo(requestId) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.ok(running.ledger.responseTo(requestId));
+    };
+    const denied = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { title: "No write" } });
+    await decide(denied.id, "deny");
+    assert.deepEqual(calls, ["calendar.search"]);
+    assert.equal(running.ledger.responseTo(denied.id)?.body.ok, false);
+    const allowed = await running.world.send(agent, { to: "device:phone", kind: "request", word: "calendar.create", body: { title: "Write once" } });
+    await decide(allowed.id, "once");
+    assert.deepEqual(calls, ["calendar.search", "calendar.create"]);
+    assert.equal(running.ledger.responseTo(allowed.id)?.body.ok, true);
+  } finally { await running.close(); }
+});
