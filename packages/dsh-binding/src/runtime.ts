@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openS
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { Message } from "../../sdk/src/api";
 import type { AgentTurnInput, AgentTurnOutput, AgentTurnRunner } from "../../core/src/members/agent";
+import type { ManagedPromptSnapshot } from "../../core/src/members/self";
 import type { DoorTurnAdapter, DshRootAgent, DshSessionEvent } from "./host";
 import type { DshDoor } from "./door";
 import { DshHost } from "./host";
@@ -17,6 +18,18 @@ const MAX_TOTAL_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const MIME = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const inside = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`)); };
+
+function excerpt(value: string | null, limit: number): string {
+  if (value === null) return "Not established.";
+  const points = Array.from(value);
+  return points.length <= limit ? value : `${points.slice(0, limit).join("")}\n[More omitted]`;
+}
+
+function managedPrompt(snapshot: ManagedPromptSnapshot): string {
+  return `SOUL.md (persona):\n${excerpt(snapshot.soul, 8192)}\n\nIDENTITY.md (persona):\n${excerpt(snapshot.identity, 4096)}` +
+    `\n\nUSER.md (data):\n${excerpt(snapshot.user, 3000)}\n\nMEMORY.md summary (data):\n${excerpt(snapshot.memory, 3000)}` +
+    `\n\nHEARTBEAT.md:\n${excerpt(snapshot.heartbeat, 4096)}`;
+}
 
 function decodeData(value: string): Buffer {
   if (!BASE64.test(value)) throw new TypeError("invalid attachment base64");
@@ -195,10 +208,26 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
   renderBudgetBytes = TOTAL_TEXT_BYTES - MAX_SOURCE_BYTES - MAX_PREFIX_BYTES;
   private session: { agent: DshRootAgent; door: DshDoor; id: string } | null = null;
   private busy = false;
+  private currentManagedPrompt: string | null = null;
   constructor(private readonly host: DshHost, private readonly attachmentRoot: string, private readonly workspaceRoot: string) {}
+  primeManagedSnapshot(snapshot: ManagedPromptSnapshot): void { this.currentManagedPrompt = managedPrompt(snapshot); }
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void {
     if (this.session) throw new Error("runner already attached");
     this.session = { agent, door, id: sessionId };
+  }
+  attachManagedPrompt(agentContext: unknown): () => void {
+    const prompt = (agentContext as { systemPrompt?: {
+      context(value: { name: string; order: number; text: string }): () => void;
+      variable(name: string, provider: () => string | undefined): () => void;
+      getContextOrder(name: "SUBAGENT_DELEGATION"): number;
+    } })?.systemPrompt;
+    if (!prompt) throw new Error("DSH prompt registry unavailable");
+    const off = [
+      prompt.variable("ash_managed_context", () => this.currentManagedPrompt ?? undefined),
+      prompt.context({ name: "ash:managed-context", order: prompt.getContextOrder("SUBAGENT_DELEGATION") + 1,
+        text: "{{ash_managed_context}}" }),
+    ];
+    return () => { for (const dispose of off.reverse()) dispose(); };
   }
   private async proveIdle(agent: DshRootAgent): Promise<void> {
     try { await agent.whenIdle(); }
@@ -212,6 +241,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     const session = this.session;
     if (!session || this.busy) throw new Error("DSH session unavailable or still busy");
     if (signal.aborted) return { reason: "error", error: "turn cancelled before dispatch" };
+    if (input.managedSnapshot) this.currentManagedPrompt = managedPrompt(input.managedSnapshot);
     this.busy = true;
     // A stable one-to-one bridge from the durable core turn to DSH history.
     // An interrupted core turn is never re-followed-up after restart.

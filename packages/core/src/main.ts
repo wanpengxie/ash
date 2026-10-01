@@ -121,6 +121,10 @@ export async function startOwner(config: Config): Promise<Running> {
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home) : new EchoTurnRunner();
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
+      ...(dsh ? { managedSnapshot: async () => {
+        if (!self) throw new Error("managed files unavailable");
+        return self.promptSnapshot();
+      } } : {}),
       isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
     reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null);
@@ -167,6 +171,8 @@ export async function startOwner(config: Config): Promise<Running> {
     if (dsh) {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
+      if (!self) throw new Error("managed files unavailable");
+      (runner as DshTurnRunner).primeManagedSnapshot(await self.promptSnapshot());
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
         nativeMode: "disabled", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });

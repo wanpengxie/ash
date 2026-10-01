@@ -97,6 +97,13 @@ class SelfFailure extends Error {
 }
 
 export interface SelfMemberOptions { home: string; stateDir: string; ledger: Ledger; router: WorldRouter; failpoint?: (stage: SelfStage) => void }
+export interface ManagedPromptSnapshot {
+  soul: string | null;
+  identity: string | null;
+  user: string | null;
+  memory: string | null;
+  heartbeat: string | null;
+}
 
 /** Only this member writes managed files. A separate OS boundary remains required for AR4. */
 export class SelfMember implements Member {
@@ -142,6 +149,17 @@ export class SelfMember implements Member {
   private content(path: string): string | null {
     const full = this.path(path);
     return existsSync(full) ? readText(full) : null;
+  }
+  /** Read the files through the existing self queue, after any earlier write. */
+  promptSnapshot(): Promise<ManagedPromptSnapshot> {
+    if (this.closed) throw new SelfFailure("offline", "managed files closed");
+    return this.enqueue(async () => ({
+      soul: this.content("SOUL.md"),
+      identity: this.content("IDENTITY.md"),
+      user: this.content("USER.md"),
+      memory: this.content("MEMORY.md"),
+      heartbeat: this.content("HEARTBEAT.md"),
+    }));
   }
   private versions(path: string): string {
     const root = join(this.home, ".ash", "versions");

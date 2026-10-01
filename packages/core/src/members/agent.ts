@@ -6,6 +6,7 @@ import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from 
 import { AgentInbox, type StoredTurn } from "../world/agent-inbox";
 import { DEFAULT_TURN_TEXT_BUDGET, TurnTextBudgetError, renderTurnBatch } from "./agent-render";
 import { AgentStatus } from "./agent-status";
+import type { ManagedPromptSnapshot } from "./self";
 
 /** Full messages are control data. A model adapter must inject only `rendered`, never stringify `messages`. */
 export interface AgentTurnInput {
@@ -13,6 +14,7 @@ export interface AgentTurnInput {
   messages: readonly Message[];
   rendered: string;
   stopFacts: readonly string[];
+  managedSnapshot?: ManagedPromptSnapshot;
 }
 export interface AgentTurnOutput { id: string; text: string }
 export interface AgentTurnRunner {
@@ -30,6 +32,7 @@ export interface AgentMemberOptions {
   name?: string;
   isPaused?: () => boolean;
   currentAdminPauseTargets?: (requestId: unknown, turn: unknown) => boolean;
+  managedSnapshot?: () => Promise<ManagedPromptSnapshot>;
 }
 
 const say = wordContract("agent:main", "say") as WordSpec | undefined;
@@ -51,6 +54,8 @@ export class AgentMember implements Member {
   private readonly runner: AgentTurnRunner;
   private readonly isPaused: () => boolean;
   private readonly currentAdminPauseTargets: (requestId: unknown, turn: unknown) => boolean;
+  private readonly managedSnapshot?: () => Promise<ManagedPromptSnapshot>;
+  private lastManagedSeq: number;
   private started = false;
   private closed = false;
   private draining = false;
@@ -69,6 +74,8 @@ export class AgentMember implements Member {
     this.runner = options.runner;
     this.isPaused = options.isPaused ?? (() => false);
     this.currentAdminPauseTargets = options.currentAdminPauseTargets ?? (() => false);
+    this.managedSnapshot = options.managedSnapshot;
+    this.lastManagedSeq = options.ledger.list({ before: Number.MAX_SAFE_INTEGER, limit: 1 }).at(-1)?.seq ?? 0;
     this.inbox = new AgentInbox(options.stateDir);
     this.status = new AgentStatus(this.router, Date.now, options.isPaused);
   }
@@ -245,10 +252,15 @@ export class AgentMember implements Member {
         const messages = ids.map((id) => this.message(id));
         const budget = this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET;
         const stopFacts = this.inbox.stopFacts();
-        const rendered = renderTurnBatch(messages, budget, stopFacts.map((fact) => fact.text)); // failure leaves all pending
+        const recent = this.managedSnapshot ? this.ledger.list({ after: this.lastManagedSeq, limit: 1000 }) : [];
+        const changes = recent.filter((item) => item.from === "service:self" && item.to === null && item.kind === "event" && item.word === "self.changed");
+        const changeText = changes.length ? `\n[self.changed facts since the previous turn]\n${changes.map((item) =>
+          `${String(item.body.path)}: ${JSON.stringify(String(item.body.summary ?? "changed"))} (by ${String(item.body.by)})`).join("\n")}\n` : "";
+        const rendered = renderTurnBatch(messages, budget - Buffer.byteLength(changeText), stopFacts.map((fact) => fact.text)) + changeText; // failure leaves all pending
         const turn = this.inbox.claim(ids);
         if (!turn) break;
         currentTurn = turn.id;
+        const managedSnapshot = this.managedSnapshot ? await this.managedSnapshot() : undefined;
         await this.turnEvents(turn);
         if (this.closed) break; // close during read/start must not dispatch a fresh runner
         if (this.inbox.turn(turn.id).status !== "active") { currentTurn = null; continue; }
@@ -258,7 +270,7 @@ export class AgentMember implements Member {
         let emitOpen = true;
         let result: { reason: "completed" | "error"; error?: string };
         try {
-          result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text) }, async (output) => {
+          result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text), managedSnapshot }, async (output) => {
             if (!emitOpen || this.closed || controller.signal.aborted || this.active !== controller) return;
             if (!output.id || output.id.length > 80 || !output.text.trim()) throw new TypeError("invalid agent output");
             await this.router.send(this.context(turn.id), { to: "person:owner", kind: "request", word: "say",
@@ -269,7 +281,10 @@ export class AgentMember implements Member {
         } finally { emitOpen = false; controller.abort(); this.active = null; this.activeTurn = null; this.quiescenceBlocked = false; }
         if (this.closed) break; // an interrupted turn is closed and explained on restart
         const ended = this.inbox.finish(turn.id, result.reason, result.error);
-        if (ended.reason === "completed") this.inbox.consumeStopFacts(stopFacts.map((fact) => fact.turn));
+        if (ended.reason === "completed") {
+          this.inbox.consumeStopFacts(stopFacts.map((fact) => fact.turn));
+          this.lastManagedSeq = recent.at(-1)?.seq ?? this.lastManagedSeq;
+        }
         currentTurn = null;
         await this.turnEvents(ended);
         this.error = null;

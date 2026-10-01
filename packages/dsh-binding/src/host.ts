@@ -18,6 +18,7 @@ export interface DshSessionEvent { type: string; data?: Record<string, any> }
 export interface DoorTurnAdapter {
   /** Attach the 206 turn lifecycle before this session receives any application input. */
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void;
+  attachManagedPrompt?(agentContext: unknown): () => void;
 }
 export interface MainSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
 export interface SessionResume {
@@ -128,6 +129,7 @@ export class DshHost {
   private shutdownHandle: any;
   private requireFromInstall: NodeRequire;
   private main: MainSession | null = null;
+  private managedPromptCleanup: (() => void) | null = null;
   private readonly listeners = new Set<(sessionId: string, event: DshSessionEvent) => void>();
 
   constructor(private readonly options: DshHostOptions) {
@@ -209,16 +211,19 @@ export class DshHost {
       }
       const handle = await this.ctx.get("agents")[snapshot ? "resume" : "create"]({
         ...(snapshot ? { resumeSessionId: sessionId } : { sessionId, meta: { cwd: options.workspace } }), agentOptions,
-        setup: (_agentCtx: unknown, rawAgent: DshRootAgent) => {
+        setup: (agentCtx: unknown, rawAgent: DshRootAgent) => {
           // DSH runs setup while the agent is unpublished; no model call can precede binding.
           preparedDoor.bind(rawAgent);
           options.adapter!.attach(rawAgent, preparedDoor, sessionId);
+          this.managedPromptCleanup = options.adapter!.attachManagedPrompt?.(agentCtx) ?? null;
           return { commit() { preparedDoor.assertReady(); } };
         } });
       const agent = handle.agent as DshRootAgent;
       this.main = { agent, door, sessionId };
       return this.main;
     } catch (error) {
+      this.managedPromptCleanup?.();
+      this.managedPromptCleanup = null;
       door?.close();
       // A published but unbound session must never outlive a failed attachment.
       try { await this.shutdownHandle?.shutdown?.(1); } catch { /* retain the original failure */ }
@@ -228,6 +233,8 @@ export class DshHost {
   }
 
   async close(): Promise<void> {
+    this.managedPromptCleanup?.();
+    this.managedPromptCleanup = null;
     this.main?.door.close();
     this.main = null;
     await this.shutdownHandle?.shutdown?.(0);
