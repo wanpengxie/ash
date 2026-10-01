@@ -2,10 +2,7 @@
 // never tool arguments, raw results, credentials, or stream control frames.
 import { isMessageSummaryV2 } from "../../../sdk/src/api.ts";
 import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
-const FACE = {
-  idle: "default", resting: "resting", listening: "listening",
-  thinking: "thinking", working: "focused", done: "success", waiting_you: "listening",
-};
+import { faceForStatus } from "./presence.js";
 
 export function initialView() {
   const view = {
@@ -22,7 +19,7 @@ const object = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 const string = (x) => typeof x === "string" ? x : "";
 const number = (x) => typeof x === "number" && Number.isFinite(x) ? x : null;
 const strings = (x) => Array.isArray(x) ? x.filter((v) => typeof v === "string") : [];
-const knownState = (x) => Object.hasOwn(FACE, x);
+const knownState = (x) => faceForStatus(x) !== null;
 const turnId = (x) => typeof x === "string" && /^[tr]_[A-Za-z0-9_-]+$/.test(x);
 const ownerPublisher = (from) => ["agent:main", "service:gate", "service:work"].includes(from);
 
@@ -153,7 +150,7 @@ function project(records, snapshots = new Map()) {
   }
   for (const r of records) {
     if (r.type === "status") {
-      view.presence = { state: r.state, text: r.text, avatar: FACE[r.state] };
+      view.presence = { state: r.state, text: r.text, avatar: faceForStatus(r.state) };
       if (r.state === "working" && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.text || "在忙" });
     } else if (r.type === "legacy.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: r.side, from: r.from, to: r.to, text: r.text, attachments: r.attachments, legacy: r.legacy, readOnly: true, reactions: [] });
     else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
