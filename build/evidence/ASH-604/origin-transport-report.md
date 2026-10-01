@@ -16,13 +16,14 @@ node --expose-internals --import tsx --test packages/core/ui/test/*.test.js
 npm run -s typecheck
 npm run -s build:core
 node tools/spikes/v2-604-ui-asset.mjs
+ASH_TEST_DSH_ROOT=<installed runtime> node --expose-internals --import tsx --test --test-concurrency=1 packages/*/test/*.test.ts packages/core/test/arch/*.test.ts packages/core/test/contract/*.test.ts packages/core/test/fixtures/*.test.ts packages/core/test/members/*.test.ts packages/core/test/world/*.test.ts packages/core/ui/test/*.test.js
 cd android
 ANDROID_HOME=<local Android SDK> JAVA_HOME=<JDK 21> ./gradlew --offline -Pandroid.useAndroidX=true :app:testDebugUnitTest --tests ai.ash.ui.transport.FixedCoreClientTest
 ```
 
 At the integrated base, the UI tests passed 120/120, typecheck and core build passed, and the focused Android JVM suite passed 7/7. Deterministic negatives cover pre-ready network/database/flush, unknown routes, oversized file reads, invalid native bootstrap URLs, redirects, invalid responses, a bearer echoed by the upstream body or split across stream chunks, and replies arriving after page invalidation. The generated test-only UI was 124775 bytes with SHA-256 `347648a04ccfeea98dd42d5c69b0d5220da77ffc642515fa4ef8e06de5ad1a28`.
 
-An initial full repository test run before the integration merge reported 431 pass, 75 intentional skips and one failure among 507 tests. Its failing test name was not captured, and it overlapped another full test process; it is not reported as a clean regression or a pass. A second overlapping run was stopped. A clean full run is pending an exclusive test slot.
+An initial full repository test run before the integration merge reported 431 pass, 75 intentional skips and one failure among 507 tests. Its failing test name was not captured, and it overlapped another full test process; it is not reported as a clean regression or a pass. A second overlapping run was stopped. The final integrated source was then tested alone with the installed runtime and `--test-concurrency=1`: **527 total, 464 pass, 63 intentional skips, 0 fail**, exit 0. The complete private TAP was recorded from 2026-10-01T13:03:21Z to 13:07:27Z, SHA-256 `072336f36231356be2bc031c0b33497cc7c72c92caa89356322f845eed4f55d7`. This clean result does not remove the embedded-origin safety gates below.
 
 ## Gates not satisfied
 
