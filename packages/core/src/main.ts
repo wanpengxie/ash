@@ -14,6 +14,7 @@ import { createAgentMember, type AgentTurnRunner } from "./members/agent";
 import { ClockMember } from "./members/clock";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
+import { ReflexMember } from "./members/reflex";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
@@ -93,6 +94,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let agent: ReturnType<typeof createAgentMember> | null = null;
   let clock: ClockMember | null = null;
   let post: PostMember | null = null;
+  let reflex: ReflexMember | null = null;
   let dsh: DshHost | null = null;
   let self: SelfMember | null = null;
   let link: OwnerLink | null = null;
@@ -115,6 +117,8 @@ export async function startOwner(config: Config): Promise<Running> {
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
       isPaused: () => clock!.journal.isPaused() });
     members.register(agent);
+    reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null);
+    members.register(reflex);
     clock = new ClockMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"),
       isPaused: () => clock!.journal.isPaused(),
       ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
@@ -162,12 +166,12 @@ export async function startOwner(config: Config): Promise<Running> {
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); await agent?.close(); await dsh?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }
