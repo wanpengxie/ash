@@ -191,6 +191,16 @@ test("visible heartbeats use registered screen identity and expire after sixty s
   } finally { a.close(); f.ledger.close(); }
 });
 
+test("a notification phone proxy cannot register or renew a browser screen", async () => {
+  const f = await fixture();
+  try {
+    const phone: EdgeCaller = { member: "device:phone", transportPrincipal: "phone-test", local: true, remote: false, ownerProxy: true, transport: "phone" };
+    const denied = await f.edge.handle(req("GET", "/api/stream?follow=true"), phone);
+    assert.equal(denied.status, 403);
+    assert.equal(f.members.describe("agent").members.some((member) => member.kind === "screen"), false);
+  } finally { f.ledger.close(); }
+});
+
 test("owner asks remain router-owned and accept only one offered cross-screen answer", async () => {
   const f = await fixture();
   const a = await tab(f.edge, "Ask A");

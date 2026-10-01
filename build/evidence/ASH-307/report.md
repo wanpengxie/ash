@@ -16,4 +16,4 @@ npm test
 npm run -s test:public-terms -- --terms-file "$PRIVATE_TERMS_FILE"
 ```
 
-At this source candidate, the focused screen suite passes 8/8 and the complete test suite exits naturally with 215 pass, 57 intentional skips, and 0 failures. Typecheck and core build pass; the external private-term scanner finds 0 issues in 383 public files. All tests use synthetic local identities and records. ASH-302 delivery behavior and ASH-602 live UI ACK remain separate joint acceptance gates.
+At this source candidate, the focused screen suite passes 9/9 and the complete test suite exits naturally with 216 pass, 57 intentional skips, and 0 failures. Typecheck and core build pass; the external private-term scanner finds 0 issues in 383 public files. All tests use synthetic local identities and records. ASH-302 delivery behavior and ASH-602 live UI ACK remain separate joint acceptance gates.
