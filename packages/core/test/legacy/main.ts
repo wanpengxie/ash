@@ -30,7 +30,7 @@ import { ClientLink, fileSigner, OwnerLink, type Signer } from "./link";
 import { HostBridge, type HostOptions } from "../../src/host";
 import { McpCapabilities, type McpServerSpec } from "../../src/mcpclient";
 import type { AgentRuntime } from "../../src/runtime";
-import { EchoRuntime } from "../../src/runtimes/echo";
+import { EchoRuntime } from "./echo";
 import { Router, startServer, type Extensions, type Tokens } from "./server";
 import { Store } from "../../src/store";
 
