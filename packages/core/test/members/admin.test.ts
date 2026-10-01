@@ -160,7 +160,7 @@ test("an accepted resume cannot clear pause after its screen expires before exec
   });
   const screens = new ScreenRegistry(router, () => now);
   const registration = screens.register({ member: "person:owner", transportPrincipal: owner.transportPrincipal,
-    transport: "web_ui", local: true, remote: false, ownerProxy: true });
+    transport: "web_ui", local: true, remote: false, ownerProxy: true }, "scope:synthetic");
   const localScreen: TrustedRouteContext = { ...screen, screenId: registration.screen, screenLabel: registration.label };
   const members = new WorldMembers(router);
   members.register({ id: "agent:main", kind: "agent", name: "Synthetic", words: () => [wordContract("agent:main", "cancel_turn")!],

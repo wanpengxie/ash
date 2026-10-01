@@ -1,5 +1,7 @@
-import { fold, initialView } from "./project.js";
+import { fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
+import { appendConversation, appendOutbox } from "./conversation.js";
+import { openInlineBlob, prepareUploads } from "./attachments.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -11,6 +13,7 @@ export class Timeline {
     this.epoch = (this.epoch ?? 0) + 1;
     this.pageAbort?.abort();
     this.records = new Map();
+    this.byId = new Map();
     this.view = initialView();
     this.loading = false;
     this.exhausted = false;
@@ -20,18 +23,28 @@ export class Timeline {
     if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string") return;
     if (this.records.has(message.seq)) return;
     this.records.set(message.seq, message);
+    this.byId.set(message.id, message);
     this.view = fold(this.view, message);
     this.onChange(this.view);
   }
-  addMany(messages) {
+  addMany(messages, snapshots = []) {
     let changed = false;
     for (const message of messages.sort((a, b) => a.seq - b.seq)) {
       if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string" || this.records.has(message.seq)) continue;
       this.records.set(message.seq, message);
+      this.byId.set(message.id, message);
       this.view = fold(this.view, message);
       changed = true;
     }
+    for (const snapshot of snapshots) {
+      const next = foldPostSnapshot(this.view, snapshot);
+      if (next !== this.view) { this.view = next; changed = true; }
+    }
     if (changed) this.onChange(this.view);
+  }
+  snapshot(snapshot) {
+    const next = foldPostSnapshot(this.view, snapshot);
+    if (next !== this.view) { this.view = next; this.onChange(this.view); }
   }
   async older() {
     if (this.loading || this.exhausted || !this.records.size) return 0;
@@ -43,12 +56,23 @@ export class Timeline {
     try {
       const page = await this.net.page(before, controller.signal);
       if (epoch !== this.epoch) return 0;
-      if (page.length < 200) this.exhausted = true;
-      this.addMany(page);
-      return page.length;
+      if (!page.end?.has_more) this.exhausted = true;
+      this.addMany(page.messages, page.snapshots);
+      return page.messages.length;
     } finally {
       if (epoch === this.epoch) this.loading = false;
     }
+  }
+
+  inlineAttachment(messageId, index) {
+    const message = this.byId.get(messageId);
+    if (!message || message.kind !== "request" || message.word !== "say" || !((message.from === "person:owner" && message.to === "agent:main") || (message.from === "agent:main" && message.to === "person:owner")) || Object.hasOwn(message.body_summary || message.body || {}, "legacy") || !Number.isSafeInteger(index) || index < 0) return null;
+    if (message.summary === true) {
+      const descriptor = message.inline_attachments?.find((item) => item.index === index);
+      return descriptor ? { summary: message, descriptor } : null;
+    }
+    const item = message.body?.attachments?.[index];
+    return item && typeof item.name === "string" && typeof item.mime_type === "string" && typeof item.data === "string" ? { item } : null;
   }
 }
 
@@ -60,33 +84,14 @@ function text(parent, tag, value, className = "") {
   return node;
 }
 
-export function render(view) {
+export function render(view, outbox = [], openInline) {
   const log = document.querySelector("#log");
   const nearEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
   const oldHeight = log.scrollHeight;
   const oldTop = log.scrollTop;
   const fragment = document.createDocumentFragment();
-  if (!view.conversation.length) text(fragment, "div", "还没有对话。", "hello");
-  for (const entry of view.conversation) {
-    if (entry.type === "say") {
-      const side = entry.side === "owner" ? "me" : "ai";
-      if (entry.legacy) {
-        text(fragment, "small", `历史记录 · ${entry.legacy.workspace} · ${entry.legacy.member} · 只读`, `from ${side === "me" ? "r" : "l"}`);
-      } else if (entry.side === "owner" && entry.origin?.label) {
-        text(fragment, "small", `来自 ${entry.origin.label}`, "from r");
-      } else if (entry.side === "inbound") {
-        text(fragment, "small", `来自 ${entry.from || "未知来源"}`, "from l");
-      }
-      const bubble = text(fragment, "div", entry.text, `msg ${side}`);
-      bubble.dataset.seq = String(entry.seq);
-      if (entry.legacy) bubble.dataset.readonly = "true";
-    } else if (entry.type === "ask") {
-      const card = text(fragment, "div", entry.ask.title, "card ask");
-      text(card, "small", entry.ask.detail);
-    } else if (entry.type === "card") {
-      text(fragment, "div", entry.card.prompt || entry.card.title || entry.card.name || "卡片", "card");
-    }
-  }
+  appendConversation(fragment, view.conversation, { openInline });
+  appendOutbox(fragment, outbox);
   log.replaceChildren(fragment);
   if (nearEnd) log.scrollTop = log.scrollHeight;
   else log.scrollTop = oldTop + Math.max(0, log.scrollHeight - oldHeight);
@@ -104,16 +109,27 @@ export function boot() {
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
   const suggestions = document.querySelector("#suggestions");
+  const fileInput = document.querySelector("#file");
+  const attachButton = document.querySelector("#attach");
+  const selected = document.querySelector("#selected");
+  const sendButton = document.querySelector("#send");
   let presenceProblem = "";
   let lastTyping = 0;
   let timeline;
+  const openInline = async (messageId, index) => {
+    const ref = timeline.inlineAttachment(messageId, index);
+    if (!ref) return null;
+    if (ref.item) return openInlineBlob(ref.item);
+    const item = await net.fetchOriginalAttachment(ref.summary, ref.descriptor);
+    return openInlineBlob(item, ref.descriptor);
+  };
   const net = new ScreenNet({
     label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "Phone browser" : "Computer browser"),
     onMessage: (message, context) => {
       timeline.add(message);
       if (context?.historical || message.kind !== "request" || message.word !== "ui.open" || message.to !== net.screen) return;
-      const target = message.body?.target;
-      const mode = message.body?.mode;
+      const target = (message.body_summary || message.body)?.target;
+      const mode = (message.body_summary || message.body)?.mode;
       const targets = { activity: "活动", upcoming: "接下来", approvals: "审批", identity: "身份", memory: "记忆", settings: "设置", turn: "当前任务" };
       if (!Object.hasOwn(targets, target) || !["suggest", "perform"].includes(mode)) return;
       if (mode === "suggest") text(suggestions, "div", `建议查看${targets[target]}（页面尚未接入）`, "chip");
@@ -122,15 +138,20 @@ export function boot() {
       // perform target is explicitly reported as unopened.
       void net.respondOpen(message, false).then((sent) => { if (!sent) state.textContent = "页面请求回执未送达"; }).catch(() => { state.textContent = "页面请求回执未送达"; });
     },
-    onHistory: (messages) => { timeline.addMany(messages); performance.mark("shell.history-rendered"); },
+    onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
+    onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
+    onReset: () => { timeline.reset(); suggestions.replaceChildren(); },
     onState: (status, error) => {
       state.textContent = status === "online" ? (presenceProblem || "已连接") : status === "connecting" ? "连接中…" : status === "send-error" ? "消息未送达，等待重试" : "离线，正在重连…";
       if (error) state.title = String(error.message || error);
     },
     onRegistered: () => { if (!document.hidden) void visible(); },
-    onQueue: (count) => { pending.textContent = count ? `${count} 条消息等待送达` : ""; },
+    onQueue: (count, outbox) => {
+      pending.textContent = count ? `${count} 条消息等待送达` : "";
+      if (timeline) render(timeline.view, outbox, openInline);
+    },
   });
-  timeline = new Timeline(net, render);
+  timeline = new Timeline(net, (view) => render(view, net.outbox, openInline));
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
 
   async function visible() {
@@ -147,13 +168,21 @@ export function boot() {
     lastTyping = now;
     await net.sendEvent("agent:main", "typing");
   }
-  form.addEventListener("submit", (event) => {
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const value = input.value.trim();
-    if (!value) return;
-    net.enqueueSay(value);
-    input.value = "";
-    log.scrollTop = log.scrollHeight;
+    const files = [...fileInput.files];
+    if (!value && !files.length) return;
+    sendButton.disabled = true;
+    try {
+      const attachments = await prepareUploads(files, value);
+      await net.enqueueSay(value, attachments);
+      input.value = "";
+      fileInput.value = "";
+      selected.textContent = "";
+      log.scrollTop = log.scrollHeight;
+    } catch (error) { state.textContent = `未发送：${error.message || "无法保存待发送消息"}`; }
+    finally { sendButton.disabled = false; }
   });
   input.addEventListener("input", () => { void typing(); });
   document.addEventListener("visibilitychange", () => {
@@ -168,8 +197,11 @@ export function boot() {
     try { if (await timeline.older()) log.scrollTop = top + log.scrollHeight - height; }
     catch { state.textContent = "更早记录暂时无法加载"; }
   });
-  document.querySelector("#attach").disabled = true;
-  document.querySelector("#attach").title = "附件入口待接入";
+  attachButton.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const files = [...fileInput.files];
+    selected.textContent = files.length ? `${files.length} 个附件，${files.map((file) => file.name).join("、").slice(0, 120)}` : "";
+  });
   document.querySelector("#menu").addEventListener("click", () => document.querySelector("#drawer").classList.toggle("open"));
   text(document.querySelector("#panel"), "p", "更多页面正在接入。", "muted");
   window.addEventListener("pagehide", () => net.stop());

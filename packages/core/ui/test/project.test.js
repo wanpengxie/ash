@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fold, initialView } from "../js/project.js";
+import { fold, foldPostSnapshot, initialView } from "../js/project.js";
 
 const cases = JSON.parse(readFileSync(new URL("./fixtures/segments.json", import.meta.url), "utf8"));
 const message = (entry, i) => ({ seq: i + 1, id: `m${i + 1}`, ts: (i + 1) * 1000, to: null, ...entry });
@@ -81,7 +81,7 @@ test("gate and background messages to the owner project, with ask replies to the
   const state = replay([
     { id: "gate-ask", from: "service:gate", to: "person:owner", kind: "request", word: "ask", body: { title: "Allow?", options: [{ id: "deny", label: "No" }], expires_at: 9999 } },
     { from: "person:owner", to: "service:gate", kind: "response", word: "ask", reply_to: "gate-ask", body: { ok: true, result: { choice: "deny" } } },
-    { from: "service:work", to: "person:owner", kind: "request", word: "say", body: { text: "Reminder", kind: "heads_up" } },
+    { from: "service:work", to: "person:owner", kind: "request", word: "say", body: { text: "Reminder" } },
     { from: "service:work", to: "person:owner", kind: "request", word: "show", body: { card: { type: "link", url: "https://example.invalid", title: "Source" } } },
   ]);
   assert.equal(state.asks[0].state, "answered");
@@ -130,6 +130,20 @@ test("only allowlisted attachment references survive; inline bytes and unknown f
   assert.equal(JSON.stringify(state).includes("INLINE_ONLY"), false);
 });
 
+test("attachment-only owner say projects index and metadata, never inline bytes", () => {
+  const state = replay([{ id: "m_inline", from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [
+    { name: "one.txt", mime_type: "text/plain", data: "eA==" },
+    { name: "bad.txt", mime_type: "text/plain", data: "not-base64!" },
+    { name: "two.txt", mime_type: "text/plain", data: "eXk=" },
+  ] } }]);
+  assert.deepEqual(state.conversation[0].attachments, [
+    { source: "inline", message_id: "m_inline", index: 0, name: "one.txt", mime_type: "text/plain", size: 1 },
+    { source: "inline", message_id: "m_inline", index: 2, name: "two.txt", mime_type: "text/plain", size: 2 },
+  ]);
+  assert.equal(state.conversation[0].text, "");
+  assert.equal(JSON.stringify(state).includes("eXk="), false);
+});
+
 test("valid migrated chat is read-only and cannot lock a current option card", () => {
   const state = replay([
     { id: "card", from: "agent:main", to: "person:owner", kind: "request", word: "show", body: { card: { type: "options", options: [{ id: "yes", text: "Yes" }] } } },
@@ -159,4 +173,30 @@ test("four migrated owner attachment bubbles keep only safe references", () => {
   assert.equal(state.conversation.length, 4);
   assert.equal(state.conversation.filter((bubble) => bubble.attachments.length === 1).length, 4);
   assert.equal(JSON.stringify(state).includes("raw-should-not-project"), false);
+});
+
+test("new offer is invisible before an authoritative release; stale history cannot roll it back", () => {
+  const offer = { seq: 1, id: "m_offer", ts: 1, from: "agent:main", to: "person:owner", kind: "request", word: "say", body: { text: "Tomorrow only", kind: "offer" } };
+  let state = fold(initialView(), offer);
+  assert.equal(state.conversation.length, 0);
+  state = foldPostSnapshot(state, { at_seq: 10, items: [{ message_id: offer.id, state: "released", version_seq: 8 }] });
+  assert.deepEqual(state.conversation.map((item) => item.text), ["Tomorrow only"]);
+  state = foldPostSnapshot(state, { at_seq: 7, items: [{ message_id: offer.id, state: "held", version_seq: 7 }] });
+  assert.equal(state.conversation.length, 1);
+  state = fold(state, { seq: 11, id: "m_drop", ts: 11, from: "service:post", to: "person:owner", kind: "event", word: "post.delivery", body: { message_id: offer.id, state: "dropped" } });
+  assert.equal(state.conversation.length, 0);
+  state = foldPostSnapshot(state, { at_seq: 12, items: [{ message_id: offer.id, state: "released", version_seq: 12 }] });
+  assert.equal(state.conversation.length, 0);
+});
+
+test("release before say, late page, and migrated legacy text preserve the visibility boundary", () => {
+  const release = { seq: 2, id: "m_release", ts: 2, from: "service:post", to: "person:owner", kind: "event", word: "post.delivery", body: { message_id: "m_late", state: "released" } };
+  let state = fold(initialView(), release);
+  assert.equal(state.conversation.length, 0);
+  state = fold(state, { seq: 1, id: "m_late", ts: 1, from: "agent:main", to: "person:owner", kind: "request", word: "say", body: { text: "Now visible", kind: "heads_up" } });
+  assert.deepEqual(state.conversation.map((item) => item.text), ["Now visible"]);
+  const legacy = { seq: 3, id: "m_legacy", ts: 3, from: "agent:retired", to: "person:owner", kind: "request", word: "say", body: { text: "Old offer", kind: "offer", legacy: { seq: 3, workspace: "old", member: "agent:retired" } } };
+  state = fold(state, legacy);
+  assert.deepEqual(state.conversation.map((item) => item.text), ["Now visible", "Old offer"]);
+  assert.equal(foldPostSnapshot(state, { at_seq: 3, items: [{ message_id: "m_late", state: "released", version_seq: 4 }] }), state);
 });

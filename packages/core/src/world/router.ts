@@ -526,20 +526,43 @@ export class WorldRouter {
   /** An atomic-in-JS replay boundary for the edge SSE implementation; caller handles auth/filtering. */
   subscribeFrom(after: number, listener: Subscriber): () => void {
     let replaying = true;
-    const buffered: Message[] = [];
-    const stop = this.subscribe((message) => { if (replaying) buffered.push(message); else listener(message); });
+    const buffered: number[] = [];
+    const stop = this.subscribe((message) => { if (replaying) buffered.push(message.seq); else listener(message); });
     try {
       const watermark = this.ledger.lastSeq();
       let cursor = after;
       while (cursor < watermark) {
-        const page = this.ledger.list({ after: cursor, limit: 1000 }).filter((message) => message.seq <= watermark);
+        const page = this.ledger.rawPage({ after: cursor, limit: 1 }).filter((message) => message.seq <= watermark);
         if (!page.length) break;
         const nextCursor = page.at(-1)!.seq;
         for (const message of page) listener(detached(message));
         cursor = nextCursor;
       }
       replaying = false;
-      for (const message of buffered.filter((item) => item.seq > watermark).sort((a, b) => a.seq - b.seq)) listener(detached(message));
+      for (const seq of buffered.filter((item) => item > watermark).sort((a, b) => a - b)) {
+        const message = this.ledger.bySeq(seq);
+        if (message) listener(detached(message));
+      }
+    } catch (error) { stop(); throw error; }
+    return stop;
+  }
+
+  /** Same replay boundary, but a summary client never materializes raw bodies. */
+  subscribeSeqFrom(after: number, listener: (seq: number) => void): () => void {
+    let replaying = true;
+    const buffered: number[] = [];
+    const stop = this.subscribe((message) => { if (replaying) buffered.push(message.seq); else listener(message.seq); });
+    try {
+      const watermark = this.ledger.lastSeq();
+      let cursor = after;
+      while (cursor < watermark) {
+        const page = this.ledger.seqPage(cursor).filter((seq) => seq <= watermark);
+        if (!page.length) break;
+        for (const seq of page) listener(seq);
+        cursor = page.at(-1)!;
+      }
+      replaying = false;
+      for (const seq of buffered.filter((item) => item > watermark).sort((a, b) => a - b)) listener(seq);
     } catch (error) { stop(); throw error; }
     return stop;
   }

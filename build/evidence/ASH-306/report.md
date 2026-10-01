@@ -19,6 +19,8 @@ ASH_TEST_DSH_ROOT=/path/to/installed/@deepseek-ai/dsh npm test
 npm run -s test:public-terms -- --terms-file "$PRIVATE_TERMS_FILE"
 ```
 
-At this checkpoint: focused 7/7; typecheck and core build pass; default full suite 283 pass/66 conditional skip; full suite with an installed real DSH runtime 290 pass/59 conditional skip; private-term scan 0 findings across 434 public files. All suites exited naturally.
+At the original checkpoint: focused 7/7; typecheck and core build pass; default full suite 283 pass/66 conditional skip; full suite with an installed real DSH runtime 290 pass/59 conditional skip; private-term scan 0 findings across 434 public files. All suites exited naturally.
+
+Integration with the later v2 stream/auth-scope baseline resolved one textual conflict in `main.ts`: the `EdgeRouter` keeps its persistent `authScopeKey` while the admin member still receives that router's one ScreenRegistry for current-binding checks. `server.ts`, `ledger.ts`, `router.ts`, and SDK contracts merged without textual conflicts; the combined typecheck plus admin/auth-scope/screen-focused tests passed 23/23. The complete installed-DSH suite then exited naturally at 321 pass/59 conditional skip/0 fail; core build passed, and the public-term scan found 0 issues across 453 files. `gen:ui` regenerated the source-derived UI bundle from the merged UI files. No author-side production change to stream or auth-scope behavior was discarded.
 
 This is a partial card, not F-S26/F-S27 or plugin R16 acceptance. There is no production `service:reflex` member yet, no Android pause/resume end-to-end, and no claim that all legacy settings operations are safely represented as words. The real DSH tests exercise existing session behavior, not a complete new cross-service pause workflow. Independent QA and later UI/Android/senses/clock integration remain required.

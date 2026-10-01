@@ -27,7 +27,7 @@ async function fixture() {
   const members = new WorldMembers(world);
   members.register({ id: "agent:main", kind: "agent", name: "Main", words: () => [wordContract("agent:main", "say")!, wordContract("agent:main", "typing")!], handle: () => ({ ok: true, result: { accepted: true } }) });
   members.register({ id: "service:admin", kind: "service", name: "Admin", words: () => [wordContract("service:admin", "settings.get")!], handle: () => ({ ok: true, result: {} }) });
-  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: { "agent:main": "agent-token" } }, { workspaces: { home: workspace } });
+  const edge = new EdgeRouter(ledger, world, members, { api: { "owner-token": "person:owner" }, mcp: { "agent:main": "agent-token" } }, { workspaces: { home: workspace }, authScopeKey: Buffer.alloc(32, 1) });
   return { dir, workspace, ledger, world, members, edge };
 }
 
@@ -47,11 +47,85 @@ test("edge authenticates before send, allows bounded wait, and exposes only decl
   } finally { ledger.close(); }
 });
 
+test("owner inbox accepts attachment-only say but rejects empty text without an attachment", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const attachment = { name: "note.txt", mime_type: "text/plain", data: Buffer.from("fixture").toString("base64") };
+    const accepted = await edge.handle(request("POST", "/api/send", send("agent:main", "say", { text: "", attachments: [attachment] })), owner);
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(ledger.byId(parsed(accepted).id)?.body, { text: "", attachments: [attachment] });
+    for (const body of [{ text: "" }, { text: "", attachments: [] }])
+      assert.equal((await edge.handle(request("POST", "/api/send", send("agent:main", "say", body)), owner)).status, 400);
+    assert.equal(ledger.list().filter((entry) => entry.word === "say" && entry.kind === "request").length, 1);
+  } finally { ledger.close(); }
+});
+
+test("L025 summary pages strip large inline bytes in SQLite and raw overflow is HTTP 413 before headers", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const data = Buffer.alloc(19 * 1024 * 1024, 7).toString("base64");
+    const first = ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [{ name: "a.bin", mime_type: "application/octet-stream", data }] } }).message;
+    const second = ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "", attachments: [{ name: "b.bin", mime_type: "application/octet-stream", data }] } }).message;
+    const summary = await edge.handle(request("GET", `/api/stream?summary=true&follow=false&before=${second.seq + 1}&limit=2`), owner);
+    assert.equal(summary.status, 200, JSON.stringify(parsed(summary)));
+    let output = "";
+    if ("stream" in summary) summary.stream((chunk) => { output += chunk; }, () => {}, () => {});
+    const frames = output.trim().split("\n\n");
+    assert.match(frames[0], /^event: auth\.scope\n/);
+    assert.equal(frames.filter((entry) => entry.includes("event: message.summary")).length, 2);
+    assert.equal(output.includes(data.slice(0, 100)), false);
+    const rows = frames.filter((entry) => entry.includes("event: message.summary")).map((entry) => JSON.parse(entry.split("\ndata: ")[1]));
+    assert.deepEqual(rows.map((row) => row.inline_attachments[0].size), [19 * 1024 * 1024, 19 * 1024 * 1024]);
+    assert.ok(rows.every((row) => row.summary === true && !Object.hasOwn(row, "body") && !Object.hasOwn(row.body_summary.attachments[0], "data")));
+    assert.ok(output.length < 2000);
+    assert.equal((await edge.handle(request("GET", `/api/stream?follow=false&before=${second.seq + 1}&limit=2`), owner)).status, 413);
+    assert.equal((await edge.handle(request("GET", `/api/stream?follow=false&before=${first.seq + 1}&limit=1`), owner)).status, 200);
+  } finally { ledger.close(); }
+});
+
+test("L025 summary byte budget returns a continuous descending selection with an exact next cursor", async () => {
+  const { ledger, edge } = await fixture();
+  try {
+    const ids = [];
+    for (let i = 0; i < 12; i++) ids.push(ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "漢".repeat(150_000) } }).message.seq);
+    const response = await edge.handle(request("GET", "/api/stream?summary=true&follow=false&limit=12"), owner);
+    assert.equal(response.status, 200);
+    let output = "";
+    if ("stream" in response) response.stream((chunk) => { output += chunk; }, () => {}, () => {});
+    assert.ok(Buffer.byteLength(output) <= 4 * 1024 * 1024);
+    const frames = output.trim().split("\n\n");
+    const rows = frames.filter((entry) => entry.includes("event: message.summary")).map((entry) => Number(/^id: (\d+)/.exec(entry)?.[1]));
+    const end = JSON.parse(frames.find((entry) => entry.startsWith("event: stream.page_end"))!.split("\ndata: ")[1]);
+    assert.ok(rows.length > 0 && rows.length < ids.length);
+    assert.deepEqual(rows, ids.slice(-rows.length));
+    assert.deepEqual(end, { has_more: true, first_seq: rows[0], last_seq: rows.at(-1) });
+    const older = ledger.summaryPage({ before: end.first_seq, limit: 12 });
+    assert.deepEqual(older.page.map((row) => row.seq), ids.slice(0, -rows.length));
+    assert.equal(older.end.has_more, false);
+  } finally { ledger.close(); }
+});
+
+test("L025 late oversized live summary emits an unnumbered error without claiming delivery", async () => {
+  const { ledger, world, edge } = await fixture();
+  try {
+    const live = await edge.handle(request("GET", "/api/stream?summary=true&after=0&follow=true"), owner);
+    assert.equal(live.status, 200);
+    let output = "", ended = false, close = () => {};
+    if ("stream" in live) live.stream((chunk) => { output += chunk; }, (fn) => { close = fn; }, () => { ended = true; });
+    await world.send({ member: "person:owner", transport: "api", transportPrincipal: "owner-credential", local: true, remote: false, ownerProxy: true },
+      { to: "agent:main", kind: "request", word: "say", body: { text: "x".repeat(1_100_000) } });
+    assert.equal(ended, true);
+    assert.match(output, /event: stream\.error\ndata: \{"code":"too_large"\}/);
+    assert.doesNotMatch(output, /(?:^|\n)id: [1-9]/);
+    close();
+  } finally { ledger.close(); }
+});
+
 test("wait cap returns the accepted id without inventing a late reply", async () => {
   const { ledger, world, members } = await fixture();
   try {
     members.register({ id: "service:slow", kind: "service", name: "Slow", words: () => [{ word: "run", kind: "request", description: "Wait for a synthetic slow result.", input_schema: { type: "object", additionalProperties: false }, timeout_ms: 5_000 }], handle: () => new Promise(() => {}) });
-    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { waitMs: 20 });
+    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { waitMs: 20, authScopeKey: Buffer.alloc(32, 1) });
     const response = await edge.handle(request("POST", "/api/send", send("service:slow", "run", {}, true)), owner);
     assert.equal(response.status, 200);
     assert.equal(typeof parsed(response).id, "string");
@@ -153,7 +227,7 @@ test("workspace bytes preserve local-only writes and reject managed, symlink and
     assert.equal((await put("ordinary-copy.txt", owner)).status, 200);
     assert.equal(readFileSync(join(workspace, "ordinary-copy.txt"), "utf8"), "safe");
     assert.equal(readFileSync(join(workspace, "MEMORY.md"), "utf8"), "protected");
-    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory, ancestor: dir, versions } });
+    const aliased = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { workspaces: { home: workspace, diary: memory, ancestor: dir, versions }, authScopeKey: Buffer.alloc(32, 1) });
     assert.equal((await aliased.handle({ ...request("PUT", "/api/workspaces/diary/files?path=2026-10-01.md"), body: Buffer.from("unsafe") }, owner)).status, 403);
     for (const [alias, path] of [["ancestor", "home/MEMORY.md"], ["ancestor", "home/memory/2026-10-01.md"], ["versions", "snap"]])
       assert.equal((await aliased.handle({ ...request("PUT", `/api/workspaces/${alias}/files?path=${path}`), body: Buffer.from("unsafe") }, owner)).status, 403);
@@ -332,7 +406,7 @@ test("a delayed old host failure cannot offline a replacement or resurrect after
 test("gateway refresh serializes dirty revocation and fences stale connection manifests", async () => {
   for (const reconnect of [false, true]) {
     const { ledger, world, members } = await fixture();
-    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} });
+    const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
     const link = new OwnerLink("http://127.0.0.1:1", { id: "synthetic", publicKey: "synthetic", sign: async () => "synthetic" }, edge, () => {});
     const active = [{ id: "synthetic", name: "Synthetic", permissions: ["expose_capability"], revoked: false, online: true }];
     const revoked = [{ ...active[0], permissions: [], revoked: true, online: false }];

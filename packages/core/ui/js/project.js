@@ -1,5 +1,7 @@
 // Pure ledger projection. _records contains only selected display-safe facts,
 // never tool arguments, raw results, credentials, or stream control frames.
+import { isMessageSummaryV2 } from "../../../sdk/src/api.ts";
+import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
 const FACE = {
   idle: "default", resting: "resting", listening: "listening",
   thinking: "thinking", working: "focused", done: "success", waiting_you: "listening",
@@ -12,6 +14,7 @@ export function initialView() {
     self: { changed: [] }, held: 0,
   };
   Object.defineProperty(view, "_records", { value: [], writable: true });
+  Object.defineProperty(view, "_postSnapshots", { value: new Map(), writable: true });
   return view;
 }
 
@@ -36,10 +39,26 @@ function safeCard(card) {
   return null;
 }
 
-function safeAttachments(value) {
+function safeAttachments(value, messageId, inline = []) {
   if (!Array.isArray(value)) return [];
-  return value.filter((item) => object(item) && typeof item.workspace === "string" && item.workspace && typeof item.path === "string" && item.path && !item.path.startsWith("/") && !item.path.split("/").includes("..") && typeof item.name === "string" && item.name && typeof item.mime_type === "string" && item.mime_type && Number.isSafeInteger(item.size) && item.size >= 0)
-    .map((item) => ({ workspace: item.workspace, path: item.path, name: item.name, mime_type: item.mime_type, size: item.size }));
+  const safe = [];
+  value.forEach((item, index) => {
+    if (!object(item) || typeof item.name !== "string" || !item.name || typeof item.mime_type !== "string" || !item.mime_type) return;
+    if (typeof item.workspace === "string" && item.workspace && typeof item.path === "string" && item.path && !item.path.startsWith("/") && !item.path.split("/").includes("..") && Number.isSafeInteger(item.size) && item.size >= 0) {
+      safe.push({ workspace: item.workspace, path: item.path, name: item.name, mime_type: item.mime_type, size: item.size });
+      return;
+    }
+    const descriptor = Array.isArray(inline) ? inline.find((entry) => entry.index === index) : null;
+    if (descriptor && typeof messageId === "string" && messageId && descriptor.name === item.name && descriptor.mime_type === item.mime_type && Number.isSafeInteger(descriptor.size) && descriptor.size >= 0) {
+      safe.push({ source: "inline", message_id: messageId, index, name: item.name, mime_type: item.mime_type, size: descriptor.size });
+      return;
+    }
+    if (typeof messageId !== "string" || !messageId || typeof item.data !== "string" || item.data.length === 0 || item.data.length > 28 * 1024 * 1024) return;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(item.data) || item.data.length % 4 !== 0) return;
+    const size = item.data.length / 4 * 3 - (item.data.endsWith("==") ? 2 : item.data.endsWith("=") ? 1 : 0);
+    safe.push({ source: "inline", message_id: messageId, index, name: item.name, mime_type: item.mime_type, size });
+  });
+  return safe;
 }
 
 function legacyMetadata(value, m) {
@@ -50,8 +69,8 @@ function legacyMetadata(value, m) {
 }
 
 function record(m) {
-  if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || !object(m.body)) return null;
-  const b = m.body;
+  if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || (m.summary === true ? !isMessageSummaryV2(m) : !object(m.body))) return null;
+  const b = m.summary === true ? m.body_summary : m.body;
   const base = { seq: m.seq, id: m.id, ts: number(m.ts), turn: turnId(m.turn) ? m.turn : "" };
   if (m.kind === "event" && m.from === "agent:main") {
     if (m.word === "status" && knownState(b.state)) return { ...base, type: "status", state: b.state, text: string(b.text) };
@@ -65,8 +84,8 @@ function record(m) {
       const legacy = legacyMetadata(b.legacy, m);
       return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : m.to === "person:owner" ? "agent" : "inbound", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
     }
-    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
-    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments), kind: string(b.kind) };
+    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
+    if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), kind: string(b.kind) };
   }
   if (m.kind === "request" && m.to === "person:owner" && ownerPublisher(m.from)) {
     if (m.word === "react" && typeof b.message_id === "string" && typeof b.emoji === "string") return { ...base, type: "react", message_id: b.message_id, emoji: b.emoji };
@@ -88,6 +107,8 @@ function record(m) {
     ...base, type: "clock.list", timers: b.result.timers.filter(object).map((t) => ({ id: string(t.id), text: string(t.text), fire_at: number(t.fire_at), repeat_seconds: number(t.repeat_seconds) })),
   };
   if (m.kind === "event" && m.from === "service:post" && m.to === "person:owner" && m.word === "post.changed" && Number.isSafeInteger(b.held) && b.held >= 0) return { ...base, type: "post.changed", held: b.held };
+  if (m.kind === "event" && m.from === "service:post" && m.to === "person:owner" && m.word === "post.delivery" && typeof b.message_id === "string" && b.message_id && ["held", "released", "dropped"].includes(b.state))
+    return { ...base, type: "post.delivery", message_id: b.message_id, state: b.state };
   if (m.kind === "event" && m.from === "service:self" && m.word === "self.changed" && typeof b.path === "string") return { ...base, type: "self.changed", path: b.path, by: string(b.by), summary: string(b.summary), version: number(b.version) };
   if (m.kind === "event" && m.from === "service:work") {
     if (m.word === "run.start" && turnId(b.run)) return { ...base, type: "run.start", turn: b.run };
@@ -97,9 +118,10 @@ function record(m) {
   return null;
 }
 
-function project(records) {
+function project(records, snapshots = new Map()) {
   const view = initialView();
   view._records = records;
+  view._postSnapshots = snapshots;
   const delivery = new Map();
   const asksById = new Map(records.filter((r) => r.type === "ask").map((r) => [r.id, r]));
   const cardsById = new Map(records.filter((r) => r.type === "show" && r.card.type === "options").map((r) => [r.id, r]));
@@ -108,7 +130,10 @@ function project(records) {
   const optionReplies = new Map();
   const sayOutcomes = new Map();
   const reactions = new Map();
+  const postStates = new Map(snapshots);
   for (const r of records) {
+    if (r.type === "post.delivery" && (r.state === "dropped" || postStates.get(r.message_id)?.state !== "dropped" && (!postStates.has(r.message_id) || postStates.get(r.message_id).version_seq <= r.seq)))
+      postStates.set(r.message_id, { state: r.state, version_seq: r.seq });
     if (r.type === "received" || r.type === "read") for (const id of r.ids) delivery.set(id, r.type === "read" ? "read" : delivery.get(id) === "read" ? "read" : "delivered");
     if (r.type === "ask.answer") {
       const ask = asksById.get(r.reply_to);
@@ -132,7 +157,10 @@ function project(records) {
       if (r.state === "working" && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.text || "在忙" });
     } else if (r.type === "legacy.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: r.side, from: r.from, to: r.to, text: r.text, attachments: r.attachments, legacy: r.legacy, readOnly: true, reactions: [] });
     else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
-    else if (r.type === "agent.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
+    else if (r.type === "agent.say") {
+      if (["offer", "heads_up"].includes(r.kind) && postStates.get(r.id)?.state !== "released") continue;
+      view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
+    }
     else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), selected_option_id: optionReplies.get(r.id) || null, reactions: reactions.get(r.id) || [] });
     else if (r.type === "ask") {
       const answer = answers.get(r.id);
@@ -158,5 +186,17 @@ export function fold(state, message) {
   const next = record(message);
   if (!next || current._records.some((r) => r.id === next.id || r.seq === next.seq)) return current;
   const records = [...current._records, next].sort((a, b) => a.seq - b.seq);
-  return project(records);
+  return project(records, current._postSnapshots);
+}
+
+/** Apply an authenticated, bounded control snapshot without treating it as a ledger row. */
+export function foldPostSnapshot(state, snapshot) {
+  const current = state && Array.isArray(state._records) ? state : initialView();
+  if (postDeliverySnapshotErrors(snapshot).length) return current;
+  const snapshots = new Map(current._postSnapshots);
+  for (const item of snapshot.items) {
+    const old = snapshots.get(item.message_id);
+    if ((!old || old.state !== "dropped") && (!old || old.version_seq < item.version_seq)) snapshots.set(item.message_id, { state: item.state, version_seq: item.version_seq });
+  }
+  return project(current._records, snapshots);
 }
