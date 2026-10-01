@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import test from "node:test";
 import { createAgentMember } from "../../src/members/agent";
+import { startOwner } from "../../src/main";
 import { ReflexMember } from "../../src/members/reflex";
 import { judgeStopKeyword } from "../../src/members/reflex-keywords";
 import { Ledger } from "../../src/world/ledger";
@@ -28,7 +28,37 @@ test("No-Key stop grammar matches only complete short commands", () => {
   for (const text of ["别忘了明天带伞", "我停在楼下了", "stop the timer", "暂停一下会议", "停在楼下", "stopword", "别发了吗"]) {
     assert.notEqual(judgeStopKeyword(text).intent, "stop", text);
   }
+  assert.deepEqual(judgeStopKeyword("暂停"), { intent: "pause", confidence: 1 });
   assert.deepEqual(judgeStopKeyword("hello"), { intent: "unrelated", confidence: 0 });
+});
+
+test("an authenticated local owner saying 暂停 uses the existing durable admin pause", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-reflex-pause-"));
+  const running = await startOwner({ stateDir: join(dir, "state"), listen: "127.0.0.1:0",
+    agents: [{ id: "agent:main", runtime: "echo" }] });
+  try {
+    const auth = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const response = await fetch(`${running.url}/api/send`, { method: "POST", headers: {
+      authorization: `Bearer ${auth}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "暂停" },
+        client_id: "owner-pause", wait: true }) });
+    assert.equal(response.status, 200);
+    const accepted = await response.json() as { id: string };
+    await wait(() => running.ledger.list({ limit: 1000 }).some((row) =>
+      row.word === "reflex.judged" && row.body.message_id === accepted.id));
+    const rows = running.ledger.list({ limit: 1000 });
+    assert.equal(rows.filter((row) => row.word === "pause" && row.to === "service:admin").length, 1);
+    assert.deepEqual(rows.find((row) => row.word === "reflex.judged" && row.body.message_id === accepted.id)?.body,
+      { message_id: accepted.id, stage: "keyword", intent: "pause", confidence: 1, acted: true });
+    const pause = rows.find((row) => row.word === "pause" && row.to === "service:admin")!;
+    assert.deepEqual(running.ledger.responseTo(pause.id)?.body, { ok: true, result: { paused: true } });
+    const retry = await fetch(`${running.url}/api/send`, { method: "POST", headers: {
+      authorization: `Bearer ${auth}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "暂停" },
+        client_id: "owner-pause", wait: true }) });
+    assert.equal((await retry.json() as { id: string }).id, accepted.id);
+    assert.equal(running.ledger.list({ limit: 1000 }).filter((row) => row.word === "pause" && row.to === "service:admin").length, 1);
+  } finally { await running.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("busy short stop cancels within one second; ambiguous and idle words only receive ordinary intake", async () => {
@@ -60,13 +90,12 @@ test("busy short stop cancels within one second; ambiguous and idle words only r
       assert.equal(rows().filter((row) => row.word === "cancel_turn" && row.kind === "request").length, 0);
       assert.equal(agent.inbox.activeTurn() !== null, true);
     }
-    const start = performance.now();
     const stop = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "停" }, wait: true });
     await wait(() => rows().some((row) => row.word === "reflex.judged" && row.body.message_id === stop.id));
-    assert.ok(performance.now() - start < 1000, "keyword stop waited beyond one second");
     const decision = rows().find((row) => row.word === "reflex.judged" && row.body.message_id === stop.id)!;
     assert.deepEqual(decision.body, { message_id: stop.id, stage: "keyword", intent: "stop", confidence: 1, acted: true });
     const cancel = rows().find((row) => row.word === "cancel_turn" && row.kind === "request")!;
+    assert.ok(cancel.ts - ledger.byId(stop.id)!.ts < 1000, "keyword stop was accepted over one second after the owner message");
     assert.equal(cancel.body.by, stop.id);
     assert.deepEqual(ledger.responseTo(cancel.id)?.body, { ok: true, result: { cancelled: true } });
     await wait(() => rows().some((row) => row.word === "turn.end" && row.body.reason === "cancelled"));

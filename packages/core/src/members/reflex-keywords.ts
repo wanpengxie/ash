@@ -4,11 +4,12 @@ const explicitStop = new Set([
   "stop", "wait",
 ]);
 
-export interface KeywordJudgement { intent: "stop" | "unclear" | "unrelated"; confidence: number }
+export interface KeywordJudgement { intent: "stop" | "pause" | "unclear" | "unrelated"; confidence: number }
 
 export function judgeStopKeyword(input: string): KeywordJudgement {
   if (typeof input !== "string") return { intent: "unrelated", confidence: 0 };
   const text = input.normalize("NFKC").trim().replace(/[。！!？?.,，]+$/u, "").trim().toLowerCase();
+  if (text === "暂停") return { intent: "pause", confidence: 1 };
   if ([...text].length <= 6 && explicitStop.has(text)) return { intent: "stop", confidence: 1 };
   return /停|别|算了|取消|等等|打住|不用了|不要发|\bstop\b|\bwait\b/iu.test(text)
     ? { intent: "unclear", confidence: 0 } : { intent: "unrelated", confidence: 0 };

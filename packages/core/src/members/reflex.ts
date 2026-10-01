@@ -30,16 +30,23 @@ export class ReflexMember implements Member {
     if (this.closed || message.kind !== "request" || message.from !== "person:owner" || message.to !== "agent:main" || message.word !== "say") return;
     // Capture the durable turn at message acceptance, not a later status label.
     const turn = this.busyTurn();
-    if (!turn) return;
-    const task = this.judge(message, turn).catch((error) => { this.failure = error instanceof Error ? error : new Error(String(error)); });
+    const judgement = judgeStopKeyword(typeof message.body.text === "string" ? message.body.text : "");
+    if (!turn && judgement.intent !== "pause") return;
+    const task = this.judge(message, turn, judgement).catch((error) => { this.failure = error instanceof Error ? error : new Error(String(error)); });
     this.tasks.add(task);
     void task.finally(() => this.tasks.delete(task));
   }
 
-  private async judge(message: Message, turn: string): Promise<void> {
-    const judgement = judgeStopKeyword(typeof message.body.text === "string" ? message.body.text : "");
+  private async judge(message: Message, turn: string | null, judgement: ReturnType<typeof judgeStopKeyword>): Promise<void> {
     let acted = false;
-    if (judgement.intent === "stop" && !this.closed && this.busyTurn() === turn) {
+    if (judgement.intent === "pause" && !this.closed) {
+      try {
+        const sent = await this.router.send(context, { to: "service:admin", kind: "request", word: "pause",
+          body: { by: message.id }, client_id: `reflex:pause:${message.id}`, wait: true });
+        acted = sent.reply?.body.ok === true &&
+          (sent.reply.body.result as { paused?: unknown } | undefined)?.paused === true;
+      } catch (error) { this.failure = error instanceof Error ? error : new Error(String(error)); }
+    } else if (judgement.intent === "stop" && turn && !this.closed && this.busyTurn() === turn) {
       try {
         const sent = await this.router.send({ ...context, turn }, { to: "agent:main", kind: "request", word: "cancel_turn",
           body: { reason: "Owner asked to stop", by: message.id }, client_id: `reflex:cancel:${message.id}`, wait: true });
