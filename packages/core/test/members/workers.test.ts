@@ -7,6 +7,7 @@ import test from "node:test";
 import type { Message, WorkerRequest } from "../../../sdk/src/api";
 import { compileWorker } from "../../src/workers/compile";
 import { DATA_NOT_INSTRUCTIONS_RULE } from "../../src/workers/rules.generated";
+import { WORKER_STEP_TEXT } from "../../src/workers/steps.generated";
 import { WORKER_NAMES, WorkerMember, registerWorkerMembers, type WorkerCompletion, type WorkerModel } from "../../src/workers/llm";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
@@ -31,18 +32,22 @@ test("prompt has fixed section order, one source-marked data block, and escaped 
   const sourceRule = readFileSync(join(import.meta.dirname, "../../src/prompts/rules/data-not-instructions.md"), "utf8");
   assert.equal(DATA_NOT_INSTRUCTIONS_RULE, sourceRule, "bundled rule drifted from its source module");
   assert.ok(prompt.system.startsWith("这是后台的一步，你不直接对用户说话\n\n"));
-  assert.ok(prompt.system.indexOf("Identify candidate claims") < prompt.system.indexOf(sourceRule));
+  assert.ok(prompt.system.indexOf(WORKER_STEP_TEXT.extract) < prompt.system.indexOf(sourceRule));
   assert.ok(prompt.system.includes(sourceRule));
   assert.match(prompt.user, /^<data source="worker:extract\/input">\n/);
   assert.match(prompt.user, /\\u003c\/data\\u003e/);
   assert.equal(prompt.user.match(/<\/data>/gu)?.length, 1);
   assert.ok(prompt.user.indexOf("</data>") < prompt.user.indexOf("Output schema"));
   const baseline = compileWorker("extract", request);
-  assert.equal(createHash("sha256").update(JSON.stringify(baseline)).digest("hex"), "740d8a7bc86ea20f3c80d4a779d6b6da4f41039d764b3ad4c3e57450e6841da6");
+  assert.equal(createHash("sha256").update(JSON.stringify(baseline)).digest("hex"), "3e1108694ded47a7f1e0dc9e0e641046c6d3d2b65d89ebaa5d17b8d5a42edcc7");
   for (const name of WORKER_NAMES) {
     const compiled = compileWorker(name, request as WorkerRequest<typeof name>);
+    const stepSource = readFileSync(join(import.meta.dirname, `../../src/prompts/workers/${name}.md`), "utf8").trim();
+    assert.equal(WORKER_STEP_TEXT[name], stepSource, `${name}: bundled step drifted from its source file`);
+    assert.ok(compiled.system.indexOf(stepSource) < compiled.system.indexOf(sourceRule), `${name}: C9 section order changed`);
     for (const forbidden of ["21:30", "guard", "免打扰", "去重", "permission grant", "dedupe"]) {
       assert.equal(compiled.system.toLowerCase().includes(forbidden), false, `${name}: ${forbidden}`);
+      assert.equal(stepSource.toLowerCase().includes(forbidden), false, `${name}: executable rule leaked into source prompt`);
     }
   }
 });
