@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { startOwner } from "../../src/main";
+import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api";
 
 const install = process.env.ASH_TEST_DSH_ROOT;
 const skip = !install || !existsSync(join(install, "package.json")) ? "set ASH_TEST_DSH_ROOT" :
@@ -24,28 +25,34 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     const user = (input.messages ?? []).filter((item) => item.role === "user").map((item) => JSON.stringify(item.content)).join("\n");
     const current = JSON.stringify((input.messages ?? []).filter((item) => item.role === "user").at(-1)?.content ?? "");
     const tour = current.includes("Reason: first_week_tour");
+    const firstMeeting = current.includes("Reason: first_meeting");
     const mind = user.includes("This is your private mind space");
     const proactive = user.includes("worker:proactive/input");
     const worker = user.includes("worker:extract/input") || proactive;
     requests.push({ user, mind, worker, tools: (input.tools ?? []).map((item) => item.name) });
     const last = input.messages?.at(-1);
     const toolResult = JSON.stringify(last?.content ?? "").includes("tool_result");
-    const callTool = mind && !toolResult;
+    const callTool = firstMeeting || mind && !toolResult;
     response.writeHead(200, { "content-type": "text/event-stream" });
     const event = (kind: string, data: object) => response.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
     event("message_start", { message: { id: `msg_mind_${++serial}`, type: "message", role: "assistant", model: input.model,
       content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } });
     if (callTool) {
-      event("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_mind_say_1", name: "ash_say", input: {} } });
-      event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: tour ? "TOUR_PUBLIC_MESSAGE" : "MIND_PUBLIC_MESSAGE", kind: "heads_up" }) } });
+      for (let i = 0; i < (firstMeeting ? 3 : 1); i++) {
+        event("content_block_start", { index: i, content_block: { type: "tool_use", id: `toolu_mind_say_${i + 1}`, name: "ash_say", input: {} } });
+        event("content_block_delta", { index: i, delta: { type: "input_json_delta", partial_json: JSON.stringify({
+          text: firstMeeting ? `FIRST_MEETING_${i + 1}` : tour ? "TOUR_PUBLIC_MESSAGE" : "MIND_PUBLIC_MESSAGE",
+          kind: firstMeeting ? "reply" : "heads_up" }) } });
+        event("content_block_stop", { index: i });
+      }
     } else {
       event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
       event("content_block_delta", { index: 0, delta: { type: "text_delta", text: proactive ? JSON.stringify({ suggestion: {
         kind: "heads_up", title: "Passport", text: "Passport renewal is due soon.", urgency: "regular", facts: [1],
       } }) : worker ? JSON.stringify({ no_change: { checked: [], details: "No new claims" } }) :
         mind ? "MIND_PRIVATE_OUTPUT" : "MAIN_VISIBLE_OUTPUT" } });
+      event("content_block_stop", { index: 0 });
     }
-    event("content_block_stop", { index: 0 });
     event("message_delta", { delta: { stop_reason: callTool ? "tool_use" : "end_turn" }, usage: { output_tokens: 1 } });
     event("message_stop", {}); response.end();
   });
@@ -110,6 +117,28 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     assert.equal(headsUp.length, 3);
     await until(() => running!.ledger.list({ limit: 1000 }).some((item) => item.from === "service:post" && item.word === "post.delivery" &&
       item.body.message_id === headsUp[2].id));
+    const registration = running.edge.screens.register({ member: "person:owner", transportPrincipal: owner.transportPrincipal,
+      local: true, remote: false, ownerProxy: true, transport: "api" }, "test-scope", "Test screen");
+    const visible = () => running!.edge.handle({ method: "POST", url: new URL("/api/send", running!.url),
+      headers: { [SCREEN_TOKEN_HEADER.toLowerCase()]: registration.token }, body: Buffer.from(JSON.stringify({
+        to: "service:post", kind: "event", word: "visible", body: {} })) },
+      { member: "person:owner", transportPrincipal: owner.transportPrincipal, local: true, remote: false,
+        ownerProxy: true, transport: "api" });
+    assert.equal((await visible()).status, 200);
+    const firstMeetingDone = () => running!.ledger.list({ limit: 1000 }).filter((item) => item.from === "agent:main" &&
+      item.to === "person:owner" && item.word === "say" && String(item.body.text).startsWith("FIRST_MEETING_")).length === 3;
+    const firstMeetingDeadline = Date.now() + 15_000;
+    while (Date.now() < firstMeetingDeadline && !firstMeetingDone()) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(firstMeetingDone(), true, JSON.stringify({
+      wake: running.ledger.list({ limit: 1000 }).filter((item) => item.word === "wake" && item.body.reason === "first_meeting")
+        .map((item) => ({ id: item.id, reply: running!.ledger.responseTo(item.id)?.body })),
+      says: running.ledger.list({ limit: 1000 }).filter((item) => String(item.body.text).startsWith("FIRST_MEETING_"))
+        .map((item) => item.body.text) }));
+    assert.deepEqual(running.ledger.list({ limit: 1000 }).filter((item) => String(item.body.text).startsWith("FIRST_MEETING_"))
+      .map((item) => [item.body.text, item.body.kind]), [["FIRST_MEETING_1", "reply"], ["FIRST_MEETING_2", "reply"], ["FIRST_MEETING_3", "reply"]]);
+    assert.equal((await visible()).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(running.ledger.list({ limit: 1000 }).filter((item) => String(item.body.text).startsWith("FIRST_MEETING_")).length, 3);
     off();
   } finally {
     await running?.close();

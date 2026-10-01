@@ -109,6 +109,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let work: WorkMember | null = null;
   let senses: SensesMember | null = null;
   let stopTour: (() => void) | null = null;
+  let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
   try {
@@ -170,6 +171,15 @@ export async function startOwner(config: Config): Promise<Running> {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
       members.register(self);
     }
+    if (dsh && self) stopFirstMeeting = world.subscribe((message) => {
+      if (message.to !== "service:post" || message.word !== "visible" || message.kind !== "event" || !message.from.startsWith("screen:")) return;
+      void (async () => {
+        if ((await self!.promptSnapshot()).identity !== null) return;
+        await world.send({ member: "service:senses", transport: "service", transportPrincipal: "service:senses",
+          local: true, remote: false, ownerProxy: false }, { to: "agent:main", kind: "request", word: "wake",
+          body: { reason: "first_meeting", context: {} }, client_id: "first-meeting:v1", wait: true });
+      })().catch((error) => log("first meeting wake failed", error));
+    });
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
@@ -222,13 +232,13 @@ export async function startOwner(config: Config): Promise<Running> {
     hostLink?.startHealthChecks(members);
     link?.enable();
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
-      stopTour?.(); senses?.close();
+      stopTour?.(); stopFirstMeeting?.(); senses?.close();
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
       await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
-    stopTour?.(); senses?.close();
+    stopTour?.(); stopFirstMeeting?.(); senses?.close();
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
     await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();

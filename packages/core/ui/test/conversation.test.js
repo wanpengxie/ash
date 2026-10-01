@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { appendConversation, workspaceFileUrl } from "../js/conversation.js";
+import { fold, initialView } from "../js/project.js";
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.listeners = {}; }
@@ -35,6 +36,16 @@ test("conversation shows receipt stages, grouped agent burst, and reactions on t
   assert.match(bubbles[4].className, /group-last/);
   assert.match(bubbles[5].className, /group-single/);
   assert.equal(fragment.children.some((node) => node.tag === "button"), false);
+});
+
+test("three first-meeting replies are visible as three conversation bubbles", () => {
+  let view = initialView();
+  for (let i = 1; i <= 3; i++) view = fold(view, { id: `first-${i}`, seq: i, ts: i,
+    from: "agent:main", to: "person:owner", kind: "request", word: "say",
+    body: { text: `FIRST_MEETING_${i}`, kind: "reply" } });
+  const rendered = draw(view.conversation);
+  assert.deepEqual(rendered.children.filter((item) => item.className?.startsWith("msg "))
+    .map((item) => item.textContent), ["FIRST_MEETING_1", "FIRST_MEETING_2", "FIRST_MEETING_3"]);
 });
 
 test("legacy text remains inert and only bounded workspace references get download links", () => {
