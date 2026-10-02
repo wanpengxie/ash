@@ -136,4 +136,6 @@ test('private sidecar maps opaque IDs to paths and paragraph start lines only', 
 test('a whitespace-free code span is a machine name and does not count; a span with spaces still counts', () => {
   assert.equal(normalizeParagraph('看 `calendar.search` 是否可用').length, 5);
   assert.equal(normalizeParagraph('`do not copy this prose`').length, 'donotcopythisprose'.length);
+  assert.equal(normalizeParagraph('`这是一整句从上游复制的中文内容`').length, 15);
+  assert.equal(normalizeParagraph(`\`${'a-'.repeat(40)}\``).length, 40);
 });

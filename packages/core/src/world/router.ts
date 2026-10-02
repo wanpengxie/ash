@@ -392,7 +392,7 @@ export class WorldRouter {
     if (request.to === "service:self" && LOCAL_SELF_MUTATIONS.has(request.word)) {
       // Background work never overwrites: it appends, applies hash-guarded plans, or creates a file that does not exist yet.
       const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan" ||
-        (request.word === "write" && request.body.expected_hash === null));
+        (request.word === "write" && request.body.expected_hash === null && (request.body.path === "MEMORY.md" || request.body.path === "USER.md")));
       if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
@@ -662,9 +662,14 @@ export class WorldRouter {
         const eventStart = request.body.start_ms;
         const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
           ? `，开始时间 ${new Date(eventStart).toLocaleString("zh-CN")}` : "";
-        const command = request.word === "shell.run" && typeof request.body.command === "string" ? request.body.command : null;
+        // A command reads best on its own, but every other argument that changes the effect (stdin, cwd…) stays visible,
+        // and a cut is marked so nothing hides past the edge of the card.
+        const { command, ...rest } = request.body as { command?: unknown };
+        const shown = request.word === "shell.run" && typeof command === "string"
+          ? `${command}${Object.keys(rest).length ? `\n${JSON.stringify(rest)}` : ""}` : JSON.stringify(request.body);
+        const preview = shown.length > 500 ? `${shown.slice(0, 500)}…（共 ${shown.length} 字，未显示部分同样会执行）` : shown;
         const detail = calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
-          : `${endpoint.spec.label ?? request.word}：${(command ?? JSON.stringify(request.body)).slice(0, 500)}`;
+          : `${endpoint.spec.label ?? request.word}：${preview}`;
         const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
           contractFingerprint: identity.fingerprint, expiresAt, objectPattern,
           askBody: { title: calendarAsk ? "创建日历事件" : "需要你确认", detail,

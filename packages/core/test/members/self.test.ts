@@ -35,6 +35,10 @@ test("self enforces canonical paths, byte hashes, USER frontmatter and authentic
       const refused = await f.send("write", { path, content: "bad", why: "test", expected_hash: null });
       assert.equal((refused.reply?.body as { error?: { code?: string } }).error?.code, "forbidden");
     }
+    for (const path of ["USER.md", "../memory/2026-01-01.md"]) {
+      const refused = await f.send("append", { path, text: "x" });
+      assert.equal((refused.reply?.body as { error?: { code?: string } }).error?.code, "forbidden", path);
+    }
     assert.equal(existsSync(join(f.home, "SOUL.md.bak")), false);
     assert.equal(existsSync(join(f.dir, "outside")), false);
     const created = await f.send("write", { path: "USER.md", content: "Notes\n", why: "test", expected_hash: null }, agent);

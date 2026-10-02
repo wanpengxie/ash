@@ -11,9 +11,9 @@ const hints = [
   "这一周有什么没帮到你的地方？指出一处，我先改接下来的回答。",
 ] as const;
 
-/** "不用了" and its everyday variants stop the remaining hints. */
+/** A whole message that only declines ("不用了", "不用了，谢谢", "别发了") stops the remaining hints; a request that merely starts with 不需要 does not. */
 export function declinesTour(text: string): boolean {
-  return /^(不用了|不需要了?|别再?发了|不要再发了?)/u.test(text.replace(/^[\s，。！!,.]+/u, ""));
+  return /^[\s，。！!,.~～]*(不用了|不需要了|别再?发了|不要再发了?)[\s，。！!,.~～]*(谢谢你?|谢了|多谢)?[\s，。！!,.~～]*$/u.test(text);
 }
 
 /** Daily one-line feature invitation. The first real owner turn starts the seven-day clock. */

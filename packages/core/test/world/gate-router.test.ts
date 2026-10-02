@@ -326,3 +326,24 @@ test("other outward actions use an exact request object, then ask after rule exp
     assert.equal(ledger.revokeGateRule(rule.id), true);
   } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
 });
+
+test("a shell approval shows the command and every other argument, and marks a cut", async () => {
+  const { ledger, router } = await setup();
+  router.registerDevice("device:phone", { name: "shell.run", description: "Run a shell command", label: "在手机上执行命令",
+    risk: "structure", input_schema: { type: "object", properties: { command: { type: "string" }, stdin: { type: "string" }, cwd: { type: "string" } },
+      required: ["command"], additionalProperties: false } }, () => ({ ok: true, result: {} }));
+  grant(ledger, "device:phone/shell.run");
+  const detailOf = async (body: Record<string, unknown>) => {
+    const sent = await router.send(agent, { to: "device:phone", kind: "request", word: "shell.run", body });
+    await new Promise((resolve) => setImmediate(resolve));
+    const askId = ledger.gateCase(sent.id)!.askId;
+    const detail = String(ledger.byId(askId)?.body.detail);
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId, body: { ok: true, result: { choice: "deny" } } });
+    return detail;
+  };
+  assert.equal(await detailOf({ command: "printf ok" }), "在手机上执行命令：printf ok");
+  const hidden = await detailOf({ command: "sh", stdin: "rm -rf /sdcard/DCIM", cwd: "/sdcard" });
+  assert.match(hidden, /rm -rf \/sdcard\/DCIM/);
+  assert.match(hidden, /"cwd":"\/sdcard"/);
+  assert.match(await detailOf({ command: `${" ".repeat(600)}rm x` }), /…（共 604 字/);
+});

@@ -199,7 +199,7 @@ test("a fresh install gets MEMORY.md from the loop, and the plan verifier sees t
     const said = f.add("I prefer short answers");
     const done = await f.run(); assert.equal(done.state, "done", JSON.stringify({ calls: model.calls, errors: f.errors.map(String) }));
     assert.deepEqual(seen.map((evidence) => evidence.map((message) => message.id)), [[said.id]]);
-    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "\n- Prefers short answers");
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "- Prefers short answers");
     assert.equal(existsSync(join(f.home, "USER.md")), false);
   } finally { await f.close(); }
 });
@@ -217,5 +217,28 @@ test("background work may create a managed file but never overwrite one", async 
     assert.equal(overwrite.error?.code, "forbidden");
     assert.equal((await write({ content: "third\n", expected_hash: null }) as { ok: boolean }).ok, false);
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "first\n");
+  } finally { await f.close(); }
+});
+
+test("an edit that does not fit a new file drops that plan before any effect, and background work creates only memory files", async () => {
+  const model = scripted((name, input) => {
+    if (name === "extract") return { claims: (input.chunk as Message[]).map((message): Claim =>
+      ({ text: "Prefers tea", type: "preference", salience: "low", evidence: [message.id], quote: String(message.body.text) })) };
+    if (name === "verify_claims") return { verdicts: (input.claims as Claim[]).flatMap((_, i) => [
+      { i, lens: "refute", pass: true, confidence: 0.9, why: "ok" }, { i, lens: "grounded", pass: true, confidence: 0.9, why: "ok" }]) };
+    if (name === "reconcile") return { edits: [{ op: "replace", start: 1, end: 1, guard: "no such line", text: "- tea", reason: "promote", evidence: [(input.claims as Claim[])[0].evidence[0]] }] };
+    if (name === "verify_plan") return { verdicts: (input.edits as unknown[]).flatMap((_, i) => (["evidence", "temporal", "preservation"] as const)
+      .map((lens) => ({ i, lens, pass: true, why: "ok" }))) };
+    throw new Error(`unexpected ${name}`);
+  });
+  const f = await fixture(model);
+  const work: TrustedRouteContext = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false };
+  try {
+    f.add("I like tea");
+    const done = await f.run(); assert.equal(done.state, "done", JSON.stringify({ calls: model.calls, errors: f.errors.map(String) }));
+    assert.equal(existsSync(join(f.home, "MEMORY.md")), false);
+    assert.equal(existsSync(join(f.home, "USER.md")), false);
+    await assert.rejects(f.router.send(work, { to: "service:self", kind: "request", word: "write", wait: true,
+      body: { path: "SOUL.md", content: "x\n", why: "test", expected_hash: null } }), /local authority/);
   } finally { await f.close(); }
 });

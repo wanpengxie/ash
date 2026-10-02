@@ -43,7 +43,7 @@ export function memoryFlow(ledger: Ledger, afterApplied?: (run: string) => void)
     if (!accepted.length) return "no_change";
 
     // Finish every model judgment before the first managed-file effect. Bad worker output leaves files untouched.
-    const plans: { path: "MEMORY.md" | "USER.md"; hash: string | null; edits: Edit[] }[] = [];
+    const plans: { path: "MEMORY.md" | "USER.md"; hash: string | null; edits: Edit[]; created?: string }[] = [];
     for (const path of ["MEMORY.md", "USER.md"] as const) {
       const key = path === "MEMORY.md" ? "memory" : "user";
       const read = await ctx.step(`read_${key}`, () => ctx.send({ to: "service:self", word: "read", body: { path }, client_id: `read_${key}` }));
@@ -57,7 +57,12 @@ export function memoryFlow(ledger: Ledger, afterApplied?: (run: string) => void)
       const checked = await ctx.step(`verify_plan_${key}`, () => worker(ctx, "verify_plan", { file: path, before: baseline.content, edits: candidate.edits, evidence }, `verify_plan_${key}`));
       if (changed(checked)) throw new Error("plan verifier did not judge edits");
       const edits = approvedEdits(candidate.edits, checked.verdicts);
-      if (edits.length) plans.push({ path, hash: baseline.hash, edits });
+      if (!edits.length) continue;
+      if (baseline.hash !== null) { plans.push({ path, hash: baseline.hash, edits }); continue; }
+      // A new file is composed now, before any effect; an edit that does not fit the empty file drops the plan, not the run.
+      let created: string;
+      try { created = applySelfEdits("", edits).replace(/^\n+/u, ""); } catch { continue; }
+      if (created.trim()) plans.push({ path, hash: null, edits, created });
     }
 
     const date = new Date().toISOString().slice(0, 10);
@@ -74,7 +79,7 @@ export function memoryFlow(ledger: Ledger, afterApplied?: (run: string) => void)
       const key = plan.path === "MEMORY.md" ? "memory" : "user";
       await ctx.step(`apply_${key}`, async () => {
         result(await ctx.send(plan.hash === null
-          ? { to: "service:self", word: "write", body: { path: plan.path, content: applySelfEdits("", plan.edits), why: "memory loop", expected_hash: null }, client_id: `apply_${key}` }
+          ? { to: "service:self", word: "write", body: { path: plan.path, content: plan.created, why: "memory loop", expected_hash: null }, client_id: `apply_${key}` }
           : { to: "service:self", word: "apply_plan", body: { path: plan.path, expected_hash: plan.hash, edits: plan.edits }, client_id: `apply_${key}` }));
       });
     }

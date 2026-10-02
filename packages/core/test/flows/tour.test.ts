@@ -96,5 +96,6 @@ test("a polite decline still stops hints after many quiet runs and a long ledger
 test("only a decline of the hints stops them", async () => {
   const { declinesTour } = await import("../../src/flows/tour");
   for (const text of ["不用了", " 不用了，谢谢", "不需要了", "别发了", "不要再发了"]) assert.equal(declinesTour(text), true, text);
-  for (const text of ["你好", "这个不用了解", "我不用了解细节吗"]) assert.equal(declinesTour(text), false, text);
+  for (const text of ["你好", "这个不用了解", "我不用了解细节吗", "不用了解释，直接说结论", "不需要翻译，帮我总结", "不需要", "不用了解细节"])
+    assert.equal(declinesTour(text), false, text);
 });
