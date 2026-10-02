@@ -8,7 +8,7 @@
     "starter_options": 3
   },
   "prompt_file_sha256": {
-    "packages/ash-skills/skills/first-meeting/SKILL.md": "9d520335d8452b37754b53bce34370695af2250e76405725e9abd4944156f054",
+    "packages/ash-skills/skills/first-meeting/SKILL.md": "6a27b694cac5ceaddb0a068172a22c25dc2dee58b24b98a778c6b60221887121",
     "packages/ash-skills/skills/self-awareness/SKILL.md": "87188b25a099702b3df49b085e9846292647d558d481f7c0e0ba429fc30237cf",
     "packages/ash-skills/skills/forget/SKILL.md": "f8346dd11b4fac0e2b82b173d9d4486b8cfda9f59edbf0c619efa58ea09a9f76"
   },
