@@ -222,19 +222,18 @@ object BrowserSession {
     /** Forgets every login and everything else the agent's browser stored. Returns whether it is now empty. */
     fun clearLogins(ctx: Context): Boolean {
         close()
-        return try {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-                val store = ProfileStore.getInstance()
-                if (store.getProfile(PROFILE) != null) store.deleteProfile(PROFILE)
-                true
-            } else {
-                // Without a separate profile the cookie jar is shared with Ash's own page, which only holds its own origin.
-                val done = CountDownLatch(1)
-                onMain { CookieManager.getInstance().removeAllCookies { done.countDown() }; android.webkit.WebStorage.getInstance().deleteAllData() }
-                done.await(3, TimeUnit.SECONDS)
-                true
+        val done = CountDownLatch(1)
+        val removed = AtomicReference(false)
+        try {
+            onMain {
+                val own = if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) ProfileStore.getInstance().getProfile(PROFILE) else null
+                val cookies = own?.cookieManager ?: CookieManager.getInstance()
+                (own?.webStorage ?: android.webkit.WebStorage.getInstance()).deleteAllData()
+                cookies.removeAllCookies { value -> removed.set(true); done.countDown(); cookies.flush(); if (value == false) removed.set(true) }
             }
-        } catch (_: Throwable) { false }
+        } catch (_: Throwable) { return false }
+        // Without a separate profile the jar is shared with Ash's own page, which only holds its own origin's cookie.
+        return done.await(5, TimeUnit.SECONDS) && removed.get()
     }
 
     fun close() {
