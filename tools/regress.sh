@@ -250,7 +250,7 @@ R19() { say "R19 a risky phone action produces an Android approval notification 
   adb shell input keyevent 3 >/dev/null 2>&1
   local from request ask notice answer effect end
   from=$(last_seq)
-  request=$(send_say "请使用手机的 shell.run 执行 printf ash-r19；这是回归测试，请实际调用工具，不要只解释。")
+  request=$(send_say "请用手机的 clipboard.set 把剪贴板设为 ash-r19；这是回归测试，请实际调用工具，不要只解释。")
   [ -n "$request" ] || { bad R19 "request not accepted"; return; }
   ask=$(wait_row 180 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&Array.isArray(x.body?.options)&&x.body.options.some(o=>o.id==='once')&&x.body.options.some(o=>o.id==='deny'))" "$from") || { bad R19 "no approval ask"; return; }
   local ask_id; ask_id=$(echo "$ask" | jq_ 'v.id||""')
@@ -265,7 +265,7 @@ R19() { say "R19 a risky phone action produces an Android approval notification 
   local once_label; once_label=$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')
   tap_notification_action "$once_label" || { bad R19 "approval action not found in the notification shade"; return; }
   answer=$(wait_row 30 "v.find(x=>x.kind==='response'&&x.reply_to==='$ask_id'&&x.body?.result?.choice==='once')" "$from") || { bad R19 "approval answer not accepted"; return; }
-  effect=$(wait_row 180 "v.find(x=>x.kind==='response'&&x.word==='shell.run'&&x.body?.ok===true)" "$from") || { bad R19 "approved phone action did not settle"; return; }
+  effect=$(wait_row 180 "v.find(x=>x.kind==='response'&&x.word==='clipboard.set'&&x.body?.ok===true)" "$from") || { bad R19 "approved phone action did not settle"; return; }
   local responses; responses=$(rows "$from" | ASH_ASK="$ask_id" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(JSON.parse);process.stdout.write(String(v.filter(x=>x.kind==="response"&&x.reply_to===process.env.ASH_ASK).length))})')
   if [ "$responses" = 1 ]; then ok "R19 Android showed the approval; once produced one terminal answer and one phone effect"; else bad R19 "approval responses=$responses"; fi
 }
