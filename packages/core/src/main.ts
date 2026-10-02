@@ -205,11 +205,11 @@ export async function startOwner(config: Config): Promise<Running> {
         switch (body.op) {
           case "approve":
             await link.approve(body.request_id as string, body.permissions as Parameters<OwnerLink["approve"]>[1]);
-            void link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
+            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
             return { approved: true };
           case "reject": await link.reject(body.request_id as string); return { rejected: true };
           case "revoke": await link.revoke(body.device as string);
-            void link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
+            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error)); // the next state read no longer lists it
             return { revoked: true };
           case "sync": await link.refreshDevices(); return { configured: true, ...link.state() };
           default: throw new Error("unsupported gateway operation");

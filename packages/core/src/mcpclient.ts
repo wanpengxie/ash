@@ -160,6 +160,14 @@ class HttpConnection extends McpConnection {
 }
 
 /** All local MCP servers of this device, flattened into capabilities. */
+/**
+ * MCP annotations are hints. They are trusted only from a server this laptop launches itself, and only for a
+ * tool that is read-only, not destructive and not reaching the open world; everything else asks the owner.
+ */
+export function approvalFree(spec: McpServerSpec, annotations: { readOnlyHint?: unknown; destructiveHint?: unknown; openWorldHint?: unknown } | undefined): boolean {
+  return "command" in spec && annotations?.readOnlyHint === true && annotations.destructiveHint !== true && annotations.openWorldHint !== true;
+}
+
 export class McpCapabilities {
   private readonly conns = new Map<string, McpConnection>();
   private cache: { at: number; caps: CapabilitySpec[] } | null = null;
@@ -177,9 +185,9 @@ export class McpCapabilities {
     for (const [server, conn] of this.conns) {
       try {
         const r = await conn.request("tools/list", {}, 60_000);
-        for (const t of (r?.tools ?? []) as { name: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: { readOnlyHint?: unknown; destructiveHint?: unknown } }[]) {
+        for (const t of (r?.tools ?? []) as { name: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: { readOnlyHint?: unknown; destructiveHint?: unknown; openWorldHint?: unknown } }[]) {
           const confirm = this.servers[server].confirm?.includes(t.name) === true;
-          const readOnly = t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint !== true && !confirm;
+          const readOnly = approvalFree(this.servers[server], t.annotations) && !confirm;
           caps.push({ name: `${server}.${t.name}`, description: t.description ?? t.name, input_schema: t.inputSchema ?? { type: "object", properties: {} },
             risk: readOnly ? "none" : "structure", ...(confirm ? { confirm: true } : {}) });
         }

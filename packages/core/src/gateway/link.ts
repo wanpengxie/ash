@@ -9,6 +9,26 @@ import type { DeviceCapability } from "../world/router";
 
 export interface Signer { readonly id: string; readonly publicKey: string; sign(data: Uint8Array): Promise<string> }
 
+/** A paired device's own name, safe to show inside owner-facing labels. */
+function deviceLabel(name: unknown): string {
+  return String(name ?? "").replace(/[\p{C}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 40) || "另一台设备";
+}
+
+/**
+ * Capabilities a paired device lends. Only a read-only claim (risk none) is honoured; any other claim, or
+ * none at all, is structure risk. The owner writes every label, naming the device and the capability.
+ */
+export function borrowedCapabilities(raw: unknown[], deviceName: unknown): DeviceCapability[] {
+  const device = deviceLabel(deviceName);
+  return raw.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid remote capability");
+    const cap = value as DeviceCapability;
+    if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
+      throw new TypeError("invalid remote capability");
+    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, label: `在${device}上用 ${cap.name.slice(0, 80)}` };
+  });
+}
+
 export async function fileSigner(stateDir: string): Promise<Signer> {
   const file = join(stateDir, "device.jwk");
   if (existsSync(file)) return DeviceKey.fromJwk(JSON.parse(readFileSync(file, "utf8")));
@@ -230,15 +250,7 @@ export class OwnerLink extends Link {
         if (response.status !== 200) throw new Error("remote manifest unavailable");
         const raw = JSON.parse(response.body.toString("utf8")) as { name?: unknown; capabilities?: unknown };
         if (!raw || !Array.isArray(raw.capabilities) || typeof raw.name !== "string" || !raw.name.trim()) throw new TypeError("invalid remote manifest");
-        const capabilities: DeviceCapability[] = raw.capabilities.map((value) => {
-          if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid remote capability");
-          const cap = value as DeviceCapability;
-          if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
-            throw new TypeError("invalid remote capability");
-          // A paired device lending its own read-only tool may skip approval; any other claim, or
-          // none at all, is structure risk. The owner labels every borrowed capability by device.
-          return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, label: `在用${item.name}` };
-        });
+        const capabilities = borrowedCapabilities(raw.capabilities, item.name);
         const manifest = JSON.stringify({ name: item.name, capabilities });
         if (previous?.manifest === manifest) { previous.member.setOnline(true); continue; }
         const member = new DeviceMember(memberId, item.name, capabilities, async (message, context) => {
@@ -305,7 +317,7 @@ export class OwnerLink extends Link {
   state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined,
     pending: [...this.pending.values()],
     devices: this.paired.map((item) => ({ id: `device:${item.id}`, name: item.name, online: this.remoteDevices.get(item.id)?.member.online ?? item.online,
-      permissions: item.permissions, capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0 })) }; }
+      permissions: item.permissions, lends: this.remoteDevices.has(item.id), capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0 })) }; }
 }
 
 export interface LocalCapabilities {

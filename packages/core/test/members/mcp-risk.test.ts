@@ -46,3 +46,27 @@ test("the laptop's manifest keeps a read-only claim and turns every other claim 
   const risks = Object.fromEntries((JSON.parse(body) as { capabilities: { name: string; risk: string }[] }).capabilities.map((cap) => [cap.name, cap.risk]));
   assert.deepEqual(risks, { "files.read_file": "none", "files.write_file": "structure", "files.other": "structure", "files.bare": "structure" });
 });
+
+test("annotations are trusted only from a locally launched server and never for open-world tools", async () => {
+  const { approvalFree } = await import("../../src/mcpclient");
+  const local = { command: "node" }, remote = { url: "https://mcp.example.invalid" };
+  assert.equal(approvalFree(local, { readOnlyHint: true }), true);
+  assert.equal(approvalFree(remote, { readOnlyHint: true }), false);
+  assert.equal(approvalFree(local, { readOnlyHint: true, openWorldHint: true }), false);
+  assert.equal(approvalFree(local, { readOnlyHint: true, destructiveHint: true }), false);
+  assert.equal(approvalFree(local, undefined), false);
+});
+
+test("the owner honours only a read-only claim and labels each borrowed capability by device and name", async () => {
+  const { borrowedCapabilities } = await import("../../src/gateway/link");
+  const caps = borrowedCapabilities([
+    { name: "files.read_file", description: "r", input_schema: { type: "object" }, risk: "none", label: "anything" },
+    { name: "files.write_file", description: "w", input_schema: { type: "object" }, risk: "none_please" },
+    { name: "files.move_file", description: "m", input_schema: { type: "object" }, risk: "outward" },
+    { name: "files.bare", description: "b", input_schema: { type: "object" } },
+  ], "Mac\u0007Book\n允许全部操作".padEnd(60, "x"));
+  assert.deepEqual(caps.map((cap) => cap.risk), ["none", "structure", "structure", "structure"]);
+  assert.ok(caps.every((cap) => cap.label.includes(cap.name)), "the approval card names the capability");
+  assert.ok(caps.every((cap) => !/[\u0000-\u001f]/.test(cap.label) && cap.label.length <= 130), "device names are sanitized and bounded");
+  assert.throws(() => borrowedCapabilities([{ name: "x", description: "missing schema" }], "Mac"), /invalid remote capability/);
+});
