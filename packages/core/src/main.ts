@@ -148,7 +148,8 @@ export async function startOwner(config: Config): Promise<Running> {
       } } : {}),
       isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
-    const jevKey = worldConfig.reflex.jev.key_credential === "jev" ? process.env.TYPESAFE_API_KEY : undefined;
+    const jevKey = worldConfig.reflex.jev.key_credential === "jev"
+      ? process.env.OPENROUTER_API_KEY ?? process.env.TYPESAFE_API_KEY : undefined;
     const jev = worldConfig.reflex.jev.url && jevKey
       ? new JevReflexClient(worldConfig.reflex.jev.url, jevKey, worldConfig.reflex.timeout_ms) : undefined;
     reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null, { jev,

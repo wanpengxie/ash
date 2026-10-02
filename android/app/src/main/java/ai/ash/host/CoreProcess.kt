@@ -76,7 +76,7 @@ class CoreProcess(private val ctx: Context) {
             .put("host", JSONObject().put("url", "http://127.0.0.1:$hostPort").put("token", secrets.hostToken).put("coreToken", secrets.coreToken))
             .put("policy", JSONObject().put("quietHours", "23:30-07:30"))
         if (secrets.jevApiKey != null) cfg.put("reflex", JSONObject().put("jev", JSONObject()
-            .put("url", "https://api.typesafe.ai/v1/systemone").put("key_credential", "jev")))
+            .put("url", "https://openrouter.ai/api/alpha/decisions").put("key_credential", "jev")))
         // The owner may override anything (more agents, policy …) in ash/config.override.json.
         if (p.configOverride.exists()) {
             runCatching { JSONObject(p.configOverride.readText()) }.getOrNull()?.let { o -> o.keys().forEach { k -> cfg.put(k, o.get(k)) } }
@@ -158,7 +158,7 @@ class CoreProcess(private val ctx: Context) {
             "npm_config_cache" to "${p.cache.path}/npm",
             "ANDROID_DATA" to (System.getenv("ANDROID_DATA") ?: "/data"),
             "ANDROID_ROOT" to (System.getenv("ANDROID_ROOT") ?: "/system"),
-        ) + (secrets.jevApiKey?.let { mapOf("TYPESAFE_API_KEY" to it) } ?: emptyMap())
+        ) + (secrets.jevApiKey?.let { mapOf("OPENROUTER_API_KEY" to it) } ?: emptyMap())
     }
 
     fun command(): List<String> = listOf(

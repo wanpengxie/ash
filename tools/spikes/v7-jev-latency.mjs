@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Run with --stub for an offline contract check; set TYPESAFE_API_KEY for real samples.
+// Run with --stub for an offline contract check; set OPENROUTER_API_KEY for real samples.
 import { performance } from 'node:perf_hooks';
 
 const questions = {
@@ -9,11 +9,14 @@ const questions = {
     unrelated: 'No control instruction for the current task.',
   } },
   targets_current: { type: 'noul', instructions: 'Probability that the message refers to the current task.' },
-  urgency: { type: 'score', instructions: 'Urgency of the control instruction, from 0 to 3.' },
+  urgency: { type: 'score', instructions: 'Urgency of the control instruction, from 0 to 3.', criteria: [
+    'No immediate action needed', 'Can wait until the current turn finishes',
+    'Stop after the current action', 'Stop immediately',
+  ] },
 };
 
 export const payload = {
-  model: 'jev-latest',
+  model: 'typesafe/jev-1.13',
   state: {
     current_task: 'Looking up tomorrow’s calendar events',
     latest_user_message: 'Stop looking at my calendar',
@@ -34,14 +37,14 @@ export async function evaluate({ key, stub = false, timeoutMs = 6000 }) {
     targets_current: { type: 'noul', noul: .99 },
     urgency: { type: 'score', score: 2 },
   } };
-  if (!key) throw new Error('TYPESAFE_API_KEY is required for real samples');
-  const response = await fetch('https://api.typesafe.ai/v1/systemone', {
+  if (!key) throw new Error('OPENROUTER_API_KEY is required for real samples');
+  const response = await fetch('https://openrouter.ai/api/alpha/decisions', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!response.ok) throw new Error('HTTP ' + response.status);
+  if (!response.ok) throw new Error('HTTP ' + response.status + ': ' + (await response.text()).slice(0, 500));
   return response.json();
 }
 
@@ -52,7 +55,7 @@ if (process.argv[1] && import.meta.url === new URL('file://' + process.argv[1]).
   const samples = [];
   for (let i = 0; i < count; i++) {
     const start = performance.now();
-    const result = await evaluate({ key: process.env.TYPESAFE_API_KEY, stub });
+    const result = await evaluate({ key: process.env.OPENROUTER_API_KEY, stub });
     if (!result?.answers?.intent || !result?.answers?.targets_current || !result?.answers?.urgency) {
       throw new Error('Sample ' + (i + 1) + ' lacks required answers');
     }
@@ -60,7 +63,7 @@ if (process.argv[1] && import.meta.url === new URL('file://' + process.argv[1]).
   }
   console.log(JSON.stringify({
     mode: stub ? 'stub (not latency evidence)' : 'real',
-    count, model: stub ? 'stub' : 'jev-latest',
+    count, model: stub ? 'stub' : 'typesafe/jev-1.13',
     min_ms: Math.min(...samples), median_ms: percentile(samples, .5),
     p95_ms: percentile(samples, .95), max_ms: Math.max(...samples),
     samples_ms: samples,

@@ -32,7 +32,10 @@ export class JevReflexClient {
     try {
       const response = await this.fetchImpl(this.url, { method: "POST", headers: {
         "content-type": "application/json", authorization: `Bearer ${this.key}` },
-      body: JSON.stringify({ model: "jev-latest", state, questions }), signal: controller.signal });
+      body: JSON.stringify({
+        model: this.url.includes("openrouter.ai/") ? "typesafe/jev-1.13" : "jev-latest",
+        state, questions,
+      }), signal: controller.signal });
       if (!response.ok) throw new Error("JEV unavailable");
       result = await response.json() as typeof result;
     } finally { clearTimeout(timer); }
