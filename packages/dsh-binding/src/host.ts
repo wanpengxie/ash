@@ -75,8 +75,9 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
     } else if (event.type === "turn/end") {
       const turn = event.data?.turn;
       const reason = event.data?.reason?.kind;
-      if (openTurn !== turn || typeof reason !== "string") throw new Error("invalid DSH turn end in history");
-      finishedTurns.set(turn, reason);
+      // A cancelled turn ends without a reason.
+      if (openTurn !== turn || (typeof reason !== "string" && event.data?.reason !== null)) throw new Error("invalid DSH turn end in history");
+      finishedTurns.set(turn, reason ?? "cancelled");
       openTurn = null;
     }
     if (event.type === "user/message") {
@@ -93,6 +94,13 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
         else if (keys === "form,kind,sections" && source.form === "snapshot" && Array.isArray(source.sections) && source.sections.length > 0 &&
           source.sections.every((section: { name?: unknown; text?: unknown }) => typeof section?.name === "string" && section.name.length > 0 && typeof section?.text === "string" && section.text.length > 0))
           runtimeContext = content[0].text === `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n${source.sections.map((section: { text: string }) => section.text).join("\n\n")}`;
+      }
+      // Workspace instructions (AGENTS.md) and the repeated-tool-call notice are DSH-owned user-role items, not prompts.
+      if (typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) && oneText) {
+        if (source?.kind === "agent-instructions" && source.form === "instructions" && Array.isArray(source.changes))
+          runtimeContext = content[0].text.startsWith("<system-reminder>\n") && content[0].text.trimEnd().endsWith("</system-reminder>");
+        else if (source?.kind === "repeat-tool-reminder" && source.form === "notice")
+          runtimeContext = content[0].text.startsWith("You are repeating the exact same tool call");
       }
       if (!runtimeContext && (typeof id !== "string" || !id.startsWith("core-") || !startedTurns.has(id.slice(5))))
         throw new Error("DSH history contains a user message without a core turn");
@@ -125,6 +133,17 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
   if (pending["next-turn"].length || pending["next-step"].length) throw new Error("DSH has queued work that cannot be automatically resumed safely");
 }
 
+const APPROVAL_PATCH = `- id: approval
+  config:
+    policy: ask
+- id: permission
+  config:
+    presets:
+      read-only: { sandbox: read-only, approval: ask }
+      workspace-write: { sandbox: workspace-write, approval: ask }
+      danger-full-access: { sandbox: danger-full-access, approval: ask }
+`;
+
 /** Core-only DSH host. It never installs the retired tool surface or starts an unbound model session. */
 export class DshHost {
   ctx: any;
@@ -152,13 +171,17 @@ export class DshHost {
       const path = join(profile, file);
       if (!existsSync(path)) writeFileSync(path, "[]\n", { mode: 0o600 });
     }
+    // The door hands every tool call through DSH approval, so the policy is always "ask", even where the
+    // deployment drops the file sandbox (Android has no sandbox runner and sets danger-full-access).
+    const approvalPatch = join(home, "ash-approval.patch.yml");
+    writeFileSync(approvalPatch, APPROVAL_PATCH, { mode: 0o600 });
     process.env.DSH_HOME = home;
     // A later root in this process must not inherit an earlier test/deployment's
     // provider endpoint; explicit trusted host config wins over stale ambient env.
     for (const [key, value] of Object.entries(this.options.env ?? {})) process.env[key] = value;
     const { loadLayeredEnv } = await this.imp("@deepseek-ai/dsh-app-boot");
     const { runProfile } = await import(pathToFileURL(join(root, "lib", "profile-boot.js")).href);
-    const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash-v2", patchFiles: [], args: [] });
+    const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash-v2", patchFiles: [approvalPatch], args: [] });
     this.ctx = ctx;
     this.shutdownHandle = shutdown;
     if (this.options.skillsRoot) {
@@ -224,7 +247,14 @@ export class DshHost {
           preparedDoor.bind(rawAgent);
           options.adapter!.attach(rawAgent, preparedDoor, sessionId);
           this.managedPromptCleanup = options.adapter!.attachManagedPrompt?.(agentCtx) ?? null;
-          return { commit() { preparedDoor.assertReady(); } };
+          // A session recorded under "never" (an earlier Android build) would refuse every door tool.
+          const approval = this.ctx.get("approval");
+          const session = (rawAgent as { session?: { append(type: string, data: object): void } }).session;
+          if (approval?.effectivePolicy?.(session) !== "ask") session?.append("approval/policy", { policy: "ask" });
+          return { commit() {
+            preparedDoor.assertReady();
+            if (approval?.effectivePolicy?.(session) !== "ask") throw new Error("DSH approval policy is not ask; door tools cannot run");
+          } };
         } });
       const agent = handle.agent as DshRootAgent;
       this.main = { agent, door, sessionId };
