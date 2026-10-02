@@ -1,99 +1,130 @@
 #!/usr/bin/env node
-// Regression helper: a temporary "browser" paired through the phone's ash core.
-//   web     pair, load the UI and /api through the gateway, send a message, read the streamed answer, unpair
-//   pair    pair and print {id, key(jwk), cookie} to stdout
-//   status  (stdin: pair output) → HTTP status of GET / through the gateway
-//   unpair  (stdin: pair output) → revoke it on the phone
-// ASH_URL/ASH_TOKEN reach the phone's core (adb forward), GATEWAY_URL the gateway.
-
-import { DeviceKey, GatewayClient } from "ash-gateway/client/client";
+// Temporary paired-browser regression against the production v2 routes.
+// GATEWAY_TICKET is a five-minute owner ticket supplied by the test setup.
+import { randomUUID } from "node:crypto";
+import { DeviceKey, GatewayClient } from "ash-gateway/client/client.ts";
 
 const [cmd] = process.argv.slice(2);
 const GW = (process.env.GATEWAY_URL ?? "").replace(/\/$/, "");
-const core = async (method, path, body) => {
-  const r = await fetch(process.env.ASH_URL + path, { method, headers: { authorization: `Bearer ${process.env.ASH_TOKEN}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-  if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
-  return r.json();
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const stdin = async () => JSON.parse(await new Promise((r) => { let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => r(s)); }));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const stdin = async () => JSON.parse(await new Promise((resolve) => {
+  let value = "";
+  process.stdin.on("data", (chunk) => { value += chunk; }).on("end", () => resolve(value));
+}));
+
+async function admin(word, body) {
+  const response = await fetch(`${process.env.ASH_URL}/api/send`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${process.env.ASH_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ to: "service:admin", kind: "request", word, body, wait: true, client_id: randomUUID() }),
+  });
+  if (!response.ok) throw new Error(`local ${word}: HTTP ${response.status}`);
+  const reply = (await response.json()).reply?.body;
+  if (reply?.ok !== true) throw new Error(`local ${word} was not accepted`);
+  return reply.result;
+}
 
 async function pair(name) {
-  const { ticket } = await core("POST", "/api/gateway/ticket", {});
+  if (!process.env.GATEWAY_TICKET) throw new Error("GATEWAY_TICKET is required");
   const key = await DeviceKey.generate();
-  const gw = new GatewayClient(GW, key);
-  const pr = await gw.requestPairing(ticket, name);
+  const gateway = new GatewayClient(GW, key);
+  const request = await gateway.requestPairing(process.env.GATEWAY_TICKET, name);
   let pending;
-  for (let i = 0; i < 40 && !pending; i++) {
-    await sleep(500);
-    pending = (await core("GET", "/api/gateway")).pending?.find((p) => p.name === name);
+  for (let attempt = 0; attempt < 40 && !pending; attempt++) {
+    pending = (await admin("gateway.state", {}))?.pending?.find((item) => item.request_id === request.request_id);
+    if (!pending) await sleep(500);
   }
-  if (!pending) throw new Error("pairing request not seen by the phone");
-  await core("POST", "/api/gateway/approve", { request_id: pending.request_id, permissions: ["chat", "web_ui"] });
-  await gw.waitForApproval(pr.request_id, pr.owner_key);
+  if (!pending) throw new Error("pairing request not seen by owner");
+  await admin("gateway.op", { op: "approve", request_id: pending.request_id, permissions: ["chat", "web_ui"] });
+  await gateway.waitForApproval(request.request_id, request.owner_key);
   return { id: key.id, jwk: await key.exportJwk() };
 }
-async function cookieFor(p) {
-  const key = await DeviceKey.fromJwk(p.jwk);
-  const s = await new GatewayClient(GW, key).authenticate();
-  return `ash_session=${s.token}`;
+
+async function cookieFor(pairing) {
+  const key = await DeviceKey.fromJwk(pairing.jwk);
+  const session = await new GatewayClient(GW, key).authenticate();
+  return `ash_session=${session.token}`;
 }
 
-if (cmd === "web") {
-  const p = await pair(`regress browser ${Date.now() % 100000}`);
-  try {
-    const cookie = await cookieFor(p);
-    const H = { cookie, "content-type": "application/json", origin: new URL(GW).origin };
-    const page = await fetch(`${GW}/`, { headers: { cookie, accept: "text/html" } });
-    if (page.status !== 200 || !(await page.text()).includes("<title>Ash</title>")) throw new Error(`UI: ${page.status}`);
-    const m = await (await fetch(`${GW}/api/manifest`, { headers: H })).json();
-    if (m.me !== `device:${p.id}`) throw new Error(`manifest me=${m.me}`);
-    const after = m.lastSeq;
-    const ac = new AbortController();
-    const sse = await fetch(`${GW}/api/events/stream?after=${after}`, { headers: { cookie, accept: "text/event-stream" }, signal: ac.signal });
-    const id = `regress-web-${Date.now()}`;
-    const d = await fetch(`${GW}/api/agents/agent:main/deliver`, { method: "POST", headers: H, body: JSON.stringify({ text: "只回复两个字：收到", message_id: id }) });
-    if (d.status !== 200) throw new Error(`deliver: ${d.status}`);
-    const dec = new TextDecoder();
-    let buf = "", text = "", origin = "";
-    const deadline = Date.now() + 240_000;
-    for await (const chunk of sse.body) {
-      buf += dec.decode(chunk, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const line = buf.slice(0, i).split("\n").find((l) => l.startsWith("data: "));
-        buf = buf.slice(i + 2);
-        if (!line) continue;
-        const e = JSON.parse(line.slice(6));
-        if (e.type === "message.delivered" && e.data.message_id === id) origin = e.data.origin;
-        if (e.type === "agent.text" && e.data.message_id === id) text += e.data.text;
-        if (e.type === "agent.turn.ended" && e.data.message_id === id) {
-          ac.abort();
-          console.log(`    streamed answer: ${text.slice(0, 80)} (origin: ${origin})`);
-          if (!text) throw new Error(`turn ended without text: ${e.data.reason} ${e.data.error ?? ""}`);
-          await core("POST", "/api/gateway/revoke", { device: `device:${p.id}` });
-          process.exit(0);
-        }
-      }
-      if (Date.now() > deadline) throw new Error("no answer in time");
+async function* frames(response) {
+  if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true }).replaceAll("\r\n", "\n");
+    let boundary;
+    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+      const lines = buffer.slice(0, boundary).split("\n");
+      buffer = buffer.slice(boundary + 2);
+      const data = lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
+      if (!data) continue;
+      yield { type: lines.find((line) => line.startsWith("event: "))?.slice(7) ?? "message",
+        id: lines.find((line) => line.startsWith("id: "))?.slice(4) ?? "", data: JSON.parse(data) };
     }
-    throw new Error("stream ended early");
-  } catch (e) {
-    await core("POST", "/api/gateway/revoke", { device: `device:${p.id}` }).catch(() => {});
-    console.error("    " + (e.message ?? e));
-    process.exit(1);
   }
-} else if (cmd === "pair") {
-  console.log(JSON.stringify(await pair(`regress offline ${Date.now() % 100000}`)));
-} else if (cmd === "status") {
-  const p = await stdin();
-  const cookie = await cookieFor(p).catch(() => "");
-  const r = await fetch(`${GW}/`, { headers: { cookie, accept: "text/html" } });
-  console.log(r.status);
+}
+
+async function latestSeq(cookie) {
+  const response = await fetch(`${GW}/api/stream?follow=false&limit=1`, { headers: { cookie, accept: "text/event-stream" } });
+  let last = 0;
+  for await (const frame of frames(response)) if (frame.id && Number.isSafeInteger(Number(frame.id))) last = Math.max(last, Number(frame.id));
+  return last;
+}
+
+async function web() {
+  const pairing = await pair(`regress browser ${Date.now() % 100000}`);
+  const controller = new AbortController();
+  try {
+    const cookie = await cookieFor(pairing);
+    const page = await fetch(`${GW}/`, { headers: { cookie, accept: "text/html" } });
+    if (page.status !== 200 || !(await page.text()).includes("<title>Ash</title>")) throw new Error(`UI HTTP ${page.status}`);
+    const after = await latestSeq(cookie);
+    const stream = await fetch(`${GW}/api/stream?follow=true&after=${after}&label=Regression`, {
+      headers: { cookie, accept: "text/event-stream" }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(240_000)]),
+    });
+    const events = frames(stream)[Symbol.asyncIterator]();
+    let registration;
+    while (!registration) {
+      const event = await events.next();
+      if (event.done) throw new Error("screen stream ended before registration");
+      if (event.value.type === "screen.registered") registration = event.value.data;
+    }
+    if (!registration?.token || !registration?.screen || registration.local_management !== false) throw new Error("bad remote screen registration");
+    const sent = await fetch(`${GW}/api/send`, {
+      method: "POST",
+      headers: { cookie, origin: new URL(GW).origin, "content-type": "application/json", "Ash-Screen": registration.token },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "只回复两个字：收到" }, client_id: randomUUID() }),
+    });
+    if (!sent.ok) throw new Error(`remote send HTTP ${sent.status}`);
+    const id = (await sent.json()).id;
+    if (!id) throw new Error("remote message not accepted");
+    let turn = "", answer = "", ended;
+    while (!ended) {
+      const event = await events.next();
+      if (event.done) throw new Error("screen stream ended before reply");
+      const row = event.value.data;
+      if (row.word === "turn.start" && row.body?.ids?.includes(id)) turn = row.body.turn;
+      if (turn && row.turn === turn && row.from === "agent:main" && row.to === "person:owner" && row.word === "say") answer += row.body?.text ?? "";
+      if (turn && row.word === "turn.end" && row.body?.turn === turn) ended = row;
+    }
+    if (!answer) throw new Error(`remote turn ended without answer (${ended.body?.reason})`);
+    console.log(`    streamed answer: ${answer.slice(0, 80)} (screen: ${registration.screen})`);
+  } finally {
+    controller.abort();
+    await admin("gateway.op", { op: "revoke", device: `device:${pairing.id}` }).catch(() => {});
+  }
+}
+
+if (cmd === "web") await web();
+else if (cmd === "pair") console.log(JSON.stringify(await pair(`regress offline ${Date.now() % 100000}`)));
+else if (cmd === "status") {
+  const pairing = await stdin();
+  const cookie = await cookieFor(pairing).catch(() => "");
+  console.log((await fetch(`${GW}/`, { headers: { cookie, accept: "text/html" } })).status);
 } else if (cmd === "unpair") {
-  const p = await stdin();
-  await core("POST", "/api/gateway/revoke", { device: `device:${p.id}` });
+  const pairing = await stdin();
+  await admin("gateway.op", { op: "revoke", device: `device:${pairing.id}` });
 } else {
   console.error("usage: regress-remote.mjs web|pair|status|unpair");
-  process.exit(1);
+  process.exitCode = 1;
 }

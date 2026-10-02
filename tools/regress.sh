@@ -4,7 +4,7 @@
 #   APK=app-debug.apk tools/regress.sh [R1 R2 …]        (default: R2 R4 R5 R6 R7 R8 R9 R11 R12)
 #
 # Needs: adb (one device), node ≥ 22, curl. Optional env:
-#   GATEWAY_URL      the gateway the phone is connected to (R7, R9)
+#   GATEWAY_URL and GATEWAY_TICKET  connected gateway and an owner pairing ticket (R7, R9)
 #   LAPTOP_SHARE     directory the paired laptop lends as "files" (R8), default ~/ash-shared
 # R1 (fresh install) and R3 (reboot) are destructive/slow and only run when named.
 # Secrets never reach the output: tokens are read on the device and used in-process only.
@@ -104,9 +104,9 @@ R6() { say "R6 the main agent answers"
   if echo "$r" | grep -qi "ash" && echo "$r" | grep -q "ash-home"; then ok "R6 replies as Ash, working in ash-home"; else bad R6 "unexpected reply"; fi
 }
 R7() { say "R7 web through the gateway (a temporary paired browser)"
-  [ -n "${GATEWAY_URL:-}" ] || { bad R7 "GATEWAY_URL not set"; return; }
+  [ -n "${GATEWAY_URL:-}" ] && [ -n "${GATEWAY_TICKET:-}" ] || { bad R7 "GATEWAY_URL/TICKET not set"; return; }
   fwd
-  if ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.mjs" web; then ok "R7 a paired browser uses Ash through the gateway (UI, message, streamed answer)"; else bad R7; fi
+  if ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" web; then ok "R7 a paired browser uses Ash through the gateway (UI, message, streamed answer)"; else bad R7; fi
 }
 R8() { say "R8 the agent uses the paired laptop"
   local share="${LAPTOP_SHARE:-$HOME/ash-shared}" name="regress-$(date +%s).txt"
@@ -115,21 +115,23 @@ R8() { say "R8 the agent uses the paired laptop"
   if [ -f "$share/$name" ]; then ok "R8 the agent wrote $share/$name on the laptop through ash"; rm -f "$share/$name"; else bad R8 "file not on the laptop"; fi
 }
 R9() { say "R9 phone offline → the browser is told; back → reconnects"
-  [ -n "${GATEWAY_URL:-}" ] || { bad R9 "GATEWAY_URL not set"; return; }
+  [ -n "${GATEWAY_URL:-}" ] && [ -n "${GATEWAY_TICKET:-}" ] || { bad R9 "GATEWAY_URL/TICKET not set"; return; }
   fwd
-  ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.mjs" pair > /tmp/ash-regress-browser.json || { bad R9 "pairing failed"; return; }
+  local pairfile; pairfile=$(mktemp "${TMPDIR:-/tmp}/ash-regress-browser.XXXXXX") || { bad R9 "cannot create temporary pair state"; return; }
+  chmod 600 "$pairfile"
+  ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" pair > "$pairfile" || { rm -f "$pairfile"; bad R9 "pairing failed"; return; }
   control STOP; local end=$((SECONDS+40)); while [ $SECONDS -lt $end ] && [ -n "$(core_pids)" ]; do sleep 2; done; sleep 5
-  local off; off=$(GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.mjs" status < /tmp/ash-regress-browser.json)
+  local off; off=$(GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" status < "$pairfile")
   control START; wait_online 300
-  local on=""; end=$((SECONDS+120)); while [ $SECONDS -lt $end ]; do on=$(GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.mjs" status < /tmp/ash-regress-browser.json); [ "$on" = "200" ] && break; sleep 5; done
-  fwd; ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" node "$HERE/regress-remote.mjs" unpair < /tmp/ash-regress-browser.json >/dev/null; rm -f /tmp/ash-regress-browser.json
+  local on=""; end=$((SECONDS+120)); while [ $SECONDS -lt $end ]; do on=$(GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" status < "$pairfile"); [ "$on" = "200" ] && break; sleep 5; done
+  fwd; ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" node "$HERE/regress-remote.bundle.mjs" unpair < "$pairfile" >/dev/null; rm -f "$pairfile"
   if [ "$off" = "503" ] && [ "$on" = "200" ]; then ok "R9 offline shows 503 to the browser; it reconnects by itself"; else bad R9 "offline=$off online=$on"; fi
 }
 R11() { say "R11 DSH ecosystem: install a community plugin with DSH's own plugin manager"
-  asr "export HOME=$F PATH=$F/payload/bin:$F/payload/runtime/bin:/system/bin DSH_HOME=$F/dsh-home TMP=\$TMPDIR OPENSSL_CONF=$F/payload/runtime/etc/tls/openssl.cnf SSL_CERT_FILE=$F/payload/runtime/etc/tls/cert.pem; dsh plugin --profile ash add dsh-mnemon 2>&1 | tail -3"
+  asr "export HOME=$F PATH=$F/payload/bin:$F/payload/runtime/bin:/system/bin DSH_HOME=$F/dsh-home TMP=\$TMPDIR OPENSSL_CONF=$F/payload/runtime/etc/tls/openssl.cnf SSL_CERT_FILE=$F/payload/runtime/etc/tls/cert.pem; dsh plugin --profile ash-v2 add dsh-mnemon 2>&1 | tail -3"
   control RESTART; sleep 10; wait_online 300
-  local tools; tools=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
-  if [ "${tools:-0}" -gt 0 ]; then ok "R11 dsh-mnemon installed and loaded ($tools tools); survives a restart"; else bad R11 "no mnemon tools"; fi
+  local bundles; bundles=$(admin plugins.list '{}' | jq_ '(v.result?.bundles||[]).filter(b=>JSON.stringify(b).includes("dsh-mnemon")).length')
+  if [ "${bundles:-0}" -gt 0 ]; then ok "R11 dsh-mnemon installed and loaded ($bundles bundle); survives a restart"; else bad R11 "no mnemon bundle"; fi
 }
 R12() { say "R12 DSH is byte-for-byte as published"
   adb push "$HERE/verify-dsh.mjs" /data/local/tmp/verify-dsh.mjs >/dev/null
