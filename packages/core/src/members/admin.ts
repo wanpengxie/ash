@@ -9,26 +9,30 @@ const pause = wordContract("service:admin", "pause")!;
 const resume = wordContract("service:admin", "resume")!;
 const settingsGet = wordContract("service:admin", "settings.get")!;
 const settingsSet = wordContract("service:admin", "settings.set")!;
+const pluginsList = wordContract("service:admin", "plugins.list")!;
+const gatewayState = wordContract("service:admin", "gateway.state")!;
 const service: TrustedRouteContext = { member: "service:admin", transport: "service", transportPrincipal: "service:admin",
   local: true, remote: false, ownerProxy: false };
 
 export interface AdminOptions { ledger: Ledger; router: WorldRouter; dbFile: string; onPauseChanged: () => void;
   delivery?: { quiet: string };
+  pluginsList?: () => Promise<Record<string, unknown>>;
+  gatewayState?: () => Record<string, unknown>;
   currentAgentTurn?: () => string | null;
   /** Current server-owned registration, not the screen name persisted with the request. */
   currentScreenBinding: (screen: string, principal: string) => boolean }
 
-/** Only implemented words are registered; opaque legacy settings/plugin/gateway bodies have no production route. */
+/** Only implemented words are registered; opaque mutation bodies have no production route. */
 export class AdminMember implements Member {
   readonly id = "service:admin";
   readonly kind = "service" as const;
   readonly name = "Administration";
   readonly online = true;
-  readonly idempotentRecovery = ["pause", "resume", "settings.get", "settings.set"] as const;
+  readonly idempotentRecovery = ["pause", "resume", "settings.get", "settings.set", "plugins.list", "gateway.state"] as const;
   readonly journal: AdminJournal;
   private closed = false;
   constructor(private readonly options: AdminOptions) { this.journal = new AdminJournal(options.dbFile); }
-  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet]; }
+  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet, pluginsList, gatewayState]; }
 
   /** A current durable pause may have crashed before it reached agent cancellation. */
   currentCommittedPause(): { requestId: string; targetTurn: string | null } | null {
@@ -64,6 +68,17 @@ export class AdminMember implements Member {
       return { ok: false, error: { code: "offline", message: "admin unavailable" } };
     if (!await this.options.router.currentlyAuthorized(message, context.caller))
       return { ok: false, error: { code: "forbidden", message: "current admin authority unavailable" } };
+    if (message.word === "plugins.list" || message.word === "gateway.state") {
+      if (message.from !== "person:owner" || !context.caller.local || context.caller.remote)
+        return { ok: false, error: { code: "forbidden", message: "local administration unavailable" } };
+      try {
+        if (message.word === "gateway.state") return { ok: true, result: this.options.gatewayState?.() ?? { configured: false } };
+        if (!this.options.pluginsList) return { ok: false, error: { code: "offline", message: "plugin manager unavailable" } };
+        const result = await this.options.pluginsList();
+        if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "admin request settled" } };
+        return { ok: true, result };
+      } catch { return { ok: false, error: { code: "failed", message: "admin read unavailable" } }; }
+    }
     if (message.word === "settings.get" || message.word === "settings.set") {
       if (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !this.options.delivery)
         return { ok: false, error: { code: "forbidden", message: "local settings unavailable" } };

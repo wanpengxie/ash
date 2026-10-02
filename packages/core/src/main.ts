@@ -198,6 +198,13 @@ export async function startOwner(config: Config): Promise<Running> {
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
+      gatewayState: () => link?.state() ?? { configured: false },
+      ...(dsh ? { pluginsList: async () => {
+        const manager = dsh!.ctx?.get("pluginManager");
+        if (!manager) throw new Error("DSH plugin manager unavailable");
+        const [bundles, plugins] = await Promise.all([manager.listBundles(), manager.listPlugins()]);
+        return { bundles, plugins };
+      } } : {}),
       currentAgentTurn: () => agent!.inbox.activeTurn()?.id ?? null,
       currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });
     delivery.quiet = admin.journal.quietHours() ?? delivery.quiet;

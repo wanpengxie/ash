@@ -33,6 +33,8 @@ async function fixture() {
     handle: (message) => message.word === "say" ? { ok: true, result: { accepted: true } }
       : (cancellations++, { ok: true, result: { cancelled: false } }) });
   const admin = new AdminMember({ ledger, router, dbFile: file, onPauseChanged: () => { changes++; },
+    pluginsList: async () => ({ bundles: [{ name: "base" }], plugins: [{ id: "sample" }] }),
+    gatewayState: () => ({ connected: true, pending: [] }),
     currentScreenBinding: (id, principal) => id === screen.screenId && principal === screen.transportPrincipal });
   members.register(admin);
   await router.recover();
@@ -40,6 +42,21 @@ async function fixture() {
     revokeOwner() { ownerAuthorized = false; }, restoreOwner() { ownerAuthorized = true; },
     async close(keep = false) { admin.close(); ledger.close(); if (!keep) rmSync(dir, { recursive: true, force: true }); } };
 }
+
+test("local owner reads plugin and gateway state as admin words; remote owner cannot", async () => {
+  const f = await fixture();
+  try {
+    const listed = await f.router.send(owner, { to: "service:admin", kind: "request", word: "plugins.list", body: {}, wait: true });
+    assert.deepEqual(listed.reply?.body, { ok: true, result: { bundles: [{ name: "base" }], plugins: [{ id: "sample" }] } });
+    const state = await f.router.send(owner, { to: "service:admin", kind: "request", word: "gateway.state", body: {}, wait: true });
+    assert.deepEqual(state.reply?.body, { ok: true, result: { connected: true, pending: [] } });
+    const before = f.ledger.lastSeq();
+    const remote = { ...screen, local: false, remote: true, pairedDeviceId: "paired:synthetic" };
+    for (const word of ["plugins.list", "gateway.state"])
+      await assert.rejects(f.router.send(remote, { to: "service:admin", kind: "request", word, body: {} }), denied("forbidden"));
+    assert.equal(f.ledger.lastSeq(), before);
+  } finally { await f.close(); }
+});
 
 test("admin pause is durable and a reflex owner message is consumed atomically once", async () => {
   const f = await fixture();
