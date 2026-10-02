@@ -10,6 +10,10 @@ The local Settings panel now lists installed DSH plugins and enables/disables to
 
 Full Chromium UI run with installed DSH: 17/17 passed, including the real plugin toggle, conversation, approvals, local settings, pause/resume, and proactive preferences.
 
+`model.set` now accepts only `{provider,model}` from the local owner, delegates to DSH's `agentDefaultModel.saveSelection`, and returns `restart_required:true` because the already-created main session retains its model. A separate temporary production Core saved an alternate model, closed, restarted on the same state/profile, and `settings.get` read the new DSH default. The local Settings panel can read and save this selection; real Chromium exercised both the plugin switch and model save in one isolated Core. This does not imply hot-swapping a live turn or configuring a provider API key.
+
+After the model change, installed-DSH full tests exited with 613 total, 550 pass, 63 conditional skip, 0 fail; Chromium 17/17, typecheck, and private-term architecture gate 0 findings.
+
 This checkpoint implements only the approved pause/resume slice of `service:admin`. The SDK contracts are strict: pause is `{}` or `{by: message_id}` and resume is `{confirmed:true}`. Settings, plugin, gateway, and model mutations are **not** registered as successful production routes; this avoids logging opaque credentials or accepting arbitrary installation inputs while their safe contracts remain unspecified.
 
 The router admits a plain pause only from a currently authenticated local owner. A reflex pause requires a trusted local `service:reflex` caller and a cited, non-migrated, locally authenticated owner `say` request to `agent:main`; it rechecks that source's current credential before acceptance and during recovery. `Ledger.append` inserts the request, retry mapping, tracked context, and a unique consumed-`by` claim in one SQLite transaction. A different client ID cannot consume the same source again, including after resume or restart; an identical client-ID retry returns the original acceptance without rerunning the effect. Rejected source/transport combinations leave no ledger row.

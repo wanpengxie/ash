@@ -200,6 +200,47 @@ export class SettingsControls {
     }); });
     pluginsSection.append(pluginsLoad, pluginsStatus, pluginsList);
     section.append(pluginsSection);
+    const modelSection = document.createElement("section");
+    modelSection.id = "settingsModel";
+    modelSection.append(node("h2", "主模型"));
+    const provider = document.createElement("input");
+    provider.id = "settingsModelProvider";
+    provider.placeholder = "Provider";
+    const model = document.createElement("input");
+    model.id = "settingsModelName";
+    model.placeholder = "Model";
+    const modelLoad = node("button", "读取模型", "btn gray");
+    modelLoad.type = "button";
+    const modelSave = node("button", "保存模型", "btn");
+    modelSave.id = "settingsModelSave";
+    modelSave.type = "button";
+    const modelStatus = node("p", "尚未读取主模型。", "muted");
+    modelStatus.id = "settingsModelStatus";
+    modelStatus.setAttribute("role", "status");
+    modelLoad.addEventListener("click", () => { void (async () => {
+      modelStatus.textContent = "正在读取…";
+      try {
+        const reply = await requestSetting("settings.get", {});
+        const selection = reply?.ok === true ? reply.result?.model : null;
+        if (typeof selection?.provider !== "string" || typeof selection?.model !== "string") throw new Error("unavailable");
+        provider.value = selection.provider;
+        model.value = selection.model;
+        modelStatus.textContent = "已读取当前模型。";
+      } catch { if (this.section === section) modelStatus.textContent = "读取失败；请重试。"; }
+    })(); });
+    modelSave.addEventListener("click", () => { void (async () => {
+      modelStatus.textContent = "正在保存…";
+      try {
+        const requested = { provider: provider.value.trim(), model: model.value.trim() };
+        if (!requested.provider || !requested.model) throw new Error("invalid");
+        const reply = await requestSetting("model.set", requested);
+        if (reply?.ok !== true || reply.result?.provider !== requested.provider || reply.result?.model !== requested.model ||
+          reply.result?.restart_required !== true) throw new Error("unconfirmed");
+        modelStatus.textContent = "已保存；重启 Ash 后主模型生效。";
+      } catch { if (this.section === section) modelStatus.textContent = "保存未确认；请重试。"; }
+    })(); });
+    modelSection.append(provider, model, modelLoad, modelSave, modelStatus);
+    section.append(modelSection);
     const preferencesRoot = document.createElement("section");
     preferencesRoot.id = "settingsProactive";
     section.append(preferencesRoot);

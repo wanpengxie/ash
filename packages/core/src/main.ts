@@ -199,6 +199,12 @@ export async function startOwner(config: Config): Promise<Running> {
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       gatewayState: () => link?.state() ?? { configured: false },
+      ...(dsh ? { modelGet: () => dsh!.agentOptions() ?? {}, modelSet: async (provider: string, model: string) => {
+        const selector = dsh!.ctx?.get("agentDefaultModel");
+        if (!selector) throw new Error("DSH model selection unavailable");
+        await selector.saveSelection({ provider, model });
+        return { provider, model, restart_required: true };
+      } } : {}),
       ...(dsh ? { pluginsList: async () => {
         const manager = dsh!.ctx?.get("pluginManager");
         if (!manager) throw new Error("DSH plugin manager unavailable");

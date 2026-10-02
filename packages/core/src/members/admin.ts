@@ -12,6 +12,7 @@ const settingsSet = wordContract("service:admin", "settings.set")!;
 const pluginsList = wordContract("service:admin", "plugins.list")!;
 const pluginsOp = wordContract("service:admin", "plugins.op")!;
 const gatewayState = wordContract("service:admin", "gateway.state")!;
+const modelSet = wordContract("service:admin", "model.set")!;
 const service: TrustedRouteContext = { member: "service:admin", transport: "service", transportPrincipal: "service:admin",
   local: true, remote: false, ownerProxy: false };
 
@@ -20,6 +21,8 @@ export interface AdminOptions { ledger: Ledger; router: WorldRouter; dbFile: str
   pluginsList?: () => Promise<Record<string, unknown>>;
   pluginsOp?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   gatewayState?: () => Record<string, unknown>;
+  modelGet?: () => Record<string, unknown>;
+  modelSet?: (provider: string, model: string) => Promise<Record<string, unknown>>;
   currentAgentTurn?: () => string | null;
   /** Current server-owned registration, not the screen name persisted with the request. */
   currentScreenBinding: (screen: string, principal: string) => boolean }
@@ -34,7 +37,7 @@ export class AdminMember implements Member {
   readonly journal: AdminJournal;
   private closed = false;
   constructor(private readonly options: AdminOptions) { this.journal = new AdminJournal(options.dbFile); }
-  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet, pluginsList, pluginsOp, gatewayState]; }
+  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet, pluginsList, pluginsOp, gatewayState, modelSet]; }
 
   /** A current durable pause may have crashed before it reached agent cancellation. */
   currentCommittedPause(): { requestId: string; targetTurn: string | null } | null {
@@ -89,10 +92,18 @@ export class AdminMember implements Member {
       try { return { ok: true, result: await this.options.pluginsOp(message.body) }; }
       catch { return { ok: false, error: { code: "failed", message: "plugin operation failed" } }; }
     }
+    if (message.word === "model.set") {
+      if (message.from !== "person:owner" || !context.caller.local || context.caller.remote)
+        return { ok: false, error: { code: "forbidden", message: "local administration unavailable" } };
+      if (!this.options.modelSet) return { ok: false, error: { code: "offline", message: "model configuration unavailable" } };
+      if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "admin request settled" } };
+      try { return { ok: true, result: await this.options.modelSet(message.body.provider as string, message.body.model as string) }; }
+      catch { return { ok: false, error: { code: "failed", message: "model selection failed" } }; }
+    }
     if (message.word === "settings.get" || message.word === "settings.set") {
       if (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !this.options.delivery)
         return { ok: false, error: { code: "forbidden", message: "local settings unavailable" } };
-      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet } } };
+      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet }, ...(this.options.modelGet ? { model: this.options.modelGet() } : {}) } };
       const body = message.body;
       const section = body.delivery;
       const quiet = section && typeof section === "object" && !Array.isArray(section) ? (section as Record<string, unknown>).quiet : undefined;

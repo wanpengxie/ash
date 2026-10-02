@@ -31,6 +31,16 @@ test("local settings toggles an installed DSH plugin through the production admi
     await expect(page.locator("#settingsPluginsStatus")).toHaveText("已更新插件。");
     const op = running.ledger.list({ limit: 1000 }).findLast((message) => message.to === "service:admin" && message.word === "plugins.op");
     expect(op?.body).toEqual({ op: "plugin", id: "include:tool-plugin-manager", enabled: true });
+    await page.locator("#settingsModel").getByRole("button", { name: "读取模型" }).click();
+    await expect(page.locator("#settingsModelStatus")).toHaveText("已读取当前模型。");
+    const provider = await page.locator("#settingsModelProvider").inputValue();
+    const before = await page.locator("#settingsModelName").inputValue();
+    const next = before === "deepseek-chat" ? "deepseek-reasoner" : "deepseek-chat";
+    await page.locator("#settingsModelName").fill(next);
+    await page.locator("#settingsModelSave").click();
+    await expect(page.locator("#settingsModelStatus")).toHaveText("已保存；重启 Ash 后主模型生效。");
+    const modelOp = running.ledger.list({ limit: 1000 }).findLast((message) => message.to === "service:admin" && message.word === "model.set");
+    expect(modelOp?.body).toEqual({ provider, model: next });
   } finally {
     await running?.close();
     rmSync(root, { recursive: true, force: true });

@@ -36,6 +36,8 @@ async function fixture() {
     pluginsList: async () => ({ bundles: [{ name: "base" }], plugins: [{ id: "sample" }] }),
     pluginsOp: async (body) => ({ applied: body.op, name: body.name }),
     gatewayState: () => ({ connected: true, pending: [] }),
+    modelGet: () => ({ provider: "current", model: "current-model" }),
+    modelSet: async (provider, model) => ({ provider, model, restart_required: true }),
     currentScreenBinding: (id, principal) => id === screen.screenId && principal === screen.transportPrincipal });
   members.register(admin);
   await router.recover();
@@ -54,9 +56,12 @@ test("local owner reads plugin and gateway state as admin words; remote owner ca
     const switched = await f.router.send(owner, { to: "service:admin", kind: "request", word: "plugins.op",
       body: { op: "enable", name: "sample" }, wait: true });
     assert.deepEqual(switched.reply?.body, { ok: true, result: { applied: "enable", name: "sample" } });
+    const selected = await f.router.send(owner, { to: "service:admin", kind: "request", word: "model.set",
+      body: { provider: "test", model: "small" }, wait: true });
+    assert.deepEqual(selected.reply?.body, { ok: true, result: { provider: "test", model: "small", restart_required: true } });
     const before = f.ledger.lastSeq();
     const remote = { ...screen, local: false, remote: true, pairedDeviceId: "paired:synthetic" };
-    for (const word of ["plugins.list", "gateway.state", "plugins.op"])
+    for (const word of ["plugins.list", "gateway.state", "plugins.op", "model.set"])
       await assert.rejects(f.router.send(remote, { to: "service:admin", kind: "request", word, body: {} }), denied("forbidden"));
     assert.equal(f.ledger.lastSeq(), before);
   } finally { await f.close(); }

@@ -136,6 +136,14 @@ test("plugin operation accepts only installed bundle and plugin switches", () =>
     assert.ok(!matchesSchema(schema, body));
 });
 
+test("model selection requires a provider and model, not an opaque settings body", () => {
+  const contract = wordContract("service:admin", "model.set")!;
+  assert.ok(matchesSchema(contract.input_schema!, { provider: "deepseek", model: "chat" }));
+  for (const body of [{}, { provider: "deepseek" }, { provider: "", model: "chat" },
+    { provider: "deepseek", model: "chat", key: "secret" }]) assert.ok(!matchesSchema(contract.input_schema!, body));
+  assert.ok(matchesSchema(contract.result_schema!, { provider: "deepseek", model: "chat", restart_required: true }));
+});
+
 test("post.delivery is a closed service-only visibility event, not an external notification", () => {
   const contract = wordContract("service:post", "post.delivery")!;
   assert.equal(contract.kind, "event");

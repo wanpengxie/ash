@@ -221,7 +221,8 @@ for (const [word, input, result] of [
     obj({ op: { const: "plugin" }, id: nonempty, enabled: bool }, ["op", "id", "enabled"]),
   ] }, obj({}, [], true)],
   ["gateway.state", empty, obj({}, [], true)], ["gateway.op", obj({}, [], true), obj({}, [], true)],
-  ["model.set", obj({}, [], true), obj({}, [], true)],
+  ["model.set", obj({ provider: nonempty, model: nonempty }, ["provider", "model"]),
+    obj({ provider: nonempty, model: nonempty, restart_required: bool }, ["provider", "model", "restart_required"])],
 ] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", risk: word === "plugins.op" || word === "gateway.op" ? "structure" : "none", description: "Local owner administration; never available to a remote screen." });
 add("service:admin", "pause", "request", { oneOf: [empty, obj({ by: id }, ["by"]) ] },
   obj({ paused: { const: true } }, ["paused"]), { audience: "owner", description: "Durably pause activity; a trusted local reflex may cite one authenticated owner message once." });
