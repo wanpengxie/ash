@@ -203,7 +203,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
   private busy = false;
   private currentManagedPrompt: string | null = null;
   constructor(private readonly host: DshHost, private readonly attachmentRoot: string, private readonly workspaceRoot: string,
-    private readonly router?: WorldRouter) {}
+    private readonly router?: WorldRouter, private readonly devices?: () => string) {}
   primeManagedSnapshot(snapshot: ManagedPromptSnapshot): void { this.currentManagedPrompt = renderMainContext(snapshot); }
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void {
     if (this.session) throw new Error("runner already attached");
@@ -298,7 +298,11 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     signal.addEventListener("abort", abort, { once: true });
     try {
       session.door.beginTurn(input.turn, signal);
-      const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, this.currentManagedPrompt ?? undefined);
+      // Devices and their capabilities change (a permission granted, a laptop asleep); each turn states them afresh
+      // so an earlier "no calendar" in the history never outlives the change.
+      const devices = this.devices?.();
+      const managed = [this.currentManagedPrompt, devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : null].filter(Boolean).join("\n\n");
+      const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, managed || undefined);
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
       session.agent.followup({ id: messageId, role: "user", content, source: { kind: "user" } });
       const result = await ended;

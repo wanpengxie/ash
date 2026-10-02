@@ -82,6 +82,15 @@ export interface Running {
 }
 
 /** No old Store/Core is instantiated here; Ledger.open owns the one-way migration. */
+/** One line per device for the agent's turn context: online state and capability names, bounded. */
+function deviceSummary(members: WorldMembers): string {
+  const summary = members.describe("agent") as { members?: { id: string; kind?: string; name?: string; online?: boolean; words?: (string | { word: string })[] }[] };
+  return (summary.members ?? []).filter((member) => member.id.startsWith("device:")).map((member) => {
+    const words = (member.words ?? []).map((word) => typeof word === "string" ? word : word.word).join(", ");
+    return `- ${member.id} (${member.name ?? member.id}, ${member.online ? "online" : "offline"}): ${words || "no capabilities"}`;
+  }).join("\n").slice(0, 2000);
+}
+
 export async function startOwner(config: Config): Promise<Running> {
   const agents = config.agents ?? [{ id: "agent:main" as const, runtime: "dsh" as const }];
   if (agents.length !== 1 || agents[0].id !== "agent:main") throw new Error("v2 requires one real agent:main member");
@@ -138,7 +147,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new GateMember(ledger, world, members));
     world.enableDurableGate();
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, env: config.dsh!.env });
-    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world) : new EchoTurnRunner();
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => deviceSummary(members)) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
       ...(dsh ? { mind: () => mind } : {}),

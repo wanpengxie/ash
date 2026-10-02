@@ -55,12 +55,20 @@ test("a managed-file change reaches the next turn's context once, with author, f
       while (Date.now() < deadline && completed() < n) await new Promise((resolve) => setTimeout(resolve, 30));
       assert.equal(completed(), n);
     };
+    // A device that gains a capability mid-conversation: the next turn states the current list.
+    const caps = [{ name: "clipboard.get", description: "Read the clipboard", label: "读剪贴板", risk: "none" as const, input_schema: { type: "object", properties: {}, additionalProperties: false } }];
+    running.members.registerDevice({ id: "device:phone", kind: "device", name: "Test phone", online: true, capabilities: () => caps,
+      handle: () => ({ ok: true, result: {} }) } as never);
     await turn("first", 1);
     const written = await send({ to: "service:self", kind: "request", word: "write", wait: true, client_id: "ctx-soul",
       body: { path: "SOUL.md", content: "NEW_SOUL_MARKER\n", why: "owner edit", expected_hash: createHash("sha256").update("OLD_SOUL_MARKER\n").digest("hex") } });
     assert.equal(written.reply?.body.ok, true);
     const changed = running.ledger.list({ before: Number.MAX_SAFE_INTEGER, limit: 1000 }).filter((message) => message.word === "self.changed" && message.body.path === "SOUL.md");
     assert.equal(changed.length, 1);
+    caps.push({ name: "calendar.search", description: "Search the calendar", label: "看日历", risk: "none", input_schema: { type: "object", properties: {}, additionalProperties: false } });
+    // The host's manifest changed (calendar permission granted): the core replaces the device member.
+    running.members.replaceDevice({ id: "device:phone", kind: "device", name: "Test phone", online: true, capabilities: () => caps,
+      handle: () => ({ ok: true, result: {} }) } as never);
     await turn("second", 2);
     await turn("third", 3);
     assert.equal(turns.length, 3);
@@ -68,6 +76,10 @@ test("a managed-file change reaches the next turn's context once, with author, f
     assert.ok(second.includes("NEW_SOUL_MARKER") && !second.includes("OLD_SOUL_MARKER"), "the next turn sees the new content");
     for (const part of ["self.changed", "SOUL.md", `by ${changed[0].body.by}`, String(changed[0].body.summary)]) assert.ok(second.includes(part), `next turn names ${part}`);
     assert.ok(!third.includes("self.changed"), "a later turn does not repeat the change");
+    const devicesOf = (text: string) => { const at = text.indexOf("Devices now"); return at < 0 ? "" : text.slice(at, text.indexOf("[ash] ", at)); };
+    assert.match(devicesOf(turns[0]), /device:phone[^]*clipboard\.get/);
+    assert.ok(!devicesOf(turns[0]).includes("calendar.search"));
+    assert.match(devicesOf(second), /calendar\.search/, "a capability granted mid-conversation is visible on the next turn");
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));

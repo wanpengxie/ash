@@ -32,6 +32,15 @@ test("No-Key stop grammar matches only complete short commands", () => {
   assert.deepEqual(judgeStopKeyword("hello"), { intent: "unrelated", confidence: 0 });
 });
 
+test("a stop said as a few short stop clauses is still an explicit command", () => {
+  for (const text of ["停，别做了", "停下，不用了", "别写了，不用了。", "停一下", "算了 别发了"]) {
+    assert.deepEqual(judgeStopKeyword(text), { intent: "stop", confidence: 1 }, text);
+  }
+  for (const text of ["等等，你说的第二点是什么意思", "停，我停在楼下了", "我停在楼下了，等下", "别忘了，不用了解释"]) {
+    assert.notEqual(judgeStopKeyword(text).intent, "stop", text);
+  }
+});
+
 test("an authenticated local owner saying 暂停 uses the existing durable admin pause", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-reflex-pause-"));
   const running = await startOwner({ stateDir: join(dir, "state"), listen: "127.0.0.1:0",
