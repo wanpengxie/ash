@@ -90,6 +90,8 @@ export class OwnerLink extends Link {
   private readonly incoming = new Map<string, Inbound>();
   private readonly outbound = new Map<string, Outbound>();
   private readonly remoteDevices = new Map<string, { member: DeviceMember; manifest: string }>();
+  /** Every paired, unrevoked device as the gateway lists it (browsers included), for listing and revoking. */
+  private paired: { id: string; name: string; permissions: string[]; online: boolean }[] = [];
   private readonly streams = new Map<string, { end: () => void; from: string }>();
   private serving = false;
   private ready = false;
@@ -207,6 +209,8 @@ export class OwnerLink extends Link {
     if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
     const list = result.devices as { id: string; name: string; permissions: string[]; revoked: boolean; online: boolean }[];
     if (!Array.isArray(list)) throw new Error("gateway device list unavailable");
+    this.paired = list.filter((item) => typeof item.id === "string" && /^[A-Za-z0-9_-]+$/.test(item.id) && !item.revoked)
+      .map((item) => ({ id: item.id, name: String(item.name ?? item.id), permissions: Array.isArray(item.permissions) ? item.permissions.map(String) : [], online: Boolean(item.online) }));
     const seen = new Set<string>();
     for (const item of list) {
       if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
@@ -229,9 +233,11 @@ export class OwnerLink extends Link {
         const capabilities: DeviceCapability[] = raw.capabilities.map((value) => {
           if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid remote capability");
           const cap = value as DeviceCapability;
-          if (!["none", "outward", "structure"].includes(cap.risk) || typeof cap.label !== "string" || !cap.label.trim()) throw new TypeError("remote capability lacks risk or label");
-          // Device claims cannot downgrade owner approval risk; MCP hints are not authority.
-          return { ...cap, risk: "structure" as const, label: `Use ${cap.name}` };
+          if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
+            throw new TypeError("invalid remote capability");
+          // Whatever risk or label a remote device claims (laptop clients send none), the owner
+          // treats every borrowed capability as structure-risk and labels it by device.
+          return { ...cap, risk: "structure" as const, label: `在用${item.name}` };
         });
         const manifest = JSON.stringify({ name: item.name, capabilities });
         if (previous?.manifest === manifest) { previous.member.setOnline(true); continue; }
@@ -298,7 +304,8 @@ export class OwnerLink extends Link {
   }
   state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined,
     pending: [...this.pending.values()],
-    devices: [...this.remoteDevices].map(([id, value]) => ({ id: `device:${id}`, name: value.member.name, online: value.member.online })) }; }
+    devices: this.paired.map((item) => ({ id: `device:${item.id}`, name: item.name, online: this.remoteDevices.get(item.id)?.member.online ?? item.online,
+      permissions: item.permissions, capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0 })) }; }
 }
 
 export interface LocalCapabilities {

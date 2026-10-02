@@ -371,7 +371,9 @@ export class SettingsControls {
         if (typeof device.id !== "string" || typeof device.name !== "string") continue;
         const row = document.createElement("div");
         row.className = "settings-plugin";
-        row.append(node("span", `${device.name} · ${device.online ? "在线" : "离线"}`));
+        const lends = Array.isArray(device.permissions) && device.permissions.includes("expose_capability");
+        const kind = lends ? `电脑 · ${Number(device.capabilities) || 0} 个能力` : "浏览器";
+        row.append(node("span", `${device.name} · ${kind} · ${device.online ? "在线" : "离线"}`));
         const revoke = node("button", "撤销设备", "btn gray");
         revoke.type = "button";
         revoke.addEventListener("click", () => { void act({ op: "revoke", device: device.id }).catch(() => {
