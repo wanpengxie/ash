@@ -8,9 +8,11 @@ export const LIMIT = 12;
 const WINDOW = LIMIT + 1;
 const CONTENT_EXTENSIONS = /\.(?:md|txt|json|ya?ml)$/i;
 
-/** Count Unicode letters and numbers, one code point each. Formatting does not count. */
+/** Count Unicode letters and numbers, one code point each. Formatting does not count.
+ * An inline code span without whitespace is a machine name (a capability, field or value that must be
+ * spelled exactly), not prose, so it does not count; any span containing a space still counts. */
 export function normalizeParagraph(text) {
-  return Array.from(text.normalize('NFKC').toLowerCase()).filter(char => /[\p{L}\p{N}]/u.test(char));
+  return Array.from(text.replace(/`[^`\s]+`/g, ' ').normalize('NFKC').toLowerCase()).filter(char => /[\p{L}\p{N}]/u.test(char));
 }
 
 function paragraphLines(text) {

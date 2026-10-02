@@ -132,3 +132,8 @@ test('private sidecar maps opaque IDs to paths and paragraph start lines only', 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a whitespace-free code span is a machine name and does not count; a span with spaces still counts', () => {
+  assert.equal(normalizeParagraph('看 `calendar.search` 是否可用').length, 5);
+  assert.equal(normalizeParagraph('`do not copy this prose`').length, 'donotcopythisprose'.length);
+});
