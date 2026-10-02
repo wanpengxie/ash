@@ -55,6 +55,7 @@ test("an owner bubble advances from sending to delivered to read", async ({ page
   await page.locator("#settingsPause").click();
   await expect(page.locator("#settingsFeedback")).toHaveText("已暂停 Ash");
   await page.locator("#drawer").evaluate((element) => element.classList.remove("open"));
+  await expect(page.locator("#send")).toBeEnabled();
 
   const text = `delivery stages ${Date.now()}`;
   let releaseSend;
@@ -91,6 +92,25 @@ test("an owner bubble advances from sending to delivered to read", async ({ page
       await page.locator("#settingsResumeYes").click();
     }
   }
+});
+
+test("the presence bar follows agent status and avatar independently of network status", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false };
+  const working = await running.world.send(agent, { to: null, kind: "event", word: "status",
+    body: { state: "working", text: "正在查看资料" } });
+  expect(working.id).toBeTruthy();
+  await expect(page.locator("#presence")).toHaveAttribute("data-state", "working");
+  await expect(page.locator("#state")).toHaveText("正在查看资料");
+  await expect(page.locator("#face img")).toHaveAttribute("src", /focused\.webp$/);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const resting = await running.world.send(agent, { to: null, kind: "event", word: "status",
+    body: { state: "resting", text: "休息中" } });
+  expect(resting.id).toBeTruthy();
+  await expect(page.locator("#presence")).toHaveAttribute("data-state", "resting");
+  await expect(page.locator("#face img")).toHaveAttribute("src", /resting\.webp$/);
 });
 
 test("two live screens see the same messages without conversation control buttons", async ({ page, context }) => {
