@@ -16,6 +16,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
@@ -84,7 +85,7 @@ object BrowserSession {
                 // names that resolve to private addresses were already refused when the page was opened.
                 return try { BrowserArguments.navigable(request.url.toString()); false } catch (_: Exception) { true }
             }
-            override fun onPageFinished(v: WebView, url: String?) { loadLatch?.countDown() }
+            override fun onPageFinished(v: WebView, url: String?) { flushCookies(); loadLatch?.countDown() }
             override fun onReceivedError(v: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) { loadError = error.description?.toString() ?: "the page could not be loaded"; loadLatch?.countDown() }
             }
@@ -92,6 +93,14 @@ object BrowserSession {
         layout(webView)
         view = webView
         return webView
+    }
+
+    /** Logins live in cookies; write them to disk now rather than whenever Android gets around to it. */
+    private fun flushCookies() {
+        try {
+            val own = if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) ProfileStore.getInstance().getProfile(PROFILE) else null
+            (own?.cookieManager ?: CookieManager.getInstance()).flush()
+        } catch (_: Throwable) { /* best effort */ }
     }
 
     private fun layout(webView: WebView) {
@@ -203,6 +212,7 @@ object BrowserSession {
 
     fun detach() {
         val webView = view ?: return
+        flushCookies()
         onMain {
             (webView.parent as? ViewGroup)?.removeView(webView)
             layout(webView)
@@ -211,6 +221,7 @@ object BrowserSession {
 
     fun close() {
         val webView = view ?: return
+        flushCookies()
         onMain {
             (webView.parent as? ViewGroup)?.removeView(webView)
             webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy()
