@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startOwner } from "../../../dist/ash-core.mjs";
@@ -145,6 +146,69 @@ test("two live screens see the same messages without conversation control button
       await expect(screen.locator("#log button").filter({ hasText: /停止|插话|编辑|撤回/ })).toHaveCount(0);
     }
   } finally { await second.close(); }
+});
+
+test("a remote screen can chat and answer an approval but cannot manage Ash", async ({ page }) => {
+  const caller = { member: "person:owner", transportPrincipal: "gateway:e2e", pairedDeviceId: "e2e-browser",
+    local: false, remote: true, ownerProxy: true, transport: "web_ui" };
+  const statuses = [];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = chunks.length ? Buffer.concat(chunks) : null;
+    const headers = Object.fromEntries(Object.entries(request.headers).filter(([, value]) => typeof value === "string"));
+    const result = await running.edge.handle({ method: request.method,
+      url: new URL(request.url, "http://remote"), headers, body }, caller);
+    if (request.url === "/api/send") statuses.push(result.status);
+    response.writeHead(result.status, result.headers ?? {});
+    if ("stream" in result) result.stream((chunk) => response.write(chunk),
+      (close) => { if (response.destroyed || response.writableEnded) close(); else response.once("close", close); },
+      () => response.end());
+    else response.end(result.body);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  let effects = 0;
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    await page.goto(base);
+    await expect(page.locator("#connection")).toContainText("已连接");
+    await expect(page.locator("#settingsAdmin")).toHaveCount(0);
+    await page.locator("#t").fill("remote e2e hello");
+    await page.locator("#send").click();
+    await expect(page.locator("#log .msg.me").filter({ hasText: "remote e2e hello" })).toHaveCount(1);
+
+    running.members.registerDevice({ id: "device:remote-e2e", kind: "device", name: "Remote E2E", online: true,
+      capabilities: () => [{ name: "run", description: "Remote approval E2E", label: "Run remote E2E", risk: "outward",
+      input_schema: { type: "object", properties: {}, additionalProperties: false } }],
+      handle: () => { effects++; return { ok: true, result: {} }; } });
+    const grant = await fetch(`${running.url}/api/send`, { method: "POST",
+      headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+        body: { member: "agent:main", scope: "device:remote-e2e/run" }, wait: true }) });
+    expect(grant.status).toBe(200);
+    const request = await running.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+      local: true, remote: false, ownerProxy: false },
+    { to: "device:remote-e2e", kind: "request", word: "run", body: {} });
+    await expect.poll(() => Boolean(running.ledger.gateCase(request.id))).toBe(true);
+    const gate = running.ledger.gateCase(request.id);
+    expect(gate?.askId).toBeTruthy();
+    await page.locator("#presence").click();
+    await page.locator("#agentTabs [data-tab=approvals]").click();
+    await page.locator(`[data-ask-id="${gate.askId}"] [data-choice="once"]`).click();
+    await expect.poll(() => effects).toBe(1);
+    expect(running.ledger.responseTo(gate.askId)?.body.result.choice).toBe("once");
+
+    const token = await page.evaluate(() => sessionStorage.getItem("ash.screen.token.v2"));
+    const forbidden = await fetch(`${base}/api/send`, { method: "POST", headers: { "content-type": "application/json", "Ash-Screen": token },
+      body: JSON.stringify({ to: "service:admin", kind: "request", word: "pause", body: {}, wait: true }) });
+    expect(forbidden.status).toBe(403);
+    expect(effects).toBe(1);
+    expect(statuses).toContain(403);
+  } finally {
+    await page.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("a same-turn burst groups its bubbles and puts the reaction on the cited owner message", async ({ page }) => {
