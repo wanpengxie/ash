@@ -25,6 +25,7 @@ const wait = async <T>(probe: () => Promise<T | undefined>, ms = 20_000): Promis
 };
 
 const owner = await startOwner({ listen: "127.0.0.1:0", stateDir, gateway: { url: base }, agents: [{ id: "agent:main", runtime: "echo" }] });
+let screenReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 try {
   const link = owner.link!;
   check(link.connected, "owner tunnel connected before edge opened");
@@ -41,10 +42,21 @@ try {
   const headers = { cookie, origin: new URL(base).origin };
   const oldRoute = await fetch(`${base}/api/agents`, { headers });
   check(oldRoute.status === 404, "retired production route absent through tunnel");
-  const stream = await fetch(`${base}/api/stream?follow=false&after=0&label=Gateway%20Tab`, { headers: { ...headers, accept: "text/event-stream" } });
+  const stream = await fetch(`${base}/api/stream?follow=true&after=0&label=Gateway%20Tab`, { headers: { ...headers, accept: "text/event-stream" } });
   check(stream.status === 200, "screen registration stream reachable");
-  const frame = await stream.text();
-  const registration = JSON.parse(frame.split("\ndata: ")[1]?.split("\n\n")[0] ?? "null") as { screen: string; token: string; label: string } | null;
+  screenReader = stream.body?.getReader() ?? null;
+  check(screenReader, "screen stream body available");
+  let frame = "";
+  const decoder = new TextDecoder();
+  while (!frame.includes("\n\n")) {
+    const chunk = await screenReader!.read();
+    if (chunk.done) break;
+    frame += decoder.decode(chunk.value, { stream: true });
+  }
+  const first = frame.split("\n\n", 1)[0];
+  const registration = first.startsWith("event: screen.registered\n")
+    ? JSON.parse(first.split("\ndata: ")[1] ?? "null") as { screen: string; token: string; label: string } | null
+    : null;
   check(registration?.screen && registration.label === "Gateway Tab", "screen identity registered");
   const request = { to: "agent:main", kind: "request", word: "say", body: { text: "controlled tunnel message" }, client_id: "gateway-e2e-say" };
   const denied = await fetch(`${base}/api/send`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(request) });
@@ -82,17 +94,28 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       try { return owner.members.describe("agent", remoteId).members[0]; } catch { return undefined; }
     });
     check(detail.online && detail.words.some((word) => word.word === "fake.echo" && word.risk === "structure"), "paired remote MCP is a conservative structure-risk device word");
-    let approvals = 0;
-    owner.world.setGate(async (message) => {
-      const allowed = message.to === remoteId && message.word === "fake.echo" && message.body.text === "controlled" && approvals++ === 0;
-      return { allow: allowed, by: "rule", reason: "synthetic gate rejects all other effects" };
-    });
-    const result = await owner.world.send({ transport: "agent", transportPrincipal: "e2e-agent", member: "agent:main", local: true, remote: false, ownerProxy: false },
-      { to: remoteId, kind: "request", word: "fake.echo", body: { text: "controlled" }, wait: true });
-    check(result.reply?.body.ok === true && JSON.stringify(result.reply.body.result).includes("synthetic:controlled"), "one explicitly gated synthetic remote effect returns through the tunnel");
-    check(approvals === 1, "test-only gate saw exactly one remote effect");
+    const ownerToken = Object.entries(owner.tokens.api).find(([, member]) => member === "person:owner")?.[0];
+    check(ownerToken, "local owner credential available");
+    const access = await fetch(`${owner.url}/api/send`, { method: "POST", headers: {
+      authorization: `Bearer ${ownerToken}`, "content-type": "application/json" }, body: JSON.stringify({
+      to: "service:gate", kind: "request", word: "access.grant", body: { member: "agent:main", scope: `${remoteId}/fake.echo` }, wait: true,
+    }) });
+    check(access.status === 200 && (await access.json()).reply?.body?.ok === true, "local owner grants the exact remote capability");
+    const effect = await owner.world.send({ transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false },
+      { to: remoteId, kind: "request", word: "fake.echo", body: { text: "controlled" } });
+    const gate = await wait(async () => owner.ledger.gateCase(effect.id) ?? undefined);
+    check(gate.decision === "waiting", "remote effect waits for owner approval");
+    const approval = await fetch(`${base}/api/send`, { method: "POST", headers: {
+      ...headers, "content-type": "application/json", "ash-screen": registration!.token }, body: JSON.stringify({
+      to: "service:gate", kind: "response", word: "ask", reply_to: gate.askId,
+      body: { ok: true, result: { choice: "once" } },
+    }) });
+    check(approval.status === 200, "paired browser approves one synthetic remote effect");
+    const result = await wait(async () => owner.ledger.responseTo(effect.id) ?? undefined);
+    check(result.body.ok === true && JSON.stringify(result.body.result).includes("synthetic:controlled"), "one approved synthetic remote effect returns through the tunnel");
+    check(owner.ledger.gateCase(effect.id)?.decision === "allowed", "remote effect gate records owner approval");
     await link.revoke(remoteId);
     await link.refreshDevices();
     check(!owner.members.describe("agent").members.some((member) => member.id === remoteId), "revocation removes remote routes");
   } finally { laptop.close(); }
-} finally { await owner.close(); }
+} finally { await screenReader?.cancel().catch(() => {}); await owner.close(); }
