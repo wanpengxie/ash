@@ -42,11 +42,13 @@ export class ReflexMember implements Member {
 
   private async judge(message: Message, turn: string | null, judgement: ReturnType<typeof judgeStopKeyword>): Promise<void> {
     let stage: "keyword" | "jev" = "keyword";
-    if (turn && judgement.intent === "unclear" && this.options.jev && this.options.context) {
+    // While a turn runs, every message that is not already an explicit command goes to JEV: "够了", "闭嘴" or
+    // "hold on" carry no stop keyword, yet they are the owner trying to stop the reply.
+    if (turn && (judgement.intent === "unclear" || judgement.intent === "unrelated") && this.options.jev && this.options.context) {
       try {
         const result = await this.options.jev.judge(this.options.context(message, turn));
         stage = "jev";
-        judgement = { intent: result.intent === "stop" && result.confidence >= (this.options.threshold ?? 0.8) ? "stop" : "unrelated",
+        judgement = { intent: result.intent === "stop" && result.confidence >= (this.options.threshold ?? 0.6) ? "stop" : "unrelated",
           confidence: result.confidence };
       } catch { /* The no-Key keyword rule remains the fallback on timeout or failure. */ }
     }

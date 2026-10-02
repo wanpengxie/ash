@@ -170,3 +170,36 @@ test("a confident JEV judgement stops an ambiguous command; JEV failure falls ba
     assert.equal(ledger.list({ limit: 1000 }).filter((row) => row.word === "cancel_turn" && row.kind === "request").length, 1);
   } finally { await reflex.close(); await agent.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("while busy, a keyword-free stop such as 够了 reaches JEV and the default bar is 0.6", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-reflex-busy-"));
+  const ledger = await Ledger.open(join(dir, "world.db"));
+  const router = new WorldRouter(ledger, async () => true);
+  let entered!: () => void;
+  const active = new Promise<void>((resolve) => { entered = resolve; });
+  const agent = createAgentMember({ ledger, router, stateDir: join(dir, "agent"), runner: { async runTurn(_input, _emit, signal) {
+    entered();
+    await new Promise<void>((resolve) => { if (signal.aborted) resolve(); else signal.addEventListener("abort", () => resolve(), { once: true }); });
+    return { reason: "error" as const, error: "synthetic stop" };
+  } } });
+  const asked: string[] = [];
+  const confidence: Record<string, number> = { "够了": 0.65, "差不多了": 0.55 };
+  const reflex = new ReflexMember(router, () => agent.inbox.activeTurn()?.id ?? null, {
+    context: (message, turn) => ({ current_task: turn, latest_user_message: String(message.body.text), recent_messages: [] }),
+    jev: { async judge(state) { asked.push(state.latest_user_message); return { intent: "stop", confidence: confidence[state.latest_user_message] ?? 0.9 }; } },
+  });
+  const members = new WorldMembers(router); members.register(agent); members.register(reflex);
+  const judged = async (text: string) => {
+    const sent = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text }, wait: true });
+    await wait(() => ledger.list({ limit: 1000 }).some((row) => row.word === "reflex.judged" && row.body.message_id === sent.id));
+    return ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === sent.id)!.body;
+  };
+  try {
+    agent.prepareRecovery(); await router.recover(); await agent.start();
+    await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "write a long plan" }, wait: true });
+    await active;
+    assert.deepEqual({ ...(await judged("差不多了")), message_id: undefined }, { message_id: undefined, stage: "jev", intent: "unrelated", confidence: 0.55, acted: false });
+    assert.deepEqual({ ...(await judged("够了")), message_id: undefined }, { message_id: undefined, stage: "jev", intent: "stop", confidence: 0.65, acted: true });
+    assert.deepEqual(asked, ["差不多了", "够了"]);
+  } finally { await reflex.close(); await agent.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+});

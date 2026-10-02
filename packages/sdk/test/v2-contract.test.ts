@@ -401,7 +401,7 @@ test("config fills defaults, preserves legacy root keys, and rejects invalid nes
   assert.deepEqual(resolved.existing, input.existing);
   assert.equal(resolved.delivery.quiet, DEFAULT_WORLD_CONFIG_V2.delivery.quiet);
   assert.equal(resolved.delivery.dedupe_minutes, 0);
-  assert.equal(resolved.reflex.timeout_ms, 1000);
+  assert.equal(resolved.reflex.timeout_ms, 3000);
   assert.deepEqual(resolved.workers.model, { provider: "p", model: "m" });
   assert.ok(matchesSchema(WORLD_CONFIG_SCHEMA_V2, resolved));
   assert.equal(resolveWorldConfigV2({ reflex: { jev: { key_credential: "vault/team-prod/key" } } }).reflex.jev.key_credential, "vault/team-prod/key");
