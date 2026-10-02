@@ -342,7 +342,7 @@ export class ClientLink extends Link {
     if (inbound.method === "GET" && path === "/ash/manifest") {
       const manifest = await this.local.manifest();
       return this.reply(sid, json(200, { ...manifest, capabilities: manifest.capabilities.map((capability) => ({
-        ...capability, risk: "structure", label: `Use ${capability.name}`,
+        ...capability, risk: capability.risk === "none" ? "none" : "structure", label: `Use ${capability.name}`,
       })) }));
     }
     if (inbound.method === "POST" && path === "/ash/call") {
