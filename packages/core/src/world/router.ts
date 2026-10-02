@@ -661,7 +661,7 @@ export class WorldRouter {
         const eventTitle = typeof request.body.title === "string" ? request.body.title.slice(0, 100) : "未命名事件";
         const eventStart = request.body.start_ms;
         const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
-          ? `，开始时间 ${new Date(eventStart).toLocaleString("zh-CN")}` : "";
+          ? `，${new Date(eventStart).toLocaleString("zh-CN", { month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" })} 开始` : "";
         // A command reads best on its own, but every other argument that changes the effect (stdin, cwd…) stays visible,
         // and a cut is marked so nothing hides past the edge of the card.
         const { command, ...rest } = request.body as { command?: unknown };

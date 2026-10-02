@@ -259,7 +259,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
         if (seen.has(key)) return;
         seen.add(key);
         for (const [index, part] of splitAssistantText(text).entries()) {
-          pending = pending.then(() => signal.aborted || emitError || said.has(sameWords(part)) ? undefined : emit({ id: `${key}:${index}`, text: part }))
+          // After real ash_say messages, a closing aside wrapped whole in brackets is narration to nobody, not speech.
+          const aside = () => said.size > 0 && /^[（(][^]*[）)]$/u.test(part.trim());
+          pending = pending.then(() => signal.aborted || emitError || said.has(sameWords(part)) || aside() ? undefined : emit({ id: `${key}:${index}`, text: part }))
             .catch((error) => { emitError ??= error; });
         }
       } else if (event.type === "tool/call" && this.router) {

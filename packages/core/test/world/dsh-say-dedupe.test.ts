@@ -18,6 +18,7 @@ test("a failed ash_say keeps its closing text; a delivered multi-paragraph ash_s
   const plans: Record<string, { input: object; closing: string }> = {
     BAD_KIND: { input: { text: "tool said", kind: "notice" }, closing: "tool said" },
     TWO_PARAS: { input: { text: "para one\n\npara two" }, closing: "para one\n\npara two" },
+    ASIDE: { input: { text: "加好了：明晚 8 点健身。" }, closing: "（已把健身事件加进日历，并在对话里说明了具体日期。）" },
   };
   const model = createServer((req, res) => {
     let raw = "";
@@ -70,6 +71,7 @@ test("a failed ash_say keeps its closing text; a delivered multi-paragraph ash_s
     };
     assert.deepEqual(await turn("BAD_KIND", 1), ["tool said"], "the failed ash_say's words still reach the owner once");
     assert.deepEqual(await turn("TWO_PARAS", 2), ["para one\n\npara two"], "two paragraphs said through ash_say are not sent again");
+    assert.deepEqual(await turn("ASIDE", 3), ["加好了：明晚 8 点健身。"], "a bracketed closing aside after ash_say is not sent");
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));
