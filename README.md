@@ -1,71 +1,59 @@
 # ash
 
-**ash** is a resident personal agent for your Android phone, built on [DeepSeek Harness (DSH)](https://www.npmjs.com/package/@deepseek-ai/dsh).
+ash 是运行在 Android 手机上的常驻个人 Agent。ash core 管理消息、设备、权限、定时和界面；[DeepSeek Harness (DSH)](https://www.npmjs.com/package/@deepseek-ai/dsh) 运行 Agent。当前生产入口使用 `ash-api/2`，两者在同一 Core 进程中通过公开扩展点连接，DSH 发布包不作修改。
 
-ash 是一个常驻在安卓手机上的个人 Agent，以 DSH 为底座。它不是 DSH 的一个插件，也不是 DSH 的一个壳：**ash 是 personal agent 的"系统"，DSH 是跑在上面的 agent harness"应用"**。两个世界之间是一套带版本号的双向 SDK（`ash-api/1`），在同一个进程里直接调用。
+当前代码包含：
 
-- **一直在**：前台服务守护 ash core；开机、升级、被杀后自动回来。Agent 设的提醒到点会把它自己叫醒。
-- **你的手机就是它的手脚**：读屏、点击、输入、剪贴板、应用、系统设置、Shizuku shell、虚拟屏（带实时预览小窗）——都是"手机"这台设备的能力，由 ash 统一授权，敏感操作先问你。特权能力只走 Shizuku，不用 root。
-- **能看图、能收文件**：对话里直接发图片（模型直接看到）和文件（存进 Agent 的工作区）。
-- **插件随装随用**：设置页里通过 DSH 自己的插件管理器装、停用、卸载插件（npm 包名、GitHub 地址、本地路径都行）；npm/npx 装的命令行工具和靠 npx 启动的 MCP 服务在手机上照常可用。
-- **跟随手机代理**：手机设了 HTTP 代理时，ash 和它启动的所有工具都走代理（VPN 模式的代理无需配置）。
-- **在任何地方找到它**：配合自部署的 Cloudflare 网关 [ash-gateway](https://github.com/wanpengxie/ash-gateway)：
-  - 你自己的浏览器配对后，打开网关地址就是同一个 Ash 界面（可以添加到主屏幕）；
-  - 你的笔记本以 client 角色运行 ash core，把本机的 MCP 服务借给手机上的 Agent——Agent 直接多出这些工具，不用改任何配置。
-- **DSH 原样**：手机上跑的是 npm 上发布的 DSH，逐字节一致；Android 适配全部在 DSH 之外完成（平台包、运行时预加载、宿主补丁层），社区插件、技能、MCP 照常可用。
+- 单一 `agent:main` 的对话、状态、后台流程、记忆文件与活动记录；
+- 手机感官、通知、审批、定时唤醒与本地暂停；
+- 浏览器界面、网关配对与笔记本设备能力；
+- DSH 的五个 ash 工具（`ash_describe`、`ash_send`、`ash_say`、`ash_react`、`ash_show`）及受控的原生读写/搜索工具。
 
-## 架构
+这些是代码能力清单，不代表真机回归和最终体验验收已经完成。进度以项目验收记录为准。
+
+## 运行结构
 
 ```text
- 浏览器 / 笔记本 / 其他设备 ──── ash-gateway（你的 Cloudflare 账户）────┐
-                                                                     │ WSS（手机只发起出站连接）
-┌─────────────────────────── 手机 ────────────────────────────────────▼──────────┐
-│ Android 宿主（Kotlin）        ash core（Node，一个进程）                          │
-│  前台服务、payload 安装       ├─ 成员·设备·能力·授权·确认·定时·通知·事件日志       │
-│  本机桥 127.0.0.1:4710 ◀─────┤─ 网关链接（配对、隧道、调用笔记本）                │
-│  Keystore 身份、通知卡片      ├─ HTTP 边缘 127.0.0.1:4700（ash 界面、SDK、MCP 投影）│
-│  屏幕/应用/Shizuku/虚拟屏     └─ DSH 绑定 ── DSH core（profile ash = dsh-base）    │
-│  WebView 打开 ash 界面            ① ash → DSH：ctx.agents、session/event、gate    │
-│                                   ② DSH → ash：ctx.ash、ash_* 工具、设备能力工具   │
-└──────────────────────────────────────────────────────────────────────────────────┘
+Android App（Kotlin）
+  ├─ 前台服务、系统感官、通知、闹钟、Keystore、设备能力
+  ├─ APK 静态资源中的 WebView 界面 ── 本机原生桥 ──┐
+  └─ 宿主 HTTP 桥 127.0.0.1:4710 ────────────────┤
+                                                   ▼
+ash core（Node，单进程）
+  ├─ ash-api/2：账本、成员、消息路由、关口、时钟、投递、后台流程
+  ├─ 本机边缘 API 127.0.0.1:4700
+  ├─ DSH 绑定 ── 原样的 DSH core
+  └─ 网关出站连接 ── 配对浏览器 / 笔记本设备
 ```
 
-详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+Android WebView 从 APK 加载静态界面，通过原生桥访问 Core；远程浏览器通过网关使用同一界面。设备能力经过成员与审批链路，不直接展开成一批 Agent 工具。详细结构见 [架构说明](docs/ARCHITECTURE.md)。
 
 | 目录 | 内容 |
 |---|---|
-| `packages/sdk` | `ash-api/1`：类型、边缘 HTTP 客户端 |
-| `packages/core` | ash core：系统本身（与具体 Agent 运行时无关）、ash 界面、网关链接、MCP 投影 |
-| `packages/dsh-binding` | 用 DSH core 实现 Agent 运行时契约（进程内，DSH 零修改） |
-| `packages/android-compat` | 让原样的 DSH 跑在 Android 上：平台包与运行时预加载 |
-| `payload/` | payload 清单（锁定 DSH、Termux 运行时的版本与哈希）和组装脚本 |
-| `android/` | Android 宿主（Gradle，Kotlin，`ai.ash`） |
-| `tools/` | 端到端测试、回归脚本 |
+| `packages/sdk` | `ash-api/2` 类型、word 目录与客户端 |
+| `packages/core` | 世界层、成员、后台流程、边缘 API 和界面 |
+| `packages/dsh-binding` | DSH 会话、工具、上下文与审批绑定 |
+| `packages/ash-skills` | 人格模板、首次见面与其他技能 |
+| `packages/android-compat` | Android 上运行原样 DSH 的适配 |
+| `payload/` | DSH、运行时和 Core 的锁定输入与组装 |
+| `android/` | Android 宿主（Gradle/Kotlin） |
+| `tools/` | 构建、验证和回归脚本 |
 
-## 构建
+## 本地构建与验证
 
-需要 Node ≥ 22、npm、`ar`/`tar`/`zip`、[patchelf](https://github.com/NixOS/patchelf)，以及 Android SDK（build-tools 35、platform 35）和 JDK 17+。
+需要 Node 22+、npm、`ar`/`tar`/`zip`、`patchelf`、Android SDK 与 JDK 17+。构建 payload 还需要 `payload/manifest.json` 指定的外部软件包可获取。
 
 ```bash
 npm ci
-npm test                              # 契约测试：第 1 组（core）、第 2 组（DSH 绑定，需要本机装一份 DSH）
-npm run build:payload                 # → build/payload/payload.zip（DSH + 运行时 + ash core）
-cd android && ./gradlew assembleDebug # → android/app/build/outputs/apk/debug/app-debug.apk
+npm run typecheck
+npm test
+npm run test:ui:e2e
+npm run build:payload
+cd android && ./gradlew :app:assembleDebug
 ```
 
-升级 DSH：改 `payload/manifest.json` 里的一行版本号，重新 `build:payload`，跑一遍 `npm test`（第 2 组契约测试守住绑定层）。
-
-笔记本当设备：
-
-```bash
-npm run build:core
-node --expose-internals packages/core/dist/ash-core.mjs --config laptop.json --pair <手机上生成的配对码>
-```
-
-`laptop.json`：`{ "role": "client", "name": "MacBook", "stateDir": "~/.ash/laptop", "gateway": { "url": "https://ash-gateway.<子域>.workers.dev" }, "mcp": { "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/ash-shared"] } } }`
+`npm test` 中依赖已安装 DSH 的场景，设置 `ASH_TEST_DSH_ROOT` 指向发布包根目录后运行；未设置时这些场景会明确跳过。浏览器 E2E 需先安装 Playwright Chromium。APK 输出为 `android/app/build/outputs/apk/debug/app-debug.apk`。
 
 ## 来源与许可
 
-ash 分叉自 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app)（MIT，v1.16.1 基线），之后重写了架构：原项目的真机经验（Shizuku、无障碍、虚拟屏、Android 上跑 node 的各种坑）保留在代码和注释里。
-
-整体按 MIT 许可（[LICENSE](LICENSE)）；虚拟屏模块源自 [Operit](https://github.com/AAswordman/Operit)，按 LGPL-3.0 分发；payload 里的 Termux 软件包各自遵循其许可。见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+ash 分叉自 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app)（MIT，v1.16.1 基线）。整体按 [MIT 许可](LICENSE)；虚拟屏模块源自 [Operit](https://github.com/AAswordman/Operit)，按 LGPL-3.0 分发。第三方软件包许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
