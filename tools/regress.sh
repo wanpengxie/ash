@@ -114,8 +114,14 @@ R7() { say "R7 web through the gateway (a temporary paired browser)"
 }
 R8() { say "R8 the agent uses the paired laptop"
   local share="${LAPTOP_SHARE:-$HOME/ash-shared}" name="regress-$(date +%s).txt"
-  local r; r=$(deliver_and_wait "用你电脑（笔记本）上的文件工具，在共享目录 ${share} 里新建文件 ${name}，内容写 ok，然后列出该目录确认。" 300)
-  echo "    reply: ${r:0:200}"
+  wait_online 300 || { bad R8 "agent not online"; return; }
+  adb shell input keyevent 3 >/dev/null 2>&1
+  local from ask end; from=$(last_seq)
+  [ -n "$(send_say "用你电脑（笔记本）上的文件工具，在共享目录 ${share} 里新建文件 ${name}，内容写 ok，然后列出该目录确认。")" ] || { bad R8 "request not accepted"; return; }
+  # Borrowed laptop capabilities are structure risk: the owner approves the write from the notification.
+  ask=$(wait_row 180 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&String(x.body?.source?.word||'').startsWith('files.'))" "$from") || true
+  [ -z "$ask" ] || tap_notification_action "$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')" || true
+  end=$((SECONDS+120)); while [ $SECONDS -lt $end ] && [ ! -f "$share/$name" ]; do sleep 3; done
   if [ -f "$share/$name" ]; then ok "R8 the agent wrote $share/$name on the laptop through ash"; rm -f "$share/$name"; else bad R8 "file not on the laptop"; fi
 }
 R9() { say "R9 phone offline → the browser is told; back → reconnects"
@@ -221,13 +227,18 @@ R18() { say "R18 explicit stop cancels the active turn, without stopping the nex
 }
 
 # Tap a notification action button by its label (case-insensitive; some skins upper-case buttons).
+# A collapsed notification hides its buttons; swipe down on its title ($2) to expand it first.
+ui_center() { adb shell uiautomator dump /sdcard/ash-regress-ui.xml >/dev/null 2>&1
+  adb exec-out cat /sdcard/ash-regress-ui.xml | LABEL="$1" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const want=process.env.LABEL.toLowerCase();for(const n of s.match(/<node [^>]*>/g)||[]){const t=(/ text="([^"]*)"/.exec(n)||[])[1]||"",d=(/ content-desc="([^"]*)"/.exec(n)||[])[1]||"";if(t.toLowerCase()!==want&&d.toLowerCase()!==want)continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})'; }
 tap_notification_action() {
   adb shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
-  local xy="" i
+  local xy="" title i
   for i in 1 2 3; do
-    adb shell uiautomator dump /sdcard/ash-regress-ui.xml >/dev/null 2>&1
-    xy=$(adb exec-out cat /sdcard/ash-regress-ui.xml | LABEL="$1" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const want=process.env.LABEL.toLowerCase();for(const n of s.match(/<node [^>]*>/g)||[]){const t=(/ text="([^"]*)"/.exec(n)||[])[1]||"",d=(/ content-desc="([^"]*)"/.exec(n)||[])[1]||"";if(t.toLowerCase()!==want&&d.toLowerCase()!==want)continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})')
-    [ -n "$xy" ] && break; sleep 1
+    xy=$(ui_center "$1")
+    [ -n "$xy" ] && break
+    title=$(ui_center "${2:-需要你确认}")
+    [ -z "$title" ] || adb shell input swipe $title ${title% *} $(( ${title#* } + 400 )) 300
+    sleep 1
   done
   adb shell rm -f /sdcard/ash-regress-ui.xml >/dev/null 2>&1
   [ -n "$xy" ] || { adb shell cmd statusbar collapse >/dev/null 2>&1; return 1; }
