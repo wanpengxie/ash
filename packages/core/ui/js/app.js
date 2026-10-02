@@ -122,6 +122,7 @@ export function boot({ uiTransport } = {}) {
   const progressRoot = document.querySelector("#progress");
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
+  const pendingNote = document.querySelector(".pending-note");
   const suggestions = document.querySelector("#suggestions");
   const contextRoot = document.querySelector("#context");
   const context = composerContext(contextRoot, input);
@@ -218,6 +219,7 @@ export function boot({ uiTransport } = {}) {
     onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
+      pendingNote.hidden = !count; // the storage notice matters only while something waits to be sent
       for (const item of outbox) if (item.in_reply_to && item.status === "rejected") optionPending.delete(item.in_reply_to);
       for (const item of outbox) if (item.in_reply_to && item.status !== "rejected") optionPending.add(item.in_reply_to);
       if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
@@ -239,6 +241,7 @@ export function boot({ uiTransport } = {}) {
       context.askAbout({ turn, text: prefill });
     } });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
+  pendingNote.hidden = !net.queue.length;
 
   async function visible() {
     if (document.hidden || !net.token) return;

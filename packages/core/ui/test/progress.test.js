@@ -33,5 +33,8 @@ test("progress shows two safe recent steps and elapsed time, then a folded summa
     assert.match(root.textContent, /做了 3 步 · 5 秒 · 查看活动/);
     renderProgress(root, { turns: { t_one: turn } }, { now: 70_000 });
     assert.equal(root.hidden, true);
+    // A finished turn that did no steps shows nothing rather than "做了 0 步".
+    renderProgress(root, { turns: { t_two: { started: 1000, ended: 2000, steps: [] } } }, { now: 2500 });
+    assert.equal(root.hidden, true);
   } finally { delete globalThis.document; }
 });

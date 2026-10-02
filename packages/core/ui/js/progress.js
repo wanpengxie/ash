@@ -8,6 +8,8 @@ export function renderProgress(root, view, { now = Date.now(), onOpen } = {}) {
     .sort((a, b) => b[1].started - a[1].started);
   if (!turns.length) { root.hidden = true; return; }
   const [id, turn] = turns[0];
+  // A plain reply did nothing worth reporting; "做了 0 步" under every message is noise.
+  if (turn.ended && !turn.steps.length) { root.hidden = true; return; }
   root.hidden = false;
   const button = document.createElement("button");
   button.type = "button";
