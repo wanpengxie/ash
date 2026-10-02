@@ -38,6 +38,8 @@ export interface CapabilitySpec {
   confirm?: boolean;
   /** Hint for callers and projections; ash does not enforce it. */
   timeout_ms?: number;
+  /** "none" only for a tool its server marks read-only and non-destructive; anything else asks first. */
+  risk?: "none" | "structure";
 }
 
 export type DeviceKind = "phone" | "laptop" | "browser" | "server" | "other";

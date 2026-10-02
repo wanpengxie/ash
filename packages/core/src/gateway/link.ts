@@ -235,9 +235,9 @@ export class OwnerLink extends Link {
           const cap = value as DeviceCapability;
           if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
             throw new TypeError("invalid remote capability");
-          // Whatever risk or label a remote device claims (laptop clients send none), the owner
-          // treats every borrowed capability as structure-risk and labels it by device.
-          return { ...cap, risk: "structure" as const, label: `在用${item.name}` };
+          // A paired device lending its own read-only tool may skip approval; any other claim, or
+          // none at all, is structure risk. The owner labels every borrowed capability by device.
+          return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, label: `在用${item.name}` };
         });
         const manifest = JSON.stringify({ name: item.name, capabilities });
         if (previous?.manifest === manifest) { previous.member.setOnline(true); continue; }

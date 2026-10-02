@@ -177,8 +177,11 @@ export class McpCapabilities {
     for (const [server, conn] of this.conns) {
       try {
         const r = await conn.request("tools/list", {}, 60_000);
-        for (const t of (r?.tools ?? []) as { name: string; description?: string; inputSchema?: Record<string, unknown> }[]) {
-          caps.push({ name: `${server}.${t.name}`, description: t.description ?? t.name, input_schema: t.inputSchema ?? { type: "object", properties: {} }, ...(this.servers[server].confirm?.includes(t.name) ? { confirm: true } : {}) });
+        for (const t of (r?.tools ?? []) as { name: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: { readOnlyHint?: unknown; destructiveHint?: unknown } }[]) {
+          const confirm = this.servers[server].confirm?.includes(t.name) === true;
+          const readOnly = t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint !== true && !confirm;
+          caps.push({ name: `${server}.${t.name}`, description: t.description ?? t.name, input_schema: t.inputSchema ?? { type: "object", properties: {} },
+            risk: readOnly ? "none" : "structure", ...(confirm ? { confirm: true } : {}) });
         }
       } catch (e) {
         this.log(`[mcp ${server}] tools/list failed:`, e instanceof Error ? e.message : e);
