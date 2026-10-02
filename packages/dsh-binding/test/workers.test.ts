@@ -10,10 +10,10 @@ test("worker model selection reads current config on every call: null, override 
   type Selection = WorldConfigV2["workers"]["model"];
   let setting: Selection = null;
   let defaultModel: { provider: string; model: string } | undefined = { provider: "default", model: "base" };
-  const captured: { provider: string; model: string; tools: unknown[] }[] = [];
+  const captured: { provider: string; model: string; tools: unknown[]; maxTokens?: number }[] = [];
   const host = {
     agentOptions: () => defaultModel,
-    ctx: { get: (name: string) => name === "llm" ? { async *stream(request: { provider: string; model: string; tools: unknown[] }) {
+    ctx: { get: (name: string) => name === "llm" ? { async *stream(request: { provider: string; model: string; tools: unknown[]; maxTokens?: number }) {
       captured.push(request);
       yield { type: "text-delta", text: "{}" };
       yield { type: "finish", reason: { kind: "stop" } };
@@ -27,6 +27,8 @@ test("worker model selection reads current config on every call: null, override 
   }
   assert.deepEqual(captured.map(({ provider, model }) => [provider, model]), [["default", "base"], ["selected", "A"], ["selected", "B"], ["default", "base"]]);
   assert.ok(captured.every(({ tools }) => Array.isArray(tools) && tools.length === 0));
+  // Room for a reasoning model to think and still finish its JSON.
+  assert.ok(captured.every(({ maxTokens }) => (maxTokens ?? 0) >= 8_192));
   defaultModel = undefined;
   setting = { provider: "selected", model: "A" };
   assert.deepEqual(await model.complete(prompt, signal), { text: "{}", finish: "stop" }, "explicit override must not depend on a default model");

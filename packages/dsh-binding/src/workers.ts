@@ -3,6 +3,8 @@ import { estimateWorkerCost, type WorkerUsage } from "../../core/src/workers/cos
 import type { WorldConfigV2 } from "../../sdk/src/config";
 import type { DshHost } from "./host";
 
+export const WORKER_MAX_TOKENS = 16_384;
+
 /** Uses the selected DSH provider without creating an agent or conversation session. */
 export function dshWorkerModel(host: DshHost, configuredModel: () => WorldConfigV2["workers"]["model"]): WorkerModel {
   return {
@@ -19,7 +21,8 @@ export function dshWorkerModel(host: DshHost, configuredModel: () => WorldConfig
       let usage: WorkerUsage | undefined;
       for await (const chunk of llm.stream({ ...model, system: prompt.system,
         messages: [{ role: "user", content: [{ type: "text", text: prompt.user }] }],
-        tools: [], maxTokens: 2048, signal })) {
+        // Reasoning models spend part of this on thinking; 2048 truncated extract output on the phone.
+        tools: [], maxTokens: WORKER_MAX_TOKENS, signal })) {
         if (signal.aborted) throw new Error("worker cancelled");
         if (chunk.type === "text-delta") {
           text += chunk.text;

@@ -220,6 +220,20 @@ R18() { say "R18 explicit stop cancels the active turn, without stopping the nex
   if [ "$intent" = stop ] && [ "$acted" = true ] && [ "$reason" = cancelled ] && [ "$next_turn" != "$turn" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -le 1000 ]; then ok "R18 explicit stop cancels active turn within 1s; stop message enters next turn"; else bad R18 "stop decision/turn/latency did not meet contract"; fi
 }
 
+# Tap a notification action button by its label (case-insensitive; some skins upper-case buttons).
+tap_notification_action() {
+  adb shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
+  local xy="" i
+  for i in 1 2 3; do
+    adb shell uiautomator dump /sdcard/ash-regress-ui.xml >/dev/null 2>&1
+    xy=$(adb exec-out cat /sdcard/ash-regress-ui.xml | LABEL="$1" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const want=process.env.LABEL.toLowerCase();for(const n of s.match(/<node [^>]*>/g)||[]){const t=(/ text="([^"]*)"/.exec(n)||[])[1]||"",d=(/ content-desc="([^"]*)"/.exec(n)||[])[1]||"";if(t.toLowerCase()!==want&&d.toLowerCase()!==want)continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})')
+    [ -n "$xy" ] && break; sleep 1
+  done
+  adb shell rm -f /sdcard/ash-regress-ui.xml >/dev/null 2>&1
+  [ -n "$xy" ] || { adb shell cmd statusbar collapse >/dev/null 2>&1; return 1; }
+  adb shell input tap $xy; sleep 1; adb shell cmd statusbar collapse >/dev/null 2>&1
+}
+
 R19() { say "R19 a risky phone action produces an Android approval notification and one answer"
   wait_online 300 || { bad R19 "agent not online"; return; }
   adb shell input keyevent 3 >/dev/null 2>&1
@@ -236,8 +250,10 @@ R19() { say "R19 a risky phone action produces an Android approval notification 
     sleep 1
   done
   [ -n "$notice" ] || { bad R19 "approval was not rendered by Android"; return; }
-  answer=$(api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:gate",kind:"response",word:"ask",reply_to:process.argv[1],body:{ok:true,result:{choice:"once"}},client_id:process.argv[2]}))' "$ask_id" "regress-r19-$RANDOM$RANDOM")" | jq_ 'v.id||""')
-  [ -n "$answer" ] || { bad R19 "approval answer not accepted"; return; }
+  # Only a screen or the notification itself may answer an ask; tap "once" the way the owner would.
+  local once_label; once_label=$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')
+  tap_notification_action "$once_label" || { bad R19 "approval action not found in the notification shade"; return; }
+  answer=$(wait_row 30 "v.find(x=>x.kind==='response'&&x.reply_to==='$ask_id'&&x.body?.result?.choice==='once')" "$from") || { bad R19 "approval answer not accepted"; return; }
   effect=$(wait_row 180 "v.find(x=>x.kind==='response'&&x.word==='shell.run'&&x.body?.ok===true)" "$from") || { bad R19 "approved phone action did not settle"; return; }
   local responses; responses=$(rows "$from" | ASH_ASK="$ask_id" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(JSON.parse);process.stdout.write(String(v.filter(x=>x.kind==="response"&&x.reply_to===process.env.ASH_ASK).length))})')
   if [ "$responses" = 1 ]; then ok "R19 Android showed the approval; once produced one terminal answer and one phone effect"; else bad R19 "approval responses=$responses"; fi

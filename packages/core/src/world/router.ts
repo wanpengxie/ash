@@ -140,8 +140,8 @@ export class WorldRouter {
       const expiresAt = accepted.deadlineAt;
       const started = this.ledger.beginGate(parent.id, { subject: hash({ member: "agent:main", sessionId: input.sessionId }),
         risk: "structure", contractFingerprint: input.contractFingerprint, expiresAt,
-        askBody: { title: "Confirm tool", detail: `Allow ${input.toolName} once?`,
-          options: [{ id: "once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+        askBody: { title: "需要你确认", detail: `允许使用 ${input.toolName} 一次？`,
+          options: [{ id: "once", label: "允许这一次" }, { id: "deny", label: "不允许" }],
           source: { word: "internal.approval", to: "service:gate", body_preview: "DSH tool request" } } });
       if (!started) return "unavailable";
       askId = started.ask.id;
@@ -660,14 +660,15 @@ export class WorldRouter {
         const eventStart = request.body.start_ms;
         const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
           ? `，开始时间 ${new Date(eventStart).toLocaleString("zh-CN")}` : "";
+        const command = request.word === "shell.run" && typeof request.body.command === "string" ? request.body.command : null;
         const detail = calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
-          : `${endpoint.spec.label ?? request.word}: ${JSON.stringify(request.body).slice(0, 500)}`;
+          : `${endpoint.spec.label ?? request.word}：${(command ?? JSON.stringify(request.body)).slice(0, 500)}`;
         const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
           contractFingerprint: identity.fingerprint, expiresAt, objectPattern,
-          askBody: { title: calendarAsk ? "创建日历事件" : "Confirm action", detail,
-            options: [{ id: "once", label: "Allow once" }, { id: "always", label: calendarAsk
-              ? "Allow this calendar for 30 days" : "Allow this action and object for 30 days" },
-              { id: "deny", label: "Deny" }],
+          askBody: { title: calendarAsk ? "创建日历事件" : "需要你确认", detail,
+            options: [{ id: "once", label: "允许这一次" }, { id: "always", label: calendarAsk
+              ? "30 天内允许这个日历" : "30 天内允许同样的操作" },
+              { id: "deny", label: "不允许" }],
             source: { word: request.word, to: request.to!, body_preview: detail } } });
         if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
         pending.phase = "gate_waiting";

@@ -502,7 +502,7 @@ test("the approval page saves an exact calendar rule and revokes it", async ({ p
   await page.locator("#agentTabs [data-tab=approvals]").click();
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toContainText("first event");
-  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Allow this calendar for 30 days" }).click();
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "30 天内允许这个日历" }).click();
   await expect.poll(() => effects).toBe(1);
   expect(running.ledger.responseTo(first.id)?.body.ok).toBe(true);
 
@@ -517,7 +517,7 @@ test("the approval page saves an exact calendar rule and revokes it", async ({ p
   const other = await create(8, "different calendar");
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
   expect(effects).toBe(2);
-  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "不允许" }).click();
   await expect.poll(() => running.ledger.responseTo(other.id)?.body.ok).toBe(false);
 
   await page.locator("#agentPanel .sheet-rule").getByRole("button", { name: "撤销规则" }).click();
@@ -525,7 +525,7 @@ test("the approval page saves an exact calendar rule and revokes it", async ({ p
   const revoked = await create(7, "after revoke");
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
   expect(effects).toBe(2);
-  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "不允许" }).click();
   await expect.poll(() => running.ledger.responseTo(revoked.id)?.body.ok).toBe(false);
 });
 
@@ -591,18 +591,18 @@ test("an approval can allow once but becomes inert after its deadline", async ({
   await expect(page.locator("#connection")).toContainText("已连接");
   const allowed = await ask("approved");
   const first = page.locator("#log .card.ask").filter({ hasText: "approved" });
-  await expect(first.getByRole("button", { name: "Allow once" })).toBeEnabled();
-  await first.getByRole("button", { name: "Allow once" }).click();
+  await expect(first.getByRole("button", { name: "允许这一次" })).toBeEnabled();
+  await first.getByRole("button", { name: "允许这一次" }).click();
   await expect.poll(() => effects).toBe(1);
   expect(running.ledger.responseTo(allowed.id)?.body.ok).toBe(true);
 
   const expired = await ask("expires");
   const second = page.locator("#log .card.ask").filter({ hasText: "expires" });
-  await expect(second.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  await expect(second.getByRole("button", { name: "允许这一次" })).toBeEnabled();
   await page.clock.fastForward(601_000);
   await expect(second).toContainText("已过期");
-  await expect(second.getByRole("button", { name: "Allow once" })).toBeDisabled();
-  await expect(second.getByRole("button", { name: "Deny" })).toBeDisabled();
+  await expect(second.getByRole("button", { name: "允许这一次" })).toBeDisabled();
+  await expect(second.getByRole("button", { name: "不允许" })).toBeDisabled();
   expect(running.ledger.responseTo(expired.id)).toBeNull();
   expect(effects).toBe(1);
 });
