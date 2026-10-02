@@ -66,6 +66,11 @@ export const gateObject = (target: string, word: string, body: Record<string, un
     const id = body.calendar_id;
     if (Number.isSafeInteger(id) && (id as number) > 0) return String(id);
   }
+  // A browser approval is about a site, not a button: the phone refuses a click or typing whose site is not the page's.
+  if (target.startsWith("device:") && (word === "browser.click" || word === "browser.type")) {
+    const site = typeof body.site === "string" ? body.site.trim().toLowerCase().replace(/\.$/, "").replace(/^www\./, "") : "";
+    if (/^[a-z0-9][a-z0-9.-]{0,200}$/.test(site)) return `site:${site}`;
+  }
   if (target.startsWith("device:") && word === "message.send") {
     const recipient = body.recipient_id;
     if (typeof recipient === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(recipient.toLowerCase()))

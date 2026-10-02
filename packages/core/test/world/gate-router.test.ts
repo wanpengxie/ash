@@ -347,3 +347,42 @@ test("a shell approval shows the command and every other argument, and marks a c
   assert.match(hidden, /"cwd":"\/sdcard"/);
   assert.match(await detailOf({ command: `${" ".repeat(600)}rm x` }), /…（共 604 字/);
 });
+
+test("a browser approval reads as one line, and 'always' covers that site and no other", async () => {
+  const { ledger, router } = await setup();
+  let effects = 0;
+  const schema = { type: "object", properties: { ref: { type: "integer" }, site: { type: "string" }, label: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" } },
+    required: ["ref", "site", "label"], additionalProperties: false };
+  for (const name of ["browser.click", "browser.type"])
+    router.registerDevice("device:phone", { name, description: name, label: name === "browser.click" ? "在网页上点击" : "在网页上输入", risk: "outward", input_schema: schema },
+      () => { effects++; return { ok: true, result: {} }; });
+  grant(ledger, "device:phone/browser.click");
+  grant(ledger, "device:phone/browser.type");
+  const send = (word: string, body: Record<string, unknown>) => router.send(agent, { to: "device:phone", kind: "request", word, body });
+  try {
+    const first = await send("browser.click", { ref: 3, site: "www.Example.com", label: "登录" });
+    await new Promise((resolve) => setImmediate(resolve));
+    const askId = ledger.gateCase(first.id)!.askId;
+    assert.equal(ledger.byId(askId)?.body.detail, "在 www.Example.com 点击「登录」");
+    assert.deepEqual((ledger.byId(askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "always", "deny"]);
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId, body: { ok: true, result: { choice: "always" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects, 1);
+    // Another control on the same site (different ref and label) passes by the rule.
+    const same = await send("browser.click", { ref: 9, site: "example.com", label: "下一页" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(!ledger.gateCase(same.id), "the rule passed it without a new question");
+    assert.equal(effects, 2, "same site, other control");
+    // A different site asks again.
+    const other = await send("browser.click", { ref: 1, site: "evil.example.org", label: "登录" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ledger.gateCase(other.id)?.decision, "waiting");
+    assert.equal(effects, 2);
+    // Typing is its own word: the click rule does not cover it, and its card shows what would be typed.
+    const typed = await send("browser.type", { ref: 2, site: "example.com", label: "搜索", text: "天气\n预报", submit: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ledger.byId(ledger.gateCase(typed.id)!.askId)?.body.detail, "在 example.com 的「搜索」里输入：天气 预报，然后提交");
+    assert.equal(effects, 2);
+    for (const pending of [other, typed]) await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: ledger.gateCase(pending.id)!.askId, body: { ok: true, result: { choice: "deny" } } });
+  } finally { ledger.close(); }
+});

@@ -42,6 +42,15 @@ object CapabilityPolicies {
         "vscreen.close" to CapabilityPolicy("structure", "关闭虚拟屏"),
         "calendar.search" to CapabilityPolicy("none", "看日历"),
         "calendar.create" to CapabilityPolicy("outward", "添加日历事件"),
+        "browser.open" to CapabilityPolicy("none", "打开网页"),
+        "browser.read" to CapabilityPolicy("none", "读网页"),
+        "browser.click" to CapabilityPolicy("outward", "在网页上点击"),
+        "browser.type" to CapabilityPolicy("outward", "在网页上输入"),
+        "browser.scroll" to CapabilityPolicy("none", "滚动网页"),
+        "browser.back" to CapabilityPolicy("none", "回到上一页"),
+        "browser.screenshot" to CapabilityPolicy("none", "给网页截图"),
+        "browser.show" to CapabilityPolicy("none", "请你看一下浏览器"),
+        "browser.close" to CapabilityPolicy("none", "关闭浏览器"),
     )
 
     fun require(name: String): CapabilityPolicy = requireNotNull(byName[name]) { "missing capability policy: $name" }

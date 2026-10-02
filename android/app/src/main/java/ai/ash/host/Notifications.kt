@@ -111,6 +111,17 @@ object Notifications {
         manager.notify(PresentChat.TAG, 0, b.build())
     }
 
+    /** Asks the owner to look at the agent's browser (log in, enter a password, pass a check). One at a time. */
+    fun browserHandoff(ctx: Context, reason: String) {
+        val open = PendingIntent.getActivity(ctx, "browser".hashCode(),
+            Intent(ctx, ai.ash.ui.BrowserActivity::class.java).putExtra("reason", reason).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = builder(ctx, CH_URGENT).setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("Ash 请你看一下浏览器").setContentText(reason).setStyle(Notification.BigTextStyle().bigText(reason))
+            .setContentIntent(open).setAutoCancel(true).build()
+        ctx.getSystemService(NotificationManager::class.java).notify("browser-handoff", 0, n)
+    }
+
     fun hidePresent(ctx: Context, id: String) = ctx.getSystemService(NotificationManager::class.java).cancel("present:$id", 0)
 
     fun presentFailure(ctx: Context, id: String) {

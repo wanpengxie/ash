@@ -11,7 +11,7 @@ object Capabilities {
 
     /** Every module contributes its list here (system, screen/accessibility, shell/Shizuku, virtual screen). */
     val all: List<Capability> by lazy {
-        SystemCapabilities.list + ScreenCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list
+        SystemCapabilities.list + ScreenCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list
     }
 
     fun manifest(ctx: Context): JSONObject {

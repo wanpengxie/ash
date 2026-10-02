@@ -668,7 +668,10 @@ export class WorldRouter {
         const shown = request.word === "shell.run" && typeof command === "string"
           ? `${command}${Object.keys(rest).length ? `\n${JSON.stringify(rest)}` : ""}` : JSON.stringify(request.body);
         const preview = shown.length > 500 ? `${shown.slice(0, 500)}…（共 ${shown.length} 字，未显示部分同样会执行）` : shown;
-        const detail = calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
+        const plain = (value: unknown, max: number) => String(value ?? "").replace(/[\p{C}\s]+/gu, " ").trim().slice(0, max);
+        const browserDetail = request.word === "browser.click" ? `在 ${plain(request.body.site, 80)} 点击「${plain(request.body.label, 60)}」`
+          : request.word === "browser.type" ? `在 ${plain(request.body.site, 80)} 的「${plain(request.body.label, 60)}」里输入：${plain(request.body.text, 120)}${request.body.submit === true ? "，然后提交" : ""}` : null;
+        const detail = browserDetail && request.to!.startsWith("device:") ? browserDetail : calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
           : `${endpoint.spec.label ?? request.word}：${preview}`;
         const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
           contractFingerprint: identity.fingerprint, expiresAt, objectPattern,
