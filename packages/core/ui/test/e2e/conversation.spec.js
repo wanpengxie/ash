@@ -1,10 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startOwner } from "../../../dist/ash-core.mjs";
 
 let root;
+let home;
 let running;
 let ownerToken;
 
@@ -18,7 +19,7 @@ async function showCard(card) {
 
 test.beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "ash-ui-e2e-"));
-  const home = join(root, "home");
+  home = join(root, "home");
   mkdirSync(home);
   writeFileSync(join(home, "note.txt"), "E2E file body\n");
   writeFileSync(join(home, "dot.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
@@ -416,4 +417,49 @@ test("local proactive preferences save through self and survive a page reload", 
   await page.locator("#menu").click();
   await page.locator("#settingsProactive").getByRole("button", { name: "加载偏好" }).click();
   await expect(page.locator("#settingsProactiveText")).toHaveValue(content);
+});
+
+test("memory page shows a versioned USER file and can roll back a snapshot", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await page.locator("#presence").click();
+  await page.locator('#agentTabs button[data-tab="memory"]').click();
+  const editor = page.locator('#agentPanel section[data-tab="memory"]');
+  await expect(editor.locator(".markdown-source")).toBeEnabled();
+  await editor.locator(".markdown-source").fill("Name: E2E first\n");
+  await editor.locator(".editor-save").click();
+  await expect(editor.locator(".editor-status")).toHaveText("已保存并核对当前版本。");
+  await expect(editor.locator(".editor-version")).toHaveText("版本 1");
+  const first = await editor.locator(".markdown-source").inputValue();
+  await editor.locator(".markdown-source").fill(first.replace("Name: E2E first", "Name: E2E second"));
+  await editor.locator(".editor-save").click();
+  await expect(editor.locator(".editor-version")).toHaveText("版本 2");
+  await editor.locator(".editor-history").click();
+  await expect(editor.locator(".editor-rollback")).toHaveCount(1);
+  page.once("dialog", (dialog) => dialog.accept());
+  await editor.locator(".editor-rollback").click();
+  await expect(editor.locator(".markdown-source")).toHaveValue(/Name: E2E first/);
+  await expect(editor.locator(".editor-version")).toHaveText("版本 3");
+  const writes = running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.to === "service:self" && message.body.path === "USER.md" && ["write", "rollback"].includes(message.word));
+  expect(writes.map((message) => message.word)).toEqual(["write", "write", "rollback"]);
+});
+
+test("memory editor keeps the owner draft when a background file change makes it stale", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await page.locator("#presence").click();
+  await page.locator('#agentTabs button[data-tab="memory"]').click();
+  const editor = page.locator('#agentPanel section[data-tab="memory"]');
+  await editor.getByRole("button", { name: "MEMORY.md" }).click();
+  await expect(editor.locator(".markdown-source")).toBeEnabled();
+  writeFileSync(join(home, "MEMORY.md"), "Before background update\n");
+  await editor.locator(".editor-refresh").click();
+  await expect(editor.locator(".markdown-source")).toHaveValue("Before background update\n");
+  await editor.locator(".markdown-source").fill("Owner draft must remain\n");
+  writeFileSync(join(home, "MEMORY.md"), "Background update wins\n");
+  await editor.locator(".editor-save").click();
+  await expect(editor.locator(".editor-warning")).toContainText("文件已被其他操作修改");
+  await expect(editor.locator(".markdown-source")).toHaveValue("Owner draft must remain\n");
+  expect(readFileSync(join(home, "MEMORY.md"), "utf8")).toBe("Background update wins\n");
 });
