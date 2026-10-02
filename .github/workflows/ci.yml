@@ -24,6 +24,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:ui:e2e
       - run: npm run test:originality
+      - run: npm run test:dogfood
       - run: npm run test:public-terms
         env:
           ASH_PRIVATE_TERMS: ${{ secrets.ASH_PRIVATE_TERMS }}
