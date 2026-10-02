@@ -97,7 +97,8 @@ for (const approved of [false, true]) {
           expect(reply.body.result.content).not.toContain("无糖茶");
         }
       }
-      expect(scripted).toHaveLength(0);
+      // The visible reply precedes the model's closing turn; wait for that last scripted step to be taken.
+      await expect.poll(() => scripted.length).toBe(0);
     } finally {
       await running?.close();
       model.closeAllConnections();
