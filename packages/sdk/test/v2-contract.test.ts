@@ -331,7 +331,7 @@ test("managed writes require a valid base hash, while dated append has no base h
   assert.ok(matchesSchema(write, { ...base, expected_hash: null }));
   assert.ok(!matchesSchema(write, { path: base.path, content: base.content, why: base.why }));
   assert.ok(!matchesSchema(write, { ...base, expected_hash: "A".repeat(64) }));
-  assert.ok(!matchesSchema(write, { ...base, path: "../USER.md" }));
+  assert.ok(matchesSchema(write, { ...base, path: "../USER.md" }), "service:self refuses foreign paths as forbidden, not the schema");
   const append = wordContract("service:self", "append")!.input_schema!;
   assert.ok(matchesSchema(append, { path: "memory/1999-12-31.md", text: "x" }));
   assert.ok(!matchesSchema(append, { path: "USER.md", text: "x" }));

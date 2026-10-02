@@ -25,7 +25,8 @@ test("a managed-file change reaches the next turn's context once, with author, f
       const request = JSON.parse(raw || "{}") as { tools?: unknown[]; messages?: { role: string; content: unknown }[]; model?: string };
       const messages = request.messages ?? [];
       const main = Boolean(request.tools?.length) && !JSON.stringify(messages).includes("This is your private mind space");
-      if (main) turns.push(JSON.stringify(messages.slice(messages.findLastIndex((message) => message.role === "assistant") + 1)));
+      const lastAssistant = messages.map((message) => message.role).lastIndexOf("assistant");
+      if (main) turns.push(JSON.stringify(messages.slice(lastAssistant + 1)));
       res.writeHead(200, { "content-type": "text/event-stream" });
       const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
       event("message_start", { message: { id: "msg_ctx", type: "message", role: "assistant", model: request.model, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } });

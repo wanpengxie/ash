@@ -14,6 +14,6 @@ test("main context asks for the owner's calendar grant through an in-chat card",
   const context = renderMainContext({ soul: null, identity: null, user: null, memory: null, heartbeat: null });
   assert.match(context, /没有 `calendar\.search`/);
   assert.match(context, /`ash_show`/);
-  assert.match(context, /"type": "permission", "permission": "calendar"/);
+  assert.match(context, /`type` 为 `permission`，`permission` 为 `calendar`/);
   assert.match(context, /获得授权并看到能力可用后，才查询日历/);
 });
