@@ -31,8 +31,8 @@ android {
         // 28 on purpose: from 29 on, app-private files are no longer executable (the payload's
         // node/git/python run from files/). Moving binaries to jniLibs is a separate project.
         targetSdk = 28
-        versionCode = 10
-        versionName = "0.2.0"
+        versionCode = 11
+        versionName = "0.3.0"
         buildConfigField("int", "CORE_PORT", "4700")
         buildConfigField("int", "HOST_PORT", "4710")
         buildConfigField("int", "SENSE_PORT", "4700")

@@ -1133,7 +1133,9 @@ export class Ledger {
     const completedTurns = new Set<string>();
     const rows = this.db.prepare(`SELECT word, json_extract(body, '$.turn') AS turn_id,
       CASE WHEN word='turn.end' THEN json_extract(body, '$.reason') END AS reason
-      FROM messages WHERE "from"=? AND kind='event' AND word IN ('turn.start', 'turn.end') ORDER BY seq`).iterate(actor) as Iterable<Row>;
+      FROM messages WHERE "from"=? AND kind='event' AND word IN ('turn.start', 'turn.end') AND seq > ? ORDER BY seq`)
+      // Turns migrated from v1 stay visible history; they were never bound to a v2 DSH session.
+      .iterate(actor, this.migration.lastLegacySeq) as Iterable<Row>;
     for (const row of rows) {
       if (typeof row.turn_id !== "string") continue;
       if (row.word === "turn.start") startedTurns.add(row.turn_id);

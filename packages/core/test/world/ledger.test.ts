@@ -259,3 +259,16 @@ test("a committed client retry survives process death before acknowledgement", a
     assert.equal(ledger.lastSeq(), 17);
   } finally { ledger.close(); }
 });
+
+test("turns migrated from v1 stay history and are not bound to the v2 DSH session", async () => {
+  const file = isolated();
+  copyFileSync(fixture, file);
+  const ledger = await Ledger.open(file);
+  try {
+    const legacyTurns = ledger.list({ limit: 1000 }).filter((row) => row.from === "agent:main" && row.word === "turn.start");
+    assert.ok(legacyTurns.length > 0, "the v10 fixture migrates at least one turn");
+    assert.equal(ledger.agentTurnHistory("agent:main").startedTurns.size, 0);
+    ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.start", body: { turn: "t_new", ids: [] }, turn: "t_new" });
+    assert.deepEqual([...ledger.agentTurnHistory("agent:main").startedTurns], ["t_new"]);
+  } finally { ledger.close(); }
+});
