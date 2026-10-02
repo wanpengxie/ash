@@ -97,6 +97,13 @@ test("an owner bubble advances from sending to delivered to read", async ({ page
 test("the presence bar follows agent status and avatar independently of network status", async ({ page }) => {
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
+  await page.evaluate(() => {
+    window.ashWorkingObservedAt = null;
+    new MutationObserver(() => {
+      if (document.querySelector("#presence")?.dataset.state === "working" && window.ashWorkingObservedAt === null)
+        window.ashWorkingObservedAt = Date.now();
+    }).observe(document.querySelector("#presence"), { attributes: true, attributeFilter: ["data-state"] });
+  });
   const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
     local: true, remote: false, ownerProxy: false };
   const working = await running.world.send(agent, { to: null, kind: "event", word: "status",
@@ -105,6 +112,8 @@ test("the presence bar follows agent status and avatar independently of network 
   await expect(page.locator("#presence")).toHaveAttribute("data-state", "working");
   await expect(page.locator("#state")).toHaveText("正在查看资料");
   await expect(page.locator("#face img")).toHaveAttribute("src", /focused\.webp$/);
+  const observedAt = await page.evaluate(() => window.ashWorkingObservedAt);
+  expect(observedAt - running.ledger.byId(working.id).ts).toBeLessThan(500);
   await expect(page.locator("#connection")).toContainText("已连接");
   const resting = await running.world.send(agent, { to: null, kind: "event", word: "status",
     body: { state: "resting", text: "休息中" } });
