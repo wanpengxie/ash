@@ -69,6 +69,9 @@ export const gateObject = (target: string, word: string, body: Record<string, un
   // A browser approval is about a site, not a button: the phone refuses a click or typing whose site is not the page's.
   if (target.startsWith("device:") && (word === "browser.click" || word === "browser.type")) {
     const site = typeof body.site === "string" ? body.site.trim().toLowerCase().replace(/\.$/, "").replace(/^www\./, "") : "";
+    // Buttons that publish, send, delete or pay are never covered by "allow this site": each one asks again.
+    if (word === "browser.click" && /发布|发表|发送|发帖|提交|删除|移除|购买|支付|付款|下单|转账|关注|取消关注|转发|post|tweet|send|reply|publish|submit|delete|remove|buy|pay|purchase|checkout|order|follow|retweet|repost|confirm|transfer/i.test(String(body.label ?? "")))
+      return `exact:${stable(body)}`;
     if (/^[a-z0-9][a-z0-9.-]{0,200}$/.test(site)) return `site:${site}`;
   }
   if (target.startsWith("device:") && word === "message.send") {

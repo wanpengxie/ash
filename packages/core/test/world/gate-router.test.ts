@@ -379,6 +379,15 @@ test("a browser approval reads as one line, and 'always' covers that site and no
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(ledger.gateCase(other.id)?.decision, "waiting");
     assert.equal(effects, 2);
+    // A button that publishes or deletes is not covered by "this site": it asks again even on the allowed site.
+    const publish = await send("browser.click", { ref: 5, site: "example.com", label: "Post" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ledger.gateCase(publish.id)?.decision, "waiting");
+    assert.equal(effects, 2);
+    const remove = await send("browser.click", { ref: 6, site: "example.com", label: "删除这条" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(ledger.gateCase(remove.id)?.decision, "waiting");
+    for (const pending of [publish, remove]) await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: ledger.gateCase(pending.id)!.askId, body: { ok: true, result: { choice: "deny" } } });
     // Typing is its own word: the click rule does not cover it, and its card shows what would be typed.
     const typed = await send("browser.type", { ref: 2, site: "example.com", label: "搜索", text: "天气\n预报", submit: true });
     await new Promise((resolve) => setImmediate(resolve));
