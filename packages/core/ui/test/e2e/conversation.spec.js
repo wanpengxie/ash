@@ -8,6 +8,7 @@ let root;
 let home;
 let running;
 let ownerToken;
+const recentMessages = () => running.ledger.list({ before: Number.MAX_SAFE_INTEGER, limit: 1000 });
 
 async function showCard(card) {
   const sent = await running.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
@@ -47,6 +48,51 @@ test("owner sends from the real UI and the echo brain replies in the conversatio
   await expect(page.locator("#log .delivery")).toHaveCount(1);
 });
 
+test("an owner bubble advances from sending to delivered to read", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await page.locator("#menu").click();
+  await page.locator("#settingsPause").click();
+  await expect(page.locator("#settingsFeedback")).toHaveText("已暂停 Ash");
+  await page.locator("#drawer").evaluate((element) => element.classList.remove("open"));
+
+  const text = `delivery stages ${Date.now()}`;
+  let releaseSend;
+  const held = new Promise((resolve) => { releaseSend = resolve; });
+  await page.route("**/api/send", async (route) => {
+    if (route.request().method() === "POST" && JSON.parse(route.request().postData() || "{}").body?.text === text)
+      await held;
+    await route.continue();
+  });
+  try {
+    await page.locator("#t").fill(text);
+    await page.locator("#send").click();
+    const pending = page.locator("#log .pending-local").filter({ hasText: text });
+    await expect(pending.locator("xpath=following-sibling::span[contains(@class,'delivery')][1]")).toHaveText("发送中");
+    releaseSend();
+    const bubble = page.locator("#log .msg.me:not(.pending-local)").filter({ hasText: text });
+    const delivery = bubble.locator("xpath=following-sibling::span[contains(@class,'delivery')][1]");
+    await expect(delivery).toHaveText("已送达");
+    await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(0);
+
+    await page.locator("#menu").click();
+    await page.locator("#settingsResume").click();
+    await page.locator("#settingsResumeYes").click();
+    await expect(page.locator("#settingsFeedback")).toHaveText("已恢复 Ash");
+    await expect(delivery).toHaveText("已读");
+    await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
+  } finally {
+    releaseSend();
+    const latestAdmin = running.ledger.list({ limit: 1000 }).filter((message) =>
+      message.to === "service:admin" && ["pause", "resume"].includes(message.word)).at(-1);
+    if (latestAdmin?.word === "pause") {
+      await page.locator("#drawer").evaluate((element) => element.classList.add("open"));
+      await page.locator("#settingsResume").click();
+      await page.locator("#settingsResumeYes").click();
+    }
+  }
+});
+
 test("two live screens see the same messages without conversation control buttons", async ({ page, context }) => {
   const second = await context.newPage();
   try {
@@ -64,7 +110,7 @@ test("two live screens see the same messages without conversation control button
     await expect(second.locator("#log .msg.me").filter({ hasText: text })).toHaveCount(1);
     await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
     await expect(page.locator("#log .from").filter({ hasText: "E2E phone" })).toHaveCount(1);
-    const source = running.ledger.list().find((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text);
+    const source = recentMessages().find((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text);
     expect(source.origin?.label).toBe("E2E phone");
     for (const screen of [page, second]) {
       await expect(screen.locator("#log button").filter({ hasText: /停止|插话|编辑|撤回/ })).toHaveCount(0);
@@ -113,7 +159,7 @@ test("an option card is settled by one ordinary owner message on both screens", 
     await firstCard.getByRole("button", { name: "Yes" }).click();
     await expect(firstCard.getByRole("button", { name: "Yes" })).toBeDisabled();
     await expect(secondCard.getByRole("button", { name: "Yes" })).toBeDisabled();
-    const replies = running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.in_reply_to === cardId);
+    const replies = recentMessages().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.in_reply_to === cardId);
     expect(replies).toHaveLength(1);
     expect(replies[0].body.option_id).toBe("yes");
   } finally { await second.close(); }
@@ -149,20 +195,20 @@ test("an offline owner message is shown locally and delivered once after reconne
     await page.locator("#t").fill(text);
     await page.locator("#send").click();
     await expect(page.locator("#log .pending-local").filter({ hasText: text })).toHaveCount(1);
-    expect(running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)).toHaveLength(0);
+    expect(recentMessages().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)).toHaveLength(0);
   } finally { await context.setOffline(false); }
   await expect(page.locator("#connection")).toContainText("已连接", { timeout: 15_000 });
-  await expect.poll(() => running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text).length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => recentMessages().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text).length, { timeout: 15_000 }).toBe(1);
   await expect(page.locator("#log .msg.me").filter({ hasText: text })).toHaveCount(1);
   await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
-  expect(running.ledger.list().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)).toHaveLength(1);
+  expect(recentMessages().filter((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)).toHaveLength(1);
 });
 
 test("a suggested page opens only when the owner accepts its chip", async ({ page }) => {
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
-  await expect.poll(() => running.ledger.list().findLast((message) => message.word === "visible" && message.origin?.screen)?.origin?.screen).toMatch(/^screen:/);
-  const screen = running.ledger.list().findLast((message) => message.word === "visible" && message.origin?.screen).origin.screen;
+  await expect.poll(() => recentMessages().findLast((message) => message.word === "visible" && message.origin?.screen)?.origin?.screen).toMatch(/^screen:/);
+  const screen = recentMessages().findLast((message) => message.word === "visible" && message.origin?.screen).origin.screen;
   const sent = await running.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
     local: true, remote: false, ownerProxy: false },
   { to: screen, kind: "request", word: "ui.open", body: { target: "activity", mode: "suggest" } });
@@ -192,7 +238,7 @@ test("the upcoming page removes a scheduled item after its confirmed cancel", as
   await item.getByRole("button", { name: "删除计划" }).click();
   await expect(item).toHaveCount(0);
   await expect(page.locator("#agentPanel [data-tab=upcoming]")).toContainText("暂无计划");
-  expect(running.ledger.list().filter((message) => message.to === "service:clock" && message.word === "cancel" && message.kind === "request" && message.from === "person:owner")).toHaveLength(1);
+  expect(recentMessages().filter((message) => message.to === "service:clock" && message.word === "cancel" && message.kind === "request" && message.from === "person:owner")).toHaveLength(1);
 });
 
 test("finished work opens its activity and can become a composer context chip", async ({ page }) => {
@@ -246,8 +292,8 @@ test("the composer compresses a static image and keeps a document intact", async
   const text = `E2E attachments ${Date.now()}`;
   await page.locator("#t").fill(text);
   await page.locator("#send").click();
-  await expect.poll(() => running.ledger.list().find((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)?.body.attachments?.length).toBe(2);
-  const message = running.ledger.list().find((item) => item.from === "person:owner" && item.word === "say" && item.body.text === text);
+  await expect.poll(() => recentMessages().find((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text)?.body.attachments?.length).toBe(2);
+  const message = recentMessages().find((item) => item.from === "person:owner" && item.word === "say" && item.body.text === text);
   expect(message.body.attachments[0].name).toBe("photo.jpg");
   expect(message.body.attachments[0].mime_type).toBe("image/jpeg");
   expect(Buffer.from(message.body.attachments[0].data, "base64").byteLength).toBeLessThan(originalSize);
@@ -412,12 +458,14 @@ test("local settings pause immediately and require a second tap to resume", asyn
   await expect(page.locator("#settingsAdmin")).toBeVisible();
   const before = running.ledger.list({ limit: 1000 }).filter((message) =>
     message.to === "service:admin" && ["pause", "resume"].includes(message.word)).length;
+  const beforeResumes = running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.to === "service:admin" && message.word === "resume").length;
   await page.locator("#settingsPause").click();
   await expect(page.locator("#settingsFeedback")).toHaveText("已暂停 Ash");
   await page.locator("#settingsResume").click();
   await expect(page.locator("#settingsResumeConfirmation")).toBeVisible();
   expect(running.ledger.list({ limit: 1000 }).filter((message) =>
-    message.to === "service:admin" && message.word === "resume")).toHaveLength(0);
+    message.to === "service:admin" && message.word === "resume")).toHaveLength(beforeResumes);
   await page.locator("#settingsResumeYes").click();
   await expect(page.locator("#settingsFeedback")).toHaveText("已恢复 Ash");
   const commands = running.ledger.list({ limit: 1000 }).filter((message) =>
