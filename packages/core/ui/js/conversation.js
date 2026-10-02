@@ -101,7 +101,13 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       const card = text(fragment, "div", item.ask.title, "card ask");
       text(card, "small", item.ask.detail);
       const expired = item.ask.state === "expired" || item.ask.state === "pending" && item.ask.expires_at <= Date.now();
-      if (expired) text(card, "small", "已过期");
+      // A decided card says how it ended instead of keeping buttons that look live but do nothing.
+      if (expired || item.ask.state !== "pending") {
+        const chosen = (item.ask.options || []).find((option) => option.id === item.ask.choice);
+        const outcome = expired ? "已过期" : item.ask.choice === "deny" ? "已拒绝" : item.ask.choice === "once" ? "已允许这一次" : chosen ? `已选择：${chosen.label}` : "已结束";
+        text(card, "small", outcome, "ask-outcome");
+        continue;
+      }
       const answer = askIntents?.get(item.ask.id);
       for (const option of item.ask.options || []) {
         const button = text(card, "button", option.label, "btn gray");

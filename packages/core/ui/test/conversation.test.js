@@ -103,8 +103,14 @@ test("file, image, and link cards open safe references and approval buttons expi
   await buttons[1].listeners.click();
   assert.deepEqual(choices, ["always"]);
   rendered = draw([{ type: "ask", ask: { ...ask, expires_at: Date.now() - 1 } }], { onAnswerAsk: async () => choices.push("unexpected") });
-  assert.ok(rendered.children[0].children.filter((node) => node.tag === "button").every((node) => node.disabled));
+  assert.equal(rendered.children[0].children.filter((node) => node.tag === "button").length, 0);
   assert.match(rendered.textContent, /已过期/);
+  // Answered elsewhere (a notification, another screen): the card states the outcome and offers no buttons.
+  for (const [choice, outcome] of [["deny", /已拒绝/], ["once", /已允许这一次/], ["always", /已选择：always/]]) {
+    rendered = draw([{ type: "ask", ask: { ...ask, state: "answered", choice } }], { onAnswerAsk: async () => choices.push("unexpected") });
+    assert.equal(rendered.children[0].children.filter((node) => node.tag === "button").length, 0, choice);
+    assert.match(rendered.textContent, outcome);
+  }
 });
 
 test("permission card delegates one owner tap to the native settings action", () => {

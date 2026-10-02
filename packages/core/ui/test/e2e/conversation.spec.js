@@ -597,14 +597,15 @@ test("an approval can allow once but becomes inert after its deadline", async ({
   await first.getByRole("button", { name: "允许这一次" }).click();
   await expect.poll(() => effects).toBe(1);
   expect(running.ledger.responseTo(allowed.id)?.body.ok).toBe(true);
+  await expect(first).toContainText("已允许这一次");
+  await expect(first.getByRole("button")).toHaveCount(0);
 
   const expired = await ask("expires");
   const second = page.locator("#log .card.ask").filter({ hasText: "expires" });
   await expect(second.getByRole("button", { name: "允许这一次" })).toBeEnabled();
   await page.clock.fastForward(601_000);
   await expect(second).toContainText("已过期");
-  await expect(second.getByRole("button", { name: "允许这一次" })).toBeDisabled();
-  await expect(second.getByRole("button", { name: "不允许" })).toBeDisabled();
+  await expect(second.getByRole("button")).toHaveCount(0);
   expect(running.ledger.responseTo(expired.id)).toBeNull();
   expect(effects).toBe(1);
 });
