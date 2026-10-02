@@ -1,5 +1,5 @@
-// The phone runs DSH without a file sandbox (danger-full-access). Door tools must still work there, and a
-// session holding workspace instructions must resume after a restart.
+// The phone runs DSH without a file sandbox (danger-full-access). Door tools must still work there, a
+// session holding workspace instructions must resume after a restart, and a reply is never sent twice.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -37,7 +37,8 @@ test("door tools run under the phone's full-access posture and the session resum
         event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ text: "tool said" }) } });
       } else {
         event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-        event("content_block_delta", { index: 0, delta: { type: "text_delta", text: "done" } });
+        // On the second turn the model closes by repeating what it just said through ash_say.
+        event("content_block_delta", { index: 0, delta: { type: "text_delta", text: user.includes("again") ? "tool  said\n" : "done" } });
       }
       event("content_block_stop", { index: 0 });
       event("message_delta", { delta: { stop_reason: toolUse ? "tool_use" : "end_turn" }, usage: { output_tokens: 5 } });
@@ -81,6 +82,8 @@ test("door tools run under the phone's full-access posture and the session resum
     assert.equal(completed(), 2);
     assert.equal(results.length, 2);
     assert.doesNotMatch(results[1], /approval no longer valid|is_error":true/);
+    const second = running.ledger.list().filter((message) => message.from === "agent:main" && message.word === "say" && message.kind === "request").slice(2);
+    assert.deepEqual(second.map((message) => message.body.text), ["tool said"], "the closing repeat of an ash_say is not sent twice");
   } finally {
     await running?.close();
     model.closeAllConnections(); await new Promise<void>((resolve) => model.close(() => resolve()));

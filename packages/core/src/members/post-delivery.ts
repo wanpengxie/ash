@@ -8,6 +8,7 @@ import { PostJournal, type DeliveryRecord } from "../world/post-journal";
 import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from "../world/router";
 
 const visible = wordContract("service:post", "visible")!;
+const hidden = wordContract("service:post", "hidden")!;
 const deliver = wordContract("service:post", "deliver")!;
 const service: TrustedRouteContext = { member: "service:post", transport: "service", transportPrincipal: "service:post", local: true, remote: false, ownerProxy: false };
 const error = (code: "bad_request" | "failed" | "offline", message: string): ResponseBody => ({ ok: false, error: { code, message } });
@@ -38,7 +39,7 @@ export function quietEnd(at: number, quiet: string, zone?: string): number {
   throw new Error("quiet interval has no release boundary");
 }
 
-export interface ScreenPresence { markVisible(screen: string): void; list(): { id: string; name: string; online: boolean }[]; visible(screen: string): boolean }
+export interface ScreenPresence { markVisible(screen: string): void; markHidden(screen: string): void; list(): { id: string; name: string; online: boolean }[]; visible(screen: string): boolean }
 export interface HostPresenter { present(value: HostPresentationV2): Promise<void>; hidePresentation(id: string): Promise<void> }
 export interface UiPresenter { present(message: Message): Promise<void> | void }
 /** Existing owner ledger stream is the in-app presenter, not a second output log. */
@@ -71,7 +72,7 @@ export class PostMember implements Member {
     this.journal = new PostJournal(options.ledger);
     this.ui = options.ui ?? new LedgerUiPresenter(options.ledger);
   }
-  words(): readonly WordSpec[] { return [visible, deliver]; }
+  words(): readonly WordSpec[] { return [visible, hidden, deliver]; }
   private now(): number { const now = (this.options.now ?? Date.now)(); if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("invalid post time"); return now; }
   private foreground(): boolean { return this.options.screens.list().some((entry) => entry.online && this.options.screens.visible(entry.id)); }
   private source(id: string, kind: DeliveryRecord["kind"]): Message | null {
@@ -94,6 +95,10 @@ export class PostMember implements Member {
     if (message.kind === "event" && message.word === "visible" && message.to === this.id && message.from.startsWith("screen:")) {
       this.options.screens.markVisible(message.from);
       this.publish(this.options.ledger.postWrite((_db, snapshot) => snapshot(this.journal.heldCount())));
+      return;
+    }
+    if (message.kind === "event" && message.word === "hidden" && message.to === this.id && message.from.startsWith("screen:")) {
+      this.options.screens.markHidden(message.from);
       return;
     }
     if (message.kind !== "request" || message.to !== this.id || message.word !== "deliver") return error("bad_request", "unsupported post word");

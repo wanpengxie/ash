@@ -228,6 +228,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     const messageId = `core-${input.turn}`;
     const seen = new Set<string>();
     const toolCalls = new Map<string, string>();
+    // Models often close with the same words they just sent through ash_say; the owner hears them once.
+    const said = new Set<string>();
+    const sameWords = (text: string) => text.replace(/\s+/gu, " ").trim();
     let pending = Promise.resolve();
     let emitError: unknown;
     let finish!: (value: { reason: "completed" | "error"; error?: string }) => void;
@@ -255,7 +258,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
         if (seen.has(key)) return;
         seen.add(key);
         for (const [index, part] of splitAssistantText(text).entries()) {
-          pending = pending.then(() => signal.aborted || emitError ? undefined : emit({ id: `${key}:${index}`, text: part }))
+          pending = pending.then(() => signal.aborted || emitError || said.has(sameWords(part)) ? undefined : emit({ id: `${key}:${index}`, text: part }))
             .catch((error) => { emitError ??= error; });
         }
       } else if (event.type === "tool/call" && this.router) {
@@ -265,6 +268,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
           const args = event.data?.arguments;
           if (typeof callId !== "string" || typeof name !== "string" || typeof args !== "string") throw new TypeError("invalid DSH tool call");
           toolCalls.set(callId, this.router.recordDshToolCall(input.turn, callId, name, args).id);
+          if (name === "ash_say") {
+            try { const text = (JSON.parse(args) as { text?: unknown }).text; if (typeof text === "string") said.add(sameWords(text)); } catch { /* the tool reports bad arguments */ }
+          }
         } catch (error) { emitError ??= error; }
       } else if (event.type === "tool/result" && this.router) {
         try {

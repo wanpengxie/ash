@@ -133,7 +133,7 @@ test("each inbound word rejects a schema-violating body from its authorized send
       "person:owner/say": w.agent, "person:owner/react": w.agent, "person:owner/show": w.agent, "person:owner/ask": w.agent,
       "screen:*/ui.open": w.agent,
       "service:clock/set": w.owner, "service:clock/cancel": w.owner, "service:clock/list": w.owner,
-      "service:post/deliver": w.service("service:work"), "service:post/visible": w.screen,
+      "service:post/deliver": w.service("service:work"), "service:post/visible": w.screen, "service:post/hidden": w.screen,
       "service:self/read": w.owner, "service:self/write": w.owner, "service:self/append": w.owner, "service:self/apply_plan": w.owner,
       "service:self/rollback": w.owner, "service:self/history": w.owner,
       "service:work/run": w.owner, "service:work/runs": w.owner,
@@ -201,6 +201,7 @@ test("a real scenario writes only contract-conforming messages and covers every 
     // Presence and visibility from a registered screen.
     await world_.send(w.screen, { to: "agent:main", kind: "event", word: "typing", body: {} });
     await world_.send(w.screen, { to: "service:post", kind: "event", word: "visible", body: {} });
+    await world_.send(w.screen, { to: "service:post", kind: "event", word: "hidden", body: {} });
     // Managed file change.
     const read = await world_.send(w.owner, { to: "service:self", kind: "request", word: "read", body: { path: "HEARTBEAT.md" }, wait: true });
     const expected = (read.reply!.body.result as { hash?: string } | undefined)?.hash ?? null;

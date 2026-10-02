@@ -86,6 +86,7 @@ export class ScreenRegistry {
   valid(token: string): boolean { return Boolean(this.registrations.get(token) && this.now() < this.registrations.get(token)!.expiresAt); }
   renew(token: string): void { const entry = this.registrations.get(token); if (entry) { entry.expiresAt = this.now() + SCREEN_REGISTRATION_TTL_MS; entry.visibleAt = this.now(); } }
   markVisible(screen: string): void { const entry = this.find(screen); if (entry && entry.connections > 0) entry.visibleAt = this.now(); }
+  markHidden(screen: string): void { const entry = this.find(screen); if (entry) entry.visibleAt = null; }
   connect(token: string): void { const entry = this.registrations.get(token); if (entry) entry.connections++; }
   disconnect(token: string): void {
     const entry = this.registrations.get(token);

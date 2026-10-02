@@ -125,7 +125,7 @@ class CoreService : Service() {
                     unhealthySince = 0L
                     if (state != "running") Notifications.updateService(this, "在线")
                     if (state != "running") {
-                        deviceSense?.retryBattery()
+                        deviceSense?.retryPending()
                         calendarSense?.refresh()
                     }
                     state = "running"

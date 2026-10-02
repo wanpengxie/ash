@@ -274,6 +274,8 @@ export function boot({ uiTransport } = {}) {
   input.addEventListener("input", () => { void typing(); });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) { void visible(); void typing(); }
+    // Leaving the app must not keep deliveries in-app for the rest of the presence window.
+    else if (net.token) void net.sendEvent("service:post", "hidden");
   });
   const visibleTimer = setInterval(() => { if (!document.hidden) void visible(); }, 30_000);
   const typingTimer = setInterval(() => { if (!document.hidden) void typing(); }, 3_000);

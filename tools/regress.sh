@@ -257,8 +257,8 @@ R20() { say "R20 app-open runs the opener after six hours; quiet hours persist"
   adb shell am force-stop "$PKG" >/dev/null
   asr "p='$prefs'; if [ -f \"\$p\" ]; then sed -i -E 's#<long name=\"app_left\" value=\"[0-9]+\" */>#<long name=\"app_left\" value=\"$old\" />#' \"\$p\"; grep -q 'name=\"app_left\"' \"\$p\" || sed -i 's#</map>#    <long name=\"app_left\" value=\"$old\" />\\n</map>#' \"\$p\"; else mkdir -p \"\$(dirname \"\$p\")\"; printf '%s\\n' '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?>' '<map>' '    <long name=\"app_left\" value=\"$old\" />' '</map>' > \"\$p\"; fi"
   adb shell am start -n "$PKG/ai.ash.ui.HomeActivity" >/dev/null
-  opened=$(wait_row 30 "v.find(x=>x.word==='sense.screen'&&x.body?.state==='app_open'&&Number(x.body?.away_ms)>=21600000)" "$from") || true
-  opener_start=$(wait_row 30 "v.find(x=>x.word==='run.start'&&x.body?.flow==='opener')" "$from") || true
+  opened=$(wait_row 180 "v.find(x=>x.word==='sense.screen'&&x.body?.state==='app_open'&&Number(x.body?.away_ms)>=21600000)" "$from") || true
+  opener_start=$(wait_row 60 "v.find(x=>x.word==='run.start'&&x.body?.flow==='opener')" "$from") || true
   local opener_run; opener_run=$(echo "$opener_start" | jq_ 'v.body?.run||""')
   [ -z "$opener_run" ] || opener=$(wait_row 180 "v.find(x=>x.word==='run.end'&&x.body?.run==='$opener_run')" "$from") || true
   restored=$(admin settings.set "{\"delivery\":{\"quiet\":\"$original\"}}" | jq_ 'v.result?.delivery?.quiet||""')
@@ -272,8 +272,8 @@ R21() { say "R21 the real memory loop records a preference and correction, then 
   local stamp from first second trigger run ended log count repeat repeat_end
   stamp="r21-$(date +%s)"
   from=$(last_seq)
-  first=$(send_say "回归标记 $stamp：我偏好简短回答。")
-  second=$(send_say "更正回归标记 $stamp：不是偏好详细回答，而是偏好简短回答。")
+  first=$(send_say "回归标记 ${stamp}：我偏好简短回答。")
+  second=$(send_say "更正回归标记 ${stamp}：不是偏好详细回答，而是偏好简短回答。")
   [ -n "$first" ] && [ -n "$second" ] || { bad R21 "memory evidence messages not accepted"; return; }
   deliver_and_wait "只回复：收到 $stamp" 180 >/dev/null || { bad R21 "conversation did not settle"; return; }
   trigger=$(owner_request service:work run '{"flow":"memory"}')

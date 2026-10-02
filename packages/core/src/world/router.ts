@@ -345,7 +345,7 @@ export class WorldRouter {
   private stampedSender(ctx: TrustedRouteContext, request: SendRequestV2): { from: string; origin?: Message["origin"] } {
     if (ctx.transport === "web_ui") {
       const screen = ctx.screenId!;
-      if ((request.to === "agent:main" && request.word === "typing") || (request.to === "service:post" && request.word === "visible")) return { from: screen, origin: { screen, label: ctx.screenLabel! } };
+      if ((request.to === "agent:main" && request.word === "typing") || (request.to === "service:post" && (request.word === "visible" || request.word === "hidden"))) return { from: screen, origin: { screen, label: ctx.screenLabel! } };
       if (request.kind === "response" && request.word === "ui.open") return { from: screen, origin: { screen, label: ctx.screenLabel! } };
       return { from: "person:owner", origin: { screen, label: ctx.screenLabel! } };
     }
@@ -401,13 +401,13 @@ export class WorldRouter {
       fail("forbidden", "gate change requires current local owner");
     if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
-    if ((request.word === "typing" || request.word === "visible") && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
+    if (["typing", "visible", "hidden"].includes(request.word) && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
     if (request.to === "service:post" && request.word === "deliver" && ctx.transport !== "service") fail("forbidden", "delivery is internal only");
     // Workers are single judgement steps of a background run; nobody else may spend model calls on them.
     if (request.to?.startsWith("worker:") && !(ctx.transport === "service" && from === "service:work" && ctx.local && !ctx.remote))
       fail("forbidden", "workers only take requests from background work");
     if (request.to === "service:senses" && request.word.startsWith("sense.") && (ctx.transport !== "phone" || from !== "device:phone")) fail("forbidden", "senses require phone identity");
-    if (ctx.transport === "web_ui" && request.kind === "event" && !["typing", "visible"].includes(request.word)) fail("forbidden", "screen cannot emit internal events");
+    if (ctx.transport === "web_ui" && request.kind === "event" && !["typing", "visible", "hidden"].includes(request.word)) fail("forbidden", "screen cannot emit internal events");
   }
 
   private validateRequestShape(request: SendRequestV2): void {

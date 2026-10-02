@@ -110,6 +110,7 @@ add("service:clock", "clock.fired", "event", obj({ timer_id: id, scheduled_at: {
 { direction: "out", description: "Durable scheduled occurrence outcome; dispatched records router acceptance, not external completion." });
 add("service:post", "deliver", "request", obj({ message_id: id, kind: choice("reply", "offer", "heads_up", "approval", "due"), dedupe_key: deliveryDedupeKey }, ["message_id", "kind"]), obj({ channel: choice("inapp", "notification", "held", "dropped") }, ["channel"]), { audience: "owner" });
 add("service:post", "visible", "event", empty, undefined, { audience: "owner", description: "Presence from the authenticated screen only." });
+add("service:post", "hidden", "event", empty, undefined, { audience: "owner", description: "The authenticated screen left the foreground; deliveries notify again at once." });
 add("service:post", "post.changed", "event", obj({ held: { type: "integer", minimum: 0 } }, ["held"]), undefined, { direction: "out", audience: "owner", label: "Updating deliveries", description: "Authoritative current held-delivery count for the owner; never infer a count from deliver results." });
 add("service:post", "post.delivery", "event", obj({ message_id: id, state: choice("held", "released", "dropped") }, ["message_id", "state"]), undefined,
   { direction: "out", audience: "owner", label: "Updating message visibility", description: "Per-message chat visibility for a new offer or heads-up; released is in-app visibility, not a host notification." });
