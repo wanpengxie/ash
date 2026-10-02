@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+#!/usr/bin/env node
 import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
 
 // tools/regress-remote.mjs
@@ -493,7 +494,72 @@ async function web() {
     });
   }
 }
+async function cross() {
+  const pairing = await pair(`regress cross ${Date.now() % 1e5}`);
+  const controller = new AbortController();
+  const local = new AbortController();
+  try {
+    const cookie = await cookieFor(pairing);
+    const remoteStream = await fetch(`${GW}/api/stream?follow=true&label=Mac%20browser`, { headers: { cookie, accept: "text/event-stream" }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12e4)]) });
+    const remoteEvents = frames(remoteStream)[Symbol.asyncIterator]();
+    let remote;
+    while (!remote) {
+      const e = await remoteEvents.next();
+      if (e.done) throw new Error("remote stream ended");
+      if (e.value.type === "screen.registered") remote = e.value.data;
+    }
+    const localStream = await fetch(`${process.env.ASH_URL}/api/stream?follow=true&label=Phone%20screen`, { headers: { authorization: `Bearer ${process.env.ASH_TOKEN}`, accept: "text/event-stream" }, signal: AbortSignal.any([local.signal, AbortSignal.timeout(12e4)]) });
+    const localEvents = frames(localStream)[Symbol.asyncIterator]();
+    let phone;
+    while (!phone) {
+      const e = await localEvents.next();
+      if (e.done) throw new Error("local stream ended");
+      if (e.value.type === "screen.registered") phone = e.value.data;
+    }
+    const waitFor = async (events, match, label) => {
+      const end = Date.now() + 3e4;
+      while (Date.now() < end) {
+        const e = await Promise.race([events.next(), sleep(3e4).then(() => ({ done: true }))]);
+        if (e.done) break;
+        if (e.value.data && match(e.value.data)) return e.value.data;
+      }
+      throw new Error(`${label} was not seen`);
+    };
+    const fromPhone = `phone-${randomUUID().slice(0, 6)}`, fromMac = `mac-${randomUUID().slice(0, 6)}`;
+    const sendLocal = await fetch(`${process.env.ASH_URL}/api/send`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${process.env.ASH_TOKEN}`, "Ash-Screen": phone.token, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: `\u53EA\u56DE\u590Dok ${fromPhone}` }, client_id: randomUUID() })
+    });
+    if (!sendLocal.ok) throw new Error(`phone send HTTP ${sendLocal.status}`);
+    const seenOnMac = await waitFor(remoteEvents, (row) => row.word === "say" && row.body?.text?.includes(fromPhone), "the phone's message on the Mac browser");
+    const sendRemote = await fetch(`${GW}/api/send`, {
+      method: "POST",
+      headers: { cookie, origin: new URL(GW).origin, "Ash-Screen": remote.token, "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: `\u53EA\u56DE\u590Dok ${fromMac}` }, client_id: randomUUID() })
+    });
+    if (!sendRemote.ok) throw new Error(`mac send HTTP ${sendRemote.status}`);
+    const seenOnPhone = await waitFor(localEvents, (row) => row.word === "say" && row.body?.text?.includes(fromMac), "the Mac browser's message on the phone");
+    const adminAttempt = await fetch(`${GW}/api/send`, {
+      method: "POST",
+      headers: { cookie, origin: new URL(GW).origin, "Ash-Screen": remote.token, "content-type": "application/json" },
+      body: JSON.stringify({ to: "service:admin", kind: "request", word: "pause", body: {}, client_id: randomUUID() })
+    });
+    console.log(JSON.stringify({
+      phone_message_on_mac: { origin: seenOnMac.origin?.label ?? null },
+      mac_message_on_phone: { origin: seenOnPhone.origin?.label ?? null },
+      mac_admin_status: adminAttempt.status,
+      mac_management: remote.local_management
+    }));
+  } finally {
+    controller.abort();
+    local.abort();
+    await admin("gateway.op", { op: "revoke", device: `device:${pairing.id}` }).catch(() => {
+    });
+  }
+}
 if (cmd === "web") await web();
+else if (cmd === "cross") await cross();
 else if (cmd === "pair") console.log(JSON.stringify(await pair(`regress offline ${Date.now() % 1e5}`)));
 else if (cmd === "status") {
   const pairing = await stdin();

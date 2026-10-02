@@ -107,9 +107,13 @@ R6() { say "R6 the main agent answers"
   echo "    reply: ${r:0:200}"
   if echo "$r" | grep -qi "ash" && echo "$r" | grep -q "ash-home"; then ok "R6 replies as Ash, working in ash-home"; else bad R6 "unexpected reply"; fi
 }
+# A fresh one-time pairing code from the app itself (what the settings page's 生成配对码 button does).
+new_ticket() { admin gateway.op '{"op":"ticket"}' | jq_ 'v.result?.ticket||v.ticket||""'; }
 R7() { say "R7 web through the gateway (a temporary paired browser)"
-  [ -n "${GATEWAY_URL:-}" ] && [ -n "${GATEWAY_TICKET:-}" ] || { bad R7 "GATEWAY_URL/TICKET not set"; return; }
+  [ -n "${GATEWAY_URL:-}" ] || { bad R7 "GATEWAY_URL not set"; return; }
   fwd
+  GATEWAY_TICKET=$(new_ticket); [ -n "$GATEWAY_TICKET" ] || { bad R7 "the app produced no pairing code"; return; }
+  export GATEWAY_TICKET
   if ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" web; then ok "R7 a paired browser uses Ash through the gateway (UI, message, streamed answer)"; else bad R7; fi
 }
 R8() { say "R8 the agent uses the paired laptop"
@@ -131,8 +135,10 @@ R8() { say "R8 the agent uses the paired laptop"
   if [ -f "$share/$name" ]; then ok "R8 the agent wrote $share/$name on the laptop through ash"; rm -f "$share/$name"; else bad R8 "file not on the laptop"; fi
 }
 R9() { say "R9 phone offline → the browser is told; back → reconnects"
-  [ -n "${GATEWAY_URL:-}" ] && [ -n "${GATEWAY_TICKET:-}" ] || { bad R9 "GATEWAY_URL/TICKET not set"; return; }
+  [ -n "${GATEWAY_URL:-}" ] || { bad R9 "GATEWAY_URL not set"; return; }
   fwd
+  GATEWAY_TICKET=$(new_ticket); [ -n "$GATEWAY_TICKET" ] || { bad R9 "the app produced no pairing code"; return; }
+  export GATEWAY_TICKET
   local pairfile; pairfile=$(mktemp "${TMPDIR:-/tmp}/ash-regress-browser.XXXXXX") || { bad R9 "cannot create temporary pair state"; return; }
   chmod 600 "$pairfile"
   ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" pair > "$pairfile" || { rm -f "$pairfile"; bad R9 "pairing failed"; return; }
