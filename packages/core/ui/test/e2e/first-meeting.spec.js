@@ -192,7 +192,8 @@ for (const starter of ["organize", "reminder", "preference"]) {
       for await (const chunk of request) raw += chunk;
       const input = JSON.parse(raw);
       captured.push(input);
-      const next = scripted.shift();
+      const latest = JSON.stringify((input.messages ?? []).filter((item) => item.role === "user").at(-1)?.content ?? "");
+      const next = latest.includes("mind wake") || latest.includes("worker:") ? null : scripted.shift();
       if (next === undefined) return void response.writeHead(500).end("unexpected model turn");
       response.writeHead(200, { "content-type": "text/event-stream" });
       const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -251,7 +252,7 @@ for (const starter of ["organize", "reminder", "preference"]) {
       expect(cards).toHaveLength(1);
       expect(messages().filter((item) => item.from === "person:owner" && item.body.in_reply_to === cards[0].id && item.body.option_id === starter)).toHaveLength(1);
       expect(JSON.stringify(captured)).toContain(options.find((item) => item.id === starter).text);
-      expect(scripted).toHaveLength(0);
+      await expect.poll(() => scripted.length).toBe(0);
     } finally {
       await running?.close();
       model.closeAllConnections();
