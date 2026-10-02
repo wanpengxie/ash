@@ -237,7 +237,7 @@ tap_notification_action() {
     xy=$(ui_center "$1")
     [ -n "$xy" ] && break
     title=$(ui_center "${2:-需要你确认}")
-    [ -z "$title" ] || adb shell input swipe $title ${title% *} $(( ${title#* } + 400 )) 300
+    [ -z "$title" ] || { local expand; expand=$(adb exec-out cat /sdcard/ash-regress-ui.xml | Y="${title#* }" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const y=+process.env.Y;for(const n of s.match(/<node [^>]*>/g)||[]){if(!/ content-desc="Expand"/.test(n))continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b&&+b[2]<=y&&y<=+b[4]){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})'); [ -z "$expand" ] || adb shell input tap $expand; }
     sleep 1
   done
   adb shell rm -f /sdcard/ash-regress-ui.xml >/dev/null 2>&1
