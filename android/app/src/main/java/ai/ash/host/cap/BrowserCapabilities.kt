@@ -100,8 +100,11 @@ object BrowserCapabilities {
         schema = schema("reason" to prop("string", "One short sentence for the owner: what they need to do there.", required = true)),
     ) { ctx, args -> guarded {
         if (BrowserSession.current() == null) throw BrowserSession.Failure("no page is open; use browser.open first")
-        Notifications.browserHandoff(ctx, BrowserArguments.required(args.opt("reason"), "reason"))
-        CapResult.text("The owner was asked to open the browser. Wait for them to say they are done, then use browser.read.")
+        val how = Notifications.browserHandoff(ctx, BrowserArguments.required(args.opt("reason"), "reason"))
+        CapResult.text(
+            if (how == "in_front") "The browser is in front of the owner now. Wait for them to say they are done, then use browser.read."
+            else "The owner is not in the Ash app, so it was sent as an urgent notification (it takes over a locked screen). Wait for them to say they are done, then use browser.read.",
+            JSONObject().put("shown", how))
     } }
 
     private val close = Cap(

@@ -35,6 +35,9 @@ class BrowserActivity : Activity() {
         Thread { BrowserSession.attachTo(frame, this) }.start()
     }
 
+    override fun onResume() { super.onResume(); ai.ash.host.AppState.browserVisible = true }
+    override fun onPause() { ai.ash.host.AppState.browserVisible = false; super.onPause() }
+
     override fun onDestroy() {
         // Hand the page back to the agent; it stays open with its cookies.
         Thread { BrowserSession.detach() }.start()

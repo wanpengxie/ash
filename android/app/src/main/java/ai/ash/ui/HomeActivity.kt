@@ -197,10 +197,12 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ai.ash.host.AppState.homeVisible = true
         CoreService.start(this, CoreService.ACTION_APP_OPEN)
     }
 
     override fun onPause() {
+        ai.ash.host.AppState.homeVisible = false
         CoreService.start(this, CoreService.ACTION_APP_LEFT)
         super.onPause()
     }

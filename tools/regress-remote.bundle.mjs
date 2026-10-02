@@ -557,7 +557,43 @@ async function cross() {
     });
   }
 }
+async function hold() {
+  const seconds = Number(process.env.HOLD_SECONDS ?? 120);
+  const pairing = await pair(`regress hold ${Date.now() % 1e5}`);
+  const controller = new AbortController();
+  try {
+    const cookie = await cookieFor(pairing);
+    const stream = await fetch(`${GW}/api/stream?follow=true&label=Computer%20browser`, { headers: { cookie, accept: "text/event-stream" }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(seconds * 1e3 + 15e3)]) });
+    const events = frames(stream)[Symbol.asyncIterator]();
+    let remote;
+    while (!remote) {
+      const e = await events.next();
+      if (e.done) throw new Error("stream ended");
+      if (e.value.type === "screen.registered") remote = e.value.data;
+    }
+    console.log("holding", remote.screen);
+    const end = Date.now() + seconds * 1e3;
+    (async () => {
+      while (Date.now() < end) {
+        await events.next().catch(() => ({}));
+      }
+    })();
+    while (Date.now() < end) {
+      await fetch(`${GW}/api/send`, {
+        method: "POST",
+        headers: { cookie, origin: new URL(GW).origin, "Ash-Screen": remote.token, "content-type": "application/json" },
+        body: JSON.stringify({ to: "service:post", kind: "event", word: "visible", body: {}, client_id: randomUUID() })
+      });
+      await sleep(2e4);
+    }
+  } finally {
+    controller.abort();
+    await admin("gateway.op", { op: "revoke", device: `device:${pairing.id}` }).catch(() => {
+    });
+  }
+}
 if (cmd === "web") await web();
+else if (cmd === "hold") await hold();
 else if (cmd === "cross") await cross();
 else if (cmd === "pair") console.log(JSON.stringify(await pair(`regress offline ${Date.now() % 1e5}`)));
 else if (cmd === "status") {

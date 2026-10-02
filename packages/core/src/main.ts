@@ -29,6 +29,7 @@ import { JevReflexClient } from "./members/reflex-jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
 import { WorkMember } from "./members/work";
+import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EchoTurnRunner } from "./runtimes/echo";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
@@ -105,6 +106,8 @@ export async function startOwner(config: Config): Promise<Running> {
   // Probe before migrating: old host protocols must fail closed without modifying the DB.
   const hostLink = config.host ? await HostDeviceLink.probe(config.host) : null;
   const worldConfig = resolveWorldConfigV2(config as unknown as Record<string, unknown>);
+  // Filled once the edge exists; the first turn cannot run before it.
+  let screensNow = () => "";
   const delivery = worldConfig.delivery;
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const tokens = loadTokens(config);
@@ -147,7 +150,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new GateMember(ledger, world, members));
     world.enableDurableGate();
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, env: config.dsh!.env });
-    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => deviceSummary(members)) : new EchoTurnRunner();
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
       ...(dsh ? { mind: () => mind } : {}),
@@ -206,6 +209,7 @@ export async function startOwner(config: Config): Promise<Running> {
     });
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
+    screensNow = () => ownerScreensLine(edge.screens);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       gatewayState: () => link ? { configured: true, ...link.state() } : { configured: false },
