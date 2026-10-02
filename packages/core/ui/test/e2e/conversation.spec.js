@@ -291,6 +291,37 @@ test("finished work opens its activity and can become a composer context chip", 
   await expect(page.locator("#context .context-chip")).toHaveCount(0);
 });
 
+test("live progress shows two human steps, then folds into a turn-grouped activity without raw tool data", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const text = `Progress topic ${Date.now()}`;
+  await page.locator("#t").fill(text);
+  await page.locator("#send").click();
+  await expect(page.locator("#log .msg.ai").filter({ hasText: text })).toHaveCount(1);
+  const owner = recentMessages().find((message) => message.from === "person:owner" && message.word === "say" && message.body.text === text);
+  expect(owner?.id).toBeTruthy();
+  const turn = `t_progress_${Date.now()}`;
+  const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false, turn };
+  await running.world.send(agent, { to: null, kind: "event", word: "turn.start", body: { turn, ids: [owner.id] } });
+  await running.world.send(agent, { to: null, kind: "event", word: "status", body: { state: "working", text: "正在理解问题" } });
+  await running.world.send(agent, { to: "service:self", kind: "request", word: "read", body: { path: "USER.md" }, wait: true });
+  await running.world.send(agent, { to: null, kind: "event", word: "status", body: { state: "working", text: "正在核对资料" } });
+  await running.world.send(agent, { to: null, kind: "event", word: "status", body: { state: "working", text: "正在整理答复" } });
+  const progress = page.locator(`#progress .progress-button[data-turn="${turn}"]`);
+  await expect(progress).toContainText("正在核对资料 · 正在整理答复");
+  await expect(progress).not.toContainText("正在理解问题");
+  await expect(progress).not.toContainText(/service:self|USER\.md|\bread\b/);
+  await running.world.send(agent, { to: null, kind: "event", word: "turn.end", body: { turn, reason: "completed" } });
+  await expect(progress).toContainText(/做了 \d+ 步 · \d+ 秒 · 查看活动/);
+  await progress.click();
+  const activity = page.locator(`#agentPanel [data-tab=activity] .activity-turn[data-turn="${turn}"]`);
+  await expect(activity).toContainText(text);
+  await expect(activity.locator(".activity-step")).toHaveCount(3);
+  await expect(activity).not.toContainText(/service:self|USER\.md|\bread\b/);
+  await expect(page.locator("#log")).not.toContainText(/service:self|USER\.md|\bread\b/);
+});
+
 test("the composer compresses a static image and keeps a document intact", async ({ page }) => {
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
