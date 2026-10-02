@@ -141,3 +141,17 @@ test("each paid worker attempt records measured usage, including an invalid firs
     ]);
   } finally { ledger.close(); }
 });
+
+test("catalog-priced worker attempt records an amount and its source", async () => {
+  const ledger = await Ledger.open(join(mkdtempSync(join(tmpdir(), "ash-worker-price-")), "ledger.db"));
+  try {
+    const m = model({ ...completion({ claims: [claim] }), usage: {
+      provider: "test", model: "priced", inputTokens: 100, outputTokens: 20, costUsd: 0.001,
+    } });
+    const result = await new WorkerMember("extract", m, ledger).handle(message(), context);
+    assert.equal(result.ok, true);
+    const item = ledger.list({ after: 0, limit: 10 }).find((row) => row.word === "worker.usage");
+    assert.equal(item?.body.cost_usd, 0.001);
+    assert.equal(item?.body.cost_source, "dsh-bundled-model-catalog");
+  } finally { ledger.close(); }
+});

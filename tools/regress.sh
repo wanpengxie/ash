@@ -40,6 +40,16 @@ control() { adb shell am broadcast -n $PKG/ai.ash.host.ControlReceiver -a "ai.as
 rows() { api GET "/api/stream?follow=false&limit=1000&after=${1:-0}" | sed -n 's/^data: //p' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const line of s.split("\n")){try{const row=JSON.parse(line);if(Number.isSafeInteger(row.seq)&&row.id&&row.word)console.log(JSON.stringify(row))}catch{}}})'; }
 last_seq() { api GET '/api/stream?follow=false&limit=1' | sed -n 's/^id: //p' | tail -1 | tr -d '\r'; }
 admin() { local word=$1 body=$2; api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:admin",kind:"request",word:process.argv[1],body:JSON.parse(process.argv[2]),wait:true,client_id:crypto.randomUUID()}))' "$word" "$body")" | jq_ 'v.reply?.body||{}'; }
+send_say() { local id="regress-$RANDOM$RANDOM"; api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"agent:main",kind:"request",word:"say",body:{text:process.argv[1]},client_id:process.argv[2]}))' "$1" "$id")" | jq_ 'v.id||""'; }
+wait_row() { # wait_row SECONDS JS_EXPRESSION, where v is the array of new ledger rows
+  local end=$((SECONDS+$1)) after="${3:-0}" found
+  while [ "$SECONDS" -lt "$end" ]; do
+    found=$(rows "$after" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(x=>JSON.parse(x));const r=new Function("v","return ("+process.argv[1]+")")(v);if(r)process.stdout.write(JSON.stringify(r))})' "$2")
+    [ -n "$found" ] && { echo "$found"; return 0; }
+    sleep 1
+  done
+  return 1
+}
 deliver_and_wait() { # deliver_and_wait TEXT SECONDS [ATTACHMENTS_JSON] → agent reply text
   wait_online 300 || return 1
   local from; from=$(last_seq)
@@ -164,6 +174,44 @@ R16() { say "R16 plugins: disable and enable through ash settings (DSH's plugin 
   local final; final=$(admin plugins.list '{}' | jq_ "v.result?.plugins?.find(p=>p.entryId==='$plugin')?.enabled")
   echo "    installed plugin: $before → $after → $final"
   if [ "$changed" = true ] && [ "$restored" = true ] && [ "$after" != "$before" ] && [ "$final" = "$before" ]; then ok "R16 installed plugin switches through ash settings"; else bad R16 "plugin switch or restoration unconfirmed"; fi
+}
+
+R17() { say "R17 three messages sent during one active turn become one next batch"
+  wait_online 300 || { bad R17 "agent not online"; return; }
+  local from anchor active ids=() next read
+  from=$(last_seq); anchor=$(send_say "请详细分析一个有多个步骤的问题：如何给新用户设计一周的个人助手使用体验？" )
+  [ -n "$anchor" ] || { bad R17 "first message not accepted"; return; }
+  active=$(wait_row 30 "v.find(x=>x.word==='turn.start'&&x.body?.ids?.includes('$anchor'))" "$from") || { bad R17 "first turn did not start"; return; }
+  for text in "补充一：重点是首次使用。" "补充二：要考虑提醒。" "补充三：请用中文回答。"; do
+    local id; id=$(send_say "$text"); [ -n "$id" ] || { bad R17 "supplement not accepted"; return; }; ids+=("$id")
+  done
+  local batch; batch=$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' "${ids[@]}")
+  local too_late; too_late=$(rows "$from" | ASH_ANCHOR="$anchor" ASH_LAST="${ids[2]}" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(JSON.parse);const start=v.find(x=>x.word==="turn.start"&&x.body?.ids?.includes(process.env.ASH_ANCHOR));const end=v.find(x=>x.word==="turn.end"&&x.body?.turn===start?.body?.turn);const last=v.find(x=>x.id===process.env.ASH_LAST);process.stdout.write(String(Boolean(end&&last&&end.ts<=last.ts)))})')
+  [ "$too_late" = false ] || { bad R17 "first turn ended before supplements were sent"; return; }
+  next=$(ASH_IDS="$batch" wait_row 300 "v.find(x=>x.word==='turn.start'&&JSON.parse(process.env.ASH_IDS).every(id=>x.body?.ids?.includes(id)))" "$from") || { bad R17 "three supplements did not enter one turn"; return; }
+  read=$(ASH_IDS="$batch" wait_row 30 "v.find(x=>x.word==='read'&&JSON.parse(process.env.ASH_IDS).every(id=>x.body?.ids?.includes(id)))" "$from") || { bad R17 "not all three messages marked read"; return; }
+  local first_turn next_turn; first_turn=$(echo "$active" | jq_ 'v.body.turn'); next_turn=$(echo "$next" | jq_ 'v.body.turn')
+  if [ -n "$first_turn" ] && [ "$next_turn" != "$first_turn" ]; then ok "R17 three busy supplements read together in the next turn"; else bad R17 "supplements joined the wrong turn"; fi
+}
+
+R18() { say "R18 explicit stop cancels the active turn, without stopping the next turn"
+  wait_online 300 || { bad R18 "agent not online"; return; }
+  local from anchor active stop decision ended next
+  from=$(last_seq); anchor=$(send_say "请详细分析一个有多个步骤的问题：如何给新用户设计一周的个人助手使用体验？")
+  [ -n "$anchor" ] || { bad R18 "first message not accepted"; return; }
+  active=$(wait_row 30 "v.find(x=>x.word==='turn.start'&&x.body?.ids?.includes('$anchor'))" "$from") || { bad R18 "first turn did not start"; return; }
+  local turn; turn=$(echo "$active" | jq_ 'v.body.turn')
+  stop=$(send_say "停")
+  [ -n "$stop" ] || { bad R18 "stop message not accepted"; return; }
+  decision=$(wait_row 15 "v.find(x=>x.word==='reflex.judged'&&x.body?.message_id==='$stop')" "$from") || { bad R18 "no reflex decision"; return; }
+  ended=$(wait_row 15 "v.find(x=>x.word==='turn.end'&&x.body?.turn==='$turn')" "$from") || { bad R18 "active turn did not end"; return; }
+  next=$(wait_row 30 "v.find(x=>x.word==='turn.start'&&x.body?.ids?.includes('$stop'))" "$from") || { bad R18 "stop message was not admitted to the next turn"; return; }
+  local judged_at requested_at elapsed intent acted reason
+  judged_at=$(echo "$decision" | jq_ 'v.ts'); requested_at=$(rows "$from" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(JSON.parse);process.stdout.write(String(v.find(x=>x.id===process.argv[1])?.ts||""))})' "$stop")
+  elapsed=$((judged_at-requested_at)); intent=$(echo "$decision" | jq_ 'v.body.intent'); acted=$(echo "$decision" | jq_ 'v.body.acted'); reason=$(echo "$ended" | jq_ 'v.body.reason')
+  echo "    reflex: $intent acted=$acted, decision ${elapsed}ms, turn=$reason"
+  local next_turn; next_turn=$(echo "$next" | jq_ 'v.body.turn')
+  if [ "$intent" = stop ] && [ "$acted" = true ] && [ "$reason" = cancelled ] && [ "$next_turn" != "$turn" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -le 1000 ]; then ok "R18 explicit stop cancels active turn within 1s; stop message enters next turn"; else bad R18 "stop decision/turn/latency did not meet contract"; fi
 }
 
 adb get-state >/dev/null 2>&1 || { echo "no adb device"; exit 2; }

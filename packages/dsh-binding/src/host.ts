@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { WorldMembers } from "../../core/src/world/member";
 import type { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, type DoorAgent, type DoorOptions, type DshDoor } from "./door";
+import type { WorkerRates } from "../../core/src/workers/cost";
 
 export interface DshHostOptions { root: string; home: string; skillsRoot?: string; env?: Record<string, string> }
 export interface DshRootAgent extends DoorAgent {
@@ -177,6 +178,15 @@ export class DshHost {
 
   /** The worker's non-session llm service remains available without creating a model agent. */
   llm(): unknown { if (!this.ctx) throw new Error("DSH host not booted"); return this.ctx.get("llm"); }
+  /** Read prices from the model catalog shipped with this DSH install, never from a guessed rate table. */
+  async modelRates(provider: string, model: string): Promise<WorkerRates | null> {
+    const file = join(this.options.root, "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "all.js");
+    if (!existsSync(file)) return null;
+    try {
+      const catalog = await import(pathToFileURL(file).href) as { getBuiltinModel?: (provider: string, model: string) => { cost?: WorkerRates } | undefined };
+      return catalog.getBuiltinModel?.(provider, model)?.cost ?? null;
+    } catch { return null; }
+  }
   agentOptions(): { provider: string; model: string } | undefined {
     const selection = this.ctx?.get("agentDefaultModel")?.currentSelection?.();
     return selection ? { provider: selection.provider, model: selection.model } : undefined;

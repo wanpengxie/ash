@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WorldConfigV2 } from "../../sdk/src/config";
 import { dshWorkerModel } from "../src/workers";
-import type { DshHost } from "../src/host";
+import { DshHost } from "../src/host";
 
 const prompt = { system: "Synthetic background instruction", user: "Synthetic input" };
 
@@ -63,4 +63,34 @@ test("worker returns provider-reported token usage with the selected model", asy
   assert.deepEqual(await dshWorkerModel(host, () => ({ provider: "selected", model: "small" })).complete(prompt, new AbortController().signal), {
     text: "{}", finish: "stop", usage: { provider: "selected", model: "small", inputTokens: 12, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 0 },
   });
+});
+
+test("worker prices each call from the selected DSH model catalog route", async () => {
+  const selected: string[] = [];
+  const host = {
+    agentOptions: () => ({ provider: "default", model: "base" }),
+    modelRates: async (provider: string, model: string) => {
+      selected.push(`${provider}/${model}`);
+      return model === "known" ? { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 2.5,
+        tiers: [{ inputTokensAbove: 100, input: 4, output: 12, cacheRead: 1, cacheWrite: 5 }] } : null;
+    },
+    ctx: { get: () => ({ async *stream() {
+      yield { type: "usage", usage: { inputTokens: 80, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0 } };
+      yield { type: "finish", reason: { kind: "stop" } };
+    } }) },
+  } as unknown as DshHost;
+  const known = await dshWorkerModel(host, () => ({ provider: "test", model: "known" })).complete(prompt, new AbortController().signal);
+  assert.equal(known.usage?.costUsd, (80 * 4 + 20 * 12 + 30) / 1_000_000);
+  const unknown = await dshWorkerModel(host, () => ({ provider: "test", model: "unknown" })).complete(prompt, new AbortController().signal);
+  assert.equal(unknown.usage?.costUsd, undefined, "an unpriced model must not be recorded as free");
+  assert.deepEqual(selected, ["test/known", "test/unknown"]);
+});
+
+test("installed DSH catalog supplies a known model price and leaves unknown models unpriced", {
+  skip: !process.env.ASH_TEST_DSH_ROOT,
+}, async () => {
+  const host = new DshHost({ root: process.env.ASH_TEST_DSH_ROOT!, home: "/tmp/ash-unused-catalog-home" });
+  const known = await host.modelRates("anthropic", "claude-haiku-4-5");
+  assert.ok(known && known.input > 0 && known.output > 0);
+  assert.equal(await host.modelRates("unknown-provider", "unknown-model"), null);
 });

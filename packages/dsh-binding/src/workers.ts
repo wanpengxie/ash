@@ -1,5 +1,5 @@
 import type { WorkerModel } from "../../core/src/workers/llm";
-import type { WorkerUsage } from "../../core/src/workers/cost";
+import { estimateWorkerCost, type WorkerUsage } from "../../core/src/workers/cost";
 import type { WorldConfigV2 } from "../../sdk/src/config";
 import type { DshHost } from "./host";
 
@@ -31,6 +31,11 @@ export function dshWorkerModel(host: DshHost, configuredModel: () => WorldConfig
             cacheReadTokens: chunk.usage.cacheReadTokens ?? 0, cacheWriteTokens: chunk.usage.cacheWriteTokens ?? 0 };
         }
         if (chunk.type === "finish") stopped = chunk.reason?.kind === "stop";
+      }
+      if (usage && host.modelRates) {
+        const rates = await host.modelRates(model.provider, model.model);
+        const cost = rates && estimateWorkerCost(usage, rates);
+        if (cost !== null && cost !== undefined) usage.costUsd = cost;
       }
       return { text, finish: stopped && !toolOutput ? "stop" : "incomplete", ...(usage ? { usage } : {}) };
     },
