@@ -216,7 +216,10 @@ worker("opener", obj({ away_ms: num, last_topic: str, pending: array(any), chang
 // Management bodies retain the current extension payloads until the edge migrates.
 for (const [word, input, result] of [
   ["settings.get", empty, obj({}, [], true)], ["settings.set", obj({}, [], true), obj({}, [], true)],
-  ["plugins.list", empty, obj({}, [], true)], ["plugins.op", obj({}, [], true), obj({}, [], true)],
+  ["plugins.list", empty, obj({}, [], true)], ["plugins.op", { oneOf: [
+    obj({ op: choice("enable", "disable"), name: nonempty }, ["op", "name"]),
+    obj({ op: { const: "plugin" }, id: nonempty, enabled: bool }, ["op", "id", "enabled"]),
+  ] }, obj({}, [], true)],
   ["gateway.state", empty, obj({}, [], true)], ["gateway.op", obj({}, [], true), obj({}, [], true)],
   ["model.set", obj({}, [], true), obj({}, [], true)],
 ] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", risk: word === "plugins.op" || word === "gateway.op" ? "structure" : "none", description: "Local owner administration; never available to a remote screen." });

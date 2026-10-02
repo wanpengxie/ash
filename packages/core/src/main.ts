@@ -204,6 +204,30 @@ export async function startOwner(config: Config): Promise<Running> {
         if (!manager) throw new Error("DSH plugin manager unavailable");
         const [bundles, plugins] = await Promise.all([manager.listBundles(), manager.listPlugins()]);
         return { bundles, plugins };
+      }, pluginsOp: async (body: Record<string, unknown>) => {
+        const manager = dsh!.ctx?.get("pluginManager");
+        if (!manager) throw new Error("DSH plugin manager unavailable");
+        const value = (field: string) => {
+          const item = body[field];
+          if (typeof item !== "string" || !item.trim()) throw new Error(`${field} required`);
+          return item.trim();
+        };
+        let result: Record<string, unknown>;
+        switch (body.op) {
+          case "enable":
+          case "disable": {
+            const name = value("name");
+            if (name === "@deepseek-ai/dsh-base") throw new Error("base bundle is required");
+            result = await manager.setBundleEnabled(name, body.op === "enable");
+            break;
+          }
+          case "plugin":
+            if (typeof body.enabled !== "boolean") throw new Error("enabled required");
+            result = await manager.setPluginEnabled(value("id"), body.enabled);
+            break;
+          default: throw new Error("unsupported plugin operation");
+        }
+        return { ...result, restart_required: result?.application === "restart-required" };
       } } : {}),
       currentAgentTurn: () => agent!.inbox.activeTurn()?.id ?? null,
       currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });

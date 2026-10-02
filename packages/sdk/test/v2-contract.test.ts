@@ -127,6 +127,15 @@ test("pause and resume require exact management bodies and truthful paused resul
   for (const result of [{ paused: true }, {}, { paused: false, accepted: true }]) assert.ok(!matchesSchema(resume.result_schema!, result));
 });
 
+test("plugin operation accepts only installed bundle and plugin switches", () => {
+  const schema = wordContract("service:admin", "plugins.op")!.input_schema!;
+  for (const body of [{ op: "enable", name: "sample" }, { op: "disable", name: "sample" },
+    { op: "plugin", id: "include:sample", enabled: true }]) assert.ok(matchesSchema(schema, body));
+  for (const body of [{ op: "install", spec: "package" }, { op: "remove", name: "sample" },
+    { op: "plugin", id: "sample", enabled: "true" }, { op: "enable", name: "sample", spec: "secret" }])
+    assert.ok(!matchesSchema(schema, body));
+});
+
 test("post.delivery is a closed service-only visibility event, not an external notification", () => {
   const contract = wordContract("service:post", "post.delivery")!;
   assert.equal(contract.kind, "event");

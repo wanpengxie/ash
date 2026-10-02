@@ -34,6 +34,7 @@ async function fixture() {
       : (cancellations++, { ok: true, result: { cancelled: false } }) });
   const admin = new AdminMember({ ledger, router, dbFile: file, onPauseChanged: () => { changes++; },
     pluginsList: async () => ({ bundles: [{ name: "base" }], plugins: [{ id: "sample" }] }),
+    pluginsOp: async (body) => ({ applied: body.op, name: body.name }),
     gatewayState: () => ({ connected: true, pending: [] }),
     currentScreenBinding: (id, principal) => id === screen.screenId && principal === screen.transportPrincipal });
   members.register(admin);
@@ -50,9 +51,12 @@ test("local owner reads plugin and gateway state as admin words; remote owner ca
     assert.deepEqual(listed.reply?.body, { ok: true, result: { bundles: [{ name: "base" }], plugins: [{ id: "sample" }] } });
     const state = await f.router.send(owner, { to: "service:admin", kind: "request", word: "gateway.state", body: {}, wait: true });
     assert.deepEqual(state.reply?.body, { ok: true, result: { connected: true, pending: [] } });
+    const switched = await f.router.send(owner, { to: "service:admin", kind: "request", word: "plugins.op",
+      body: { op: "enable", name: "sample" }, wait: true });
+    assert.deepEqual(switched.reply?.body, { ok: true, result: { applied: "enable", name: "sample" } });
     const before = f.ledger.lastSeq();
     const remote = { ...screen, local: false, remote: true, pairedDeviceId: "paired:synthetic" };
-    for (const word of ["plugins.list", "gateway.state"])
+    for (const word of ["plugins.list", "gateway.state", "plugins.op"])
       await assert.rejects(f.router.send(remote, { to: "service:admin", kind: "request", word, body: {} }), denied("forbidden"));
     assert.equal(f.ledger.lastSeq(), before);
   } finally { await f.close(); }
