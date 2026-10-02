@@ -41,6 +41,10 @@ rows() { api GET "/api/stream?follow=false&limit=1000&after=${1:-0}" | sed -n 's
 last_seq() { api GET '/api/stream?follow=false&limit=1' | sed -n 's/^id: //p' | tail -1 | tr -d '\r'; }
 admin() { local word=$1 body=$2; api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:admin",kind:"request",word:process.argv[1],body:JSON.parse(process.argv[2]),wait:true,client_id:crypto.randomUUID()}))' "$word" "$body")" | jq_ 'v.reply?.body||{}'; }
 send_say() { local id="regress-$RANDOM$RANDOM"; api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"agent:main",kind:"request",word:"say",body:{text:process.argv[1]},client_id:process.argv[2]}))' "$1" "$id")" | jq_ 'v.id||""'; }
+owner_request() { # owner_request TARGET WORD JSON_BODY
+  local id="regress-$RANDOM$RANDOM"
+  api POST /api/send "$(node -e 'console.log(JSON.stringify({to:process.argv[1],kind:"request",word:process.argv[2],body:JSON.parse(process.argv[3]),wait:true,client_id:process.argv[4]}))' "$1" "$2" "$3" "$id")"
+}
 wait_row() { # wait_row SECONDS JS_EXPRESSION, where v is the array of new ledger rows
   local end=$((SECONDS+$1)) after="${3:-0}" found
   while [ "$SECONDS" -lt "$end" ]; do
@@ -214,6 +218,73 @@ R18() { say "R18 explicit stop cancels the active turn, without stopping the nex
   echo "    reflex: $intent acted=$acted, decision ${elapsed}ms, turn=$reason"
   local next_turn; next_turn=$(echo "$next" | jq_ 'v.body.turn')
   if [ "$intent" = stop ] && [ "$acted" = true ] && [ "$reason" = cancelled ] && [ "$next_turn" != "$turn" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -le 1000 ]; then ok "R18 explicit stop cancels active turn within 1s; stop message enters next turn"; else bad R18 "stop decision/turn/latency did not meet contract"; fi
+}
+
+R19() { say "R19 a risky phone action produces an Android approval notification and one answer"
+  wait_online 300 || { bad R19 "agent not online"; return; }
+  adb shell input keyevent 3 >/dev/null 2>&1
+  local from request ask notice answer effect
+  from=$(last_seq)
+  request=$(send_say "请使用手机的 shell.run 执行 printf ash-r19；这是回归测试，请实际调用工具，不要只解释。")
+  [ -n "$request" ] || { bad R19 "request not accepted"; return; }
+  ask=$(wait_row 180 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&Array.isArray(x.body?.options)&&x.body.options.some(o=>o.id==='once')&&x.body.options.some(o=>o.id==='deny'))" "$from") || { bad R19 "no approval ask"; return; }
+  local ask_id; ask_id=$(echo "$ask" | jq_ 'v.id||""')
+  notice=$(adb shell dumpsys notification --noredact 2>/dev/null | grep -F "present:$ask_id" | head -1)
+  [ -n "$notice" ] || { bad R19 "approval was not rendered by Android"; return; }
+  answer=$(api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:gate",kind:"response",word:"ask",reply_to:process.argv[1],body:{ok:true,result:{choice:"once"}},client_id:process.argv[2]}))' "$ask_id" "regress-r19-$RANDOM$RANDOM")" | jq_ 'v.id||""')
+  [ -n "$answer" ] || { bad R19 "approval answer not accepted"; return; }
+  effect=$(wait_row 180 "v.find(x=>x.kind==='response'&&x.word==='shell.run'&&x.body?.ok===true)" "$from") || { bad R19 "approved phone action did not settle"; return; }
+  local responses; responses=$(rows "$from" | ASH_ASK="$ask_id" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(JSON.parse);process.stdout.write(String(v.filter(x=>x.kind==="response"&&x.reply_to===process.env.ASH_ASK).length))})')
+  if [ "$responses" = 1 ]; then ok "R19 Android showed the approval; once produced one terminal answer and one phone effect"; else bad R19 "approval responses=$responses"; fi
+}
+
+R20() { say "R20 app-open runs the opener after six hours; quiet hours persist"
+  wait_online 300 || { bad R20 "agent not online"; return; }
+  local before original changed restored prefs now old from opened opener_start opener quiet
+  before=$(admin settings.get '{}'); original=$(echo "$before" | jq_ 'v.result?.delivery?.quiet||""')
+  [ -n "$original" ] || { bad R20 "cannot read quiet hours"; return; }
+  changed=$(admin settings.set '{"delivery":{"quiet":"00:00-23:59"}}' | jq_ 'v.result?.delivery?.quiet||""')
+  [ "$changed" = "00:00-23:59" ] || { bad R20 "cannot set quiet hours"; return; }
+  control RESTART; wait_online 300 || { admin settings.set "{\"delivery\":{\"quiet\":\"$original\"}}" >/dev/null; bad R20 "core did not restart"; return; }
+  quiet=$(admin settings.get '{}' | jq_ 'v.result?.delivery?.quiet||""')
+  now=$(date +%s); old=$(((now-7*3600)*1000)); prefs="/data/user/0/$PKG/shared_prefs/sense_device.xml"
+  from=$(last_seq)
+  adb shell am force-stop "$PKG" >/dev/null
+  asr "p='$prefs'; if [ -f \"\$p\" ]; then sed -i -E 's#<long name=\"app_left\" value=\"[0-9]+\" */>#<long name=\"app_left\" value=\"$old\" />#' \"\$p\"; grep -q 'name=\"app_left\"' \"\$p\" || sed -i 's#</map>#    <long name=\"app_left\" value=\"$old\" />\\n</map>#' \"\$p\"; else mkdir -p \"\$(dirname \"\$p\")\"; printf '%s\\n' '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?>' '<map>' '    <long name=\"app_left\" value=\"$old\" />' '</map>' > \"\$p\"; fi"
+  adb shell am start -n "$PKG/ai.ash.ui.HomeActivity" >/dev/null
+  opened=$(wait_row 30 "v.find(x=>x.word==='sense.screen'&&x.body?.state==='app_open'&&Number(x.body?.away_ms)>=21600000)" "$from") || true
+  opener_start=$(wait_row 30 "v.find(x=>x.word==='run.start'&&x.body?.flow==='opener')" "$from") || true
+  local opener_run; opener_run=$(echo "$opener_start" | jq_ 'v.body?.run||""')
+  [ -z "$opener_run" ] || opener=$(wait_row 180 "v.find(x=>x.word==='run.end'&&x.body?.run==='$opener_run')" "$from") || true
+  restored=$(admin settings.set "{\"delivery\":{\"quiet\":\"$original\"}}" | jq_ 'v.result?.delivery?.quiet||""')
+  if [ -n "$opened" ] && [ -n "$opener" ] && [ "$quiet" = "00:00-23:59" ] && [ "$restored" = "$original" ]; then
+    ok "R20 seven-hour app open ran opener; all-day quiet persisted across restart and was restored"
+  else bad R20 "opened=$([ -n "$opened" ]&&echo yes||echo no) opener=$([ -n "$opener" ]&&echo yes||echo no) quiet=$quiet restored=$restored"; fi
+}
+
+R21() { say "R21 the real memory loop records a preference and correction, then has no duplicate work"
+  wait_online 300 || { bad R21 "agent not online"; return; }
+  local stamp from first second trigger run ended log count repeat repeat_end
+  stamp="r21-$(date +%s)"
+  from=$(last_seq)
+  first=$(send_say "回归标记 $stamp：我偏好简短回答。")
+  second=$(send_say "更正回归标记 $stamp：不是偏好详细回答，而是偏好简短回答。")
+  [ -n "$first" ] && [ -n "$second" ] || { bad R21 "memory evidence messages not accepted"; return; }
+  deliver_and_wait "只回复：收到 $stamp" 180 >/dev/null || { bad R21 "conversation did not settle"; return; }
+  trigger=$(owner_request service:work run '{"flow":"memory"}')
+  run=$(echo "$trigger" | jq_ 'v.reply?.body?.result?.run||""')
+  [ -n "$run" ] || { bad R21 "memory run not accepted"; return; }
+  ended=$(wait_row 300 "v.find(x=>x.word==='run.end'&&x.body?.run==='$run')" "$from") || { bad R21 "memory run did not settle"; return; }
+  [ "$(echo "$ended" | jq_ 'v.body?.outcome||""')" = done ] || { bad R21 "first memory outcome=$(echo "$ended" | jq_ 'v.body?.outcome||""')"; return; }
+  log=$(asr "find ash-home/memory -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | tail -1")
+  [ -n "$log" ] || { bad R21 "dated memory log absent"; return; }
+  count=$(asr "grep -c '$stamp' '$log' 2>/dev/null || true" | tr -d '\r')
+  repeat=$(owner_request service:work run '{"flow":"memory"}'); repeat=$(echo "$repeat" | jq_ 'v.reply?.body?.result?.run||""')
+  [ -n "$repeat" ] || { bad R21 "repeat memory run not accepted"; return; }
+  repeat_end=$(wait_row 180 "v.find(x=>x.word==='run.end'&&x.body?.run==='$repeat')" "$from") || { bad R21 "repeat memory run did not settle"; return; }
+  if [ "${count:-0}" -ge 1 ] && [ "$(echo "$repeat_end" | jq_ 'v.body?.outcome||""')" = no_change ]; then
+    ok "R21 real workers committed evidence for $stamp; the next run was no_change"
+  else bad R21 "log matches=${count:-0}, repeat=$(echo "$repeat_end" | jq_ 'v.body?.outcome||""')"; fi
 }
 
 adb get-state >/dev/null 2>&1 || { echo "no adb device"; exit 2; }
