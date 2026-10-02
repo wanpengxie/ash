@@ -49,6 +49,21 @@ class ConsoleActivity : Activity() {
         info = TextView(this).apply { textSize = 13f; setTextIsSelectable(true) }
         root.addView(info)
         row("启动" to { CoreService.start(this, CoreService.ACTION_START) }, "停止" to { CoreService.start(this, CoreService.ACTION_STOP) }, "重启" to { CoreService.start(this, CoreService.ACTION_RESTART) })
+        row("移除网关配置" to {
+            AlertDialog.Builder(this)
+                .setTitle("移除本机网关配置？")
+                .setMessage("仅移除本机的网关地址和未使用的一次性密钥，然后重启 Ash；不会删除对话或其他数据。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("移除") { _, _ ->
+                    val paths = Paths(this)
+                    val removed = runCatching {
+                        if (paths.gateway.exists()) check(paths.gateway.delete())
+                        if (paths.gatewayBootstrap.exists()) check(paths.gatewayBootstrap.delete())
+                        CoreService.start(this, CoreService.ACTION_RESTART)
+                    }.isSuccess
+                    Toast.makeText(this, if (removed) "已移除网关配置" else "移除失败", Toast.LENGTH_SHORT).show()
+                }.show()
+        })
 
         h("手机权限（给 Ash 用的能力）")
         perms = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

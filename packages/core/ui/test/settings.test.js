@@ -37,6 +37,36 @@ test("Android settings save JEV Key through native bridge without sending it to 
   } finally { delete globalThis.document; delete globalThis.location; delete globalThis.__ashJevKey; }
 });
 
+test("Android settings configure the gateway privately and clear the one-time secret", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "https://appassets.androidplatform.net" };
+  const calls = [];
+  globalThis.__ashGatewayConfig = async (operation, url, secret) => {
+    calls.push({ operation, url, secret });
+    return { ok: true, configured: true, url: "https://ash.example.test" };
+  };
+  try {
+    const panel = new Element("div");
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request() { throw new Error("Gateway bootstrap secret must not use /api/send"); } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    const url = panel.find("settingsGatewayUrl");
+    const secret = panel.find("settingsGatewaySecret");
+    url.value = " https://ash.example.test ";
+    secret.value = " one-time-test-secret ";
+    panel.find("settingsGatewaySave").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(secret.value, "");
+    assert.deepEqual(calls, [{ operation: "save", url: "https://ash.example.test", secret: "one-time-test-secret" }]);
+    assert.match(panel.find("settingsGatewayConfigStatus").textContent, /网关已保存/);
+    settings.network("offline");
+    assert.equal(panel.find("settingsGatewayUrl"), undefined);
+  } finally {
+    delete globalThis.document; delete globalThis.location; delete globalThis.__ashGatewayConfig;
+  }
+});
+
 test("settings hide management on old, remote, malformed, or disconnected registration", () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
   try {

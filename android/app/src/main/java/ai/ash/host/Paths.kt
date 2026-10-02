@@ -23,6 +23,9 @@ class Paths(ctx: Context) {
     val configOverride = File(ash, "config.override.json")
     val coreLog = File(ash, "core.log")
     val uiUrl = File(state, "ui-url")
+    /** Consumed by the existing Core OwnerLink on its next start. */
+    val gateway = File(state, "gateway.json")
+    val gatewayBootstrap = File(state, "bootstrap-secret")
 
     /** The main agent's workspace (its cwd; AGENTS.md is its standing brief). */
     val home = File(files, "ash-home")

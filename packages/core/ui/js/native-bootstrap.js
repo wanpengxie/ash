@@ -18,6 +18,15 @@
     });
   };
 
+  globalThis.__ashGatewayConfig = (operation, url = "", secret = "") => {
+    if (!ready || !["status", "save"].includes(operation)) return Promise.reject(new Error("native settings unavailable"));
+    const id = String(++nextId);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { gatewayConfig: true, finish() { pending.delete(id); }, resolve, reject });
+      post({ type: "gateway_config", id, operation, ...(operation === "save" ? { url, secret } : {}) });
+    });
+  };
+
   function request(operation, path, options = {}) {
     if (!ready) return Promise.reject(new Error("native transport unavailable"));
     const id = String(++nextId);
@@ -67,6 +76,11 @@
     if (!item) return;
     if (item.jev) {
       if (message.type === "jev_result") { item.finish(); item.resolve({ ok: message.ok === true, configured: message.configured === true }); }
+      return;
+    }
+    if (item.gatewayConfig) {
+      if (message.type === "gateway_config_result") { item.finish(); item.resolve({ ok: message.ok === true,
+        configured: message.configured === true, url: typeof message.url === "string" ? message.url : "" }); }
       return;
     }
     if (message.type === "started") item.started();

@@ -45,6 +45,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -143,6 +144,7 @@ class HomeActivity : Activity() {
                     "cancel" -> requests.remove(input.optString("id"))?.cancel()
                     "request" -> handleNativeRequest(input, reply)
                     "jev" -> handleJevSetting(input, reply)
+                    "gateway_config" -> handleGatewaySetting(input, reply)
                 }
             }
         }
@@ -278,6 +280,48 @@ class HomeActivity : Activity() {
         }
         result.put("type", "jev_result").put("id", id)
             .put("configured", secrets.jevApiKey != null)
+        if (pageEpoch == epoch) reply.postMessage(result.toString())
+    }
+
+    private fun handleGatewaySetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
+        val id = input.optString("id")
+        if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
+        val epoch = pageEpoch
+        val paths = Paths(this)
+        val result = when (input.optString("operation")) {
+            "status" -> JSONObject().put("ok", true)
+            "save" -> {
+                val rawUrl = input.opt("url") as? String
+                val rawSecret = input.opt("secret") as? String
+                val url = rawUrl?.trim()
+                val secret = rawSecret?.trim()
+                val normalized = if (url.isNullOrEmpty()) "" else runCatching {
+                    val parsed = URI(url)
+                    require(parsed.scheme == "https" && !parsed.host.isNullOrBlank() && parsed.userInfo == null &&
+                        parsed.query == null && parsed.fragment == null && (parsed.path.isNullOrEmpty() || parsed.path == "/") &&
+                        (parsed.port == -1 || parsed.port in 1..65535))
+                    URI("https", null, parsed.host, parsed.port, null, null, null).toString()
+                }.getOrNull()
+                val saved = if (url == null || secret == null || secret.length > 1024 || normalized == null) false else runCatching {
+                    paths.state.mkdirs()
+                    if (normalized.isEmpty()) {
+                        if (paths.gateway.exists()) check(paths.gateway.delete())
+                        if (paths.gatewayBootstrap.exists()) check(paths.gatewayBootstrap.delete())
+                    } else {
+                        if (secret.isNotEmpty()) paths.gatewayBootstrap.writeText(secret)
+                        else if (paths.gatewayBootstrap.exists()) check(paths.gatewayBootstrap.delete())
+                        paths.gateway.writeText(JSONObject().put("url", normalized).toString())
+                    }
+                    CoreService.start(this, CoreService.ACTION_RESTART)
+                    true
+                }.getOrDefault(false)
+                JSONObject().put("ok", saved)
+            }
+            else -> return
+        }
+        val configuredUrl = runCatching { JSONObject(paths.gateway.readText()).optString("url") }.getOrDefault("")
+        result.put("type", "gateway_config_result").put("id", id)
+            .put("configured", configuredUrl.isNotEmpty()).put("url", configuredUrl)
         if (pageEpoch == epoch) reply.postMessage(result.toString())
     }
 

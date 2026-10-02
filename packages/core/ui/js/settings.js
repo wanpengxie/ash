@@ -284,6 +284,50 @@ export class SettingsControls {
     const gatewaySection = document.createElement("section");
     gatewaySection.id = "settingsGateway";
     gatewaySection.append(node("h2", "已连接设备"));
+    if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashGatewayConfig === "function") {
+      const url = document.createElement("input");
+      url.id = "settingsGatewayUrl";
+      url.type = "url";
+      url.placeholder = "https://你的网关域名";
+      const secret = document.createElement("input");
+      secret.id = "settingsGatewaySecret";
+      secret.type = "password";
+      secret.placeholder = "首次认领的一次性密钥；已认领可留空";
+      secret.autocomplete = "off";
+      const loadConfig = node("button", "读取配置", "btn gray");
+      loadConfig.type = "button";
+      const saveConfig = node("button", "保存网关", "btn");
+      saveConfig.id = "settingsGatewaySave";
+      saveConfig.type = "button";
+      const configStatus = node("p", "域名与一次性密钥只在本机设置；保存后 Ash 重启。", "muted");
+      configStatus.id = "settingsGatewayConfigStatus";
+      configStatus.setAttribute("role", "status");
+      loadConfig.addEventListener("click", () => { void (async () => {
+        try {
+          const result = await globalThis.__ashGatewayConfig("status");
+          if (this.section !== section) return;
+          if (!result.ok) throw new Error("unavailable");
+          url.value = result.url;
+          configStatus.textContent = result.configured ? "当前网关：" + result.url : "网关尚未配置。";
+        } catch { if (this.section === section) configStatus.textContent = "配置读取失败。"; }
+      })(); });
+      saveConfig.addEventListener("click", () => { void (async () => {
+        const enteredUrl = url.value.trim();
+        const enteredSecret = secret.value.trim();
+        secret.value = "";
+        saveConfig.disabled = true;
+        configStatus.textContent = "正在保存…";
+        try {
+          const result = await globalThis.__ashGatewayConfig("save", enteredUrl, enteredSecret);
+          if (this.section !== section) return;
+          if (!result.ok) throw new Error("unconfirmed");
+          url.value = result.url;
+          configStatus.textContent = result.configured ? "网关已保存；Ash 正在重启。" : "网关已移除；Ash 正在重启。";
+        } catch { if (this.section === section) configStatus.textContent = "保存失败；请检查域名与密钥。"; }
+        finally { saveConfig.disabled = false; }
+      })(); });
+      gatewaySection.append(url, secret, loadConfig, saveConfig, configStatus);
+    }
     const gatewayLoad = node("button", "读取设备", "btn gray");
     gatewayLoad.id = "settingsGatewayLoad";
     gatewayLoad.type = "button";

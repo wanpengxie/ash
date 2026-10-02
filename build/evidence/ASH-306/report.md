@@ -1,5 +1,11 @@
 # ASH-306 narrow administration runtime checkpoint
 
+## 2026-10-02: first-time gateway configuration on the existing Android private bridge
+
+The local Settings page now accepts a gateway HTTPS origin and one-time claim secret. The secret is sent only to the existing origin/main-frame-bound `AshNative` listener, written to the app-private `state/bootstrap-secret`, and never returned to JavaScript or sent through `/api/send` and the message ledger. The URL is stored in the existing `state/gateway.json`; the existing Core OwnerLink reads both on restart and consumes the secret on a successful claim. An empty URL removes the local configuration. The native diagnostics page has one confirmed "remove gateway configuration" action, because an unreachable configured gateway prevents Core startup and therefore the WebView settings page cannot recover it. This adds no HTTP route or new gateway subsystem.
+
+Focused native bridge and Settings tests: 12/12. Android `:app:compileDebugKotlin --offline`: pass. Installed-DSH full suite: 624 total, 561 pass, 63 conditional skip, 0 fail. Typecheck and final architecture gate: pass, 0 findings. No live external gateway or claim secret was supplied, so first claim, remote pairing and the full ASH-306 card remain unverified.
+
 ## 2026-10-02 mainline update: DSH management reads and installed-plugin switches
 
 The production `service:admin` now exposes `plugins.list` and `gateway.state` through the existing word router, and `plugins.op` for enabling/disabling an already-installed bundle or plugin. It calls the installed DSH `pluginManager`; no parallel plugin registry was added. The fresh DSH profile still starts with the base bundle, while a profile already modified by DSH is accepted on restart. The base bundle cannot be disabled. The SDK input schema rejects `install`, `remove`, and extra fields before ledger acceptance. Those operations are not silently treated as complete: arbitrary installation through the ordinary message ledger is outside this checkpoint. Local owner requests are allowed; remote owner requests are denied before ledger acceptance.
