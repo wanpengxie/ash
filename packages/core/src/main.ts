@@ -198,7 +198,22 @@ export async function startOwner(config: Config): Promise<Running> {
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
-      gatewayState: () => link?.state() ?? { configured: false },
+      gatewayState: () => link ? { configured: true, ...link.state() } : { configured: false },
+      gatewayOp: async (body: Record<string, unknown>) => {
+        if (!link) throw new Error("gateway unavailable");
+        switch (body.op) {
+          case "approve":
+            await link.approve(body.request_id as string, body.permissions as Parameters<OwnerLink["approve"]>[1]);
+            void link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
+            return { approved: true };
+          case "reject": await link.reject(body.request_id as string); return { rejected: true };
+          case "revoke": await link.revoke(body.device as string);
+            void link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
+            return { revoked: true };
+          case "sync": await link.refreshDevices(); return { configured: true, ...link.state() };
+          default: throw new Error("unsupported gateway operation");
+        }
+      },
       ...(dsh ? { modelGet: () => dsh!.agentOptions() ?? {}, modelSet: async (provider: string, model: string) => {
         const selector = dsh!.ctx?.get("agentDefaultModel");
         if (!selector) throw new Error("DSH model selection unavailable");

@@ -450,3 +450,26 @@ test("gateway refresh serializes dirty revocation and fences stale connection ma
     } finally { release(); ledger.close(); }
   }
 });
+
+test("owner gateway actions call the existing pairing and revoke client", async () => {
+  const { ledger, world, members } = await fixture();
+  const edge = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1) });
+  const link = new OwnerLink("http://127.0.0.1:1", { id: "synthetic", publicKey: "synthetic", sign: async () => "synthetic" }, edge, () => {});
+  const calls: unknown[] = [];
+  const injected = link as unknown as { conn: { request: (request: Record<string, unknown>) => Promise<Record<string, unknown>> };
+    gateway: { approve: (...args: unknown[]) => Promise<void>; revoke: (...args: unknown[]) => Promise<void> } };
+  injected.conn = { request: async (request) => { calls.push(request); return { grant_version: 4, devices: [] }; } };
+  injected.gateway.approve = async (_conn, item, permissions, version) => { calls.push(["approve", item, permissions, version]); };
+  injected.gateway.revoke = async (_conn, device, version) => { calls.push(["revoke", device, version]); };
+  link.pending.set("request-1", { request_id: "request-1", client_id: "client-1", name: "Phone", pubkey: "public", fingerprint: "fingerprint", at: 1 });
+  try {
+    await link.approve("request-1", ["chat", "web_ui"]);
+    assert.equal(link.pending.has("request-1"), false);
+    assert.deepEqual(calls[1], ["approve", { request_id: "request-1", client_id: "client-1", name: "Phone",
+      pubkey: "public", fingerprint: "fingerprint", at: 1 }, ["chat", "web_ui"], 5]);
+    await link.reject("request-2");
+    assert.deepEqual(calls[2], { op: "pair.reject", request_id: "request-2" });
+    await link.revoke("device:phone_1");
+    assert.deepEqual(calls[4], ["revoke", "phone_1", 5]);
+  } finally { ledger.close(); }
+});

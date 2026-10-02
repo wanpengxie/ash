@@ -12,6 +12,7 @@ const settingsSet = wordContract("service:admin", "settings.set")!;
 const pluginsList = wordContract("service:admin", "plugins.list")!;
 const pluginsOp = wordContract("service:admin", "plugins.op")!;
 const gatewayState = wordContract("service:admin", "gateway.state")!;
+const gatewayOp = wordContract("service:admin", "gateway.op")!;
 const modelSet = wordContract("service:admin", "model.set")!;
 const service: TrustedRouteContext = { member: "service:admin", transport: "service", transportPrincipal: "service:admin",
   local: true, remote: false, ownerProxy: false };
@@ -21,6 +22,7 @@ export interface AdminOptions { ledger: Ledger; router: WorldRouter; dbFile: str
   pluginsList?: () => Promise<Record<string, unknown>>;
   pluginsOp?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   gatewayState?: () => Record<string, unknown>;
+  gatewayOp?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   modelGet?: () => Record<string, unknown>;
   modelSet?: (provider: string, model: string) => Promise<Record<string, unknown>>;
   currentAgentTurn?: () => string | null;
@@ -37,7 +39,7 @@ export class AdminMember implements Member {
   readonly journal: AdminJournal;
   private closed = false;
   constructor(private readonly options: AdminOptions) { this.journal = new AdminJournal(options.dbFile); }
-  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet, pluginsList, pluginsOp, gatewayState, modelSet]; }
+  words(): readonly WordSpec[] { return [pause, resume, settingsGet, settingsSet, pluginsList, pluginsOp, gatewayState, gatewayOp, modelSet]; }
 
   /** A current durable pause may have crashed before it reached agent cancellation. */
   currentCommittedPause(): { requestId: string; targetTurn: string | null } | null {
@@ -99,6 +101,14 @@ export class AdminMember implements Member {
       if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "admin request settled" } };
       try { return { ok: true, result: await this.options.modelSet(message.body.provider as string, message.body.model as string) }; }
       catch { return { ok: false, error: { code: "failed", message: "model selection failed" } }; }
+    }
+    if (message.word === "gateway.op") {
+      if (message.from !== "person:owner" || !context.caller.local || context.caller.remote)
+        return { ok: false, error: { code: "forbidden", message: "local administration unavailable" } };
+      if (!this.options.gatewayOp) return { ok: false, error: { code: "offline", message: "gateway unavailable" } };
+      if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "admin request settled" } };
+      try { return { ok: true, result: await this.options.gatewayOp(message.body) }; }
+      catch { return { ok: false, error: { code: "failed", message: "gateway operation failed" } }; }
     }
     if (message.word === "settings.get" || message.word === "settings.set") {
       if (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !this.options.delivery)

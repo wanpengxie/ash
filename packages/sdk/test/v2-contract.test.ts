@@ -144,6 +144,16 @@ test("model selection requires a provider and model, not an opaque settings body
   assert.ok(matchesSchema(contract.result_schema!, { provider: "deepseek", model: "chat", restart_required: true }));
 });
 
+test("gateway operations are closed and cannot carry bootstrap secrets or pairing tickets", () => {
+  const schema = wordContract("service:admin", "gateway.op")!.input_schema!;
+  for (const body of [{ op: "approve", request_id: "request-1", permissions: ["chat", "web_ui"] },
+    { op: "reject", request_id: "request-1" }, { op: "revoke", device: "device:phone_1" }, { op: "sync" }])
+    assert.ok(matchesSchema(schema, body));
+  for (const body of [{ op: "configure", url: "https://gateway", secret: "credential" }, { op: "ticket" },
+    { op: "approve", request_id: "request-1", permissions: ["admin"] }, { op: "sync", secret: "credential" },
+    { op: "revoke", device: "phone_1" }]) assert.ok(!matchesSchema(schema, body));
+});
+
 test("post.delivery is a closed service-only visibility event, not an external notification", () => {
   const contract = wordContract("service:post", "post.delivery")!;
   assert.equal(contract.kind, "event");

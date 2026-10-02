@@ -220,7 +220,14 @@ for (const [word, input, result] of [
     obj({ op: choice("enable", "disable"), name: nonempty }, ["op", "name"]),
     obj({ op: { const: "plugin" }, id: nonempty, enabled: bool }, ["op", "id", "enabled"]),
   ] }, obj({}, [], true)],
-  ["gateway.state", empty, obj({}, [], true)], ["gateway.op", obj({}, [], true), obj({}, [], true)],
+  ["gateway.state", empty, obj({}, [], true)], ["gateway.op", { oneOf: [
+    obj({ op: { const: "approve" }, request_id: nonempty,
+      permissions: array(choice("chat", "read_status", "cancel_own_task", "request_sensitive_action", "expose_capability", "web_ui")) },
+    ["op", "request_id", "permissions"]),
+    obj({ op: { const: "reject" }, request_id: nonempty }, ["op", "request_id"]),
+    obj({ op: { const: "revoke" }, device: { type: "string", pattern: "^device:[A-Za-z0-9_-]+$" } }, ["op", "device"]),
+    obj({ op: { const: "sync" } }, ["op"]),
+  ] }, obj({}, [], true)],
   ["model.set", obj({ provider: nonempty, model: nonempty }, ["provider", "model"]),
     obj({ provider: nonempty, model: nonempty, restart_required: bool }, ["provider", "model", "restart_required"])],
 ] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", risk: word === "plugins.op" || word === "gateway.op" ? "structure" : "none", description: "Local owner administration; never available to a remote screen." });
