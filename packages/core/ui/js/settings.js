@@ -241,6 +241,67 @@ export class SettingsControls {
     })(); });
     modelSection.append(provider, model, modelLoad, modelSave, modelStatus);
     section.append(modelSection);
+    const gatewaySection = document.createElement("section");
+    gatewaySection.id = "settingsGateway";
+    gatewaySection.append(node("h2", "已连接设备"));
+    const gatewayLoad = node("button", "读取设备", "btn gray");
+    gatewayLoad.id = "settingsGatewayLoad";
+    gatewayLoad.type = "button";
+    const gatewayStatus = node("p", "尚未读取网关。", "muted");
+    gatewayStatus.id = "settingsGatewayStatus";
+    gatewayStatus.setAttribute("role", "status");
+    const gatewayList = document.createElement("div");
+    gatewayList.id = "settingsGatewayList";
+    const refreshGateway = async () => {
+      gatewayStatus.textContent = "正在读取…";
+      const reply = await requestSetting("gateway.state", {});
+      if (reply?.ok !== true) throw new Error("gateway unavailable");
+      const state = reply.result;
+      gatewayList.replaceChildren();
+      if (state?.configured !== true) { gatewayStatus.textContent = "网关尚未配置。"; return; }
+      gatewayStatus.textContent = state.connected ? "网关已连接。" : "网关暂时离线。";
+      const act = async (body) => {
+        const result = await requestSetting("gateway.op", body);
+        if (result?.ok !== true) throw new Error("gateway operation failed");
+        await refreshGateway();
+      };
+      for (const pending of Array.isArray(state.pending) ? state.pending : []) {
+        if (typeof pending.request_id !== "string" || typeof pending.name !== "string") continue;
+        const row = document.createElement("div");
+        row.className = "settings-plugin";
+        row.append(node("span", `${pending.name} · 待配对 · ${pending.fingerprint ?? ""}`));
+        for (const [label, body] of [
+          ["批准连接（聊天、网页、设备能力）", { op: "approve", request_id: pending.request_id, permissions: ["chat", "web_ui", "expose_capability"] }],
+          ["拒绝", { op: "reject", request_id: pending.request_id }],
+        ]) {
+          const button = node("button", label, "btn gray");
+          button.type = "button";
+          button.addEventListener("click", () => { void act(body).catch(() => {
+            if (this.section === section) gatewayStatus.textContent = "操作未确认；请重试。";
+          }); });
+          row.append(button);
+        }
+        gatewayList.append(row);
+      }
+      for (const device of Array.isArray(state.devices) ? state.devices : []) {
+        if (typeof device.id !== "string" || typeof device.name !== "string") continue;
+        const row = document.createElement("div");
+        row.className = "settings-plugin";
+        row.append(node("span", `${device.name} · ${device.online ? "在线" : "离线"}`));
+        const revoke = node("button", "撤销设备", "btn gray");
+        revoke.type = "button";
+        revoke.addEventListener("click", () => { void act({ op: "revoke", device: device.id }).catch(() => {
+          if (this.section === section) gatewayStatus.textContent = "撤销未确认；请重试。";
+        }); });
+        row.append(revoke);
+        gatewayList.append(row);
+      }
+    };
+    gatewayLoad.addEventListener("click", () => { void refreshGateway().catch(() => {
+      if (this.section === section) gatewayStatus.textContent = "读取失败；请重试。";
+    }); });
+    gatewaySection.append(gatewayLoad, gatewayStatus, gatewayList);
+    section.append(gatewaySection);
     const preferencesRoot = document.createElement("section");
     preferencesRoot.id = "settingsProactive";
     section.append(preferencesRoot);

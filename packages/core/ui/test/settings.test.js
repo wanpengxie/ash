@@ -146,3 +146,41 @@ test("local settings saves the DSH main-model choice and reports restart", async
     assert.equal(panel.find("settingsModelStatus").textContent, "已保存；重启 Ash 后主模型生效。");
   } finally { delete globalThis.document; }
 });
+
+test("local gateway controls approve a pending device and revoke an existing device", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    const sent = [];
+    let pending = true, device = true;
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request(_path, init) {
+        const wire = JSON.parse(init.body);
+        sent.push(wire);
+        if (wire.word === "gateway.op" && wire.body.op === "approve") pending = false;
+        if (wire.word === "gateway.op" && wire.body.op === "revoke") device = false;
+        const result = wire.word === "gateway.state"
+          ? { configured: true, connected: true,
+            pending: pending ? [{ request_id: "request-1", name: "Phone", fingerprint: "abc" }] : [],
+            devices: device ? [{ id: "device:laptop", name: "Laptop", online: true }] : [] }
+          : { approved: true, revoked: true };
+        return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
+          from: "service:admin", to: "person:owner", word: wire.word, body: { ok: true, result } } }), { status: 200 });
+      } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsGatewayLoad").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsGatewayList").children.length, 2);
+    panel.find("settingsGatewayList").children[0].children[1].click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsGatewayList").children.length, 1);
+    panel.find("settingsGatewayList").children[0].children[1].click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsGatewayList").children.length, 0);
+    assert.deepEqual(sent.map((item) => [item.word, item.body]), [
+      ["gateway.state", {}],
+      ["gateway.op", { op: "approve", request_id: "request-1", permissions: ["chat", "web_ui", "expose_capability"] }],
+      ["gateway.state", {}], ["gateway.op", { op: "revoke", device: "device:laptop" }], ["gateway.state", {}]]);
+  } finally { delete globalThis.document; }
+});

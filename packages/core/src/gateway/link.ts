@@ -296,7 +296,9 @@ export class OwnerLink extends Link {
     const list = await this.requireConnection().request({ op: "device.list" });
     await this.gateway.revoke(this.requireConnection(), member.replace(/^device:/, ""), Number(list.grant_version) + 1);
   }
-  state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined, pending: [...this.pending.values()] }; }
+  state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined,
+    pending: [...this.pending.values()],
+    devices: [...this.remoteDevices].map(([id, value]) => ({ id: `device:${id}`, name: value.member.name, online: value.member.online })) }; }
 }
 
 export interface LocalCapabilities {

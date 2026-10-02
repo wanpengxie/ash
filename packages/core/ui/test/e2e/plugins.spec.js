@@ -41,6 +41,8 @@ test("local settings toggles an installed DSH plugin through the production admi
     await expect(page.locator("#settingsModelStatus")).toHaveText("已保存；重启 Ash 后主模型生效。");
     const modelOp = running.ledger.list({ limit: 1000 }).findLast((message) => message.to === "service:admin" && message.word === "model.set");
     expect(modelOp?.body).toEqual({ provider, model: next });
+    await page.locator("#settingsGatewayLoad").click();
+    await expect(page.locator("#settingsGatewayStatus")).toHaveText("网关尚未配置。");
   } finally {
     await running?.close();
     rmSync(root, { recursive: true, force: true });
