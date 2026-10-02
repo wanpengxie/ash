@@ -365,6 +365,7 @@ test("a browser approval reads as one line, and 'always' covers that site and no
     const askId = ledger.gateCase(first.id)!.askId;
     assert.equal(ledger.byId(askId)?.body.detail, "在 www.Example.com 点击「登录」");
     assert.deepEqual((ledger.byId(askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "always", "deny"]);
+    assert.equal((ledger.byId(askId)?.body.options as { id: string; label: string }[])[1].label, "30 天内允许在这个网站上这样操作");
     await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId, body: { ok: true, result: { choice: "always" } } });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(effects, 1);

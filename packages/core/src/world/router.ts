@@ -677,7 +677,7 @@ export class WorldRouter {
           contractFingerprint: identity.fingerprint, expiresAt, objectPattern,
           askBody: { title: calendarAsk ? "创建日历事件" : "需要你确认", detail,
             options: [{ id: "once", label: "允许这一次" }, { id: "always", label: calendarAsk
-              ? "30 天内允许这个日历" : "30 天内允许同样的操作" },
+              ? "30 天内允许这个日历" : browserDetail && request.to!.startsWith("device:") ? "30 天内允许在这个网站上这样操作" : "30 天内允许同样的操作" },
               { id: "deny", label: "不允许" }],
             source: { word: request.word, to: request.to!, body_preview: detail } } });
         if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }

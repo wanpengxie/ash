@@ -73,6 +73,31 @@ export function materializeFile(root: string, id: string, index: number, data: B
 }
 
 /** Separate conversational paragraphs, never a fenced code block. */
+/** Character pairs of a message with spacing and punctuation removed; two retellings of one answer share most of them. */
+function pairs(text: string): Set<string> {
+  const chars = [...text.toLowerCase().replace(/[\s，。！？、：；,.!?:;"“”「」（）()\-—*_`]/gu, "")];
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < chars.length; i++) out.add(chars[i] + chars[i + 1]);
+  return out;
+}
+
+/** True when `text` only retells something already said: nearly the same pairs, in either direction. */
+export function retells(text: string, said: Iterable<string>): boolean {
+  const mine = pairs(text);
+  if (mine.size < 6) return false;
+  for (const earlier of said) {
+    const theirs = pairs(earlier);
+    if (theirs.size < 6) continue;
+    let shared = 0;
+    for (const pair of mine) if (theirs.has(pair)) shared++;
+    const jaccard = shared / (mine.size + theirs.size - shared);
+    const contained = shared / Math.min(mine.size, theirs.size);
+    const similarSize = Math.min(mine.size, theirs.size) / Math.max(mine.size, theirs.size) >= 0.3;
+    if (jaccard >= 0.5 || (contained >= 0.85 && similarSize)) return true;
+  }
+  return false;
+}
+
 export function splitAssistantText(text: string): string[] {
   const parts: string[] = [];
   let lines: string[] = [];
@@ -261,7 +286,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
         for (const [index, part] of splitAssistantText(text).entries()) {
           // After real ash_say messages, a closing aside wrapped whole in brackets is narration to nobody, not speech.
           const aside = () => said.size > 0 && /^[（(][^]*[）)]$/u.test(part.trim());
-          pending = pending.then(() => signal.aborted || emitError || said.has(sameWords(part)) || aside() ? undefined : emit({ id: `${key}:${index}`, text: part }))
+          pending = pending.then(() => signal.aborted || emitError || said.has(sameWords(part)) || retells(part, said) || aside() ? undefined : emit({ id: `${key}:${index}`, text: part }))
             .catch((error) => { emitError ??= error; });
         }
       } else if (event.type === "tool/call" && this.router) {
