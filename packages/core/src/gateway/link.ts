@@ -25,7 +25,8 @@ export function borrowedCapabilities(raw: unknown[], deviceName: unknown): Devic
     const cap = value as DeviceCapability;
     if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
       throw new TypeError("invalid remote capability");
-    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, label: `在${device}上用 ${cap.name.slice(0, 80)}` };
+    const name = cap.name.replace(/[\p{C}\s]+/gu, " ").trim().slice(0, 80);
+    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, label: `在${device}上用 ${name}` };
   });
 }
 

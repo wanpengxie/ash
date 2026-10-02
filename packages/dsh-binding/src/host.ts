@@ -141,6 +141,8 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
 const GENTLE_REMINDER = "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.";
 const DETAILED_REMINDER = /^Repeated tool call detected:\n- tool: [A-Za-z0-9_.:-]{1,128}\n- consecutive_calls: [0-9]{1,6}\n- arguments: [^\n]*\nThe repeated calls are not making progress\. Do not call this tool with these exact arguments again\. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered\.$/u;
 
+// Deliberately replaces the approval and permission rows whole: ash owns this DSH home and the door needs ask
+// under every preset, so a narrower user default (if one were ever configured here) is not carried over.
 const APPROVAL_PATCH = `- id: approval
   config:
     policy: ask
