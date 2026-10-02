@@ -223,13 +223,18 @@ R18() { say "R18 explicit stop cancels the active turn, without stopping the nex
 R19() { say "R19 a risky phone action produces an Android approval notification and one answer"
   wait_online 300 || { bad R19 "agent not online"; return; }
   adb shell input keyevent 3 >/dev/null 2>&1
-  local from request ask notice answer effect
+  local from request ask notice answer effect end
   from=$(last_seq)
   request=$(send_say "请使用手机的 shell.run 执行 printf ash-r19；这是回归测试，请实际调用工具，不要只解释。")
   [ -n "$request" ] || { bad R19 "request not accepted"; return; }
   ask=$(wait_row 180 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&Array.isArray(x.body?.options)&&x.body.options.some(o=>o.id==='once')&&x.body.options.some(o=>o.id==='deny'))" "$from") || { bad R19 "no approval ask"; return; }
   local ask_id; ask_id=$(echo "$ask" | jq_ 'v.id||""')
-  notice=$(adb shell dumpsys notification --noredact 2>/dev/null | grep -F "present:$ask_id" | head -1)
+  notice=""; end=$((SECONDS+30))
+  while [ "$SECONDS" -lt "$end" ]; do
+    notice=$(adb shell dumpsys notification --noredact 2>/dev/null | grep -F "present:$ask_id" | head -1)
+    [ -z "$notice" ] || break
+    sleep 1
+  done
   [ -n "$notice" ] || { bad R19 "approval was not rendered by Android"; return; }
   answer=$(api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:gate",kind:"response",word:"ask",reply_to:process.argv[1],body:{ok:true,result:{choice:"once"}},client_id:process.argv[2]}))' "$ask_id" "regress-r19-$RANDOM$RANDOM")" | jq_ 'v.id||""')
   [ -n "$answer" ] || { bad R19 "approval answer not accepted"; return; }
