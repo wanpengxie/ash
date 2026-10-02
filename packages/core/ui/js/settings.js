@@ -281,6 +281,31 @@ export class SettingsControls {
       jevSection.append(key, statusButton, saveKey, jevStatus);
       section.append(jevSection);
     }
+    if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashBrowserLogins === "function") {
+      const browserSection = document.createElement("section");
+      browserSection.id = "settingsBrowser";
+      browserSection.append(node("h2", "Ash 的浏览器"));
+      const clear = node("button", "清除浏览器里的所有登录", "btn gray");
+      clear.id = "settingsBrowserClear";
+      clear.type = "button";
+      const browserStatus = node("p", "浏览器里登录过的网站只保存在这台手机上；清除后她需要你重新登录。", "muted");
+      browserStatus.id = "settingsBrowserStatus";
+      browserStatus.setAttribute("role", "status");
+      let armed = false;
+      clear.addEventListener("click", () => { void (async () => {
+        // One accidental tap must not wipe logins: the first tap asks, the second confirms.
+        if (!armed) { armed = true; clear.textContent = "再点一次确认清除"; browserStatus.textContent = "会清掉所有网站的登录，并关闭浏览器。"; return; }
+        armed = false; clear.textContent = "清除浏览器里的所有登录"; clear.disabled = true;
+        browserStatus.textContent = "正在清除…";
+        try {
+          const result = await globalThis.__ashBrowserLogins();
+          if (this.section === section) browserStatus.textContent = result.ok ? "已清除所有登录。" : "清除失败；请重试。";
+        } catch { if (this.section === section) browserStatus.textContent = "清除失败；请重试。"; }
+        finally { clear.disabled = false; }
+      })(); });
+      browserSection.append(clear, browserStatus);
+      section.append(browserSection);
+    }
     const gatewaySection = document.createElement("section");
     gatewaySection.id = "settingsGateway";
     gatewaySection.append(node("h2", "已连接设备"));

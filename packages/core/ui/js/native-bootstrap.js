@@ -18,6 +18,15 @@
     });
   };
 
+  globalThis.__ashBrowserLogins = () => {
+    if (!ready) return Promise.reject(new Error("native settings unavailable"));
+    const id = String(++nextId);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { browserLogins: true, finish() { pending.delete(id); }, resolve, reject });
+      post({ type: "browser_logins", id, operation: "clear" });
+    });
+  };
+
   globalThis.__ashGatewayConfig = (operation, url = "", secret = "") => {
     if (!ready || !["status", "save"].includes(operation)) return Promise.reject(new Error("native settings unavailable"));
     const id = String(++nextId);
@@ -76,6 +85,10 @@
     if (!item) return;
     if (item.jev) {
       if (message.type === "jev_result") { item.finish(); item.resolve({ ok: message.ok === true, configured: message.configured === true }); }
+      return;
+    }
+    if (item.browserLogins) {
+      if (message.type === "browser_logins_result") { item.finish(); item.resolve({ ok: message.ok === true }); }
       return;
     }
     if (item.gatewayConfig) {

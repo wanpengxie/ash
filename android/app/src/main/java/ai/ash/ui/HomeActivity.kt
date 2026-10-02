@@ -145,6 +145,7 @@ class HomeActivity : Activity() {
                     "request" -> handleNativeRequest(input, reply)
                     "jev" -> handleJevSetting(input, reply)
                     "gateway_config" -> handleGatewaySetting(input, reply)
+                    "browser_logins" -> handleBrowserLogins(input, reply)
                 }
             }
         }
@@ -283,6 +284,16 @@ class HomeActivity : Activity() {
         result.put("type", "jev_result").put("id", id)
             .put("configured", secrets.jevApiKey != null)
         if (pageEpoch == epoch) reply.postMessage(result.toString())
+    }
+
+    private fun handleBrowserLogins(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
+        val id = input.optString("id")
+        if (!Regex("[1-9][0-9]{0,11}").matches(id) || input.optString("operation") != "clear") return
+        val epoch = pageEpoch
+        Thread {
+            val ok = ai.ash.host.browser.BrowserSession.clearLogins(applicationContext)
+            runOnUiThread { if (pageEpoch == epoch) reply.postMessage(JSONObject().put("type", "browser_logins_result").put("id", id).put("ok", ok).toString()) }
+        }.start()
     }
 
     private fun handleGatewaySetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {

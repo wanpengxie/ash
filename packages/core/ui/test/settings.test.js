@@ -271,3 +271,41 @@ test("local gateway controls show a one-time pairing code with where to use it",
     assert.doesNotMatch(panel.find("settingsGatewayPairResult").textContent, /pair-XYZ-123/);
   } finally { delete globalThis.document; }
 });
+
+test("Android settings clear every browser login only after a second tap", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "https://appassets.androidplatform.net" };
+  let cleared = 0, ok = true;
+  globalThis.__ashBrowserLogins = async () => { cleared++; return { ok }; };
+  try {
+    const panel = new Element("div");
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request() { throw new Error("browser logins must not use /api/send"); } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    const button = panel.find("settingsBrowserClear");
+    button.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cleared, 0, "one tap only asks");
+    assert.match(button.textContent, /再点一次/);
+    button.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cleared, 1);
+    assert.match(panel.find("settingsBrowserStatus").textContent, /已清除/);
+    ok = false;
+    button.click(); button.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cleared, 2);
+    assert.match(panel.find("settingsBrowserStatus").textContent, /清除失败/);
+  } finally { delete globalThis.document; delete globalThis.location; delete globalThis.__ashBrowserLogins; }
+});
+
+test("outside the Android app there is no browser-login control", () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    const settings = new SettingsControls(panel, { token: "t", screen: "screen:local", currentScope: "s", localManagement: true, async request() { return new Response("{}"); } });
+    settings.registration({ local_management: true }); settings.network("online");
+    assert.equal(panel.find("settingsBrowserClear"), undefined);
+  } finally { delete globalThis.document; }
+});
