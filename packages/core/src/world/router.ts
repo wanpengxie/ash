@@ -390,7 +390,9 @@ export class WorldRouter {
         fail("forbidden", "resume requires a verified local owner screen");
     }
     if (request.to === "service:self" && LOCAL_SELF_MUTATIONS.has(request.word)) {
-      const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan");
+      // Background work never overwrites: it appends, applies hash-guarded plans, or creates a file that does not exist yet.
+      const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan" ||
+        (request.word === "write" && request.body.expected_hash === null));
       if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")

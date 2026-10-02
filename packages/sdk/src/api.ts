@@ -504,7 +504,7 @@ export interface WorkerInputMap {
   extract: { chunk: Message[]; summary: string; known: string[] };
   verify_claims: { claims: Claim[]; evidence: Message[] };
   reconcile: { file: "MEMORY.md" | "USER.md"; numbered: string; claims: Claim[] };
-  verify_plan: { file: "MEMORY.md" | "USER.md"; before: string; edits: Edit[] };
+  verify_plan: { file: "MEMORY.md" | "USER.md"; before: string; edits: Edit[]; evidence?: Message[] };
   proactive: { prefs: string; recent: Message[]; facts: { n: number; text: string }[]; upcoming: unknown[]; delivered: unknown[] };
   opener: { away_ms: number; last_topic: string; pending: unknown[]; changes: unknown[] };
 }
