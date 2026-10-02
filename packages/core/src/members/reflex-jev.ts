@@ -19,7 +19,7 @@ const questions = {
 };
 
 export class JevReflexClient {
-  constructor(private readonly url: string, private readonly key: string, private readonly timeoutMs = 3000,
+  constructor(private readonly url: string, private readonly key: string, private readonly timeoutMs = 6000,
     private readonly fetchImpl: typeof fetch = fetch) {
     if (!url || !key || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError("JEV configuration unavailable");
   }

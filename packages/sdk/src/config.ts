@@ -12,7 +12,7 @@ export interface WorldConfigV2 {
 
 export const DEFAULT_WORLD_CONFIG_V2: WorldConfigV2 = {
   delivery: { quiet: "21:30-09:00", dedupe_minutes: 60 },
-  reflex: { jev: { url: "", key_credential: "jev" }, threshold: 0.6, timeout_ms: 3000 },
+  reflex: { jev: { url: "", key_credential: "jev" }, threshold: 0.6, timeout_ms: 6000 },
   workers: { model: null },
   memory: { idle_minutes: 5, every_minutes: 60 },
   heartbeat: { every_minutes: 30 },
