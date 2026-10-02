@@ -319,3 +319,101 @@ test("local settings change quiet hours through the live admin word", async ({ p
   await expect(page.locator("#settingsQuietStart")).toHaveValue("22:00");
   await expect(page.locator("#settingsQuietEnd")).toHaveValue("08:00");
 });
+
+test("visible heartbeats stop in the background and resume when the screen returns", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const visibleCount = () => running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.to === "service:post" && message.word === "visible").length;
+  await expect.poll(visibleCount).toBeGreaterThan(0);
+  const before = visibleCount();
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.fastForward(60_000);
+  expect(visibleCount()).toBe(before);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(visibleCount).toBe(before + 1);
+});
+
+test("an approval can allow once but becomes inert after its deadline", async ({ page }) => {
+  await page.clock.install();
+  const device = "device:approval_expiry_e2e";
+  let effects = 0;
+  running.members.registerDevice({ id: device, kind: "device", name: "Approval expiry probe", online: true,
+    capabilities: () => [{ name: "run", description: "Run once", label: "Running once", risk: "outward",
+      input_schema: { type: "object", properties: { item: { type: "string" } }, required: ["item"], additionalProperties: false } }],
+    handle: () => { effects++; return { ok: true, result: {} }; } });
+  const grant = await fetch(`${running.url}/api/send`, { method: "POST",
+    headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ to: "service:gate", kind: "request", word: "access.grant",
+      body: { member: "agent:main", scope: `${device}/run` }, wait: true }) });
+  expect((await grant.json()).reply?.body.ok).toBe(true);
+  const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false };
+  const ask = (item) => running.world.send(agent, { to: device, kind: "request", word: "run", body: { item } });
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const allowed = await ask("approved");
+  const first = page.locator("#log .card.ask").filter({ hasText: "approved" });
+  await expect(first.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  await first.getByRole("button", { name: "Allow once" }).click();
+  await expect.poll(() => effects).toBe(1);
+  expect(running.ledger.responseTo(allowed.id)?.body.ok).toBe(true);
+
+  const expired = await ask("expires");
+  const second = page.locator("#log .card.ask").filter({ hasText: "expires" });
+  await expect(second.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  await page.clock.fastForward(601_000);
+  await expect(second).toContainText("已过期");
+  await expect(second.getByRole("button", { name: "Allow once" })).toBeDisabled();
+  await expect(second.getByRole("button", { name: "Deny" })).toBeDisabled();
+  expect(running.ledger.responseTo(expired.id)).toBeNull();
+  expect(effects).toBe(1);
+});
+
+test("local settings pause immediately and require a second tap to resume", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await page.locator("#menu").click();
+  await expect(page.locator("#settingsAdmin")).toBeVisible();
+  const before = running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.to === "service:admin" && ["pause", "resume"].includes(message.word)).length;
+  await page.locator("#settingsPause").click();
+  await expect(page.locator("#settingsFeedback")).toHaveText("已暂停 Ash");
+  await page.locator("#settingsResume").click();
+  await expect(page.locator("#settingsResumeConfirmation")).toBeVisible();
+  expect(running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.to === "service:admin" && message.word === "resume")).toHaveLength(0);
+  await page.locator("#settingsResumeYes").click();
+  await expect(page.locator("#settingsFeedback")).toHaveText("已恢复 Ash");
+  const commands = running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.to === "service:admin" && ["pause", "resume"].includes(message.word));
+  expect(commands.slice(before).map((message) => message.word)).toEqual(["pause", "resume"]);
+});
+
+test("local proactive preferences save through self and survive a page reload", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await page.locator("#menu").click();
+  const preferences = page.locator("#settingsProactive");
+  await expect(preferences).toBeVisible();
+  await preferences.getByRole("button", { name: "加载偏好" }).click();
+  await expect(preferences.getByRole("status")).toContainText(/已读取当前偏好|偏好文件尚不存在/);
+  const content = `Only useful updates. ${Date.now()}\n`;
+  await page.locator("#settingsProactiveText").fill(content);
+  await preferences.getByRole("button", { name: "保存偏好" }).click();
+  await expect(preferences.getByRole("status")).toHaveText("已保存并重新核对。");
+  const writes = running.ledger.list({ limit: 1000 }).filter((message) =>
+    message.from === "person:owner" && message.to === "service:self" && message.word === "write" && message.body.path === "PROACTIVE.md");
+  expect(writes.at(-1)?.body.content).toBe(content);
+  await page.reload();
+  await page.locator("#menu").click();
+  await page.locator("#settingsProactive").getByRole("button", { name: "加载偏好" }).click();
+  await expect(page.locator("#settingsProactiveText")).toHaveValue(content);
+});
