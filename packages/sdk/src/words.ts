@@ -43,6 +43,8 @@ const positiveSafe: JsonSchema = { type: "integer", minimum: 1, maximum: Number.
 const nonnegativeSafe: JsonSchema = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const datePath = { type: "string", pattern: "^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
 const selfPath = { type: "string", pattern: "^(SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE)\\.md$|^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
+// Requests accept any short path so that service:self answers a non-managed one with forbidden (F-S22).
+const selfPathRequest = { type: "string", minLength: 1, maxLength: 256 } as const satisfies JsonSchema;
 const edit = obj({ op: choice("replace", "delete", "insert_after"), start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 }, guard: str, text: str, reason: choice("promote", "correct", "complete", "expire", "dedupe", "condense", "demote"), evidence: strings }, ["op", "start", "end", "guard", "reason", "evidence"]);
 const claim = obj({ text: nonempty, type: choice("fact", "preference", "relationship", "event", "boundary", "correction"), salience: choice("low", "medium", "high"), evidence: strings, quote: str, supersedes: str, valid_until: str }, ["text", "type", "salience", "evidence"]);
 const message = obj({ seq: integer, id, ts: num, from: id, to: { anyOf: [str, { type: "null" }] }, kind: choice("request", "response", "event"), word: id, body: obj({}, [], true), reply_to: str, origin, turn: str }, ["seq", "id", "ts", "from", "to", "kind", "word", "body"]);
@@ -168,12 +170,12 @@ add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("ru
 add("service:gate", "gate.denied", "event", obj({ request_id: id, by: choice("answer", "timeout"), ask_id: id },
   ["request_id", "by"]), undefined, { direction: "out" });
 
-add("service:self", "read", "request", obj({ path: selfPath }, ["path"]), obj({ content: str, hash: sha, version: integer }, ["content", "hash"]));
-add("service:self", "write", "request", obj({ path: selfPath, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });
+add("service:self", "read", "request", obj({ path: selfPathRequest }, ["path"]), obj({ content: str, hash: sha, version: integer }, ["content", "hash"]));
+add("service:self", "write", "request", obj({ path: selfPathRequest, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });
 add("service:self", "append", "request", obj({ path: datePath, text: str }, ["path", "text"]), obj({ hash: sha }, ["hash"]), { label: "Adding to a log", description: "Atomically append to any allowed dated log." });
-add("service:self", "apply_plan", "request", obj({ path: selfPath, expected_hash: sha, edits: array(edit) }, ["path", "expected_hash", "edits"]), obj({ applied: integer, hash: sha }, ["applied", "hash"]));
-add("service:self", "rollback", "request", obj({ path: selfPath, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure" });
-add("service:self", "history", "request", obj({ path: selfPath }, ["path"]), obj({ versions: array(any) }, ["versions"]));
+add("service:self", "apply_plan", "request", obj({ path: selfPathRequest, expected_hash: sha, edits: array(edit) }, ["path", "expected_hash", "edits"]), obj({ applied: integer, hash: sha }, ["applied", "hash"]));
+add("service:self", "rollback", "request", obj({ path: selfPathRequest, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure" });
+add("service:self", "history", "request", obj({ path: selfPathRequest }, ["path"]), obj({ versions: array(any) }, ["versions"]));
 add("service:self", "self.changed", "event", obj({ path: selfPath, by: id, summary: str, version: integer }, ["path", "by", "summary"]), undefined, { direction: "out" });
 
 const calendarEvent = obj({ id, title: str, start: num, end: num, important: bool }, ["id", "title", "start", "end"]);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -30,8 +30,13 @@ async function fixture(failpoint?: (stage: SelfStage) => void) {
 test("self enforces canonical paths, byte hashes, USER frontmatter and authentic by", async () => {
   const f = await fixture();
   try {
-    for (const path of ["../outside", "SOUL.md.bak"])
-      await assert.rejects(f.send("write", { path, content: "bad", why: "test", expected_hash: null }), /schema/);
+    // F-S22: a path outside the managed set is refused as forbidden and nothing is written.
+    for (const path of ["../outside", "SOUL.md.bak", "memory/../SOUL.md"]) {
+      const refused = await f.send("write", { path, content: "bad", why: "test", expected_hash: null });
+      assert.equal((refused.reply?.body as { error?: { code?: string } }).error?.code, "forbidden");
+    }
+    assert.equal(existsSync(join(f.home, "SOUL.md.bak")), false);
+    assert.equal(existsSync(join(f.dir, "outside")), false);
     const created = await f.send("write", { path: "USER.md", content: "Notes\n", why: "test", expected_hash: null }, agent);
     assert.equal(created.reply?.body.ok, true);
     const written = readFileSync(join(f.home, "USER.md"), "utf8");

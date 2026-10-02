@@ -682,12 +682,15 @@ export class Ledger {
     });
   }
 
-  workRuns(flow?: string, limit = 50): WorkRunInfoV2[] {
+  workRuns(flow?: string, limit = 50, state?: WorkRunInfoV2["state"]): WorkRunInfoV2[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid runs limit");
     if (flow !== undefined && !matchesSchema(wordContract("service:work", "run")!.input_schema!, { flow })) throw new TypeError("invalid flow");
+    if (state !== undefined && flow === undefined) throw new TypeError("state filter needs a flow");
     const rows = (flow === undefined
       ? this.db.prepare("SELECT run,flow,trigger,state,started_at,ended_at FROM work_runs ORDER BY started_at DESC,run DESC LIMIT ?").all(limit)
-      : this.db.prepare("SELECT run,flow,trigger,state,started_at,ended_at FROM work_runs WHERE flow=? ORDER BY started_at DESC,run DESC LIMIT ?").all(flow, limit)) as Row[];
+      : state === undefined
+        ? this.db.prepare("SELECT run,flow,trigger,state,started_at,ended_at FROM work_runs WHERE flow=? ORDER BY started_at DESC,run DESC LIMIT ?").all(flow, limit)
+        : this.db.prepare("SELECT run,flow,trigger,state,started_at,ended_at FROM work_runs WHERE flow=? AND state=? ORDER BY started_at DESC,run DESC LIMIT ?").all(flow, state, limit)) as Row[];
     const runs = rows.map((row) => ({ run: String(row.run), flow: String(row.flow), trigger: String(row.trigger) as WorkRunInfoV2["trigger"],
       state: String(row.state) as WorkRunInfoV2["state"], started_at: Number(row.started_at), ended_at: row.ended_at === null ? null : Number(row.ended_at) }));
     if (workRunsResultErrors({ runs }).length) throw new TypeError("invalid durable work run metadata");
@@ -1069,6 +1072,13 @@ export class Ledger {
     const rows = this.db.prepare("SELECT seq FROM messages WHERE seq>? ORDER BY seq LIMIT ?")
       .iterate(after, Math.min(Math.max(limit, 1), 1000)) as Iterable<Row>;
     return Array.from(rows, (row) => Number(row.seq));
+  }
+
+  /** What the owner said to Ash, oldest first, independent of how much else the ledger holds. */
+  ownerSays(q: { after?: number; afterTs?: number; limit?: number } = {}): Message[] {
+    const limit = Math.min(Math.max(q.limit ?? 200, 1), 1000);
+    return (this.db.prepare(`SELECT * FROM messages WHERE "from"='person:owner' AND "to"='agent:main' AND kind='request' AND word='say'
+      AND seq>? AND ts>? ORDER BY seq LIMIT ?`).all(q.after ?? 0, q.afterTs ?? -1, limit) as Row[]).map(decode);
   }
 
   list(q: { after?: number; before?: number; limit?: number } = {}): Message[] {
