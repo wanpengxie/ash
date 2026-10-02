@@ -92,6 +92,15 @@ export function applySelfEdits(content: string, edits: readonly Edit[]): string 
   return out.join("\n") + (trailing ? "\n" : "");
 }
 
+/** What a reader of the change needs to recognise it: a few added and removed lines, bounded. */
+export function lineChanges(before: string, after: string): string {
+  const meaningful = (text: string) => text.split("\n").map((line) => line.trim()).filter((line) => line && !/^(---|version:|updated:)/u.test(line));
+  const was = new Set(meaningful(before)), now = new Set(meaningful(after));
+  const clip = (lines: string[]) => lines.slice(0, 3).map((line) => JSON.stringify([...line].slice(0, 60).join(""))).join(" | ");
+  const added = [...now].filter((line) => !was.has(line)), removed = [...was].filter((line) => !now.has(line));
+  return `${added.length ? `; added: ${clip(added)}` : ""}${removed.length ? `; removed: ${clip(removed)}` : ""}`;
+}
+
 class SelfFailure extends Error {
   constructor(readonly code: MessageErrorCode, message: string) { super(message); }
 }
@@ -246,6 +255,7 @@ export class SelfMember implements Member {
       summary = "Managed file rolled back";
       result = {};
     } else throw new SelfFailure("not_found", "self word unavailable");
+    if (message.word !== "append") summary += lineChanges(old ?? "", content);
     if (path === "USER.md") {
       const previous = userVersion(old) ?? 0;
       if (previous >= Number.MAX_SAFE_INTEGER) throw new SelfFailure("bad_request", "USER.md version exhausted");

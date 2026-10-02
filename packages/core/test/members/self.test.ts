@@ -429,3 +429,10 @@ test("self rejects symbolic and hard-link aliases and retains only the latest 50
     assert.equal(readdirSync(join(g.home, ".ash", "versions", "MEMORY.md")).length, 50);
   } finally { await g.self.close(); g.ledger.close(); }
 });
+
+test("a change summary names the lines that were added and removed", async () => {
+  const { lineChanges } = await import("../../src/members/self");
+  assert.equal(lineChanges("- 温和\n", "- 温和\n- 说话更短，能一句说完就一句。\n"), '; added: "- 说话更短，能一句说完就一句。"');
+  assert.equal(lineChanges("- 旧说法\n- 保留\n", "- 保留\n"), '; removed: "- 旧说法"');
+  assert.equal(lineChanges("---\nversion: 1\n---\nA\n", "---\nversion: 2\n---\nA\n"), "");
+});

@@ -130,7 +130,7 @@ try {
     firstHasMemory: beforeVisible.includes(memoryFact), firstContextOrder: ordered.every((position, index) =>
       position >= 0 && (index === 0 || position > ordered[index - 1])), firstDynamicVisible: beforeTail.includes("Synthetic context check before"),
     secondHasNewSoul: afterVisible.includes(newSoul),
-    secondCurrentHasNewSoul: afterTail.includes(newSoul), secondCurrentHasOldSoul: afterTail.includes(oldSoul),
+    secondCurrentHasNewSoul: afterTail.includes(newSoul), secondCurrentHasOldSoul: afterTail.slice(afterTail.indexOf("SOUL.md (persona):"), afterTail.indexOf("IDENTITY.md (persona):")).includes(oldSoul),
     secondHasUser: afterVisible.includes(userFact), secondHasMemory: afterVisible.includes(memoryFact),
     secondHasChangedFact: afterTail.includes("self.changed") && afterTail.includes("SOUL.md") &&
       afterTail.includes(`by ${changed[0].body.by}`) && afterTail.includes(changed[0].body.summary), thirdHasChangedFact: laterTail.includes("self.changed") &&

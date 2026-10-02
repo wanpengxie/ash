@@ -73,8 +73,10 @@ test("a managed-file change reaches the next turn's context once, with author, f
     await turn("third", 3);
     assert.equal(turns.length, 3);
     const [, second, third] = turns;
-    assert.ok(second.includes("NEW_SOUL_MARKER") && !second.includes("OLD_SOUL_MARKER"), "the next turn sees the new content");
-    for (const part of ["self.changed", "SOUL.md", `by ${changed[0].body.by}`, String(changed[0].body.summary)]) assert.ok(second.includes(part), `next turn names ${part}`);
+    const soulOf = (text: string) => { const at = text.indexOf("SOUL.md (persona):"); return text.slice(at, text.indexOf("IDENTITY.md (persona):", at)); };
+    assert.ok(soulOf(second).includes("NEW_SOUL_MARKER") && !soulOf(second).includes("OLD_SOUL_MARKER"), "the next turn sees the new content");
+    assert.ok(second.includes("added: ") && second.includes("NEW_SOUL_MARKER"), "the change fact says what was added");
+    for (const part of ["self.changed", "SOUL.md", `by ${changed[0].body.by}`, "Managed file updated"]) assert.ok(second.includes(part), `next turn names ${part}`);
     assert.ok(!third.includes("self.changed"), "a later turn does not repeat the change");
     const devicesOf = (text: string) => { const at = text.indexOf("Devices now"); return at < 0 ? "" : text.slice(at, text.indexOf("[ash] ", at)); };
     assert.match(devicesOf(turns[0]), /device:phone[^]*clipboard\.get/);
