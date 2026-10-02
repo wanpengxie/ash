@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regression checklist R1–R16 on a device/emulator (run on the machine with adb).
+# Regression checklist on a device/emulator (run on the machine with adb).
 #
 #   APK=app-debug.apk tools/regress.sh [R1 R2 …]        (default: R2 R4 R5 R6 R7 R8 R9 R11 R12)
 #
@@ -10,9 +10,9 @@
 # Secrets never reach the output: tokens are read on the device and used in-process only.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PKG=ai.ash.agent
+PKG=${ASH_REGRESS_PACKAGE:-ai.ash.agent.probe}
 F=/data/user/0/$PKG/files
-PORT=4700
+PORT=${ASH_REGRESS_PORT:-14763}
 PASS=0; FAIL=0; RESULTS=()
 
 say() { printf '\n== %s\n' "$*"; }
@@ -29,23 +29,26 @@ api() { # api METHOD PATH [JSON]
   else curl -s -m 30 -X "$1" -H "authorization: Bearer $t" "http://127.0.0.1:$PORT$2"; fi
 }
 jq_() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const v=JSON.parse(s);const f=new Function("v","return ("+process.argv[1]+")");const r=f(v);process.stdout.write(typeof r==="string"?r:JSON.stringify(r))}catch(e){process.stdout.write("")}})' "$1"; }
-agent_status() { api GET /api/agents | jq_ 'v.find(a=>a.id==="agent:main")?.status||""'; }
-session_id() { api GET /api/agents | jq_ 'v.find(a=>a.id==="agent:main")?.handle||""'; }
-core_pids() { adb shell ps -A -o PID,ARGS 2>/dev/null | grep 'ash-core.mjs --config' | grep -v grep | awk '{print $1}'; }
+core_status() { local t; t=$(token) || return 1; fwd; curl -s -o /dev/null -w '%{http_code}' -m 5 -H "authorization: Bearer $t" "http://127.0.0.1:$PORT/api/describe?member=agent:main"; }
+session_id() { asr 'cat ash/state/dsh-main-session.json' | jq_ 'v.id||""'; }
+core_pids() { adb shell ps -A -o PID,ARGS 2>/dev/null | grep -F "$F/payload/ash/ash-core.mjs --config" | awk '{print $1}'; }
 wait_online() { # wait_online SECONDS
   local end=$((SECONDS+$1))
-  while [ $SECONDS -lt $end ]; do [ "$(agent_status)" = "idle" ] && return 0; sleep 3; done; return 1
+  while [ $SECONDS -lt $end ]; do [ "$(core_status)" = "200" ] && return 0; sleep 3; done; return 1
 }
 control() { adb shell am broadcast -n $PKG/ai.ash.host.ControlReceiver -a "ai.ash.$1" >/dev/null; }
-last_seq() { api GET '/api/events?limit=1000' | jq_ 'v.next||0'; }
-deliver_and_wait() { # deliver_and_wait TEXT SECONDS → prints the agent's reply text
+rows() { api GET "/api/stream?follow=false&limit=1000&after=${1:-0}" | sed -n 's/^data: //p' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const line of s.split("\n")){try{const row=JSON.parse(line);if(Number.isSafeInteger(row.seq)&&row.id&&row.word)console.log(JSON.stringify(row))}catch{}}})'; }
+last_seq() { api GET '/api/stream?follow=false&limit=1' | sed -n 's/^id: //p' | tail -1 | tr -d '\r'; }
+admin() { local word=$1 body=$2; api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:admin",kind:"request",word:process.argv[1],body:JSON.parse(process.argv[2]),wait:true,client_id:crypto.randomUUID()}))' "$word" "$body")" | jq_ 'v.reply?.body||{}'; }
+deliver_and_wait() { # deliver_and_wait TEXT SECONDS [ATTACHMENTS_JSON] → agent reply text
   wait_online 300 || return 1
   local from; from=$(last_seq)
   local id="regress-$RANDOM$RANDOM"
-  api POST /api/agents/agent:main/deliver "$(node -e 'console.log(JSON.stringify({text:process.argv[1],message_id:process.argv[2]}))' "$1" "$id")" >/dev/null
+  local accepted; accepted=$(api POST /api/send "$(node -e 'const a=process.argv[3]?JSON.parse(process.argv[3]):[];console.log(JSON.stringify({to:"agent:main",kind:"request",word:"say",body:{text:process.argv[1],...(a.length?{attachments:a}:{})},client_id:process.argv[2]}))' "$1" "$id" "${3:-}")" | jq_ 'v.id||""')
+  [ -n "$accepted" ] || return 1
   local end=$((SECONDS+$2))
   while [ $SECONDS -lt $end ]; do
-    local r; r=$(api GET "/api/events?after=$from&limit=1000" | jq_ "(()=>{const e=v.events;const done=e.find(x=>x.type==='agent.turn.ended'&&x.data.message_id==='$id');if(!done)return '';return e.filter(x=>x.type==='agent.text'&&x.data.message_id==='$id').map(x=>x.data.text).join('\\n')||('('+done.data.reason+': '+(done.data.error||'')+')')})()")
+    local r; r=$(rows "${from:-0}" | ASH_INPUT_ID="$accepted" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const e=s.trim().split("\n").filter(Boolean).map(x=>JSON.parse(x));const start=e.find(x=>x.word==="turn.start"&&x.body?.ids?.includes(process.env.ASH_INPUT_ID));if(!start)return;const turn=start.body.turn;const done=e.find(x=>x.word==="turn.end"&&x.body?.turn===turn);if(!done)return;const out=e.filter(x=>x.from==="agent:main"&&x.to==="person:owner"&&x.word==="say"&&x.turn===turn).map(x=>x.body?.text).filter(Boolean).join("\n");process.stdout.write(out||`(${done.body?.reason}: ${done.body?.error||""})`)})')
     [ -n "$r" ] && { echo "$r"; return 0; }
     sleep 3
   done
@@ -145,23 +148,22 @@ R15() { say "R15 an image sent in the chat reaches the model"
     const chunk=(t,d)=>{const l=Buffer.alloc(4);l.writeUInt32BE(d.length);const td=Buffer.concat([Buffer.from(t),d]);const c=Buffer.alloc(4);c.writeUInt32BE(crc(td));return Buffer.concat([l,td,c])};
     const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=2;
     process.stdout.write(Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk("IHDR",ihdr),chunk("IDAT",zlib.deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]).toString("base64"))')
-  local from; from=$(last_seq)
-  api POST /api/agents/agent:main/deliver "{\"text\":\"这张图片主要是什么颜色？只回答颜色。\",\"message_id\":\"r15-$RANDOM\",\"attachments\":[{\"name\":\"r15.png\",\"mime_type\":\"image/png\",\"data\":\"$img\"}]}" >/dev/null
-  local r=""; local end=$((SECONDS+180))
-  while [ $SECONDS -lt $end ]; do r=$(api GET "/api/events?after=$from&limit=1000" | jq_ "(()=>{const e=v.events;if(!e.some(x=>x.type==='agent.turn.ended'))return '';return e.filter(x=>x.type==='agent.text').map(x=>x.data.text).join(' ')||'(no text)'})()"); [ -n "$r" ] && break; sleep 3; done
+  local attachment; attachment=$(node -e 'console.log(JSON.stringify([{name:"r15.png",mime_type:"image/png",data:process.argv[1]}]))' "$img")
+  local r; r=$(deliver_and_wait "这张图片主要是什么颜色？只回答颜色。" 180 "$attachment")
   echo "    reply: ${r:0:120}"
   if echo "$r" | grep -q "红"; then ok "R15 the model sees the attached image (answers red)"; else bad R15 "unexpected reply"; fi
 }
 R16() { say "R16 plugins: disable and enable through ash settings (DSH's plugin manager)"
   wait_online 300 || { bad R16 "agent not online"; return; }
-  local n0 n1 n2
-  n0=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
-  api POST /api/plugins '{"op":"disable","name":"dsh-mnemon"}' >/dev/null; sleep 5
-  n1=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
-  api POST /api/plugins '{"op":"enable","name":"dsh-mnemon"}' >/dev/null; sleep 5
-  n2=$(api GET /api/settings | jq_ '(v.tools||[]).filter(t=>t.startsWith("mnemon_")).length')
-  echo "    mnemon tools: $n0 → disabled $n1 → enabled $n2"
-  if [ "${n0:-0}" -gt 0 ] && [ "${n1:-1}" = "0" ] && [ "$n2" = "$n0" ]; then ok "R16 plugin switches hot-apply"; else bad R16; fi
+  local plugin=include:tool-plugin-manager before after restored changed
+  before=$(admin plugins.list '{}' | jq_ "v.result?.plugins?.find(p=>p.entryId==='$plugin')?.enabled")
+  [ "$before" = "true" ] || [ "$before" = "false" ] || { bad R16 "installed plugin not listed"; return; }
+  changed=$(admin plugins.op "{\"op\":\"plugin\",\"id\":\"$plugin\",\"enabled\":$([ "$before" = true ] && echo false || echo true)}" | jq_ 'v.ok===true')
+  after=$(admin plugins.list '{}' | jq_ "v.result?.plugins?.find(p=>p.entryId==='$plugin')?.enabled")
+  restored=$(admin plugins.op "{\"op\":\"plugin\",\"id\":\"$plugin\",\"enabled\":$before}" | jq_ 'v.ok===true')
+  local final; final=$(admin plugins.list '{}' | jq_ "v.result?.plugins?.find(p=>p.entryId==='$plugin')?.enabled")
+  echo "    installed plugin: $before → $after → $final"
+  if [ "$changed" = true ] && [ "$restored" = true ] && [ "$after" != "$before" ] && [ "$final" = "$before" ]; then ok "R16 installed plugin switches through ash settings"; else bad R16 "plugin switch or restoration unconfirmed"; fi
 }
 
 adb get-state >/dev/null 2>&1 || { echo "no adb device"; exit 2; }
