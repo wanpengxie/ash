@@ -322,6 +322,29 @@ test("live progress shows two human steps, then folds into a turn-grouped activi
   await expect(page.locator("#log")).not.toContainText(/service:self|USER\.md|\bread\b/);
 });
 
+test("a committed background run appears in its own activity group with human step names", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const topic = `Background grouping ${Date.now()}`;
+  await page.locator("#t").fill(topic);
+  await page.locator("#send").click();
+  await expect(page.locator("#log .msg.ai").filter({ hasText: topic })).toHaveCount(1);
+  const started = running.ledger.workStartScheduled("memory", "event", `e2e:background:${Date.now()}`);
+  expect(started.run).toBeTruthy();
+  running.world.publishWorkEvent(started.event);
+  running.world.publishWorkEvent(running.ledger.workStep({ run: started.run, step: "extract", state: "started" }));
+  running.world.publishWorkEvent(running.ledger.workStep({ run: started.run, step: "extract", state: "done" }));
+  running.world.publishWorkEvent(running.ledger.workFinish(started.run, "done", "completed"));
+  await page.locator("#presence").click();
+  await page.locator("#agentTabs [data-tab=activity]").click();
+  const activity = page.locator(`#agentPanel [data-tab=activity] .activity-turn[data-turn="${started.run}"]`);
+  await expect(activity).toContainText("整理记忆");
+  await expect(activity.locator(".activity-step")).toHaveText("提取记忆");
+  await expect(page.locator("#agentPanel [data-tab=activity] .activity-group")).toContainText(["对话", "后台任务"]);
+  await expect(activity).not.toContainText(/service:work|\bextract\b/);
+  await expect(page.locator("#progress")).not.toContainText("提取记忆");
+});
+
 test("the composer compresses a static image and keeps a document intact", async ({ page }) => {
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
