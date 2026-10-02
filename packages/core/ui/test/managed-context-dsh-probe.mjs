@@ -64,7 +64,8 @@ try {
     for await (const chunk of request) raw += chunk;
     let payload;
     try { payload = JSON.parse(raw); } catch { response.writeHead(400).end("{}"); return; }
-    if (Array.isArray(payload.tools) && payload.tools.length) captured.push(payload);
+    // Only main turns: a mind-space wake also carries tools but is not the conversation under test.
+    if (Array.isArray(payload.tools) && payload.tools.length && !JSON.stringify(payload.messages ?? []).includes("This is your private mind space")) captured.push(payload);
     response.writeHead(200, { "content-type": "text/event-stream" });
     const event = (kind, data) => response.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
     event("message_start", { message: { id: `msg_context_${++serial}`, type: "message", role: "assistant", model: payload.model,
