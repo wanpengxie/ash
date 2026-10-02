@@ -12,6 +12,7 @@ test("JEV second stage posts three typed control questions and uses only a confi
       const body = JSON.parse(String(init?.body));
       assert.deepEqual(body.state, state);
       assert.deepEqual(Object.keys(body.questions), ["intent", "targets_current", "urgency"]);
+      assert.equal(body.questions.urgency.criteria.length, 4);
       return { ok: true, json: async () => ({ answers: {
         intent: { choice: "stop_current", confidence: 0.97 }, targets_current: { noul: 0.93 }, urgency: { score: 2 },
       } }) } as Response;

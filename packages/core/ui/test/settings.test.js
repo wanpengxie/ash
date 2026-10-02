@@ -12,6 +12,31 @@ class Element {
   find(id) { return this.id === id ? this : this.children.map((child) => child.find(id)).find(Boolean); }
 }
 
+test("Android settings save JEV Key through native bridge without sending it to the ledger", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "https://appassets.androidplatform.net" };
+  const calls = [];
+  globalThis.__ashJevKey = async (operation, key) => {
+    calls.push({ operation, key });
+    return { ok: true, configured: operation === "save" || key !== "" };
+  };
+  try {
+    const panel = new Element("div");
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request() { throw new Error("JEV Key must not use /api/send"); } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    const key = panel.find("settingsJevKey");
+    key.value = "  secret-test-key  ";
+    const save = panel.find("settingsJev").children.find((item) => item.textContent === "保存 Key");
+    save.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(key.value, "");
+    assert.deepEqual(calls, [{ operation: "save", key: "secret-test-key" }]);
+    assert.match(panel.find("settingsJevStatus").textContent, /已保存/);
+  } finally { delete globalThis.document; delete globalThis.location; delete globalThis.__ashJevKey; }
+});
+
 test("settings hide management on old, remote, malformed, or disconnected registration", () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
   try {

@@ -35,6 +35,7 @@ import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.Paths
 import ai.ash.host.Permissions
+import ai.ash.host.Secrets
 import ai.ash.ui.transport.CoreCancellation
 import ai.ash.ui.transport.CoreUiRequest
 import ai.ash.ui.transport.FixedCoreClient
@@ -141,6 +142,7 @@ class HomeActivity : Activity() {
                         .put("endpoint", "http://127.0.0.1:${BuildConfig.CORE_PORT}").toString())
                     "cancel" -> requests.remove(input.optString("id"))?.cancel()
                     "request" -> handleNativeRequest(input, reply)
+                    "jev" -> handleJevSetting(input, reply)
                 }
             }
         }
@@ -252,6 +254,31 @@ class HomeActivity : Activity() {
             } catch (_: Exception) { respond(JSONObject().put("type", "error")) }
             finally { requests.remove(id, cancellation) }
         }.start()
+    }
+
+    private fun handleJevSetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
+        val id = input.optString("id")
+        if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
+        val epoch = pageEpoch
+        val secrets = Secrets(this)
+        val operation = input.optString("operation")
+        val result = when (operation) {
+            "status" -> JSONObject().put("ok", true)
+            "save" -> {
+                val raw = input.opt("key")
+                val key = (raw as? String)?.trim()
+                if (key == null || key.length > 4096) JSONObject().put("ok", false)
+                else {
+                    val saved = secrets.saveJevApiKey(key)
+                    if (saved) CoreService.start(this, CoreService.ACTION_RESTART)
+                    JSONObject().put("ok", saved)
+                }
+            }
+            else -> return
+        }
+        result.put("type", "jev_result").put("id", id)
+            .put("configured", secrets.jevApiKey != null)
+        if (pageEpoch == epoch) reply.postMessage(result.toString())
     }
 
     private fun forbidden() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))

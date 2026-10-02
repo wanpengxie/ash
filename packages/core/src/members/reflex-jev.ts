@@ -13,7 +13,9 @@ const questions = {
     redirect: "Change the direction of the task.", unrelated: "No control instruction for the current task.",
   } },
   targets_current: { type: "noul", instructions: "Probability that the message refers to the current task." },
-  urgency: { type: "score", instructions: "Urgency of the control instruction, from 0 to 3." },
+  urgency: { type: "score", instructions: "Urgency of the control instruction, from 0 to 3.",
+    criteria: ["No immediate action needed", "Can wait until the current turn finishes",
+      "Stop after the current action", "Stop immediately"] },
 };
 
 export class JevReflexClient {

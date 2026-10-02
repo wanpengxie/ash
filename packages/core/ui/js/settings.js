@@ -241,6 +241,46 @@ export class SettingsControls {
     })(); });
     modelSection.append(provider, model, modelLoad, modelSave, modelStatus);
     section.append(modelSection);
+    if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashJevKey === "function") {
+      const jevSection = document.createElement("section");
+      jevSection.id = "settingsJev";
+      jevSection.append(node("h2", "JEV Key"));
+      const key = document.createElement("input");
+      key.id = "settingsJevKey";
+      key.type = "password";
+      key.placeholder = "输入新 Key；留空并保存可移除";
+      key.autocomplete = "off";
+      const statusButton = node("button", "检查状态", "btn gray");
+      statusButton.type = "button";
+      const saveKey = node("button", "保存 Key", "btn");
+      saveKey.type = "button";
+      const jevStatus = node("p", "Key 仅保存在本机；保存后 Ash 自动重启。", "muted");
+      jevStatus.id = "settingsJevStatus";
+      jevStatus.setAttribute("role", "status");
+      statusButton.addEventListener("click", () => { void (async () => {
+        try {
+          const result = await globalThis.__ashJevKey("status");
+          if (this.section === section) jevStatus.textContent = result.ok
+            ? result.configured ? "JEV Key 已设置。" : "JEV Key 未设置；目前只使用关键词判断。"
+            : "状态读取失败。";
+        } catch { if (this.section === section) jevStatus.textContent = "状态读取失败。"; }
+      })(); });
+      saveKey.addEventListener("click", () => { void (async () => {
+        const value = key.value.trim();
+        key.value = "";
+        saveKey.disabled = true;
+        jevStatus.textContent = "正在保存…";
+        try {
+          const result = await globalThis.__ashJevKey("save", value);
+          if (this.section === section) jevStatus.textContent = result.ok
+            ? result.configured ? "已保存；Ash 正在重启以启用 JEV。" : "Key 已移除；Ash 正在重启。"
+            : "保存失败；请重试。";
+        } catch { if (this.section === section) jevStatus.textContent = "保存失败；请重试。"; }
+        finally { saveKey.disabled = false; }
+      })(); });
+      jevSection.append(key, statusButton, saveKey, jevStatus);
+      section.append(jevSection);
+    }
     const gatewaySection = document.createElement("section");
     gatewaySection.id = "settingsGateway";
     gatewaySection.append(node("h2", "已连接设备"));
