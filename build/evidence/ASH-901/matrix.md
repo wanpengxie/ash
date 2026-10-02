@@ -4,7 +4,8 @@
 
 - AR1–AR4 and AR12: the current repository gate reports zero findings with a nonempty private terminology file kept outside git. The scanner now excludes nested generated `build/` output while retaining root `build/evidence/`; its positive/negative fixture suite passes 14/14. This resolves false hits from generated Android reports containing the workspace's absolute path.
 - AR5: the installed Linux DSH root passes the production five-tool registration test and the separate world-routed tool test. Both enumerate exactly five `ash_*` tools; the second test also registers a fake device and checks no per-device alias appears.
-- AR6–AR15 still require their full final scenario/review matrix; zero static findings alone do not sign ASH-901.
+- AR6: production Core now has an automated four-effect scenario against an independent fake host and real managed-file bytes, in addition to detector fixtures. This is a local automated scenario, not physical Android or non-author sign-off.
+- AR7–AR15 still require their full final scenario/review matrix; zero static findings alone do not sign ASH-901.
 
 The table below is the original measured baseline and remains for comparison.
 

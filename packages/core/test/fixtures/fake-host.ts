@@ -9,6 +9,7 @@ export type HostScript = { capability: string; result: unknown };
 
 export class FakeHost {
   readonly calls: HostRecord[] = [];
+  onRecord?: (record: HostRecord) => void;
   readonly scripts: HostScript[] = [];
   manifest: { name: string; capabilities: Capability[] } = { name: "Test phone", capabilities: [] };
   keyResponse: unknown = { id: "test-device", publicKey: "test-public-key" };
@@ -27,7 +28,9 @@ export class FakeHost {
       for await (const chunk of req) raw += chunk;
       let body: unknown;
       try { body = raw ? JSON.parse(raw) : undefined; } catch { res.writeHead(400).end(JSON.stringify({ error: "bad_json" })); return; }
-      this.calls.push({ method: req.method ?? "", path, body });
+      const record = { method: req.method ?? "", path, body };
+      this.calls.push(record);
+      this.onRecord?.(record);
       const json = (status: number, value: unknown) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value)); };
       if (req.method === "GET" && path === "/manifest") return json(200, this.manifest);
       if (req.method === "GET" && path === "/key") return json(200, this.keyResponse);
