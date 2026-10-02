@@ -94,3 +94,15 @@ test("installed DSH catalog supplies a known model price and leaves unknown mode
   assert.ok(known && known.input > 0 && known.output > 0);
   assert.equal(await host.modelRates("unknown-provider", "unknown-model"), null);
 });
+
+test("installed DSH price reaches the actual worker completion", { skip: !process.env.ASH_TEST_DSH_ROOT }, async () => {
+  const host = new DshHost({ root: process.env.ASH_TEST_DSH_ROOT!, home: "/tmp/ash-unused-catalog-home" });
+  host.ctx = { get: () => ({ async *stream() {
+    yield { type: "usage", usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 10, cacheWriteTokens: 0 } };
+    yield { type: "text-delta", text: "{}" };
+    yield { type: "finish", reason: { kind: "stop" } };
+  } }) };
+  const result = await dshWorkerModel(host, () => ({ provider: "anthropic", model: "claude-haiku-4-5" }))
+    .complete(prompt, new AbortController().signal);
+  assert.equal(result.usage?.costUsd, (100 * 1 + 20 * 5 + 10 * 0.1) / 1_000_000);
+});
