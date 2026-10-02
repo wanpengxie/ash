@@ -72,6 +72,33 @@ test("two live screens see the same messages without conversation control button
   } finally { await second.close(); }
 });
 
+test("a same-turn burst groups its bubbles and puts the reaction on the cited owner message", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  const ownerText = `reaction target ${Date.now()}`;
+  await page.locator("#t").fill(ownerText);
+  await page.locator("#send").click();
+  const findOwner = () => running.ledger.list({ limit: 1000 }).find((message) =>
+    message.from === "person:owner" && message.word === "say" && message.body.text === ownerText);
+  await expect.poll(() => findOwner()?.id).toBeTruthy();
+  const owner = findOwner();
+  const agent = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false, turn: `t_burst_${Date.now()}` };
+  for (const text of ["Burst first", "Burst second"]) {
+    const sent = await running.world.send(agent, { to: "person:owner", kind: "request", word: "say",
+      body: { text, kind: "reply" }, wait: true });
+    expect(sent.reply?.body.ok).toBe(true);
+  }
+  const reaction = await running.world.send(agent, { to: "person:owner", kind: "request", word: "react",
+    body: { message_id: owner.id, emoji: "👍" }, wait: true });
+  expect(reaction.reply?.body.ok).toBe(true);
+  await expect(page.locator("#log .msg.ai").filter({ hasText: "Burst first" })).toHaveClass(/group-first/);
+  await expect(page.locator("#log .msg.ai").filter({ hasText: "Burst second" })).toHaveClass(/group-last/);
+  const bubble = page.locator("#log .msg.me").filter({ hasText: ownerText });
+  await expect(bubble.locator(".reaction")).toHaveText("👍");
+  await expect(page.locator("#log .msg.ai").filter({ hasText: "Burst first" }).locator(".reaction")).toHaveCount(0);
+});
+
 test("an option card is settled by one ordinary owner message on both screens", async ({ page, context }) => {
   await page.goto(`${running.url}/?token=${ownerToken}`);
   const second = await context.newPage();
