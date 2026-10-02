@@ -9,6 +9,8 @@ import { startOwner } from "../../src/main";
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api";
 
 const install = process.env.ASH_TEST_DSH_ROOT;
+/** Workers only answer background work. */
+const work = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false } as const;
 const skip = !install || !existsSync(join(install, "package.json")) ? "set ASH_TEST_DSH_ROOT" :
   !process.execArgv.includes("--expose-internals") ? "needs node --expose-internals" : false;
 
@@ -95,7 +97,7 @@ test("wake uses a second DSH session; only explicit ash_say reaches the owner", 
     assert.equal(second.reply?.body.ok, true);
     await until(() => requests.filter((item) => !item.mind && !item.worker).length >= 2);
     assert.equal(requests.filter((item) => !item.mind && !item.worker).some((item) => item.user.includes("MIND_WAKE_MARKER")), false);
-    const extract = await running.world.send(owner, { to: "worker:extract", kind: "request", word: "extract",
+    const extract = await running.world.send(work, { to: "worker:extract", kind: "request", word: "extract",
       body: { run: "r_production", input: { chunk: [], summary: "", known: [] } }, wait: true });
     assert.equal(extract.reply?.body.ok, true);
     assert.deepEqual(extract.reply?.body.result, { no_change: { checked: [], details: "No new claims" } });

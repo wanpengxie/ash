@@ -13,6 +13,8 @@ import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 
+/** Workers only answer background work. */
+const work: TrustedRouteContext = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false };
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: false };
 const msg = { seq: 1, id: "m1", ts: 1, from: "person:owner", to: "agent:main", kind: "request" as const, word: "say", body: { text: "Use compact summaries" } };
 const request: WorkerRequest<"extract"> = { run: "run_1", input: { chunk: [msg], summary: "", known: [] } };
@@ -108,10 +110,10 @@ test("worker member uses the frozen route contract and records failed result as 
     const router = new WorldRouter(ledger, async () => true);
     const members = new WorldMembers(router);
     members.register(new WorkerMember("extract", model(completion({ claims: [{ ...claim, evidence: ["fake"] }] }), completion("{}"))));
-    const sent = await router.send(owner, { to: "worker:extract", kind: "request", word: "extract", body: request, wait: true });
+    const sent = await router.send(work, { to: "worker:extract", kind: "request", word: "extract", body: request, wait: true });
     assert.equal(sent.reply?.body.ok, false);
     assert.equal((sent.reply?.body as { error?: { code: string } }).error?.code, "failed");
-    assert.equal(ledger.byId(sent.id)?.from, "person:owner");
+    assert.equal(ledger.byId(sent.id)?.from, "service:work");
   } finally { ledger.close(); }
 });
 

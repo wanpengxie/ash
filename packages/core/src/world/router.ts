@@ -403,6 +403,9 @@ export class WorldRouter {
     if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
     if ((request.word === "typing" || request.word === "visible") && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
     if (request.to === "service:post" && request.word === "deliver" && ctx.transport !== "service") fail("forbidden", "delivery is internal only");
+    // Workers are single judgement steps of a background run; nobody else may spend model calls on them.
+    if (request.to?.startsWith("worker:") && !(ctx.transport === "service" && from === "service:work" && ctx.local && !ctx.remote))
+      fail("forbidden", "workers only take requests from background work");
     if (request.to === "service:senses" && request.word.startsWith("sense.") && (ctx.transport !== "phone" || from !== "device:phone")) fail("forbidden", "senses require phone identity");
     if (ctx.transport === "web_ui" && request.kind === "event" && !["typing", "visible"].includes(request.word)) fail("forbidden", "screen cannot emit internal events");
   }
