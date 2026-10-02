@@ -26,7 +26,14 @@ object Wake {
         if (at == null) return am.cancel(pi)
         // A few seconds early: the core must be up when its timer fires, and it fires timers itself.
         val t = maxOf(System.currentTimeMillis() + 1000, at - 5_000)
-        if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi) else am.setExact(AlarmManager.RTC_WAKEUP, t, pi)
+        try {
+            if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi)
+            else am.setExact(AlarmManager.RTC_WAKEUP, t, pi)
+        } catch (_: SecurityException) {
+            // Exact-alarm permission is optional; the durable Core timer remains the source of truth.
+            if (Build.VERSION.SDK_INT >= 23) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi)
+            else am.set(AlarmManager.RTC_WAKEUP, t, pi)
+        }
     }
 }
 

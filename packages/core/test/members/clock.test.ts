@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { wordContract } from "../../../sdk/src/words";
+import { AdminMember } from "../../src/members/admin";
 import { ClockMember } from "../../src/members/clock";
 import { OwnerMember } from "../../src/members/owner";
 import { Store } from "../../src/store";
@@ -35,7 +36,7 @@ async function fixture() {
   const clock = new ClockMember({ ledger, router: world, dbFile: file, isPaused: () => pauseReader(),
     alarm: async (at) => { alarms.push(at); await alarmImpl(at); }, now: () => time, scanMs: 60_000 });
   members.register(clock);
-  return { dir, file, ledger, world, clock, alarms, setTime: (value: number) => { time = value; },
+  return { dir, file, ledger, world, members, clock, alarms, setTime: (value: number) => { time = value; },
     setPaused: (value: boolean) => { paused = value; }, setPauseReader: (reader: () => boolean) => { pauseReader = reader; },
     setAlarm: (handler: (at: number | null) => Promise<void>) => { alarmImpl = handler; },
     setAuthorized: (value: boolean) => { authorized = value; },
@@ -162,6 +163,30 @@ test("paused and revoked occurrences only record a terminal outcome, never deliv
     assert.equal(f.ledger.list({ limit: 1000 }).filter((item) => item.from === "service:clock" && item.word === "say").length, 0);
     assert.equal(f.ledger.list({ limit: 1000 }).filter((item) => item.word === "clock.fired" && item.body.outcome === "failed").length, 1);
   } finally { await f.close(); }
+});
+
+test("owner pause and resume share the production clock state without replaying a skipped reminder", async () => {
+  const f = await fixture();
+  const screen: TrustedRouteContext = { ...owner, transport: "web_ui", screenId: "screen:local", screenLabel: "Local" };
+  const admin = new AdminMember({ ledger: f.ledger, router: f.world, dbFile: f.file, onPauseChanged: () => {},
+    currentScreenBinding: (id, principal) => id === screen.screenId && principal === screen.transportPrincipal });
+  f.members.register(admin);
+  f.setPauseReader(() => f.clock.journal.isPaused());
+  try {
+    const set = await f.world.send(owner, { to: "service:clock", kind: "request", word: "set",
+      body: scheduled("person:owner", "say", { text: "Reminder", kind: "due" }), wait: true });
+    assert.equal(set.reply?.body.ok, true);
+    const paused = await f.world.send(owner, { to: "service:admin", kind: "request", word: "pause", body: {}, wait: true });
+    assert.deepEqual(paused.reply?.body, { ok: true, result: { paused: true } });
+    f.setTime(2000);
+    await f.clock.tick();
+    const resumed = await f.world.send(screen, { to: "service:admin", kind: "request", word: "resume", body: { confirmed: true }, wait: true });
+    assert.deepEqual(resumed.reply?.body, { ok: true, result: { paused: false } });
+    await f.clock.tick();
+    const messages = f.ledger.list({ limit: 1000 });
+    assert.equal(messages.filter((message) => message.from === "service:clock" && message.word === "say").length, 0);
+    assert.deepEqual(messages.filter((message) => message.word === "clock.fired").map((message) => message.body.outcome), ["skipped"]);
+  } finally { admin.close(); await f.close(); }
 });
 
 test("durable pause key accepts only JSON boolean; malformed state fails closed until repaired", async () => {
