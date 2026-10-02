@@ -249,6 +249,15 @@ test("a suggested page opens only when the owner accepts its chip", async ({ pag
   await expect(page.locator("#agentSheet")).toHaveAttribute("aria-hidden", "false");
   await expect(page.locator("#agentTabs [data-tab=activity]")).toHaveAttribute("aria-selected", "true");
   await expect(suggestion).toHaveCount(0);
+  await page.locator("#agentClose").click();
+  const dismissed = await running.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
+    local: true, remote: false, ownerProxy: false },
+  { to: screen, kind: "request", word: "ui.open", body: { target: "memory", mode: "suggest" } });
+  await expect(suggestion).toContainText("Ash 建议查看记忆");
+  await suggestion.getByRole("button", { name: "关闭" }).click();
+  await expect(suggestion).toHaveCount(0);
+  await expect(page.locator("#agentSheet")).toHaveAttribute("aria-hidden", "true");
+  await expect.poll(() => running.ledger.responseTo(dismissed.id)?.body?.result?.opened).toBe(false);
 });
 
 test("the upcoming page removes a scheduled item after its confirmed cancel", async ({ page }) => {
