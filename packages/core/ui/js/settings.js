@@ -328,6 +328,24 @@ export class SettingsControls {
       })(); });
       gatewaySection.append(url, secret, loadConfig, saveConfig, configStatus);
     }
+    const pairCode = node("button", "生成配对码", "btn gray");
+    pairCode.id = "settingsGatewayPair";
+    pairCode.type = "button";
+    const pairResult = node("p", "", "muted");
+    pairResult.id = "settingsGatewayPairResult";
+    pairResult.setAttribute("role", "status");
+    pairCode.addEventListener("click", () => { void (async () => {
+      pairCode.disabled = true;
+      pairResult.textContent = "正在生成…";
+      try {
+        const reply = await requestSetting("gateway.op", { op: "ticket" });
+        const ticket = reply?.ok === true ? reply.result?.ticket : null;
+        if (typeof ticket !== "string" || !ticket) throw new Error("no ticket");
+        const where = typeof reply.result.gateway === "string" ? reply.result.gateway : "网关地址";
+        pairResult.textContent = `配对码：${ticket}（5 分钟内有效，只能用一次）。在新设备的浏览器打开 ${where}，粘贴配对码，再回到这里点“批准连接”。`;
+      } catch { if (this.section === section) pairResult.textContent = "生成失败：网关可能离线，请稍后重试。"; }
+      finally { pairCode.disabled = false; }
+    })(); });
     const gatewayLoad = node("button", "读取设备", "btn gray");
     gatewayLoad.id = "settingsGatewayLoad";
     gatewayLoad.type = "button";
@@ -386,7 +404,7 @@ export class SettingsControls {
     gatewayLoad.addEventListener("click", () => { void refreshGateway().catch(() => {
       if (this.section === section) gatewayStatus.textContent = "读取失败；请重试。";
     }); });
-    gatewaySection.append(gatewayLoad, gatewayStatus, gatewayList);
+    gatewaySection.append(pairCode, pairResult, gatewayLoad, gatewayStatus, gatewayList);
     section.append(gatewaySection);
     const preferencesRoot = document.createElement("section");
     preferencesRoot.id = "settingsProactive";

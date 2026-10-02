@@ -232,6 +232,8 @@ for (const [word, input, result] of [
     obj({ op: { const: "reject" }, request_id: nonempty }, ["op", "request_id"]),
     obj({ op: { const: "revoke" }, device: { type: "string", pattern: "^device:[A-Za-z0-9_-]+$" } }, ["op", "device"]),
     obj({ op: { const: "sync" } }, ["op"]),
+    // A short-lived one-time code a new browser or computer presents; the phone still asks the owner before anything is granted.
+    obj({ op: { const: "ticket" } }, ["op"]),
   ] }, obj({}, [], true)],
   ["model.set", obj({ provider: nonempty, model: nonempty }, ["provider", "model"]),
     obj({ provider: nonempty, model: nonempty, restart_required: bool }, ["provider", "model", "restart_required"])],

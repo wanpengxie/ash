@@ -239,3 +239,35 @@ test("local gateway controls approve a pending device and revoke an existing dev
       ["gateway.state", {}], ["gateway.op", { op: "revoke", device: "device:laptop" }], ["gateway.state", {}]]);
   } finally { delete globalThis.document; }
 });
+
+test("local gateway controls show a one-time pairing code with where to use it", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    const sent = [];
+    let fail = false;
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request(_path, init) {
+        const wire = JSON.parse(init.body);
+        sent.push(wire);
+        const body = fail ? { ok: false, error: { code: "failed", message: "gateway operation failed" } }
+          : { ok: true, result: { ticket: "pair-XYZ-123", expires_in: 300, gateway: "https://gw.example" } };
+        return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
+          from: "service:admin", to: "person:owner", word: wire.word, body } }), { status: 200 });
+      } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsGatewayPair").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.map((item) => [item.word, item.body]), [["gateway.op", { op: "ticket" }]]);
+    const shown = panel.find("settingsGatewayPairResult").textContent;
+    assert.match(shown, /pair-XYZ-123/);
+    assert.match(shown, /5 分钟/);
+    assert.match(shown, /https:\/\/gw\.example/);
+    fail = true;
+    panel.find("settingsGatewayPair").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(panel.find("settingsGatewayPairResult").textContent, /生成失败/);
+    assert.doesNotMatch(panel.find("settingsGatewayPairResult").textContent, /pair-XYZ-123/);
+  } finally { delete globalThis.document; }
+});

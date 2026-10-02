@@ -217,6 +217,7 @@ export async function startOwner(config: Config): Promise<Running> {
             await link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
             return { approved: true };
           case "reject": await link.reject(body.request_id as string); return { rejected: true };
+          case "ticket": return { ...(await link.ticket()) };
           case "revoke": await link.revoke(body.device as string);
             await link.refreshDevices().catch((error) => log("gateway device refresh failed", error)); // the next state read no longer lists it
             return { revoked: true };
