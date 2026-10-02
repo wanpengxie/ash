@@ -152,6 +152,54 @@ export class SettingsControls {
     })(); });
     quietSection.append(quietHeading, start, end, load, save, quietStatus);
     section.append(quietSection);
+    const pluginsSection = document.createElement("section");
+    pluginsSection.id = "settingsPlugins";
+    pluginsSection.append(node("h2", "DSH 插件"));
+    const pluginsLoad = node("button", "读取已安装插件", "btn gray");
+    pluginsLoad.id = "settingsPluginsLoad";
+    pluginsLoad.type = "button";
+    const pluginsStatus = node("p", "尚未读取插件。", "muted");
+    pluginsStatus.id = "settingsPluginsStatus";
+    pluginsStatus.setAttribute("role", "status");
+    const pluginsList = document.createElement("div");
+    pluginsList.id = "settingsPluginsList";
+    const readPlugins = async () => {
+      pluginsStatus.textContent = "正在读取…";
+      const reply = await requestSetting("plugins.list", {});
+      const plugins = reply?.ok === true ? reply.result?.plugins : null;
+      if (!Array.isArray(plugins)) throw new Error("plugins unavailable");
+      pluginsList.replaceChildren();
+      for (const plugin of plugins) {
+        if (typeof plugin.entryId !== "string" || typeof plugin.moduleName !== "string") continue;
+        const row = document.createElement("div");
+        row.className = "settings-plugin";
+        row.setAttribute("data-plugin-id", plugin.entryId);
+        row.append(node("span", `${plugin.moduleName} · ${plugin.enabled ? "已启用" : "已停用"}`));
+        if (!plugin.readOnlyReason) {
+          const toggle = node("button", plugin.enabled ? "停用" : "启用", "btn gray");
+          toggle.type = "button";
+          toggle.addEventListener("click", () => { void (async () => {
+            toggle.disabled = true;
+            pluginsStatus.textContent = "正在保存…";
+            try {
+              const result = await requestSetting("plugins.op", { op: "plugin", id: plugin.entryId, enabled: !plugin.enabled });
+              if (result?.ok !== true || !["applied", "restart-required"].includes(result.result?.application)) throw new Error("operation failed");
+              await readPlugins();
+              pluginsStatus.textContent = result.result.application === "restart-required" ? "已保存；重启 Ash 后生效。" : "已更新插件。";
+            } catch { if (this.section === section) pluginsStatus.textContent = "插件更新未确认；请重试。"; }
+            finally { toggle.disabled = false; }
+          })(); });
+          row.append(toggle);
+        }
+        pluginsList.append(row);
+      }
+      pluginsStatus.textContent = `已读取 ${plugins.length} 个插件。`;
+    };
+    pluginsLoad.addEventListener("click", () => { void readPlugins().catch(() => {
+      if (this.section === section) pluginsStatus.textContent = "读取失败；请重试。";
+    }); });
+    pluginsSection.append(pluginsLoad, pluginsStatus, pluginsList);
+    section.append(pluginsSection);
     const preferencesRoot = document.createElement("section");
     preferencesRoot.id = "settingsProactive";
     section.append(preferencesRoot);

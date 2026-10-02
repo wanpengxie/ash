@@ -11,7 +11,7 @@ const bundled = await build({ entryPoints: [join(ui, "js/app.js")], bundle: true
 const app = bundled.outputFiles[0].text.replaceAll("</script", "<\\/script");
 const html = readFileSync(join(ui, "index.html"), "utf8");
 if (!html.includes("<!-- ui-app -->")) throw new Error("UI app marker missing");
-const generatedHtml = html.replace("<!-- ui-app -->", `<script>${app}</script>`);
+const generatedHtml = html.replace("<!-- ui-app -->", () => `<script>${app}</script>`);
 const assetRoot = join(ui, "../../../android/app/src/main/assets/ash-ui");
 const nativeBootstrap = readFileSync(join(ui, "js/native-bootstrap.js"), "utf8").replaceAll("</script", "<\\/script");
 const assetHtml = generatedHtml.replace("<head>", `<head>\n<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'">`)

@@ -14,6 +14,14 @@ test("test-only static UI uses exactly the generated core bytes", () => {
   assert.ok(!html.includes("ash_ui"));
 });
 
+test("generated inline browser script parses without placeholder substitution", () => {
+  const html = coreUiBytes().toString("utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script);
+  assert.ok(!script.includes("<!-- ui-app -->"));
+  assert.doesNotThrow(() => new Function(script));
+});
+
 test("test-only static parity refuses altered bytes, digest and length", () => {
   const bytes = coreUiBytes();
   const manifest = staticManifest(bytes);

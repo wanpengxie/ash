@@ -85,3 +85,35 @@ test("quiet hours load and save only after a paired local settings reply", async
     assert.equal(panel.find("settingsQuiet"), undefined);
   } finally { delete globalThis.document; }
 });
+
+test("local settings switches an installed DSH plugin and refreshes its actual state", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    let enabled = false;
+    const sent = [];
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request(_path, init) {
+        const wire = JSON.parse(init.body);
+        sent.push(wire);
+        if (wire.word === "plugins.op") enabled = wire.body.enabled;
+        const result = wire.word === "plugins.list"
+          ? { plugins: [{ entryId: "include:sample", moduleName: "sample", enabled }] }
+          : { application: "applied", changed: true };
+        return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
+          from: "service:admin", to: "person:owner", word: wire.word, body: { ok: true, result } } }), { status: 200 });
+      } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsPluginsLoad").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsPluginsList").children[0].children[0].textContent, "sample · 已停用");
+    panel.find("settingsPluginsList").children[0].children[1].click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsPluginsList").children[0].children[0].textContent, "sample · 已启用");
+    assert.deepEqual(sent.map((item) => [item.word, item.body]), [
+      ["plugins.list", {}], ["plugins.op", { op: "plugin", id: "include:sample", enabled: true }], ["plugins.list", {}]]);
+    settings.network("offline");
+    assert.equal(panel.find("settingsPlugins"), undefined);
+  } finally { delete globalThis.document; }
+});
