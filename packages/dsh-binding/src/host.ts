@@ -96,11 +96,15 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
           runtimeContext = content[0].text === `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n${source.sections.map((section: { text: string }) => section.text).join("\n\n")}`;
       }
       // Workspace instructions (AGENTS.md) and the repeated-tool-call notice are DSH-owned user-role items, not prompts.
-      if (typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) && oneText) {
+      // Each must match the exact form DSH renders; anything else still needs a core turn.
+      if (typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) && Array.isArray(content) && content.length > 0 &&
+        content.every((part: { type?: unknown; text?: unknown }) => part?.type === "text" && typeof part.text === "string")) {
+        const texts = content.map((part: { text: string }) => part.text);
         if (source?.kind === "agent-instructions" && source.form === "instructions" && Array.isArray(source.changes))
-          runtimeContext = content[0].text.startsWith("<system-reminder>\n") && content[0].text.trimEnd().endsWith("</system-reminder>");
-        else if (source?.kind === "repeat-tool-reminder" && source.form === "notice")
-          runtimeContext = content[0].text.startsWith("You are repeating the exact same tool call");
+          runtimeContext = texts.every((text: string) => /^<system-reminder>\n[\s\S]*\n<\/system-reminder>\s*$/u.test(text) &&
+            text.indexOf("</system-reminder>") === text.lastIndexOf("</system-reminder>"));
+        else if (source?.kind === "repeat-tool-reminder" && source.form === "notice" && oneText)
+          runtimeContext = texts[0] === GENTLE_REMINDER || DETAILED_REMINDER.test(texts[0]);
       }
       if (!runtimeContext && (typeof id !== "string" || !id.startsWith("core-") || !startedTurns.has(id.slice(5))))
         throw new Error("DSH history contains a user message without a core turn");
@@ -132,6 +136,10 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
   }
   if (pending["next-turn"].length || pending["next-step"].length) throw new Error("DSH has queued work that cannot be automatically resumed safely");
 }
+
+// The repeated-tool-call notices DSH renders (dsh-repeat-tool-reminder): the first threshold, then the detailed form.
+const GENTLE_REMINDER = "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.";
+const DETAILED_REMINDER = /^Repeated tool call detected:\n- tool: [A-Za-z0-9_.:-]{1,128}\n- consecutive_calls: [0-9]{1,6}\n- arguments: [^\n]*\nThe repeated calls are not making progress\. Do not call this tool with these exact arguments again\. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered\.$/u;
 
 const APPROVAL_PATCH = `- id: approval
   config:

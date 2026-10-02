@@ -119,9 +119,15 @@ R8() { say "R8 the agent uses the paired laptop"
   local from ask end; from=$(last_seq)
   [ -n "$(send_say "用你电脑（笔记本）上的文件工具，在共享目录 ${share} 里新建文件 ${name}，内容写 ok，然后列出该目录确认。")" ] || { bad R8 "request not accepted"; return; }
   # Borrowed laptop capabilities are structure risk: the owner approves the write from the notification.
-  ask=$(wait_row 180 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&String(x.body?.source?.word||'').startsWith('files.'))" "$from") || true
-  [ -z "$ask" ] || tap_notification_action "$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')" || true
-  end=$((SECONDS+120)); while [ $SECONDS -lt $end ] && [ ! -f "$share/$name" ]; do sleep 3; done
+  # The model may need more than one write-class step (e.g. a directory first); approve each until the file exists.
+  end=$((SECONDS+240)); local answered=""
+  while [ $SECONDS -lt $end ] && [ ! -f "$share/$name" ]; do
+    ask=$(wait_row 15 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&String(x.body?.source?.word||'').startsWith('files.')&&!'$answered'.includes(x.id))" "$from") || true
+    if [ -n "$ask" ]; then
+      answered="$answered $(echo "$ask" | jq_ 'v.id')"
+      tap_notification_action "$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')" || true
+    fi
+  done
   if [ -f "$share/$name" ]; then ok "R8 the agent wrote $share/$name on the laptop through ash"; rm -f "$share/$name"; else bad R8 "file not on the laptop"; fi
 }
 R9() { say "R9 phone offline → the browser is told; back → reconnects"
@@ -237,7 +243,7 @@ tap_notification_action() {
     xy=$(ui_center "$1")
     [ -n "$xy" ] && break
     title=$(ui_center "${2:-需要你确认}")
-    [ -z "$title" ] || { local expand; expand=$(adb exec-out cat /sdcard/ash-regress-ui.xml | Y="${title#* }" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const y=+process.env.Y;for(const n of s.match(/<node [^>]*>/g)||[]){if(!/ content-desc="Expand"/.test(n))continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b&&+b[2]<=y&&y<=+b[4]){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})'); [ -z "$expand" ] || adb shell input tap $expand; }
+    [ -z "$title" ] || { local expand; expand=$(adb exec-out cat /sdcard/ash-regress-ui.xml | Y="${title#* }" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const y=+process.env.Y;for(const n of s.match(/<node [^>]*>/g)||[]){if(!/ content-desc="(Expand|展开)"/.test(n))continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b&&+b[2]<=y&&y<=+b[4]){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})'); [ -z "$expand" ] || adb shell input tap $expand; }
     sleep 1
   done
   adb shell rm -f /sdcard/ash-regress-ui.xml >/dev/null 2>&1

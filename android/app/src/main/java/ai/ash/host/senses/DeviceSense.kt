@@ -44,8 +44,11 @@ class DeviceSense(private val ctx: Context) {
     fun appOpen() {
         serial.submit {
             val now = System.currentTimeMillis()
-            prefs.edit().putString("open_pending", UUID.randomUUID().toString()).putLong("open_at", now)
-                .putLong("open_away_ms", SensePolicy.awayMs(now, prefs.getLong("app_left", 0))).commit()
+            val away = SensePolicy.awayMs(now, prefs.getLong("app_left", 0))
+            // A permission dialog during a cold start pauses and resumes the app; that must not erase the long absence.
+            val pending = prefs.getString("open_pending", null)?.takeIf { now - prefs.getLong("open_at", 0) <= SensePolicy.OPEN_PENDING_MS }
+            if (pending == null) prefs.edit().putString("open_pending", UUID.randomUUID().toString()).putLong("open_at", now).putLong("open_away_ms", away).commit()
+            else prefs.edit().putLong("open_away_ms", maxOf(away, prefs.getLong("open_away_ms", 0))).commit()
             appOpenPending()
         }
     }

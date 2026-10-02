@@ -90,7 +90,7 @@ object Notifications {
     }
 
     /** The conversation with Ash as one notification; an empty list removes it. */
-    fun presentChat(ctx: Context, items: List<Pair<JSONObject, Long>>) {
+    fun presentChat(ctx: Context, items: List<Pair<JSONObject, Long>>, alert: Boolean = true) {
         val manager = ctx.getSystemService(NotificationManager::class.java)
         if (items.isEmpty()) { manager.cancel(PresentChat.TAG, 0); return }
         val latest = items.last().first
@@ -105,6 +105,7 @@ object Notifications {
             .setStyle(style)
             .setContentIntent(openApp(ctx, PresentChat.TAG.hashCode()))
             .setAutoCancel(true)
+            .setOnlyAlertOnce(!alert)
             .addAction(Notification.Action.Builder(null, "回复", action(ctx, id, "reply", mutable = true)).addRemoteInput(input).build())
             .setDeleteIntent(action(ctx, id, "dismiss"))
         manager.notify(PresentChat.TAG, 0, b.build())

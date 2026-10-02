@@ -111,7 +111,7 @@ object Present {
     fun clearChat(ctx: Context) = serial.run { clearChatLocked(ctx) }
 
     private fun chatIds(ctx: Context): List<String> = prefs(ctx).all.keys.filter { it.startsWith(ITEM) }.map { it.removePrefix(ITEM) }
-        .filter { id -> item(ctx, id)?.optString("kind")?.let(PresentChat::isChat) == true }
+        .filter { id -> (try { item(ctx, id) } catch (_: Exception) { null })?.optString("kind")?.let(PresentChat::isChat) == true }
 
     private fun clearChatLocked(ctx: Context) {
         val edit = prefs(ctx).edit()
@@ -121,7 +121,7 @@ object Present {
     }
 
     /** Caller holds serial. Renders the newest chat messages as one notification and retires older ones. */
-    private fun refreshChatLocked(ctx: Context) {
+    private fun refreshChatLocked(ctx: Context, alert: Boolean = true) {
         val live = chatIds(ctx).mapNotNull { id ->
             val record = try { item(ctx, id) } catch (_: Exception) { null } ?: return@mapNotNull null
             if (expired(record) || !PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false))) null
@@ -134,7 +134,7 @@ object Present {
             edit.commit()
         }
         val byId = live.associateBy { it.first }
-        Notifications.presentChat(ctx, keep.map { byId.getValue(it).second to byId.getValue(it).third })
+        Notifications.presentChat(ctx, keep.map { byId.getValue(it).second to byId.getValue(it).third }, alert)
     }
 
     fun restore(ctx: Context) {
@@ -154,14 +154,16 @@ object Present {
                 }
             }
         }
-        serial.run { refreshChatLocked(ctx) }
+        serial.run { refreshChatLocked(ctx, alert = false) } // a service restart re-shows, it does not ring again
         flushAsync(ctx)
     }
 
     /** Persist before network I/O. The same client_id is reused on every offline retry. */
     fun act(ctx: Context, id: String, choice: String?, replyText: String?) {
         serial.run {
-            val record = item(ctx, id) ?: return
+            // A reply typed into the conversation notification still counts after its message was cleared from it.
+            val record = item(ctx, id) ?: if (replyText != null && prefs(ctx).getBoolean(RETIRED + id, false))
+                JSONObject().put("id", id).put("kind", "reply") else return
             if (expired(record) || prefs(ctx).getBoolean(CONSUMED + id, false)) return
             val route = try { when (record.optString("kind")) {
                 "approval" -> {

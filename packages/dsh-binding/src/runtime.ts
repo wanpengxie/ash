@@ -230,6 +230,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     const toolCalls = new Map<string, string>();
     // Models often close with the same words they just sent through ash_say; the owner hears them once.
     const said = new Set<string>();
+    const sayCalls = new Map<string, string>();
     const sameWords = (text: string) => text.replace(/\s+/gu, " ").trim();
     let pending = Promise.resolve();
     let emitError: unknown;
@@ -269,7 +270,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
           if (typeof callId !== "string" || typeof name !== "string" || typeof args !== "string") throw new TypeError("invalid DSH tool call");
           toolCalls.set(callId, this.router.recordDshToolCall(input.turn, callId, name, args).id);
           if (name === "ash_say") {
-            try { const text = (JSON.parse(args) as { text?: unknown }).text; if (typeof text === "string") said.add(sameWords(text)); } catch { /* the tool reports bad arguments */ }
+            try { const text = (JSON.parse(args) as { text?: unknown }).text; if (typeof text === "string") sayCalls.set(callId, text); } catch { /* the tool reports bad arguments */ }
           }
         } catch (error) { emitError ??= error; }
       } else if (event.type === "tool/result" && this.router) {
@@ -279,7 +280,12 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
           if (!requestId) throw new TypeError("unmatched DSH tool result");
           const preview = Array.isArray(message?.content) ? message.content.filter((block: { type?: string }) => block?.type === "text")
             .map((block: { text?: string }) => block.text ?? "").join("") : "";
-          this.router.recordDshToolResult(requestId, !message.isError && !event.data?.error, preview);
+          const succeeded = !message.isError && !event.data?.error;
+          this.router.recordDshToolResult(requestId, succeeded, preview);
+          // Only words the owner actually received count as said; a failed ash_say leaves the closing text to deliver them.
+          const sayText = sayCalls.get(message.toolCallId);
+          sayCalls.delete(message.toolCallId);
+          if (succeeded && sayText !== undefined) for (const part of splitAssistantText(sayText)) said.add(sameWords(part));
           toolCalls.delete(message.toolCallId);
         } catch (error) { emitError ??= error; }
       } else if (event.type === "turn/end") {

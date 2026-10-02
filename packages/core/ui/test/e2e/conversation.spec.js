@@ -562,6 +562,8 @@ test("visible heartbeats stop in the background and resume when the screen retur
     Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
     document.dispatchEvent(new Event("visibilitychange"));
   });
+  // Leaving the foreground tells delivery at once, so replies in the next minute notify.
+  await expect.poll(() => running.ledger.list({ limit: 1000 }).filter((message) => message.to === "service:post" && message.word === "hidden").length).toBe(1);
   await page.clock.fastForward(60_000);
   expect(visibleCount()).toBe(before);
   await page.evaluate(() => {
