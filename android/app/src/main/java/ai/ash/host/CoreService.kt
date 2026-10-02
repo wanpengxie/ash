@@ -60,6 +60,7 @@ class CoreService : Service() {
             }
             ACTION_CALENDAR_ALARM, ACTION_CALENDAR_REFRESH -> calendarSense?.refresh()
             ACTION_APP_OPEN -> {
+                Present.clearChat(this)
                 deviceSense?.appOpen()
                 calendarSense?.refresh()
             }

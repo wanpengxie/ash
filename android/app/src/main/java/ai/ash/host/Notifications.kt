@@ -89,6 +89,27 @@ object Notifications {
         ctx.getSystemService(NotificationManager::class.java).notify("present:$id", 0, b.build())
     }
 
+    /** The conversation with Ash as one notification; an empty list removes it. */
+    fun presentChat(ctx: Context, items: List<Pair<JSONObject, Long>>) {
+        val manager = ctx.getSystemService(NotificationManager::class.java)
+        if (items.isEmpty()) { manager.cancel(PresentChat.TAG, 0); return }
+        val latest = items.last().first
+        val id = latest.getString("id")
+        val style = Notification.MessagingStyle("我")
+        for ((record, at) in items) style.addMessage(record.optString("text"), at, "Ash")
+        val input = RemoteInput.Builder("reply").setLabel("回复").build()
+        val b = builder(ctx, CH_MESSAGES)
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("Ash")
+            .setContentText(latest.optString("text"))
+            .setStyle(style)
+            .setContentIntent(openApp(ctx, PresentChat.TAG.hashCode()))
+            .setAutoCancel(true)
+            .addAction(Notification.Action.Builder(null, "回复", action(ctx, id, "reply", mutable = true)).addRemoteInput(input).build())
+            .setDeleteIntent(action(ctx, id, "dismiss"))
+        manager.notify(PresentChat.TAG, 0, b.build())
+    }
+
     fun hidePresent(ctx: Context, id: String) = ctx.getSystemService(NotificationManager::class.java).cancel("present:$id", 0)
 
     fun presentFailure(ctx: Context, id: String) {
