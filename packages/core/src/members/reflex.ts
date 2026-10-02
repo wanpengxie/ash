@@ -42,15 +42,22 @@ export class ReflexMember implements Member {
 
   private async judge(message: Message, turn: string | null, judgement: ReturnType<typeof judgeStopKeyword>): Promise<void> {
     let stage: "keyword" | "jev" = "keyword";
+    let fallback: { fallback: "timeout" | "unavailable" | "invalid" | "error"; fallback_ms: number } | undefined;
     // While a turn runs, every message that is not already an explicit command goes to JEV: "够了", "闭嘴" or
     // "hold on" carry no stop keyword, yet they are the owner trying to stop the reply.
     if (turn && (judgement.intent === "unclear" || judgement.intent === "unrelated") && this.options.jev && this.options.context) {
+      const asked = Date.now();
       try {
         const result = await this.options.jev.judge(this.options.context(message, turn));
         stage = "jev";
         judgement = { intent: result.intent === "stop" && result.confidence >= (this.options.threshold ?? 0.6) ? "stop" : "unrelated",
           confidence: result.confidence };
-      } catch { /* The no-Key keyword rule remains the fallback on timeout or failure. */ }
+      } catch (error) {
+        // The no-Key keyword rule remains the fallback on timeout or failure; the record says which, without any secret.
+        const text = error instanceof Error ? `${error.name} ${error.message}` : "";
+        fallback = { fallback: /abort|timeout/iu.test(text) ? "timeout" : /JEV answer/u.test(text) ? "invalid" : /JEV unavailable|fetch failed/u.test(text) ? "unavailable" : "error",
+          fallback_ms: Math.max(0, Date.now() - asked) };
+      }
     }
     let acted = false;
     if (judgement.intent === "pause" && !this.closed) {
@@ -70,7 +77,7 @@ export class ReflexMember implements Member {
     }
     if (this.closed) return;
     await this.router.send(context, { to: null, kind: "event", word: "reflex.judged",
-      body: { message_id: message.id, stage, intent: judgement.intent, confidence: judgement.confidence, acted },
+      body: { message_id: message.id, stage, intent: judgement.intent, confidence: judgement.confidence, acted, ...fallback },
       client_id: `reflex:judged:${message.id}` });
   }
 

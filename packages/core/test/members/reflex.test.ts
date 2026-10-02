@@ -159,8 +159,10 @@ test("a confident JEV judgement stops an ambiguous command; JEV failure falls ba
     await active;
     const unclear = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "stop the timer" }, wait: true });
     await wait(() => ledger.list({ limit: 1000 }).some((row) => row.word === "reflex.judged" && row.body.message_id === unclear.id));
-    assert.deepEqual(ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === unclear.id)?.body,
-      { message_id: unclear.id, stage: "keyword", intent: "unclear", confidence: 0, acted: false });
+    const fellBack = ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === unclear.id)!.body;
+    assert.equal(typeof fellBack.fallback_ms, "number");
+    assert.deepEqual({ ...fellBack, fallback_ms: 0 },
+      { message_id: unclear.id, stage: "keyword", intent: "unclear", confidence: 0, acted: false, fallback: "error", fallback_ms: 0 });
     assert.equal(ledger.list({ limit: 1000 }).filter((row) => row.word === "cancel_turn").length, 0);
     fail = false;
     const stop = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "stop that search" }, wait: true });

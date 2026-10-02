@@ -183,7 +183,9 @@ add("service:senses", "sense.calendar", "event", obj({ kind: choice("upcoming", 
 add("service:senses", "sense.battery", "event", obj({ level: { type: "number", minimum: 0, maximum: 100 } }, ["level"]), undefined, { audience: "owner" });
 add("service:senses", "sense.screen", "event", obj({ state: choice("on", "app_open"), away_ms: { type: "number", minimum: 0 } }, ["state", "away_ms"]), undefined, { audience: "owner" });
 add("service:senses", "sense.notification", "event", obj({ app: str, title: str, text: str }, ["app", "title", "text"]), undefined, { audience: "owner" });
-add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined, { direction: "out" });
+add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool,
+  fallback: choice("timeout", "unavailable", "invalid", "error"), fallback_ms: { type: "integer", minimum: 0 } }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined,
+  { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });
 add("service:work", "run", "request", obj({ flow: workName }, ["flow"]), obj({ run: workRunId }, ["run"]), { audience: "owner" });
 add("service:work", "runs", "request", obj({ flow: workName, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ runs: { type: "array", items: workRunInfo, maxItems: 100 } }, ["runs"]), { audience: "owner" });
