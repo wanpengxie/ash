@@ -86,6 +86,21 @@ test("AR12 repository walk includes ignored-build evidence logs", () => {
   assert.ok(checkRepository(dir).some(f => f.rule === "AR12" && f.file === "<terms>"));
 });
 
+test("AR12 excludes generated nested build output but keeps repository evidence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-generated-scan-"));
+  const term = "CEDAR42";
+  const generated = join(dir, "android", "app", "build", "outputs");
+  const evidence = join(dir, "build", "evidence", "ASH-999");
+  mkdirSync(generated, { recursive: true });
+  mkdirSync(evidence, { recursive: true });
+  writeFileSync(join(generated, "report.txt"), term);
+  writeFileSync(join(evidence, "report.txt"), term);
+  const termsFile = join(mkdtempSync(join(tmpdir(), "ash-private-terms-")), "terms.txt");
+  writeFileSync(termsFile, term);
+  const hits = checkRepository(dir, termsFile).filter((finding) => finding.rule === "AR12");
+  assert.deepEqual(hits.map((finding) => finding.file), ["build/evidence/ASH-999/report.txt"]);
+});
+
 test("AR4 runtime monitor identifies a write without self authorization", () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-intrinsic-test-"));
   const monitor = new IntrinsicMonitor(dir);

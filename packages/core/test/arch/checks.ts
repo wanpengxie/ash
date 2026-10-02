@@ -12,7 +12,7 @@ function filesUnder(root: string): Tree {
   const visit = (dir: string) => {
     if (!existsSync(dir)) return;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (["node_modules", ".git", "dist"].includes(e.name)) continue;
+      if (["node_modules", ".git", "dist"].includes(e.name) || (e.name === "build" && dir !== root)) continue;
       const full = join(dir, e.name);
       if (e.isDirectory() && e.name === "build" && dir === root) visit(join(full, "evidence"));
       else if (e.isDirectory()) visit(full);

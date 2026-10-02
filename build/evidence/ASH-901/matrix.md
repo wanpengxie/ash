@@ -1,5 +1,13 @@
 # ASH-901 architecture acceptance matrix — baseline
 
+## Current checkpoint (2026-10-02; not final sign-off)
+
+- AR1–AR4 and AR12: the current repository gate reports zero findings with a nonempty private terminology file kept outside git. The scanner now excludes nested generated `build/` output while retaining root `build/evidence/`; its positive/negative fixture suite passes 14/14. This resolves false hits from generated Android reports containing the workspace's absolute path.
+- AR5: the installed Linux DSH root passes the production five-tool registration test and the separate world-routed tool test. Both enumerate exactly five `ash_*` tools; the second test also registers a fake device and checks no per-device alias appears.
+- AR6–AR15 still require their full final scenario/review matrix; zero static findings alone do not sign ASH-901.
+
+The table below is the original measured baseline and remains for comparison.
+
 Base revision: `09fa4aebfc4b1457909c14cfa6abc8aa32227c50` (2026-10-01). This is a plan and measured baseline, **not** final sign-off. `npm run test:arch:final` with an external private term file reports **25 findings** in AR1–AR4; no AR12 finding. The separate public term scan examined 272 tracked text files and found 0. Neither detector self-tests nor legacy v1 tests certify the v2 architecture.
 
 | Rule | Required evidence and independent test | Current status |
