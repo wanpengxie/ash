@@ -13,7 +13,7 @@ import { createDshDoor, NativeFilePolicy } from "../src/door";
 import { DshHost } from "../src/host";
 // @ts-expect-error The browser's pure JavaScript projection has no TypeScript declaration.
 import { fold, initialView } from "../../core/ui/js/project.js";
-import { requestText, startHarness, type ScriptedReply, waitForTurn } from "../../../tools/spikes/harness";
+import { requestText, startHarness, type ScriptedReply, waitForTurn } from "./harness";
 
 const root = process.env.ASH_TEST_DSH_ROOT;
 const skip = !root || !existsSync(join(root, "package.json")) ? "set ASH_TEST_DSH_ROOT to an installed DSH package" :

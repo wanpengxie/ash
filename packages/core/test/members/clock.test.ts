@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { wordContract } from "../../../sdk/src/words";
 import { AdminMember } from "../../src/members/admin";
 import { ClockMember } from "../../src/members/clock";
 import { OwnerMember } from "../../src/members/owner";
-import { Store } from "../../src/store";
+import { DatabaseSync } from "node:sqlite";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
@@ -232,12 +231,29 @@ test("same accepted set request is idempotent and cancel cannot delete another a
 test("verified v10 timer fires narrowly; missing provenance preserves the old row blocked", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-clock-legacy-"));
   const file = join(dir, "world.db");
-  const old = new Store(file);
+  // The v10 schema exactly as that release created it.
+  const old = new DatabaseSync(file);
+  old.exec(`PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, workspace TEXT NOT NULL,
+        member TEXT NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS events_ws ON events (workspace, seq);
+      CREATE TABLE IF NOT EXISTS timers (
+        id TEXT PRIMARY KEY, owner TEXT NOT NULL, text TEXT NOT NULL, fire_at INTEGER NOT NULL,
+        repeat_seconds INTEGER, created_by TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS message_ids (id TEXT PRIMARY KEY, ts INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS grants (
+        id TEXT PRIMARY KEY, member TEXT NOT NULL, scope TEXT NOT NULL, created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL, UNIQUE (member, scope));
+      CREATE TABLE IF NOT EXISTS confirms (
+        id TEXT PRIMARY KEY, asker TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, kind TEXT NOT NULL,
+        state TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, answered_by TEXT);`);
   const proven = { id: "old-proven", owner: "agent:main", text: "old synthetic", fire_at: 2000, repeat_seconds: null, created_by: "person:owner" };
   const unknown = { ...proven, id: "old-unknown", text: "unknown synthetic" };
-  old.putTimer(proven);
-  old.putTimer(unknown);
-  old.append("owner", "person:owner", "timer.set", { timer: proven });
+  for (const t of [proven, unknown]) old.prepare("INSERT INTO timers (id, owner, text, fire_at, repeat_seconds, created_by) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(t.id, t.owner, t.text, t.fire_at, t.repeat_seconds, t.created_by);
+  old.prepare("INSERT INTO events (ts, workspace, member, type, data) VALUES (?, ?, ?, ?, ?)").run(Date.now(), "owner", "person:owner", "timer.set", JSON.stringify({ timer: proven }));
   old.close();
   const ledger = await Ledger.open(file);
   const world = new WorldRouter(ledger, async () => true);

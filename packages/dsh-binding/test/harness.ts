@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DshHost } from "../../packages/dsh-binding/test/legacy/host";
+import { randomUUID } from "node:crypto";
+import { DshHost } from "../src/host";
 
 export type Request = { system: string; messages: { role: string; content: unknown }[]; tools: unknown[]; model: string };
 
@@ -45,7 +46,15 @@ export async function startHarness(reply: (request: Request) => ScriptedReply) {
   const dir = mkdtempSync(join(tmpdir(), "ash-dsh-spike-"));
   process.env.DEEPSEEK_API_KEY = "sk-spike-local";
   process.env.DEEPSEEK_BASE_URL = `http://127.0.0.1:${port}/anthropic`;
-  const host = new DshHost({ root, home: join(dir, "dsh-home"), env: { DSH_PERMISSION_MODE: "danger-full-access", DSH_TELEMETRY_DISABLED: "1", DEEPSEEK_API_KEY: "sk-spike-local", DEEPSEEK_BASE_URL: `http://127.0.0.1:${port}/anthropic` } }, () => {});
+  const dsh = new DshHost({ root, home: join(dir, "dsh-home"), env: { DSH_PERMISSION_MODE: "danger-full-access", DSH_TELEMETRY_DISABLED: "1", DEEPSEEK_API_KEY: "sk-spike-local", DEEPSEEK_BASE_URL: `http://127.0.0.1:${port}/anthropic` } });
+  // A bare DSH agent in the booted v2 host; each test installs the door it exercises.
+  const host = Object.assign(dsh, {
+    async agent(_port: unknown, cwd: string): Promise<{ agent: any; sessionId: string }> {
+      const sessionId = `session-${randomUUID()}`;
+      const handle = await dsh.ctx.get("agents").create({ sessionId, meta: { cwd }, agentOptions: dsh.agentOptions() });
+      return { agent: handle.agent, sessionId };
+    },
+  });
   try {
     await host.boot();
   } catch (error) {
@@ -53,7 +62,7 @@ export async function startHarness(reply: (request: Request) => ScriptedReply) {
     rmSync(dir, { recursive: true, force: true });
     throw error;
   }
-  return { host, requests, dir, port, async close() { await host.stop(); await new Promise<void>((resolve) => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); } };
+  return { host, requests, dir, port, async close() { await host.close(); await new Promise<void>((resolve) => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 export function requestText(request: Request): string {
@@ -68,7 +77,7 @@ export async function waitForTurn(host: DshHost, sessionId: string, send: () => 
     const off = host.onSessionEvent((id, event) => {
       if (id !== sessionId) return;
       events.push(event.type);
-      if (event.type === "assistant/message") text += (event.data.message?.content ?? []).filter((part: { type: string }) => part.type === "text").map((part: { text: string }) => part.text).join("");
+      if (event.type === "assistant/message") text += (event.data?.message?.content ?? []).filter((part: { type: string }) => part.type === "text").map((part: { text: string }) => part.text).join("");
       if (event.type === "turn/end") { clearTimeout(timer); off(); resolve({ text, events }); }
     });
     send();
