@@ -20,6 +20,11 @@ export interface AgentTurnOutput { id: string; text: string }
 export interface AgentTurnRunner {
   /** Optional lower text cap; not a claim about the provider's total context window. */
   renderBudgetBytes?: number;
+  /**
+   * Hand messages that arrived mid-turn to the work in progress (they are seen at the agent's next step). True only when
+   * the running work took them; false leaves them for the next turn.
+   */
+  steer?(input: { turn: string; messages: readonly Message[]; rendered: string }, signal: AbortSignal): Promise<boolean>;
   /** Settlement must prove the underlying session is idle, including after abort. A turn/end event alone is insufficient. */
   runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<{ reason: "completed" | "error"; error?: string }>;
 }
@@ -68,6 +73,8 @@ export class AgentMember implements Member {
   private quiescenceBlocked = false;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private receiptTask: Promise<void> | null = null;
+  private steering: Promise<void> = Promise.resolve();
+  private steered: { turn: string; ids: string[] } | null = null;
   private error: Error | null = null;
 
   constructor(options: AgentMemberOptions) {
@@ -103,6 +110,7 @@ export class AgentMember implements Member {
     this.inbox.accept(message); // sync durable commit before acknowledging the route
     if (this.started) void this.receipts().catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
     this.schedule();
+    if (this.started && this.activeTurn && this.runner.steer) this.steering = this.steering.then(() => this.steer()).catch(() => { /* left pending for the next turn */ });
     return { ok: true, result: { accepted: true } };
   }
 
@@ -128,6 +136,8 @@ export class AgentMember implements Member {
     if (!receipt.cancelled || !receipt.turn) return { ok: true, result: { cancelled: false } };
     this.router.cancelTurn(this.id, receipt.turn); // wake pending tool promises before aborting the runtime
     const ended = this.inbox.finish(receipt.turn, "cancelled", "External effect may be unknown; waiting for runner to become idle");
+    // Words the owner added mid-turn were never answered; the next turn takes them up again.
+    if (this.steered?.turn === receipt.turn) { this.inbox.release(this.steered.ids, receipt.turn); this.steered = null; this.schedule(); }
     if (this.activeTurn === receipt.turn && this.active) { this.quiescenceBlocked = true; this.active.abort(); }
     void this.turnEvents(ended).catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
     return { ok: true, result: { cancelled: true } };
@@ -174,6 +184,22 @@ export class AgentMember implements Member {
     if (this.retry) clearTimeout(this.retry);
     this.active?.abort();
     this.inbox.close();
+  }
+
+  /** Messages that arrive while a turn runs join it at the agent's next step, instead of waiting for the turn to end. */
+  private async steer(): Promise<void> {
+    const turn = this.activeTurn;
+    const controller = this.active;
+    if (this.closed || !turn || !controller || controller.signal.aborted || !this.runner.steer || this.isPaused()) return;
+    const ids = this.inbox.pendingIds();
+    if (!ids.length) return;
+    const messages = ids.map((id) => this.message(id));
+    const rendered = renderTurnBatch(messages, this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET, []);
+    if (!await this.runner.steer({ turn, messages, rendered }, controller.signal)) return;
+    if (this.closed || this.inbox.turn(turn).status !== "active") return;
+    this.inbox.attach(ids, turn);
+    this.steered = { turn, ids: [...(this.steered?.turn === turn ? this.steered.ids : []), ...ids] };
+    await this.event("read", { ids, turn }, `read:${turn}:${ids[0]}`, turn);
   }
 
   private context(turn?: string): TrustedRouteContext {

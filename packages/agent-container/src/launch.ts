@@ -1,0 +1,118 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+/** Where the agent runtime lives. `proot` is the product; `direct` runs the same DSH without a container, for tests. */
+export interface ContainerConfig {
+  root: string;
+  dns?: string[];
+  env?: Record<string, string>;
+  model?: { provider: string; model: string };
+  direct?: { dshBin: string; dshHome: string; workspace: string; pluginPath: string };
+  /** Tests only: where the model egress forwards instead of the provider. */
+  modelUpstream?: string;
+}
+
+export interface LaunchSpec {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  /** The workspace as the host (ash) sees it: persona and memory files, attachments for the agent. */
+  hostWorkspace: string;
+  /** The same directory as the agent sees it: every ACP session's cwd. */
+  agentWorkspace: string;
+  /** Map a host path inside the workspace to the path the agent sees. */
+  toAgentPath(hostPath: string): string;
+  mode: "proot" | "direct";
+}
+
+/** The model key the container is given. It is not a secret: ash swaps it for the vault key at the egress. */
+export const PLACEHOLDER_KEY = "sk-ash-placeholder-the-real-key-stays-outside";
+const CONTAINER_PATH = "/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+function writeIfChanged(file: string, text: string): void {
+  mkdirSync(dirname(file), { recursive: true });
+  if (existsSync(file) && readFileSync(file, "utf8") === text) return;
+  const temp = `${file}.tmp-${process.pid}`;
+  writeFileSync(temp, text, { mode: 0o644 });
+  renameSync(temp, file);
+}
+
+const yamlString = (value: string) => `'${value.replace(/'/g, "''")}'`;
+
+/**
+ * The DSH application patch: the official ACP row is replaced by ash's control plugin (ACP plus steer and inject),
+ * and DSH's own sandbox is off (DSH_PERMISSION_MODE) because the container is the sandbox.
+ */
+export function patchText(pluginPath: string, model: { provider: string; model: string }, skillsPath?: string): string {
+  return [
+    "- id: acp",
+    "  disabled: true",
+    "- insert:",
+    "    - id: ash-control",
+    `      name: ${yamlString(pluginPath)}`,
+    "      inject: [acpAppStartup]",
+    "      config:",
+    `        provider: ${yamlString(model.provider)}`,
+    `        model: ${yamlString(model.model)}`,
+    ...(skillsPath ? ["    - id: ash-skills", `      name: ${yamlString(skillsPath)}`] : []),
+    "",
+  ].join("\n");
+}
+
+export const DEFAULT_MODEL = { provider: "deepseek-official", model: "deepseek-v4-flash" } as const;
+
+/** Prepare the files the runtime reads at start (patch, resolv.conf) and return how to spawn it. */
+export function prepareLaunch(config: ContainerConfig, egressBase: string, stateDir: string): LaunchSpec {
+  const model = config.model ?? DEFAULT_MODEL;
+  const proxyless = "127.0.0.1,localhost,::1";
+  const extra = { ...(config.env ?? {}) };
+  const noProxy = [extra.NO_PROXY ?? extra.no_proxy, proxyless].filter(Boolean).join(",");
+  const common: Record<string, string> = {
+    ...extra,
+    NO_PROXY: noProxy, no_proxy: noProxy,
+    DSH_TELEMETRY_DISABLED: "1",
+    // DSH's own sandbox and approval prompts are off as a pair: the container is the sandbox.
+    DSH_PERMISSION_MODE: "danger-full-access",
+    DEEPSEEK_API_KEY: PLACEHOLDER_KEY,
+    DEEPSEEK_BASE_URL: egressBase,
+    LANG: "C.UTF-8",
+  };
+  if (config.direct) {
+    const { dshBin, dshHome, workspace, pluginPath } = config.direct;
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(dshHome, { recursive: true });
+    const patch = join(stateDir, "container-patch.yml");
+    const skills = join(dirname(dirname(pluginPath)), "ash-skills", "index.mjs");
+    writeIfChanged(patch, patchText(pluginPath, model, existsSync(skills) ? skills : undefined));
+    return {
+      mode: "direct", command: dshBin, args: ["--profile", "acp", "--patch", patch],
+      env: { HOME: process.env.HOME ?? dshHome, PATH: process.env.PATH ?? CONTAINER_PATH, DSH_HOME: dshHome, ...common },
+      hostWorkspace: workspace, agentWorkspace: workspace, toAgentPath: (path) => path,
+    };
+  }
+  const root = config.root;
+  const rootfs = join(root, "ubuntu");
+  const proot = join(root, "proot", "bin", "proot");
+  if (!existsSync(proot) || !existsSync(join(rootfs, "opt", "dsh"))) throw new Error("agent container is not installed");
+  const hostWorkspace = join(rootfs, "root", "work");
+  mkdirSync(hostWorkspace, { recursive: true });
+  mkdirSync(join(root, "tmp"), { recursive: true });
+  writeIfChanged(join(rootfs, "opt", "ash", "patch.yml"), patchText("/opt/ash/dsh-ash-control/index.mjs", model,
+    existsSync(join(rootfs, "opt", "ash", "ash-skills", "index.mjs")) ? "/opt/ash/ash-skills/index.mjs" : undefined));
+  const dns = (config.dns ?? []).filter((server) => /^[0-9a-fA-F:.]{2,45}$/.test(server));
+  writeIfChanged(join(rootfs, "etc", "resolv.conf"), `${(dns.length ? dns : ["223.5.5.5", "119.29.29.29"]).map((server) => `nameserver ${server}`).join("\n")}\n`);
+  const inside: Record<string, string> = { HOME: "/root", DSH_HOME: "/root/.dsh", PATH: CONTAINER_PATH, TMPDIR: "/tmp", TERM: "dumb", ...common };
+  const vars = Object.entries(inside).map(([key, value]) => `${key}=${value}`);
+  return {
+    mode: "proot", command: proot,
+    args: ["--kill-on-exit", "--link2symlink", "-0", "-r", rootfs, "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", `${join(root, "tmp")}:/tmp`,
+      "-w", "/root/work", "/usr/bin/env", "-i", ...vars, "/opt/dsh/node_modules/.bin/dsh", "--profile", "acp", "--patch", "/opt/ash/patch.yml"],
+    env: { LD_LIBRARY_PATH: join(root, "proot", "lib"), PROOT_LOADER: join(root, "proot", "libexec", "loader"), PROOT_TMP_DIR: join(root, "tmp"),
+      PATH: process.env.PATH ?? "/system/bin" },
+    hostWorkspace, agentWorkspace: "/root/work",
+    toAgentPath: (path) => {
+      if (path !== hostWorkspace && !path.startsWith(`${hostWorkspace}/`)) throw new Error("path is outside the agent workspace");
+      return `/root/work${path.slice(hostWorkspace.length)}`;
+    },
+  };
+}

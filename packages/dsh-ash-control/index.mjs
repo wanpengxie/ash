@@ -14,6 +14,8 @@ export async function apply(ctx, config) {
   const sdkPath = createRequire(acpPath).resolve("@agentclientprotocol/sdk");
   const acp = await import(pathToFileURL(acpPath).href);
   const { ndJsonStream } = await import(pathToFileURL(sdkPath).href);
+  // DSH's own constructor gives each message the identity a stored session needs to load again.
+  const { createUserMessage } = await import(pathToFileURL(createRequire(acpPath).resolve("@deepseek-ai/dsh-llm")).href);
 
   // One writer for stdout: ACP frames and our own replies never interleave mid-line.
   const out = (line) => process.stdout.write(line.endsWith("\n") ? line : line + "\n");
@@ -29,9 +31,15 @@ export async function apply(ctx, config) {
     if (!agent) return reply(msg.id, undefined, { code: -32602, message: `unknown session: ${sessionId}` });
     if (!Array.isArray(content) || !content.length) return reply(msg.id, undefined, { code: -32602, message: "content must be a non-empty array" });
     // A steer is the owner speaking; injected context is ash's own producer kind (DSH retired the generic "plugin" kind).
-    const message = { role: "user", content, source: { kind: msg.method === "_ash/steer" ? "user" : "ash-context" } };
-    if (msg.method === "_ash/steer") agent.steer(message);
-    else agent.inject(message);
+    const message = createUserMessage({ content, source: { kind: msg.method === "_ash/steer" ? "user" : "ash-context" } });
+    // A steer only joins work in progress. An idle agent would start a turn nobody is watching, so ash keeps the words
+    // for its next prompt instead.
+    if (msg.method === "_ash/steer") {
+      if (agent.status !== "running") return reply(msg.id, { steered: false });
+      agent.steer(message);
+      return reply(msg.id, { steered: true });
+    }
+    agent.inject(message);
     reply(msg.id, {});
   };
 

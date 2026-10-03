@@ -46,6 +46,9 @@ export interface InternalApprovalIngress {
   contractFingerprint: string;
   signal: AbortSignal;
   stillValid: () => boolean;
+  /** The card's words when the agent itself asks for confirmation; otherwise a generic tool question. */
+  title?: string;
+  detail?: string;
 }
 export type InternalApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 type Subscriber = (message: Message) => void;
@@ -140,7 +143,7 @@ export class WorldRouter {
       const expiresAt = accepted.deadlineAt;
       const started = this.ledger.beginGate(parent.id, { subject: hash({ member: "agent:main", sessionId: input.sessionId }),
         risk: "structure", contractFingerprint: input.contractFingerprint, expiresAt,
-        askBody: { title: "需要你确认", detail: `允许使用 ${input.toolName} 一次？`,
+        askBody: { title: input.title ?? "需要你确认", detail: input.detail ?? `允许使用 ${input.toolName} 一次？`,
           options: [{ id: "once", label: "允许这一次" }, { id: "deny", label: "不允许" }],
           source: { word: "internal.approval", to: "service:gate", body_preview: "DSH tool request" } } });
       if (!started) return "unavailable";
@@ -171,6 +174,15 @@ export class WorldRouter {
       }
       this.internalApprovals.delete(parent.id);
     }
+  }
+
+  /** The agent asks the owner to confirm something it is about to do: the same durable card as any approval. */
+  async requestAgentConfirmation(input: { sessionId: string; turn: string; callId: string; title: string; detail: string; signal: AbortSignal;
+    stillValid?: () => boolean }): Promise<"approved" | "rejected" | "cancelled" | "unavailable"> {
+    const fingerprint = hash({ confirm: input.title, detail: input.detail });
+    const outcome = await this.requestInternalApproval({ sessionId: input.sessionId, turn: input.turn, callId: input.callId, toolName: "human_confirm",
+      contractFingerprint: fingerprint, signal: input.signal, stillValid: input.stillValid ?? (() => true), title: input.title, detail: input.detail });
+    return outcome === "allowed-once" ? "approved" : outcome;
   }
 
   /** Recheck a stored delegate against the current credential/grant authority. */

@@ -92,6 +92,25 @@ export class AgentInbox {
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
+  /** Pending messages the running turn took in mid-work (a steer). They become part of that turn. */
+  attach(ids: readonly string[], turn: string): void {
+    if (!ids.length) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.turn(turn).status !== "active") throw new Error("steer target turn is not active");
+      for (const id of ids) {
+        const change = this.db.prepare("UPDATE inbox SET state='read',turn_id=? WHERE message_id=? AND state='pending'").run(turn, id);
+        if (Number(change.changes) !== 1) throw new Error("steered message is no longer pending");
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** Give steered messages back to the queue when their turn was stopped, so the next turn answers them. */
+  release(ids: readonly string[], turn: string): void {
+    for (const id of ids) this.db.prepare("UPDATE inbox SET state='pending',turn_id=NULL WHERE message_id=? AND turn_id=? AND state='read'").run(id, turn);
+  }
+
   turn(id: string): StoredTurn {
     const row = this.db.prepare("SELECT * FROM turns WHERE id=?").get(id) as Row | undefined;
     if (!row) throw new Error("unknown inbox turn");

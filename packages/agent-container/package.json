@@ -1,0 +1,7 @@
+{
+  "name": "ash-agent-container",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ash's side of the agent runtime in its Linux container: launch, ACP client with steer and inject, model egress, turn runners."
+}
