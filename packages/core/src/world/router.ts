@@ -449,11 +449,14 @@ export class WorldRouter {
     if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
-    if (this.durableGate && request.kind === "request" && request.to?.startsWith("device:") &&
-      !this.ledger.gateDeviceAccess(from, request.to, request.word)) fail("forbidden", "current device access grant unavailable");
+    // Without a device access grant an agent's request is not refused: the gate asks the owner for access first.
+    const needsAccess = this.durableGate && request.kind === "request" && Boolean(request.to?.startsWith("device:")) &&
+      !this.ledger.gateDeviceAccess(from, request.to!, request.word);
+    if (needsAccess && !(endpoint && /^agent:[A-Za-z0-9_-]+$/.test(from))) fail("forbidden", "current device access grant unavailable");
     // A risky request and its owner approval share one persisted total budget.
-    // Explicit endpoint deadlines remain authoritative, even when shorter.
-    const timeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint?.spec.risk && endpoint.spec.risk !== "none" ? 600_000 : 60_000);
+    // Explicit endpoint deadlines remain authoritative, even when shorter, except that an access card always gets the owner's full ten minutes.
+    const baseTimeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint?.spec.risk && endpoint.spec.risk !== "none" ? 600_000 : 60_000);
+    const timeoutMs = needsAccess ? Math.max(baseTimeoutMs, 600_000) : baseTimeoutMs;
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
     const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
@@ -638,18 +641,20 @@ export class WorldRouter {
     if (pending.settled) return;
     try {
       const gateBypass = request.from === "person:owner";
-      if (this.durableGate && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none" && !gateBypass) {
+      const needsAccess = this.durableGate && pending.phase === "accepted" && Boolean(request.to?.startsWith("device:")) &&
+        /^agent:[A-Za-z0-9_-]+$/.test(request.from) && !this.ledger.gateDeviceAccess(request.from, request.to!, request.word);
+      if (this.durableGate && pending.phase === "accepted" && ((endpoint.spec.risk && endpoint.spec.risk !== "none") || needsAccess) && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;
         if (!currentAuthority || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body) ||
-          (request.to?.startsWith("device:") && !this.ledger.gateDeviceAccess(request.from, request.to, request.word))) {
+          (request.to?.startsWith("device:") && !needsAccess && !this.ledger.gateDeviceAccess(request.from, request.to, request.word))) {
           this.finish(pending, errors("forbidden", "risk request authority changed before gate"), request.to!, false); return;
         }
         if (!pending.context.transportPrincipal || !this.endpoint("person:owner", "ask")) {
           this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
         }
         const identity = this.gateIdentity(pending);
-        const objectPattern = gateObject(request.to!, request.word, request.body);
+        const objectPattern = needsAccess ? null : gateObject(request.to!, request.word, request.body);
         const ruleEvent = objectPattern ? this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint, objectPattern) : null;
         if (ruleEvent) {
           pending.phase = "dispatching";
@@ -671,12 +676,17 @@ export class WorldRouter {
         const plain = (value: unknown, max: number) => String(value ?? "").replace(/[\p{C}\s]+/gu, " ").trim().slice(0, max);
         const browserDetail = request.word === "browser.click" ? `在 ${plain(request.body.site, 80)} 点击「${plain(request.body.label, 60)}」`
           : request.word === "browser.type" ? `在 ${plain(request.body.site, 80)} 的「${plain(request.body.label, 60)}」里输入：${plain(request.body.text, 120)}${request.body.submit === true ? "，然后提交" : ""}` : null;
-        const detail = browserDetail && request.to!.startsWith("device:") ? browserDetail : calendarAsk ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
-          : `${endpoint.spec.label ?? request.word}：${preview}`;
-        const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk,
-          contractFingerprint: identity.fingerprint, expiresAt, objectPattern,
-          askBody: { title: calendarAsk ? "创建日历事件" : "需要你确认", detail,
-            options: [{ id: "once", label: "允许这一次" }, { id: "always", label: calendarAsk
+        const capability = endpoint.spec.label ?? request.word;
+        const risky = Boolean(endpoint.spec.risk && endpoint.spec.risk !== "none");
+        const detail = browserDetail && request.to!.startsWith("device:") ? browserDetail : calendarAsk && !needsAccess ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
+          : needsAccess && Object.keys(request.body).length === 0 ? `第一次用到这项手机能力：${capability}。`
+          : `${capability}：${preview}`;
+        const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk ?? "none",
+          contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
+          ...(needsAccess ? { accessScope: `${request.to}/${request.word}` } : {}),
+          askBody: { title: needsAccess ? "允许使用这项手机能力吗？" : calendarAsk ? "创建日历事件" : "需要你确认", detail,
+            options: [{ id: "once", label: "允许这一次" }, { id: "always", label: needsAccess
+              ? `30 天内允许「${capability}」${risky ? "（有风险的操作仍会每次问你）" : ""}` : calendarAsk
               ? "30 天内允许这个日历" : browserDetail && request.to!.startsWith("device:") ? "30 天内允许在这个网站上这样操作" : "30 天内允许同样的操作" },
               { id: "deny", label: "不允许" }],
             source: { word: request.word, to: request.to!, body_preview: detail } } });
@@ -715,7 +725,7 @@ export class WorldRouter {
       }
       if (pending.settled) return;
       if (this.durableGate && request.to?.startsWith("device:") &&
-        !this.ledger.gateDeviceAccess(request.from, request.to, request.word)) {
+        !this.ledger.gateDeviceAccess(request.from, request.to, request.word) && !this.ledger.gateAccessAnswered(request.id)) {
         this.finish(pending, errors("forbidden", "device access changed before effect"), request.to, false); return;
       }
       if (pending.phase === "accepted" || pending.phase === "gate_waiting") {

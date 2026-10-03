@@ -69,7 +69,9 @@ test("gate events are service-only closed audit shapes without arguments or cred
   }
   assert.equal(wordContract("agent:main", "gate.asked"), undefined);
   assert.ok(matchesSchema(asked.input_schema!, base));
-  for (const invalid of [{ ...base, risk: "none" }, { ...base, expires_at: Infinity }, { ...base, arguments: { text: "private" } },
+  // An access card for a capability's first use is gated even when the action itself carries no risk.
+  assert.ok(matchesSchema(asked.input_schema!, { ...base, risk: "none" }));
+  for (const invalid of [{ ...base, risk: "low" }, { ...base, expires_at: Infinity }, { ...base, arguments: { text: "private" } },
     { ...base, token: "private" }, { request_id: "m_request" }, null]) assert.ok(!matchesSchema(asked.input_schema!, invalid));
   for (const body of [{ request_id: "m_request", by: "rule", rule_id: rule.id },
     { request_id: "m_request", by: "answer", ask_id: "m_ask" }]) assert.ok(matchesSchema(passed.input_schema!, body));

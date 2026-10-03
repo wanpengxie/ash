@@ -431,7 +431,7 @@ export type GateHistoryDecisionV2 =
   | "legacy_unresolved" | "legacy_approved" | "legacy_denied" | "legacy_expired" | "legacy_cancelled"
   | "legacy_access_imported" | "legacy_access_expired" | "legacy_access_invalid";
 export type GateHistoryItemV2 =
-  | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
+  | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "none" | "outward" | "structure";
       decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule"; at: number; rule_id?: string; source: "current" }
   | { id: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
       decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule">;

@@ -108,7 +108,7 @@ for (const stage of ["answered-before-cas", "cas-before-handoff", "handoff-befor
       assert.equal(typeof ready.parentId, "string");
       assert.equal(typeof ready.askId, "string");
       const executionBarrier = stage === "handoff-before-effect" ? message(child, "barrier") : null;
-      const turnEnded = stage === "policy-after-handoff" || stage === "acl-after-handoff" ? message(child, "turn-ended") : null;
+      const turnEnded = stage === "policy-after-handoff" ? message(child, "turn-ended") : stage === "acl-after-handoff" ? message(child, "access-asked") : null;
       child.send({ type: "answer" });
       if (stage === "answered-before-cas" || stage === "cas-before-handoff")
         await marker(join(root, "commit-barrier"));

@@ -31,12 +31,14 @@ const askChoice = choice("once", "always", "deny");
 const askOption = obj({ id: askChoice, label: nonempty }, ["id", "label"]);
 const origin = obj({ screen: nonempty, label: str }, ["screen", "label"]);
 const cardOption = obj({ id: nonempty, text: nonempty }, ["id", "text"]);
+export const PHONE_PERMISSIONS = ["calendar", "notifications", "battery", "accessibility", "all_files", "usage", "write_settings", "overlay", "shizuku"] as const;
 export const CARD_SCHEMA: JsonSchema = { oneOf: [
   obj({ type: { const: "options" }, prompt: str, options: { type: "array", items: cardOption, minItems: 1 }, allow_custom: bool }, ["type", "options"]),
   obj({ type: { const: "file" }, workspace: nonempty, path: nonempty, name: nonempty, mime_type: nonempty, size: { type: "integer", minimum: 0 } }, ["type", "workspace", "path", "name", "mime_type", "size"]),
   obj({ type: { const: "image" }, workspace: nonempty, path: nonempty, alt: str }, ["type", "workspace", "path"]),
   obj({ type: { const: "link" }, url: nonempty, title: nonempty, summary: str }, ["type", "url", "title"]),
-  obj({ type: { const: "permission" }, permission: nonempty, why: nonempty }, ["type", "permission", "why"]),
+  // An Android setting the owner switches on by hand; the phone app opens exactly that page.
+  obj({ type: { const: "permission" }, permission: choice(...PHONE_PERMISSIONS), why: nonempty }, ["type", "permission", "why"]),
 ] };
 const sha = { type: "string", pattern: "^[0-9a-f]{64}$" } as const satisfies JsonSchema;
 const positiveSafe: JsonSchema = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
@@ -56,7 +58,7 @@ const guidance: Record<string, string> = {
   "agent:main/say": "Use to tell the agent something or answer an active option card. It acknowledges receipt immediately; read later conversation messages for the answer.",
   "person:owner/say": "Use to reply or offer a heads-up to the owner. This records immediately; it does not wait for a response or replace ask.",
   "person:owner/react": "Use for a brief reaction to a known message. Do not use for a new explanation; send say instead.",
-  "person:owner/show": "Use to present a file, image, link, permission, or choices. Showing choices does not itself authorize an action.",
+  "person:owner/show": "Use to present a file, image, link, permission, or choices. Showing choices does not itself authorize an action. A permission card only names an Android setting the owner must switch on (calendar, notifications, battery, accessibility, all_files, usage, write_settings, overlay, shizuku); never use it to ask for access to a phone capability, because calling the capability asks the owner by itself.",
   "person:owner/ask": "Use when the owner must choose before an action continues. It waits for the first valid unexpired answer; do not treat mere presentation as consent.",
   "screen:*/ui.open": "Use to ask a named screen to show a view. A suggested opening may be declined; check opened in the response.",
   "service:clock/set": "Use for a future or repeating message, not for immediate delivery. Record the returned timer id for cancellation.",
@@ -154,7 +156,8 @@ const gateRisk = choice("outward", "structure");
 const gateRule = obj({ id, subject: nonempty, device_id: id, capability_id: id, to: id, word: id, object_pattern: nonempty,
   risk: gateRisk, contract_fingerprint: sha, created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
 ["id", "subject", "to", "word", "object_pattern", "risk", "contract_fingerprint", "created_at", "expires_at"]);
-const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: gateRisk,
+// A first use of a phone capability is asked for access even when the action itself carries no risk.
+const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: choice("none", "outward", "structure"),
   decision: choice("once", "always", "deny", "timeout", "cancelled", "rule"), at: nonnegativeSafe, rule_id: id,
   source: { const: "current" } },
 ["id", "request_id", "decision", "at", "source"]);
@@ -180,7 +183,7 @@ add("service:gate", "access.grant", "request", obj({ member: { type: "string", p
   { audience: "owner", risk: "structure" });
 add("service:gate", "access.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]),
   { audience: "owner", risk: "structure" });
-add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: gateRisk, to: id, word: id,
+add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: choice("none", "outward", "structure"), to: id, word: id,
   expires_at: nonnegativeSafe }, ["request_id", "ask_id", "risk", "to", "word", "expires_at"]), undefined, { direction: "out" });
 add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer"), rule_id: id, ask_id: id },
   ["request_id", "by"]), undefined, { direction: "out" });

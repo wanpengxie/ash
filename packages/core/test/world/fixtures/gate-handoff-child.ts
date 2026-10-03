@@ -94,6 +94,11 @@ try {
   const gate = running.ledger.gateCase(parent.id);
   if (!gate) throw new Error("gate ask absent");
   if (stage === "policy-after-handoff" || stage === "acl-after-handoff") running.world.subscribe((item) => {
+    // With its grant revoked, the device call does not run: the owner is asked for access again instead.
+    if (stage === "acl-after-handoff" && item.word === "gate.asked" && item.body.risk === "none") notify("access-asked", {
+      parentResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === parent!.id).length,
+      askResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === gate.askId).length,
+    });
     if (item.word === "turn.end") notify("turn-ended", {
       parentResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === parent!.id).length,
       askResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === gate.askId).length,

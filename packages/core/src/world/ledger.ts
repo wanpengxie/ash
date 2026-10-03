@@ -33,23 +33,29 @@ export interface TrackedRequest { message: Message; phase: RequestPhase; deadlin
 export interface GateCaseStart {
   /** Stable authenticated identity, not a screen registration or bearer token. */
   subject: string;
-  risk: "outward" | "structure";
+  risk: "none" | "outward" | "structure";
   contractFingerprint: string;
   askBody: Record<string, unknown>;
   expiresAt: number;
   /** Exact action object chosen from the validated request. */
   objectPattern?: string;
   ruleId?: string;
+  /**
+   * Set when the agent has no device access grant for this capability yet: the owner is asked for access instead of the
+   * request being refused, and "always" grants this exact device/capability scope for 30 days.
+   */
+  accessScope?: string;
 }
 export interface GateCaseRecord {
   requestId: string;
   askId: string;
   subject: string;
-  risk: "outward" | "structure";
+  risk: "none" | "outward" | "structure";
   contractFingerprint: string;
   expiresAt: number;
   decision: "waiting" | "allowed" | "denied" | "timeout" | "cancelled";
   objectPattern?: string;
+  accessScope?: string;
 }
 
 const marker = "v2:messages:migrated";
@@ -286,6 +292,8 @@ export class Ledger {
         decision TEXT NOT NULL CHECK(decision IN ('waiting','allowed','denied','timeout','cancelled')),
         decided_at INTEGER);
         CREATE INDEX IF NOT EXISTS gate_cases_ask ON gate_cases(ask_id);`);
+      if (!(db.prepare("PRAGMA table_info(gate_cases)").all() as Row[]).some((column) => column.name === "access_scope"))
+        db.exec("ALTER TABLE gate_cases ADD COLUMN access_scope TEXT");
       db.exec(`CREATE TABLE IF NOT EXISTS gate_history (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, request_id TEXT,
         ask_id TEXT, subject TEXT, target TEXT, word TEXT,
@@ -775,8 +783,10 @@ export class Ledger {
 
   /** Atomically enter the gate and create its single owner ask and audit event. */
   beginGate(requestId: string, input: GateCaseStart): { ask: Message; event: Message } | null {
+    const access = input.accessScope !== undefined;
     if (!input.subject || !/^[a-f0-9]{64}$/.test(input.contractFingerprint) ||
-      !["outward", "structure"].includes(input.risk) || !Number.isSafeInteger(input.expiresAt) ||
+      !(access ? ["none", "outward", "structure"] : ["outward", "structure"]).includes(input.risk) || !Number.isSafeInteger(input.expiresAt) ||
+      (access && (input.objectPattern !== undefined || !/^device:[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(input.accessScope!))) ||
       input.expiresAt < 0 || !matchesSchema(wordContract("person:owner", "ask")!.input_schema!,
         { ...input.askBody, expires_at: input.expiresAt })) throw new TypeError("invalid gate case");
     this.db.exec("BEGIN IMMEDIATE");
@@ -785,7 +795,8 @@ export class Ledger {
         WHERE m.id=?`).get(requestId) as Row | undefined;
       if (!tracked || tracked.kind !== "request" || tracked.phase !== "accepted" || !tracked.to ||
         input.expiresAt > Number(tracked.deadline_at) || input.expiresAt <= Date.now()) { this.db.exec("COMMIT"); return null; }
-      if (String(tracked.to).startsWith("device:") && !this.gateDeviceAccess(String(tracked.from), String(tracked.to), String(tracked.word))) {
+      if (access ? !/^agent:[A-Za-z0-9_-]+$/.test(String(tracked.from)) || input.accessScope !== `${String(tracked.to)}/${String(tracked.word)}`
+        : String(tracked.to).startsWith("device:") && !this.gateDeviceAccess(String(tracked.from), String(tracked.to), String(tracked.word))) {
         this.db.exec("COMMIT"); return null;
       }
       const source = obj(input.askBody.source);
@@ -794,7 +805,7 @@ export class Ledger {
       const reviewedObject = typeof input.objectPattern === "string" &&
         gateObject(String(tracked.to), String(tracked.word), obj(JSON.parse(String(tracked.body)))) === input.objectPattern;
       if (input.objectPattern !== undefined && !reviewedObject) throw new TypeError("approval object does not match request");
-      if (optionIds.join(",") !== (reviewedObject ? "once,always,deny" : "once,deny")) throw new TypeError("gate choices do not match reviewed object policy");
+      if (optionIds.join(",") !== (reviewedObject || access ? "once,always,deny" : "once,deny")) throw new TypeError("gate choices do not match reviewed object policy");
       if (this.db.prepare("SELECT 1 FROM gate_cases WHERE request_id=?").get(requestId)) throw new TypeError("duplicate gate case");
       const at = Date.now();
       const askId = newId();
@@ -803,9 +814,9 @@ export class Ledger {
         .run(askId, at, "service:gate", "person:owner", "request", "ask", JSON.stringify(askBody), null, null, tracked.turn === null ? null : String(tracked.turn));
       this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)")
         .run(askId, "accepted", input.expiresAt, JSON.stringify({ member: "service:gate", local: true, remote: false, ownerProxy: false, transportPrincipal: "service:gate" }), at);
-      this.db.prepare(`INSERT INTO gate_cases(request_id,ask_id,subject,risk,contract_fingerprint,expires_at,object_pattern,decision)
-        VALUES(?,?,?,?,?,?,?,?)`).run(requestId, askId, input.subject, input.risk, input.contractFingerprint, input.expiresAt,
-          input.objectPattern ?? null, "waiting");
+      this.db.prepare(`INSERT INTO gate_cases(request_id,ask_id,subject,risk,contract_fingerprint,expires_at,object_pattern,decision,access_scope)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(requestId, askId, input.subject, input.risk, input.contractFingerprint, input.expiresAt,
+          input.objectPattern ?? null, "waiting", input.accessScope ?? null);
       const changed = this.db.prepare("UPDATE request_state SET phase='gate_waiting',updated_at=? WHERE request_id=? AND phase='accepted'").run(at, requestId);
       if (Number(changed.changes) !== 1) throw new TypeError("gate phase changed");
       const eventId = newId();
@@ -856,7 +867,8 @@ export class Ledger {
       risk: row.risk as GateCaseRecord["risk"], contractFingerprint: String(row.contract_fingerprint),
       expiresAt: Number(row.expires_at), decision: row.decision as GateCaseRecord["decision"],
       ...(row.object_pattern === null ? {} : { objectPattern: String(row.object_pattern) }),
-      ...(row.rule_id === null ? {} : { ruleId: String(row.rule_id) }) };
+      ...(row.rule_id === null ? {} : { ruleId: String(row.rule_id) }),
+      ...(row.access_scope === null || row.access_scope === undefined ? {} : { accessScope: String(row.access_scope) }) };
   }
 
   gateCaseByAsk(askId: string): GateCaseRecord | null {
@@ -878,7 +890,8 @@ export class Ledger {
       const at = Date.now();
       if (cause === "answer" && at >= Number(row.expires_at)) throw new TypeError("gate ask expired before answer");
       if (cause === "deadline" && at < Number(row.expires_at)) throw new TypeError("gate deadline has not elapsed");
-      if (cause === "answer" && choice === "always" && typeof row.object_pattern !== "string")
+      const accessScope = typeof row.access_scope === "string" ? row.access_scope : null;
+      if (cause === "answer" && choice === "always" && typeof row.object_pattern !== "string" && !accessScope)
         throw new TypeError("always not available for this capability");
       const timedOut = cause === "deadline";
       const decision = cause === "cancelled" ? "cancelled" : timedOut ? "timeout" : choice === "deny" ? "denied" : "allowed";
@@ -895,7 +908,16 @@ export class Ledger {
           retryPayload({ from: "person:owner", to: "service:gate", kind: "response", word: "ask", body: askBody, reply_to: askId }), askResponseId);
       this.db.prepare("UPDATE gate_cases SET decision=?,decided_at=? WHERE ask_id=? AND decision='waiting'").run(decision, at, askId);
       let ruleId: string | null = null;
-      if (decision === "allowed" && choice === "always") {
+      if (decision === "allowed" && choice === "always" && accessScope) {
+        // The owner's answer on this card is the grant: one exact agent and device capability, for 30 days.
+        const member = this.byId(String(row.request_id))!.from;
+        this.db.prepare(`UPDATE gate_access SET revoked_at=? WHERE source='current' AND member=? AND scope=? AND revoked_at IS NULL`)
+          .run(at, member, accessScope);
+        const accessId = newId();
+        this.db.prepare(`INSERT INTO gate_access(id,member,scope,source,created_at,expires_at) VALUES(?,?,?,?,?,?)`)
+          .run(accessId, member, accessScope, "current", at, at + 30 * 24 * 60 * 60_000);
+        this.db.prepare("INSERT INTO gate_access_audit(request_id,access_id,action,at) VALUES(?,?,?,?)").run(askId, accessId, "grant", at);
+      } else if (decision === "allowed" && choice === "always") {
         ruleId = newId();
         const original = this.byId(String(row.request_id))!;
         this.db.prepare(`INSERT INTO gate_rules(id,subject,subject_alias,device_id,capability_id,target,word,object_pattern,risk,
@@ -940,7 +962,7 @@ export class Ledger {
     if (!subject || !/^[a-f0-9]{64}$/.test(contractFingerprint)) return false;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const row = this.db.prepare(`SELECT c.decision,c.subject,c.contract_fingerprint,c.expires_at,s.phase,s.deadline_at,
+      const row = this.db.prepare(`SELECT c.decision,c.subject,c.contract_fingerprint,c.expires_at,c.access_scope,s.phase,s.deadline_at,
         m."from" AS request_from,m."to" AS request_to,m.word AS request_word,
         a.kind AS ask_kind,a.word AS ask_word,r.body AS answer_body
         FROM gate_cases c JOIN request_state s ON s.request_id=c.request_id
@@ -953,7 +975,9 @@ export class Ledger {
         typeof row.answer_body !== "string" || Date.now() >= Number(row.deadline_at)) {
         this.db.exec("COMMIT"); return false;
       }
-      if (String(row.request_to).startsWith("device:") &&
+      // An answered access card is the authority for this one request, even when the owner allowed it only once.
+      const accessAnswered = typeof row.access_scope === "string" && row.access_scope === `${String(row.request_to)}/${String(row.request_word)}`;
+      if (String(row.request_to).startsWith("device:") && !accessAnswered &&
         !this.gateDeviceAccess(String(row.request_from), String(row.request_to), String(row.request_word))) {
         this.db.exec("COMMIT"); return false;
       }
@@ -992,7 +1016,7 @@ export class Ledger {
         at: Number(row.at), source: "legacy", ...(row.subject === null ? {} : { subject: String(row.subject) }),
         ...(row.legacy_scope === null ? {} : { legacy_scope: String(row.legacy_scope) }) }
       : { id: String(row.id), request_id: String(row.request_id), ...(row.ask_id === null ? {} : { ask_id: String(row.ask_id) }),
-        subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "outward" | "structure",
+        subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "none" | "outward" | "structure",
         decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule", at: Number(row.at),
         ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }), source: "current" }),
       ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };
@@ -1005,6 +1029,13 @@ export class Ledger {
     const row = this.db.prepare(`SELECT 1 FROM gate_access WHERE member=? AND revoked_at IS NULL AND expires_at>? AND
       scope IN ('*',?,?) LIMIT 1`).get(member, at, `${device}/*`, `${device}/${capability}`);
     return Boolean(row);
+  }
+
+  /** True only for a request whose own access card the owner allowed (once or for 30 days). */
+  gateAccessAnswered(requestId: string): boolean {
+    const row = this.db.prepare(`SELECT c.decision,c.access_scope,m."to" AS target,m.word FROM gate_cases c JOIN messages m ON m.id=c.request_id
+      WHERE c.request_id=?`).get(requestId) as Row | undefined;
+    return Boolean(row && row.decision === "allowed" && typeof row.access_scope === "string" && row.access_scope === `${String(row.target)}/${String(row.word)}`);
   }
 
   gateAccessPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { items: GateAccessItemV2[]; next_before?: number } {

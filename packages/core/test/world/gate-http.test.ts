@@ -59,7 +59,13 @@ test("local owner grants one exact device capability without waiving the agent's
     const agent = { transport: "agent" as const, member: "agent:main", transportPrincipal: "agent:main",
       local: true, remote: false, ownerProxy: false };
     const attempt = () => running.world.send(agent, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
-    await assert.rejects(attempt(), /device access grant unavailable/);
+    // Without a grant the agent is not refused: the gate asks the owner for access instead.
+    const asked = await attempt();
+    const askedBy = Date.now() + 2_000;
+    while (!running.ledger.gateCase(asked.id) && Date.now() < askedBy) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(running.ledger.gateCase(asked.id)?.accessScope, "device:fake/run");
+    running.world.cancel([asked.id]);
+    assert.equal(effects, 0);
     const bad = await call("access.grant", { member: "agent:main", scope: "device:fake/*" });
     assert.equal(bad.status, 400);
     assert.equal(running.ledger.gateAccessPage().items.length, 0);
