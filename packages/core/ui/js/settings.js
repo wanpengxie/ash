@@ -8,6 +8,26 @@ function node(tag, label, className = "") {
   return element;
 }
 
+const SCOPE_NAMES = { chat: "对话", mind: "内心整理", background: "后台任务", title: "起标题", compaction: "压缩历史", other: "其他" };
+const money = (value) => `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`;
+const tokens = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+
+/** Rows for the usage table: one headline line per period, then where the last week went. */
+export function renderUsage(summary) {
+  const line = (label, totals, className = "") => {
+    const row = node("p", "", className);
+    const note = totals.unpriced_calls ? `，另有 ${totals.unpriced_calls} 次没有价格` : "";
+    row.textContent = `${label}：${money(totals.cost_usd)} · ${totals.calls} 次调用 · 输入 ${tokens(totals.input_tokens + totals.cache_read_tokens)} / 输出 ${tokens(totals.output_tokens)}${note}`;
+    return row;
+  };
+  const rows = [line("今天", summary.periods.today), line("近 7 天", summary.periods["7d"]), line("近 30 天", summary.periods["30d"])];
+  if (summary.by_scope.length) {
+    rows.push(node("p", "近 7 天花在哪：", "muted"));
+    for (const scope of summary.by_scope) rows.push(line(`　${SCOPE_NAMES[scope.scope] ?? scope.scope}`, scope, "muted"));
+  }
+  return rows;
+}
+
 /** Local management controls are rendered only for this screen's current server registration. */
 export class SettingsControls {
   constructor(panel, net) {
@@ -117,17 +137,17 @@ export class SettingsControls {
     const quietStatus = node("p", "尚未读取当前时段。", "muted");
     quietStatus.id = "settingsQuietStatus";
     quietStatus.setAttribute("role", "status");
-    const requestSetting = async (word, body) => {
+    const requestSetting = async (word, body, to = "service:admin") => {
       const token = this.net.token, screen = this.net.screen, scope = this.net.currentScope;
       if (this.section !== section || !this.connected || !this.allowed || !this.net.localManagement || !token || !screen || !scope) return null;
       const response = await this.net.request("/api/send", { method: "POST", credentials: "same-origin",
         headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token },
-        body: JSON.stringify({ to: "service:admin", kind: "request", word, body, wait: true, client_id: crypto.randomUUID() }) });
+        body: JSON.stringify({ to, kind: "request", word, body, wait: true, client_id: crypto.randomUUID() }) });
       if (this.section !== section || !this.connected || !this.allowed || token !== this.net.token ||
         screen !== this.net.screen || scope !== this.net.currentScope || !this.net.localManagement || !response.ok) return null;
       const accepted = await response.json();
       const reply = accepted?.reply;
-      return reply?.kind === "response" && reply.reply_to === accepted.id && reply.from === "service:admin" &&
+      return reply?.kind === "response" && reply.reply_to === accepted.id && reply.from === to &&
         reply.to === "person:owner" && reply.word === word ? reply.body : null;
     };
     load.addEventListener("click", () => { void (async () => {
@@ -241,6 +261,40 @@ export class SettingsControls {
     })(); });
     modelSection.append(provider, model, modelLoad, modelSave, modelStatus);
     section.append(modelSection);
+    const usageSection = document.createElement("section");
+    usageSection.id = "settingsUsage";
+    usageSection.append(node("h2", "用量"));
+    const usageTable = document.createElement("div");
+    usageTable.id = "settingsUsageTable";
+    const balanceLine = node("p", "", "muted");
+    balanceLine.id = "settingsUsageBalance";
+    const usageStatus = node("p", "点「查看用量」读取。", "muted");
+    usageStatus.id = "settingsUsageStatus";
+    usageStatus.setAttribute("role", "status");
+    const usageRefresh = node("button", "查看用量", "btn gray");
+    usageRefresh.id = "settingsUsageRefresh";
+    usageRefresh.type = "button";
+    usageRefresh.addEventListener("click", () => { void refreshUsage(); });
+    usageSection.append(usageTable, balanceLine, usageStatus, usageRefresh);
+    section.append(usageSection);
+    const refreshUsage = async () => {
+      usageStatus.textContent = "正在读取…";
+      usageRefresh.textContent = "刷新";
+      try {
+        const reply = await requestSetting("usage.get", { days: 7 }, "service:cost");
+        if (reply?.ok !== true) throw new Error("unavailable");
+        if (this.section !== section) return;
+        usageTable.replaceChildren(...renderUsage(reply.result));
+        usageStatus.textContent = reply.result.estimated ? "金额按模型目录价估算，不是账单。" : "";
+      } catch { if (this.section === section) usageStatus.textContent = "用量读取失败；请重试。"; return; }
+      try {
+        const reply = await requestSetting("balance.get", {}, "service:cost");
+        if (this.section !== section) return;
+        balanceLine.textContent = reply?.ok === true
+          ? `账户余额：${reply.result.balances.map((b) => `${b.total} ${b.currency}`).join("，") || "无数据"}${reply.result.available ? "" : "（账户当前不可用）"}`
+          : "账户余额暂时读不到（不是零）。";
+      } catch { if (this.section === section) balanceLine.textContent = "账户余额暂时读不到（不是零）。"; }
+    };
     if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashJevKey === "function") {
       const jevSection = document.createElement("section");
       jevSection.id = "settingsJev";

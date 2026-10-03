@@ -28,6 +28,7 @@ import { ReflexMember } from "./members/reflex";
 import { JevReflexClient } from "./members/reflex-jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
+import { CostMember } from "./members/cost";
 import { WorkMember } from "./members/work";
 import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
@@ -37,6 +38,7 @@ import { Ledger } from "./world/ledger";
 import { WorldMembers } from "./world/member";
 import { WorldRouter } from "./world/router";
 import { registerWorkerMembers } from "./workers/llm";
+import { estimateWorkerCost } from "./workers/cost";
 
 export interface Config {
   role?: "owner" | "client";
@@ -46,7 +48,7 @@ export interface Config {
   stateDir: string;
   workspaces?: Record<string, string>;
   agents?: { id: "agent:main"; name?: string; runtime: "echo" | "dsh" }[];
-  dsh?: { root: string; home?: string; skillsRoot?: string; env?: Record<string, string> };
+  dsh?: { root: string; home?: string; skillsRoot?: string; costRoot?: string; env?: Record<string, string> };
   host?: HostConnection & { coreToken?: string };
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
@@ -122,6 +124,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let self: SelfMember | null = null;
   let work: WorkMember | null = null;
   let senses: SensesMember | null = null;
+  let cost: CostMember | null = null;
   let stopTour: (() => void) | null = null;
   let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
@@ -136,6 +139,7 @@ export async function startOwner(config: Config): Promise<Running> {
       if (caller.transportPrincipal === "agent:main" && caller.member === "agent:main") return true;
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
+      if (caller.transportPrincipal === "service:cost" && caller.member === "service:cost" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:work" && caller.member === "service:work" && caller.local && !caller.remote)
         return Boolean(work?.ownsRequestTurn(request));
@@ -149,7 +153,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     members.register(new GateMember(ledger, world, members));
     world.enableDurableGate();
-    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, env: config.dsh!.env });
+    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
@@ -293,6 +297,12 @@ export async function startOwner(config: Config): Promise<Running> {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
     registerWorkerMembers(members, dshWorkerModel(dsh, () => worldConfig.workers.model), ledger);
+      const collector = dsh.cost();
+      if (collector) { cost = new CostMember({ ledger, router: world, collector, price: async (record) => {
+        const rates = await dsh!.modelRates(record.provider, record.model);
+        return rates ? estimateWorkerCost({ provider: record.provider, model: record.model, inputTokens: record.input, outputTokens: record.output,
+          cacheReadTokens: record.cacheRead, cacheWriteTokens: record.cacheWrite }, rates) : null;
+      } }); members.register(cost); }
       if (!self) throw new Error("managed files unavailable");
       (runner as DshTurnRunner).primeManagedSnapshot(await self.promptSnapshot());
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
@@ -315,13 +325,13 @@ export async function startOwner(config: Config): Promise<Running> {
     hostLink?.startHealthChecks(members);
     link?.enable();
     return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
-      stopTour?.(); stopFirstMeeting?.(); senses?.close();
+      stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
       await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
-    stopTour?.(); stopFirstMeeting?.(); senses?.close();
+    stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
     await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();

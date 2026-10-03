@@ -8,7 +8,7 @@ import type { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, type DoorAgent, type DoorOptions, type DshDoor } from "./door";
 import type { WorkerRates } from "../../core/src/workers/cost";
 
-export interface DshHostOptions { root: string; home: string; skillsRoot?: string; env?: Record<string, string> }
+export interface DshHostOptions { root: string; home: string; skillsRoot?: string; costRoot?: string; env?: Record<string, string> }
 export interface DshRootAgent extends DoorAgent {
   id: string;
   followup(message: { id: string; role: "user"; content: unknown[]; source: { kind: "user" } }): void;
@@ -20,6 +20,12 @@ export interface DoorTurnAdapter {
   /** Attach the 206 turn lifecycle before this session receives any application input. */
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void;
   attachManagedPrompt?(agentContext: unknown): () => void;
+}
+export interface DshUsageCollector {
+  label(sessionId: string, scope: string): void;
+  onUsage(listener: (record: { at: number; ms: number; scope: string; provider: string; model: string; input: number; output: number;
+    cacheRead: number; cacheWrite: number; ok: boolean }) => void): () => void;
+  balance(options?: { credential?: string; baseURL?: string; timeoutMs?: number }): Promise<unknown>;
 }
 export interface MainSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
 export interface MindSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
@@ -162,6 +168,7 @@ export class DshHost {
   private main: MainSession | null = null;
   private mind: MindSession | null = null;
   private managedPromptCleanup: (() => void) | null = null;
+  private collector: DshUsageCollector | null = null;
   private readonly listeners = new Set<(sessionId: string, event: DshSessionEvent) => void>();
 
   constructor(private readonly options: DshHostOptions) {
@@ -198,6 +205,11 @@ export class DshHost {
       const plugin = await import(pathToFileURL(join(this.options.skillsRoot, "index.mjs")).href);
       await ctx.plugin(plugin);
     }
+    if (this.options.costRoot) {
+      const plugin = await import(pathToFileURL(join(this.options.costRoot, "index.mjs")).href);
+      await ctx.plugin(plugin);
+      this.collector = plugin.collector as DshUsageCollector;
+    }
     ctx.on("session/event", (session: { id?: string; header?: { id?: string } }, event: DshSessionEvent) => {
       const id = session?.id ?? session?.header?.id ?? "";
       for (const listener of this.listeners) listener(id, event);
@@ -211,13 +223,17 @@ export class DshHost {
 
   /** The worker's non-session llm service remains available without creating a model agent. */
   llm(): unknown { if (!this.ctx) throw new Error("DSH host not booted"); return this.ctx.get("llm"); }
+  /** The DSH-world usage collector, present when the deployment ships the cost plugin. */
+  cost(): DshUsageCollector | null { return this.collector; }
   /** Read prices from the model catalog shipped with this DSH install, never from a guessed rate table. */
   async modelRates(provider: string, model: string): Promise<WorkerRates | null> {
     const file = join(this.options.root, "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "all.js");
     if (!existsSync(file)) return null;
     try {
       const catalog = await import(pathToFileURL(file).href) as { getBuiltinModel?: (provider: string, model: string) => { cost?: WorkerRates } | undefined };
-      return catalog.getBuiltinModel?.(provider, model)?.cost ?? null;
+      // ash's DeepSeek profile names its provider "deepseek-official"; the catalog files the same models under "deepseek".
+      const key = provider === "deepseek-official" ? "deepseek" : provider;
+      return catalog.getBuiltinModel?.(key, model)?.cost ?? null;
     } catch { return null; }
   }
   agentOptions(): { provider: string; model: string } | undefined {
@@ -234,6 +250,7 @@ export class DshHost {
     let door: DshDoor | null = null;
     try {
       const sessionId = options.resume ? loadOrCreateSessionId(options.resume.file, options.resume.startedTurns) : `session-${randomUUID()}`;
+      this.collector?.label(sessionId, "chat");
       const agentOptions = this.agentOptions();
       door = createDshDoor({ tools: this.ctx.tools, members: options.members, router: options.router,
         workspace: options.workspace, managedRoot: options.managedRoot, protectedRoots: options.protectedRoots,
@@ -286,6 +303,7 @@ export class DshHost {
     if (!this.ctx || !this.main || this.mind) throw new Error("main session must start before the mind session");
     const scope = await this.imp("@deepseek-ai/dsh-scope");
     const sessionId = `session-${randomUUID()}`;
+    this.collector?.label(sessionId, "mind");
     const door = createDshDoor({ ...options, tools: this.ctx.tools, scopeChainOf: scope.scopeChainOf,
       nativeMode: "disabled" });
     try {

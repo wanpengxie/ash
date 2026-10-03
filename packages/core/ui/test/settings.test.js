@@ -309,3 +309,32 @@ test("outside the Android app there is no browser-login control", () => {
     assert.equal(panel.find("settingsBrowserClear"), undefined);
   } finally { delete globalThis.document; }
 });
+
+test("settings show usage by period and part of Ash, and an unreadable balance is not shown as zero", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "http://127.0.0.1" };
+  const zero = { calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0, unpriced_calls: 0 };
+  const summary = { estimated: true, periods: { today: { ...zero, calls: 3, cost_usd: 0.0042, input_tokens: 12000, unpriced_calls: 1 }, "7d": { ...zero, calls: 9, cost_usd: 1.5 }, "30d": zero },
+    by_scope: [{ ...zero, scope: "chat", calls: 7, cost_usd: 1.2 }, { ...zero, scope: "background", calls: 2, cost_usd: 0.3 }] };
+  const seen = [];
+  const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
+    async request(_path, init) {
+      const sent = JSON.parse(init.body); seen.push(sent.word);
+      const body = sent.word === "usage.get" ? { ok: true, result: summary } : { ok: false, error: { code: "failed", message: "HTTP 401" } };
+      return { ok: true, json: async () => ({ id: "m1", reply: { kind: "response", reply_to: "m1", from: sent.to, to: "person:owner", word: sent.word, body } }) };
+    } };
+  try {
+    const panel = new Element("div");
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsUsageRefresh").click();
+    for (let i = 0; i < 50 && !panel.find("settingsUsageBalance")?.textContent; i++) await new Promise((resolve) => setImmediate(resolve));
+    const table = panel.find("settingsUsageTable").children.map((row) => row.textContent);
+    assert.match(table[0], /^今天：\$0\.0042 · 3 次调用 · 输入 12\.0k.*另有 1 次没有价格/);
+    assert.match(table[1], /^近 7 天：\$1\.50 · 9 次调用/);
+    assert.ok(table.some((row) => /对话：\$1\.20/.test(row)) && table.some((row) => /后台任务：\$0\.30/.test(row)));
+    assert.deepEqual(seen.slice(0, 2), ["usage.get", "balance.get"]);
+    assert.match(panel.find("settingsUsageBalance").textContent, /读不到（不是零）/);
+    assert.match(panel.find("settingsUsageStatus").textContent, /估算/);
+  } finally { delete globalThis.document; delete globalThis.location; }
+});

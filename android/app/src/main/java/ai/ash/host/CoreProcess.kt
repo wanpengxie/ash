@@ -67,6 +67,7 @@ class CoreProcess(private val ctx: Context) {
                     .put("root", p.dshRoot.path)
                     .put("home", p.dshHome.path)
                     .put("skillsRoot", p.skillsRoot.path)
+                    .put("costRoot", p.costRoot.path)
                     .put("patchFiles", JSONArray().put(p.hostPatch.path))
                     // No DSH sandbox runner exists on Android; the app sandbox is the boundary and
                     // ash's own gates decide what untrusted requests may do.

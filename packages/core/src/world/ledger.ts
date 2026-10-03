@@ -61,6 +61,13 @@ const str = (value: unknown, fallback = "") => typeof value === "string" ? value
 const stable = (value: unknown): string => Array.isArray(value) ? `[${value.map(stable).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Row)[key])}`).join(",")}}` : JSON.stringify(value);
 const digest = (value: unknown) => createHash("sha256").update(stable(value)).digest("hex");
 const retryPayload = (input: NewMessage) => digest({ to: input.to, kind: input.kind, word: input.word, body: input.body, reply_to: input.reply_to ?? null });
+export interface UsageTotals { calls: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cost_usd: number; unpriced_calls: number }
+export interface UsageCall { at: number; scope: string; model: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cost_usd: number | null; ms: number }
+export interface UsageSummary {
+  as_of: number; currency: "USD"; estimated: true; periods: { today: UsageTotals; "7d": UsageTotals; "30d": UsageTotals };
+  by_scope: (UsageTotals & { scope: string })[]; by_day: (UsageTotals & { date: string })[]; recent: UsageCall[];
+}
+
 export const gateObject = (target: string, word: string, body: Record<string, unknown>): string => {
   if (target.startsWith("device:") && word === "calendar.create") {
     const id = body.calendar_id;
@@ -1080,6 +1087,40 @@ export class Ledger {
     const rows = this.db.prepare("SELECT seq FROM messages WHERE seq>? ORDER BY seq LIMIT ?")
       .iterate(after, Math.min(Math.max(limit, 1), 1000)) as Iterable<Row>;
     return Array.from(rows, (row) => Number(row.seq));
+  }
+
+  /** Model usage over the last `days` days, summed by period, part of Ash and local day. Costs of unpriced calls are counted apart, never as zero. */
+  usageSummary(days: number, now: number, timeZone: string): UsageSummary {
+    const span = Math.min(Math.max(Math.trunc(days), 1), 90);
+    const dayOf = (at: number) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(at));
+    const dayStart = (offset: number) => dayOf(now - offset * 86_400_000);
+    const first = dayStart(Math.max(span, 30) - 1);
+    const rows = this.db.prepare(`SELECT ts, body FROM messages WHERE "from"='service:cost' AND word='usage.recorded' AND kind='event' AND ts>=? ORDER BY seq`)
+      .all(now - (Math.max(span, 30) + 1) * 86_400_000) as Row[];
+    const zero = (): UsageTotals => ({ calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0, unpriced_calls: 0 });
+    const add = (into: UsageTotals, body: Record<string, unknown>) => {
+      into.calls++;
+      into.input_tokens += Number(body.input_tokens) || 0; into.output_tokens += Number(body.output_tokens) || 0; into.cache_read_tokens += Number(body.cache_read_tokens) || 0;
+      if (typeof body.cost_usd === "number") into.cost_usd += body.cost_usd; else into.unpriced_calls++;
+    };
+    const today = dayOf(now), week = dayStart(6), month = dayStart(29);
+    const periods = { today: zero(), "7d": zero(), "30d": zero() };
+    const byScope = new Map<string, UsageTotals>();
+    const byDay = new Map<string, UsageTotals>();
+    const recent: UsageCall[] = [];
+    for (const row of rows) {
+      const body = JSON.parse(String(row.body)) as Record<string, unknown>, at = Number(body.at) || Number(row.ts), day = dayOf(at);
+      if (day < first) continue;
+      if (day >= month) add(periods["30d"], body);
+      if (day >= week) { add(periods["7d"], body); const scope = String(body.scope); add(byScope.get(scope) ?? byScope.set(scope, zero()).get(scope)!, body); }
+      if (day === today) add(periods.today, body);
+      if (day >= dayStart(span - 1)) add(byDay.get(day) ?? byDay.set(day, zero()).get(day)!, body);
+      recent.push({ at, scope: String(body.scope), model: String(body.model), input_tokens: Number(body.input_tokens) || 0, output_tokens: Number(body.output_tokens) || 0,
+        cache_read_tokens: Number(body.cache_read_tokens) || 0, cost_usd: typeof body.cost_usd === "number" ? body.cost_usd : null, ms: Number(body.ms) || 0 });
+    }
+    return { as_of: now, currency: "USD", estimated: true, periods,
+      by_scope: [...byScope].map(([scope, totals]) => ({ scope, ...totals })).sort((a, b) => b.cost_usd - a.cost_usd || b.calls - a.calls),
+      by_day: [...byDay].map(([date, totals]) => ({ date, ...totals })).sort((a, b) => a.date.localeCompare(b.date)), recent: recent.slice(-15).reverse() };
   }
 
   /** What the owner said to Ash, oldest first, independent of how much else the ledger holds. */

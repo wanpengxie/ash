@@ -105,6 +105,15 @@ add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, option
 
 add("screen:*", "ui.open", "request", obj({ target: choice("activity", "upcoming", "approvals", "identity", "memory", "settings", "turn"), id: str, mode: choice("perform", "suggest") }, ["target", "mode"]), obj({ opened: bool }, ["opened"]), { description: "Open or suggest a view on a named screen." });
 add("service:clock", "set", "request", obj({ at: num, every: { type: "integer", minimum: 60 }, to: id, word: id, body: obj({}, [], true), label: nonempty }, ["to", "word", "body", "label"]), obj({ id, next: num }, ["id", "next"]));
+add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "other"), provider: str, model: str,
+  input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
+  cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },
+["scope", "provider", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "cost_source", "ms", "ok"]), undefined,
+{ direction: "out", audience: "owner", description: "One model call as the DSH side measured it, priced from the installed model catalog; cost_usd is null when no price is known, never zero." });
+add("service:cost", "usage.get", "request", obj({ days: { type: "integer", minimum: 1, maximum: 90 } }), obj({}, [], true),
+  { audience: "owner", label: "Reading usage", description: "What the models used and cost: today, 7 and 30 days, by part of Ash, by day, and the latest calls." });
+add("service:cost", "balance.get", "request", empty, obj({}, [], true),
+  { audience: "owner", label: "Reading balance", description: "The provider account balance for the configured API key; fails rather than reporting zero when it cannot be read." });
 add("service:clock", "cancel", "request", obj({ id }, ["id"]), obj({ cancelled: bool }, ["cancelled"]));
 add("service:clock", "list", "request", empty, obj({ timers: array(any) }, ["timers"]));
 add("service:clock", "clock.fired", "event", obj({ timer_id: id, scheduled_at: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },

@@ -56,7 +56,7 @@ async function world() {
   await host.start();
   const running = await startOwner({ stateDir: join(root, "state"), listen: "127.0.0.1:0", workspaces: { home },
     agents: [{ id: "agent:main", runtime: "dsh" }], host: { url: host.url, token: host.token },
-    dsh: { root: install!, home: join(root, "dsh"), env: { DSH_TELEMETRY_DISABLED: "1", DSH_PERMISSION_MODE: "danger-full-access",
+    dsh: { root: install!, home: join(root, "dsh"), costRoot: join(process.cwd(), "packages/ash-cost"), env: { DSH_TELEMETRY_DISABLED: "1", DSH_PERMISSION_MODE: "danger-full-access",
       DEEPSEEK_API_KEY: "sk-synthetic", DEEPSEEK_BASE_URL: model.url } } });
   const ownerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
   const owner: TrustedRouteContext = { member: "person:owner", transport: "api", local: true, remote: false, ownerProxy: true,
@@ -137,6 +137,7 @@ test("each inbound word rejects a schema-violating body from its authorized send
       "service:self/read": w.owner, "service:self/write": w.owner, "service:self/append": w.owner, "service:self/apply_plan": w.owner,
       "service:self/rollback": w.owner, "service:self/history": w.owner,
       "service:work/run": w.owner, "service:work/runs": w.owner,
+      "service:cost/usage.get": w.owner, "service:cost/balance.get": w.owner,
     };
     for (const word of ["rules.list", "rules.revoke", "history", "access.list", "access.grant", "access.revoke"]) senders[`service:gate/${word}`] = w.owner;
     for (const word of ["settings.get", "settings.set", "plugins.list", "plugins.op", "gateway.state", "gateway.op", "model.set", "pause"]) senders[`service:admin/${word}`] = w.owner;
