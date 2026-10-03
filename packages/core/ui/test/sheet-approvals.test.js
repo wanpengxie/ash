@@ -157,3 +157,24 @@ test("5xx, timeout and rate limiting are unknown ACKs, not definitive rejection"
   net.request = async () => ({ ok: false, status: 403 });
   await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => null, { now: () => 5000 }), /无权回答/);
 });
+
+test("history says when she judged an action herself and why; a capability-wide rule names no object", () => {
+  globalThis.document = { createElement: (tag) => new Node(tag), createDocumentFragment: () => new Node("fragment") };
+  try {
+    const root = new Node("root");
+    renderApprovalsSheet(root, initialView(), { now: 5000, rules: [
+      { id: "rule-star", to: "device:phone", word: "file.delete", object_pattern: "*", risk: "outward", expires_at: 90_000 },
+    ], history: [
+      { id: "h-review", source: "current", request_id: "m_1", to: "device:phone", word: "browser.click", risk: "outward",
+        decision: "review", reason: "你让她打开推特，你来登录", at: 4000 },
+      { id: "h-carry", source: "current", request_id: "m_2", to: "device:phone", word: "browser.click", risk: "outward",
+        decision: "carry", reason: "你几分钟前刚允许过同样的操作", at: 4500 },
+      { id: "h-once", source: "current", request_id: "m_3", to: "device:phone", word: "shell.run", risk: "structure", decision: "once", at: 4800 },
+    ] });
+    const text = root.textContent;
+    assert.match(text, /在网页上点击由她判断后放行 · .*你让她打开推特，你来登录/);
+    assert.match(text, /刚允许过，沿用 · .*你几分钟前刚允许过同样的操作/);
+    assert.match(text, /执行命令仅这一次/);
+    assert.doesNotMatch(text, /\*/);
+  } finally { delete globalThis.document; }
+});

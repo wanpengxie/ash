@@ -7,6 +7,8 @@ const validTime = (value) => Number.isSafeInteger(value) && value >= 0 && value 
 const choices = new Set(["once", "always", "deny"]);
 const actionLabel = (item) => item?.word === "calendar.create" ? "创建日历事件" :
   item?.word === "message.send" ? "发送消息" :
+  item?.word === "browser.click" ? "在网页上点击" : item?.word === "browser.type" ? "在网页上输入" :
+  item?.word === "shell.run" ? "执行命令" :
   item?.risk === "outward" ? "对外操作" : item?.risk === "structure" ? "修改资料" : "受保护操作";
 export function approvalSections(view, now = Date.now()) {
   const pending = [];
@@ -100,7 +102,8 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
   else for (const rule of live) {
     const row = text(rulesBox, "div", "", "set-item sheet-rule");
     const body = text(row, "span", "", "set-text");
-    const objectLabel = rule.word === "calendar.create" ? `日历 ${safeText(rule.object_pattern, 80)}` :
+    // "*" covers every use of the capability: there is no single object to name.
+    const objectLabel = rule.object_pattern === "*" ? "" : rule.word === "calendar.create" ? `日历 ${safeText(rule.object_pattern, 80)}` :
       rule.word === "message.send" ? `收件人 ${safeText(rule.object_pattern, 80)}` : safeText(rule.object_pattern, 80);
     text(body, "span", actionLabel(rule), "set-title");
     text(body, "span", `${objectLabel ? `${objectLabel} · ` : ""}${at(rule.expires_at, now)} 前有效`, "set-sub");
@@ -126,11 +129,13 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
   else for (const item of items.slice(0, HISTORY_SHOWN)) {
     const label = item.source === "current" ? actionLabel(item) : "较早的审批";
     const decision = { once: "仅这一次", always: "以后都允许", deny: "已拒绝", timeout: "过期没回答",
-      cancelled: "已取消", rule: "按规则放行" }[item.decision] || "已记录";
+      cancelled: "已取消", rule: "按规则放行", review: "由她判断后放行", carry: "刚允许过，沿用" }[item.decision] || "已记录";
     const row = text(historyBox, "div", "", "set-line sheet-history");
     const body = text(row, "span", "", "set-text");
     text(body, "span", safeText(label, 80), "set-title");
     text(body, "span", `${decision} · ${at(item.at, now)}`, "set-sub");
+    if ((item.decision === "review" || item.decision === "carry") && safeText(item.reason, 200))
+      text(body, "span", safeText(item.reason, 200), "set-sub sheet-reason");
   }
   if (items.length > HISTORY_SHOWN) text(fragment, "p", `只显示最近 ${HISTORY_SHOWN} 条。`, "sheet-empty");
   if (!loading && (!history || !rules) && typeof onRetry === "function") {
