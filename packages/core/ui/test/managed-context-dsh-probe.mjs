@@ -108,7 +108,7 @@ try {
   await evaluate("document.querySelector('#presence').click()");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .markdown-source')?.value === 'SYNTHETIC_SOUL_OLD_017\\n'"), "canonical old SOUL read");
   await evaluate(`(() => { const input=document.querySelector('#agentPanel section[data-tab=identity] .markdown-source');input.value=${JSON.stringify(`${newSoul}\n`)};input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#agentPanel section[data-tab=identity] .editor-save').click();})()`);
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent.includes('已保存并核对当前版本')"), "Chrome SOUL write/readback");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent.includes('已保存')"), "Chrome SOUL write/readback");
   assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), `${newSoul}\n`);
   const changed = owner.ledger.list({ limit: 1000 }).filter((message) => message.word === "self.changed" && message.body?.path === "SOUL.md");
   assert.equal(changed.length, 1, "canonical file change must have one source event");

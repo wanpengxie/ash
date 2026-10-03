@@ -118,9 +118,10 @@ test("editing SOUL in the identity page reaches the next real DSH turn", async (
     await page.locator("#presence").click();
     const editor = page.locator("#agentPanel section[data-tab=identity] .markdown-source");
     await expect(editor).toHaveValue(`${oldSoul}\n`);
+    await page.locator("#agentPanel section[data-tab=identity] .editor-edit").click();
     await editor.fill(`${newSoul}\n`);
     await page.locator("#agentPanel section[data-tab=identity] .editor-save").click();
-    await expect(page.locator("#agentPanel section[data-tab=identity] .editor-status")).toContainText("已保存并核对当前版本");
+    await expect(page.locator("#agentPanel section[data-tab=identity] .editor-status")).toHaveText("已保存。");
     expect(readFileSync(join(home, "SOUL.md"), "utf8")).toBe(`${newSoul}\n`);
     await page.locator("#agentClose").click();
     await page.locator("#t").fill("After soul edit");

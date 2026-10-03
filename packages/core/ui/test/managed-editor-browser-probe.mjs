@@ -96,9 +96,9 @@ try {
 
   await open(first, "memory");
   await fill(first, "memory", "Synthetic owner fact A\n");
-  await save(first, "memory", "已保存并核对当前版本");
+  await save(first, "memory", "已保存");
   await fill(first, "memory", "Synthetic owner fact B\n");
-  await save(first, "memory", "已保存并核对当前版本");
+  await save(first, "memory", "已保存");
   assert.match(readFileSync(join(root, "home", "USER.md"), "utf8"), /version: 2[\s\S]*Synthetic owner fact B/);
   await history(first, "memory");
   await first.evalJs("window.confirm=()=>true");
@@ -122,14 +122,14 @@ try {
   await first.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-rollback').click()");
   gated = await askForLatestRollback(count);
   assert.equal((await answer(first, gated.gate.askId, "once", "synthetic-rollback-once")).status, 200);
-  await until(() => first.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent.includes('已读取当前版本')"), "rollback canonical readback");
+  await until(() => first.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent.includes('已恢复成')"), "rollback canonical readback");
   assert.match(await value(first, "memory"), /Synthetic owner fact A/);
   assert.match(readFileSync(join(root, "home", "USER.md"), "utf8"), /version: 3[\s\S]*Synthetic owner fact A/);
   assert.equal(changes("USER.md").length, 3);
 
   // Exercise the real router's deadline callback with a controlled clock, not a ten-minute wait.
   await fill(first, "memory", "Synthetic owner fact C\n");
-  await save(first, "memory", "已保存并核对当前版本");
+  await save(first, "memory", "已保存");
   await history(first, "memory");
   const beforeExpired = { bytes: readFileSync(join(root, "home", "USER.md"), "utf8"),
     snapshots: await snapshots("USER.md"), changes: changes("USER.md").length };
@@ -155,7 +155,7 @@ try {
   gated = await askForLatestRollback(count);
   await open(second, "memory");
   await fill(second, "memory", "Synthetic concurrent USER D\n");
-  await save(second, "memory", "已保存并核对当前版本");
+  await save(second, "memory", "已保存");
   const beforeStaleRollback = { bytes: readFileSync(join(root, "home", "USER.md"), "utf8"),
     snapshots: await snapshots("USER.md"), changes: changes("USER.md").length };
   assert.equal((await answer(first, gated.gate.askId, "once", "synthetic-stale-rollback")).status, 200);
@@ -164,16 +164,16 @@ try {
   assert.equal(readFileSync(join(root, "home", "USER.md"), "utf8"), beforeStaleRollback.bytes);
   assert.deepEqual(await snapshots("USER.md"), beforeStaleRollback.snapshots);
   assert.equal(changes("USER.md").length, beforeStaleRollback.changes);
-  await until(() => first.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-warning')?.textContent.includes('其他操作修改')"), "stale rollback warning");
+  await until(() => first.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-warning')?.textContent.includes('刚在别处改过')"), "stale rollback warning");
 
   // MEMORY has snapshot timestamps and hashes, not USER's numeric version header.
   await second.evalJs("document.querySelector('#agentPanel section[data-tab=memory] nav button:nth-child(2)').click()");
   await until(() => second.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .markdown-source')?.value === ''"), "MEMORY editor ready");
   await fill(second, "memory", "Synthetic memory A\n");
-  await save(second, "memory", "已保存并核对当前版本");
+  await save(second, "memory", "已保存");
   await fill(second, "memory", "Synthetic memory B\n");
-  await save(second, "memory", "已保存并核对当前版本");
-  assert.equal(await second.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-version')?.textContent"), "已读取");
+  await save(second, "memory", "已保存");
+  assert.equal(await second.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-version')?.textContent"), "", "files without a numbered header show no version line");
   await history(second, "memory");
   await second.evalJs("window.confirm=()=>true");
   const memoryCount = owner.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:self" && row.word === "rollback" && row.body?.path === "MEMORY.md").length;
@@ -181,7 +181,7 @@ try {
   const memoryRequest = await until(() => owner.ledger.list({ limit: 1000 }).filter((row) => row.kind === "request" && row.to === "service:self" && row.word === "rollback" && row.body?.path === "MEMORY.md")[memoryCount], "MEMORY rollback accepted");
   const memoryGate = await until(() => owner.ledger.gateCase(memoryRequest.id), "MEMORY gate ask");
   assert.equal((await answer(second, memoryGate.askId, "once", "synthetic-memory-rollback")).status, 200);
-  await until(() => second.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent.includes('已读取当前版本')"), "MEMORY rollback readback");
+  await until(() => second.evalJs("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent.includes('已恢复成')"), "MEMORY rollback readback");
   assert.equal(await value(second, "memory"), "Synthetic memory A\n");
   assert.equal(readFileSync(join(root, "home", "MEMORY.md"), "utf8"), "Synthetic memory A\n");
   assert.equal(changes("MEMORY.md").length, 3);
@@ -190,16 +190,16 @@ try {
   await first.evalJs("document.querySelector('#agentTabs button[data-tab=identity]').click()");
   await until(() => first.evalJs("Boolean(document.querySelector('#agentPanel section[data-tab=identity] .markdown-source'))"), "first identity editor");
   await fill(first, "identity", "Synthetic initial SOUL\n");
-  await save(first, "identity", "已保存并核对当前版本");
+  await save(first, "identity", "已保存");
   await fill(first, "identity", "Synthetic stale local draft\n");
   await second.evalJs("document.querySelector('#agentTabs button[data-tab=identity]').click()");
   await second.evalJs("document.querySelector('#agentPanel section[data-tab=identity] .editor-refresh').click()");
   await until(() => second.evalJs("document.querySelector('#agentPanel section[data-tab=identity] .markdown-source')?.value === 'Synthetic initial SOUL\\n'"), "second tab reads current SOUL");
   await fill(second, "identity", "Synthetic background SOUL\n");
-  await save(second, "identity", "已保存并核对当前版本");
+  await save(second, "identity", "已保存");
   const before = { changes: changes("SOUL.md").length, writes: requests("write", "SOUL.md").length,
     snapshots: await snapshots("SOUL.md") };
-  await save(first, "identity", "文件已被其他操作修改");
+  await save(first, "identity", "刚在别处改过");
   assert.equal(await value(first, "identity"), "Synthetic stale local draft\n");
   assert.equal(readFileSync(join(root, "home", "SOUL.md"), "utf8"), "Synthetic background SOUL\n");
   assert.equal(changes("SOUL.md").length, before.changes, "stale write cannot emit an additional self.changed");

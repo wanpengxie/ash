@@ -57,8 +57,8 @@ test("only a live gate ask from trusted ledger origin appears; other asks and ol
   assert.deepEqual(sections.pending.map((ask) => ask.id), ["gate-live"]);
   assert.deepEqual(nodes.filter((node) => node.tag === "article").map((node) => node.dataset.askId), ["gate-live"]);
   assert.equal(nodes.some((node) => node.tag === "button"), false);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /审批历史暂不可用/);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /不能据此判断没有规则/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂时读不到审批记录（不代表没有）/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂时读不到这些规则（不代表没有）/);
 });
 
 test("missing or body-spoofed source fails closed and empty state never claims rules are empty", () => {
@@ -68,8 +68,8 @@ test("missing or body-spoofed source fails closed and empty state never claims r
   assert.deepEqual(approvalSections(view, 9000).pending, [], "at the exact expiry no action is displayed");
   const { nodes } = draw({ asks: [{ id: "legacy", seq: 3, state: "pending", title: "Legacy", expires_at: 9000, options: [{ id: "deny", label: "No" }] }] });
   assert.equal(nodes.some((node) => node.tag === "article"), false);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /缺少可验证来源/);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /暂不可用/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /看不出来自哪里/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂时读不到/);
 });
 
 test("malformed raw options cannot be laundered into a valid approval by projection", () => {
