@@ -903,11 +903,12 @@ export class Ledger {
    */
   turnFacts(turn: string | undefined, requester: string, beforeSeq: number): { ownerSaid: string[]; steps: string[] } {
     if (!turn) return { ownerSaid: [], steps: [] };
-    const start = this.db.prepare(`SELECT body FROM messages WHERE turn=? AND kind='event' AND word='turn.start' AND "from"=?
-      ORDER BY seq DESC LIMIT 1`).get(turn, requester) as Row | undefined;
-    const ids = start ? obj(JSON.parse(String(start.body))).ids : undefined;
+    // The turn's opening messages, plus any the owner added while it ran (each recorded by a read event of that turn).
+    const events = this.db.prepare(`SELECT body FROM messages WHERE turn=? AND kind='event' AND word IN ('turn.start','read') AND "from"=?
+      ORDER BY seq`).all(turn, requester) as Row[];
+    const ids = [...new Set(events.flatMap((event) => { const listed = obj(JSON.parse(String(event.body))).ids; return Array.isArray(listed) ? listed : []; }))];
     const ownerSaid: string[] = [];
-    for (const id of Array.isArray(ids) ? ids.slice(-8) : []) {
+    for (const id of ids.slice(-8)) {
       const said = typeof id === "string" ? this.byId(id) : null;
       if (said && said.from === "person:owner" && said.kind === "request" && said.word === "say" && typeof said.body.text === "string" && said.body.text.trim())
         ownerSaid.push(said.body.text);
