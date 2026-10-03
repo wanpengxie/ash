@@ -79,6 +79,7 @@ test("a managed-file change reaches the next turn's context once, with author, f
     for (const part of ["self.changed", "SOUL.md", `by ${changed[0].body.by}`, "Managed file updated"]) assert.ok(second.includes(part), `next turn names ${part}`);
     assert.ok(!third.includes("self.changed"), "a later turn does not repeat the change");
     const devicesOf = (text: string) => { const at = text.indexOf("Devices now"); return at < 0 ? "" : text.slice(at, text.indexOf("[ash] ", at)); };
+    assert.match(turns[0], /Now: \w+ \d{4}-\d\d-\d\d \d\d:\d\d \([^)]+\); epoch ms \d{13}\./, "each turn states the current time");
     assert.match(devicesOf(turns[0]), /device:phone[^]*clipboard\.get/);
     assert.ok(!devicesOf(turns[0]).includes("calendar.search"));
     assert.match(devicesOf(second), /calendar\.search/, "a capability granted mid-conversation is visible on the next turn");

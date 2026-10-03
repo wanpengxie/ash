@@ -221,6 +221,15 @@ export async function turnContent(host: DshHost, input: AgentTurnInput, attachme
   return content;
 }
 
+/** The model has no clock; without this it runs a shell command just to learn the time. Stated afresh every turn. */
+export function clockLine(now: number): string {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const part = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-US", { timeZone: zone, ...options }).format(new Date(now));
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now));
+  return `Now: ${part({ weekday: "long" })} ${date} ${time} (${zone}, ${part({ timeZoneName: "shortOffset" }).split(", ").pop()}); epoch ms ${now}. Use this for dates and timers instead of running a command to read the clock.`;
+}
+
 /** A single real DSH session; cancellation is not proof of idle. */
 export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
   renderBudgetBytes = TOTAL_TEXT_BYTES - MAX_SOURCE_BYTES - MAX_PREFIX_BYTES;
@@ -328,7 +337,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
       // Devices and their capabilities change (a permission granted, a laptop asleep); each turn states them afresh
       // so an earlier "no calendar" in the history never outlives the change.
       const devices = this.devices?.();
-      const managed = [this.currentManagedPrompt, devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : null].filter(Boolean).join("\n\n");
+      const managed = [this.currentManagedPrompt, clockLine(Date.now()), devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : null].filter(Boolean).join("\n\n");
       const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, managed || undefined);
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
       session.agent.followup({ id: messageId, role: "user", content, source: { kind: "user" } });
