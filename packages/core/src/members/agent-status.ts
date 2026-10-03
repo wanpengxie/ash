@@ -1,5 +1,5 @@
 import type { Message } from "../../../sdk/src/api";
-import { STATUS_FALLBACK_LABEL, nativeDetailLabel, statusLabel } from "../../../sdk/src/labels";
+import { STATUS_FALLBACK_LABEL, nativeDetailLabel, pageDetailLabel, statusLabel } from "../../../sdk/src/labels";
 import { WorldRouter, type TrustedRouteContext } from "../world/router";
 
 export type AgentStatusState = "idle" | "listening" | "thinking" | "working" | "done" | "waiting_you" | "resting";
@@ -136,7 +136,8 @@ export class AgentStatus {
       }
     } else if (message.kind === "request" && message.to &&
       (message.from === "agent:main" || (message.to === "person:owner" && message.word === "ask"))) {
-      const detail = message.to === "service:dsh-tool" ? nativeDetailLabel(message.word, message.body.arguments) : null;
+      const detail = message.to === "service:dsh-tool" ? nativeDetailLabel(message.word, message.body.arguments)
+        : pageDetailLabel(statusLabel(message.to, message.word, this.router.registeredLabel(message.to, message.word)), message.body);
       this.pending.set(message.id, { id: message.id, from: message.from, to: message.to, word: message.word,
         ...(message.turn ? { turn: message.turn } : {}), ...(detail ? { detail } : {}) });
       this.lastActivity = now;

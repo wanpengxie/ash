@@ -329,6 +329,17 @@ export async function startOwner(config: Config): Promise<Running> {
         }
         return { provider, model, restart_required: !applied };
       } } : {}),
+      ...(container ? { pluginsList: async () => container!.plugins({ op: "list" }), pluginsOp: async (body: Record<string, unknown>) => {
+        if (body.op === "enable" || body.op === "disable") {
+          if (body.name === "@deepseek-ai/dsh-base" || body.name === "@deepseek-ai/dsh-acp-app") throw new Error("this bundle is required");
+          if (body.name === "dsh-ash-control" || body.name === "ash-skills") throw new Error("ash's own plugins are required");
+        }
+        const result = await container!.plugins({ op: body.op, name: body.name, id: body.id, enabled: body.enabled });
+        // A changed plugin set takes effect when the runtime starts again; restart it now, between turns if possible.
+        const restart = result?.application === "restart-required";
+        if (restart && !agent!.inbox.activeTurn()) await container!.restart();
+        return { ...result, restart_required: restart && Boolean(agent!.inbox.activeTurn()) };
+      } } : {}),
       ...(dsh ? { pluginsList: async () => {
         const manager = dsh!.ctx?.get("pluginManager");
         if (!manager) throw new Error("DSH plugin manager unavailable");

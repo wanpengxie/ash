@@ -131,6 +131,22 @@ export class ContainerHost {
   async inject(sessionId: string, content: ContentBlock[]): Promise<void> { await (await this.boot()).request("_ash/inject", { sessionId, content }); }
   cancel(sessionId: string): void { this.client?.notify("session/cancel", { sessionId }); }
 
+  /** DSH's plugin manager inside the container: list, or switch a bundle or plugin (applies when the runtime restarts). */
+  async plugins(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return await (await this.boot()).request<Record<string, unknown>>("_ash/plugins", body) ?? {};
+  }
+
+  /** Stop the runtime; the next use starts it again and resumes every session. */
+  async restart(): Promise<void> {
+    const client = this.client;
+    this.client = null;
+    this.sessions.clear();
+    if (!client) return;
+    const done = new Promise<void>((resolve) => { client.onExit(() => resolve()); setTimeout(resolve, 5_000).unref(); });
+    client.close();
+    await done;
+  }
+
   /** Choose a model for a session. Values are the runtime's own option ids, a JSON [provider, model] pair. */
   async setModel(sessionId: string, provider: string, model: string): Promise<void> {
     const client = await this.boot();

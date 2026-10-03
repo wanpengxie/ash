@@ -1,5 +1,5 @@
 // ACP superset for ash: the official ACP bridge keeps every standard method; this plugin owns stdin/stdout,
-// answers ash's extension methods (_ash/steer, _ash/inject) through the live Agent, and passes everything else through.
+// answers ash's extension methods (_ash/steer, _ash/inject, _ash/plugins) through the live Agent and DSH's own services, and passes everything else through.
 import { createRequire } from "node:module";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -43,11 +43,32 @@ export async function apply(ctx, config) {
     reply(msg.id, {});
   };
 
+  // The owner's plugin page: list, and switch bundles or single plugins on and off (they apply on the next start).
+  const plugins = async (msg) => {
+    const manager = ctx.get?.("pluginManager");
+    if (!manager) return reply(msg.id, undefined, { code: -32603, message: "plugin manager unavailable" });
+    const { op, name: target, id, enabled } = msg.params ?? {};
+    try {
+      if (op === "list") {
+        const [bundles, list] = await Promise.all([manager.listBundles(), manager.listPlugins()]);
+        return reply(msg.id, { bundles, plugins: list });
+      }
+      if ((op === "enable" || op === "disable") && typeof target === "string" && target.trim())
+        return reply(msg.id, await manager.setBundleEnabled(target.trim(), op === "enable"));
+      if (op === "plugin" && typeof id === "string" && id.trim() && typeof enabled === "boolean")
+        return reply(msg.id, await manager.setPluginEnabled(id.trim(), enabled));
+      return reply(msg.id, undefined, { code: -32602, message: "unsupported plugin operation" });
+    } catch (error) {
+      return reply(msg.id, undefined, { code: -32603, message: String(error?.message ?? error).slice(0, 300) });
+    }
+  };
+
   const lines = createInterface({ input: process.stdin });
   lines.on("line", (line) => {
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
     if (typeof msg?.method === "string" && (msg.method === "_ash/steer" || msg.method === "_ash/inject")) return extension(msg);
+    if (msg?.method === "_ash/plugins") return void plugins(msg);
     feed.enqueue(encoder.encode(line + "\n"));
   });
   lines.on("close", () => { try { feed.close(); } catch {} });

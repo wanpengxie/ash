@@ -663,8 +663,8 @@ export class SettingsControls {
         if (!requested.provider || !requested.model) throw new Error("invalid");
         const reply = await requestSetting("model.set", requested);
         if (reply?.ok !== true || reply.result?.provider !== requested.provider || reply.result?.model !== requested.model ||
-          reply.result?.restart_required !== true) throw new Error("unconfirmed");
-        modelStatus.textContent = `已保存；重启 ${name} 后主模型生效。`;
+          typeof reply.result?.restart_required !== "boolean") throw new Error("unconfirmed");
+        modelStatus.textContent = reply.result.restart_required ? `已保存；重启 ${name} 后主模型生效。` : "已保存，下一条消息起就用它。";
       } catch { if (live()) modelStatus.textContent = "保存未确认，请重试。"; }
     })(); });
     modelSection.append(node("span", "主模型", "set-title"), provider, model, modelSave, modelStatus);
