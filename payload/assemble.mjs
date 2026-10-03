@@ -12,8 +12,6 @@
 //              plus android-compat packages as siblings in dsh/lib/node_modules (never inside @deepseek-ai).
 //   ash/       ash core bundle.
 //   ash-skills/  ash's own DSH skill-provider plugin and its instructions.
-//   ash-cost/    ash's DSH plugin that measures each model call for the usage view.
-//   ash-vault/   ash's DSH plugin that answers DSH's credential lookups from ash's vault.
 //   bin/       small sh wrappers (Android has no /usr/bin/env).
 //   profile/   the host's DSH patch layer (cordis.patch.yml rows, e.g. the ptc worker launcher).
 // Next to the zip: payload-index.json { build, links, exec, placeholders, dshTree }.
@@ -301,11 +299,8 @@ async function build() {
 
   // Ash skills are a separate DSH plugin. Never modify the published DSH tree.
   fs.cpSync(path.join(ROOT, "packages/ash-skills"), path.join(tree, "ash-skills"), { recursive: true });
-  // The cost collector is a second ash-owned DSH plugin: it measures model calls inside DSH's own process.
-  fs.cpSync(path.join(ROOT, "packages/ash-cost"), path.join(tree, "ash-cost"), { recursive: true });
-
-  // ash's DSH plugin that lets DSH's credential lookups reach ash's own vault.
-  fs.cpSync(path.join(ROOT, "packages/ash-vault"), path.join(tree, "ash-vault"), { recursive: true });
+  // The agent's DSH runs in the container (tools/build-container-rootfs.mjs): model calls and
+  // credentials go through ash core, so the in-process cost and vault plugins are not shipped.
 
   // 5. wrappers.
   const wrappers = path.join(HERE, "wrappers");

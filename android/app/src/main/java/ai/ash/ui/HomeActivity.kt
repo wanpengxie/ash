@@ -181,6 +181,7 @@ class HomeActivity : Activity() {
         val st = CoreService.state
         status.text = when {
             st == "installing" -> "正在安装运行环境… ${CoreService.installProgress.takeIf { it >= 0 }?.let { "$it%" } ?: ""}\n（首次安装或升级后需要一两分钟）"
+            st == "preparing" -> "正在准备 Ash 的工作环境… ${CoreService.installProgress.takeIf { it >= 0 }?.let { "$it%" } ?: ""}\n（首次安装或升级后需要一两分钟）"
             st == "stopped" -> "Ash 已停止"
             st.startsWith("error") -> "出错了：${st.removePrefix("error: ")}"
             else -> "正在启动…"
