@@ -120,44 +120,15 @@ private fun coreRoute(input: CoreUiRequest): CoreRoute {
     require(raw.startsWith("/") && !raw.startsWith("//") && !raw.contains('\\') && !raw.contains('#') && raw.length <= 1024)
     val url = java.net.URI("http://ui.invalid$raw")
     require(url.scheme == "http" && url.host == "ui.invalid" && url.rawUserInfo == null && url.normalize() == url)
-    val params = url.rawQuery?.split('&')?.map { it.substringBefore('=') } ?: emptyList()
     val headerNames = input.headers.keys.map { it.lowercase() }
     require(headerNames.size == headerNames.toSet().size)
     require(input.headers.all { (key, value) -> value.length <= 256 && !value.contains('\r') && !value.contains('\n') &&
         key.lowercase() in setOf("content-type", "ash-screen", "last-event-id") })
     val headers = input.headers.mapKeys { it.key.lowercase() }
-    return when {
-        url.rawPath == "/api/send" && input.method == "POST" && url.rawQuery == null && input.body != null &&
-            input.body.size <= 28 * 1024 * 1024 && headers["content-type"] == "application/json" && "last-event-id" !in headers -> CoreRoute(headers, false)
-        url.rawPath == "/api/stream" && input.method == "GET" && input.body == null &&
-            params.size == params.toSet().size && params.all { it in setOf("after", "before", "follow", "summary", "limit", "label") } &&
-            headers.keys.all { it == "last-event-id" } -> CoreRoute(headers, url.rawQuery?.split('&')?.contains("follow=true") == true)
-        Regex("/api/workspaces/[a-z0-9_-]+/files").matches(url.rawPath) && input.method == "GET" && input.body == null &&
-            params == listOf("path") && headers.isEmpty() && validFilePath(url.rawQuery!!.substringAfter('=')) -> CoreRoute(emptyMap(), false)
-        // The vault door: list, save and remove a credential. A value goes in once and is never read back.
-        Regex("/api/vault(/[A-Za-z_][A-Za-z0-9_]{0,63})?").matches(url.rawPath) && url.rawQuery == null && "last-event-id" !in headers && when {
-            url.rawPath == "/api/vault" -> input.method == "GET" && input.body == null
-            input.method == "PUT" -> input.body != null && input.body.size <= 8192 && headers["content-type"] == "application/json"
-            else -> input.method == "DELETE" && input.body == null
-        } -> CoreRoute(headers, false)
-        else -> throw IllegalArgumentException("unapproved core route")
-    }
-}
-
-private fun validFilePath(encoded: String): Boolean {
-    val decoded = runCatching { java.net.URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: return false
-    return decoded.isNotEmpty() && !decoded.startsWith('/') && !decoded.contains('\\') && !decoded.contains('\u0000') &&
-        !decoded.contains("//") && decoded.split('/').none { it.isEmpty() || it == "." || it == ".." } &&
-        encodeUriComponent(decoded) == encoded
-}
-
-private fun encodeUriComponent(value: String): String = buildString {
-    val digits = "0123456789ABCDEF"
-    for (byte in value.toByteArray(Charsets.UTF_8)) {
-        val n = byte.toInt() and 0xff
-        val safe = n in 65..90 || n in 97..122 || n in 48..57 || n.toChar() in "-_.!~*'()"
-        if (safe) append(n.toChar()) else { append('%'); append(digits[n ushr 4]); append(digits[n and 15]) }
-    }
+    // No list of routes: what the page may do is decided by the core, which authorizes every request itself. This only
+    // keeps the destination fixed (the core's own address), the headers plain, and a stream recognisable.
+    require(input.body == null || input.body.size <= 28 * 1024 * 1024)
+    return CoreRoute(headers, url.rawPath == "/api/stream" && url.rawQuery?.split('&')?.contains("follow=true") == true)
 }
 
 /** No proxy, no redirect and bounded non-live responses; a live stream is delivered in chunks. */

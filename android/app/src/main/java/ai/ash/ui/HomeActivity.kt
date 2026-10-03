@@ -228,15 +228,9 @@ class HomeActivity : Activity() {
         val id = input.optString("id")
         if (!Regex("[1-9][0-9]{0,11}").matches(id) || requests.containsKey(id)) return
         val path = input.optString("path")
-        val operation = input.optString("operation")
         val method = input.optString("method")
-        val vaultRoute = Regex("/api/vault(/[A-Za-z_][A-Za-z0-9_]{0,63})?")
-        if (operation !in setOf("send", "stream", "file", "vault") || path.length > 1024 ||
-            !(operation == "send" && method == "POST" && path == "/api/send" ||
-              operation == "vault" && vaultRoute.matches(path) &&
-                (path == "/api/vault" && method == "GET" || path != "/api/vault" && (method == "PUT" || method == "DELETE")) ||
-              operation == "stream" && method == "GET" && path.startsWith("/api/stream?") ||
-              operation == "file" && method == "GET" && path.startsWith("/api/workspaces/"))) return
+        // Which requests are allowed is the core's decision; the page can only reach the core's own address.
+        if (path.length > 1024 || method !in setOf("GET", "POST", "PUT", "DELETE")) return
         val headersJson = input.optJSONObject("headers") ?: JSONObject()
         val headers = headersJson.keys().asSequence().associateWith { headersJson.optString(it) }
         val rawBody = input.opt("body")
@@ -245,7 +239,7 @@ class HomeActivity : Activity() {
         val request = CoreUiRequest(method, path, headers, (rawBody as? String)?.toByteArray(Charsets.UTF_8))
         val cancellation = CoreCancellation()
         requests[id] = cancellation
-        val live = operation == "stream" && path.contains("follow=true")
+        val live = path.startsWith("/api/stream?") && path.contains("follow=true")
         fun respond(message: JSONObject) {
             ui.post { if (pageEpoch == epoch && !cancellation.cancelled) runCatching { reply.postMessage(message.put("id", id).toString()) } }
         }
