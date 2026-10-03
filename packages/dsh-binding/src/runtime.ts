@@ -223,14 +223,14 @@ export async function turnContent(host: DshHost, input: AgentTurnInput, attachme
 
 /** The model has no clock; without this it runs a shell command just to learn the time. Stated afresh every turn. */
 /** Shown when a message arrives and no model key has been set. Plain words, and where to go. */
-export const NO_MODEL_KEY = "我还没有模型的 Key，现在没法回你。请打开 设置 → 模型 Key（DeepSeek），把 Key 填进去保存，我会自动重启，之后就能聊了。";
+export const NO_MODEL_KEY = "我还没有模型的 Key，现在没法回你。请打开 设置 → 密钥，把 DeepSeek Key 填进去保存，马上就能聊了。";
 
 /** What the owner is told when a model call fails: the likely cause in plain words, never the provider's raw payload. */
 export function modelFailureText(failure: unknown): string {
   const detail = failure && typeof failure === "object" ? failure as { code?: unknown; status?: unknown; message?: unknown } : {};
   const text = `${String(detail.code ?? "")} ${String(detail.status ?? "")} ${String(detail.message ?? "")}`;
   if (/\b(401|403)\b|auth|api.?key|unauthori[sz]ed|forbidden/i.test(text))
-    return "模型那边没认我的 Key，这次没能回你。请到 设置 → 模型 Key（DeepSeek）检查一下，换成有效的再保存。";
+    return "模型那边没认我的 Key，这次没能回你。请到 设置 → 密钥 检查一下 DeepSeek Key，换成有效的再保存。";
   if (/\b402\b|balance|insufficient|quota/i.test(text)) return "模型账户余额不足，这次没能回你。充值后再发一次就行。";
   if (/\b429\b|rate/i.test(text)) return "模型那边在限流，这次没能回你。过一会儿再发一次。";
   if (/network|fetch|timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN|offline/i.test(text)) return "连不上模型，这次没能回你。看看手机网络（或代理）是否通，再发一次。";
@@ -275,7 +275,8 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     if (await this.host.modelKeyMissing()) {
       // Only an owner's own message earns the reply; the clock and the senses wake her without anyone waiting for an answer.
       if (input.messages.some((message) => message.from === "person:owner")) await emit({ id: `${input.turn}:no-model-key`, text: NO_MODEL_KEY });
-      return { reason: "completed" };
+      // Never "completed": DSH ran no turn, and restart checks every completed core turn against DSH history.
+      return { reason: "error", error: "no model key" };
     }
     this.busy = true;
     // A stable one-to-one bridge from the durable core turn to DSH history.
