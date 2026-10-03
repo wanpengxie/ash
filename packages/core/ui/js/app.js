@@ -234,6 +234,7 @@ export function boot({ uiTransport } = {}) {
   identityName = new IdentityName(net, (name) => {
     presenceBar.setName(name);
     document.querySelector("#agentSheetHeader h2").textContent = name;
+    agentSheet?.setName(name);
     settings?.setName(name);
   });
   settings = new SettingsControls(document.querySelector("#panel"), net,
@@ -242,6 +243,11 @@ export function boot({ uiTransport } = {}) {
     getLedgerMessage: (id) => timeline.byId.get(id), onAskAbout: ({ turn, text: prefill }) => {
       if (!agentSheet.close()) return;
       context.askAbout({ turn, text: prefill });
+    }, onPrefill: (prefill) => {
+      if (!agentSheet.close()) return;
+      clearContext();
+      input.value = prefill;
+      input.focus();
     } });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
   pendingNote.hidden = !net.queue.length;

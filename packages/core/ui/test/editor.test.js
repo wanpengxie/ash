@@ -39,13 +39,13 @@ test("managed editor keeps a dirty draft on stale write and never uses file PUT"
   await editor.load();
   editor.setDraft("owner draft\n");
   content = "background update\n";
-  await assert.rejects(editor.save(), /文件已被其他操作修改/);
+  await assert.rejects(editor.save(), /刚在别处改过，未覆盖/);
   assert.equal(content, "background update\n");
   assert.equal(editor.draft, "owner draft\n");
   assert.equal(editor.conflict, true);
   assert.deepEqual(calls.map((item) => item.word), ["read", "write"]);
   assert.equal(calls[1].body.expected_hash, digest("before\n"));
-  await assert.rejects(editor.save(), /请先检查/);
+  await assert.rejects(editor.save(), /请先重新读取/);
   await editor.load({ discardDraft: true });
   assert.equal(editor.draft, "background update\n");
 }));
@@ -68,7 +68,7 @@ test("USER write verifies the server's canonical versioned content, then keeps i
   assert.equal(editor.content, content);
   assert.equal(editor.draft, content);
   assert.equal(editor.version, 1);
-  assert.equal(editor.status, "已保存并核对当前版本。");
+  assert.equal(editor.status, "已保存。");
 }));
 
 test("uncertain write ACK reuses the same client id and exact payload", () => dom(async (root) => {
@@ -88,7 +88,7 @@ test("uncertain write ACK reuses the same client id and exact payload", () => do
   await editor.load();
   editor.setDraft("new");
   await assert.rejects(editor.save(), /lost ACK/);
-  await assert.rejects(editor.load({ discardDraft: true }), /只能原样重试/);
+  await assert.rejects(editor.load({ discardDraft: true }), /还没确认/);
   await editor.save();
   assert.deepEqual(calls.filter((item) => item.word === "write"), [calls[1], calls[1]]);
   assert.equal(calls[1].client_id, "stable-id");
@@ -118,7 +118,7 @@ test("rollback requires explicit confirmation, sends L030 baseline hash, and ret
   assert.equal(calls.some((item) => item.word === "rollback"), false);
   confirmation = true;
   content = "background";
-  await assert.rejects(editor.rollback(100), /文件已被其他操作修改/);
+  await assert.rejects(editor.rollback(100), /刚在别处改过，未覆盖/);
   assert.equal(content, "background");
   assert.equal(calls.at(-1).body.expected_hash, digest("current"));
   assert.equal(editor.conflict, true);
@@ -135,7 +135,7 @@ test("identity and memory sheets use only allowlisted managed paths and block di
   await identity.open();
   assert.equal(identity.active, "SOUL.md");
   identity.editor.setDraft("dirty");
-  await assert.rejects(identity.open("IDENTITY.md"), /草稿/);
+  await assert.rejects(identity.open("IDENTITY.md"), /先保存或取消/);
   await assert.rejects(identity.open("../secret"), /unknown/);
   assert.equal(calls.length, 1);
   const memory = new MemorySheet(root, { send });
@@ -155,19 +155,76 @@ test("screen sender requires live registration and rejects scope switch before t
   } };
   const send = createSelfScreenSender(net);
   const wire = { to: "service:self", kind: "request", word: "read", body: { path: "SOUL.md" }, wait: true };
-  await assert.rejects(send(wire), /尚未注册/);
+  await assert.rejects(send(wire), /还没连上/);
   assert.equal(requests.length, 0);
   net.token = "screen-token"; net.screen = "screen:a"; net.currentScope = "scope-a";
   await assert.rejects(send({ ...wire, to: "device:unrelated" }), /unsupported/);
   await send(wire);
   assert.equal(requests[0].headers["Ash-Screen"], "screen-token");
-  await assert.rejects(send({ ...wire, word: "write" }), /本地管理权限/);
+  await assert.rejects(send({ ...wire, word: "write" }), /才能修改/);
   net.request = async () => { net.currentScope = "scope-b"; return { ok: true, json: async () => paired() }; };
-  await assert.rejects(send(wire), /身份已变化/);
+  await assert.rejects(send(wire), /连接已经换过/);
   net.currentScope = "scope-a";
   net.request = async () => ({ ok: true, json: async () => { net.screen = "screen:b"; return paired(); } });
-  await assert.rejects(send(wire), /身份已变化/, "JSON parse after a registration change is not trusted");
+  await assert.rejects(send(wire), /连接已经换过/, "JSON parse after a registration change is not trusted");
   net.screen = "screen:a";
   net.request = async () => ({ ok: true, json: async () => paired("read", "agent:main") });
-  await assert.rejects(send(wire), /未配对/, "a response from the wrong member is not a file result");
+  await assert.rejects(send(wire), /没有收到确认/, "a response from the wrong member is not a file result");
 });
+
+function findAll(element, predicate) {
+  return [...(predicate(element) ? [element] : []), ...(element.children ?? []).flatMap((child) => findAll(child, predicate))];
+}
+
+test("the file reads as a card; editing sits behind 编辑 and the page never shows hashes or version jargon", () => dom(async (root) => {
+  let content = "---\nversion: 2\nupdated: 2026-10-01T00:00:00.000Z\n---\n# 关于你\n- 喜欢清晨跑步\n";
+  const send = async (request) => {
+    if (request.word === "read") return ok({ content, hash: digest(content), version: Number(/version: (\d+)/.exec(content)[1]) });
+    if (request.word === "history") return ok({ versions: [{ ts: 100, hash: digest("old") }] });
+    if (request.word === "write") {
+      content = `---\nversion: 3\nupdated: 2026-10-02T00:00:00.000Z\n---\n${request.body.content.replace(/^---\n[\s\S]*?\n---\n/, "")}`;
+      return ok({ hash: digest(content), version: 3 });
+    }
+    throw new Error("unexpected");
+  };
+  const editor = new ManagedMarkdownEditor(root, { path: "USER.md", send });
+  await editor.load();
+  const by = (className) => findAll(root, (item) => String(item.className ?? "").split(" ").includes(className))[0];
+  assert.equal(by("markdown-source").hidden, true, "the source is not shown until the owner asks to edit");
+  assert.equal(by("editor-edit").hidden, false);
+  assert.match(by("doc-body").textContent, /关于你.*喜欢清晨跑步/s);
+  assert.doesNotMatch(by("doc-body").textContent, /version:|updated:/, "the USER header is not part of the reading view");
+  assert.equal(by("markdown-source").value, "# 关于你\n- 喜欢清晨跑步\n", "the header stays out of the text box");
+  assert.match(by("editor-version").textContent, /第 2 版/);
+  await editor.history();
+  assert.doesNotMatch(root.textContent, new RegExp(digest("old").slice(0, 12)), "snapshot rows never show hashes");
+  assert.doesNotMatch(root.textContent, /哈希|核对版本|快照|HTTP/);
+  await by("editor-edit").listeners.click();
+  assert.equal(editor.editing, true);
+  assert.equal(by("markdown-source").hidden, false);
+  const source = by("markdown-source");
+  source.value = "# 关于你\n- 喜欢傍晚散步\n";
+  source.listeners.input();
+  assert.match(editor.draft, /^---\nversion: 2\n/, "the server header is kept so the guarded write sees the same baseline");
+  await editor.save();
+  assert.equal(editor.editing, false, "a confirmed save returns to the reading view");
+  assert.equal(by("editor-status").textContent, "已保存。");
+  assert.match(by("doc-body").textContent, /傍晚散步/);
+  assert.match(by("editor-version").textContent, /第 3 版/);
+  await by("editor-edit").listeners.click();
+  by("markdown-source").value = "scratch";
+  by("markdown-source").listeners.input();
+  by("editor-cancel").listeners.click();
+  assert.equal(editor.editing, false);
+  assert.equal(editor.draft, editor.content, "cancel discards the local draft only");
+}));
+
+test("a read-only screen shows the file without an edit button", () => dom(async (root) => {
+  const send = async () => ok({ content: "沉着、好奇", hash: digest("沉着、好奇") });
+  const editor = new ManagedMarkdownEditor(root, { path: "SOUL.md", send, canEdit: false });
+  await editor.load();
+  const by = (className) => findAll(root, (item) => String(item.className ?? "").split(" ").includes(className))[0];
+  assert.equal(by("editor-edit").hidden, true);
+  assert.equal(by("editor-save").disabled, true);
+  assert.match(root.textContent, /沉着、好奇.*只能在她所在的那台手机上修改/s);
+}));

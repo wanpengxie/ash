@@ -104,7 +104,7 @@ try {
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(identityText)}).disabled`), false);
   await fill(identityText, "Synthetic SOUL A\n");
   await evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').click()");
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent === '已保存并核对当前版本。'"), "SOUL write/readback");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent === '已保存。'"), "SOUL write/readback");
   assert.equal(readFileSync(join(dir, "first-home", "SOUL.md"), "utf8"), "Synthetic SOUL A\n");
   await evaluate("document.querySelector('#agentPanel section[data-tab=identity] nav button:nth-child(2)').click()");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .markdown-source')?.value === ''"), "identity file ready");
@@ -120,11 +120,11 @@ try {
   await until(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(memoryText)}))`), "memory editor");
   await fill(memoryText, "Synthetic owner fact A\n");
   await evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-save').click()");
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent === '已保存并核对当前版本。'"), "USER write/readback");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent === '已保存。'"), "USER write/readback");
   assert.match(readFileSync(join(dir, "first-home", "USER.md"), "utf8"), /version: 1/);
   await fill(memoryText, "Synthetic owner fact B\n");
   await evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-save').click()");
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent === '已保存并核对当前版本。'"), "USER second version");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-status')?.textContent === '已保存。'"), "USER second version");
   await evaluate("window.confirm=()=>true;document.querySelector('#agentPanel section[data-tab=memory] .editor-history').click()");
   await until(() => evaluate("Boolean(document.querySelector('#agentPanel section[data-tab=memory] .editor-rollback'))"), "USER version history");
   assert.equal(await evaluate("document.querySelector('#agentPanel section[data-tab=memory] .editor-rollback').disabled"), false);
@@ -146,7 +146,7 @@ try {
   assert.equal(external.reply.body.ok, true);
   await fill(identityText, "Must not overwrite\n");
   await evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').click()");
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-warning')?.textContent.includes('其他操作修改')"), "stale draft warning");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-warning')?.textContent.includes('刚在别处改过')"), "stale draft warning");
   assert.equal(readFileSync(join(dir, "first-home", "SOUL.md"), "utf8"), "Synthetic external update\n");
 
   await fill("#t", "Synthetic weather task");
@@ -163,6 +163,8 @@ try {
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('synthetic umbrella')"), "authoritative clock timer visible");
   assert.equal(await evaluate("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), true);
   holdNextCancel = true;
+  await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /删除后/, "first tap states the consequence");
   await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
   await until(() => Boolean(releaseHeldCancel), "clock cancel response held after durable effect");
   assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /synthetic umbrella/, "no optimistic removal");
@@ -186,13 +188,14 @@ try {
     body: { id: alreadyGone.reply.body.result.id }, wait: true });
   assert.equal(externalCancel.reply?.body?.result?.cancelled, true);
   await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
+  await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel').click()");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming] .sheet-error')?.textContent"), "cancelled false shown as not confirmed");
   assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /synthetic stale/, "failed cancel does not remove a row");
   await clickTab("activity"); await clickTab("upcoming");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent.includes('暂无计划')"), "fresh list sees externally removed timer");
   await clickTab("approvals");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent.includes('已拒绝')"), "real gate history visible");
-  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /当前没有生效的规则/);
+  assert.match(await evaluate("document.querySelector('#agentPanel section[data-tab=approvals]').textContent"), /没有正在生效的规则/);
 
   await clickTab("identity");
   holdNextRead = true;
@@ -234,7 +237,7 @@ try {
   assert.equal(await remoteEval("document.querySelector('#agentPanel section[data-tab=identity] .editor-save').disabled"), true);
   await remoteEval("document.querySelector('#agentTabs button[data-tab=upcoming]').click()");
   await delay(1000);
-  assert.match(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /计划列表暂不可用/);
+  assert.match(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /暂时读不到计划/);
   assert.doesNotMatch(await remoteEval("document.querySelector('#agentPanel section[data-tab=upcoming]').textContent"), /暂无计划/);
   assert.equal(await remoteEval("Boolean(document.querySelector('#agentPanel section[data-tab=upcoming] .upcoming-cancel'))"), false);
   const remoteDeniedTimer = await first.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",

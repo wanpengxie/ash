@@ -1,48 +1,16 @@
-import { ManagedMarkdownEditor } from "./editor.js";
+import { ManagedFilesSheet, named } from "./editor.js";
 
 /** Identity files are read and changed only through the authenticated self member. */
-export class IdentitySheet {
+export class IdentitySheet extends ManagedFilesSheet {
   constructor(root, options) {
-    this.root = root;
-    this.options = options;
-    this.active = null;
-    this.editor = null;
-    this.epoch = 0;
-  }
-
-  dispose() {
-    this.epoch++;
-    this.editor?.dispose();
-    this.editor = null;
-    this.active = null;
-    this.root.replaceChildren();
+    const name = options?.name || "Ash";
+    super(root, options, { files: ["SOUL.md", "IDENTITY.md"],
+      intro: `这些决定了${named(name)}是谁、怎样和你相处。改之前想一想；改完她下一句话就会照新的来。`,
+      extra: options?.extra });
   }
 
   async open(path = "SOUL.md") {
     if (path !== "SOUL.md" && path !== "IDENTITY.md") throw new TypeError("unknown identity file");
-    if (this.editor?.pending || this.editor?.pendingRollback ||
-      this.editor?.loaded && this.editor.draft !== this.editor.content) throw new Error("先处理未确认修改或草稿，再切换文件。");
-    const epoch = ++this.epoch;
-    const panel = document.createElement("section");
-    const editor = new ManagedMarkdownEditor(panel, { ...this.options, path });
-    await editor.load();
-    if (epoch !== this.epoch) { editor.dispose(); throw new Error("页面身份已变化，读取结果已丢弃。"); }
-    const tabs = document.createElement("nav");
-    for (const name of ["SOUL.md", "IDENTITY.md"]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = name;
-      button.disabled = name === path;
-      button.addEventListener("click", async () => {
-        try { await this.open(name); }
-        catch (error) { editor.status = error instanceof Error ? error.message : "切换失败"; editor.render(); }
-      });
-      tabs.append(button);
-    }
-    this.editor?.dispose();
-    this.root.replaceChildren(tabs, panel);
-    this.active = path;
-    this.editor = editor;
-    return editor;
+    return super.open(path);
   }
 }
