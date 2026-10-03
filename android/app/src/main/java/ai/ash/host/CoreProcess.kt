@@ -43,11 +43,13 @@ class CoreProcess(private val ctx: Context) {
     private val secrets = Secrets(ctx)
 
     /** Writes ash.json for this start (paths may change across app updates; tokens do not). */
-    fun writeConfig(hostPort: Int) {
+    fun writeConfig(hostPort: Int, proxy: String? = systemProxy()) {
         p.ash.mkdirs()
         p.home.mkdirs()
+        // The agent runs as DSH inside the container (proot + Ubuntu) that ContainerInstaller keeps
+        // at files/container/main; core starts it and owns its model calls and credentials.
         val agents = JSONArray().put(
-            JSONObject().put("id", "agent:main").put("name", "Ash").put("runtime", "dsh").put("workspace", "home")
+            JSONObject().put("id", "agent:main").put("name", "Ash").put("runtime", "container").put("workspace", "home")
                 .put("grants", JSONArray().put("*")).put("instructions", DEFAULT_BRIEF),
         )
         val cfg = JSONObject()
@@ -58,17 +60,12 @@ class CoreProcess(private val ctx: Context) {
             .put("stateDir", p.state.path)
             .put("workspaces", JSONObject().put("home", p.home.path))
             .put(
-                "dsh",
+                "container",
                 JSONObject()
-                    .put("root", p.dshRoot.path)
-                    .put("home", p.dshHome.path)
-                    .put("skillsRoot", p.skillsRoot.path)
-                    .put("costRoot", p.costRoot.path)
-                    .put("vaultRoot", p.vaultRoot.path)
-                    .put("patchFiles", JSONArray().put(p.hostPatch.path))
-                    // No DSH sandbox runner exists on Android; the app sandbox is the boundary and
-                    // ash's own gates decide what untrusted requests may do.
-                    .put("env", JSONObject().put("DSH_PERMISSION_MODE", "danger-full-access").put("DSH_TELEMETRY_DISABLED", "1")),
+                    .put("root", p.containerRoot.path)
+                    .put("dns", JSONArray(dnsServers()))
+                    // The phone's proxy, so apt/pip/npm/git/curl inside the container take the same way out.
+                    .put("env", JSONObject(proxyEnv(proxy))),
             )
             .put("agents", agents)
             .put("host", JSONObject().put("url", "http://127.0.0.1:$hostPort").put("token", secrets.hostToken).put("coreToken", secrets.coreToken))
@@ -109,30 +106,32 @@ class CoreProcess(private val ctx: Context) {
         return if (!h.isNullOrBlank() && !port.isNullOrBlank()) "$h:$port" else null
     }
 
-    /** Proxy variables understood by node (NODE_USE_ENV_PROXY), npm, git, curl, pip — and inherited by MCP servers. */
-    private fun proxyEnv(proxy: String?): Map<String, String> {
-        if (proxy == null) return emptyMap()
-        val u = "http://$proxy"
-        val direct = "127.0.0.1,localhost,::1"
-        return mapOf(
-            "HTTP_PROXY" to u, "HTTPS_PROXY" to u, "http_proxy" to u, "https_proxy" to u,
-            "NO_PROXY" to direct, "no_proxy" to direct,
-            "NODE_USE_ENV_PROXY" to "1",
-            "npm_config_proxy" to u, "npm_config_https_proxy" to u,
-        )
-    }
+    /**
+     * DNS servers of the active network (IPv4 first) for the container's resolv.conf: Android has
+     * no resolv.conf of its own, and proot's Ubuntu reads only that file. Public resolvers when the
+     * network does not say (or no network is up yet).
+     */
+    fun dnsServers(): List<String> = orderDns(
+        try {
+            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+            cm.getLinkProperties(cm.activeNetwork)?.dnsServers.orEmpty().mapNotNull { it.hostAddress }
+        } catch (_: Exception) {
+            emptyList()
+        },
+    )
 
     /** The proxy the running core was started with (the supervisor restarts it when this changes). */
     @Volatile var startedWithProxy: String? = null
         private set
 
-    fun environment(): Map<String, String> {
+    fun environment(proxy: String? = systemProxy()): Map<String, String> {
         val pl = p.payload.path
         p.tmp.mkdirs()
         val cert = "$pl/runtime/etc/tls/cert.pem"
-        val proxy = systemProxy()
         startedWithProxy = proxy
         return proxyEnv(proxy) + mapOf(
+            // Core's own fetch (model calls it forwards for the agent) honours HTTP(S)_PROXY.
+            "NODE_USE_ENV_PROXY" to "1",
             "HOME" to p.files.path,
             "PATH" to "$pl/bin:$pl/runtime/bin:${p.files.path}/.npm-global/bin:/system/bin:/system/xbin",
             "TMPDIR" to p.tmp.path,
@@ -170,12 +169,13 @@ class CoreProcess(private val ctx: Context) {
     )
 
     fun start(hostPort: Int): Int {
-        writeConfig(hostPort)
+        val proxy = systemProxy()
+        writeConfig(hostPort, proxy)
         ensureGitConfig()
         rotateLog()
         val pb = ProcessBuilder(command()).directory(p.home)
         pb.environment().clear()
-        pb.environment().putAll(environment())
+        pb.environment().putAll(environment(proxy))
         pb.redirectErrorStream(true)
         // A daemon: no stdin (an open pipe nobody writes could stall anything that reads it).
         pb.redirectInput(File("/dev/null"))
@@ -258,6 +258,26 @@ class CoreProcess(private val ctx: Context) {
     companion object {
         private const val TAG = "ash.core"
         val PORT = BuildConfig.CORE_PORT
+
+        /** Public resolvers reachable from mainland China, for when the network names none. */
+        val FALLBACK_DNS = listOf("223.5.5.5", "119.29.29.29")
+
+        /** Nameservers for the container: IPv4 first (some IPv6 resolvers are link-local), no duplicates. */
+        fun orderDns(hosts: List<String>): List<String> =
+            hosts.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sortedBy { if (it.contains(':')) 1 else 0 }.ifEmpty { FALLBACK_DNS }
+
+        /** Proxy variables understood by node (NODE_USE_ENV_PROXY), npm, git, curl, pip — for core and the container. */
+        fun proxyEnv(proxy: String?): Map<String, String> {
+            if (proxy == null) return emptyMap()
+            val u = "http://$proxy"
+            val direct = "127.0.0.1,localhost,::1"
+            return mapOf(
+                "HTTP_PROXY" to u, "HTTPS_PROXY" to u, "http_proxy" to u, "https_proxy" to u,
+                "NO_PROXY" to direct, "no_proxy" to direct,
+                "NODE_USE_ENV_PROXY" to "1",
+                "npm_config_proxy" to u, "npm_config_https_proxy" to u,
+            )
+        }
 
         val DEFAULT_BRIEF = """
             # Ash

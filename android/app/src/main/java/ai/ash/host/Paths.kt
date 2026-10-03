@@ -35,13 +35,23 @@ class Paths(ctx: Context) {
 
     val tmp = File(cache, "tmp")
 
+    /**
+     * The agent container (proot + Ubuntu + DSH), shipped in the APK and extracted by ContainerInstaller.
+     * Everything but ubuntu/root is replaced on an upgrade; ubuntu/root (workspace, DSH home) is the user's.
+     */
+    val containers = File(files, "container")
+    val containerRoot = File(containers, "main")
+    val containerStaging = File(containers, "main.new")
+    val containerOld = File(containers, "main.old")
+    val containerVersion = File(containerRoot, "VERSION")
+    /** DSH_HOME of the agent inside the container (/root/.dsh there). */
+    val containerDshHome = File(containerRoot, "ubuntu/root/.dsh")
+
     // ---- the payload's own layout
     val node = File(payload, "runtime/bin/node")
     val coreBundle = File(payload, "ash/ash-core.mjs")
     val dshRoot = File(payload, "dsh/lib/node_modules/@deepseek-ai/dsh")
     val skillsRoot = File(payload, "ash-skills")
-    val costRoot = File(payload, "ash-cost")
-    val vaultRoot = File(payload, "ash-vault")
     val compatPreload = File(payload, "dsh/lib/node_modules/android-node-compat/index.cjs")
     val hostPatch = File(payload, "profile/cordis.patch.yml")
     val buildMarker = File(payload, ".build")

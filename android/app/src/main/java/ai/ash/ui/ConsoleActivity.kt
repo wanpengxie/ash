@@ -19,6 +19,7 @@ import ai.ash.host.CoreProcess
 import ai.ash.host.CoreService
 import ai.ash.host.HostServer
 import ai.ash.host.LogShareProvider
+import ai.ash.host.ContainerInstaller
 import ai.ash.host.PayloadInstaller
 import ai.ash.host.Paths
 import ai.ash.host.Permissions
@@ -124,6 +125,8 @@ class ConsoleActivity : Activity() {
                 append("本机桥：127.0.0.1:${HostServer.PORT}\n")
                 append("运行环境：${PayloadInstaller.installedBuild(p) ?: "未安装"}")
                 PayloadInstaller.shippedBuild(this@ConsoleActivity)?.let { if (it != PayloadInstaller.installedBuild(p)) append("（待安装 $it）") }
+                append("\n工作环境：${ContainerInstaller.installedVersion(p) ?: "未安装"}")
+                ContainerInstaller.shippedVersion(this@ConsoleActivity)?.let { if (it != ContainerInstaller.installedVersion(p)) append("（待安装 $it）") }
                 append("\nApp：${packageManager.getPackageInfo(packageName, 0).versionName}  Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）")
             }
             ui.post { info.text = text; renderPerms(); renderNotificationSense() }
@@ -198,7 +201,7 @@ class ConsoleActivity : Activity() {
             val out = File(LogShareProvider.shareDir(this), "ash-logs.txt")
             out.writeText(
                 "== core.log\n" + tail(p.coreLog, 512 * 1024) +
-                    "\n\n== dsh.log\n" + tail(File(p.dshHome, "logs/dsh.log"), 256 * 1024),
+                    "\n\n== dsh.log\n" + tail(File(p.containerDshHome, "logs/dsh.log"), 256 * 1024),
             )
             ui.post {
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
