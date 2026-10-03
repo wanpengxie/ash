@@ -10,6 +10,8 @@ const TABS = Object.freeze([
   ["activity", "活动"], ["upcoming", "计划"], ["approvals", "审批"],
   ["identity", "身份"], ["memory", "记忆"],
 ]);
+// Where she looked on the web reads like a domain, which the raw-route guard would otherwise drop.
+const webDetail = /^(?:在看网页|在搜索) · [^\n]{1,61}$/u;
 const rawRoute = /\b(?:agent|worker|device|service|person):[A-Za-z0-9_-]+\b|\b[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+\b/i;
 const flowLabels = Object.freeze({ memory: "整理记忆", proactive: "寻找值得提醒的事", heartbeat: "查看托付事项", opener: "见面问候", tour: "使用提示" });
 const stepLabels = Object.freeze({ evidence: "查看对话", extract: "提取记忆", verify_claims: "核对记忆", append_log: "记下新发现",
@@ -27,7 +29,7 @@ export function safeActivityView(view) {
       ended: Number.isFinite(turn.ended) ? turn.ended : undefined,
       outcome: ["completed", "cancelled", "error"].includes(turn.outcome) ? turn.outcome : undefined,
       steps: Array.isArray(turn.steps) ? turn.steps.filter((step) => (!step.requestId || step.native === true) &&
-        typeof step.label === "string" && step.label.length <= 160 && (turn.background ? Boolean(backgroundStep(step.label)) : !rawRoute.test(step.label)))
+        typeof step.label === "string" && step.label.length <= 160 && (turn.background ? Boolean(backgroundStep(step.label)) : webDetail.test(step.label) || !rawRoute.test(step.label)))
         .map((step) => ({ label: turn.background ? backgroundStep(step.label) : step.label, ts: step.ts, state: step.state })) : [],
     };
   }

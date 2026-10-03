@@ -67,7 +67,7 @@ test("activity question passes a turn-linked prefill to the composer callback", 
 test("activity strips raw route words; a paired live clock list offers cancellation", async () => {
   const view = { turns: { t_one: { title: "查天气", started: 1000, steps: [
     { label: "service:self · write", requestId: "raw" }, { label: "calendar.search", ts: 1000 },
-    { label: "正在查找", ts: 1001 },
+    { label: "正在查找", ts: 1001 }, { label: "在看网页 · nba.com", ts: 1002 },
   ] }, r_one: { title: "memory", background: true, started: 2000, steps: [
     { label: "extract", state: "done", ts: 2000 }, { label: "service:self", ts: 2001 },
   ] } } };
@@ -83,7 +83,7 @@ test("activity strips raw route words; a paired live clock list offers cancellat
     await new Promise((resolve) => setImmediate(resolve));
     await f.sheet.show("activity");
     const activity = f.sheet.panels.get("activity").textContent;
-    assert.match(activity, /查天气.*正在查找/s);
+    assert.match(activity, /查天气.*正在查找.*在看网页 · nba\.com/s);
     assert.match(activity, /整理记忆.*提取记忆/s);
     assert.doesNotMatch(activity, /service:self|secret flow|write/);
     await f.sheet.show("upcoming");

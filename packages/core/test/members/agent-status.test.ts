@@ -93,6 +93,14 @@ test("native DSH tool activity uses a human label and falls back for unknown too
     await status.settled();
     assert.deepEqual(status.snapshot, { state: "working", text: "在忙" });
     router.recordDshToolResult(unknown.id, false, "failed");
+    const fetch = router.recordDshToolCall("t_native", "call-fetch", "web_fetch", '{"url":"https://www.nba.com/news/today?sig=abc"}');
+    await status.settled();
+    assert.deepEqual(status.snapshot, { state: "working", text: "在看网页 · nba.com" });
+    router.recordDshToolResult(fetch.id, true, "page");
+    const search = router.recordDshToolCall("t_native", "call-search", "web_search", '{"queries":["明天 北京 天气"]}');
+    await status.settled();
+    assert.deepEqual(status.snapshot, { state: "working", text: "在搜索 · 明天 北京 天气" });
+    router.recordDshToolResult(search.id, true, "results");
   } finally { status.close(); ledger.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
