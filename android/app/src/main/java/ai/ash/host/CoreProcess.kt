@@ -182,12 +182,30 @@ class CoreProcess(private val ctx: Context) {
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(p.coreLog))
         val proc = pb.start()
         val pid = pidOf(proc)
+        try { pidFile.writeText("$pid\n") } catch (e: Exception) { Log.w(TAG, "core pid file", e) }
         Log.i(TAG, "ash core started (pid $pid)")
         return pid
     }
 
-    /** The running ash core, found in /proc (our uid, our bundle on the command line). */
-    fun pid(): Int? = scan { it.contains(p.coreBundle.path) || it.contains("ash-core.mjs --config ${p.config.path}") }.firstOrNull()
+    private val pidFile get() = File(p.ash, "core.pid")
+
+    /** Signal 0 checks a process exists and is ours, without needing to see it in /proc. */
+    private fun alive(pid: Int): Boolean = try { Os.kill(pid, 0); true } catch (_: android.system.ErrnoException) { false }
+
+    /**
+     * The running ash core. Core marks itself non-dumpable, and Android hides such a process from /proc even for its own
+     * user, so it is found through the pid recorded at start: alive and ours (signal 0), and either invisible in /proc
+     * (only a non-dumpable process of this user is) or visible with our bundle on its command line. An older core that
+     * is still dumpable is found by scanning /proc as before.
+     */
+    fun pid(): Int? {
+        val ours = { cmd: String -> cmd.contains(p.coreBundle.path) || cmd.contains("ash-core.mjs --config ${p.config.path}") }
+        scan(ours).firstOrNull()?.let { return it }
+        val recorded = try { pidFile.readText().trim().toIntOrNull() } catch (_: Exception) { null } ?: return null
+        if (!alive(recorded)) return null
+        val cmd = try { File("/proc/$recorded/cmdline").readBytes().toString(Charsets.UTF_8).replace('\u0000', ' ') } catch (_: Exception) { null }
+        return if (cmd == null || cmd.isEmpty() || ours(cmd)) recorded else null
+    }
 
     fun stop() {
         pid()?.let { kill(it) }
@@ -211,7 +229,7 @@ class CoreProcess(private val ctx: Context) {
             Os.kill(pid, OsConstants.SIGTERM)
             for (i in 0 until 30) {
                 Thread.sleep(100)
-                if (!File("/proc/$pid").exists()) return
+                if (!alive(pid)) return
             }
             Os.kill(pid, OsConstants.SIGKILL)
         } catch (e: Exception) {
