@@ -348,6 +348,47 @@ test("a shell approval shows the command and every other argument, marks a cut, 
   assert.match(await detailOf({ command: `${" ".repeat(600)}rm x` }), /…（共 604 字/);
 });
 
+test("a browser script lists its steps, 'always' covers the one site it acts on, and weighty or payment clicks ask every time", async () => {
+  const { ledger, router } = await setup();
+  let effects = 0;
+  router.registerDevice("device:phone", { name: "browser.run", description: "browser.run", label: "在浏览器里连续操作", risk: "outward", effect: "act",
+    input_schema: { type: "object", properties: { space: { type: "string" }, steps: { type: "array", items: { type: "object" } } }, required: ["steps"] } },
+  () => { effects++; return { ok: true, result: {} }; });
+  const send = (body: Record<string, unknown>) => router.send(agent, { to: "device:phone", kind: "request", word: "browser.run", body });
+  const ask = async (id: string) => { await new Promise((resolve) => setImmediate(resolve)); return ledger.byId(ledger.gateCase(id)!.askId)!.body; };
+  const answer = (id: string, choice: string) => router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: ledger.gateCase(id)!.askId, body: { ok: true, result: { choice } } });
+  try {
+    const first = await send({ space: "trains", steps: [{ op: "open", url: "https://example.com/" }, { op: "type", ref: 2, site: "www.example.com", label: "出发", text: "上海" },
+      { op: "click", ref: 3, site: "example.com", label: "查询" }, { op: "wait", text: "车次" }, { op: "capture" }] });
+    const card = await ask(first.id);
+    assert.equal(card.detail, "1. 打开 https://example.com/\n2. 在 www.example.com 的「出发」里输入：上海\n3. 在 example.com 点击「查询」\n4. 等页面出现「车次」\n5. 截图");
+    assert.equal((card.options as { id: string; label: string }[])[1].label, "30 天内允许在这个网站上这样操作");
+    await answer(first.id, "always");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects, 1);
+    // Other steps on the same site pass by the rule.
+    const same = await send({ steps: [{ op: "click", ref: 9, site: "example.com", label: "下一页" }] });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(!ledger.gateCase(same.id), "the rule passed it without a new question");
+    assert.equal(effects, 2);
+    // A second site, a weighty button or a payment on the allowed site asks again; a payment never offers always.
+    const twoSites = await send({ steps: [{ op: "click", ref: 1, site: "example.com", label: "下一页" }, { op: "click", ref: 1, site: "evil.example.org", label: "登录" }] });
+    assert.equal((await ask(twoSites.id)) && ledger.gateCase(twoSites.id)?.decision, "waiting");
+    const weighty = await send({ steps: [{ op: "click", ref: 5, site: "example.com", label: "发布" }] });
+    assert.equal((await ask(weighty.id)) && ledger.gateCase(weighty.id)?.decision, "waiting");
+    const pay = await send({ steps: [{ op: "read" }, { op: "click", ref: 7, site: "example.com", label: "立即支付" }] });
+    assert.deepEqual(((await ask(pay.id)).options as { id: string }[]).map((item) => item.id), ["once", "deny"]);
+    // Allowing a script that only looks never covers one that acts.
+    const looking = await send({ steps: [{ op: "open", url: "https://news.example.net/" }, { op: "read" }] });
+    assert.equal((await ask(looking.id)).detail, "1. 打开 https://news.example.net/\n2. 读页面");
+    await answer(looking.id, "always");
+    const acting = await send({ steps: [{ op: "open", url: "https://news.example.net/" }, { op: "click", ref: 1, site: "news.example.net", label: "更多" }] });
+    assert.equal((await ask(acting.id)) && ledger.gateCase(acting.id)?.decision, "waiting");
+    assert.equal(effects, 3);
+    for (const pending of [twoSites, weighty, pay, acting]) await answer(pending.id, "deny");
+  } finally { ledger.close(); }
+});
+
 test("a browser approval reads as one line, and 'always' covers that site and no other", async () => {
   const { ledger, router } = await setup();
   let effects = 0;

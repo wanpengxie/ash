@@ -68,6 +68,8 @@ export interface UsageSummary {
   by_scope: (UsageTotals & { scope: string })[]; by_day: (UsageTotals & { date: string })[]; recent: UsageCall[];
 }
 
+const browserSite = (value: unknown): string => typeof value === "string" ? value.trim().toLowerCase().replace(/\.$/, "").replace(/^www\./, "") : "";
+const WEIGHTY_CLICK = /发布|发表|发送|发帖|提交|删除|移除|购买|支付|付款|下单|转账|关注|取消关注|转发|post|tweet|send|reply|publish|submit|delete|remove|buy|pay|purchase|checkout|order|follow|retweet|repost|confirm|transfer/i;
 /** The thing an approval is about when a capability names one: a calendar, a site, a recipient. Null when it names none. */
 export const gateTarget = (target: string, word: string, body: Record<string, unknown>): string | null => {
   if (target.startsWith("device:") && word === "calendar.create") {
@@ -76,11 +78,21 @@ export const gateTarget = (target: string, word: string, body: Record<string, un
   }
   // A browser approval is about a site, not a button: the phone refuses a click or typing whose site is not the page's.
   if (target.startsWith("device:") && (word === "browser.click" || word === "browser.type")) {
-    const site = typeof body.site === "string" ? body.site.trim().toLowerCase().replace(/\.$/, "").replace(/^www\./, "") : "";
+    const site = browserSite(body.site);
     // Buttons that publish, send, delete or pay are never covered by "allow this site": each one asks again.
-    if (word === "browser.click" && /发布|发表|发送|发帖|提交|删除|移除|购买|支付|付款|下单|转账|关注|取消关注|转发|post|tweet|send|reply|publish|submit|delete|remove|buy|pay|purchase|checkout|order|follow|retweet|repost|confirm|transfer/i.test(String(body.label ?? "")))
-      return `exact:${stable(body)}`;
+    if (word === "browser.click" && WEIGHTY_CLICK.test(String(body.label ?? ""))) return `exact:${stable(body)}`;
     if (/^[a-z0-9][a-z0-9.-]{0,200}$/.test(site)) return `site:${site}`;
+  }
+  // A browser script is about the sites it clicks or types on, judged like those single steps: one site is "this site";
+  // several sites or any weighty button only this exact script; a script that only looks is its own target, so allowing
+  // looking never covers acting.
+  if (target.startsWith("device:") && word === "browser.run") {
+    const acting = (Array.isArray(body.steps) ? body.steps : []).map(obj).filter((step) => step.op === "click" || step.op === "type");
+    if (acting.some((step) => step.op === "click" && WEIGHTY_CLICK.test(String(step.label ?? "")))) return `exact:${stable(body)}`;
+    const sites = [...new Set(acting.map((step) => browserSite(step.site)))];
+    if (sites.length === 0) return "browse";
+    if (sites.length === 1 && /^[a-z0-9][a-z0-9.-]{0,200}$/.test(sites[0]!)) return `site:${sites[0]}`;
+    return `exact:${stable(body)}`;
   }
   if (target.startsWith("device:") && word === "message.send") {
     const recipient = body.recipient_id;
