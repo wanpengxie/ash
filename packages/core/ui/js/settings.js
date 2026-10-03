@@ -329,7 +329,7 @@ export class SettingsControls {
       save.type = "button";
       const remove = node("button", "移除", "btn gray");
       remove.type = "button";
-      const show = (saved) => { status.textContent = `${saved ? "已保存。" : "还没有保存。"}${hint}`; };
+      const show = (saved) => { status.textContent = saved ? "已保存，立刻生效。" : `还没有保存。${hint}`; };
       const refresh = async () => {
         try {
           const reply = await vaultRequest("GET");
