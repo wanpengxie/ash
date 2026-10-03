@@ -61,12 +61,6 @@ try {
       approval.setPolicy(session.agent, "never");
       notify("policy-changed-after-handoff");
     }
-    if (stage === "acl-after-handoff") {
-      const revoked = await send({ to: "service:gate", kind: "request", word: "access.revoke", body: { id: grantId }, wait: true });
-      if (revoked.status !== 200 || !(await revoked.json() as { reply?: { body?: { ok?: boolean } } }).reply?.body?.ok)
-        throw new Error("synthetic device grant revocation failed");
-      notify("acl-revoked-after-handoff");
-    }
     return next();
   });
   const ownerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
@@ -75,12 +69,6 @@ try {
   const send = (wire: object) => fetch(`${running.url}/api/send`, { method: "POST", headers: {
     authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "Ash-Screen": screen.token,
   }, body: JSON.stringify(wire) });
-  const grant = await send({ to: "service:gate", kind: "request", word: "access.grant",
-    body: { member: "agent:main", scope: "device:phone/hold" }, wait: true });
-  const granted = await grant.json() as { reply?: { body?: { ok?: boolean; result?: { id?: string } } } };
-  if (grant.status !== 200 || !granted.reply?.body?.ok || !granted.reply.body.result?.id)
-    throw new Error("synthetic access grant failed");
-  const grantId = granted.reply.body.result.id;
   const sent = await send({ to: "agent:main", kind: "request", word: "say", body: { text: "use the synthetic hold tool" }, client_id: "handoff-turn" });
   if (sent.status !== 200) throw new Error(`synthetic say rejected: ${sent.status}`);
   const deadline = Date.now() + 15_000;
@@ -93,12 +81,7 @@ try {
   if (!parent) throw new Error("internal approval parent absent");
   const gate = running.ledger.gateCase(parent.id);
   if (!gate) throw new Error("gate ask absent");
-  if (stage === "policy-after-handoff" || stage === "acl-after-handoff") running.world.subscribe((item) => {
-    // With its grant revoked, the device call does not run: the owner is asked for access again instead.
-    if (stage === "acl-after-handoff" && item.word === "gate.asked" && item.body.risk === "none") notify("access-asked", {
-      parentResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === parent!.id).length,
-      askResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === gate.askId).length,
-    });
+  if (stage === "policy-after-handoff") running.world.subscribe((item) => {
     if (item.word === "turn.end") notify("turn-ended", {
       parentResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === parent!.id).length,
       askResponseCount: running.ledger.list().filter((row) => row.kind === "response" && row.reply_to === gate.askId).length,

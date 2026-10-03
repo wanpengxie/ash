@@ -30,6 +30,7 @@ import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
 import { CostMember } from "./members/cost";
 import { VaultMember, VaultStore } from "./members/vault";
+import { deepseekReviewer } from "./review/reviewer";
 import { WorkMember } from "./members/work";
 import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
@@ -157,6 +158,11 @@ export async function startOwner(config: Config): Promise<Running> {
     const vault = new VaultMember(vaultStore, world);
     members.register(vault);
     world.enableDurableGate();
+    // ---- Approval: an agent's non-read action is judged by one reviewer call (key from the vault, read per review);
+    // the owner's mode lives in the admin journal and is read on every decision. No key, an error or a timeout asks the owner.
+    world.setReviewer(deepseekReviewer(() => vaultStore.get("DEEPSEEK_API_KEY")));
+    world.setApprovalMode(() => admin?.journal.approvalMode() ?? "auto");
+    // ---- end approval
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;

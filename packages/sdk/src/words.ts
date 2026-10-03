@@ -1,4 +1,4 @@
-import type { Card, JsonSchema, WordSpec } from "./api";
+import type { Card, JsonSchema, WordEffect, WordSpec } from "./api";
 import { matchesSchema } from "./schema";
 
 export interface WordContract extends WordSpec { member: string; direction: "in" | "out" }
@@ -67,9 +67,9 @@ const guidance: Record<string, string> = {
   "service:gate/rules.list": "Use to inspect current approval rules, not to assume a risky action is already allowed.",
   "service:gate/rules.revoke": "Use to remove a known rule with local owner authority; this changes future decisions, not past actions.",
   "service:gate/history": "Use to review earlier gate decisions; this is read-only.",
-  "service:gate/access.list": "Inspect device access grants; access alone never approves a protected action.",
-  "service:gate/access.grant": "As the local owner, grant one exact agent and device capability for 30 days; risk approval remains separate.",
-  "service:gate/access.revoke": "As the local owner, revoke one device access grant; already executed actions cannot be undone.",
+  "service:gate/access.list": "Inspect the earlier device access grants. They are kept as a record only: agents no longer need one, and none approves an action.",
+  "service:gate/access.grant": "Legacy: record one exact agent and device capability for 30 days. Agents no longer need a grant; the approval gate judges each action.",
+  "service:gate/access.revoke": "Legacy: revoke one recorded device access grant. It changes no approval decision; already executed actions cannot be undone.",
   "service:self/read": "Use to read an allowed managed file and its hash before editing. Do not infer a stable baseline from stale conversation context.",
   "service:self/write": "Use for a complete managed-file replacement with the exact baseline hash; null creates only a missing file. Do not use native file tools for managed writes.",
   "service:self/append": "Use to atomically add text to an allowed dated log, including an older date. No baseline hash is required.",
@@ -79,8 +79,20 @@ const guidance: Record<string, string> = {
   "service:work/run": "Use for an authorized manual background-flow trigger, not for a conversational answer. Follow its run id for outcome.",
   "service:work/runs": "Use to inspect recent background runs; this does not start a run.",
 };
-function add(member: string, word: string, kind: "request" | "event", input_schema: JsonSchema, result_schema?: JsonSchema, options: Partial<Pick<WordSpec, "risk" | "label" | "audience" | "timeout_ms">> & { direction?: "in" | "out"; description?: string } = {}) {
-  entries.push({ member, word, kind, description: options.description ?? guidance[`${member}/${word}`] ?? (kind === "event" ? `Status event ${word} from ${member}; observe rather than call it.` : `Use ${word} on ${member} for the declared input only; inspect the result before following up.`), input_schema, ...(result_schema ? { result_schema } : {}), risk: options.risk ?? "none", label: options.label ?? "Working", audience: options.audience ?? "all", ...(options.timeout_ms ? { timeout_ms: options.timeout_ms } : {}), direction: options.direction ?? "in" });
+function add(member: string, word: string, kind: "request" | "event", input_schema: JsonSchema, result_schema?: JsonSchema, options: Partial<Pick<WordSpec, "risk" | "effect" | "label" | "audience" | "timeout_ms">> & { direction?: "in" | "out"; description?: string } = {}) {
+  entries.push({ member, word, kind, description: options.description ?? guidance[`${member}/${word}`] ?? (kind === "event" ? `Status event ${word} from ${member}; observe rather than call it.` : `Use ${word} on ${member} for the declared input only; inspect the result before following up.`), input_schema, ...(result_schema ? { result_schema } : {}), risk: options.risk ?? "none", ...(options.effect ? { effect: options.effect } : {}), label: options.label ?? "Working", audience: options.audience ?? "all", ...(options.timeout_ms ? { timeout_ms: options.timeout_ms } : {}), direction: options.direction ?? "in" });
+}
+
+export const WORD_EFFECTS: readonly WordEffect[] = Object.freeze(["read", "act", "write", "send", "execute", "structure"]);
+export const isWordEffect = (value: unknown): value is WordEffect => typeof value === "string" && (WORD_EFFECTS as readonly string[]).includes(value);
+/**
+ * The effect a word declares; without one it follows risk (none -> read, outward -> act, structure -> write).
+ * A word that claims to only read while its risk says otherwise is treated by its risk: a mismatch never relaxes the gate.
+ */
+export function wordEffect(spec: Pick<WordSpec, "risk" | "effect">): WordEffect {
+  const derived: WordEffect = spec.risk === "outward" ? "act" : spec.risk === "structure" ? "write" : "read";
+  if (!isWordEffect(spec.effect)) return derived;
+  return spec.effect === "read" && derived !== "read" ? derived : spec.effect;
 }
 
 // Main agent: a queued conversation and a separately driven secondary session.
@@ -154,12 +166,12 @@ export function postDeliverySnapshotErrors(value: unknown): string[] {
 }
 const gateRisk = choice("outward", "structure");
 const gateRule = obj({ id, subject: nonempty, device_id: id, capability_id: id, to: id, word: id, object_pattern: nonempty,
-  risk: gateRisk, contract_fingerprint: sha, created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
+  risk: choice("none", "outward", "structure"), contract_fingerprint: sha, created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
 ["id", "subject", "to", "word", "object_pattern", "risk", "contract_fingerprint", "created_at", "expires_at"]);
-// A first use of a phone capability is asked for access even when the action itself carries no risk.
+// A word whose effect is not read is gated even when its legacy risk says none.
 const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: choice("none", "outward", "structure"),
-  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule"), at: nonnegativeSafe, rule_id: id,
-  source: { const: "current" } },
+  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule", "review", "carry"), at: nonnegativeSafe, rule_id: id,
+  reason: { type: "string", maxLength: 500 }, source: { const: "current" } },
 ["id", "request_id", "decision", "at", "source"]);
 const gateLegacyScope: JsonSchema = { type: "string", pattern: "^(\\*|device:[A-Za-z0-9_-]+/(\\*|[A-Za-z0-9_.-]+))$" };
 const gateLegacyHistory = obj({ id, subject: nonempty, to: id, word: id, risk: gateRisk,
@@ -173,20 +185,21 @@ const gateAccessItem = obj({ id, member: { type: "string", pattern: "^agent:[A-Z
 // A current case always names its accepted request; a migrated row is never an actionable ask.
 add("service:gate", "rules.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe }, ["rules"]), { audience: "owner" });
-add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure" });
+add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "history", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 1000 } }),
   obj({ items: { type: "array", items: { oneOf: [gateCurrentHistory, gateLegacyHistory] }, maxItems: 1000 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
 add("service:gate", "access.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ items: { type: "array", items: gateAccessItem, maxItems: 100 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
 add("service:gate", "access.grant", "request", obj({ member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope }, ["member", "scope"]),
   obj({ id, member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope, expires_at: nonnegativeSafe }, ["id", "member", "scope", "expires_at"]),
-  { audience: "owner", risk: "structure" });
+  { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "access.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]),
-  { audience: "owner", risk: "structure" });
+  { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: choice("none", "outward", "structure"), to: id, word: id,
   expires_at: nonnegativeSafe }, ["request_id", "ask_id", "risk", "to", "word", "expires_at"]), undefined, { direction: "out" });
-add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer"), rule_id: id, ask_id: id },
-  ["request_id", "by"]), undefined, { direction: "out" });
+// by review: the reviewer judged the action reversible or already asked for; carry: the same thing was allowed minutes ago.
+add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer", "review", "carry"), rule_id: id, ask_id: id,
+  reason: { type: "string", minLength: 1, maxLength: 500 } }, ["request_id", "by"]), undefined, { direction: "out" });
 add("service:gate", "gate.denied", "event", obj({ request_id: id, by: choice("answer", "timeout"), ask_id: id },
   ["request_id", "by"]), undefined, { direction: "out" });
 
@@ -194,7 +207,7 @@ add("service:self", "read", "request", obj({ path: selfPathRequest }, ["path"]),
 add("service:self", "write", "request", obj({ path: selfPathRequest, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });
 add("service:self", "append", "request", obj({ path: selfPathRequest, text: str }, ["path", "text"]), obj({ hash: sha }, ["hash"]), { label: "Adding to a log", description: "Atomically append to any allowed dated log." });
 add("service:self", "apply_plan", "request", obj({ path: selfPathRequest, expected_hash: sha, edits: array(edit) }, ["path", "expected_hash", "edits"]), obj({ applied: integer, hash: sha }, ["applied", "hash"]));
-add("service:self", "rollback", "request", obj({ path: selfPathRequest, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure" });
+add("service:self", "rollback", "request", obj({ path: selfPathRequest, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure", effect: "write" });
 add("service:self", "history", "request", obj({ path: selfPathRequest }, ["path"]), obj({ versions: array(any) }, ["versions"]));
 add("service:self", "self.changed", "event", obj({ path: selfPath, by: id, summary: str, version: integer }, ["path", "by", "summary"]), undefined, { direction: "out" });
 
@@ -257,7 +270,7 @@ for (const [word, input, result] of [
   ] }, obj({}, [], true)],
   ["model.set", obj({ provider: nonempty, model: nonempty }, ["provider", "model"]),
     obj({ provider: nonempty, model: nonempty, restart_required: bool }, ["provider", "model", "restart_required"])],
-] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", risk: word === "plugins.op" || word === "gateway.op" ? "structure" : "none", description: "Local owner administration; never available to a remote screen." });
+] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", ...(word === "plugins.op" || word === "gateway.op" ? { risk: "structure" as const, effect: "structure" as const } : { risk: "none" as const }), description: "Local owner administration; never available to a remote screen." });
 add("service:admin", "pause", "request", { oneOf: [empty, obj({ by: id }, ["by"]) ] },
   obj({ paused: { const: true } }, ["paused"]), { audience: "owner", description: "Durably pause activity; a trusted local reflex may cite one authenticated owner message once." });
 add("service:admin", "resume", "request", obj({ confirmed: { const: true } }, ["confirmed"]),
@@ -267,11 +280,12 @@ export const WORD_CONTRACTS: readonly WordContract[] = Object.freeze(entries);
 export function wordContract(member: string, word: string): WordContract | undefined {
   return WORD_CONTRACTS.find((item) => item.word === word && (item.member === member || (item.member === "screen:*" && /^screen:[^:]+$/.test(member))));
 }
-export function deviceWordSpec(capability: { name: string; description: string; input_schema: JsonSchema; result_schema?: JsonSchema; risk: "none" | "outward" | "structure"; label: string }): WordSpec {
+export function deviceWordSpec(capability: { name: string; description: string; input_schema: JsonSchema; result_schema?: JsonSchema; risk: "none" | "outward" | "structure"; effect?: WordEffect; label: string }): WordSpec {
   if (typeof capability.name !== "string" || !capability.name.trim() || typeof capability.description !== "string" || !capability.description.trim() || typeof capability.label !== "string" || !capability.label.trim() || !["none", "outward", "structure"].includes(capability.risk)) throw new TypeError("device capability needs valid name, description, risk and label");
+  if (capability.effect !== undefined && !isWordEffect(capability.effect)) throw new TypeError("device capability effect must be read, act, write, send, execute or structure");
   if (!capability.input_schema || typeof capability.input_schema !== "object" || Array.isArray(capability.input_schema) || capability.input_schema.type !== "object") throw new TypeError("device capability needs an object input schema");
   // Full externally supplied JSON Schemas must be compiled by a standards-compliant validator at registration.
-  return { word: capability.name, kind: "request", description: capability.description, input_schema: capability.input_schema, result_schema: capability.result_schema ?? obj({}, [], true), risk: capability.risk, label: capability.label, audience: "all" };
+  return { word: capability.name, kind: "request", description: capability.description, input_schema: capability.input_schema, result_schema: capability.result_schema ?? obj({}, [], true), risk: capability.risk, ...(capability.effect ? { effect: capability.effect } : {}), label: capability.label, audience: "all" };
 }
 
 /** Cross-field checks that JSON Schema alone cannot express for a choice card. */

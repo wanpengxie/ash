@@ -149,20 +149,40 @@ test("an answer before ask expiry remains valid for dispatch after ask expiry bu
   } finally { ledger.close(); }
 });
 
-test("committed device ACL revoke between authorization and dispatch CAS blocks the effect", async () => {
+test("a revoked legacy access grant no longer blocks an agent's approved action; a non-agent device caller still does", async () => {
   const { file, ledger, accepted } = await fixture(60_000, true);
   try {
     const started = ledger.beginGate(accepted.id, gate(Date.now() + 20_000))!;
     assert.ok(started);
     assert.equal(ledger.settleGateAsk(started.ask.id, "once", "answer")?.event?.word, "gate.passed");
-    assert.equal(ledger.gateDeviceAccess("agent:main", "device:fake", "run"), true);
     const other = new DatabaseSync(file);
     try { other.prepare("UPDATE gate_access SET revoked_at=? WHERE member=? AND scope=?")
       .run(Date.now(), "agent:main", "device:fake/run"); }
     finally { other.close(); }
-    assert.equal(ledger.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), false);
-    assert.equal(ledger.trackedRequests().find((item) => item.message.id === accepted.id)?.phase, "gate_waiting");
+    assert.equal(ledger.gateDeviceAccess("agent:main", "device:fake", "run"), false);
+    assert.equal(ledger.dispatchAllowedGate(accepted.id, "principal:exact", "a".repeat(64)), true);
+    const service = ledger.append({ from: "service:work", to: "device:fake", kind: "request", word: "run", body: { n: 2 } },
+      undefined, { deadlineAt: Date.now() + 60_000, context: { member: "service:work", local: true, remote: false, ownerProxy: false,
+        transportPrincipal: "service:work" } }).message;
+    assert.equal(ledger.beginGate(service.id, gate(Date.now() + 20_000)), null);
+    assert.equal(ledger.passGate(service.id, "principal:exact", "review", "synthetic", "outward"), null);
   } finally { ledger.close(); }
+});
+
+test("a reviewer or carry-over pass commits phase, audit event and history with its reason together", async () => {
+  const { file, ledger, accepted } = await fixture(60_000, true);
+  try {
+    assert.equal(ledger.passGate(accepted.id, "principal:exact", "review", "  ", "outward"), null);
+    const event = ledger.passGate(accepted.id, "principal:exact", "review", "打开网页是可撤回的操作", "outward")!;
+    assert.deepEqual(event.body, { request_id: accepted.id, by: "review", reason: "打开网页是可撤回的操作" });
+    assert.equal(ledger.trackedRequests().find((item) => item.message.id === accepted.id)?.phase, "dispatching");
+    assert.equal(ledger.passGate(accepted.id, "principal:exact", "review", "again", "outward"), null, "one pass per request");
+    const item = ledger.gateHistoryPage().items[0]!;
+    assert.equal(item.decision, "review");
+    assert.equal(item.source === "current" ? item.reason : undefined, "打开网页是可撤回的操作");
+  } finally { ledger.close(); }
+  const reopened = await Ledger.open(file);
+  try { assert.equal(reopened.gateHistoryPage().items[0]?.decision, "review"); } finally { reopened.close(); }
 });
 
 test("a failed gate event insert rolls back case, ask and phase", async () => {
