@@ -1,0 +1,8 @@
+{
+  "name": "dsh-ash-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "description": "DSH plugin loaded inside the agent container: the standard ACP bridge plus ash's extension methods (_ash/steer, _ash/inject)."
+}
