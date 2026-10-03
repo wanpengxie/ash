@@ -27,6 +27,8 @@ export interface CostOptions {
   price: (record: UsageRecord) => Promise<number | null>;
   timeZone?: string;
   now?: () => number;
+  /** Where prices come from, recorded with each cost. */
+  priceSource?: string;
 }
 
 const SCOPES = new Set(["chat", "mind", "background", "title", "compaction", "review", "other"]);
@@ -62,7 +64,7 @@ export class CostMember implements Member {
     await this.options.router.send(service, { to: null, kind: "event", word: "usage.recorded", body: {
       scope: SCOPES.has(record.scope) ? record.scope : "other", provider: record.provider, model: record.model,
       input_tokens: record.input, output_tokens: record.output, cache_read_tokens: record.cacheRead, cache_write_tokens: record.cacheWrite,
-      cost_usd: cost, cost_source: cost === null ? null : "dsh-bundled-model-catalog", ms: Math.max(0, Math.trunc(record.ms)), ok: record.ok, at: Math.max(0, Math.trunc(record.at)) } });
+      cost_usd: cost, cost_source: cost === null ? null : this.options.priceSource ?? "dsh-bundled-model-catalog", ms: Math.max(0, Math.trunc(record.ms)), ok: record.ok, at: Math.max(0, Math.trunc(record.at)) } });
   }
 
   async handle(message: Message, _context: RouteHandlerContext): Promise<ResponseBody> {

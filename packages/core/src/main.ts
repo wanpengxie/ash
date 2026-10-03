@@ -1,17 +1,19 @@
 // Production ash-api/2 entrypoint. The retired event writer is test-only.
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAuthScopeKey } from "./auth-scope";
+import { protectProcessMemory } from "./harden";
 import { DshHost } from "../../dsh-binding/src/host";
 import { DshMindRunner } from "../../dsh-binding/src/mind";
 import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { dshWorkerModel } from "../../dsh-binding/src/workers";
 import { ModelEgress } from "../../agent-container/src/egress";
 import { ContainerHost } from "../../agent-container/src/host";
-import { DEFAULT_MODEL, prepareLaunch, type ContainerConfig } from "../../agent-container/src/launch";
+import { DEFAULT_MODEL, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
 import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
 import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
 import { AgentMcpServer, type AgentBinding } from "./agent-mcp/server";
@@ -106,6 +108,8 @@ function deviceSummary(members: WorldMembers): string {
 }
 
 export async function startOwner(config: Config): Promise<Running> {
+  // Before any secret is read: the agent container must not be able to read this process's memory.
+  protectProcessMemory(log);
   const agents = config.agents ?? [{ id: "agent:main" as const, runtime: "dsh" as const }];
   if (agents.length !== 1 || agents[0].id !== "agent:main") throw new Error("v2 requires one real agent:main member");
   if (agents[0].runtime !== "echo" && agents[0].runtime !== "dsh" && agents[0].runtime !== "container") throw new Error("unsupported agent runtime");
@@ -150,6 +154,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let container: ContainerHost | null = null;
   let egress: ModelEgress | null = null;
   let agentTools: AgentMcpServer | null = null;
+  let provisioning: ChildProcess | null = null;
   let self: SelfMember | null = null;
   let work: WorkMember | null = null;
   let senses: SensesMember | null = null;
@@ -394,9 +399,18 @@ export async function startOwner(config: Config): Promise<Running> {
     post.prepareRecovery();
     admin.prepareRecovery();
     work.prepareRecovery();
+    // Install Python in the background once per container image; she can use apt herself for anything else.
+    const provision = () => {
+      const run = config.container ? provisionCommand(config.container) : null;
+      if (!run || provisioning) return;
+      const out = openSync(join(config.stateDir, "container-provision.log"), "a", 0o600);
+      provisioning = spawn(run.command, run.args, { env: run.env, stdio: ["ignore", out, out] });
+      provisioning.on("exit", (code) => { log("container provisioning finished", code); closeSync(out); provisioning = null; });
+      provisioning.on("error", (error) => log("container provisioning failed", error));
+    };
     if (container) {
       registerWorkerMembers(members, piWorkerModel(() => vaultStore.get("DEEPSEEK_API_KEY"), () => worldConfig.workers.model ?? containerModel()), ledger);
-      cost = new CostMember({ ledger, router: world, collector: { onUsage: (listener) => {
+      cost = new CostMember({ ledger, router: world, priceSource: "pi-ai-model-catalog", collector: { onUsage: (listener) => {
         const stop = egress!.onUsage(listener);
         reviewUsage.add(listener);
         return () => { stop(); reviewUsage.delete(listener); };
@@ -413,7 +427,7 @@ export async function startOwner(config: Config): Promise<Running> {
       // Start the runtime and open her session now, so the first message does not wait for it. A failure here is
       // reported on that message instead of stopping ash.
       void container.session("main", { url: agentTools!.url, token: mainBinding!.token })
-        .then(() => log("agent runtime ready", JSON.stringify(container!.timings)))
+        .then(() => { log("agent runtime ready", JSON.stringify(container!.timings)); provision(); })
         .catch((error) => { if (!container!.isClosed) log("agent runtime failed to start", error); });
     }
     if (dsh) {
@@ -452,13 +466,13 @@ export async function startOwner(config: Config): Promise<Running> {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

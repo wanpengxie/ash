@@ -102,17 +102,37 @@ export function prepareLaunch(config: ContainerConfig, egressBase: string, state
   const dns = (config.dns ?? []).filter((server) => /^[0-9a-fA-F:.]{2,45}$/.test(server));
   writeIfChanged(join(rootfs, "etc", "resolv.conf"), `${(dns.length ? dns : ["223.5.5.5", "119.29.29.29"]).map((server) => `nameserver ${server}`).join("\n")}\n`);
   const inside: Record<string, string> = { HOME: "/root", DSH_HOME: "/root/.dsh", PATH: CONTAINER_PATH, TMPDIR: "/tmp", TERM: "dumb", ...common };
-  const vars = Object.entries(inside).map(([key, value]) => `${key}=${value}`);
+  const run = inContainer(root, ["/opt/dsh/node_modules/.bin/dsh", "--profile", "acp", "--patch", "/opt/ash/patch.yml"], inside);
   return {
-    mode: "proot", command: proot,
-    args: ["--kill-on-exit", "--link2symlink", "-0", "-r", rootfs, "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", `${join(root, "tmp")}:/tmp`,
-      "-w", "/root/work", "/usr/bin/env", "-i", ...vars, "/opt/dsh/node_modules/.bin/dsh", "--profile", "acp", "--patch", "/opt/ash/patch.yml"],
-    env: { LD_LIBRARY_PATH: join(root, "proot", "lib"), PROOT_LOADER: join(root, "proot", "libexec", "loader"), PROOT_TMP_DIR: join(root, "tmp"),
-      PATH: process.env.PATH ?? "/system/bin" },
+    mode: "proot", command: run.command, args: run.args, env: run.env,
     hostWorkspace, agentWorkspace: "/root/work",
     toAgentPath: (path) => {
       if (path !== hostWorkspace && !path.startsWith(`${hostWorkspace}/`)) throw new Error("path is outside the agent workspace");
       return `/root/work${path.slice(hostWorkspace.length)}`;
     },
   };
+}
+
+/** A command run inside the container with exactly the given environment, as the agent's own processes are. */
+export function inContainer(root: string, argv: string[], inside: Record<string, string>): { command: string; args: string[]; env: Record<string, string> } {
+  const vars = Object.entries(inside).map(([key, value]) => `${key}=${value}`);
+  return {
+    command: join(root, "proot", "bin", "proot"),
+    args: ["--kill-on-exit", "--link2symlink", "-0", "-r", join(root, "ubuntu"), "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", `${join(root, "tmp")}:/tmp`,
+      "-w", "/root/work", "/usr/bin/env", "-i", ...vars, ...argv],
+    env: { LD_LIBRARY_PATH: join(root, "proot", "lib"), PROOT_LOADER: join(root, "proot", "libexec", "loader"), PROOT_TMP_DIR: join(root, "tmp"),
+      PATH: process.env.PATH ?? "/system/bin" },
+  };
+}
+
+/** Python is part of the promise of a working Linux box. The image does not carry it, so it is installed once per image. */
+export const PROVISION_SCRIPT = "command -v python3 >/dev/null && exit 0; " +
+  "apt-get -o DPkg::Lock::Timeout=300 update -q && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y -q python3 python3-pip python3-venv";
+
+export function provisionCommand(config: ContainerConfig): { command: string; args: string[]; env: Record<string, string> } | null {
+  if (config.direct || !existsSync(join(config.root, "ubuntu", "usr", "bin", "apt-get"))) return null;
+  if (existsSync(join(config.root, "ubuntu", "usr", "bin", "python3"))) return null;
+  const extra = config.env ?? {};
+  return inContainer(config.root, ["/bin/sh", "-c", PROVISION_SCRIPT],
+    { HOME: "/root", PATH: CONTAINER_PATH, TMPDIR: "/tmp", TERM: "dumb", LANG: "C.UTF-8", ...extra });
 }

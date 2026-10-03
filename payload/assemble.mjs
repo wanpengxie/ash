@@ -296,6 +296,8 @@ async function build() {
   if (!fs.existsSync(core)) throw new Error("build ash core first: npm run build:core");
   fs.mkdirSync(path.join(tree, "ash"), { recursive: true });
   fs.copyFileSync(core, path.join(tree, "ash/ash-core.mjs"));
+  // Core marks itself non-dumpable with this library, so the agent container (same Linux user) cannot read its memory.
+  fs.copyFileSync(buildNodump(), path.join(tree, "ash/libashnodump.so"));
 
   // Ash skills are a separate DSH plugin. Never modify the published DSH tree.
   fs.cpSync(path.join(ROOT, "packages/ash-skills"), path.join(tree, "ash-skills"), { recursive: true });
@@ -353,3 +355,21 @@ function hashTree(dir) {
 
 if (flag("--lock")) await lock();
 else await build();
+
+/** Compile packages/core/native/nodump.c for the phone with the Android NDK. The payload is not built without it. */
+function buildNodump() {
+  const sdk = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT ?? path.join(os.homedir(), "android-sdk");
+  const ndkRoot = process.env.ANDROID_NDK_HOME ?? (() => {
+    const dir = path.join(sdk, "ndk");
+    const versions = fs.existsSync(dir) ? fs.readdirSync(dir).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) : [];
+    return versions.length ? path.join(dir, versions.at(-1)) : null;
+  })();
+  if (!ndkRoot) throw new Error("the Android NDK is required to build libashnodump.so (set ANDROID_NDK_HOME)");
+  const host = fs.readdirSync(path.join(ndkRoot, "toolchains/llvm/prebuilt"))[0];
+  const clang = path.join(ndkRoot, "toolchains/llvm/prebuilt", host, "bin/aarch64-linux-android24-clang");
+  const out = path.join(ROOT, "build/libashnodump.so");
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  sh(clang, ["-shared", "-fPIC", "-O2", "-Wl,-z,max-page-size=16384", "-o", out, path.join(ROOT, "packages/core/native/nodump.c")]);
+  log("libashnodump.so built with", path.basename(ndkRoot));
+  return out;
+}

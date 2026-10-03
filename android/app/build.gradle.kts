@@ -66,6 +66,8 @@ android {
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild { ndkBuild { path = file("src/main/jni/Android.mk") } }
 
     signingConfigs {
         create("release") {
