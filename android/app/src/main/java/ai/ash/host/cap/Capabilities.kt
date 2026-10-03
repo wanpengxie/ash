@@ -21,7 +21,7 @@ object Capabilities {
             if (!ok) continue
             val policy = CapabilityPolicies.require(c.name)
             caps.put(JSONObject().put("name", c.name).put("description", c.description).put("input_schema", c.schema)
-                .put("risk", policy.risk).put("label", policy.label).apply { if (c.confirm) put("confirm", true) })
+                .put("risk", policy.risk).put("effect", policy.effect).put("label", policy.label).apply { if (c.confirm) put("confirm", true) })
         }
         return JSONObject().put("name", deviceName()).put("kind", "phone").put("capabilities", caps)
     }
