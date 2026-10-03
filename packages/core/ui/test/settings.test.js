@@ -392,7 +392,7 @@ test("opening settings reads what each row should say: quiet hours, pause, keys,
     assert.equal(panel.find("settingsQuietRow").sub.textContent, "每天 22:00 到 07:30 不主动找你");
     assert.equal(panel.find("settingsPause").hidden, true);
     assert.equal(panel.find("settingsResume").hidden, false);
-    assert.equal(panel.find("settingsVaultRow").sub.textContent, "模型 Key 未设置 · 叫停判断 Key 已保存");
+    assert.equal(panel.find("settingsVaultRow").sub.textContent, "DeepSeek Key 未设置 · OpenRouter Key 已保存");
     assert.equal(panel.find("settingsVaultRow").sub.className, "set-sub warn");
     assert.equal(panel.find("settingsGatewayRow").sub.textContent, "1 台设备 · 1 个等你批准");
     assert.equal(panel.find("settingsUsageCard").children[1].textContent, "$0.12");

@@ -16,8 +16,8 @@ interface Entry { value: string; label: string; kind: Kind; updated_at: number }
 
 /** What the owner sees a known credential called. Anything else is shown under its own name. */
 const KNOWN: Record<string, { label: string; kind: Kind }> = {
-  DEEPSEEK_API_KEY: { label: "DeepSeek 模型", kind: "model" },
-  OPENROUTER_API_KEY: { label: "OpenRouter（JEV 停止判断）", kind: "model" },
+  DEEPSEEK_API_KEY: { label: "DeepSeek（对话模型）", kind: "model" },
+  OPENROUTER_API_KEY: { label: "OpenRouter（JEV 快速判断模型）", kind: "model" },
 };
 
 export interface VaultInfo { ref: string; label: string; kind: Kind; configured: boolean; updated_at?: number }

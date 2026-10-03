@@ -55,7 +55,7 @@ test("a key saved in the vault is what DSH sends to the provider, and it never r
 
     // The agent's view of the vault: names only.
     const listed = (await send({ to: "service:vault", kind: "request", word: "list", body: {}, wait: true, client_id: "v-list" })).reply.body.result.entries;
-    assert.deepEqual(listed.find((e: { ref: string }) => e.ref === "DEEPSEEK_API_KEY"), { ref: "DEEPSEEK_API_KEY", label: "DeepSeek 模型", kind: "model", configured: false });
+    assert.deepEqual(listed.find((e: { ref: string }) => e.ref === "DEEPSEEK_API_KEY"), { ref: "DEEPSEEK_API_KEY", label: "DeepSeek（对话模型）", kind: "model", configured: false });
 
     // The owner saves a key through the settings route.
     const put = await fetch(`${running.url}/api/vault/DEEPSEEK_API_KEY`, { method: "PUT", headers, body: JSON.stringify({ value: "sk-from-the-vault" }) });

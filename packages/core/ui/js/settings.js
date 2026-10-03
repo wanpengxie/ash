@@ -55,8 +55,8 @@ function armed(control, label, confirmLabel, onWarn, run) {
 
 const SCOPE_NAMES = { chat: "对话", mind: "内心整理", background: "后台任务", title: "起标题", compaction: "压缩历史", other: "其他" };
 const KEYS = [
-  { ref: "DEEPSEEK_API_KEY", title: "模型 Key", provider: "DeepSeek", hint: "没有它，Ash 无法对话。" },
-  { ref: "OPENROUTER_API_KEY", title: "叫停判断 Key", provider: "OpenRouter", hint: "没有它，叫停只能靠关键词判断。" },
+  { ref: "DEEPSEEK_API_KEY", title: "DeepSeek Key", use: "用于：对话模型", hint: "没有它，Ash 无法对话。" },
+  { ref: "OPENROUTER_API_KEY", title: "OpenRouter Key", use: "用于：快速判断（JEV 模型）", hint: "没有它，快速判断只能靠关键词。" },
 ];
 const money = (value) => `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`;
 const tokens = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
@@ -210,7 +210,7 @@ export class SettingsControls {
     const usageMore = node("span", "点开看花在哪里", "set-sub");
     usageCard.append(node("span", "今天花了", "set-sub"), usageToday, usageMore);
 
-    const vaultRow = navRow("settingsVaultRow", "key", "密钥", "Ash 用来调用模型的 Key", () => vaultPage.open());
+    const vaultRow = navRow("settingsVaultRow", "key", "密钥", "DeepSeek、OpenRouter", () => vaultPage.open());
     const gatewayRow = navRow("settingsGatewayRow", "devices", "已连接设备", "其他电脑和浏览器", () => gatewayPage.open());
     const capability = [vaultRow, gatewayRow];
     if (android && typeof globalThis.__ashBrowserLogins === "function")
@@ -306,13 +306,13 @@ export class SettingsControls {
     const vaultPage = page("settingsVault", "密钥",
       `Key 只保存在这台手机上。${name} 知道存了哪几个，但看不到内容，Key 也不会出现在聊天里。保存后立刻生效。`, () => refreshVault());
     const vaultViews = [];
-    for (const { ref, title, provider, hint } of KEYS) {
+    for (const { ref, title, use, hint } of KEYS) {
       const card = document.createElement("div");
       card.id = `settingsVault_${ref}`;
       card.className = "set-card";
       const head = document.createElement("div");
       head.className = "set-text";
-      head.append(node("span", title, "set-title"), node("span", provider, "set-sub"));
+      head.append(node("span", title, "set-title"), node("span", use, "set-sub"));
       const status = node("p", "正在读取…", "set-status");
       status.id = `settingsVault_${ref}_status`;
       status.setAttribute("role", "status");
