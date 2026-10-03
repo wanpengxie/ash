@@ -101,7 +101,7 @@ test("quiet hours load and save only after a paired local settings reply", async
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
-    panel.find("settingsQuiet").children.find((item) => item.textContent === "读取时段").click();
+    panel.find("settingsQuietRow").click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsQuietStart").value, "22:00");
     assert.equal(panel.find("settingsQuietEnd").value, "08:00");
@@ -111,6 +111,7 @@ test("quiet hours load and save only after a paired local settings reply", async
     assert.deepEqual(sent.map((item) => [item.word, item.body]), [
       ["settings.get", {}], ["settings.set", { delivery: { quiet: "23:00-08:00" } }]]);
     assert.equal(panel.find("settingsQuietStatus").textContent, "已保存免打扰时段。");
+    assert.equal(panel.find("settingsQuietRow").sub.textContent, "每天 23:00 到 08:00 不主动找你");
     settings.network("offline");
     assert.equal(panel.find("settingsQuiet"), undefined);
   } finally { delete globalThis.document; }
@@ -135,13 +136,14 @@ test("local settings switches an installed DSH plugin and refreshes its actual s
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
-    panel.find("settingsPluginsLoad").click();
+    panel.find("settingsDevRow").click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(panel.find("settingsPluginsList").children[0].children[0].textContent, "sample · 已停用");
+    const state = () => panel.find("settingsPluginsList").children[0].children[0].children.map((item) => item.textContent).join(" · ");
+    assert.equal(state(), "sample · 已停用");
     panel.find("settingsPluginsList").children[0].children[1].click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(panel.find("settingsPluginsList").children[0].children[0].textContent, "sample · 已启用");
-    assert.deepEqual(sent.map((item) => [item.word, item.body]), [
+    assert.equal(state(), "sample · 已启用");
+    assert.deepEqual(sent.filter((item) => item.word !== "settings.get").map((item) => [item.word, item.body]), [
       ["plugins.list", {}], ["plugins.op", { op: "plugin", id: "include:sample", enabled: true }], ["plugins.list", {}]]);
     settings.network("offline");
     assert.equal(panel.find("settingsPlugins"), undefined);
@@ -165,13 +167,13 @@ test("local settings saves the DSH main-model choice and reports restart", async
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
-    panel.find("settingsModel").children.find((item) => item.textContent === "读取模型").click();
+    panel.find("settingsDevRow").click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsModelName").value, "deepseek-chat");
     panel.find("settingsModelName").value = "deepseek-reasoner";
     panel.find("settingsModelSave").click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(sent.map((item) => [item.word, item.body]), [
+    assert.deepEqual(sent.filter((item) => item.word !== "plugins.list").map((item) => [item.word, item.body]), [
       ["settings.get", {}], ["model.set", { provider: "deepseek", model: "deepseek-reasoner" }]]);
     assert.equal(panel.find("settingsModelStatus").textContent, "已保存；重启 Ash 后主模型生效。");
   } finally { delete globalThis.document; }
@@ -199,13 +201,18 @@ test("local gateway controls approve a pending device and revoke an existing dev
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
-    panel.find("settingsGatewayLoad").click();
+    panel.find("settingsGatewayRow").click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayList").children.length, 2);
     panel.find("settingsGatewayList").children[0].children[1].click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayList").children.length, 1);
-    panel.find("settingsGatewayList").children[0].children[1].click();
+    const revoke = panel.find("settingsGatewayList").children[0].children[1];
+    revoke.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(sent.filter((item) => item.body.op === "revoke").length, 0, "one tap only says what removing does");
+    assert.match(panel.find("settingsGatewayStatus").textContent, /重新配对/);
+    revoke.click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayList").children.length, 0);
     assert.deepEqual(sent.map((item) => [item.word, item.body]), [
@@ -302,12 +309,14 @@ test("settings show usage by period and part of Ash, and an unreadable balance i
     const panel = new Element("div");
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
-    panel.find("settingsUsageRefresh").click();
+    panel.find("settingsUsageCard").click();
     for (let i = 0; i < 50 && !panel.find("settingsUsageBalance")?.textContent; i++) await new Promise((resolve) => setImmediate(resolve));
-    const table = panel.find("settingsUsageTable").children.map((row) => row.textContent);
-    assert.match(table[0], /^今天：\$0\.0042 · 3 次调用 · 输入 12\.0k.*另有 1 次没有价格/);
-    assert.match(table[1], /^近 7 天：\$1\.50 · 9 次调用/);
-    assert.ok(table.some((row) => /对话：\$1\.20/.test(row)) && table.some((row) => /后台任务：\$0\.30/.test(row)));
+    const text = (item) => item.children.length ? item.children.map(text).join("|") : item.textContent ?? "";
+    const table = panel.find("settingsUsageTable").children.flatMap((box) => box.children.at(-1).children.map(text));
+    assert.match(table[0], /^今天\|3 次调用 · 输入 12\.0k.*另有 1 次没有价格\|\$0\.0042$/);
+    assert.match(table[1], /^近 7 天\|9 次调用.*\|\$1\.50$/);
+    assert.ok(table.some((row) => /^对话\|.*\$1\.20$/.test(row)) && table.some((row) => /^后台任务\|.*\$0\.30$/.test(row)));
+    assert.equal(panel.find("settingsUsageCard").children[1].textContent, "$0.0042");
     assert.deepEqual(seen.slice(0, 2), ["usage.get", "balance.get"]);
     assert.match(panel.find("settingsUsageBalance").textContent, /读不到（不是零）/);
     assert.match(panel.find("settingsUsageStatus").textContent, /估算/);
@@ -334,20 +343,60 @@ test("the vault section saves and removes keys through the owner route, clears t
     settings.registration({ local_management: true }); settings.network("online");
     const wait = async (check) => { for (let i = 0; i < 50 && !check(); i++) await new Promise((resolve) => setImmediate(resolve)); };
     const status = () => panel.find("settingsVault_DEEPSEEK_API_KEY_status").textContent;
+    panel.find("settingsVaultRow").click();
     await wait(() => /还没有保存/.test(status()));
     assert.match(status(), /还没有保存.*无法对话/);
     const row = panel.find("settingsVault_DEEPSEEK_API_KEY");
     const field = panel.find("settingsVault_DEEPSEEK_API_KEY_value");
     field.value = "  sk-vault-test  ";
-    row.children.find((item) => item.textContent === "保存").click();
+    const actions = row.children.at(-1);
+    actions.children.find((item) => item.textContent === "保存").click();
     await wait(() => /^已保存/.test(status()));
     assert.equal(field.value, "");
     assert.match(status(), /^已保存/);
     const put = calls.find((call) => call.method === "PUT");
     assert.deepEqual([put.path, put.body], ["/api/vault/DEEPSEEK_API_KEY", { value: "sk-vault-test" }]);
     assert.doesNotMatch(JSON.stringify(panel), /sk-vault-test/);
-    row.children.find((item) => item.textContent === "移除").click();
+    const remove = actions.children.find((item) => item.textContent === "移除");
+    assert.equal(remove.hidden, false);
+    remove.click();
+    assert.match(status(), /^移除后，Ash 无法对话/);
+    assert.ok(!calls.some((call) => call.method === "DELETE"), "one tap only says what removing does");
+    remove.click();
     await wait(() => /还没有保存/.test(status()));
     assert.ok(calls.some((call) => call.method === "DELETE" && call.path === "/api/vault/DEEPSEEK_API_KEY"));
+  } finally { delete globalThis.document; delete globalThis.location; }
+});
+
+test("opening settings reads what each row should say: quiet hours, pause, keys, devices and today's spend", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "http://127.0.0.1" };
+  const zero = { calls: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0, unpriced_calls: 0 };
+  const results = {
+    "settings.get": { delivery: { quiet: "22:00-07:30" }, paused: true },
+    "usage.get": { periods: { today: { ...zero, cost_usd: 0.12 }, "7d": { ...zero, cost_usd: 1.5 }, "30d": { ...zero, cost_usd: 4 } }, by_scope: [] },
+    "gateway.state": { configured: true, connected: true, devices: [{ id: "device:a", name: "A" }], pending: [{ request_id: "r", name: "B" }] },
+  };
+  const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
+    async request(path, init) {
+      if (path === "/api/vault") return { ok: true, json: async () => ({ entries: [{ ref: "DEEPSEEK_API_KEY", configured: false }, { ref: "OPENROUTER_API_KEY", configured: true }] }) };
+      const sent = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ id: "m1", reply: { kind: "response", reply_to: "m1", from: sent.to, to: "person:owner", word: sent.word, body: { ok: true, result: results[sent.word] } } }) };
+    } };
+  try {
+    const panel = new Element("div");
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    settings.opened();
+    for (let i = 0; i < 50 && panel.find("settingsUsageCard").children[1].textContent === "—"; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsQuietRow").sub.textContent, "每天 22:00 到 07:30 不主动找你");
+    assert.equal(panel.find("settingsPause").hidden, true);
+    assert.equal(panel.find("settingsResume").hidden, false);
+    assert.equal(panel.find("settingsVaultRow").sub.textContent, "模型 Key 未设置 · 叫停判断 Key 已保存");
+    assert.equal(panel.find("settingsVaultRow").sub.className, "set-sub warn");
+    assert.equal(panel.find("settingsGatewayRow").sub.textContent, "1 台设备 · 1 个等你批准");
+    assert.equal(panel.find("settingsUsageCard").children[1].textContent, "$0.12");
+    settings.setName("小灰");
+    assert.equal(panel.find("settingsPause").textContent, "暂停 小灰");
   } finally { delete globalThis.document; delete globalThis.location; }
 });

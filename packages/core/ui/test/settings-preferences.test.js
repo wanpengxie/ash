@@ -43,10 +43,10 @@ test("missing PROACTIVE creates only after paired write and matching readback", 
     await f.editor.save();
     assert.equal(f.calls.length, 0, "unread file cannot be overwritten");
     await f.editor.load();
-    assert.match(f.editor.status.textContent, /不存在/);
+    assert.match(f.editor.status.textContent, /还没有写过/);
     f.editor.editor.value = "Only important updates.\n";
     await f.editor.save();
-    assert.equal(f.editor.status.textContent, "已保存并重新核对。");
+    assert.equal(f.editor.status.textContent, "已保存。");
     assert.equal(f.calls.filter(({ wire }) => wire.word === "write").length, 1);
     assert.equal(f.calls.at(-1).wire.word, "read");
   } finally { f.editor.dispose(); delete globalThis.document; }
@@ -87,7 +87,7 @@ test("unknown ACK retries exactly the same client_id/content and keeps editor lo
     assert.equal(writesSent.length, 2);
     assert.equal(writesSent[0].client_id, writesSent[1].client_id);
     assert.deepEqual(writesSent[0].body, writesSent[1].body);
-    assert.notEqual(f.editor.status.textContent, "已保存并重新核对。", "mismatched readback is not success");
+    assert.notEqual(f.editor.status.textContent, "已保存。", "mismatched readback is not success");
   } finally { f.editor.dispose(); delete globalThis.document; }
 });
 
@@ -135,7 +135,7 @@ test("unpaired response, HTTP denial, and late write after screen rotation never
     f.net.screen = "screen:b";
     release();
     await writing;
-    assert.notEqual(f.editor.status.textContent, "已保存并重新核对。");
+    assert.notEqual(f.editor.status.textContent, "已保存。");
     assert.equal(f.editor.current(), false);
   } finally { f.editor.dispose(); delete globalThis.document; }
 });

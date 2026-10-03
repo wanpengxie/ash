@@ -178,6 +178,7 @@ export function boot({ uiTransport } = {}) {
       if (!net.localManagement) return false;
       if (!agentSheet.close()) return false;
       document.querySelector("#drawer").classList.add("open");
+      settings.opened();
       return true;
     }
     const tab = target === "turn" ? "activity" : target;
@@ -233,8 +234,10 @@ export function boot({ uiTransport } = {}) {
   identityName = new IdentityName(net, (name) => {
     presenceBar.setName(name);
     document.querySelector("#agentSheetHeader h2").textContent = name;
+    settings?.setName(name);
   });
-  settings = new SettingsControls(document.querySelector("#panel"), net);
+  settings = new SettingsControls(document.querySelector("#panel"), net,
+    { onClose: () => document.querySelector("#drawer").classList.remove("open") });
   agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view,
     getLedgerMessage: (id) => timeline.byId.get(id), onAskAbout: ({ turn, text: prefill }) => {
       if (!agentSheet.close()) return;
@@ -302,7 +305,7 @@ export function boot({ uiTransport } = {}) {
   });
   document.querySelector("#menu").addEventListener("click", () => {
     if (!agentSheet.close()) return;
-    document.querySelector("#drawer").classList.toggle("open");
+    if (document.querySelector("#drawer").classList.toggle("open")) settings.opened();
   });
   window.addEventListener("pagehide", () => { clearInterval(progressTimer); net.stop(); });
   window.addEventListener("offline", () => agentSheet.reset());

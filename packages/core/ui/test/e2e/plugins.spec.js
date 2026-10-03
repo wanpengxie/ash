@@ -22,8 +22,8 @@ test("local settings toggles an installed DSH plugin through the production admi
     await page.goto(`${running.url}/?token=${token}`);
     await expect(page.locator("#connection")).toContainText("已连接", { timeout: 20_000 });
     await page.locator("#menu").click();
-    await page.locator("#settingsPluginsLoad").click();
-    await expect(page.locator("#settingsPluginsStatus")).toContainText("已读取");
+    await page.locator("#settingsDevRow").click();
+    await expect(page.locator("#settingsPluginsStatus")).toContainText("已安装");
     const row = page.locator('#settingsPluginsList .settings-plugin[data-plugin-id="include:tool-plugin-manager"]');
     await expect(row).toContainText("已停用");
     await row.getByRole("button", { name: "启用" }).click();
@@ -31,8 +31,7 @@ test("local settings toggles an installed DSH plugin through the production admi
     await expect(page.locator("#settingsPluginsStatus")).toHaveText("已更新插件。");
     const op = running.ledger.list({ limit: 1000 }).findLast((message) => message.to === "service:admin" && message.word === "plugins.op");
     expect(op?.body).toEqual({ op: "plugin", id: "include:tool-plugin-manager", enabled: true });
-    await page.locator("#settingsModel").getByRole("button", { name: "读取模型" }).click();
-    await expect(page.locator("#settingsModelStatus")).toHaveText("已读取当前模型。");
+    await expect(page.locator("#settingsModelProvider")).not.toHaveValue("");
     const provider = await page.locator("#settingsModelProvider").inputValue();
     const before = await page.locator("#settingsModelName").inputValue();
     const next = before === "deepseek-chat" ? "deepseek-reasoner" : "deepseek-chat";
@@ -41,8 +40,9 @@ test("local settings toggles an installed DSH plugin through the production admi
     await expect(page.locator("#settingsModelStatus")).toHaveText("已保存；重启 Ash 后主模型生效。");
     const modelOp = running.ledger.list({ limit: 1000 }).findLast((message) => message.to === "service:admin" && message.word === "model.set");
     expect(modelOp?.body).toEqual({ provider, model: next });
-    await page.locator("#settingsGatewayLoad").click();
-    await expect(page.locator("#settingsGatewayStatus")).toHaveText("网关尚未配置。");
+    await page.locator("#settingsDevBack").click();
+    await page.locator("#settingsGatewayRow").click();
+    await expect(page.locator("#settingsGatewayStatus")).toHaveText("还没有设置网关，其他设备暂时连不上。");
   } finally {
     await running?.close();
     rmSync(root, { recursive: true, force: true });

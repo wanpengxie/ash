@@ -113,7 +113,7 @@ export class AdminMember implements Member {
     if (message.word === "settings.get" || message.word === "settings.set") {
       if (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !this.options.delivery)
         return { ok: false, error: { code: "forbidden", message: "local settings unavailable" } };
-      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet }, ...(this.options.modelGet ? { model: this.options.modelGet() } : {}) } };
+      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet }, paused: this.journal.isPaused(), ...(this.options.modelGet ? { model: this.options.modelGet() } : {}) } };
       const body = message.body;
       const section = body.delivery;
       const quiet = section && typeof section === "object" && !Array.isArray(section) ? (section as Record<string, unknown>).quiet : undefined;

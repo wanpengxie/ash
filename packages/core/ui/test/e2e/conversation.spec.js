@@ -533,9 +533,9 @@ test("local settings change quiet hours through the live admin word", async ({ p
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
   await page.locator("#menu").click();
+  await page.locator("#settingsQuietRow").click();
   await expect(page.locator("#settingsQuiet")).toBeVisible();
-  await page.locator("#settingsQuiet").getByRole("button", { name: "读取时段" }).click();
-  await expect(page.locator("#settingsQuietStatus")).toHaveText("已读取当前时段。");
+  await expect(page.locator("#settingsQuietStatus")).toBeHidden();
   await page.locator("#settingsQuietStart").fill("22:00");
   await page.locator("#settingsQuietEnd").fill("08:00");
   await page.locator("#settingsQuietSave").click();
@@ -545,7 +545,8 @@ test("local settings change quiet hours through the live admin word", async ({ p
   expect(saved?.body).toEqual({ delivery: { quiet: "22:00-08:00" } });
   await page.reload();
   await page.locator("#menu").click();
-  await page.locator("#settingsQuiet").getByRole("button", { name: "读取时段" }).click();
+  await expect(page.locator("#settingsQuietRow")).toContainText("每天 22:00 到 08:00");
+  await page.locator("#settingsQuietRow").click();
   await expect(page.locator("#settingsQuietStart")).toHaveValue("22:00");
   await expect(page.locator("#settingsQuietEnd")).toHaveValue("08:00");
 });
@@ -636,20 +637,20 @@ test("local proactive preferences save through self and survive a page reload", 
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
   await page.locator("#menu").click();
+  await page.locator("#settingsProactiveRow").click();
   const preferences = page.locator("#settingsProactive");
   await expect(preferences).toBeVisible();
-  await preferences.getByRole("button", { name: "加载偏好" }).click();
-  await expect(preferences.getByRole("status")).toContainText(/已读取当前偏好|偏好文件尚不存在/);
+  await expect(preferences.getByRole("status")).toContainText(/已读取当前偏好|还没有写过/);
   const content = `Only useful updates. ${Date.now()}\n`;
   await page.locator("#settingsProactiveText").fill(content);
-  await preferences.getByRole("button", { name: "保存偏好" }).click();
-  await expect(preferences.getByRole("status")).toHaveText("已保存并重新核对。");
+  await preferences.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(preferences.getByRole("status")).toHaveText("已保存。");
   const writes = running.ledger.list({ limit: 1000 }).filter((message) =>
     message.from === "person:owner" && message.to === "service:self" && message.word === "write" && message.body.path === "PROACTIVE.md");
   expect(writes.at(-1)?.body.content).toBe(content);
   await page.reload();
   await page.locator("#menu").click();
-  await page.locator("#settingsProactive").getByRole("button", { name: "加载偏好" }).click();
+  await page.locator("#settingsProactiveRow").click();
   await expect(page.locator("#settingsProactiveText")).toHaveValue(content);
 });
 

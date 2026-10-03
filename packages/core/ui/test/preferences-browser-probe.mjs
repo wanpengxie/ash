@@ -85,15 +85,15 @@ try {
   await call("Page.enable"); await call("Runtime.enable");
   const evaluate = async (expression) => (await call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
   const status = () => evaluate("document.querySelector('#settingsProactive [role=status]')?.textContent");
-  const load = () => evaluate("document.querySelector('#settingsProactive button:first-of-type').click()");
-  const save = () => evaluate("document.querySelector('#settingsProactive button:last-of-type').click()");
+  const load = () => evaluate("document.querySelector('#settingsProactiveLoad').click()");
+  const save = () => evaluate("document.querySelector('#settingsProactiveSave').click()");
   const setDraft = (text) => evaluate(`document.querySelector('#settingsProactiveText').value=${JSON.stringify(text)}`);
   await call("Page.navigate", { url: `${localUrl}/?token=${ownerToken(first)}` });
   await until(() => evaluate("Boolean(document.querySelector('#settingsProactive'))"), "local preferences panel");
   await load();
-  await until(async () => (await status())?.includes("不存在"), "missing-file read");
+  await until(async () => (await status())?.includes("还没有写过"), "missing-file read");
   await setDraft("Synthetic preference A\n"); await save();
-  await until(async () => (await status()) === "已保存并重新核对。", "create and verified readback");
+  await until(async () => (await status()) === "已保存。", "create and verified readback");
   assert.equal(readFileSync(join(dir, "first-home", "PROACTIVE.md"), "utf8"), "Synthetic preference A\n");
   assert.equal(writes(first).length, 1);
 
@@ -117,7 +117,7 @@ try {
   assert.equal(readFileSync(join(dir, "first-home", "PROACTIVE.md"), "utf8"), "Synthetic preference C\n");
   const beforeRetry = writes(first).length;
   await save();
-  await until(async () => (await status()) === "已保存并重新核对。", "same-ID retry and readback");
+  await until(async () => (await status()) === "已保存。", "same-ID retry and readback");
   assert.equal(writes(first).length, beforeRetry, "retry did not create a second write");
   assert.equal(writtenIds.at(-1), writtenIds.at(-2));
 
@@ -128,7 +128,7 @@ try {
   await until(() => evaluate("Boolean(document.querySelector('#settingsProactive'))"), "new-scope local screen");
   assert.notEqual(await evaluate("document.querySelector('#settingsProactiveText').value"), "Synthetic preference C\n");
   await load();
-  await until(async () => (await status())?.includes("不存在"), "new scope has no old plaintext");
+  await until(async () => (await status())?.includes("还没有写过"), "new scope has no old plaintext");
   assert.equal(writes(second).length, 0);
 
   const remoteCaller = { member: "person:owner", transportPrincipal: "gateway:preferences-fixture", pairedDeviceId: "preferences-fixture",
