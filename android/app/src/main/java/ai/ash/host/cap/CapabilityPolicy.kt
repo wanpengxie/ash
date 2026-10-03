@@ -65,6 +65,8 @@ object CapabilityPolicies {
         "browser.screenshot" to CapabilityPolicy("none", "read", "给网页截图"),
         "browser.show" to CapabilityPolicy("none", "read", "请你看一下浏览器"),
         "browser.close" to CapabilityPolicy("none", "read", "关闭浏览器"),
+        "browser.spaces" to CapabilityPolicy("none", "read", "看打开了哪些网页"),
+        "browser.run" to CapabilityPolicy("outward", "act", "在浏览器里连续操作"),
     )
 
     fun require(name: String): CapabilityPolicy = requireNotNull(byName[name]) { "missing capability policy: $name" }

@@ -49,6 +49,11 @@ class CapResult private constructor(val ok: Boolean, val content: JSONArray, val
             return CapResult(true, c, null, null)
         }
 
+        /** Text (e.g. a page) followed by an image, with structured data. */
+        fun textAndImage(t: String, base64: String, mime: String, data: Any? = null) = CapResult(true, JSONArray()
+            .put(JSONObject().put("type", "text").put("text", t))
+            .put(JSONObject().put("type", "image").put("data", base64).put("mimeType", mime)), data, null)
+
         fun fail(msg: String) = CapResult(false, JSONArray().put(JSONObject().put("type", "text").put("text", msg)), null, msg)
     }
 }

@@ -94,8 +94,17 @@ const PAYMENT = /\b(pay|payment|purchase|checkout|transfer)\b|支付|付款|购�
 /** Payments always reach the owner: no reviewer pass, no carry-over and no "always". */
 const isPayment = (word: string, label: string | undefined, body: Record<string, unknown>): boolean =>
   PAYMENT.test(word.replace(/[._-]/g, " ")) || PAYMENT.test(label ?? "") ||
-  (word === "browser.click" && PAYMENT.test(String(body.label ?? "")));
+  (word === "browser.click" && PAYMENT.test(String(body.label ?? ""))) ||
+  (word === "browser.run" && Array.isArray(body.steps) && body.steps.some((step) =>
+    plainObject(step) && step.op === "click" && PAYMENT.test(String(step.label ?? ""))));
 const plainText = (value: unknown, max: number) => String(value ?? "").replace(/[\p{C}\s]+/gu, " ").trim().slice(0, max);
+/** One browser action as the owner reads it on an approval card. */
+const browserStepText = (op: string, step: Record<string, unknown>): string =>
+  op === "click" ? `在 ${plainText(step.site, 80)} 点击「${plainText(step.label, 60)}」`
+    : op === "type" ? `在 ${plainText(step.site, 80)} 的「${plainText(step.label, 60)}」里输入：${plainText(step.text, 120)}${step.submit === true ? "，然后提交" : ""}`
+      : op === "open" ? `打开 ${plainText(step.url, 200)}`
+        : op === "wait" ? (step.text === undefined ? `等 ${plainText(step.ms, 10)} 毫秒` : `等页面出现「${plainText(step.text, 60)}」`)
+          : ({ read: "读页面", scroll: step.direction === "up" ? "向上滚动" : "向下滚动", back: "回到上一页", capture: "截图" } as Record<string, string>)[op] ?? plainText(op, 20);
 const askExpiry = (message: Pick<Message, "to" | "word" | "body">): number | null =>
   message.to === "person:owner" && message.word === "ask" && typeof message.body.expires_at === "number" && Number.isFinite(message.body.expires_at)
     ? Math.ceil(message.body.expires_at) : null;
@@ -702,8 +711,9 @@ export class WorldRouter {
     const shown = this.actionText(request);
     const preview = shown.length > 500 ? `${shown.slice(0, 500)}…（共 ${shown.length} 字，未显示部分同样会执行）` : shown;
     const device = request.to!.startsWith("device:");
-    const browserDetail = !device ? null : request.word === "browser.click" ? `在 ${plainText(request.body.site, 80)} 点击「${plainText(request.body.label, 60)}」`
-      : request.word === "browser.type" ? `在 ${plainText(request.body.site, 80)} 的「${plainText(request.body.label, 60)}」里输入：${plainText(request.body.text, 120)}${request.body.submit === true ? "，然后提交" : ""}` : null;
+    const browserDetail = !device ? null : request.word === "browser.click" || request.word === "browser.type" ? browserStepText(request.word.slice(8), request.body)
+      : request.word === "browser.run" && Array.isArray(request.body.steps)
+        ? request.body.steps.map((step, i) => `${i + 1}. ${browserStepText(plainObject(step) ? String(step.op) : "", plainObject(step) ? step : {})}`).join("\n") : null;
     const capability = endpoint.spec.label ?? request.word;
     const detail = browserDetail ?? (calendarAsk && device ? `在日历 ${String(request.body.calendar_id)} 添加“${eventTitle}”${startText}。` : `${capability}：${preview}`);
     return { title: calendarAsk && device ? "创建日历事件" : "需要你确认", detail };
@@ -787,7 +797,7 @@ export class WorldRouter {
     const objectPattern = offerAlways ? gateRulePattern(request.to!, request.word, request.body) : null;
     const capability = endpoint.spec.label ?? request.word;
     const alwaysLabel = request.word === "calendar.create" && target ? "30 天内允许这个日历"
-      : (request.word === "browser.click" || request.word === "browser.type") && target?.startsWith("site:") ? "30 天内允许在这个网站上这样操作"
+      : (request.word === "browser.click" || request.word === "browser.type" || request.word === "browser.run") && target?.startsWith("site:") ? "30 天内允许在这个网站上这样操作"
         : request.word === "message.send" && target ? "30 天内允许发给这个人"
           : target ? "30 天内允许同样的操作" : `30 天内都允许「${plainText(capability, 40)}」`;
     const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk ?? "none",

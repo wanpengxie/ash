@@ -19,6 +19,7 @@ class CapabilityPolicyTest {
             "device.status", "apps.list", "apps.info", "apps.usage", "settings.get", "screen.read", "screen.see",
             "screen.screenshot", "screen.touch_status", "shell.status", "vscreen.status", "vscreen.see", "calendar.search", "clipboard.get",
             "browser.read", "browser.open", "browser.scroll", "browser.back", "browser.screenshot", "browser.show", "browser.close",
+            "browser.spaces",
         )) assertEquals(n, "read", effect(n))
     }
 
@@ -27,6 +28,7 @@ class CapabilityPolicyTest {
             "apps.open", "intent.view", "settings.open", "input.key", "screen.tap", "screen.type", "screen.scroll", "screen.swipe",
             "screen.hold", "screen.touch", "screen.gesture", "screen.global_action", "vscreen.launch", "vscreen.tap",
             "vscreen.swipe", "vscreen.key", "vscreen.type", "vscreen.create", "vscreen.close", "clipboard.set", "browser.click", "browser.type",
+            "browser.run",
         )) assertEquals(n, "act", effect(n))
     }
 
@@ -34,6 +36,13 @@ class CapabilityPolicyTest {
         assertEquals("write", effect("calendar.create"))
         assertEquals("write", effect("settings.put"))
         assertEquals("execute", effect("shell.run"))
+    }
+
+    @Test fun aBrowserScriptIsOutwardAndSaysWhatItDoes() {
+        val run = CapabilityPolicies.require("browser.run")
+        assertEquals("outward", run.risk)
+        assertEquals("在浏览器里连续操作", run.label)
+        assertEquals("none", CapabilityPolicies.require("browser.spaces").risk)
     }
 
     @Test fun unknownEffectIsRejected() {

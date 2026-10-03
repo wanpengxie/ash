@@ -19,6 +19,7 @@ object Notifications {
     const val CH_MESSAGES = "ash.messages"
     const val CH_URGENT = "ash.urgent"
     const val CH_CONFIRM = "ash.confirm"
+    const val CH_BROWSING = "ash.browsing"
     const val ID_SERVICE = 1
 
     fun createChannels(ctx: Context) {
@@ -28,6 +29,7 @@ object Notifications {
         nm.createNotificationChannel(NotificationChannel(CH_MESSAGES, "Ash 的消息", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(CH_URGENT, "Ash 的紧急提醒", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel(CH_CONFIRM, "需要你确认", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(CH_BROWSING, "Ash 正在浏览", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
     }
 
     @Suppress("DEPRECATION")
@@ -116,9 +118,13 @@ object Notifications {
      * appears; elsewhere Android does not let a background app take the screen, so it is an urgent notification that
      * takes over a locked screen and is one tap away otherwise. Returns how it was shown.
      */
-    fun browserHandoff(ctx: Context, reason: String): String {
-        val intent = Intent(ctx, ai.ash.ui.BrowserActivity::class.java).putExtra("reason", reason)
+    private fun browserIntent(ctx: Context, space: String, reason: String?): Intent =
+        Intent(ctx, ai.ash.ui.BrowserActivity::class.java).putExtra(ai.ash.ui.BrowserActivity.EXTRA_SPACE, space)
+            .apply { if (reason != null) putExtra(ai.ash.ui.BrowserActivity.EXTRA_REASON, reason) }
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+    fun browserHandoff(ctx: Context, reason: String, space: String): String {
+        val intent = browserIntent(ctx, space, reason)
         if (AppState.inFront) {
             android.os.Handler(android.os.Looper.getMainLooper()).post { ctx.startActivity(intent) }
             return "in_front"
@@ -130,6 +136,27 @@ object Notifications {
             .setAutoCancel(true).build()
         ctx.getSystemService(NotificationManager::class.java).notify("browser-handoff", 0, n)
         return "notification"
+    }
+
+    /**
+     * While the agent's browser has a page open, one quiet ongoing notice names the latest page; tapping it shows that
+     * page so the owner can watch, take over or close it. Null [latest] (nothing open) removes it.
+     */
+    @Suppress("DEPRECATION")
+    fun browsing(ctx: Context, latest: ai.ash.host.browser.BrowserSession.Info?, open: Int) {
+        val manager = ctx.getSystemService(NotificationManager::class.java)
+        if (latest == null) { manager.cancel("browser-browsing", 0); return }
+        val page = latest.title.ifBlank { latest.site }
+        val text = if (latest.title.isBlank() || latest.site.isBlank()) page else "$page · ${latest.site}"
+        val tap = PendingIntent.getActivity(ctx, "browser-browsing".hashCode(), browserIntent(ctx, latest.id, null),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val b = builder(ctx, CH_BROWSING).setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("Ash 正在浏览").setContentText(text.ifBlank { "打开中…" })
+            .setContentIntent(tap).setOngoing(true).setOnlyAlertOnce(true).setShowWhen(false)
+            .setCategory(Notification.CATEGORY_STATUS)
+        if (open > 1) b.setSubText("$open 个页面")
+        if (Build.VERSION.SDK_INT < 26) b.setPriority(Notification.PRIORITY_LOW)
+        manager.notify("browser-browsing", 0, b.build())
     }
 
     fun hidePresent(ctx: Context, id: String) = ctx.getSystemService(NotificationManager::class.java).cancel("present:$id", 0)
