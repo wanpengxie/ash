@@ -223,6 +223,18 @@ export class DshHost {
 
   /** The worker's non-session llm service remains available without creating a model agent. */
   llm(): unknown { if (!this.ctx) throw new Error("DSH host not booted"); return this.ctx.get("llm"); }
+  /**
+   * False only when the selected provider is ash's DeepSeek default and no key can be resolved for it. Answering that case
+   * with a plain request for the key beats a turn that fails silently; other providers are not second-guessed here.
+   */
+  async modelKeyMissing(): Promise<boolean> {
+    if (!this.ctx || this.agentOptions()?.provider !== "deepseek-official") return false;
+    try {
+      const hit = await this.ctx.get("credentials")?.resolve("DEEPSEEK_API_KEY");
+      if (typeof hit?.value === "string" && hit.value) return false;
+    } catch { /* fall back to the environment, as DSH's own provider does */ }
+    return !process.env.DEEPSEEK_API_KEY;
+  }
   /** The DSH-world usage collector, present when the deployment ships the cost plugin. */
   cost(): DshUsageCollector | null { return this.collector; }
   /** Read prices from the model catalog shipped with this DSH install, never from a guessed rate table. */

@@ -19,6 +19,11 @@ class Secrets(ctx: Context) {
     val hostToken: String get() = token("host_token")
     val coreToken: String get() = token("core_token")
     val jevApiKey: String? get() = prefs.getString("jev_api_key", null)?.takeIf { it.isNotEmpty() }
+    /** The model provider key (DeepSeek). Typed in the app, kept only here, handed to the core as an environment variable. */
+    val modelApiKey: String? get() = prefs.getString("model_api_key", null)?.takeIf { it.isNotEmpty() }
+    fun saveModelApiKey(value: String): Boolean = prefs.edit().apply {
+        if (value.isEmpty()) remove("model_api_key") else putString("model_api_key", value)
+    }.commit()
     fun saveJevApiKey(value: String): Boolean = prefs.edit().apply {
         if (value.isEmpty()) remove("jev_api_key") else putString("jev_api_key", value)
     }.commit()
@@ -159,7 +164,8 @@ class CoreProcess(private val ctx: Context) {
             "npm_config_cache" to "${p.cache.path}/npm",
             "ANDROID_DATA" to (System.getenv("ANDROID_DATA") ?: "/data"),
             "ANDROID_ROOT" to (System.getenv("ANDROID_ROOT") ?: "/system"),
-        ) + (secrets.jevApiKey?.let { mapOf("OPENROUTER_API_KEY" to it) } ?: emptyMap())
+        ) + (secrets.jevApiKey?.let { mapOf("OPENROUTER_API_KEY" to it) } ?: emptyMap()) +
+            (secrets.modelApiKey?.let { mapOf("DEEPSEEK_API_KEY" to it) } ?: emptyMap())
     }
 
     fun command(): List<String> = listOf(

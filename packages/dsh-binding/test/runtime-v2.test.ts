@@ -93,7 +93,7 @@ test("runner uses followup once, waits for real idle outside listener, and suppr
   let followups = 0;
   let cancelled = 0;
   const events = (event: DshSessionEvent) => { for (const listener of listeners) listener("session-test", event); };
-  const host = { ctx: { get() { return undefined; } }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as DshHost;
+  const host = { ctx: { get() { return undefined; } }, async modelKeyMissing() { return false; }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as DshHost;
   const agent = { id: "root", followup(message: { id: string }) {
     followups++;
     events({ type: "user/message", data: { id: message.id } });
@@ -136,7 +136,7 @@ test("DSH session tool call and result enter the core ledger under the current t
   const router = new WorldRouter(ledger, () => true);
   const listeners = new Set<(id: string, event: DshSessionEvent) => void>();
   const events = (event: DshSessionEvent) => { for (const listener of listeners) listener("session-test", event); };
-  const host = { ctx: { get() { return undefined; } }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) {
+  const host = { ctx: { get() { return undefined; } }, async modelKeyMissing() { return false; }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) {
     listeners.add(listener); return () => listeners.delete(listener);
   } } as unknown as DshHost;
   const agent = { id: "root", followup(message: { id: string }) {

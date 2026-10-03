@@ -338,3 +338,30 @@ test("settings show usage by period and part of Ash, and an unreadable balance i
     assert.match(panel.find("settingsUsageStatus").textContent, /估算/);
   } finally { delete globalThis.document; delete globalThis.location; }
 });
+
+test("the model key goes to the native bridge only, is cleared from the field, and the page learns just whether it is set", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "https://appassets.androidplatform.net" };
+  const calls = [];
+  globalThis.__ashModelKey = async (operation, key) => { calls.push({ operation, key }); return { ok: true, configured: operation === "save" ? key !== "" : false }; };
+  try {
+    const panel = new Element("div");
+    const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
+      async request() { throw new Error("the model key must not use /api/send"); } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    const field = panel.find("settingsModelCredentialKey");
+    const section = panel.find("settingsModelCredential");
+    const button = (label) => section.children.find((item) => item.textContent === label);
+    button("检查状态").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(panel.find("settingsModelCredentialStatus").textContent, /未设置/);
+    field.value = "  sk-test-model-key  ";
+    button("保存 Key").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(field.value, "");
+    assert.deepEqual(calls, [{ operation: "status", key: undefined }, { operation: "save", key: "sk-test-model-key" }]);
+    assert.match(panel.find("settingsModelCredentialStatus").textContent, /已保存/);
+    assert.doesNotMatch(JSON.stringify(panel), /sk-test-model-key/);
+  } finally { delete globalThis.document; delete globalThis.location; delete globalThis.__ashModelKey; }
+});

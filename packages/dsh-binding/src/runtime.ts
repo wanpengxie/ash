@@ -222,6 +222,9 @@ export async function turnContent(host: DshHost, input: AgentTurnInput, attachme
 }
 
 /** The model has no clock; without this it runs a shell command just to learn the time. Stated afresh every turn. */
+/** Shown when a message arrives and no model key has been set. Plain words, and where to go. */
+export const NO_MODEL_KEY = "我还没有模型的 Key，现在没法回你。请打开 设置 → 模型 Key（DeepSeek），把 Key 填进去保存，我会自动重启，之后就能聊了。";
+
 export function clockLine(now: number): string {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const part = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-US", { timeZone: zone, ...options }).format(new Date(now));
@@ -256,6 +259,12 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     if (!session || this.busy) throw new Error("DSH session unavailable or still busy");
     if (signal.aborted) return { reason: "error", error: "turn cancelled before dispatch" };
     if (input.managedSnapshot) this.currentManagedPrompt = renderMainContext(input.managedSnapshot);
+    // Without a model key a turn would die inside DSH and the owner would see nothing at all.
+    if (await this.host.modelKeyMissing()) {
+      // Only an owner's own message earns the reply; the clock and the senses wake her without anyone waiting for an answer.
+      if (input.messages.some((message) => message.from === "person:owner")) await emit({ id: `${input.turn}:no-model-key`, text: NO_MODEL_KEY });
+      return { reason: "completed" };
+    }
     this.busy = true;
     // A stable one-to-one bridge from the durable core turn to DSH history.
     // An interrupted core turn is never re-followed-up after restart.

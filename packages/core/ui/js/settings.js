@@ -295,12 +295,14 @@ export class SettingsControls {
           : "账户余额暂时读不到（不是零）。";
       } catch { if (this.section === section) balanceLine.textContent = "账户余额暂时读不到（不是零）。"; }
     };
-    if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashJevKey === "function") {
-      const jevSection = document.createElement("section");
-      jevSection.id = "settingsJev";
-      jevSection.append(node("h2", "JEV Key"));
+    // A secret typed here goes straight to the phone's private storage. The page never gets it back, only "configured".
+    const secretSection = ({ id, title, bridge, unsetText, setText, savedText, removedText }) => {
+      if (globalThis.location?.origin !== "https://appassets.androidplatform.net" || typeof globalThis[bridge] !== "function") return;
+      const holder = document.createElement("section");
+      holder.id = id;
+      holder.append(node("h2", title));
       const key = document.createElement("input");
-      key.id = "settingsJevKey";
+      key.id = `${id}Key`;
       key.type = "password";
       key.placeholder = "输入新 Key；留空并保存可移除";
       key.autocomplete = "off";
@@ -308,33 +310,35 @@ export class SettingsControls {
       statusButton.type = "button";
       const saveKey = node("button", "保存 Key", "btn");
       saveKey.type = "button";
-      const jevStatus = node("p", "Key 仅保存在本机；保存后 Ash 自动重启。", "muted");
-      jevStatus.id = "settingsJevStatus";
-      jevStatus.setAttribute("role", "status");
+      const status = node("p", "Key 仅保存在本机；保存后 Ash 自动重启。", "muted");
+      status.id = `${id}Status`;
+      status.setAttribute("role", "status");
       statusButton.addEventListener("click", () => { void (async () => {
         try {
-          const result = await globalThis.__ashJevKey("status");
-          if (this.section === section) jevStatus.textContent = result.ok
-            ? result.configured ? "JEV Key 已设置。" : "JEV Key 未设置；目前只使用关键词判断。"
-            : "状态读取失败。";
-        } catch { if (this.section === section) jevStatus.textContent = "状态读取失败。"; }
+          const result = await globalThis[bridge]("status");
+          if (this.section === section) status.textContent = result.ok ? result.configured ? setText : unsetText : "状态读取失败。";
+        } catch { if (this.section === section) status.textContent = "状态读取失败。"; }
       })(); });
       saveKey.addEventListener("click", () => { void (async () => {
         const value = key.value.trim();
         key.value = "";
         saveKey.disabled = true;
-        jevStatus.textContent = "正在保存…";
+        status.textContent = "正在保存…";
         try {
-          const result = await globalThis.__ashJevKey("save", value);
-          if (this.section === section) jevStatus.textContent = result.ok
-            ? result.configured ? "已保存；Ash 正在重启以启用 JEV。" : "Key 已移除；Ash 正在重启。"
-            : "保存失败；请重试。";
-        } catch { if (this.section === section) jevStatus.textContent = "保存失败；请重试。"; }
+          const result = await globalThis[bridge]("save", value);
+          if (this.section === section) status.textContent = result.ok ? result.configured ? savedText : removedText : "保存失败；请重试。";
+        } catch { if (this.section === section) status.textContent = "保存失败；请重试。"; }
         finally { saveKey.disabled = false; }
       })(); });
-      jevSection.append(key, statusButton, saveKey, jevStatus);
-      section.append(jevSection);
-    }
+      holder.append(key, statusButton, saveKey, status);
+      section.append(holder);
+    };
+    secretSection({ id: "settingsModelCredential", title: "模型 Key（DeepSeek）", bridge: "__ashModelKey",
+      unsetText: "模型 Key 未设置；Ash 现在没有模型可用，填写后才能对话。", setText: "模型 Key 已设置。",
+      savedText: "已保存；Ash 正在重启，用这个 Key 对话。", removedText: "Key 已移除；Ash 正在重启，之后无法对话。" });
+    secretSection({ id: "settingsJev", title: "JEV Key", bridge: "__ashJevKey",
+      unsetText: "JEV Key 未设置；目前只使用关键词判断。", setText: "JEV Key 已设置。",
+      savedText: "已保存；Ash 正在重启以启用 JEV。", removedText: "Key 已移除；Ash 正在重启。" });
     if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashBrowserLogins === "function") {
       const browserSection = document.createElement("section");
       browserSection.id = "settingsBrowser";
