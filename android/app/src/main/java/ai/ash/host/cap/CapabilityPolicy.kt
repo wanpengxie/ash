@@ -48,7 +48,7 @@ object CapabilityPolicies {
         "vscreen.create" to CapabilityPolicy("structure", "act", "创建虚拟屏"),
         "vscreen.status" to CapabilityPolicy("none", "read", "看虚拟屏状态"),
         "vscreen.launch" to CapabilityPolicy("outward", "act", "在虚拟屏里打开应用"),
-        "vscreen.see" to CapabilityPolicy("none", "act", "看虚拟屏"),
+        "vscreen.see" to CapabilityPolicy("none", "read", "看虚拟屏"),
         "vscreen.tap" to CapabilityPolicy("outward", "act", "点虚拟屏"),
         "vscreen.swipe" to CapabilityPolicy("outward", "act", "滑动虚拟屏"),
         "vscreen.key" to CapabilityPolicy("outward", "act", "在虚拟屏按键"),

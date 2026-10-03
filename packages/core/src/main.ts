@@ -1,6 +1,6 @@
 // Production ash-api/2 entrypoint. The retired event writer is test-only.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,6 +115,14 @@ export async function startOwner(config: Config): Promise<Running> {
     // Persona and memory files live in the agent's own workspace, where the agent reads them like any file.
     const home = config.container.direct?.workspace ?? join(config.container.root, "ubuntu", "root", "work");
     mkdirSync(home, { recursive: true });
+    // Once, on the first start in the container: bring the persona, memory and files over from the old home.
+    const previous = config.workspaces?.home;
+    const moved = join(config.stateDir, "container-home-migrated");
+    if (previous && previous !== home && existsSync(previous) && !existsSync(moved)) {
+      cpSync(previous, home, { recursive: true, force: false, errorOnExist: false, verbatimSymlinks: true });
+      mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(moved, `${previous}\n`, { mode: 0o600 });
+    }
     config = { ...config, workspaces: { ...(config.workspaces ?? {}), home } };
   }
   if (agents[0].runtime === "dsh" && (!config.dsh?.root || !config.workspaces?.home || !existsSync(join(config.dsh.root, "package.json")) || !existsSync(config.workspaces.home))) {
