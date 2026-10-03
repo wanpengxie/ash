@@ -58,6 +58,25 @@ class FixedCoreClientTest {
         assertFails { client.execute(epoch, CoreUiRequest("GET", "/api/workspaces/home/files?path=notes.txt&extra=1")) }
     }
 
+    @Test fun vaultRouteAllowsOnlyListSaveAndRemove() {
+        val seen = mutableListOf<String>()
+        val client = FixedCoreClient(14763, { token }, CoreHttpTransport { request, _, _ ->
+            seen += "${request.method} ${request.url.path}"
+            CoreHttpReply(200, "application/json", "{\"ok\":true}".toByteArray())
+        })
+        val epoch = client.beginPage(true)
+        val json = mapOf("content-type" to "application/json")
+        client.execute(epoch, CoreUiRequest("GET", "/api/vault", json))
+        client.execute(epoch, CoreUiRequest("PUT", "/api/vault/DEEPSEEK_API_KEY", json, "{\"value\":\"x\"}".toByteArray()))
+        client.execute(epoch, CoreUiRequest("DELETE", "/api/vault/DEEPSEEK_API_KEY", json))
+        assertEquals(listOf("GET /api/vault", "PUT /api/vault/DEEPSEEK_API_KEY", "DELETE /api/vault/DEEPSEEK_API_KEY"), seen)
+        assertFails { client.execute(epoch, CoreUiRequest("PUT", "/api/vault", json, "{}".toByteArray())) }
+        assertFails { client.execute(epoch, CoreUiRequest("GET", "/api/vault/DEEPSEEK_API_KEY", json)) }
+        assertFails { client.execute(epoch, CoreUiRequest("PUT", "/api/vault/A/B", json, "{}".toByteArray())) }
+        assertFails { client.execute(epoch, CoreUiRequest("PUT", "/api/vault/A?x=1", json, "{}".toByteArray())) }
+        assertFails { client.execute(epoch, CoreUiRequest("PUT", "/api/vault/A", json, ByteArray(9000))) }
+    }
+
     @Test fun navigationAbortsAndDropsLateReply() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)

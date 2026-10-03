@@ -134,6 +134,12 @@ private fun coreRoute(input: CoreUiRequest): CoreRoute {
             headers.keys.all { it == "last-event-id" } -> CoreRoute(headers, url.rawQuery?.split('&')?.contains("follow=true") == true)
         Regex("/api/workspaces/[a-z0-9_-]+/files").matches(url.rawPath) && input.method == "GET" && input.body == null &&
             params == listOf("path") && headers.isEmpty() && validFilePath(url.rawQuery!!.substringAfter('=')) -> CoreRoute(emptyMap(), false)
+        // The vault door: list, save and remove a credential. A value goes in once and is never read back.
+        Regex("/api/vault(/[A-Za-z_][A-Za-z0-9_]{0,63})?").matches(url.rawPath) && url.rawQuery == null && "last-event-id" !in headers && when {
+            url.rawPath == "/api/vault" -> input.method == "GET" && input.body == null
+            input.method == "PUT" -> input.body != null && input.body.size <= 8192 && headers["content-type"] == "application/json"
+            else -> input.method == "DELETE" && input.body == null
+        } -> CoreRoute(headers, false)
         else -> throw IllegalArgumentException("unapproved core route")
     }
 }
