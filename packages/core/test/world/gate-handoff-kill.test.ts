@@ -34,7 +34,7 @@ async function marker(file: string): Promise<void> {
   throw new Error("commit barrier timeout");
 }
 
-for (const stage of ["answered-before-cas", "cas-before-handoff", "handoff-before-effect", "effect-after-fsync", "policy-after-handoff", "acl-after-handoff"] as const) {
+for (const stage of ["answered-before-cas", "cas-before-handoff", "handoff-before-effect", "effect-after-fsync", "policy-after-handoff"] as const) {
   test(`installed DSH ${stage.endsWith("-after-handoff") ? `effect-time ${stage}` : `SIGKILL at ${stage}`} never replays a synthetic committed effect`, { skip }, async () => {
     const root = mkdtempSync(join(tmpdir(), "ash-gate-handoff-"));
     mkdirSync(join(root, "home"));
@@ -108,7 +108,7 @@ for (const stage of ["answered-before-cas", "cas-before-handoff", "handoff-befor
       assert.equal(typeof ready.parentId, "string");
       assert.equal(typeof ready.askId, "string");
       const executionBarrier = stage === "handoff-before-effect" ? message(child, "barrier") : null;
-      const turnEnded = stage === "policy-after-handoff" ? message(child, "turn-ended") : stage === "acl-after-handoff" ? message(child, "access-asked") : null;
+      const turnEnded = stage === "policy-after-handoff" ? message(child, "turn-ended") : null;
       child.send({ type: "answer" });
       if (stage === "answered-before-cas" || stage === "cas-before-handoff")
         await marker(join(root, "commit-barrier"));
@@ -123,7 +123,7 @@ for (const stage of ["answered-before-cas", "cas-before-handoff", "handoff-befor
       else await bounded("synthetic effect", effectEntered.promise);
       assert.equal(effectCount, stage === "effect-after-fsync" ? 1 : 0,
         "a policy change after allowed-once but before tool execution reached the synthetic effect");
-      if (stage === "policy-after-handoff" || stage === "acl-after-handoff") return; // effect-time oracle, not crash replay
+      if (stage === "policy-after-handoff") return; // effect-time oracle, not crash replay
       child.kill("SIGKILL");
       await bounded("killed child", new Promise<void>((resolve) => child!.once("exit", () => resolve())));
       const callsAtKill = modelCalls;

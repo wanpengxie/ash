@@ -4,10 +4,11 @@ import Ajv2019 from "ajv/dist/2019.js";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
-import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordSpec } from "../../../sdk/src/api";
+import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordEffect, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema, schemaErrors } from "../../../sdk/src/schema";
-import { deviceWordSpec, optionReplyErrors, wordContract } from "../../../sdk/src/words";
-import { gateObject, Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
+import { deviceWordSpec, isWordEffect, optionReplyErrors, wordContract, wordEffect } from "../../../sdk/src/words";
+import type { ReviewFacts, Reviewer, ReviewVerdict } from "../review/reviewer";
+import { gateBodyDigest, gateRulePattern, gateTarget, Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
 type Transport = "web_ui" | "api" | "phone" | "agent" | "device" | "service";
 /** Constructed only after edge authentication and (for web_ui) screen-token verification. */
@@ -32,9 +33,11 @@ export interface DeviceCapability {
   input_schema: unknown;
   result_schema?: unknown;
   risk: "none" | "outward" | "structure";
+  effect?: WordEffect;
   label: string;
 }
 export interface GateDecision { allow: boolean; by?: "rule" | "answer" | "timeout"; reason?: string }
+export type ApprovalMode = "auto" | "always";
 export type GateHook = (request: Message, spec: WordSpec, caller: RequestContextSnapshot, signal: AbortSignal) => Promise<GateDecision>;
 export type RecoveryAuthorizer = (request: Message, caller: RequestContextSnapshot) => boolean | Promise<boolean>;
 /** Not a send envelope: only the bound DSH Door may construct this after pre-execute provenance. */
@@ -83,6 +86,16 @@ const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forb
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   transportPrincipal: ctx.transportPrincipal,
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
+const AGENT = /^agent:[A-Za-z0-9_-]+$/;
+/** Owner and agents may call device capabilities; the gate judges each action instead of a per-capability access list. */
+const deviceCaller = (from: string): boolean => from === "person:owner" || AGENT.test(from);
+const CARRY_MS = 5 * 60_000;
+const PAYMENT = /\b(pay|payment|purchase|checkout|transfer)\b|支付|付款|购买|下单|转账|充值|买单/i;
+/** Payments always reach the owner: no reviewer pass, no carry-over and no "always". */
+const isPayment = (word: string, label: string | undefined, body: Record<string, unknown>): boolean =>
+  PAYMENT.test(word.replace(/[._-]/g, " ")) || PAYMENT.test(label ?? "") ||
+  (word === "browser.click" && PAYMENT.test(String(body.label ?? "")));
+const plainText = (value: unknown, max: number) => String(value ?? "").replace(/[\p{C}\s]+/gu, " ").trim().slice(0, max);
 const askExpiry = (message: Pick<Message, "to" | "word" | "body">): number | null =>
   message.to === "person:owner" && message.word === "ask" && typeof message.body.expires_at === "number" && Number.isFinite(message.body.expires_at)
     ? Math.ceil(message.body.expires_at) : null;
@@ -115,6 +128,13 @@ export class WorldRouter {
   private gate: GateHook | null = null;
   private durableGate = false;
   private readonly internalApprovals = new Map<string, (outcome: InternalApprovalOutcome | "approved") => void>();
+  private reviewer: Reviewer | null = null;
+  private reviewTimeoutMs = 5_000;
+  private approvalMode: () => ApprovalMode = () => "auto";
+  /** In memory only: what was allowed in the last five minutes, by subject x word x object. */
+  private readonly carry = new Map<string, { until: number; reason: string }>();
+  /** Carry keys of agent requests waiting on an owner card, recorded when the owner allows. */
+  private readonly carryOnAllow = new Map<string, string>();
 
   constructor(readonly ledger: Ledger, private readonly authorizeRecovery: RecoveryAuthorizer) {}
 
@@ -233,6 +253,7 @@ export class WorldRouter {
       if (spec.timeout_ms !== undefined && (!Number.isSafeInteger(spec.timeout_ms) || spec.timeout_ms <= 0)) throw new TypeError("invalid endpoint timeout");
       if (spec.audience !== undefined && !["agent", "owner", "all"].includes(spec.audience)) throw new TypeError("invalid endpoint audience");
       if (spec.risk !== undefined && !["none", "outward", "structure"].includes(spec.risk)) throw new TypeError("invalid endpoint risk");
+      if (spec.effect !== undefined && !isWordEffect(spec.effect)) throw new TypeError("invalid endpoint effect");
       const validateInput = (value: unknown) => matchesSchema(spec.input_schema!, value);
       const validateResult = spec.result_schema ? (value: unknown) => matchesSchema(spec.result_schema!, value) : undefined;
       prepared.set(key, { ...endpoint, direction, spec, validateInput, validateResult });
@@ -286,6 +307,19 @@ export class WorldRouter {
   }
 
   setGate(gate: GateHook): void { this.gate = gate; }
+  /** The reviewer judges an agent's non-read action when no owner rule covers it; null means every such action asks. */
+  setReviewer(reviewer: Reviewer | null, options: { timeoutMs?: number } = {}): void {
+    this.reviewer = reviewer;
+    if (options.timeoutMs !== undefined) {
+      if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) throw new TypeError("invalid review timeout");
+      this.reviewTimeoutMs = options.timeoutMs;
+    }
+  }
+  /** "always" asks the owner for every non-read agent action that no owner rule covers. Read on every decision. */
+  setApprovalMode(mode: () => ApprovalMode): void { this.approvalMode = mode; }
+  private currentApprovalMode(): ApprovalMode {
+    try { return this.approvalMode() === "always" ? "always" : "auto"; } catch { return "always"; }
+  }
   /** Production gate is ledger-backed; fake GateHook remains only for isolated router tests. */
   enableDurableGate(): void {
     if (this.gate) throw new TypeError("cannot combine durable gate with fake gate hook");
@@ -461,14 +495,11 @@ export class WorldRouter {
     if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
-    // Without a device access grant an agent's request is not refused: the gate asks the owner for access first.
-    const needsAccess = this.durableGate && request.kind === "request" && Boolean(request.to?.startsWith("device:")) &&
-      !this.ledger.gateDeviceAccess(from, request.to!, request.word);
-    if (needsAccess && !(endpoint && /^agent:[A-Za-z0-9_-]+$/.test(from))) fail("forbidden", "current device access grant unavailable");
-    // A risky request and its owner approval share one persisted total budget.
-    // Explicit endpoint deadlines remain authoritative, even when shorter, except that an access card always gets the owner's full ten minutes.
-    const baseTimeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint?.spec.risk && endpoint.spec.risk !== "none" ? 600_000 : 60_000);
-    const timeoutMs = needsAccess ? Math.max(baseTimeoutMs, 600_000) : baseTimeoutMs;
+    // Agents need no separate device access grant; any other non-owner sender is still refused before acceptance.
+    if (this.durableGate && request.kind === "request" && request.to?.startsWith("device:") && !deviceCaller(from))
+      fail("forbidden", "device capabilities take requests only from the owner and agents");
+    // A gated request and its owner approval share one persisted total budget. Explicit endpoint deadlines remain authoritative, even when shorter.
+    const timeoutMs = endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint && wordEffect(endpoint.spec) !== "read" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
     const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
@@ -616,6 +647,10 @@ export class WorldRouter {
     this.publish(outcome.askResponse);
     if (outcome.event) this.publish(outcome.event);
     const originalId = this.ledger.gateCaseByAsk(pending.request.id)!.requestId;
+    const carryKey = this.carryOnAllow.get(originalId);
+    this.carryOnAllow.delete(originalId);
+    if (carryKey && cause === "answer" && choice !== "deny" && outcome.event?.word === "gate.passed")
+      this.remember(carryKey, "你几分钟前刚允许过同样的操作");
     const internal = this.internalApprovals.get(originalId);
     if (internal) internal(cause === "cancelled" ? "cancelled" : cause === "deadline" ? "unavailable"
       : choice === "deny" ? "rejected" : "approved");
@@ -648,73 +683,163 @@ export class WorldRouter {
     this.finish(pending, this.deadlineBody(pending), pending.request.to!, true);
   }
 
+  /** What the action does, in full: a command reads best on its own, every other argument that changes the effect stays visible. */
+  private actionText(request: Message): string {
+    const { command, ...rest } = request.body as { command?: unknown };
+    return request.word === "shell.run" && typeof command === "string"
+      ? `${command}${Object.keys(rest).length ? `\n${JSON.stringify(rest)}` : ""}` : JSON.stringify(request.body);
+  }
+
+  /** The plain card written from the request itself; also what the owner sees when the reviewer is unavailable. */
+  private defaultCard(request: Message, endpoint: Registered): { title: string; detail: string } {
+    const calendarAsk = request.word === "calendar.create" && Number.isSafeInteger(request.body.calendar_id) &&
+      (request.body.calendar_id as number) > 0;
+    const eventTitle = typeof request.body.title === "string" ? request.body.title.slice(0, 100) : "未命名事件";
+    const eventStart = request.body.start_ms;
+    const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
+      ? `，${new Date(eventStart).toLocaleString("zh-CN", { month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" })} 开始` : "";
+    // A cut is marked so nothing hides past the edge of the card.
+    const shown = this.actionText(request);
+    const preview = shown.length > 500 ? `${shown.slice(0, 500)}…（共 ${shown.length} 字，未显示部分同样会执行）` : shown;
+    const device = request.to!.startsWith("device:");
+    const browserDetail = !device ? null : request.word === "browser.click" ? `在 ${plainText(request.body.site, 80)} 点击「${plainText(request.body.label, 60)}」`
+      : request.word === "browser.type" ? `在 ${plainText(request.body.site, 80)} 的「${plainText(request.body.label, 60)}」里输入：${plainText(request.body.text, 120)}${request.body.submit === true ? "，然后提交" : ""}` : null;
+    const capability = endpoint.spec.label ?? request.word;
+    const detail = browserDetail ?? (calendarAsk && device ? `在日历 ${String(request.body.calendar_id)} 添加“${eventTitle}”${startText}。` : `${capability}：${preview}`);
+    return { title: calendarAsk && device ? "创建日历事件" : "需要你确认", detail };
+  }
+
+  /** Same subject x word x object. Operating the phone carries over per target; anything else only for the exact same request. */
+  private carryKey(pending: Pending, subject: string, effect: WordEffect): string | null {
+    const { request, endpoint } = pending;
+    if (effect === "execute" || isPayment(request.word, endpoint.spec.label, request.body)) return null;
+    const object = effect === "act" ? gateRulePattern(request.to!, request.word, request.body) : `exact:${gateBodyDigest(request.body)}`;
+    return `${subject}\0${request.to}/${request.word}\0${hash(endpoint.spec)}\0${object}`;
+  }
+
+  private remember(key: string, reason: string): void {
+    const now = Date.now();
+    for (const [stored, entry] of this.carry) if (entry.until <= now) this.carry.delete(stored);
+    this.carry.set(key, { until: now + CARRY_MS, reason });
+  }
+
+  /**
+   * After owner rules: mode, carry-over, reviewer. Only an agent's request is judged here; null means it settled meanwhile.
+   * A reviewer that fails, stalls or is missing never passes anything: the owner is asked.
+   */
+  private async judge(pending: Pending, subject: string, effect: WordEffect): Promise<{ passed: true } | { passed: false; verdict?: ReviewVerdict } | null> {
+    const { request, endpoint } = pending;
+    if (!AGENT.test(request.from) || this.currentApprovalMode() === "always") return { passed: false };
+    const risk = endpoint.spec.risk ?? "none";
+    const key = this.carryKey(pending, subject, effect);
+    const carried = key ? this.carry.get(key) : undefined;
+    if (carried && carried.until > Date.now()) {
+      const event = this.ledger.passGate(request.id, subject, "carry", carried.reason, risk);
+      if (event) { pending.phase = "dispatching"; this.publish(event); return { passed: true }; }
+      return pending.settled ? null : { passed: false };
+    }
+    const reviewer = this.reviewer;
+    if (!reviewer || effect === "execute" || isPayment(request.word, endpoint.spec.label, request.body)) return { passed: false };
+    const target = gateTarget(request.to!, request.word, request.body);
+    const { ownerSaid, steps } = this.ledger.turnFacts(request.turn, request.from, request.seq);
+    const facts: ReviewFacts = { requester: request.from, owner_said: ownerSaid,
+      action: { member: request.to!, word: request.word, label: endpoint.spec.label ?? request.word, effect, ...(target ? { target } : {}) },
+      content: this.actionText(request), context: steps };
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    pending.controller.signal.addEventListener("abort", stop, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let verdict: ReviewVerdict | null = null;
+    try {
+      verdict = await Promise.race([reviewer(detached(facts), controller.signal),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("review timed out")); }, this.reviewTimeoutMs); })]);
+      if (!verdict || (verdict.decision !== "allow" && verdict.decision !== "ask") || typeof verdict.reason !== "string") verdict = null;
+    } catch { verdict = null; }
+    finally { if (timer) clearTimeout(timer); pending.controller.signal.removeEventListener("abort", stop); }
+    if (pending.settled) return null;
+    if (verdict?.decision !== "allow") return { passed: false, ...(verdict ? { verdict } : {}) };
+    // The review took time: authority and the route are checked again right before the pass commits.
+    const stillAuthorized = await this.currentlyAuthorized(request, pending.context);
+    if (pending.settled) return null;
+    if (!stillAuthorized || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body)) {
+      this.finish(pending, errors("forbidden", "risk request authority changed during review"), request.to!, false); return null;
+    }
+    const event = this.ledger.passGate(request.id, subject, "review", verdict.reason.trim() || "判断为可以直接做", risk);
+    if (!event) return pending.settled ? null : { passed: false };
+    pending.phase = "dispatching";
+    this.publish(event);
+    if (effect === "act" && key) this.remember(key, `刚判断过同样的操作可以直接做：${verdict.reason.trim().slice(0, 200)}`);
+    return { passed: true };
+  }
+
+  /** The owner card: the reviewer's words when it asked, the plain card otherwise; the exact action is always on it. */
+  private askOwner(pending: Pending, identity: { subject: string; fingerprint: string }, effect: WordEffect, verdict?: ReviewVerdict): void {
+    const { request, endpoint } = pending;
+    const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
+    const plain = this.defaultCard(request, endpoint);
+    const reviewed = verdict?.decision === "ask";
+    const title = reviewed && verdict.title?.trim() ? plainText(verdict.title, 40) : plain.title;
+    const reviewerDetail = reviewed && verdict.detail?.trim() ? verdict.detail.trim().slice(0, 600) : "";
+    const detail = reviewerDetail ? (reviewerDetail.includes(plain.detail) ? reviewerDetail : `${reviewerDetail}\n${plain.detail}`) : plain.detail;
+    // "Always" is never offered for running commands or payments; elsewhere it covers the target, or the capability when there is none.
+    const offerAlways = effect !== "execute" && !isPayment(request.word, endpoint.spec.label, request.body);
+    const target = gateTarget(request.to!, request.word, request.body);
+    const objectPattern = offerAlways ? gateRulePattern(request.to!, request.word, request.body) : null;
+    const capability = endpoint.spec.label ?? request.word;
+    const alwaysLabel = request.word === "calendar.create" && target ? "30 天内允许这个日历"
+      : (request.word === "browser.click" || request.word === "browser.type") && target?.startsWith("site:") ? "30 天内允许在这个网站上这样操作"
+        : request.word === "message.send" && target ? "30 天内允许发给这个人"
+          : target ? "30 天内允许同样的操作" : `30 天内都允许「${plainText(capability, 40)}」`;
+    const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk ?? "none",
+      contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
+      askBody: { title, detail,
+        options: [{ id: "once", label: "允许这一次" }, ...(objectPattern ? [{ id: "always" as const, label: alwaysLabel }] : []), { id: "deny", label: "不允许" }],
+        source: { word: request.word, to: request.to!, body_preview: plain.detail } } });
+    if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
+    pending.phase = "gate_waiting";
+    const key = AGENT.test(request.from) ? this.carryKey(pending, identity.subject, effect) : null;
+    if (key) {
+      if (this.carryOnAllow.size > 1000) this.carryOnAllow.delete(this.carryOnAllow.keys().next().value!);
+      this.carryOnAllow.set(request.id, key);
+    }
+    this.publish(started.ask);
+    this.publish(started.event);
+    this.activateGateAsk(started.ask);
+  }
+
   private async dispatch(pending: Pending, recovered: boolean): Promise<void> {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
       const gateBypass = request.from === "person:owner";
-      const needsAccess = this.durableGate && pending.phase === "accepted" && Boolean(request.to?.startsWith("device:")) &&
-        /^agent:[A-Za-z0-9_-]+$/.test(request.from) && !this.ledger.gateDeviceAccess(request.from, request.to!, request.word);
-      if (this.durableGate && pending.phase === "accepted" && ((endpoint.spec.risk && endpoint.spec.risk !== "none") || needsAccess) && !gateBypass) {
+      const effect = wordEffect(endpoint.spec);
+      if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;
         if (!currentAuthority || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body) ||
-          (request.to?.startsWith("device:") && !needsAccess && !this.ledger.gateDeviceAccess(request.from, request.to, request.word))) {
+          (request.to?.startsWith("device:") && !deviceCaller(request.from))) {
           this.finish(pending, errors("forbidden", "risk request authority changed before gate"), request.to!, false); return;
         }
         if (!pending.context.transportPrincipal || !this.endpoint("person:owner", "ask")) {
           this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
         }
         const identity = this.gateIdentity(pending);
-        const objectPattern = needsAccess ? null : gateObject(request.to!, request.word, request.body);
-        const ruleEvent = objectPattern ? this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint, objectPattern) : null;
+        // Owner rules ("always", 30 days) come first; then mode, carry-over and the reviewer, for agents only.
+        const ruleEvent = this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint);
         if (ruleEvent) {
           pending.phase = "dispatching";
           this.publish(ruleEvent);
         } else {
-        const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
-        const calendarAsk = request.word === "calendar.create" && Number.isSafeInteger(request.body.calendar_id) &&
-          (request.body.calendar_id as number) > 0;
-        const eventTitle = typeof request.body.title === "string" ? request.body.title.slice(0, 100) : "未命名事件";
-        const eventStart = request.body.start_ms;
-        const startText = typeof eventStart === "number" && Number.isFinite(new Date(eventStart).getTime())
-          ? `，${new Date(eventStart).toLocaleString("zh-CN", { month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" })} 开始` : "";
-        // A command reads best on its own, but every other argument that changes the effect (stdin, cwd…) stays visible,
-        // and a cut is marked so nothing hides past the edge of the card.
-        const { command, ...rest } = request.body as { command?: unknown };
-        const shown = request.word === "shell.run" && typeof command === "string"
-          ? `${command}${Object.keys(rest).length ? `\n${JSON.stringify(rest)}` : ""}` : JSON.stringify(request.body);
-        const preview = shown.length > 500 ? `${shown.slice(0, 500)}…（共 ${shown.length} 字，未显示部分同样会执行）` : shown;
-        const plain = (value: unknown, max: number) => String(value ?? "").replace(/[\p{C}\s]+/gu, " ").trim().slice(0, max);
-        const browserDetail = request.word === "browser.click" ? `在 ${plain(request.body.site, 80)} 点击「${plain(request.body.label, 60)}」`
-          : request.word === "browser.type" ? `在 ${plain(request.body.site, 80)} 的「${plain(request.body.label, 60)}」里输入：${plain(request.body.text, 120)}${request.body.submit === true ? "，然后提交" : ""}` : null;
-        const capability = endpoint.spec.label ?? request.word;
-        const risky = Boolean(endpoint.spec.risk && endpoint.spec.risk !== "none");
-        const detail = browserDetail && request.to!.startsWith("device:") ? browserDetail : calendarAsk && !needsAccess ? `在日历 ${objectPattern} 添加“${eventTitle}”${startText}。`
-          : needsAccess && Object.keys(request.body).length === 0 ? `第一次用到这项手机能力：${capability}。`
-          : `${capability}：${preview}`;
-        const started = this.ledger.beginGate(request.id, { subject: identity.subject, risk: endpoint.spec.risk ?? "none",
-          contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
-          ...(needsAccess ? { accessScope: `${request.to}/${request.word}` } : {}),
-          askBody: { title: needsAccess ? "允许使用这项手机能力吗？" : calendarAsk ? "创建日历事件" : "需要你确认", detail,
-            options: [{ id: "once", label: "允许这一次" }, { id: "always", label: needsAccess
-              ? `30 天内允许「${capability}」${risky ? "（有风险的操作仍会每次问你）" : ""}` : calendarAsk
-              ? "30 天内允许这个日历" : browserDetail && request.to!.startsWith("device:") ? "30 天内允许在这个网站上这样操作" : "30 天内允许同样的操作" },
-              { id: "deny", label: "不允许" }],
-            source: { word: request.word, to: request.to!, body_preview: detail } } });
-        if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
-        pending.phase = "gate_waiting";
-        this.publish(started.ask);
-        this.publish(started.event);
-        this.activateGateAsk(started.ask);
-        return;
+          const judged = await this.judge(pending, identity.subject, effect);
+          if (judged === null || pending.settled) return;
+          if (!judged.passed) { this.askOwner(pending, identity, effect, judged.verdict); return; }
         }
       }
-      if (!this.durableGate && request.from !== "person:owner" && pending.phase === "accepted" && endpoint.spec.risk && endpoint.spec.risk !== "none") {
+      if (!this.durableGate && request.from !== "person:owner" && pending.phase === "accepted" && effect !== "read") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";
-        this.gateEvent("gate.asked", { request_id: request.id, risk: endpoint.spec.risk });
+        this.gateEvent("gate.asked", { request_id: request.id, risk: endpoint.spec.risk ?? "none" });
         const decision = await this.gate(detached(request), detached(endpoint.spec), detached(pending.context), pending.controller.signal);
         if (pending.settled) return;
         const by = decision.allow ? (decision.by === "rule" ? "rule" : "answer") : (decision.by === "timeout" ? "timeout" : "answer");
@@ -736,9 +861,8 @@ export class WorldRouter {
         pending.phase = "dispatching";
       }
       if (pending.settled) return;
-      if (this.durableGate && request.to?.startsWith("device:") &&
-        !this.ledger.gateDeviceAccess(request.from, request.to, request.word) && !this.ledger.gateAccessAnswered(request.id)) {
-        this.finish(pending, errors("forbidden", "device access changed before effect"), request.to, false); return;
+      if (this.durableGate && request.to?.startsWith("device:") && !deviceCaller(request.from)) {
+        this.finish(pending, errors("forbidden", "device caller not allowed"), request.to, false); return;
       }
       if (pending.phase === "accepted" || pending.phase === "gate_waiting") {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
@@ -871,9 +995,8 @@ export class WorldRouter {
         this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
         continue;
       }
-      if (this.durableGate && message.to?.startsWith("device:") &&
-        !this.ledger.gateDeviceAccess(message.from, message.to, message.word)) {
-        this.publish(this.ledger.settle(message.id, message.to, errors("forbidden", "device access unavailable after restart")).message);
+      if (this.durableGate && message.to?.startsWith("device:") && !deviceCaller(message.from)) {
+        this.publish(this.ledger.settle(message.id, message.to, errors("forbidden", "device caller not allowed after restart")).message);
         continue;
       }
       // Screen registrations are process-local. An old screenId plus a still-valid

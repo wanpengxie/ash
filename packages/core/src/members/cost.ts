@@ -29,7 +29,7 @@ export interface CostOptions {
   now?: () => number;
 }
 
-const SCOPES = new Set(["chat", "mind", "background", "title", "compaction", "other"]);
+const SCOPES = new Set(["chat", "mind", "background", "title", "compaction", "review", "other"]);
 
 /**
  * The showing half of ash's cost centre. The DSH-world plugin measures every model call; this member prices it from the

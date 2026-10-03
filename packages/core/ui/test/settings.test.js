@@ -117,6 +117,41 @@ test("quiet hours load and save only after a paired local settings reply", async
   } finally { delete globalThis.document; }
 });
 
+test("the approval page shows the two modes, saves a choice only after a paired reply, and the row says which is on", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    const sent = [];
+    let confirm = true;
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request(_path, init) {
+        const wire = JSON.parse(init.body);
+        sent.push(wire);
+        const result = wire.word === "settings.get" ? { delivery: { quiet: "22:00-08:00" }, approval: { mode: "auto" } }
+          : { approval: { mode: confirm ? wire.body.approval.mode : "auto" } };
+        return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
+          from: "service:admin", to: "person:owner", word: wire.word, body: { ok: true, result } } }), { status: 200 });
+      } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsApprovalRow").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsApproval_auto").children[1].textContent, "✓");
+    assert.equal(panel.find("settingsApproval_always").children[1].textContent, "");
+    assert.match(panel.find("settingsApproval_auto").children[0].children[1].textContent, /先问你/);
+    panel.find("settingsApproval_always").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.map((item) => [item.word, item.body]), [["settings.get", {}], ["settings.set", { approval: { mode: "always" } }]]);
+    assert.equal(panel.find("settingsApproval_always").children[1].textContent, "✓");
+    assert.equal(panel.find("settingsApprovalRow").sub.textContent, "每次都问");
+    assert.equal(panel.find("settingsApprovalStatus").textContent, "已保存。");
+    confirm = false;
+    panel.find("settingsApproval_always").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsApprovalStatus").textContent, "保存未确认，请重试。");
+  } finally { delete globalThis.document; }
+});
+
 test("local settings switches an installed DSH plugin and refreshes its actual state", async () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
   try {

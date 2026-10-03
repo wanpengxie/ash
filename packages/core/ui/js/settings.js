@@ -53,7 +53,7 @@ function armed(control, label, confirmLabel, onWarn, run) {
   });
 }
 
-const SCOPE_NAMES = { chat: "对话", mind: "内心整理", background: "后台任务", title: "起标题", compaction: "压缩历史", other: "其他" };
+const SCOPE_NAMES = { chat: "对话", mind: "内心整理", background: "后台任务", title: "起标题", compaction: "压缩历史", review: "审批判断", other: "其他" };
 const KEYS = [
   { ref: "DEEPSEEK_API_KEY", title: "DeepSeek Key", use: "用于：对话模型", hint: "没有它，Ash 无法对话。" },
   { ref: "OPENROUTER_API_KEY", title: "OpenRouter Key", use: "用于：快速判断（JEV 模型）", hint: "没有它，快速判断只能靠关键词。" },
@@ -218,6 +218,7 @@ export class SettingsControls {
     if (android) capability.push(navRow("settingsConsole", "shield", "手机权限", "通知、无障碍、后台运行，以及诊断", null, "ash://console"));
     const quietRow = navRow("settingsQuietRow", "moon", "免打扰", "这段时间不主动找你", () => quietPage.open());
     const proactiveRow = navRow("settingsProactiveRow", "chat", "主动联系", `${name} 什么时候可以主动找你`, () => proactivePage.open());
+    const approvalRow = navRow("settingsApprovalRow", "shield", "审批", `${name} 做事前什么时候先问你`, () => approvalPage.open());
 
     const pauseCard = document.createElement("div");
     pauseCard.id = "settingsPauseCard";
@@ -264,7 +265,7 @@ export class SettingsControls {
     pauseCard.append(pauseTitle, pauseText, pause, resume, confirmation, feedback);
 
     const devRow = navRow("settingsDevRow", "code", "开发者选项", "主模型、DSH 插件", () => devPage.open());
-    home.append(usageCard, group(`${name} 能用的`, ...capability), group("相处方式", quietRow, proactiveRow), pauseCard, group("其他", devRow));
+    home.append(usageCard, group(`${name} 能用的`, ...capability), group("相处方式", quietRow, proactiveRow, approvalRow), pauseCard, group("其他", devRow));
     usageCard.addEventListener("click", () => usagePage.open());
 
     // ---- Usage
@@ -563,6 +564,62 @@ export class SettingsControls {
     })(); });
     quietPage.append(range, save, quietStatus);
 
+    // ---- Approval: one choice, how often she asks before acting.
+    const APPROVAL_MODES = [
+      { mode: "auto", title: "有影响时才问", sub: `替你对外发消息、删改你的数据、花钱或执行命令前先问你；看、找、打开这类可撤回的事 ${name} 直接做。` },
+      { mode: "always", title: "每次都问", sub: `除了看和读，${name} 每做一件事都先问你。` },
+    ];
+    const approvalPage = page("settingsApproval", "审批",
+      `你选过「以后都允许」的事照常直接做；在 ${name} 的人物页里能看到每次是怎么决定的。`, () => loadApproval());
+    const approvalStatus = node("p", "", "set-status");
+    approvalStatus.id = "settingsApprovalStatus";
+    approvalStatus.setAttribute("role", "status");
+    const approvalChoices = APPROVAL_MODES.map(({ mode, title, sub }) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.id = `settingsApproval_${mode}`;
+      row.className = "set-row";
+      row.approvalMode = mode;
+      const text = document.createElement("span");
+      text.className = "set-text";
+      text.append(node("span", title, "set-title"), node("span", sub, "set-sub"));
+      const mark = node("span", "", "set-value");
+      row.append(text, mark);
+      row.mark = mark;
+      row.addEventListener("click", () => { void saveApproval(mode); });
+      return row;
+    });
+    const showApproval = (mode) => {
+      for (const row of approvalChoices) {
+        const chosen = row.approvalMode === mode;
+        row.mark.textContent = chosen ? "✓" : "";
+        row.setAttribute("aria-pressed", String(chosen));
+      }
+      approvalRow.sub.textContent = mode === "always" ? "每次都问" : "有影响时才问";
+    };
+    const loadApproval = async () => {
+      approvalStatus.textContent = "正在读取…";
+      try {
+        const reply = await requestSetting("settings.get", {});
+        const mode = reply?.ok === true ? reply.result?.approval?.mode : null;
+        if (mode !== "auto" && mode !== "always") throw new Error("unavailable");
+        showApproval(mode);
+        approvalStatus.textContent = "";
+      } catch { if (live()) approvalStatus.textContent = "读取失败，请返回后重试。"; }
+    };
+    const saveApproval = async (mode) => {
+      for (const row of approvalChoices) row.disabled = true;
+      approvalStatus.textContent = "正在保存…";
+      try {
+        const reply = await requestSetting("settings.set", { approval: { mode } });
+        if (reply?.ok !== true || reply.result?.approval?.mode !== mode) throw new Error("unconfirmed");
+        showApproval(mode);
+        approvalStatus.textContent = "已保存。";
+      } catch { if (live()) approvalStatus.textContent = "保存未确认，请重试。"; }
+      finally { for (const row of approvalChoices) row.disabled = false; }
+    };
+    approvalPage.append(group("", ...approvalChoices), approvalStatus);
+
     // ---- Proactive preferences
     const proactivePage = page("settingsProactivePage", "主动联系",
       `告诉 ${name} 什么时候可以主动找你、哪些事值得说。用平常的话写就行。`, () => this.preferences?.load());
@@ -665,6 +722,8 @@ export class SettingsControls {
         showQuiet(quiet);
       }
       if (settings?.ok === true && typeof settings.result?.paused === "boolean") showPaused(settings.result.paused);
+      const approvalMode = settings?.ok === true ? settings.result?.approval?.mode : null;
+      if (approvalMode === "auto" || approvalMode === "always") showApproval(approvalMode);
       if (usage?.ok === true) showUsage(usage.result);
       else usageMore.textContent = "用量暂时读不到";
       if (vault) {

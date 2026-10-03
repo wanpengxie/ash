@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Connection, DeviceKey, GatewayClient } from "ash-gateway/client/client";
 import { b64u, fromB64u, LIMITS, type Permission, PERMISSIONS, randomToken, shortFingerprint } from "ash-gateway/src/protocol";
 import type { CallResult, CapabilitySpec, DeviceKind } from "../../../sdk/src/api";
+import { isWordEffect } from "../../../sdk/src/words";
 import { DeviceMember } from "../members/device";
 import type { EdgeCaller, EdgeResponse, EdgeRouter } from "../server";
 import type { DeviceCapability } from "../world/router";
@@ -26,7 +27,9 @@ export function borrowedCapabilities(raw: unknown[], deviceName: unknown): Devic
     if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
       throw new TypeError("invalid remote capability");
     const name = cap.name.replace(/[\p{C}\s]+/gu, " ").trim().slice(0, 80);
-    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, label: `在${device}上用 ${name}` };
+    // A lent effect is believed only when it is not a read: another device can never make a call look harmless.
+    const effect = cap.risk === "none" ? "read" as const : isWordEffect(cap.effect) && cap.effect !== "read" ? cap.effect : "write" as const;
+    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, effect, label: `在${device}上用 ${name}` };
   });
 }
 

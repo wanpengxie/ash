@@ -14,14 +14,6 @@ const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", t
 const screen: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "owner-principal",
   local: true, remote: false, ownerProxy: true, screenId: "screen:approved", screenLabel: "Test screen" };
 
-function grant(ledger: Ledger, scope: string): void {
-  const request = ledger.append({ from: "person:owner", to: "service:gate", kind: "request", word: "access.grant",
-    body: { member: "agent:main", scope } }, undefined, { deadlineAt: Date.now() + 60_000,
-    context: { member: "person:owner", local: true, remote: false, ownerProxy: true, transportPrincipal: "owner-principal" } }).message;
-  assert.equal(ledger.advanceRequest(request.id, "accepted", "dispatching"), true);
-  ledger.gateAccessGrant(request.id, "agent:main", scope);
-}
-
 async function setup(authorize: () => boolean | Promise<boolean> = () => true) {
   const file = join(mkdtempSync(join(tmpdir(), "ash-gate-router-")), "ash.db");
   const ledger = await Ledger.open(file);
@@ -32,7 +24,6 @@ async function setup(authorize: () => boolean | Promise<boolean> = () => true) {
     input_schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"], additionalProperties: false },
     result_schema: { type: "object", properties: { done: { type: "boolean" } }, required: ["done"], additionalProperties: false } },
     handle: () => { effects++; return { ok: true, result: { done: true } }; } });
-  grant(ledger, "device:fake/run");
   router.enableDurableGate();
   return { ledger, router, effects: () => effects };
 }
@@ -75,8 +66,6 @@ test("risky requests persist one total deadline: default 600s, explicit 90s and 
   for (const [word, timeout_ms] of [["short", 90_000], ["long", 900_000]] as const)
     router.register({ member: "device:fake", spec: { word, kind: "request", risk: "outward", timeout_ms,
       description: "Synthetic timed effect", input_schema: { type: "object", additionalProperties: false } }, handle: () => assert.fail("unapproved effect") });
-  grant(ledger, "device:fake/short");
-  grant(ledger, "device:fake/long");
   try {
     for (const [word, total, ask] of [["run", 600_000, 600_000], ["short", 90_000, 90_000], ["long", 900_000, 600_000]] as const) {
       const sent = await router.send(agent, { to: "device:fake", kind: "request", word, body: word === "run" ? { n: 1 } : {} });
@@ -107,52 +96,24 @@ test("durable gate waits for owner choice then runs one synthetic effect", async
   } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
 });
 
-test("a fresh agent is never refused silently: its first use of a capability asks the owner for access", async () => {
+test("an agent needs no device access grant: its risky call gets the ordinary card, other senders are still refused", async () => {
   const { ledger, router, effects } = await setup();
   try {
-    const ungranted = { ...agent, member: "agent:other", transportPrincipal: "agent:other" };
-    const answer = async (askId: string, choice: "once" | "always" | "deny", client: string) => {
-      await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId,
-        body: { ok: true, result: { choice } }, client_id: client });
-      for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
-    };
-    const ask = async () => {
-      const sent = await router.send(ungranted, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
-      await new Promise((resolve) => setImmediate(resolve));
-      const gate = ledger.gateCase(sent.id)!;
-      assert.equal(gate.accessScope, "device:fake/run");
-      const card = ledger.byId(gate.askId)!;
-      assert.equal(card.body.title, "允许使用这项手机能力吗？");
-      assert.deepEqual((card.body.options as { id: string }[]).map((option) => option.id), ["once", "always", "deny"]);
-      return { sent, gate };
-    };
-    // Once: this call runs, and nothing is remembered.
-    const first = await ask();
-    assert.equal(effects(), 0);
-    await answer(first.gate.askId, "once", "access-once");
-    assert.equal(effects(), 1);
-    assert.equal(ledger.responseTo(first.sent.id)?.body.ok, true);
-    assert.equal(ledger.gateDeviceAccess("agent:other", "device:fake", "run"), false);
-    // Deny: nothing runs.
-    const second = await ask();
-    await answer(second.gate.askId, "deny", "access-deny");
-    assert.equal(effects(), 1);
-    assert.equal(ledger.responseTo(second.sent.id)?.body.ok, false);
-    // Always: this call runs and the exact capability is granted for 30 days, and the grant shows in the access list.
-    const third = await ask();
-    await answer(third.gate.askId, "always", "access-always");
-    assert.equal(effects(), 2);
-    assert.equal(ledger.gateDeviceAccess("agent:other", "device:fake", "run"), true);
-    const listed = ledger.gateAccessPage().items.find((item) => item.member === "agent:other");
-    assert.equal(listed?.scope, "device:fake/run");
-    assert.ok(listed!.expires_at - listed!.created_at === 30 * 24 * 60 * 60_000);
-    // Access never waives risk: the next risky call still gets an ordinary approval card, not another access card.
-    const fourth = await router.send(ungranted, { to: "device:fake", kind: "request", word: "run", body: { n: 2 } });
+    assert.equal(ledger.gateAccessPage().items.length, 0);
+    const other = { ...agent, member: "agent:other", transportPrincipal: "agent:other" };
+    const sent = await router.send(other, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } });
     await new Promise((resolve) => setImmediate(resolve));
-    const risk = ledger.gateCase(fourth.id)!;
-    assert.equal(risk.accessScope, undefined);
-    assert.equal(ledger.byId(risk.askId)!.body.title, "需要你确认");
-    // Only agents are asked; any other sender without access is still refused before acceptance.
+    const gate = ledger.gateCase(sent.id)!;
+    const card = ledger.byId(gate.askId)!;
+    assert.equal(card.body.title, "需要你确认");
+    assert.deepEqual((card.body.options as { id: string }[]).map((option) => option.id), ["once", "always", "deny"]);
+    await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: gate.askId,
+      body: { ok: true, result: { choice: "once" } } });
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(effects(), 1);
+    assert.equal(ledger.responseTo(sent.id)?.body.ok, true);
+    // Nothing was granted on the way: the access list stays empty.
+    assert.equal(ledger.gateAccessPage().items.length, 0);
     const before = ledger.lastSeq();
     const worker = { ...agent, member: "worker:memory", transportPrincipal: "worker:memory" };
     await assert.rejects(router.send(worker, { to: "device:fake", kind: "request", word: "run", body: { n: 1 } }),
@@ -254,7 +215,6 @@ test("reviewed isolated message recipient alone may create and reuse a 30-day ex
     text: { type: "string" as const, minLength: 1 } }, required: ["recipient_id", "text"], additionalProperties: false };
   router.registerDevice("device:isolated", { name: "message.send", description: "Synthetic message", label: "Synthetic message",
     risk: "outward", input_schema: schema }, () => { effects++; return { ok: true, result: {} }; });
-  grant(ledger, "device:isolated/message.send");
   router.enableDurableGate();
   const send = (recipient_id: string, text: string, ctx = agent) => router.send(ctx, { to: "device:isolated", kind: "request",
     word: "message.send", body: { recipient_id, text } });
@@ -306,7 +266,6 @@ test("a real device recipient can use the same exact action-and-object rule", as
   let effects = 0;
   router.registerDevice("device:phone", { name: "message.send", description: "Synthetic phone-like word", label: "Message",
     risk: "outward", input_schema: schema }, () => { effects++; return { ok: true, result: {} }; });
-  grant(ledger, "device:phone/message.send");
   router.enableDurableGate();
   try {
     const sent = await router.send(agent, { to: "device:phone", kind: "request", word: "message.send",
@@ -328,38 +287,37 @@ test("a real device recipient can use the same exact action-and-object rule", as
   } finally { ledger.close(); }
 });
 
-test("other outward actions use an exact request object, then ask after rule expiry or revocation", async (t) => {
+test("without a target, 'always' covers the capability for this agent; it asks again after expiry or revocation", async (t) => {
   const { ledger, router } = await setup();
   let effects = 0;
   router.registerDevice("device:phone", { name: "file.delete", description: "Delete a file", label: "Delete file",
-    risk: "outward", input_schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } },
+    risk: "outward", effect: "write", input_schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } },
   () => { effects++; return { ok: true, result: {} }; });
-  grant(ledger, "device:phone/file.delete");
-  const send = (path: string) => router.send(agent, { to: "device:phone", kind: "request", word: "file.delete", body: { path } });
+  const send = (path: string, ctx = agent) => router.send(ctx, { to: "device:phone", kind: "request", word: "file.delete", body: { path } });
   try {
     const first = await send("/tmp/first");
     await new Promise((resolve) => setImmediate(resolve));
     const askId = ledger.gateCase(first.id)!.askId;
-    assert.deepEqual((ledger.byId(askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "always", "deny"]);
+    const options = ledger.byId(askId)?.body.options as { id: string; label: string }[];
+    assert.deepEqual(options.map((item) => item.id), ["once", "always", "deny"]);
+    assert.equal(options[1]!.label, "30 天内都允许「Delete file」");
     assert.match(String(ledger.byId(askId)?.body.detail), /\/tmp\/first/);
     await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId,
       body: { ok: true, result: { choice: "always" } } });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(effects, 1);
     const rule = ledger.gateRulesPage().rules[0]!;
-    assert.equal(rule.object_pattern, '{"path":"/tmp/first"}');
-    const repeated = await send("/tmp/first");
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(ledger.gateCase(repeated.id), null);
-    assert.equal(effects, 2);
+    assert.equal(rule.object_pattern, "*");
     const different = await send("/tmp/other");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.ok(ledger.gateCase(different.id));
+    assert.equal(ledger.gateCase(different.id), null, "the capability rule covers another file too");
     assert.equal(effects, 2);
-    router.cancel([different.id]);
+    const otherAgent = await send("/tmp/first", { ...agent, member: "agent:other", transportPrincipal: "agent:other" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(ledger.gateCase(otherAgent.id), "a rule belongs to one agent");
+    router.cancel([otherAgent.id]);
     const now = Date.now();
     t.mock.method(Date, "now", () => now + 31 * 24 * 60 * 60_000);
-    grant(ledger, "device:phone/file.delete");
     const expired = await send("/tmp/first");
     await new Promise((resolve) => setImmediate(resolve));
     assert.ok(ledger.gateCase(expired.id));
@@ -369,16 +327,16 @@ test("other outward actions use an exact request object, then ask after rule exp
   } finally { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); }
 });
 
-test("a shell approval shows the command and every other argument, and marks a cut", async () => {
+test("a shell approval shows the command and every other argument, marks a cut, and never offers always", async () => {
   const { ledger, router } = await setup();
   router.registerDevice("device:phone", { name: "shell.run", description: "Run a shell command", label: "在手机上执行命令",
-    risk: "structure", input_schema: { type: "object", properties: { command: { type: "string" }, stdin: { type: "string" }, cwd: { type: "string" } },
+    risk: "structure", effect: "execute", input_schema: { type: "object", properties: { command: { type: "string" }, stdin: { type: "string" }, cwd: { type: "string" } },
       required: ["command"], additionalProperties: false } }, () => ({ ok: true, result: {} }));
-  grant(ledger, "device:phone/shell.run");
   const detailOf = async (body: Record<string, unknown>) => {
     const sent = await router.send(agent, { to: "device:phone", kind: "request", word: "shell.run", body });
     await new Promise((resolve) => setImmediate(resolve));
     const askId = ledger.gateCase(sent.id)!.askId;
+    assert.deepEqual((ledger.byId(askId)?.body.options as { id: string }[]).map((item) => item.id), ["once", "deny"]);
     const detail = String(ledger.byId(askId)?.body.detail);
     await router.send(screen, { to: "service:gate", kind: "response", word: "ask", reply_to: askId, body: { ok: true, result: { choice: "deny" } } });
     return detail;
@@ -398,8 +356,6 @@ test("a browser approval reads as one line, and 'always' covers that site and no
   for (const name of ["browser.click", "browser.type"])
     router.registerDevice("device:phone", { name, description: name, label: name === "browser.click" ? "在网页上点击" : "在网页上输入", risk: "outward", input_schema: schema },
       () => { effects++; return { ok: true, result: {} }; });
-  grant(ledger, "device:phone/browser.click");
-  grant(ledger, "device:phone/browser.type");
   const send = (word: string, body: Record<string, unknown>) => router.send(agent, { to: "device:phone", kind: "request", word, body });
   try {
     const first = await send("browser.click", { ref: 3, site: "www.Example.com", label: "登录" });

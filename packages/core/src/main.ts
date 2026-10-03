@@ -34,8 +34,9 @@ import { ReflexMember } from "./members/reflex";
 import { JevReflexClient } from "./members/reflex-jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
-import { CostMember } from "./members/cost";
+import { CostMember, type UsageRecord } from "./members/cost";
 import { VaultMember, VaultStore } from "./members/vault";
+import { deepseekReviewer } from "./review/reviewer";
 import { WorkMember } from "./members/work";
 import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
@@ -176,6 +177,17 @@ export async function startOwner(config: Config): Promise<Running> {
     const vault = new VaultMember(vaultStore, world);
     members.register(vault);
     world.enableDurableGate();
+    // ---- Approval: an agent's non-read action is judged by one reviewer call (key from the vault, read per review);
+    // the owner's mode lives in the admin journal and is read on every decision. No key, an error or a timeout asks the owner.
+    // Each review's tokens join the usage page under their own scope.
+    const reviewUsage = new Set<(record: UsageRecord) => void>();
+    world.setReviewer(deepseekReviewer(() => vaultStore.get("DEEPSEEK_API_KEY"), { onUsage: (usage) => {
+      const record: UsageRecord = { at: Date.now() - usage.ms, ms: usage.ms, scope: "review", provider: "deepseek-official", model: usage.model,
+        input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: 0, ok: true };
+      for (const listener of reviewUsage) listener(record);
+    } }));
+    world.setApprovalMode(() => admin?.journal.approvalMode() ?? "auto");
+    // ---- end approval
     const containerMode = agents[0].runtime === "container";
     const live = agents[0].runtime !== "echo";
     // Which part of ash a model call belongs to, for the usage page: whoever is running when it is made.
@@ -365,7 +377,11 @@ export async function startOwner(config: Config): Promise<Running> {
     work.prepareRecovery();
     if (container) {
       registerWorkerMembers(members, piWorkerModel(() => vaultStore.get("DEEPSEEK_API_KEY"), () => worldConfig.workers.model ?? containerModel()), ledger);
-      cost = new CostMember({ ledger, router: world, collector: { onUsage: (listener) => egress!.onUsage(listener), balance: () => egress!.balance() },
+      cost = new CostMember({ ledger, router: world, collector: { onUsage: (listener) => {
+        const stop = egress!.onUsage(listener);
+        reviewUsage.add(listener);
+        return () => { stop(); reviewUsage.delete(listener); };
+      }, balance: () => egress!.balance() },
         price: async (record) => {
           const rates = catalogRates(record.provider, record.model);
           return rates ? estimateWorkerCost({ provider: record.provider, model: record.model, inputTokens: record.input, outputTokens: record.output,
