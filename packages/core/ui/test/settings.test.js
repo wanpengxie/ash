@@ -12,31 +12,6 @@ class Element {
   find(id) { return this.id === id ? this : this.children.map((child) => child.find(id)).find(Boolean); }
 }
 
-test("Android settings save JEV Key through native bridge without sending it to the ledger", async () => {
-  globalThis.document = { createElement: (tag) => new Element(tag) };
-  globalThis.location = { origin: "https://appassets.androidplatform.net" };
-  const calls = [];
-  globalThis.__ashJevKey = async (operation, key) => {
-    calls.push({ operation, key });
-    return { ok: true, configured: operation === "save" || key !== "" };
-  };
-  try {
-    const panel = new Element("div");
-    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
-      async request() { throw new Error("JEV Key must not use /api/send"); } };
-    const settings = new SettingsControls(panel, net);
-    settings.registration({ local_management: true }); settings.network("online");
-    const key = panel.find("settingsJevKey");
-    key.value = "  secret-test-key  ";
-    const save = panel.find("settingsJev").children.find((item) => item.textContent === "保存 Key");
-    save.click();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(key.value, "");
-    assert.deepEqual(calls, [{ operation: "save", key: "secret-test-key" }]);
-    assert.match(panel.find("settingsJevStatus").textContent, /已保存/);
-  } finally { delete globalThis.document; delete globalThis.location; delete globalThis.__ashJevKey; }
-});
-
 test("Android settings configure the gateway privately and clear the one-time secret", async () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
   globalThis.location = { origin: "https://appassets.androidplatform.net" };
@@ -339,29 +314,40 @@ test("settings show usage by period and part of Ash, and an unreadable balance i
   } finally { delete globalThis.document; delete globalThis.location; }
 });
 
-test("the model key goes to the native bridge only, is cleared from the field, and the page learns just whether it is set", async () => {
+
+test("the vault section saves and removes keys through the owner route, clears the field, and shows only saved or not", async () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
-  globalThis.location = { origin: "https://appassets.androidplatform.net" };
+  globalThis.location = { origin: "http://127.0.0.1" };
   const calls = [];
-  globalThis.__ashModelKey = async (operation, key) => { calls.push({ operation, key }); return { ok: true, configured: operation === "save" ? key !== "" : false }; };
+  const saved = new Set();
+  const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
+    async request(path, init) {
+      calls.push({ path, method: init.method, body: init.body ? JSON.parse(init.body) : undefined, token: init.headers["x-ash-screen"] ?? init.headers["X-Ash-Screen"] });
+      if (init.method === "PUT") saved.add(path.split("/").pop());
+      if (init.method === "DELETE") saved.delete(path.split("/").pop());
+      const body = init.method === "GET" ? { entries: ["DEEPSEEK_API_KEY", "OPENROUTER_API_KEY"].map((ref) => ({ ref, label: ref, kind: "model", configured: saved.has(ref) })) } : { ok: true };
+      return { ok: true, json: async () => body };
+    } };
   try {
     const panel = new Element("div");
-    const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
-      async request() { throw new Error("the model key must not use /api/send"); } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
-    const field = panel.find("settingsModelCredentialKey");
-    const section = panel.find("settingsModelCredential");
-    const button = (label) => section.children.find((item) => item.textContent === label);
-    button("检查状态").click();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.match(panel.find("settingsModelCredentialStatus").textContent, /未设置/);
-    field.value = "  sk-test-model-key  ";
-    button("保存 Key").click();
-    await new Promise((resolve) => setImmediate(resolve));
+    const wait = async (check) => { for (let i = 0; i < 50 && !check(); i++) await new Promise((resolve) => setImmediate(resolve)); };
+    const status = () => panel.find("settingsVault_DEEPSEEK_API_KEY_status").textContent;
+    await wait(() => /还没有保存/.test(status()));
+    assert.match(status(), /还没有保存.*无法对话/);
+    const row = panel.find("settingsVault_DEEPSEEK_API_KEY");
+    const field = panel.find("settingsVault_DEEPSEEK_API_KEY_value");
+    field.value = "  sk-vault-test  ";
+    row.children.find((item) => item.textContent === "保存").click();
+    await wait(() => /^已保存/.test(status()));
     assert.equal(field.value, "");
-    assert.deepEqual(calls, [{ operation: "status", key: undefined }, { operation: "save", key: "sk-test-model-key" }]);
-    assert.match(panel.find("settingsModelCredentialStatus").textContent, /已保存/);
-    assert.doesNotMatch(JSON.stringify(panel), /sk-test-model-key/);
-  } finally { delete globalThis.document; delete globalThis.location; delete globalThis.__ashModelKey; }
+    assert.match(status(), /^已保存/);
+    const put = calls.find((call) => call.method === "PUT");
+    assert.deepEqual([put.path, put.body], ["/api/vault/DEEPSEEK_API_KEY", { value: "sk-vault-test" }]);
+    assert.doesNotMatch(JSON.stringify(panel), /sk-vault-test/);
+    row.children.find((item) => item.textContent === "移除").click();
+    await wait(() => /还没有保存/.test(status()));
+    assert.ok(calls.some((call) => call.method === "DELETE" && call.path === "/api/vault/DEEPSEEK_API_KEY"));
+  } finally { delete globalThis.document; delete globalThis.location; }
 });

@@ -143,8 +143,6 @@ class HomeActivity : Activity() {
                         .put("endpoint", "http://127.0.0.1:${BuildConfig.CORE_PORT}").toString())
                     "cancel" -> requests.remove(input.optString("id"))?.cancel()
                     "request" -> handleNativeRequest(input, reply)
-                    "jev" -> handleJevSetting(input, reply)
-                    "model_key" -> handleModelKey(input, reply)
                     "gateway_config" -> handleGatewaySetting(input, reply)
                     "browser_logins" -> handleBrowserLogins(input, reply)
                 }
@@ -260,54 +258,6 @@ class HomeActivity : Activity() {
             } catch (_: Exception) { respond(JSONObject().put("type", "error")) }
             finally { requests.remove(id, cancellation) }
         }.start()
-    }
-
-    private fun handleJevSetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
-        val id = input.optString("id")
-        if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
-        val epoch = pageEpoch
-        val secrets = Secrets(this)
-        val operation = input.optString("operation")
-        val result = when (operation) {
-            "status" -> JSONObject().put("ok", true)
-            "save" -> {
-                val raw = input.opt("key")
-                val key = (raw as? String)?.trim()
-                if (key == null || key.length > 4096) JSONObject().put("ok", false)
-                else {
-                    val saved = secrets.saveJevApiKey(key)
-                    if (saved) CoreService.start(this, CoreService.ACTION_RESTART)
-                    JSONObject().put("ok", saved)
-                }
-            }
-            else -> return
-        }
-        result.put("type", "jev_result").put("id", id)
-            .put("configured", secrets.jevApiKey != null)
-        if (pageEpoch == epoch) reply.postMessage(result.toString())
-    }
-
-    /** Same shape as the JEV key: the page sends the key once, the host keeps it, the page only ever learns "configured". */
-    private fun handleModelKey(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
-        val id = input.optString("id")
-        if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
-        val epoch = pageEpoch
-        val secrets = Secrets(this)
-        val result = when (input.optString("operation")) {
-            "status" -> JSONObject().put("ok", true)
-            "save" -> {
-                val key = (input.opt("key") as? String)?.trim()
-                if (key == null || key.length > 4096) JSONObject().put("ok", false)
-                else {
-                    val saved = secrets.saveModelApiKey(key)
-                    if (saved) CoreService.start(this, CoreService.ACTION_RESTART)
-                    JSONObject().put("ok", saved)
-                }
-            }
-            else -> return
-        }
-        result.put("type", "model_key_result").put("id", id).put("configured", secrets.modelApiKey != null)
-        if (pageEpoch == epoch) reply.postMessage(result.toString())
     }
 
     private fun handleBrowserLogins(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {

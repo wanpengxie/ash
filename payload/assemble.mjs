@@ -13,6 +13,7 @@
 //   ash/       ash core bundle.
 //   ash-skills/  ash's own DSH skill-provider plugin and its instructions.
 //   ash-cost/    ash's DSH plugin that measures each model call for the usage view.
+//   ash-vault/   ash's DSH plugin that answers DSH's credential lookups from ash's vault.
 //   bin/       small sh wrappers (Android has no /usr/bin/env).
 //   profile/   the host's DSH patch layer (cordis.patch.yml rows, e.g. the ptc worker launcher).
 // Next to the zip: payload-index.json { build, links, exec, placeholders, dshTree }.
@@ -302,6 +303,9 @@ async function build() {
   fs.cpSync(path.join(ROOT, "packages/ash-skills"), path.join(tree, "ash-skills"), { recursive: true });
   // The cost collector is a second ash-owned DSH plugin: it measures model calls inside DSH's own process.
   fs.cpSync(path.join(ROOT, "packages/ash-cost"), path.join(tree, "ash-cost"), { recursive: true });
+
+  // ash's DSH plugin that lets DSH's credential lookups reach ash's own vault.
+  fs.cpSync(path.join(ROOT, "packages/ash-vault"), path.join(tree, "ash-vault"), { recursive: true });
 
   // 5. wrappers.
   const wrappers = path.join(HERE, "wrappers");

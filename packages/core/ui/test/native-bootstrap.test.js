@@ -14,22 +14,8 @@ function page() {
   runInNewContext(source, sandbox);
   assert.deepEqual(sent.shift(), { type: "hello" });
   native.onmessage({ data: JSON.stringify({ type: "ready", endpoint: "http://127.0.0.1:4700" }) });
-  return { native, sent, request, jev: sandbox.__ashJevKey, gateway: sandbox.__ashGatewayConfig };
+  return { native, sent, request, gateway: sandbox.__ashGatewayConfig };
 }
-
-test("APK bridge stores JEV Key privately and returns only configured status", async () => {
-  const { native, sent, jev } = page();
-  const pending = jev("save", "secret-test-key");
-  const wire = sent.shift();
-  assert.deepEqual(wire, { type: "jev", id: "1", operation: "save", key: "secret-test-key" });
-  native.onmessage({ data: JSON.stringify({ type: "jev_result", id: wire.id, ok: true, configured: true }) });
-  assert.equal(JSON.stringify(await pending), '{"ok":true,"configured":true}');
-  const status = jev("status");
-  const statusWire = sent.shift();
-  assert.equal(Object.hasOwn(statusWire, "key"), false);
-  native.onmessage({ data: JSON.stringify({ type: "jev_result", id: statusWire.id, ok: true, configured: true }) });
-  assert.equal(JSON.stringify(await status), '{"ok":true,"configured":true}');
-});
 
 test("APK bridge keeps the gateway bootstrap secret off ordinary API requests and replies", async () => {
   const { native, sent, gateway } = page();

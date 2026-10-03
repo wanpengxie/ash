@@ -19,7 +19,7 @@ export class ReflexMember implements Member {
   private failure: Error | null = null;
 
   constructor(private readonly router: WorldRouter, private readonly busyTurn: () => string | null,
-    private readonly options: { jev?: Pick<JevReflexClient, "judge">; context?: (message: Message, turn: string) => JevReflexState;
+    private readonly options: { jev?: Pick<JevReflexClient, "judge"> & { available?(): boolean }; context?: (message: Message, turn: string) => JevReflexState;
       threshold?: number } = {}) {
     this.stop = router.subscribe((message) => this.observe(message));
   }
@@ -45,7 +45,7 @@ export class ReflexMember implements Member {
     let fallback: { fallback: "timeout" | "unavailable" | "invalid" | "error"; fallback_ms: number } | undefined;
     // While a turn runs, every message that is not already an explicit command goes to JEV: "够了", "闭嘴" or
     // "hold on" carry no stop keyword, yet they are the owner trying to stop the reply.
-    if (turn && (judgement.intent === "unclear" || judgement.intent === "unrelated") && this.options.jev && this.options.context) {
+    if (turn && (judgement.intent === "unclear" || judgement.intent === "unrelated") && this.options.jev && (this.options.jev.available?.() ?? true) && this.options.context) {
       const asked = Date.now();
       try {
         const result = await this.options.jev.judge(this.options.context(message, turn));

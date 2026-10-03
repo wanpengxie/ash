@@ -9,24 +9,6 @@
   const decode = (value) => Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
   const post = (value) => native.postMessage(JSON.stringify(value));
 
-  globalThis.__ashJevKey = (operation, key) => {
-    if (!ready || !["status", "save"].includes(operation)) return Promise.reject(new Error("native settings unavailable"));
-    const id = String(++nextId);
-    return new Promise((resolve, reject) => {
-      pending.set(id, { jev: true, finish() { pending.delete(id); }, resolve, reject });
-      post({ type: "jev", id, operation, ...(operation === "save" ? { key } : {}) });
-    });
-  };
-
-  globalThis.__ashModelKey = (operation, key) => {
-    if (!ready || !["status", "save"].includes(operation)) return Promise.reject(new Error("native settings unavailable"));
-    const id = String(++nextId);
-    return new Promise((resolve, reject) => {
-      pending.set(id, { modelKey: true, finish() { pending.delete(id); }, resolve, reject });
-      post({ type: "model_key", id, operation, ...(operation === "save" ? { key } : {}) });
-    });
-  };
-
   globalThis.__ashBrowserLogins = () => {
     if (!ready) return Promise.reject(new Error("native settings unavailable"));
     const id = String(++nextId);
@@ -92,14 +74,6 @@
     }
     const item = pending.get(message.id);
     if (!item) return;
-    if (item.jev) {
-      if (message.type === "jev_result") { item.finish(); item.resolve({ ok: message.ok === true, configured: message.configured === true }); }
-      return;
-    }
-    if (item.modelKey) {
-      if (message.type === "model_key_result") { item.finish(); item.resolve({ ok: message.ok === true, configured: message.configured === true }); }
-      return;
-    }
     if (item.browserLogins) {
       if (message.type === "browser_logins_result") { item.finish(); item.resolve({ ok: message.ok === true }); }
       return;

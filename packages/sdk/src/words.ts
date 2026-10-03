@@ -105,6 +105,14 @@ add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, option
 
 add("screen:*", "ui.open", "request", obj({ target: choice("activity", "upcoming", "approvals", "identity", "memory", "settings", "turn"), id: str, mode: choice("perform", "suggest") }, ["target", "mode"]), obj({ opened: bool }, ["opened"]), { description: "Open or suggest a view on a named screen." });
 add("service:clock", "set", "request", obj({ at: num, every: { type: "integer", minimum: 60 }, to: id, word: id, body: obj({}, [], true), label: nonempty }, ["to", "word", "body", "label"]), obj({ id, next: num }, ["id", "next"]));
+// Secure vault: the agent may look, never touch. Values enter through the owner's settings route and leave only to ash's own code.
+const vaultEntry = obj({ ref: nonempty, label: nonempty, kind: choice("model", "login", "api", "other"), configured: bool, updated_at: nonnegativeSafe }, ["ref", "label", "kind", "configured"]);
+add("service:vault", "list", "request", empty, obj({ entries: { type: "array", items: vaultEntry } }, ["entries"]),
+  { label: "Checking saved credentials", description: "Which credentials are saved (names and kinds only, never a value)." });
+add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vaultEntry,
+  { label: "Checking a saved credential", description: "Whether one credential is saved, and what it is for. A value is never returned." });
+add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
+  { direction: "out", audience: "owner", description: "A credential was saved or removed. Names only; the value is never on the ledger." });
 add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "other"), provider: str, model: str,
   input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
   cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },

@@ -295,50 +295,75 @@ export class SettingsControls {
           : "账户余额暂时读不到（不是零）。";
       } catch { if (this.section === section) balanceLine.textContent = "账户余额暂时读不到（不是零）。"; }
     };
-    // A secret typed here goes straight to the phone's private storage. The page never gets it back, only "configured".
-    const secretSection = ({ id, title, bridge, unsetText, setText, savedText, removedText }) => {
-      if (globalThis.location?.origin !== "https://appassets.androidplatform.net" || typeof globalThis[bridge] !== "function") return;
-      const holder = document.createElement("section");
-      holder.id = id;
-      holder.append(node("h2", title));
-      const key = document.createElement("input");
-      key.id = `${id}Key`;
-      key.type = "password";
-      key.placeholder = "输入新 Key；留空并保存可移除";
-      key.autocomplete = "off";
-      const statusButton = node("button", "检查状态", "btn gray");
-      statusButton.type = "button";
-      const saveKey = node("button", "保存 Key", "btn");
-      saveKey.type = "button";
-      const status = node("p", "Key 仅保存在本机；保存后 Ash 自动重启。", "muted");
-      status.id = `${id}Status`;
+    // Credentials live in ash's own vault. This is the only door in: the local owner's screen, a route that never touches
+    // the ledger. The page learns whether a key is saved, never what it is.
+    const vaultRequest = async (method, ref, body) => {
+      const token = this.net.token, screen = this.net.screen, scope = this.net.currentScope;
+      if (this.section !== section || !this.connected || !this.allowed || !this.net.localManagement || !token || !screen || !scope) return null;
+      const response = await this.net.request(ref ? `/api/vault/${ref}` : "/api/vault", { method, credentials: "same-origin",
+        headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      if (this.section !== section || token !== this.net.token || screen !== this.net.screen || scope !== this.net.currentScope || !response.ok) return null;
+      return await response.json();
+    };
+    const vaultSection = document.createElement("section");
+    vaultSection.id = "settingsVault";
+    vaultSection.append(node("h2", "密钥保险库"));
+    vaultSection.append(node("p", "Key 只保存在这台手机的 Ash 里，不会出现在聊天里。保存后立刻生效，不用重启。", "muted"));
+    const refreshers = [];
+    for (const { ref, title, hint } of [
+      { ref: "DEEPSEEK_API_KEY", title: "模型 Key（DeepSeek）", hint: "没有它，Ash 无法对话。" },
+      { ref: "OPENROUTER_API_KEY", title: "JEV Key（OpenRouter）", hint: "没有它，叫停只靠关键词判断。" },
+    ]) {
+      const row = document.createElement("div");
+      row.id = `settingsVault_${ref}`;
+      row.append(node("h3", title));
+      const status = node("p", "正在读取…", "muted");
+      status.id = `settingsVault_${ref}_status`;
       status.setAttribute("role", "status");
-      statusButton.addEventListener("click", () => { void (async () => {
+      const field = document.createElement("input");
+      field.id = `settingsVault_${ref}_value`;
+      field.type = "password";
+      field.placeholder = "粘贴新的 Key";
+      field.autocomplete = "off";
+      const save = node("button", "保存", "btn");
+      save.type = "button";
+      const remove = node("button", "移除", "btn gray");
+      remove.type = "button";
+      const show = (saved) => { status.textContent = `${saved ? "已保存。" : "还没有保存。"}${hint}`; };
+      const refresh = async () => {
         try {
-          const result = await globalThis[bridge]("status");
-          if (this.section === section) status.textContent = result.ok ? result.configured ? setText : unsetText : "状态读取失败。";
-        } catch { if (this.section === section) status.textContent = "状态读取失败。"; }
-      })(); });
-      saveKey.addEventListener("click", () => { void (async () => {
-        const value = key.value.trim();
-        key.value = "";
-        saveKey.disabled = true;
+          const reply = await vaultRequest("GET");
+          const entry = reply?.entries?.find((item) => item.ref === ref);
+          if (this.section === section) { if (entry) show(entry.configured === true); else status.textContent = "读取失败；请重试。"; }
+        } catch { if (this.section === section) status.textContent = "读取失败；请重试。"; }
+      };
+      refreshers.push(refresh);
+      save.addEventListener("click", () => { void (async () => {
+        const value = field.value.trim();
+        field.value = "";
+        if (!value) { status.textContent = "请先粘贴 Key。"; return; }
+        save.disabled = true;
         status.textContent = "正在保存…";
         try {
-          const result = await globalThis[bridge]("save", value);
-          if (this.section === section) status.textContent = result.ok ? result.configured ? savedText : removedText : "保存失败；请重试。";
+          const reply = await vaultRequest("PUT", ref, { value });
+          if (this.section === section) { if (reply?.ok === true) show(true); else status.textContent = "保存失败；请重试。"; }
         } catch { if (this.section === section) status.textContent = "保存失败；请重试。"; }
-        finally { saveKey.disabled = false; }
+        finally { save.disabled = false; }
       })(); });
-      holder.append(key, statusButton, saveKey, status);
-      section.append(holder);
-    };
-    secretSection({ id: "settingsModelCredential", title: "模型 Key（DeepSeek）", bridge: "__ashModelKey",
-      unsetText: "模型 Key 未设置；Ash 现在没有模型可用，填写后才能对话。", setText: "模型 Key 已设置。",
-      savedText: "已保存；Ash 正在重启，用这个 Key 对话。", removedText: "Key 已移除；Ash 正在重启，之后无法对话。" });
-    secretSection({ id: "settingsJev", title: "JEV Key", bridge: "__ashJevKey",
-      unsetText: "JEV Key 未设置；目前只使用关键词判断。", setText: "JEV Key 已设置。",
-      savedText: "已保存；Ash 正在重启以启用 JEV。", removedText: "Key 已移除；Ash 正在重启。" });
+      remove.addEventListener("click", () => { void (async () => {
+        remove.disabled = true;
+        try {
+          const reply = await vaultRequest("DELETE", ref);
+          if (this.section === section) { if (reply?.ok === true) show(false); else status.textContent = "移除失败；请重试。"; }
+        } catch { if (this.section === section) status.textContent = "移除失败；请重试。"; }
+        finally { remove.disabled = false; }
+      })(); });
+      row.append(status, field, save, remove);
+      vaultSection.append(row);
+    }
+    section.append(vaultSection);
+    // After render() has published this section, so the first read passes its own staleness check.
+    queueMicrotask(() => { for (const refresh of refreshers) void refresh(); });
     if (globalThis.location?.origin === "https://appassets.androidplatform.net" && typeof globalThis.__ashBrowserLogins === "function") {
       const browserSection = document.createElement("section");
       browserSection.id = "settingsBrowser";

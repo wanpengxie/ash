@@ -18,15 +18,6 @@ class Secrets(ctx: Context) {
     private val prefs = ctx.getSharedPreferences("ash.host", Context.MODE_PRIVATE)
     val hostToken: String get() = token("host_token")
     val coreToken: String get() = token("core_token")
-    val jevApiKey: String? get() = prefs.getString("jev_api_key", null)?.takeIf { it.isNotEmpty() }
-    /** The model provider key (DeepSeek). Typed in the app, kept only here, handed to the core as an environment variable. */
-    val modelApiKey: String? get() = prefs.getString("model_api_key", null)?.takeIf { it.isNotEmpty() }
-    fun saveModelApiKey(value: String): Boolean = prefs.edit().apply {
-        if (value.isEmpty()) remove("model_api_key") else putString("model_api_key", value)
-    }.commit()
-    fun saveJevApiKey(value: String): Boolean = prefs.edit().apply {
-        if (value.isEmpty()) remove("jev_api_key") else putString("jev_api_key", value)
-    }.commit()
     var stopped: Boolean
         get() = prefs.getBoolean("stopped", false)
         set(v) { prefs.edit().putBoolean("stopped", v).apply() }
@@ -73,6 +64,7 @@ class CoreProcess(private val ctx: Context) {
                     .put("home", p.dshHome.path)
                     .put("skillsRoot", p.skillsRoot.path)
                     .put("costRoot", p.costRoot.path)
+                    .put("vaultRoot", p.vaultRoot.path)
                     .put("patchFiles", JSONArray().put(p.hostPatch.path))
                     // No DSH sandbox runner exists on Android; the app sandbox is the boundary and
                     // ash's own gates decide what untrusted requests may do.
@@ -81,7 +73,8 @@ class CoreProcess(private val ctx: Context) {
             .put("agents", agents)
             .put("host", JSONObject().put("url", "http://127.0.0.1:$hostPort").put("token", secrets.hostToken).put("coreToken", secrets.coreToken))
             .put("policy", JSONObject().put("quietHours", "23:30-07:30"))
-        if (secrets.jevApiKey != null) cfg.put("reflex", JSONObject().put("jev", JSONObject()
+        // The JEV key lives in ash's own vault; the core reads it per judgement, so only the address is configured here.
+        cfg.put("reflex", JSONObject().put("jev", JSONObject()
             .put("url", "https://openrouter.ai/api/alpha/decisions").put("key_credential", "jev")))
         // The owner may override anything (more agents, policy …) in ash/config.override.json.
         if (p.configOverride.exists()) {
@@ -164,8 +157,7 @@ class CoreProcess(private val ctx: Context) {
             "npm_config_cache" to "${p.cache.path}/npm",
             "ANDROID_DATA" to (System.getenv("ANDROID_DATA") ?: "/data"),
             "ANDROID_ROOT" to (System.getenv("ANDROID_ROOT") ?: "/system"),
-        ) + (secrets.jevApiKey?.let { mapOf("OPENROUTER_API_KEY" to it) } ?: emptyMap()) +
-            (secrets.modelApiKey?.let { mapOf("DEEPSEEK_API_KEY" to it) } ?: emptyMap())
+        )
     }
 
     fun command(): List<String> = listOf(

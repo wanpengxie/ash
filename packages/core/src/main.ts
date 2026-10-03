@@ -29,6 +29,7 @@ import { JevReflexClient } from "./members/reflex-jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
 import { CostMember } from "./members/cost";
+import { VaultMember, VaultStore } from "./members/vault";
 import { WorkMember } from "./members/work";
 import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
@@ -48,7 +49,7 @@ export interface Config {
   stateDir: string;
   workspaces?: Record<string, string>;
   agents?: { id: "agent:main"; name?: string; runtime: "echo" | "dsh" }[];
-  dsh?: { root: string; home?: string; skillsRoot?: string; costRoot?: string; env?: Record<string, string> };
+  dsh?: { root: string; home?: string; skillsRoot?: string; costRoot?: string; vaultRoot?: string; env?: Record<string, string> };
   host?: HostConnection & { coreToken?: string };
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
@@ -152,8 +153,11 @@ export async function startOwner(config: Config): Promise<Running> {
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     members.register(new GateMember(ledger, world, members));
+    const vaultStore = new VaultStore(join(config.stateDir, "vault.json"));
+    const vault = new VaultMember(vaultStore, world);
+    members.register(vault);
     world.enableDurableGate();
-    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, env: config.dsh!.env });
+    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`) : new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
@@ -164,10 +168,13 @@ export async function startOwner(config: Config): Promise<Running> {
       } } : {}),
       isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
-    const jevKey = worldConfig.reflex.jev.key_credential === "jev"
-      ? process.env.OPENROUTER_API_KEY ?? process.env.TYPESAFE_API_KEY : undefined;
-    const jev = worldConfig.reflex.jev.url && jevKey
-      ? new JevReflexClient(worldConfig.reflex.jev.url, jevKey, worldConfig.reflex.timeout_ms) : undefined;
+    // The JEV key lives in the vault and is read on each judgement, so saving or removing it needs no restart.
+    const jevRef = "OPENROUTER_API_KEY";
+    const jevUrl = worldConfig.reflex.jev.url;
+    const jev = jevUrl && worldConfig.reflex.jev.key_credential === "jev" ? {
+      available: () => vaultStore.has(jevRef),
+      judge: (state: Parameters<JevReflexClient["judge"]>[0]) => new JevReflexClient(jevUrl, vaultStore.get(jevRef) ?? "", worldConfig.reflex.timeout_ms).judge(state),
+    } : undefined;
     reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null, { jev,
       threshold: worldConfig.reflex.threshold,
       context: (message, turn) => {
@@ -212,7 +219,7 @@ export async function startOwner(config: Config): Promise<Running> {
       })().catch((error) => log("first meeting wake failed", error));
     });
     if (hostLink) members.registerDevice(hostLink.device());
-    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
+    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault });
     screensNow = () => ownerScreensLine(edge.screens);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
@@ -297,6 +304,7 @@ export async function startOwner(config: Config): Promise<Running> {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
     registerWorkerMembers(members, dshWorkerModel(dsh, () => worldConfig.workers.model), ledger);
+      dsh.attachVault(async (ref) => vaultStore.get(ref));
       const collector = dsh.cost();
       if (collector) { cost = new CostMember({ ledger, router: world, collector, price: async (record) => {
         const rates = await dsh!.modelRates(record.provider, record.model);

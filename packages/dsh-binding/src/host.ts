@@ -8,7 +8,7 @@ import type { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, type DoorAgent, type DoorOptions, type DshDoor } from "./door";
 import type { WorkerRates } from "../../core/src/workers/cost";
 
-export interface DshHostOptions { root: string; home: string; skillsRoot?: string; costRoot?: string; env?: Record<string, string> }
+export interface DshHostOptions { root: string; home: string; skillsRoot?: string; costRoot?: string; vaultRoot?: string; env?: Record<string, string> }
 export interface DshRootAgent extends DoorAgent {
   id: string;
   followup(message: { id: string; role: "user"; content: unknown[]; source: { kind: "user" } }): void;
@@ -169,6 +169,7 @@ export class DshHost {
   private mind: MindSession | null = null;
   private managedPromptCleanup: (() => void) | null = null;
   private collector: DshUsageCollector | null = null;
+  private vaultBridge: { attach(lookup: (ref: string) => Promise<string | null>): void } | null = null;
   private readonly listeners = new Set<(sessionId: string, event: DshSessionEvent) => void>();
 
   constructor(private readonly options: DshHostOptions) {
@@ -205,6 +206,11 @@ export class DshHost {
       const plugin = await import(pathToFileURL(join(this.options.skillsRoot, "index.mjs")).href);
       await ctx.plugin(plugin);
     }
+    if (this.options.vaultRoot) {
+      const plugin = await import(pathToFileURL(join(this.options.vaultRoot, "index.mjs")).href);
+      await ctx.plugin(plugin);
+      this.vaultBridge = plugin.vault as { attach(lookup: (ref: string) => Promise<string | null>): void };
+    }
     if (this.options.costRoot) {
       const plugin = await import(pathToFileURL(join(this.options.costRoot, "index.mjs")).href);
       await ctx.plugin(plugin);
@@ -235,6 +241,8 @@ export class DshHost {
     } catch { /* fall back to the environment, as DSH's own provider does */ }
     return !process.env.DEEPSEEK_API_KEY;
   }
+  /** Point DSH's credential lookups at ash's vault. DSH asks by name, per request; ash answers or says nothing. */
+  attachVault(lookup: (ref: string) => Promise<string | null>): void { this.vaultBridge?.attach(lookup); }
   /** The DSH-world usage collector, present when the deployment ships the cost plugin. */
   cost(): DshUsageCollector | null { return this.collector; }
   /** Read prices from the model catalog shipped with this DSH install, never from a guessed rate table. */

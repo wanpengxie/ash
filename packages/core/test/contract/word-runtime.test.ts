@@ -138,6 +138,7 @@ test("each inbound word rejects a schema-violating body from its authorized send
       "service:self/rollback": w.owner, "service:self/history": w.owner,
       "service:work/run": w.owner, "service:work/runs": w.owner,
       "service:cost/usage.get": w.owner, "service:cost/balance.get": w.owner,
+      "service:vault/list": w.owner, "service:vault/describe": w.owner,
     };
     for (const word of ["rules.list", "rules.revoke", "history", "access.list", "access.grant", "access.revoke"]) senders[`service:gate/${word}`] = w.owner;
     for (const word of ["settings.get", "settings.set", "plugins.list", "plugins.op", "gateway.state", "gateway.op", "model.set", "pause"]) senders[`service:admin/${word}`] = w.owner;
@@ -199,6 +200,12 @@ test("a real scenario writes only contract-conforming messages and covers every 
     // A conversation turn: received/read/turn.start/status/turn.end and a delivered reply.
     const said = await world_.send(w.owner, { to: "agent:main", kind: "request", word: "say", body: { text: "你好" }, wait: true });
     await waitFor((rows) => rows.some((row) => row.word === "turn.end" && rows.find((x) => x.word === "turn.start" && (x.body.ids as string[])?.includes(said.id))), "turn end");
+    // A credential saved and removed through the owner route: the ledger gets the names, never a value.
+    const ownerToken = Object.entries(w.running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const vaultHeaders = { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" };
+    await fetch(`${w.running.url}/api/vault/CONTRACT_PROBE_KEY`, { method: "PUT", headers: vaultHeaders, body: JSON.stringify({ value: "sk-contract-probe" }) });
+    await fetch(`${w.running.url}/api/vault/CONTRACT_PROBE_KEY`, { method: "DELETE", headers: vaultHeaders });
+    assert.doesNotMatch(JSON.stringify(ledger.list({ limit: 100000 })), /sk-contract-probe/);
     // Presence and visibility from a registered screen.
     await world_.send(w.screen, { to: "agent:main", kind: "event", word: "typing", body: {} });
     await world_.send(w.screen, { to: "service:post", kind: "event", word: "visible", body: {} });
