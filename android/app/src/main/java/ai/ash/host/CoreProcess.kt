@@ -176,6 +176,10 @@ class CoreProcess(private val ctx: Context) {
         val pb = ProcessBuilder(command()).directory(p.home)
         pb.environment().clear()
         pb.environment().putAll(environment(proxy))
+        // The vault's seal key, unwrapped by Keystore for this start only. Core is non-dumpable, so the agent container
+        // (same Linux user) cannot read it from /proc.
+        try { pb.environment()["ASH_VAULT_SEAL_KEY"] = Keys.vaultSealKey(File(p.ash, "vault.key")) }
+        catch (e: Exception) { note("vault seal key unavailable: ${e.javaClass.simpleName}") }
         pb.redirectErrorStream(true)
         // A daemon: no stdin (an open pipe nobody writes could stall anything that reads it).
         pb.redirectInput(File("/dev/null"))

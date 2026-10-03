@@ -1,7 +1,7 @@
 // Production ash-api/2 entrypoint. The retired event writer is test-only.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,10 @@ function deviceSummary(members: WorldMembers): string {
 export async function startOwner(config: Config): Promise<Running> {
   // Before any secret is read: the agent container must not be able to read this process's memory.
   protectProcessMemory(log);
+  // The phone hands over the vault's seal key, unwrapped by Android Keystore; no child process inherits it.
+  const sealText = process.env.ASH_VAULT_SEAL_KEY;
+  delete process.env.ASH_VAULT_SEAL_KEY;
+  const vaultSealKey = sealText ? Buffer.from(sealText, "base64url") : undefined;
   const agents = config.agents ?? [{ id: "agent:main" as const, runtime: "dsh" as const }];
   if (agents.length !== 1 || agents[0].id !== "agent:main") throw new Error("v2 requires one real agent:main member");
   if (agents[0].runtime !== "echo" && agents[0].runtime !== "dsh" && agents[0].runtime !== "container") throw new Error("unsupported agent runtime");
@@ -186,7 +190,18 @@ export async function startOwner(config: Config): Promise<Running> {
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     members.register(new GateMember(ledger, world, members));
-    const vaultStore = new VaultStore(join(config.stateDir, "vault.json"));
+    const vaultFile = join(config.stateDir, "vault.json");
+    let vaultStore: VaultStore;
+    try { vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey); }
+    catch (error) {
+      // A sealed vault whose key is gone (the phone's Keystore was reset) cannot be opened again. Keep the file aside and
+      // start empty, so the owner can enter the keys again instead of facing an assistant that never starts.
+      if (!readFileSync(vaultFile, "utf8").includes('"sealed"')) throw error;
+      const aside = `${vaultFile}.unreadable-${Date.now()}`;
+      renameSync(vaultFile, aside);
+      log("the sealed vault could not be opened; it was moved aside and ash starts with an empty vault", aside);
+      vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey);
+    }
     const vault = new VaultMember(vaultStore, world);
     members.register(vault);
     world.enableDurableGate();

@@ -1,3 +1,4 @@
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
@@ -30,13 +31,40 @@ export interface VaultInfo { ref: string; label: string; kind: Kind; configured:
 export class VaultStore {
   private entries: Record<string, Entry>;
 
-  constructor(private readonly file: string, private readonly now: () => number = Date.now) {
+  /**
+   * With a seal key (on the phone: a key that only Android Keystore can unwrap), the file is AES-256-GCM encrypted, and a
+   * plain file from before is sealed on first load. Without one the file stays plain, as in tests and on a computer.
+   */
+  constructor(private readonly file: string, private readonly now: () => number = Date.now, private readonly sealKey?: Buffer) {
+    if (sealKey && sealKey.length !== 32) throw new TypeError("vault seal key must be 32 bytes");
     this.entries = existsSync(file) ? this.read() : {};
+    if (sealKey && this.plainOnDisk) this.write(this.entries); // a vault from before sealing is sealed now
+  }
+
+  private plainOnDisk = false;
+
+  private open(raw: string): string {
+    const outer = JSON.parse(raw) as { sealed?: unknown; iv?: unknown; tag?: unknown; data?: unknown };
+    this.plainOnDisk = outer.sealed === undefined;
+    if (outer.sealed === undefined) return raw;
+    if (outer.sealed !== 1 || typeof outer.iv !== "string" || typeof outer.tag !== "string" || typeof outer.data !== "string") throw new Error("unknown vault format");
+    if (!this.sealKey) throw new Error("vault is sealed and no key was given");
+    const decipher = createDecipheriv("aes-256-gcm", this.sealKey, Buffer.from(outer.iv, "base64"));
+    decipher.setAuthTag(Buffer.from(outer.tag, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(outer.data, "base64")), decipher.final()]).toString("utf8");
+  }
+
+  private seal(text: string): string {
+    if (!this.sealKey) return text;
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", this.sealKey, iv);
+    const data = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+    return JSON.stringify({ sealed: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") });
   }
 
   private read(): Record<string, Entry> {
     try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8")) as { entries?: Record<string, Entry> };
+      const parsed = JSON.parse(this.open(readFileSync(this.file, "utf8"))) as { entries?: Record<string, Entry> };
       const out: Record<string, Entry> = {};
       for (const [ref, entry] of Object.entries(parsed.entries ?? {}))
         if (REF.test(ref) && typeof entry?.value === "string" && entry.value) out[ref] = entry;
@@ -80,7 +108,7 @@ export class VaultStore {
   private write(next: Record<string, Entry>): void {
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ version: 1, entries: next }), { mode: 0o600 });
+    writeFileSync(tmp, this.seal(JSON.stringify({ version: 1, entries: next })), { mode: 0o600 });
     chmodSync(tmp, 0o600);
     renameSync(tmp, this.file);
     this.entries = next;
