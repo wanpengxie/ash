@@ -22,6 +22,9 @@ function approved(path, options = {}) {
     const workspace = url.pathname.split("/")[3];
     if (workspaceFileUrl({ workspace, path: url.searchParams.get("path") }) === path) return "file";
   }
+  // The vault door: list, save and remove only. The page sends a key once and never reads one back.
+  if (!url.search && (url.pathname === "/api/vault" ? method === "GET" : /^\/api\/vault\/[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(url.pathname) && (method === "PUT" || method === "DELETE")))
+    return "vault";
   throw new Error("unapproved UI route");
 }
 

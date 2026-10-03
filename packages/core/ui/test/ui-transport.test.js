@@ -97,3 +97,15 @@ test("embedded boot does not open its new-origin pending database before READY",
     assert.equal(opens, 1);
   } finally { globalThis.indexedDB = original; }
 });
+
+test("the native transport lets the page list, save and remove vault keys, and nothing else under /api/vault", () => {
+  const calls = [];
+  const transport = embeddedUiTransport({ endpoint: "http://127.0.0.1:4700", request: (op, path) => { calls.push([op, path]); return Promise.resolve(new Response("")); } });
+  transport.authorizeReady();
+  transport.request("/api/vault", { method: "GET" });
+  transport.request("/api/vault/DEEPSEEK_API_KEY", { method: "PUT", body: "{}" });
+  transport.request("/api/vault/DEEPSEEK_API_KEY", { method: "DELETE" });
+  assert.deepEqual(calls, [["vault", "/api/vault"], ["vault", "/api/vault/DEEPSEEK_API_KEY"], ["vault", "/api/vault/DEEPSEEK_API_KEY"]]);
+  for (const [path, method] of [["/api/vault", "PUT"], ["/api/vault/DEEPSEEK_API_KEY", "GET"], ["/api/vault/a/b", "PUT"], ["/api/vault/x?y=1", "PUT"], ["/api/vault/..%2f", "DELETE"], ["/api/vault/", "GET"]])
+    assert.throws(() => transport.request(path, { method }), /unapproved/, `${method} ${path}`);
+});

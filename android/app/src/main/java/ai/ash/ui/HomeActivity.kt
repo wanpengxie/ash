@@ -230,8 +230,11 @@ class HomeActivity : Activity() {
         val path = input.optString("path")
         val operation = input.optString("operation")
         val method = input.optString("method")
-        if (operation !in setOf("send", "stream", "file") || path.length > 1024 ||
+        val vaultRoute = Regex("/api/vault(/[A-Za-z_][A-Za-z0-9_]{0,63})?")
+        if (operation !in setOf("send", "stream", "file", "vault") || path.length > 1024 ||
             !(operation == "send" && method == "POST" && path == "/api/send" ||
+              operation == "vault" && vaultRoute.matches(path) &&
+                (path == "/api/vault" && method == "GET" || path != "/api/vault" && (method == "PUT" || method == "DELETE")) ||
               operation == "stream" && method == "GET" && path.startsWith("/api/stream?") ||
               operation == "file" && method == "GET" && path.startsWith("/api/workspaces/"))) return
         val headersJson = input.optJSONObject("headers") ?: JSONObject()
