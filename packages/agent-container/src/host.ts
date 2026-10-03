@@ -20,6 +20,7 @@ export interface ContainerHostOptions {
  */
 export class ContainerHost {
   private client: AcpClient | null = null;
+  private starting: AcpClient | null = null;
   private booting: Promise<AcpClient> | null = null;
   private readonly sessions = new Map<string, { id: string; mcp: McpEndpoint }>();
   private readonly opening = new Map<string, Promise<string>>();
@@ -63,6 +64,7 @@ export class ContainerHost {
       this.spec = spec;
       const child = spawn(spec.command, spec.args, { env: spec.env, stdio: ["pipe", "pipe", "pipe"], cwd: spec.mode === "direct" ? spec.hostWorkspace : undefined });
       const client = new AcpClient(child, this.options.log);
+      this.starting = client;
       client.onUpdate((sessionId, update) => { for (const listener of this.listeners) listener(sessionId, update); });
       client.onExit((reason) => {
         this.options.log?.("agent runtime stopped:", reason);
@@ -75,10 +77,11 @@ export class ContainerHost {
       this.imageInput = init?.agentCapabilities?.promptCapabilities?.image === true;
       this.bootMs = Date.now() - started;
       this.timings.boot = this.bootMs;
+      if (this.closed) { client.close(); throw new Error("agent runtime is closed"); }
       this.client = client;
       return client;
     })();
-    try { return await this.booting; } finally { this.booting = null; }
+    try { return await this.booting; } finally { this.booting = null; this.starting = null; }
   }
 
   /** The live session for an ash agent: resumed from ash's record when possible, created otherwise. */
@@ -155,11 +158,13 @@ export class ContainerHost {
 
   async close(): Promise<void> {
     this.closed = true;
-    const client = this.client;
+    // A runtime still starting is stopped too; it must never outlive ash.
+    const clients = [this.client, this.starting].filter((item): item is AcpClient => item !== null && item.alive);
     this.client = null;
-    if (!client) return;
-    const done = new Promise<void>((resolve) => { client.onExit(() => resolve()); setTimeout(resolve, 5_000).unref(); });
-    client.close();
-    await done;
+    await Promise.all(clients.map((client) => {
+      const done = new Promise<void>((resolve) => { client.onExit(() => resolve()); setTimeout(resolve, 5_000).unref(); });
+      client.close();
+      return done;
+    }));
   }
 }
