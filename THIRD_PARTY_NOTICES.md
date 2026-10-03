@@ -80,7 +80,22 @@
 
 ---
 
-## 4. 摘要
+## 4. 智能体容器（`assets/container/ash-container.tgz`）
+
+App 里随附一个 Linux 容器，智能体在其中运行。它由 `tools/build-container-rootfs.mjs` 从锁定的来源组装（版本与 sha256 写在脚本里），各组件**原样分发**、保留各自许可：
+
+| 组件 | 来源 | 许可证 |
+|---|---|---|
+| PRoot 5.1.107.96（`proot/bin/proot`、`proot/libexec/loader`） | Termux 的 `proot` 软件包，上游 <https://github.com/termux/proot>（源自 <https://proot-me.github.io/>） | **GPL-2.0**，全文见 [`licenses/gpl-2.0.txt`](licenses/gpl-2.0.txt)。对应版本的源码可从上游仓库与 Termux 软件包源（<https://github.com/termux/termux-packages>，`packages/proot`）获得 |
+| talloc 2.5.0（`proot/lib/libtalloc.so.2`） | Termux 的 `libtalloc` 软件包，上游 <https://talloc.samba.org/> | **LGPL-3.0**，全文见 [`licenses/lgpl-3.0.txt`](licenses/lgpl-3.0.txt)；以独立动态库形式分发，可被替换 |
+| libandroid-shmem 0.7（`proot/lib/libandroid-shmem.so`） | Termux 的 `libandroid-shmem` 软件包 | BSD 式许可（版权声明见该包的 `share/doc/libandroid-shmem/copyright`） |
+| Ubuntu Base 24.04 arm64（`ubuntu/`） | <https://cdimage.ubuntu.com/ubuntu-base/> | 各软件包各自的许可，见容器内 `/usr/share/doc/*/copyright` 与 `/usr/share/common-licenses/` |
+| Node.js（`ubuntu/opt/node`） | <https://nodejs.org/> | MIT 及其依赖各自的许可（见 `ubuntu/opt/node/LICENSE`） |
+| DSH（`ubuntu/opt/dsh`） | npm 上的 `@deepseek-ai/dsh` 及其依赖 | MIT 及各依赖各自的许可，原样分发 |
+
+---
+
+## 5. 摘要
 
 | 范围 | 许可证 |
 |---|---|
@@ -89,3 +104,6 @@
 | `android/app/libs/*.aar`（Shizuku API） | **Apache-2.0** |
 | payload：DSH（`@deepseek-ai/*`）及其 npm 依赖 | 各自原许可，原样分发，本仓库不重新授权 |
 | payload：Termux 软件包（node、python、git、ripgrep、bash、curl、pnpm、openssl 等） | 各自原许可（见 payload 内 `runtime/share/LICENSES` 与各包说明）；版本与哈希锁定在 `payload/manifest.json` |
+| 智能体容器：PRoot | **GPL-2.0** |
+| 智能体容器：talloc | **LGPL-3.0** |
+| 智能体容器：Ubuntu Base、Node.js、DSH 及其余组件 | 各自原许可，原样分发 |
