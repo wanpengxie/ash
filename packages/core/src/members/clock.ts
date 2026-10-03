@@ -96,6 +96,12 @@ export class ClockMember implements Member {
         return error("bad_request", "invalid scheduled time");
       const next = at === undefined ? now + (every as number) * 1000 : at as number;
       if (!safeNow(next)) return error("bad_request", "scheduled time out of range");
+      // The model sometimes sets one reminder twice in a row. The same delegate asking for the same thing at the same
+      // minute is the same reminder: answer with the timer already pending rather than ringing twice.
+      const same = this.journal.list().find((item) => item.createdBy === message.from && !item.blocked && item.every === (every === undefined ? null : every) &&
+        Math.abs(item.next - next) < 60_000 && item.payload?.to === payload.to && item.payload?.word === payload.word &&
+        item.payload?.label === payload.label && JSON.stringify(item.payload?.body) === JSON.stringify(payload.body));
+      if (same) return { ok: true, result: { id: same.id, next: same.next } };
       const result = this.journal.set(message.id, payload, context.caller, message.from, next, every === undefined ? null : every as number);
       try { await this.rearm(); } catch { return error("offline", "host alarm acknowledgement unavailable; timer is durably pending"); }
       return { ok: true, result };

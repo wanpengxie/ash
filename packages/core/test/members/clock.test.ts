@@ -310,3 +310,16 @@ for (const stage of ["claimed", "request-accepted", "event-accepted"] as const) 
     } finally { await clock.close(); ledger.close(); }
   } finally { if (!firstClosed) await f.close(true); rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+test("the same delegate setting the same reminder for the same minute gets the pending timer, not a second one", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.world.send(agent, { to: "service:clock", kind: "request", word: "set", body: scheduled(), wait: true });
+    const again = await f.world.send(agent, { to: "service:clock", kind: "request", word: "set", body: { ...scheduled(), at: 2030 }, wait: true });
+    assert.deepEqual(again.reply?.body, first.reply?.body);
+    assert.equal(f.clock.journal.list().length, 1);
+    await f.world.send(agent, { to: "service:clock", kind: "request", word: "set", body: { ...scheduled(), at: 2000 + 120_000 }, wait: true });
+    await f.world.send(agent, { to: "service:clock", kind: "request", word: "set", body: { ...scheduled("agent:main", "say", { text: "another reminder" }) }, wait: true });
+    assert.equal(f.clock.journal.list().length, 3, "a different time or different words is a different reminder");
+  } finally { await f.close(); }
+});
