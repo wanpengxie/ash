@@ -195,10 +195,13 @@ test("owner can inspect gate history; local revoke never recursively asks, remot
       body: { ok: true, result: { choice: "deny" } } });
     const listed = await router.send(screen, { to: "service:gate", kind: "request", word: "history", body: {}, wait: true });
     assert.equal((listed.reply?.body.result as { items: { decision: string }[] }).items[0]?.decision, "deny");
+    // An agent may read approval history (to help the owner look into a decision); it cannot grant itself device access.
+    const read = await router.send(agent, { to: "service:gate", kind: "request", word: "history", body: {}, wait: true });
+    assert.equal((read.reply?.body as { ok: boolean }).ok, true);
+    await assert.rejects(router.send(agent, { to: "service:gate", kind: "request", word: "access.list", body: {} }),
+      (error) => error instanceof RouterError && error.code === "forbidden");
     const prior = ledger.lastSeq();
     const remote = { ...screen, local: false, remote: true, screenId: "screen:remote" };
-    await assert.rejects(router.send(agent, { to: "service:gate", kind: "request", word: "history", body: {} }),
-      (error) => error instanceof RouterError && error.code === "forbidden");
     await assert.rejects(router.send(remote, { to: "service:gate", kind: "request", word: "rules.revoke", body: { id: "missing" } }),
       (error) => error instanceof RouterError && error.code === "forbidden");
     assert.equal(ledger.lastSeq(), prior);

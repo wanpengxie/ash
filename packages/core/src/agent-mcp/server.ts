@@ -112,6 +112,17 @@ const TOOLS = [
       at: { type: "number", description: "Epoch ms of the first delivery" }, every: { type: "integer", minimum: 60, description: "Repeat interval in seconds" } }, ["label", "text", "deliver"]) },
   { name: "timer_list", description: "Active timers.", inputSchema: object({}) },
   { name: "timer_cancel", description: "Cancel a timer by id; cancelled=false means it already fired or never existed.", inputSchema: object({ id: text("Timer id from timer_set or timer_list") }, ["id"]) },
+  { name: "approval_log", description: "Approval records, newest first: for each action that reached the approval gate, what was asked, the facts the reviewer saw and its verdict, the card the owner saw, the decision and who made it (rule, review, carry, owner, timeout), and whether the action then ran. Use it to work out why something was allowed, asked about or refused.",
+    inputSchema: object({ request_id: text("One request"), requester: text("Only this agent, e.g. agent:main"), word: text("Only this capability, e.g. clipboard.set"),
+      decision: { type: "string", enum: ["rule", "review", "carry", "once", "always", "deny", "timeout", "cancelled", "waiting"] },
+      before: { type: "integer", minimum: 1, description: "next_before from the previous page" }, limit: { type: "integer", minimum: 1, maximum: 50 } }) },
+  { name: "approval_rules", description: "The owner's approval rules: which agent may use which outside capability (and target) without asking, until when, and whether it was revoked.",
+    inputSchema: object({ before: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
+  { name: "approval_rule_add", description: "Ask for a new approval rule: for up to 30 days, one agent may use one outside capability without asking, optionally only for one target (site:<host>, a calendar id, a recipient id, or browse). This ALWAYS asks the owner on a card, whatever else is allowed, and you get a receipt to collect with await_result. Running commands and payments can never be covered.",
+    inputSchema: object({ agent: text("Agent id, e.g. agent:main"), member: text("Device member, e.g. device:phone"), word: text("Capability, e.g. clipboard.set"),
+      target: text("Only this target; omit for every use of the capability"), days: { type: "integer", minimum: 1, maximum: 30 } }, ["agent", "member", "word"]) },
+  { name: "approval_rule_remove", description: "Ask to revoke an approval rule by id. This ALWAYS asks the owner on a card; collect the result with await_result.",
+    inputSchema: object({ id: text("Rule id from approval_rules") }, ["id"]) },
   { name: "history_query", description: "Search the conversation history with the owner. Give text to search, or read_seq to read one message in full. Returns newest first, with seq numbers; page older with before_seq.",
     inputSchema: object({ text: text("Words to look for (case-insensitive)"), speaker: { type: "string", enum: ["owner", "agent", "any"] },
       before_seq: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 }, read_seq: { type: "integer", minimum: 1 } }) },
@@ -280,6 +291,11 @@ export class AgentMcpServer {
         case "timer_list": return await this.send(binding, active.turn, "service:clock", "list", {}, turnSignal);
         case "timer_cancel": return await this.send(binding, active.turn, "service:clock", "cancel", { id: args.id }, turnSignal);
         case "history_query": return this.history(args);
+        case "approval_log": return await this.send(binding, active.turn, "service:gate", "audit", pick(args, ["request_id", "requester", "word", "decision", "before", "limit"]), turnSignal);
+        case "approval_rules": return await this.send(binding, active.turn, "service:gate", "rules.list", pick(args, ["before", "limit"]), turnSignal);
+        // Changing rules waits for the owner's card: a receipt comes back after the fast path.
+        case "approval_rule_add": return await this.job(binding, active.turn, "service:gate", "rules.set", pick(args, ["agent", "member", "word", "target", "days"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        case "approval_rule_remove": return await this.job(binding, active.turn, "service:gate", "rules.revoke", { id: args.id }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
         case "human_say": return await this.send(binding, active.turn, "person:owner", "say", { text: args.text, kind: args.kind ?? "reply" }, turnSignal);
         case "human_notify": return await this.send(binding, active.turn, "person:owner", "say", { text: args.text, kind: "heads_up" }, turnSignal);
         case "human_ask": {
@@ -308,6 +324,7 @@ export class AgentMcpServer {
         case "capability_call": {
           if (typeof args.member !== "string" || typeof args.word !== "string") return failure("payload_invalid", "member and word are required");
           if (args.member === "service:agents") return failure("forbidden", "use the agent tools for other agents");
+          if (args.member === "service:gate") return failure("forbidden", "use the approval tools for approval records and rules");
           if (!binding.allowsWord(args.member, args.word)) return failure("forbidden", `${args.member}/${args.word} is not among the capabilities you may use`);
           if (args.body !== undefined && (typeof args.body !== "object" || args.body === null || Array.isArray(args.body))) return failure("payload_invalid", "body must be an object");
           return await this.job(binding, active.turn, args.member, args.word, (args.body ?? {}) as Record<string, unknown>,
@@ -388,7 +405,7 @@ export class AgentMcpServer {
   private list(binding: AgentBinding, only?: string): ToolResult {
     const summary = this.options.members.describe("agent");
     // Agents reach each other through the agent tools, not as capabilities.
-    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && (!only || member.id === only)).map((member) => {
+    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && member.id !== "service:gate" && (!only || member.id === only)).map((member) => {
       let words: WordSpec[] = [];
       try { words = this.options.members.describe("agent", member.id).members[0]?.words ?? []; } catch { /* vanished */ }
       return { id: member.id, kind: member.kind, name: member.name, ...(member.online === undefined ? {} : { online: member.online }),

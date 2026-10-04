@@ -89,6 +89,11 @@ const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({
   transportPrincipal: ctx.transportPrincipal,
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
 const AGENT = /^agent:[A-Za-z0-9_-]+$/;
+/**
+ * Written into ash, not configurable: when an agent asks to change how approvals work, the owner is asked every time.
+ * No rule, mode, carry-over or reviewer can let it through, and the card offers no "always".
+ */
+const ALWAYS_ASK_OWNER = new Set(["service:gate/rules.set", "service:gate/rules.revoke"]);
 /** Owner and agents may call device capabilities; the gate judges each action instead of a per-capability access list. */
 const deviceCaller = (from: string): boolean => from === "person:owner" || AGENT.test(from);
 const CARRY_MS = 5 * 60_000;
@@ -461,8 +466,12 @@ export class WorldRouter {
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
       fail("forbidden", "only owner may inspect or start background work");
-    if (request.to === "service:gate" && from !== "person:owner") fail("forbidden", "gate inspection requires owner");
-    if (request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
+    // An agent may read approval evidence and rules, and ask to change rules (which always asks the owner, see ALWAYS_ASK_OWNER).
+    const agentGateWord = ["audit", "history", "rules.list", "rules.set", "rules.revoke"].includes(request.word) &&
+      AGENT.test(from) && ctx.transport === "agent" && ctx.transportPrincipal === from && ctx.local && !ctx.remote;
+    if (request.to === "service:gate" && from !== "person:owner" && !agentGateWord) fail("forbidden", "gate inspection requires owner");
+    if (request.to === "service:gate" && request.word.startsWith("access.") && from !== "person:owner") fail("forbidden", "device access is the owner's");
+    if (request.to === "service:gate" && from === "person:owner" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
       (ctx.remote || !ctx.local || !ctx.ownerProxy || (request.word.startsWith("access.") && !["api", "web_ui"].includes(ctx.transport))))
       fail("forbidden", "gate change requires current local owner");
     const toAgent = typeof request.to === "string" && AGENT_ID.test(request.to);
@@ -719,6 +728,23 @@ export class WorldRouter {
       ? `${command}${Object.keys(rest).length ? `\n${JSON.stringify(rest)}` : ""}` : JSON.stringify(request.body);
   }
 
+  /** What an agent wants to change about approvals, in words the owner can judge. */
+  private ruleChangeCard(request: Message): { title: string; detail: string } {
+    const body = request.body as { agent?: string; member?: string; word?: string; target?: string; days?: number; id?: string };
+    if (request.word === "rules.revoke") return { title: `${request.from} 想撤销一条审批规则`, detail: `规则 ${String(body.id)}：撤销后，这类操作会重新按正常流程判断或问你。` };
+    const label = body.member && body.word ? this.endpoint(body.member, body.word)?.spec.label ?? body.word : String(body.word);
+    return { title: `${request.from} 想新增一条审批规则`,
+      detail: `${body.days ?? 30} 天内，${body.agent} 使用「${label}」（${body.member}/${body.word}）${body.target ? `，目标 ${body.target}` : "，不限目标"}时不再问你。` };
+  }
+
+  /** The identity a rule for one agent and one outside capability is matched by, as the gate computes it for that agent's requests. */
+  ruleIdentity(agent: string, member: string, word: string): { subject: string; fingerprint: string; risk: string; effect: WordEffect; payment: boolean } | null {
+    const endpoint = this.endpoint(member, word);
+    if (!AGENT.test(agent) || !endpoint || !member.startsWith("device:")) return null;
+    return { subject: hash({ member: agent, principal: agent, pairedDeviceId: null }), fingerprint: hash({ to: member, word, spec: endpoint.spec }),
+      risk: endpoint.spec.risk ?? "none", effect: wordEffect(endpoint.spec), payment: isPayment(word, endpoint.spec.label, {}) };
+  }
+
   /** The plain card written from the request itself; also what the owner sees when the reviewer is unavailable. */
   private defaultCard(request: Message, endpoint: Registered): { title: string; detail: string } {
     const calendarAsk = request.word === "calendar.create" && Number.isSafeInteger(request.body.calendar_id) &&
@@ -780,12 +806,18 @@ export class WorldRouter {
     pending.controller.signal.addEventListener("abort", stop, { once: true });
     let timer: ReturnType<typeof setTimeout> | undefined;
     let verdict: ReviewVerdict | null = null;
+    let failure = "";
+    const reviewStarted = Date.now();
+    this.ledger.gateEvidence(request.id, { facts });
     try {
       verdict = await Promise.race([reviewer(detached(facts), controller.signal),
         new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("review timed out")); }, this.reviewTimeoutMs); })]);
-      if (!verdict || (verdict.decision !== "allow" && verdict.decision !== "ask") || typeof verdict.reason !== "string") verdict = null;
-    } catch { verdict = null; }
+      if (!verdict || (verdict.decision !== "allow" && verdict.decision !== "ask") || typeof verdict.reason !== "string") { failure = "malformed verdict"; verdict = null; }
+    } catch (error) { failure = error instanceof Error ? error.message.slice(0, 200) : "review failed"; verdict = null; }
     finally { if (timer) clearTimeout(timer); pending.controller.signal.removeEventListener("abort", stop); }
+    this.ledger.gateEvidence(request.id, { review: verdict
+      ? { decision: verdict.decision, reason: verdict.reason, ...(verdict.title ? { title: verdict.title } : {}), ...(verdict.detail ? { detail: verdict.detail } : {}), ms: Date.now() - reviewStarted }
+      : { decision: "unavailable", error: failure || "no verdict", ms: Date.now() - reviewStarted } });
     if (pending.settled) return null;
     if (verdict?.decision !== "allow") return { passed: false, ...(verdict ? { verdict } : {}) };
     // The review took time: authority and the route are checked again right before the pass commits.
@@ -803,16 +835,16 @@ export class WorldRouter {
   }
 
   /** The owner card: the reviewer's words when it asked, the plain card otherwise; the exact action is always on it. */
-  private askOwner(pending: Pending, identity: { subject: string; fingerprint: string }, effect: WordEffect, verdict?: ReviewVerdict): void {
+  private askOwner(pending: Pending, identity: { subject: string; fingerprint: string }, effect: WordEffect, verdict?: ReviewVerdict, forced = false): void {
     const { request, endpoint } = pending;
     const expiresAt = Math.min(request.ts + 600_000, pending.deadlineAt);
-    const plain = this.defaultCard(request, endpoint);
+    const plain = forced ? this.ruleChangeCard(request) : this.defaultCard(request, endpoint);
     const reviewed = verdict?.decision === "ask";
     const title = reviewed && verdict.title?.trim() ? plainText(verdict.title, 40) : plain.title;
     const reviewerDetail = reviewed && verdict.detail?.trim() ? verdict.detail.trim().slice(0, 600) : "";
     const detail = reviewerDetail ? (reviewerDetail.includes(plain.detail) ? reviewerDetail : `${reviewerDetail}\n${plain.detail}`) : plain.detail;
     // "Always" is never offered for running commands or payments; elsewhere it covers the target, or the capability when there is none.
-    const offerAlways = effect !== "execute" && !isPayment(request.word, endpoint.spec.label, request.body);
+    const offerAlways = !forced && effect !== "execute" && !isPayment(request.word, endpoint.spec.label, request.body);
     const target = gateTarget(request.to!, request.word, request.body);
     const objectPattern = offerAlways ? gateRulePattern(request.to!, request.word, request.body) : null;
     const capability = endpoint.spec.label ?? request.word;
@@ -826,6 +858,8 @@ export class WorldRouter {
         options: [{ id: "once", label: "允许这一次" }, ...(objectPattern ? [{ id: "always" as const, label: alwaysLabel }] : []), { id: "deny", label: "不允许" }],
         source: { word: request.word, to: request.to!, body_preview: plain.detail } } });
     if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
+    this.ledger.gateEvidence(request.id, { card: { ask_id: started.ask.id, title, detail, options: (started.ask.body.options as unknown[]) ?? [],
+      ...(forced ? { forced: "rule changes always ask the owner" } : {}), ...(verdict?.decision === "ask" ? { by: "reviewer" } : { by: "plain" }) } });
     pending.phase = "gate_waiting";
     const key = AGENT.test(request.from) ? this.carryKey(pending, identity.subject, effect) : null;
     if (key) {
@@ -843,7 +877,8 @@ export class WorldRouter {
     try {
       // Only what reaches outside ash is judged: a capability of the phone or another device. ash's own system, human
       // and agent words (agents, timers, the owner's files, talking to the owner) are internal and never asked about.
-      const gateBypass = request.from === "person:owner" || !request.to?.startsWith("device:");
+      const forced = AGENT.test(request.from) && ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`);
+      const gateBypass = request.from === "person:owner" || (!request.to?.startsWith("device:") && !forced);
       const effect = wordEffect(endpoint.spec);
       if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
@@ -856,6 +891,8 @@ export class WorldRouter {
           this.finish(pending, errors("failed", "owner approval unavailable"), request.to!, false); return;
         }
         const identity = this.gateIdentity(pending);
+        this.ledger.gateEvidence(request.id, { label: endpoint.spec.label ?? request.word, effect, content: this.actionText(request).slice(0, 4000) });
+        if (forced) { this.askOwner(pending, identity, effect, undefined, true); return; }
         // Owner rules ("always", 30 days) come first; then mode, carry-over and the reviewer, for agents only.
         const ruleEvent = this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint);
         if (ruleEvent) {

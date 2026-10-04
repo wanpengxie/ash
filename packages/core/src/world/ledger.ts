@@ -326,6 +326,14 @@ export class Ledger {
         object_pattern TEXT NOT NULL, risk TEXT NOT NULL, contract_fingerprint TEXT NOT NULL,
         created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER);
         CREATE INDEX IF NOT EXISTS gate_rules_match ON gate_rules(subject,target,word,object_pattern,expires_at);`);
+      // Who made or revoked a rule: null is the owner's own card or screen, otherwise the approved request that did it.
+      for (const column of ["created_by", "revoked_by"])
+        if (!(db.prepare("PRAGMA table_info(gate_rules)").all() as Row[]).some((item) => item.name === column)) db.exec(`ALTER TABLE gate_rules ADD COLUMN ${column} TEXT`);
+      // The evidence behind each approval decision: the facts the reviewer saw, its verdict, the card shown.
+      db.exec(`CREATE TABLE IF NOT EXISTS gate_evidence (
+        request_id TEXT PRIMARY KEY, at INTEGER NOT NULL, requester TEXT NOT NULL, member TEXT NOT NULL, word TEXT NOT NULL,
+        label TEXT, effect TEXT, turn TEXT, content TEXT, facts TEXT, review TEXT, card TEXT);
+        CREATE INDEX IF NOT EXISTS gate_evidence_requester ON gate_evidence(requester);`);
       db.exec(`CREATE TABLE IF NOT EXISTS gate_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS gate_access (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, source_hash TEXT UNIQUE,
@@ -1156,10 +1164,73 @@ export class Ledger {
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
-  revokeGateRule(id: string): boolean {
+  revokeGateRule(id: string, by?: string): boolean {
     if (!id) throw new TypeError("invalid gate rule id");
-    const changed = this.db.prepare("UPDATE gate_rules SET revoked_at=? WHERE id=? AND revoked_at IS NULL").run(Date.now(), id);
+    const changed = this.db.prepare("UPDATE gate_rules SET revoked_at=?,revoked_by=? WHERE id=? AND revoked_at IS NULL").run(Date.now(), by ?? null, id);
     return Number(changed.changes) === 1;
+  }
+
+  /** A rule made by an approved request (an agent asked, the owner said yes), never by an agent alone. */
+  addGateRule(input: { subject: string; alias: string; target: string; word: string; pattern: string; risk: string;
+    contractFingerprint: string; days: number; createdBy: string }): { id: string; expires_at: number } {
+    if (!/^[a-f0-9]{64}$/.test(input.subject) || !/^[a-f0-9]{64}$/.test(input.contractFingerprint) || !Number.isSafeInteger(input.days) ||
+      input.days < 1 || input.days > 30 || !input.pattern) throw new TypeError("invalid gate rule");
+    const id = newId();
+    const at = Date.now();
+    const expires = at + input.days * 24 * 60 * 60_000;
+    this.db.prepare(`INSERT INTO gate_rules(id,subject,subject_alias,device_id,capability_id,target,word,object_pattern,risk,
+      contract_fingerprint,created_at,expires_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, input.subject, input.alias, input.target, input.word, input.target, input.word, input.pattern, input.risk,
+        input.contractFingerprint, at, expires, input.createdBy);
+    return { id, expires_at: expires };
+  }
+
+  /** Record what an approval decision was based on; later stages add their part to the same request's row. */
+  gateEvidence(requestId: string, fields: { requester?: string; member?: string; word?: string; label?: string; effect?: string; turn?: string | null;
+    content?: string; facts?: unknown; review?: unknown; card?: unknown }): void {
+    const request = this.byId(requestId);
+    if (!request) return;
+    this.db.prepare(`INSERT OR IGNORE INTO gate_evidence(request_id,at,requester,member,word,label,effect,turn,content)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(requestId, Date.now(), fields.requester ?? request.from, fields.member ?? request.to ?? "",
+      fields.word ?? request.word, fields.label ?? null, fields.effect ?? null, fields.turn ?? request.turn ?? null, fields.content ?? null);
+    for (const key of ["label", "effect", "content"] as const)
+      if (fields[key] !== undefined) this.db.prepare(`UPDATE gate_evidence SET ${key}=? WHERE request_id=?`).run(fields[key] as string, requestId);
+    for (const key of ["facts", "review", "card"] as const)
+      if (fields[key] !== undefined) this.db.prepare(`UPDATE gate_evidence SET ${key}=? WHERE request_id=?`).run(JSON.stringify(fields[key]), requestId);
+  }
+
+  /** Approval evidence, newest first, with the decision, who made it, and whether the action then ran. */
+  gateAudit(query: { request_id?: string; requester?: string; word?: string; decision?: string; before?: number; limit?: number }): { entries: Record<string, unknown>[]; next_before?: number } {
+    const limit = Math.min(Math.max(query.limit ?? 10, 1), 50);
+    const where: string[] = ["e.rowid<?"];
+    const args: (string | number)[] = [query.before ?? Number.MAX_SAFE_INTEGER];
+    if (query.request_id) { where.push("e.request_id=?"); args.push(query.request_id); }
+    if (query.requester) { where.push("e.requester=?"); args.push(query.requester); }
+    if (query.word) { where.push("e.word=?"); args.push(query.word); }
+    const rows = this.db.prepare(`SELECT e.rowid AS row_id,e.* FROM gate_evidence e WHERE ${where.join(" AND ")} ORDER BY e.rowid DESC LIMIT ?`)
+      .all(...args, query.decision ? 500 : limit + 1) as Row[];
+    const parse = (value: unknown) => { try { return value === null || value === undefined ? null : JSON.parse(String(value)); } catch { return null; } };
+    const entries: Record<string, unknown>[] = [];
+    let last: number | undefined;
+    for (const row of rows) {
+      const history = this.db.prepare("SELECT decision,reason,rule_id,at,ask_id FROM gate_history WHERE request_id=? ORDER BY seq DESC LIMIT 1").get(String(row.request_id)) as Row | undefined;
+      const decision = history ? String(history.decision) : "waiting";
+      if (query.decision && decision !== query.decision) continue;
+      if (entries.length >= limit) break;
+      const response = this.responseTo(String(row.request_id));
+      const answer = history?.ask_id ? this.responseTo(String(history.ask_id)) : null;
+      const body = response?.body as { ok?: boolean; error?: { code?: string; message?: string } } | undefined;
+      entries.push({ request_id: String(row.request_id), at: Number(row.at), requester: String(row.requester), member: String(row.member), word: String(row.word),
+        label: row.label === null ? "" : String(row.label), effect: row.effect === null ? "" : String(row.effect), turn: row.turn === null ? "" : String(row.turn),
+        content: row.content === null ? "" : String(row.content), facts: parse(row.facts), review: parse(row.review), card: parse(row.card),
+        decision, decided_by: ["rule", "review", "carry"].includes(decision) ? decision : ["once", "always", "deny"].includes(decision) ? "owner" : decision,
+        reason: history?.reason === null || history?.reason === undefined ? "" : String(history.reason),
+        rule_id: history?.rule_id === null || history?.rule_id === undefined ? "" : String(history.rule_id),
+        answered_at: answer ? answer.ts : null,
+        executed: body ? (body.ok ? { ok: true } : { ok: false, error: body.error?.code ?? "failed", message: String(body.error?.message ?? "").slice(0, 200) }) : null });
+      last = Number(row.row_id);
+    }
+    return { entries, ...(entries.length >= limit && last !== undefined ? { next_before: last } : {}) };
   }
 
   byId(id: string): Message | null {

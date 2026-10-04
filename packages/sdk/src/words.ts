@@ -212,6 +212,18 @@ add("service:gate", "rules.list", "request", obj({ before: positiveSafe, limit: 
 add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "history", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 1000 } }),
   obj({ items: { type: "array", items: { oneOf: [gateCurrentHistory, gateLegacyHistory] }, maxItems: 1000 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
+// Evidence of every approval decision, for the owner and for an agent helping to look into one.
+const gateEvidence = obj({ request_id: id, at: nonnegativeSafe, requester: str, member: str, word: str, label: str, effect: str, turn: str,
+  content: str, facts: any, review: any, card: any, decision: str, decided_by: str, reason: str, rule_id: str, answered_at: any,
+  executed: any }, ["request_id", "at", "requester", "member", "word"], true);
+add("service:gate", "audit", "request", obj({ request_id: id, requester: str, word: str, decision: str, before: positiveSafe,
+  limit: { type: "integer", minimum: 1, maximum: 50 } }), obj({ entries: array(gateEvidence), next_before: any }, ["entries"]),
+  { label: "Reading approval records", description: "Approval evidence, newest first: what was asked, the facts the reviewer saw and its verdict, the card shown, the owner's answer, and whether the action then ran." });
+// Changing approval rules always asks the owner when an agent asks for it; it is never covered by a rule, the mode or the reviewer.
+add("service:gate", "rules.set", "request", obj({ agent: { type: "string", pattern: "^agent:[a-z][a-z0-9_-]{0,31}$" }, member: id, word: id,
+  target: nonempty, days: { type: "integer", minimum: 1, maximum: 30 } }, ["agent", "member", "word"]), obj({ id, expires_at: nonnegativeSafe }, ["id", "expires_at"]),
+  { audience: "owner", risk: "structure", effect: "structure", label: "Changing approval rules",
+    description: "Allow one agent to use one outside capability without asking, for up to 30 days, optionally only for one target (site:<host>, a calendar id, a recipient id, browse)." });
 add("service:gate", "access.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ items: { type: "array", items: gateAccessItem, maxItems: 100 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
 add("service:gate", "access.grant", "request", obj({ member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope }, ["member", "scope"]),
