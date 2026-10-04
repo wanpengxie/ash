@@ -7,13 +7,11 @@ export interface EgressUsage {
   at: number; ms: number; scope: string; provider: string; model: string;
   input: number; output: number; cacheRead: number; cacheWrite: number; ok: boolean;
 }
-export interface EgressFailure { at: number; status: number; message: string }
+export interface EgressFailure { at: number; status: number; message: string; scope: string; sessionId?: string }
 
 export interface EgressOptions {
   /** The real key, read from the vault on every call so saving a new key needs no restart. */
   key: () => string | null;
-  /** Which part of ash the current call belongs to (chat, mind, ...), decided by who is running now. */
-  scope: () => string;
   upstream?: string;
   log?: (...args: unknown[]) => void;
 }
@@ -67,6 +65,7 @@ export class ModelEgress {
   private readonly secret = randomBytes(18).toString("base64url");
   private readonly usageListeners = new Set<(record: EgressUsage) => void>();
   private readonly failures: EgressFailure[] = [];
+  private readonly sessionScopes = new Map<string, string>();
   private readonly upstream: string;
   base = "";
 
@@ -82,8 +81,15 @@ export class ModelEgress {
 
   onUsage(listener: (record: EgressUsage) => void): () => void { this.usageListeners.add(listener); return () => this.usageListeners.delete(listener); }
 
+  /** DSH puts this server-issued session id on every model request; bind it to the exact Ash actor before prompting. */
+  label(sessionId: string, scope: string): void {
+    if (/^[^\x00-\x1f\x7f]{1,256}$/.test(sessionId) && /^[A-Za-z0-9:_-]{1,128}$/.test(scope)) this.sessionScopes.set(sessionId, scope);
+  }
+
   /** Provider failures since a moment, newest last; a turn uses this to tell the owner why it went quiet. */
-  failuresSince(at: number): EgressFailure[] { return this.failures.filter((failure) => failure.at >= at); }
+  failuresSince(at: number, sessionId?: string): EgressFailure[] {
+    return this.failures.filter((failure) => failure.at >= at && (sessionId === undefined || failure.sessionId === sessionId));
+  }
 
   /** The provider's account balance for the vault key. The key never leaves this process. */
   async balance(): Promise<unknown> {
@@ -104,8 +110,9 @@ export class ModelEgress {
     if (server) await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
   }
 
-  private fail(at: number, status: number, message: string): void {
-    this.failures.push({ at, status, message: message.slice(0, 200) });
+  private fail(at: number, status: number, message: string, sessionId?: string): void {
+    this.failures.push({ at, status, message: message.slice(0, 200), scope: sessionId ? this.sessionScopes.get(sessionId) ?? `session:${sessionId}` : "background",
+      ...(sessionId ? { sessionId } : {}) });
     if (this.failures.length > 50) this.failures.splice(0, this.failures.length - 50);
   }
 
@@ -114,9 +121,12 @@ export class ModelEgress {
     const prefix = `/${this.secret}/anthropic/`;
     const url = request.url ?? "";
     if (!url.startsWith(prefix)) { response.writeHead(404).end(); return; }
+    const rawSession = request.headers["x-deepseek-harness-session-id"];
+    const sessionId = typeof rawSession === "string" && /^[^\x00-\x1f\x7f]{1,256}$/.test(rawSession) ? rawSession : undefined;
+    const scope = sessionId ? this.sessionScopes.get(sessionId) ?? `session:${sessionId}` : "background";
     const key = this.options.key();
     if (!key) {
-      this.fail(at, 401, "no model key in the vault");
+      this.fail(at, 401, "no model key in the vault", sessionId);
       response.writeHead(401, { "content-type": "application/json" })
         .end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "no API key: the owner has not saved a DeepSeek key yet" } }));
       return;
@@ -137,7 +147,6 @@ export class ModelEgress {
       headers.set(name, Array.isArray(value) ? value.join(", ") : value);
     }
     headers.set("x-api-key", key);
-    const scope = this.options.scope();
     const meter = new UsageMeter();
     const controller = new AbortController();
     response.on("close", () => { if (!response.writableFinished) controller.abort(); });
@@ -146,7 +155,7 @@ export class ModelEgress {
       upstream = await fetch(`${this.upstream}/anthropic/${url.slice(prefix.length)}`, { method: request.method, headers,
         body: request.method === "GET" || request.method === "HEAD" ? undefined : body, signal: controller.signal });
     } catch (error) {
-      this.fail(at, 0, `network: ${(error as Error).message}`);
+      this.fail(at, 0, `network: ${(error as Error).message}`, sessionId);
       if (!response.headersSent) response.writeHead(502, { "content-type": "application/json" })
         .end(JSON.stringify({ type: "error", error: { type: "api_error", message: "network: the provider could not be reached" } }));
       return;
@@ -165,7 +174,7 @@ export class ModelEgress {
       }
       response.end();
     } catch (error) {
-      if (!controller.signal.aborted) this.fail(at, 0, `network: ${(error as Error).message}`);
+      if (!controller.signal.aborted) this.fail(at, 0, `network: ${(error as Error).message}`, sessionId);
       response.destroy();
     }
     if (!streaming && whole) { try { meter.json({ type: "message", ...JSON.parse(whole) }); } catch { /* error text */ } }
@@ -173,8 +182,8 @@ export class ModelEgress {
     if (!upstream.ok) {
       let message = whole;
       try { message = String((JSON.parse(whole) as { error?: { message?: unknown } }).error?.message ?? whole); } catch { /* raw */ }
-      this.fail(at, upstream.status, message || `HTTP ${upstream.status}`);
-    } else if (meter.error) this.fail(at, 200, meter.error);
+      this.fail(at, upstream.status, message || `HTTP ${upstream.status}`, sessionId);
+    } else if (meter.error) this.fail(at, 200, meter.error, sessionId);
     if (request.method === "POST" && /messages/.test(url)) {
       const record: EgressUsage = { at, ms: Date.now() - at, scope, provider: "deepseek-official", model: meter.model || requestedModel || "unknown",
         input: meter.input, output: meter.output, cacheRead: meter.cacheRead, cacheWrite: meter.cacheWrite, ok };

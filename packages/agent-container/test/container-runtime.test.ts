@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders } from "node:http";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { startOwner } from "../../core/src/main";
+import { ContainerHost } from "../src/host";
 import { VaultStore } from "../../core/src/members/vault";
 import type { Message } from "../../sdk/src/api";
 
@@ -13,6 +14,19 @@ const install = process.env.ASH_TEST_DSH_ROOT;
 const skip = !install || !existsSync(join(install, "lib", "bin.js")) ? "ASH_TEST_DSH_ROOT is not a DSH install" : false;
 const plugin = fileURLToPath(new URL("../../dsh-ash-control/index.mjs", import.meta.url));
 const VAULT_KEY = "sk-vault-only-test-value-0123456789";
+
+test("deleting an agent forgets its persisted DSH session while restart keeps it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ash-session-cleanup-"));
+  const state = join(root, "state");
+  mkdirSync(state);
+  writeFileSync(join(state, "container-sessions.json"), JSON.stringify({ main: "s-main", "agent:helper": "s-old" }));
+  const host = new ContainerHost({ stateDir: state, launch: () => { throw new Error("must not boot"); } });
+  await host.closeSession("main");
+  assert.deepEqual(JSON.parse(readFileSync(join(state, "container-sessions.json"), "utf8")), { main: "s-main", "agent:helper": "s-old" });
+  await host.closeSession("agent:helper", true);
+  assert.deepEqual(JSON.parse(readFileSync(join(state, "container-sessions.json"), "utf8")), { main: "s-main" });
+  await host.close();
+});
 
 type Seen = { headers: IncomingHttpHeaders; tools: string[]; user: string; toolResult: boolean; mind: boolean; raw: string };
 

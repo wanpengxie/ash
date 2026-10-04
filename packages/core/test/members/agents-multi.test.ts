@@ -46,7 +46,7 @@ async function world(scripts: Record<string, Script>) {
       return createAgentMember({ id: item.id, ledger, router, stateDir: join(dir, "agents", item.id.slice(6)), runner: runnerFor(item.id), name: item.name });
     },
     reopen: async (id) => { reopened.push(id); },
-    dispose: (id) => { const binding = bindings.get(id); if (binding) tools.unbind(binding); bindings.delete(id); },
+    dispose: async (id) => { const binding = bindings.get(id); if (binding) tools.retire(binding); bindings.delete(id); },
     apply: (item) => { const binding = bindings.get(item.id); if (binding) binding.policy = policy(item); },
   };
   const main = createAgentMember({ ledger, router, stateDir: join(dir, "main"), runner: runnerFor("agent:main") });
@@ -153,8 +153,12 @@ test("the main agent manages agents through its system tools; other agents canno
     assert.deepEqual(w.reopened, ["agent:helper"]);
     const keeperRemoval = await w.call("agent:main", "agent_remove", { agent: "agent:keeper" }) as { error: { code: string } };
     assert.equal(keeperRemoval.error.code, "forbidden", "built-in agents are stopped, not removed");
+    const oldToken = w.bindings.get("agent:helper")!.token;
     assert.deepEqual((await w.call("agent:main", "agent_remove", { agent: "agent:helper" }) as { result: unknown }).result, { removed: true });
     assert.ok(!w.members.describe("agent").members.some((m) => m.id === "agent:helper"));
+    const recreated = await w.call("agent:main", "agent_create", { id: "agent:helper", name: "新帮手", summary: "重新开始", brief: "不要继承旧会话。" }) as { ok: boolean };
+    assert.equal(recreated.ok, true);
+    assert.notEqual(w.bindings.get("agent:helper")!.token, oldToken, "a reused display id receives a fresh credential");
     mainTurn.abort(); keeperTurn.abort();
   } finally { await w.close(); }
 });

@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAuthScopeKey } from "./auth-scope";
 import { protectProcessMemory } from "./harden";
@@ -249,11 +249,13 @@ export async function startOwner(config: Config): Promise<Running> {
     const otherBindings = new Map<string, AgentBinding>();
     if (containerMode) {
       const containerConfig = config.container!;
-      egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream, scope: () => running.chat ? "chat" : running.mind ? "mind" : running.background ? "background" : "other" });
+      egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream });
       const egressBase = await egress.start();
       container = new ContainerHost({ stateDir: config.stateDir, log,
         launch: () => prepareLaunch({ ...containerConfig, model: containerModel() }, egressBase, config.stateDir) });
+      const resultRoot = join(config.workspaces!.home, ".ash", "results");
       agentTools = new AgentMcpServer({ router: world, members, ledger, log,
+        resultArtifacts: { hostDir: resultRoot, toAgentPath: (path) => containerConfig.direct ? path : `/root/work/.ash/results/${basename(path)}` },
         status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }),
         confirm: ({ binding, turn, callId, title, detail, signal }) => world.requestAgentConfirmation({ member: binding.member,
           sessionId: `session-${createHash("sha256").update(binding.label).digest("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5")}`,
@@ -268,12 +270,12 @@ export async function startOwner(config: Config): Promise<Running> {
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const keyMissing = () => !vaultStore.has("DEEPSEEK_API_KEY");
     const containerRunner = container ? new ContainerTurnRunner({ host: container, binding: mainBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
-      mcp: () => ({ url: agentTools!.url, token: mainBinding!.token }), failuresSince: (at) => egress!.failuresSince(at),
+      mcp: () => ({ url: agentTools!.url, token: mainBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
       devices: () => `${deviceSummary(members)}\n${screensNow()}`, onActive: (active) => { running.chat += active ? 1 : -1; } }) : null;
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`)
       : containerRunner ?? new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : container ? new ContainerMindRunner({ host: container, binding: mindBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
-      mcp: () => ({ url: agentTools!.url, token: mindBinding!.token }), failuresSince: (at) => egress!.failuresSince(at), onActive: (active) => { running.mind += active ? 1 : -1; } }) : null;
+      mcp: () => ({ url: agentTools!.url, token: mindBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope), onActive: (active) => { running.mind += active ? 1 : -1; } }) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
       ...(live ? { mind: () => mind } : {}),
       ...(live ? { managedSnapshot: async () => {
@@ -292,13 +294,18 @@ export async function startOwner(config: Config): Promise<Running> {
         const runner = new ContainerTurnRunner({ host: container!, binding, router: world, keyMissing, stateDir: config.stateDir, log,
           sessionKey: item.id, agentName: agentName(item.id),
           context: () => { const current = declaration(); return `[${current.name}（${current.id}）的职责]\n${current.brief ?? current.summary}\n\n[Ash 的规则]\n${AGENT_RULES}`; },
-          mcp: () => ({ url: agentTools!.url, token: binding.token }), failuresSince: (at) => egress!.failuresSince(at),
+          mcp: () => ({ url: agentTools!.url, token: binding.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
           onActive: (active) => { running.background += active ? 1 : -1; } });
         return createAgentMember({ id: item.id, ledger, router: world, stateDir: join(config.stateDir, "agents", agentName(item.id)), runner, name: item.name,
           isPaused: () => clock!.journal.isPaused() });
       },
       reopen: async (id) => { await container!.closeSession(id); },
-      dispose: (id) => { const binding = otherBindings.get(id); if (binding) agentTools!.unbind(binding); otherBindings.delete(id); },
+      dispose: async (id) => {
+        const binding = otherBindings.get(id);
+        if (binding) agentTools!.retire(binding);
+        otherBindings.delete(id);
+        await container!.closeSession(id, true);
+      },
       apply: (item) => { const binding = otherBindings.get(item.id); if (binding) binding.policy = agentPolicy!(item); },
     } : null;
     agentSystem = new AgentSystem({ router: world, members, stateDir: config.stateDir, defaults: declarations, main: agent, runtime: agentRuntime,

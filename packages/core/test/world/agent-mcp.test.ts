@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,8 +13,9 @@ import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-login", member: "person:owner", local: true, remote: false, ownerProxy: true };
 
-async function world(options: { fastPathMs?: number; maxWaitMs?: number } = {}) {
-  const ledger = await Ledger.open(join(mkdtempSync(join(tmpdir(), "ash-mcp-")), "ash.db"));
+async function world(options: { fastPathMs?: number; maxWaitMs?: number; artifacts?: string } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "ash-mcp-"));
+  const ledger = await Ledger.open(join(dir, "ash.db"));
   const router = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(router);
   members.register(new OwnerMember("Owner", ledger));
@@ -25,19 +26,23 @@ async function world(options: { fastPathMs?: number; maxWaitMs?: number } = {}) 
         input_schema: { type: "object", properties: {}, additionalProperties: false }, result_schema: { type: "object", properties: { level: { type: "integer" } }, required: ["level"] } },
       { name: "slow.run", label: "Slow", description: "Takes a while.", risk: "none",
         input_schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"], additionalProperties: false } },
+      { name: "large.get", label: "Large", description: "Returns a large page. Read-only.", risk: "none",
+        input_schema: { type: "object", properties: {}, additionalProperties: false } },
     ],
     handle: async (message) => {
       if (message.word === "battery.get") return { ok: true, result: { level: 80 } };
+      if (message.word === "large.get") return { ok: true, result: { page: "x".repeat(90_000) } };
       await new Promise<void>((resolve) => { release = resolve; });
       return { ok: true, result: { done: message.body.n } };
     } });
   const confirms: { title: string; detail: string }[] = [];
   const server = new AgentMcpServer({ router, members, ledger, fastPathMs: options.fastPathMs, maxWaitMs: options.maxWaitMs,
+    ...(options.artifacts ? { resultArtifacts: { hostDir: options.artifacts, toAgentPath: (path: string) => path } } : {}),
     status: () => ({ paused: false }),
     confirm: async (input) => { confirms.push({ title: input.title, detail: input.detail }); return input.title.includes("yes") ? "approved" : "rejected"; } });
   const url = await server.start();
   const binding = server.bind("agent:main", "main", () => null);
-  return { ledger, router, members, server, url, binding, confirms, release: () => release?.() };
+  return { dir, ledger, router, members, server, url, binding, confirms, release: () => release?.() };
 }
 
 test("the tool set is fixed, the connection is the identity, and a browser page cannot reach it", async () => {
@@ -80,7 +85,7 @@ test("human and meta tools act as the agent within its turn", async () => {
 
     const listed = await w.server.call(w.binding, "capability_list", {}, turn.signal) as ToolResult & { ok: true; result: { members: { id: string; capabilities: { word: string; effect: string }[] }[] } };
     const phone = listed.result.members.find((m) => m.id === "device:phone")!;
-    assert.deepEqual(phone.capabilities.map((c) => [c.word, c.effect]), [["battery.get", "read"], ["slow.run", "read"]]);
+    assert.deepEqual(phone.capabilities.map((c) => [c.word, c.effect]), [["battery.get", "read"], ["slow.run", "read"], ["large.get", "read"]]);
     assert.ok(!listed.result.members.some((m) => m.id === "agent:main"), "she does not list herself");
 
     const described = await w.server.call(w.binding, "capability_describe", { member: "device:phone", word: "battery.get" }, turn.signal) as ToolResult & { ok: true; result: { capabilities: { input_schema: object; effect: string }[] } };
@@ -123,8 +128,62 @@ test("a slow call returns a receipt, then await_result collects it", async () =>
     const done = await w.server.call(w.binding, "await_result", { request_id: receipt.request_id }, turn.signal);
     assert.deepEqual(done, { ok: true, result: { done: 3 } });
     const unknown = await w.server.call(w.binding, "await_result", { request_id: "m_nope" }, turn.signal) as ToolResult & { ok: false };
-    assert.equal(unknown.error.code, "payload_invalid");
+    assert.equal(unknown.error.code, "result_unknown");
   } finally { turn.abort(); await w.server.close(); w.ledger.close(); }
+});
+
+test("receipts and their owner survive an MCP server restart", async () => {
+  const w = await world({ fastPathMs: 20, maxWaitMs: 2_000 });
+  const turn = new AbortController();
+  w.binding.begin("t_restart", turn.signal);
+  const receipt = await w.server.call(w.binding, "capability_call", { member: "device:phone", word: "slow.run", body: { n: 7 }, wait: false }, turn.signal) as { request_id: string };
+  await w.server.close();
+  const restarted = new AgentMcpServer({ router: w.router, members: w.members, ledger: w.ledger, fastPathMs: 20, maxWaitMs: 2_000,
+    status: () => ({}), confirm: async () => "unavailable" });
+  const rebound = restarted.bind("agent:main", "main", () => null);
+  try {
+    const pending = await restarted.call(rebound, "list_pending", {}, turn.signal) as ToolResult & { ok: true; result: { pending: { request_id: string }[] } };
+    assert.deepEqual(pending.result.pending.map((item) => item.request_id), [receipt.request_id]);
+    setTimeout(() => w.release(), 20);
+    assert.deepEqual(await restarted.call(rebound, "await_result", { request_id: receipt.request_id }, turn.signal), { ok: true, result: { done: 7 } });
+    const stranger = restarted.bind("agent:other", "other", () => null);
+    const hidden = await restarted.call(stranger, "await_result", { request_id: receipt.request_id }, turn.signal) as ToolResult & { ok: false };
+    assert.equal(hidden.error.code, "result_unknown");
+  } finally { turn.abort(); await restarted.close(); w.ledger.close(); }
+});
+
+test("a crash between request acceptance and receipt indexing recovers from authenticated ledger provenance", async () => {
+  const w = await world({ maxWaitMs: 2_000 });
+  const signal = new AbortController();
+  const accepted = await w.router.send({ transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false, turn: "t_gap" },
+    { to: "device:phone", kind: "request", word: "slow.run", body: { n: 9 } }, signal.signal);
+  try {
+    const pending = await w.server.call(w.binding, "list_pending", {}, signal.signal) as ToolResult & { ok: true; result: { pending: { request_id: string }[] } };
+    assert.ok(pending.result.pending.some((item) => item.request_id === accepted.id));
+    setTimeout(() => w.release(), 20);
+    assert.deepEqual(await w.server.call(w.binding, "await_result", { request_id: accepted.id }, signal.signal), { ok: true, result: { done: 9 } });
+    w.ledger.forgetAgentJobs("agent:main");
+    const afterDeletion = await w.server.call(w.server.bind("agent:main", "fresh", () => null), "await_result", { request_id: accepted.id }, signal.signal) as ToolResult & { ok: false };
+    assert.equal(afterDeletion.error.code, "result_unknown");
+  } finally { signal.abort(); await w.server.close(); w.ledger.close(); }
+});
+
+test("an oversized MCP result stays valid JSON and points to the complete workspace file", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ash-results-"));
+  const w = await world({ artifacts: root });
+  const turn = new AbortController();
+  w.binding.begin("t_large", turn.signal);
+  const client = new Client({ name: "agent", version: "1" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(w.url), { requestInit: { headers: { authorization: `Bearer ${w.binding.token}` } } }));
+    const response = await client.callTool({ name: "capability_call", arguments: { member: "device:phone", word: "large.get", body: {} } });
+    const parsed = JSON.parse((response.content as { text: string }[])[0]!.text) as { result: { truncated: boolean; artifact: { path: string; bytes: number; sha256: string } } };
+    assert.equal(parsed.result.truncated, true);
+    assert.equal(existsSync(parsed.result.artifact.path), true);
+    const full = readFileSync(parsed.result.artifact.path, "utf8");
+    assert.equal(JSON.parse(full).result.page.length, 90_000);
+    assert.equal(parsed.result.artifact.bytes, Buffer.byteLength(full));
+  } finally { turn.abort(); await client.close(); await w.server.close(); w.ledger.close(); }
 });
 
 test("every error code the tool server can emit is in the closed set", () => {

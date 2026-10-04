@@ -917,7 +917,9 @@ export class WorldRouter {
         const identity = this.gateIdentity(pending);
         this.ledger.gateEvidence(request.id, { label: endpoint.spec.label ?? request.word, effect, content: this.actionText(request).slice(0, 4000) });
         if (forced) { this.askOwner(pending, identity, effect, undefined, true); return; }
-        // Owner rules ("always", 30 days) come first; then mode, carry-over and the reviewer, for agents only.
+        // "Every time" is the strongest owner setting: saved rules stay listed but are dormant until auto mode returns.
+        if (this.currentApprovalMode() === "always") { this.askOwner(pending, identity, effect); return; }
+        // In auto mode, owner rules come first; then carry-over and the reviewer, for agents only.
         const ruleEvent = this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint);
         if (ruleEvent) {
           pending.phase = "dispatching";

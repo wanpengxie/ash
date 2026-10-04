@@ -52,6 +52,14 @@ export class ContainerHost {
     writeFileSync(temp, JSON.stringify(next, null, 1), { mode: 0o600 });
     renameSync(temp, this.file);
   }
+  private forgetStored(key: string): void {
+    const next = this.stored();
+    if (!(key in next)) return;
+    delete next[key];
+    const temp = `${this.file}.tmp`;
+    writeFileSync(temp, JSON.stringify(next, null, 1), { mode: 0o600 });
+    renameSync(temp, this.file);
+  }
 
   /** Start the runtime process and complete the ACP handshake. Idempotent while it is alive. */
   async boot(): Promise<AcpClient> {
@@ -134,10 +142,13 @@ export class ContainerHost {
   async inject(sessionId: string, content: ContentBlock[]): Promise<void> { await (await this.boot()).request("_ash/inject", { sessionId, content }); }
   cancel(sessionId: string): void { this.client?.notify("session/cancel", { sessionId }); }
 
-  /** Close one agent's session; its next turn resumes it from its kept history. */
-  async closeSession(key: string): Promise<void> {
+  /** Close one agent's session; forget=true is reserved for deleting that agent identity and its history. */
+  async closeSession(key: string, forget = false): Promise<void> {
+    const opening = this.opening.get(key);
+    if (opening) await opening.catch(() => undefined);
     const live = this.sessions.get(key);
     this.sessions.delete(key);
+    if (forget) this.forgetStored(key);
     if (live && this.client?.alive) await this.client.request("session/close", { sessionId: live.id }).catch((error) => this.options.log?.("session close failed", key, error));
   }
 

@@ -30,6 +30,9 @@ export interface RequestContextSnapshot {
 }
 export interface RequestTracking { deadlineAt: number; context: RequestContextSnapshot }
 export interface TrackedRequest { message: Message; phase: RequestPhase; deadlineAt: number; context: RequestContextSnapshot }
+export interface AgentJobRecord {
+  requestId: string; owner: string; turn: string; member: string; word: string; label: string; at: number; phase: RequestPhase;
+}
 export interface GateCaseStart {
   /** Stable authenticated identity, not a screen registration or bearer token. */
   subject: string;
@@ -291,6 +294,13 @@ export class Ledger {
       db.exec(`CREATE TABLE IF NOT EXISTS request_state (
         request_id TEXT PRIMARY KEY, phase TEXT NOT NULL, deadline_at INTEGER NOT NULL,
         context TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS agent_jobs (
+        request_id TEXT PRIMARY KEY, owner TEXT NOT NULL, turn TEXT NOT NULL, member TEXT NOT NULL,
+        word TEXT NOT NULL, label TEXT NOT NULL, created_at INTEGER NOT NULL,
+        FOREIGN KEY(request_id) REFERENCES request_state(request_id));
+        CREATE INDEX IF NOT EXISTS agent_jobs_owner ON agent_jobs(owner,created_at);
+        CREATE TABLE IF NOT EXISTS agent_job_cutoffs (
+          owner TEXT PRIMARY KEY, through_seq INTEGER NOT NULL);`);
       db.exec(`CREATE TABLE IF NOT EXISTS admin_pause_claims (
         by_message_id TEXT PRIMARY KEY, pause_request_id TEXT NOT NULL UNIQUE);`);
       db.exec(`CREATE TABLE IF NOT EXISTS option_answers (
@@ -585,6 +595,64 @@ export class Ledger {
   responseTo(requestId: string): Message | null {
     const row = this.db.prepare("SELECT * FROM messages WHERE kind='response' AND reply_to=?").get(requestId) as Row | undefined;
     return row ? decode(row) : null;
+  }
+
+  /** Persist which authenticated agent owns a receipt so it survives MCP/core restarts. */
+  recordAgentJob(input: Omit<AgentJobRecord, "phase">): void {
+    if (!input.requestId || !AGENT_ID.test(input.owner) || !input.turn || !input.member || !input.word ||
+      !input.label || !Number.isSafeInteger(input.at) || input.at < 0) throw new TypeError("invalid agent job");
+    const source = this.requestSource(input.requestId);
+    if (!source || source.message.from !== input.owner || source.message.to !== input.member ||
+      source.message.word !== input.word || source.message.turn !== input.turn) throw new TypeError("agent job does not match request");
+    this.db.prepare(`INSERT OR IGNORE INTO agent_jobs(request_id,owner,turn,member,word,label,created_at)
+      VALUES(?,?,?,?,?,?,?)`).run(input.requestId, input.owner, input.turn, input.member, input.word, input.label.slice(0, 160), input.at);
+  }
+
+  agentJob(owner: string, requestId: string): AgentJobRecord | null {
+    const row = this.db.prepare(`SELECT j.*,s.phase FROM agent_jobs j JOIN request_state s ON s.request_id=j.request_id
+      WHERE j.owner=? AND j.request_id=?`).get(owner, requestId) as Row | undefined;
+    if (row) return { requestId: String(row.request_id), owner: String(row.owner), turn: String(row.turn), member: String(row.member),
+      word: String(row.word), label: String(row.label), at: Number(row.created_at), phase: String(row.phase) as RequestPhase };
+    // Crash-safe fallback: request acceptance commits before the MCP layer can index the receipt. The authenticated
+    // request snapshot is sufficient to recover it, except across an explicit agent deletion cutoff.
+    const fallback = this.db.prepare(`SELECT m.*,s.phase,s.context AS tracking_context FROM messages m
+      JOIN request_state s ON s.request_id=m.id WHERE m.id=? AND m."from"=? AND m.seq>
+      COALESCE((SELECT through_seq FROM agent_job_cutoffs WHERE owner=?),0)`).get(requestId, owner, owner) as Row | undefined;
+    return fallback ? this.agentJobFromRequest(owner, fallback) : null;
+  }
+
+  pendingAgentJobs(owner: string): AgentJobRecord[] {
+    const rows = this.db.prepare(`SELECT j.*,s.phase FROM agent_jobs j JOIN request_state s ON s.request_id=j.request_id
+      WHERE j.owner=? AND s.phase!='settled' ORDER BY j.created_at`).all(owner) as Row[];
+    const indexed = rows.map((row) => ({ requestId: String(row.request_id), owner: String(row.owner), turn: String(row.turn),
+      member: String(row.member), word: String(row.word), label: String(row.label), at: Number(row.created_at), phase: String(row.phase) as RequestPhase }));
+    const ids = new Set(indexed.map((job) => job.requestId));
+    const fallback = (this.db.prepare(`SELECT m.*,s.phase,s.context AS tracking_context FROM messages m
+      JOIN request_state s ON s.request_id=m.id WHERE m."from"=? AND s.phase!='settled' AND m.seq>
+      COALESCE((SELECT through_seq FROM agent_job_cutoffs WHERE owner=?),0) ORDER BY m.seq`).all(owner, owner) as Row[])
+      .map((row) => this.agentJobFromRequest(owner, row)).filter((job): job is AgentJobRecord => Boolean(job) && !ids.has(job!.requestId));
+    return [...indexed, ...fallback].sort((a, b) => a.at - b.at);
+  }
+
+  /** Removing an agent creates a fresh identity even when the display id is later reused. */
+  forgetAgentJobs(owner: string): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM agent_jobs WHERE owner=?").run(owner);
+      this.db.prepare(`INSERT INTO agent_job_cutoffs(owner,through_seq) VALUES(?,?)
+        ON CONFLICT(owner) DO UPDATE SET through_seq=excluded.through_seq`).run(owner, this.lastSeq());
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  private agentJobFromRequest(owner: string, row: Row): AgentJobRecord | null {
+    try {
+      const context = JSON.parse(String(row.tracking_context)) as RequestContextSnapshot;
+      if (!AGENT_ID.test(owner) || row.kind !== "request" || row.from !== owner || typeof row.to !== "string" ||
+        typeof row.turn !== "string" || context.member !== owner || context.transportPrincipal !== owner) return null;
+      return { requestId: String(row.id), owner, turn: String(row.turn), member: String(row.to), word: String(row.word),
+        label: String(row.word), at: Number(row.ts), phase: String(row.phase) as RequestPhase };
+    } catch { return null; }
   }
 
   /** Internal recovery probe for a server-owned stable client ID; never exposed as a public lookup. */

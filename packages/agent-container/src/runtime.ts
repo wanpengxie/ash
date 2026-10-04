@@ -44,7 +44,9 @@ export interface ContainerRunnerOptions {
   /** True when no model key is in the vault: the owner is told how to fix it instead of hearing nothing. */
   keyMissing: () => boolean;
   /** Provider failures since a moment, from the model egress. */
-  failuresSince: (at: number) => { status: number; message: string }[];
+  failuresSince: (at: number, sessionId: string) => { status: number; message: string }[];
+  /** Register the DSH-owned session id before its first model request. */
+  labelSession?: (sessionId: string, scope: string) => void;
   devices?: () => string;
   stateDir: string;
   /** The runner says when it is working, so model usage is booked to chat or mind. */
@@ -216,6 +218,7 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       // A declared agent works in its own directory of the container; the session's cwd says so.
       const cwd = this.options.agentName ? (await host.boot(), host.workspace!.agentHome(this.options.agentName).agent) : undefined;
       sessionId = await host.session(this.options.sessionKey ?? "main", this.options.mcp(), cwd);
+      this.options.labelSession?.(sessionId, this.options.sessionKey && this.options.sessionKey !== "main" ? binding.member : "chat");
     }
     catch (error) {
       this.options.log?.("agent session unavailable", error);
@@ -248,7 +251,7 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       await watch.settle();
       if (watch.emitError) return { reason: "error", error: watch.emitError instanceof Error ? watch.emitError.message : "agent output failed" };
       if (signal.aborted || stop === "cancelled") return { reason: "error", error: "turn cancelled" };
-      const failures = this.options.failuresSince(started);
+      const failures = this.options.failuresSince(started, sessionId);
       if (failures.length && !watch.spoke) {
         const last = failures[failures.length - 1]!;
         if (fromOwner) await emit({ id: `${input.turn}:model-failed`, text: modelFailureText({ status: last.status, message: last.message }) }).catch(() => {});
@@ -285,6 +288,7 @@ export class ContainerMindRunner implements MindTurnRunner {
     if (this.options.keyMissing()) throw new Error("no model key");
     const { host, binding } = this.options;
     const sessionId = await host.session("mind", this.options.mcp());
+    this.options.labelSession?.(sessionId, "mind");
     const turn = `t_mind_${message.id}`;
     const watch = new TurnWatch(turn, async () => { /* the mind's own text goes nowhere */ }, signal, this.options.router);
     const off = host.onUpdate((sid, update) => { if (sid === sessionId) watch.update(update); });

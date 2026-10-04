@@ -1,4 +1,6 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -50,6 +52,8 @@ export interface AgentMcpOptions {
   /** Other agents in this world (agent:main is the only one today). */
   fastPathMs?: number;
   maxWaitMs?: number;
+  /** Full oversized tool results live here; agents receive a valid preview and the mapped workspace path. */
+  resultArtifacts?: { hostDir: string; toAgentPath(path: string): string; ttlMs?: number };
   log?: (...args: unknown[]) => void;
 }
 
@@ -197,6 +201,16 @@ export class AgentMcpServer {
   /** A removed agent's credential stops working at once. */
   unbind(binding: AgentBinding): void { this.bindings.delete(binding.token); }
 
+  /** Remove a declared agent's credential and durable receipt namespace. */
+  retire(binding: AgentBinding): void {
+    this.unbind(binding);
+    const pending = new Set(this.options.ledger.pendingAgentJobs(binding.member).map((job) => job.requestId));
+    for (const job of binding.jobs.values()) if (!job.result) pending.add(job.id);
+    if (pending.size) this.options.router.cancel([...pending]);
+    binding.jobs.clear();
+    this.options.ledger.forgetAgentJobs(binding.member);
+  }
+
   bind(member: string, label: string, sessionId: () => string | null, policy: AgentPolicy = {}): AgentBinding {
     const binding = new AgentBinding(member, label, sessionId, policy);
     this.bindings.set(binding.token, binding);
@@ -245,9 +259,8 @@ export class AgentMcpServer {
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((tool) => binding.allowsTool(tool.name)).map((tool) => ({ ...tool })) }));
       server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
         const result = await this.call(binding, call.params.name, (call.params.arguments ?? {}) as Record<string, unknown>, extra.signal);
-        let body = JSON.stringify(result);
-        if (body.length > MAX_RESULT_CHARS) body = `${body.slice(0, MAX_RESULT_CHARS)}… [truncated: result too large]`;
-        return { content: [{ type: "text", text: body }], ...(result && typeof result === "object" && "ok" in result && result.ok === false ? { isError: true } : {}) };
+        const encoded = this.encodeResult(result);
+        return { content: [{ type: "text", text: encoded.body }], ...(encoded.isError ? { isError: true } : {}) };
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       response.on("close", () => { void transport.close(); void server.close(); });
@@ -268,10 +281,17 @@ export class AgentMcpServer {
     if (!TOOL_NAMES.includes(name)) return failure("payload_invalid", `unknown tool ${name}`);
     if (!binding.allowsTool(name)) return failure("forbidden", `${name} is not one of your tools`);
     if (name === "await_result") return this.awaitResult(binding, args);
-    if (name === "list_pending") return { ok: true, result: { pending: [...binding.jobs.values()].filter((job) => !job.result).map((job) => ({ request_id: job.id, member: job.member, word: job.word, label: job.label, since: job.at })) } };
+    if (name === "list_pending") {
+      const durable = this.options.ledger.pendingAgentJobs(binding.member)
+        .map((job) => ({ request_id: job.requestId, member: job.member, word: job.word, label: job.label, since: job.at }));
+      const ids = new Set(durable.map((job) => job.request_id));
+      const local = [...binding.jobs.values()].filter((job) => !job.result && !ids.has(job.id))
+        .map((job) => ({ request_id: job.id, member: job.member, word: job.word, label: job.label, since: job.at }));
+      return { ok: true, result: { pending: [...durable, ...local].sort((a, b) => a.since - b.since) } };
+    }
     if (name === "cancel") {
-      const job = typeof args.request_id === "string" ? binding.jobs.get(args.request_id) : undefined;
-      if (!job) return failure("payload_invalid", "no call of yours has this request_id");
+      const job = typeof args.request_id === "string" ? this.restoreJob(binding, args.request_id) : null;
+      if (!job) return this.unknownReceipt(args.request_id);
       if (!job.result) this.options.router.cancel([job.id]);
       return { ok: true, result: { cancelled: !job.result } };
     }
@@ -366,6 +386,7 @@ export class AgentMcpServer {
       this.waiters.set(sent.id, (message) => resolve(fromResponse(message.body as ResponseBody, spec)));
     });
     const job: Job = { id: sent.id, member, word, label: spec?.label ?? word, turn, at: Date.now(), done, result: null };
+    this.options.ledger.recordAgentJob({ requestId: job.id, owner: binding.member, turn, member, word, label: job.label, at: job.at });
     void done.then((result) => { job.result = result; });
     binding.jobs.set(job.id, job);
     if (binding.jobs.size > 200) for (const [id, old] of binding.jobs) { if (old.result) binding.jobs.delete(id); if (binding.jobs.size <= 100) break; }
@@ -384,10 +405,70 @@ export class AgentMcpServer {
   }
 
   private async awaitResult(binding: AgentBinding, args: Record<string, unknown>): Promise<ToolResult | Record<string, unknown>> {
-    const job = typeof args.request_id === "string" ? binding.jobs.get(args.request_id) : undefined;
-    if (!job) return failure("payload_invalid", "no call of yours has this request_id");
+    const job = typeof args.request_id === "string" ? this.restoreJob(binding, args.request_id) : null;
+    if (!job) return this.unknownReceipt(args.request_id);
     const timeout = typeof args.timeout_ms === "number" ? Math.max(0, Math.min(args.timeout_ms, this.options.maxWaitMs ?? MAX_WAIT_MS)) : (this.options.maxWaitMs ?? MAX_WAIT_MS);
     return this.within(job, timeout);
+  }
+
+  private unknownReceipt(value: unknown): ToolResult {
+    if (typeof value !== "string" || !/^(?:m_|confirm)[A-Za-z0-9_-]{4,}$/.test(value))
+      return failure("payload_invalid", "request_id must be an earlier receipt");
+    return failure("result_unknown", "this receipt is not recoverable for your current agent identity");
+  }
+
+  /** Rebuild an in-memory waiter from the durable request, response and ownership records. */
+  private restoreJob(binding: AgentBinding, id: string): Job | null {
+    const live = binding.jobs.get(id);
+    if (live) return live;
+    const stored = this.options.ledger.agentJob(binding.member, id);
+    if (!stored) return null;
+    const spec = this.spec(stored.member, stored.word);
+    let resolveDone!: (result: ToolResult) => void;
+    const done = new Promise<ToolResult>((resolve) => { resolveDone = resolve; });
+    const job: Job = { id, member: stored.member, word: stored.word, label: stored.label, turn: stored.turn, at: stored.at, done, result: null };
+    binding.jobs.set(id, job);
+    const finish = (result: ToolResult) => { if (job.result) return; job.result = result; resolveDone(result); };
+    const settled = this.options.ledger.responseTo(id);
+    if (settled) finish(fromResponse(settled.body as ResponseBody, spec));
+    else if (stored.phase !== "settled") {
+      this.waiters.set(id, (message) => finish(fromResponse(message.body as ResponseBody, spec)));
+      const raced = this.options.ledger.responseTo(id);
+      if (raced) { this.waiters.delete(id); finish(fromResponse(raced.body as ResponseBody, spec)); }
+    } else finish(failure("result_unknown", "the request settled but its response is unavailable"));
+    return job;
+  }
+
+  private encodeResult(result: ToolResult | Record<string, unknown>): { body: string; isError: boolean } {
+    const full = JSON.stringify(result);
+    const originalError = result && typeof result === "object" && "ok" in result && result.ok === false;
+    if (full.length <= MAX_RESULT_CHARS) return { body: full, isError: originalError };
+    const artifacts = this.options.resultArtifacts;
+    if (!artifacts) return { body: JSON.stringify(failure("internal_error", "result was too large and result storage is unavailable")), isError: true };
+    const now = Date.now();
+    mkdirSync(artifacts.hostDir, { recursive: true, mode: 0o700 });
+    const name = `result-${now}-${randomBytes(6).toString("hex")}.json`;
+    const file = join(artifacts.hostDir, name);
+    const temp = `${file}.tmp`;
+    writeFileSync(temp, full, { mode: 0o600 });
+    renameSync(temp, file);
+    const ttl = artifacts.ttlMs ?? 24 * 3_600_000;
+    try {
+      for (const entry of readdirSync(artifacts.hostDir)) {
+        if (!/^result-\d+-[a-f0-9]+\.json$/.test(entry)) continue;
+        const old = join(artifacts.hostDir, entry);
+        if (now - statSync(old).mtimeMs > ttl) unlinkSync(old);
+      }
+    } catch (error) { this.options.log?.("result artifact cleanup failed", error); }
+    const artifact = { path: artifacts.toAgentPath(file), bytes: Buffer.byteLength(full), sha256: createHash("sha256").update(full).digest("hex"),
+      mime_type: "application/json", expires_at: now + ttl };
+    if (originalError) {
+      const source = (result as ToolResult & { ok: false }).error;
+      return { body: JSON.stringify({ ok: false, error: { code: source.code, message: source.message, recovery_hint: source.recovery_hint,
+        detail: { truncated: true, preview: full.slice(0, 40_000), artifact, note: "The complete JSON error is in artifact.path." } } }), isError: true };
+    }
+    return { body: JSON.stringify({ ok: true, result: { truncated: true, preview: full.slice(0, 40_000), artifact,
+      note: "The complete JSON result is in artifact.path." } }), isError: false };
   }
 
   private async confirm(binding: AgentBinding, turn: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult | Record<string, unknown>> {

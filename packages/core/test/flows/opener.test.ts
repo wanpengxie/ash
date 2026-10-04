@@ -62,3 +62,16 @@ test("app open after six hours passes upcoming sense facts to opener; only speak
     } finally { await f.close(); }
   }
 });
+
+test("a completed last turn is not offered to the opener as unfinished work", async () => {
+  const f = await fixture(true);
+  try {
+    const owner = f.ledger.append({ from: "person:owner", to: "agent:main", kind: "request", word: "say", body: { text: "建翻译员并翻译一句" } }).message;
+    f.ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.start", body: { turn: "t_done", ids: [owner.id] }, turn: "t_done" });
+    f.ledger.append({ from: "agent:main", to: "person:owner", kind: "request", word: "say", body: { text: "已经建好，译文是 done" }, turn: "t_done" });
+    f.ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.end", body: { turn: "t_done", reason: "completed" }, turn: "t_done" });
+    await f.send("sense.screen", { state: "app_open", away_ms: 7 * 3_600_000 });
+    await wait(() => Boolean(f.ledger.workRuns("opener")[0] && f.ledger.workRuns("opener")[0].state !== "running"));
+    assert.equal(f.inputs[0]!.last_topic, "");
+  } finally { await f.close(); }
+});

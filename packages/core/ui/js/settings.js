@@ -585,7 +585,7 @@ export class SettingsControls {
       { mode: "always", title: "每次都问", sub: `除了看和读，${name} 每做一件事都先问你。` },
     ];
     const approvalPage = page("settingsApproval", "审批",
-      `你选过「以后都允许」的事照常直接做；在 ${name} 的人物页里能看到每次是怎么决定的。`, () => loadApproval());
+      `「有影响时才问」会使用你选过的「以后都允许」规则；「每次都问」会暂停这些规则，切回后继续生效。在 ${name} 的人物页里能看到每次是怎么决定的。`, () => loadApproval());
     const approvalStatus = node("p", "", "set-status");
     approvalStatus.id = "settingsApprovalStatus";
     approvalStatus.setAttribute("role", "status");

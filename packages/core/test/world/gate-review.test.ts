@@ -242,7 +242,7 @@ test("an owner allow carries over for five minutes for the same exact action onl
   } finally { world.close(); }
 });
 
-test("mode always asks for every non-read agent action; reads and owner rules still apply", async () => {
+test("mode always asks for every non-read agent action and temporarily ignores owner rules", async () => {
   let mode: "auto" | "always" = "always";
   const fake = fakeReviewer({ decision: "allow", reason: "可撤回" });
   const world = await setup(fake.reviewer, { mode: () => mode });
@@ -257,11 +257,12 @@ test("mode always asks for every non-read agent action; reads and owner rules st
     assert.ok(world.card(again), "no carry-over in this mode");
     await world.answer(again, "always");
     const ruled = await world.send("browser.click", { site: "x.com", label: "第 2 页", ref: 3 });
-    assert.equal(world.card(ruled), null, "an owner rule still applies");
-    assert.equal(world.passes().at(-1)!.body.by, "rule");
+    assert.ok(world.card(ruled), "an existing owner rule is dormant in this mode");
+    await world.answer(ruled, "once");
     mode = "auto";
-    await world.send("browser.click", { site: "z.com", label: "下一页", ref: 1 });
-    assert.equal(fake.calls.length, 1, "the mode is read on every decision");
+    const auto = await world.send("browser.click", { site: "x.com", label: "第 3 页", ref: 4 });
+    assert.equal(world.card(auto), null, "switching back reactivates the saved rule");
+    assert.equal(world.passes().at(-1)!.body.by, "rule");
   } finally { world.close(); }
 });
 

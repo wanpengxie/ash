@@ -143,7 +143,7 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
     else if (state?.status === "rejected") text(card, "p", "这次回答没有被接受；它可能已经过期，或这台设备不能回答。", "set-status warn sheet-warning");
   }
 
-  const rulesBox = group(fragment, "以后都允许", `你选过「以后都允许」的事，${named(name, false)}在有效期内会直接去做，不再问你。`);
+  const rulesBox = group(fragment, "以后都允许", `在「有影响时才问」档位，${named(name, false)}会按这些有效规则直接去做；「每次都问」会暂时忽略它们。`);
   const live = Array.isArray(rules) ? rules.filter((rule) => rule && validId(rule.id) && !rule.revoked_at &&
     validTime(rule.expires_at) && rule.expires_at > now) : [];
   if (loading) text(rulesBox, "p", "正在读取…", "set-line sheet-loading");

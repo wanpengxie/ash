@@ -14,7 +14,7 @@ export interface AgentRuntime {
   /** Close the agent's session so its next turn reopens it (its history is kept). */
   reopen(id: string): Promise<void>;
   /** Forget everything created for a removed agent. */
-  dispose(id: string): void;
+  dispose(id: string): Promise<void>;
   /** Apply a changed declaration to the agent's tool credential. */
   apply(declaration: AgentDeclaration): void;
 }
@@ -299,7 +299,7 @@ export class AgentSystem implements Member {
       await member.close();
       this.live.delete(target);
     }
-    this.options.runtime?.dispose(target);
+    await this.options.runtime?.dispose(target);
     this.declarations.delete(target);
     delete this.lastWake[target];
     this.save();
