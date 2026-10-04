@@ -52,7 +52,7 @@ export class HostDeviceLink {
     const capabilities: DeviceCapability[] = this.currentManifest.capabilities.map((item) => ({ name: item.name, description: item.description, input_schema: item.input_schema, risk: item.risk, ...(item.effect ? { effect: item.effect } : {}), label: item.label }));
     const member = new DeviceMember("device:phone", this.currentManifest.name, capabilities, async (message, context) => {
       try {
-        const result = await this.request("POST", "/call", { capability: message.word, args: message.body, caller: message.from }, 180_000, context.signal) as CallResult;
+        const result = await this.request("POST", "/call", { capability: message.word, args: message.body, caller: message.from, turn: message.turn }, 180_000, context.signal) as CallResult;
         if (!result || typeof result.ok !== "boolean") throw new Error("invalid host result");
         return result.ok ? { ok: true, result: { content: result.content, ...(result.data === undefined ? {} : { data: result.data }) } }
           : { ok: false, error: { code: "failed", message: result.error ?? "device call failed" } };
@@ -91,6 +91,14 @@ export class HostDeviceLink {
   startHealthChecks(members: WorldMembers): void {
     if (this.closed || this.refresh) return;
     this.refresh = setInterval(() => void this.refreshManifest(members), 60_000);
+  }
+  /** Narrow host controls used only by the local peripheral decision member. */
+  async decisionCall(word: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    if (this.closed) throw new Error("device host is closed");
+    const paths: Record<string, string> = { "surface.get": "/decision/surface", "screen.get": "/decision/screen",
+      "screen.return": "/decision/return", "virtual.close": "/decision/virtual-close" };
+    if (!paths[word]) throw new Error("unknown decision host word");
+    return this.request("POST", paths[word], body, word === "virtual.close" ? 9500 : word === "surface.get" ? 800 : 900, signal);
   }
   /** Confirm the Android host has replaced or cancelled its one core wake alarm. */
   async scheduleAlarm(at: number | null): Promise<void> {

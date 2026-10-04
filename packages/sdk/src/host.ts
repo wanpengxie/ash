@@ -70,4 +70,8 @@ export const HOST_ROUTES_V2 = {
   key: "GET /key",
   sign: "POST /sign",
   restart: "POST /restart",
+  decisionSurface: "POST /decision/surface",
+  decisionScreen: "POST /decision/screen",
+  decisionReturn: "POST /decision/return",
+  decisionVirtualClose: "POST /decision/virtual-close",
 } as const;

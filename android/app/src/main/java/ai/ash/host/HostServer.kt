@@ -24,6 +24,7 @@ import java.util.concurrent.Executors
  * token that only ash core (started by us, with the token in its config) knows.
  */
 class HostServer(private val ctx: Context, private val token: String) {
+    private val decisions = ScreenDecisionHost(ctx)
     private val pool = Executors.newCachedThreadPool()
     private var server: ServerSocket? = null
     var port = 0
@@ -87,10 +88,14 @@ class HostServer(private val ctx: Context, private val token: String) {
     private fun route(method: String, path: String, b: JSONObject): Pair<Int, JSONObject> = when ("$method $path") {
         "GET /manifest" -> 200 to Capabilities.manifest(ctx)
         "POST /call" -> {
-            val r: CapResult = Capabilities.call(ctx, b.optString("capability"), b.optJSONObject("args") ?: JSONObject())
+            val r: CapResult = decisions.call(b.optString("capability"), b.optJSONObject("args") ?: JSONObject(), b.optString("turn"))
             200 to r.toJson()
         }
         "POST /present" -> Present.show(ctx, b)
+        "POST /decision/surface" -> 200 to decisions.surface(b)
+        "POST /decision/screen" -> 200 to decisions.snapshot()
+        "POST /decision/return" -> 200 to decisions.returnToAsh(b)
+        "POST /decision/virtual-close" -> 200 to decisions.closeVirtual(b)
         "POST /present/hide" -> {
             val id = b.optString("id")
             if (id.isBlank()) 400 to JSONObject().put("error", "id_required")

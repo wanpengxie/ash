@@ -197,6 +197,15 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.equal(readResult?.body.ok, true);
     assert.match(JSON.stringify(readResult?.body), /NATIVE_READ_FIXTURE/);
     assert.equal(readResult?.turn, readCall.turn);
+    // Tool completion is not turn completion: a probe sent here would race with
+    // the followup and be steered into the old turn instead of starting its own.
+    const ended = async (turn: string | undefined) => {
+      const until = Date.now() + 15_000;
+      while (Date.now() < until && !running!.ledger.list().some((m) => m.word === "turn.end" && m.turn === turn))
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.ok(running!.ledger.list().some((m) => m.word === "turn.end" && m.turn === turn), "probe turn completed before the next native-tool probe");
+    };
+    await ended(readCall.turn);
     const soulBefore = readFileSync(join(home, "SOUL.md"), "utf8");
     soulWatcher = watch(join(home, "SOUL.md"), (kind) => soulChanges.push(kind));
     const writeResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -212,6 +221,7 @@ test("production DSH main uses one bounded followup, routes its tool once, and s
     assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), soulBefore);
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(soulChanges, [], "native write caused no managed-file change event");
+    await ended(writeCall.turn);
     const privateResponse = await fetch(`${running.url}/api/send`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ to: "agent:main", kind: "request", word: "say", body: { text: "read core private" }, client_id: "dsh-private-read-probe" }) });
     assert.equal(privateResponse.status, 200);

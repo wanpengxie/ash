@@ -117,12 +117,18 @@ class HomeActivity : Activity() {
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                ai.ash.host.AppState.homePageLive = false
                 super.onPageStarted(view, url, favicon)
                 requests.values.forEach { it.cancel() }
                 requests.clear()
                 coreUi?.invalidate()
                 pageEpoch = if (url == UI_ASSET_URL) coreUi?.beginPage(true) ?: 0L else 0L
                 if (pageEpoch == 0L) { loaded = false; cover.visibility = View.VISIBLE; view.stopLoading() }
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                super.onPageFinished(view, url)
+                ai.ash.host.AppState.homePageLive = url == UI_ASSET_URL && pageEpoch != 0L
             }
 
             override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
@@ -217,7 +223,9 @@ class HomeActivity : Activity() {
         }
         val token = try { ownerBearerFromPrivateUiUrl(url, BuildConfig.CORE_PORT) }
             catch (_: Exception) { status.text = "核心凭据不可用"; return }
-        coreUi = FixedCoreClient(BuildConfig.CORE_PORT, bearer = { token })
+        val nativeProof = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${Secrets(this).hostToken}:home".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        coreUi = FixedCoreClient(BuildConfig.CORE_PORT, bearer = { token }, nativeUiToken = nativeProof)
         loaded = true
         web.loadUrl(UI_ASSET_URL)
         ui.postDelayed({ cover.visibility = View.GONE }, 400)
@@ -363,6 +371,7 @@ class HomeActivity : Activity() {
     }
 
     override fun onDestroy() {
+        ai.ash.host.AppState.homePageLive = false
         ui.removeCallbacksAndMessages(null)
         requests.values.forEach { it.cancel() }
         requests.clear()

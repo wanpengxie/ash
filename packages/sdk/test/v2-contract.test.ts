@@ -29,6 +29,21 @@ function example(schema: JsonSchema): unknown {
   }
 }
 
+test("decision configuration preserves legacy JEV settings and allows independent routes", () => {
+  const legacy = resolveWorldConfigV2({ reflex: { jev: { url: "https://fixture/jev", key_credential: "fixture" }, threshold: 0.7, timeout_ms: 1234 } });
+  assert.deepEqual(legacy.decision.jev, { url: "https://fixture/jev", key_credential: "fixture", model: "", timeout_ms: 1234 });
+  assert.equal(legacy.decision.routes["conversation.control"].threshold, 0.7);
+  const explicit = resolveWorldConfigV2({ reflex: { timeout_ms: 1234 }, decision: {
+    jev: { model: "fixture-model", timeout_ms: 2000 }, routes: { "screen.reconcile": { enabled: false } } } });
+  assert.equal(explicit.decision.jev.timeout_ms, 2000);
+  assert.equal(explicit.decision.jev.model, "fixture-model");
+  assert.equal(explicit.decision.routes["conversation.control"].enabled, true);
+  assert.equal(explicit.decision.routes["screen.reconcile"].enabled, false);
+  for (const decision of [{ jev: null }, { routes: [] }, { routes: { "screen.reconcile": null } },
+    { routes: { unknown: { enabled: true } } }, { jev: { timeout_ms: 0 } }])
+    assert.throws(() => resolveWorldConfigV2({ decision }));
+});
+
 test("response send contract carries a stable client id for acknowledgement-loss retries", () => {
   const first: SendRequestV2 = { to: "agent:main", kind: "response", word: "ask", reply_to: "m_request", body: { ok: true, result: { choice: "once" } }, client_id: "approval-1" };
   const retry: SendRequestV2 = { ...first, body: { ok: true, result: { choice: "once" } } };
@@ -286,7 +301,7 @@ test("v2 is additive to the existing client protocol", () => {
   assert.equal(SCREEN_REGISTRATION_EVENT, "screen.registered");
   assert.equal(SCREEN_TOKEN_HEADER, "Ash-Screen");
   assert.equal(SCREEN_REGISTRATION_TTL_MS, 86_400_000);
-  assert.deepEqual(Object.keys(HOST_ROUTES_V2).sort(), ["alarm", "call", "hide", "key", "manifest", "present", "restart", "sign"]);
+  assert.deepEqual(Object.keys(HOST_ROUTES_V2).sort(), ["alarm", "call", "decisionReturn", "decisionScreen", "decisionSurface", "decisionVirtualClose", "hide", "key", "manifest", "present", "restart", "sign"]);
   assert.equal(RUNTIME_CONTRACT_V2.publicMember, "agent:main");
   assert.notEqual(RUNTIME_CONTRACT_V2.sessions.main, RUNTIME_CONTRACT_V2.publicMember);
   assert.deepEqual(RUNTIME_CONTRACT_V2.tools, ["ash_describe", "ash_send", "ash_say", "ash_react", "ash_show"]);

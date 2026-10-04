@@ -22,11 +22,15 @@ export interface EdgeCaller {
   ownerProxy: boolean;
   transport: "api" | "web_ui" | "phone" | "agent" | "device" | "service";
   pairedDeviceId?: string;
+  nativeUi?: boolean;
 }
 export interface EdgeRequest { method: string; url: URL; headers: Record<string, string>; body: Buffer | null }
 export type EdgeResponse = { status: number; headers?: Record<string, string>; body?: string | Buffer } |
   { status: number; headers?: Record<string, string>; stream: (write: (chunk: string) => void, onClose: (fn: () => void) => void, end: () => void) => void };
 export interface EdgeOptions { authScopeKey: Buffer; /** Where the owner saves and removes credentials; values never take the message route. */ vault?: { save(ref: string, value: string): Promise<void>; remove(ref: string): Promise<boolean>; store: { list(): unknown[]; availability?(): { available: boolean } } }; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
+
+// Native proof is injected by Android's fixed transport, not supplied by a web page.
+export interface EdgeOptions { nativeUiToken?: string }
 
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
@@ -170,7 +174,8 @@ export class EdgeRouter {
     if (!matched) return null;
     const member = matched[1];
     const transport: EdgeCaller["transport"] = member === "device:phone" ? "phone" : member.startsWith("agent:") ? "agent" : member.startsWith("service:") ? "service" : member.startsWith("device:") ? "device" : cookie && !bearer ? "web_ui" : "api";
-    return { member, transportPrincipal: `token:${createHash("sha256").update(token).digest("hex")}`, local: true, remote: false, ownerProxy: member === "person:owner" || member === "device:phone", transport };
+    const nativeUi = member === "person:owner" && this.options.nativeUiToken !== undefined && same(headers["x-ash-native-ui"] ?? "", this.options.nativeUiToken);
+    return { member, transportPrincipal: `token:${createHash("sha256").update(token).digest("hex")}`, local: true, remote: false, ownerProxy: member === "person:owner" || member === "device:phone", transport, ...(nativeUi ? { nativeUi: true } : {}) };
   }
 
   private context(caller: EdgeCaller, req: EdgeRequest): TrustedRouteContext {

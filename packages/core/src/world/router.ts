@@ -14,6 +14,7 @@ type Transport = "web_ui" | "api" | "phone" | "agent" | "device" | "service";
 /** Constructed only after edge authentication and (for web_ui) screen-token verification. */
 export interface TrustedRouteContext extends AuthenticatedCallerContext {
   transport: Transport;
+  nativeUi?: boolean;
   screenLabel?: string;
   turn?: string;
 }
@@ -87,6 +88,7 @@ const hash = (value: unknown): string => createHash("sha256").update(canonical(v
 const ERROR_CODES = new Set<MessageErrorCode>(["bad_request", "not_found", "forbidden", "denied", "cancelled", "timeout", "offline", "failed"]);
 const contextSnapshot = (ctx: TrustedRouteContext): RequestContextSnapshot => ({ member: ctx.member, local: ctx.local, remote: ctx.remote, ownerProxy: ctx.ownerProxy,
   transportPrincipal: ctx.transportPrincipal,
+  ...(ctx.nativeUi ? { nativeUi: true } : {}),
   ...(ctx.pairedDeviceId ? { pairedDeviceId: ctx.pairedDeviceId } : {}), ...(ctx.screenId ? { screenId: ctx.screenId } : {}) });
 const AGENT = /^agent:[A-Za-z0-9_-]+$/;
 /**
@@ -445,6 +447,10 @@ export class WorldRouter {
   async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
 
   private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
+    if (request.to === "service:reflex") {
+      const internal = from === "service:reflex" && ctx.transport === "service" && ctx.transportPrincipal === "service:reflex";
+      if (ctx.remote || !ctx.local || !internal) fail("forbidden", "peripheral hooks require trusted local runtime authority");
+    }
     if (request.to === "person:owner" && request.word === "say" && Object.hasOwn(request.body, "dedupe_key") &&
       (ctx.remote || !ctx.local || !((ctx.transport === "agent" && from === "agent:main" && ctx.transportPrincipal === "agent:main") ||
         (ctx.transport === "service" && from === "service:work" && ctx.transportPrincipal === "service:work"))))

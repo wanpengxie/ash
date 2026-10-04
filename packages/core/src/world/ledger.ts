@@ -27,6 +27,7 @@ export interface RequestContextSnapshot {
   transportPrincipal?: string;
   pairedDeviceId?: string;
   screenId?: string;
+  nativeUi?: boolean;
 }
 export interface RequestTracking { deadlineAt: number; context: RequestContextSnapshot }
 export interface TrackedRequest { message: Message; phase: RequestPhase; deadlineAt: number; context: RequestContextSnapshot }
@@ -501,6 +502,7 @@ export class Ledger {
         const supplied = tracking?.context ?? { member: input.from, local: true, remote: false, ownerProxy: false };
         if (!Number.isSafeInteger(deadlineAt)) throw new TypeError("invalid request deadline");
         const context: RequestContextSnapshot = { member: supplied.member, local: supplied.local, remote: supplied.remote, ownerProxy: supplied.ownerProxy,
+          ...(supplied.nativeUi ? { nativeUi: true } : {}),
           ...(supplied.transportPrincipal ? { transportPrincipal: supplied.transportPrincipal } : {}),
           ...(supplied.pairedDeviceId ? { pairedDeviceId: supplied.pairedDeviceId } : {}), ...(supplied.screenId ? { screenId: supplied.screenId } : {}) };
         this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)").run(id, "accepted", deadlineAt, JSON.stringify(context), ts);
@@ -660,6 +662,20 @@ export class Ledger {
     const row = this.db.prepare("SELECT message_id FROM client_retries WHERE scope_hash=? AND client_id=?")
       .get(digest(transportPrincipal), clientId) as Row | undefined;
     return row ? this.byId(String(row.message_id)) : null;
+  }
+
+  /** Bounded peripheral evidence, indexed by durable turn identity. */
+  turnMessages(turn: string): Message[] {
+    return (this.db.prepare("SELECT * FROM messages WHERE turn=? ORDER BY seq LIMIT 2000").all(turn) as Row[]).map(decode);
+  }
+
+  /** A restart closes peripheral work as interrupted; it must never replay focus changes. */
+  unfinishedDecisions(): Message[] {
+    return (this.db.prepare(`SELECT s.* FROM messages s WHERE s."from"='service:reflex'
+      AND s.kind='event' AND s.word='decision.started' AND NOT EXISTS (
+        SELECT 1 FROM messages a WHERE a."from"='service:reflex' AND a.kind='event'
+        AND a.word='decision.applied' AND json_extract(a.body,'$.decision_id')=json_extract(s.body,'$.decision_id'))
+      ORDER BY s.seq LIMIT 100`).all() as Row[]).map(decode);
   }
 
   /** Post's private tables and authoritative count event commit on this one ledger connection. */
@@ -867,6 +883,7 @@ export class Ledger {
       const context = JSON.parse(String(row.tracking_context)) as RequestContextSnapshot;
       if (!context || typeof context !== "object" || typeof context.member !== "string" || typeof context.local !== "boolean" ||
         typeof context.remote !== "boolean" || typeof context.ownerProxy !== "boolean" ||
+        (context.nativeUi !== undefined && typeof context.nativeUi !== "boolean") ||
         (context.transportPrincipal !== undefined && typeof context.transportPrincipal !== "string") ||
         (context.screenId !== undefined && typeof context.screenId !== "string")) return null;
       return { message: decode(row), context };

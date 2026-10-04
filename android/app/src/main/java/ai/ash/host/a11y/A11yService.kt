@@ -82,6 +82,7 @@ class A11yService : AccessibilityService() {
     // ------------------------------------------------------------------ lifecycle
 
     @Volatile private var lastEventAt = 0L
+    val screenEpoch = ai.ash.host.AppState.screenEpoch
     private var cbThread: HandlerThread? = null
     @Volatile private var cbHandler: Handler? = null
     private var timer: ScheduledThreadPoolExecutor? = null
@@ -100,6 +101,9 @@ class A11yService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         lastEventAt = SystemClock.uptimeMillis()
+        if (event.eventType in setOf(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+                AccessibilityEvent.TYPE_VIEW_CLICKED, AccessibilityEvent.TYPE_VIEW_SCROLLED, AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+                AccessibilityEvent.TYPE_TOUCH_INTERACTION_START)) screenEpoch.incrementAndGet()
         // Only window-state changes name the foreground app; content changes also come from the
         // status bar, IME, toasts … and would make activePackage flicker.
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {

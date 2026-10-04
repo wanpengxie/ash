@@ -1,0 +1,6 @@
+{
+  "decision": {
+    "jev": { "url": "http://10.0.2.2:14980/jev", "key_credential": "jev", "timeout_ms": 6000 },
+    "routes": { "conversation.control": { "enabled": true }, "screen.reconcile": { "enabled": true } }
+  }
+}

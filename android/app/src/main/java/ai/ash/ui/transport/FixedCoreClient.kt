@@ -11,6 +11,7 @@ internal class FixedCoreClient(
     corePort: Int,
     private val bearer: () -> String,
     private val transport: CoreHttpTransport = DirectCoreHttpTransport(),
+    private val nativeUiToken: String? = null,
 ) {
     private val root = "http://127.0.0.1:$corePort"
     private var epoch = 0L
@@ -50,6 +51,7 @@ internal class FixedCoreClient(
             }
             val request = CoreHttpRequest(URL(root + input.path), input.method, mapOf(
                 "authorization" to "Bearer $token",
+                *nativeUiToken?.let { arrayOf("x-ash-native-ui" to it) }.orEmpty(),
                 *route.headers.entries.map { it.key to it.value }.toTypedArray(),
             ), input.body, route.streaming)
             val result = transport.execute(request, cancellation) { chunk ->

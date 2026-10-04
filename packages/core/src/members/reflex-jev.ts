@@ -1,4 +1,5 @@
-/** Small typed JEV client for the second-stage stop judgement. No credential is written to the ledger. */
+import { JevClient, type DecisionModel } from "../world/decision/jev";
+/** Compatibility adapter for the conversation route; transport is shared by all routes. */
 export interface JevReflexState {
   current_task: string;
   latest_user_message: string;
@@ -7,7 +8,7 @@ export interface JevReflexState {
 
 export interface JevReflexDecision { intent: "stop" | "unrelated"; confidence: number }
 
-const questions = {
+export const conversationQuestions = {
   intent: { type: "choice", instructions: "Classify the new message in relation to the current task.", criteria: {
     stop_all: "Stop all ongoing work.", stop_current: "Stop the current action.", wait: "Pause briefly.",
     redirect: "Change the direction of the task.", unrelated: "No control instruction for the current task.",
@@ -19,26 +20,14 @@ const questions = {
 };
 
 export class JevReflexClient {
-  constructor(private readonly url: string, private readonly key: string, private readonly timeoutMs = 6000,
-    private readonly fetchImpl: typeof fetch = fetch) {
-    if (!url || !key || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError("JEV configuration unavailable");
+  private readonly model: DecisionModel;
+  constructor(url: string, key: string, timeoutMs = 6000, fetchImpl: typeof fetch = fetch, model?: DecisionModel) {
+    this.model = model ?? new JevClient(url, key, timeoutMs, fetchImpl);
   }
 
-  async judge(state: JevReflexState): Promise<JevReflexDecision> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let result: { answers?: { intent?: { choice?: unknown; confidence?: unknown };
+  async judge(state: JevReflexState, signal?: AbortSignal): Promise<JevReflexDecision> {
+    const result = await this.model.evaluate(state, conversationQuestions, signal) as { answers?: { intent?: { choice?: unknown; confidence?: unknown };
       targets_current?: { noul?: unknown }; urgency?: { score?: unknown } } };
-    try {
-      const response = await this.fetchImpl(this.url, { method: "POST", headers: {
-        "content-type": "application/json", authorization: `Bearer ${this.key}` },
-      body: JSON.stringify({
-        model: this.url.includes("openrouter.ai/") ? "typesafe/jev-1.13" : "jev-latest",
-        state, questions,
-      }), signal: controller.signal });
-      if (!response.ok) throw new Error("JEV unavailable");
-      result = await response.json() as typeof result;
-    } finally { clearTimeout(timer); }
     const choice = result.answers?.intent?.choice;
     const confidence = result.answers?.intent?.confidence;
     const target = result.answers?.targets_current?.noul;

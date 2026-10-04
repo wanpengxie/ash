@@ -45,6 +45,16 @@ class FixedCoreClientTest {
         assertFails { client.execute(epoch, CoreUiRequest("POST", "/api/send", mapOf("authorization" to "x"), byteArrayOf(1))) }
     }
 
+    @Test fun nativeProofIsInjectedByTransportAndCannotBeSuppliedByPage() {
+        val client = FixedCoreClient(14763, { token }, CoreHttpTransport { request, _, _ ->
+            assertEquals("SYNTHETIC_ANDROID_PROOF", request.headers["x-ash-native-ui"])
+            CoreHttpReply(200, "application/json", "{}".toByteArray())
+        }, nativeUiToken = "SYNTHETIC_ANDROID_PROOF")
+        val epoch = client.beginPage(true)
+        client.execute(epoch, send())
+        assertFails { client.execute(epoch, CoreUiRequest("POST", "/api/send", mapOf("x-ash-native-ui" to "forged"), "{}".toByteArray())) }
+    }
+
     @Test fun bytesArePreservedAndOnlyTheCoreAddressIsReachable() {
         val source = byteArrayOf(0, 1, 2, -1)
         val seen = mutableListOf<String>()

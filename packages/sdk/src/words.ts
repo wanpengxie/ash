@@ -258,6 +258,26 @@ add("service:senses", "sense.notification", "event", obj({ app: str, title: str,
 add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool,
   fallback: choice("timeout", "unavailable", "invalid", "error"), fallback_ms: { type: "integer", minimum: 0 } }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined,
   { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });
+add("service:reflex", "before_turn", "request", obj({ turn: id }, ["turn"]), obj({ captured: bool,
+  captures: array(obj({ route: id, state: { type: "object" } }, ["route", "state"])) }, ["captured"]),
+  { audience: "owner", timeout_ms: 2000, description: "Internal bounded pre-run capture for peripheral decision routes." });
+add("service:reflex", "surface.get", "request", obj({}), obj({ home_visible: bool, page_live: bool, visibility_epoch: nonnegativeSafe },
+  ["home_visible", "page_live", "visibility_epoch"]), { audience: "owner", timeout_ms: 1000 });
+add("service:reflex", "screen.get", "request", obj({}), obj({ foreground_package: str, state_epoch: nonnegativeSafe,
+  virtual_generation: nonnegativeSafe, virtual_owner_turn: str, virtual_open: bool },
+  ["foreground_package", "state_epoch", "virtual_generation", "virtual_owner_turn", "virtual_open"]), { audience: "owner", timeout_ms: 1000 });
+add("service:reflex", "screen.return", "request", obj({ expected_package: str, expected_state_epoch: nonnegativeSafe, decision_id: id },
+  ["expected_package", "expected_state_epoch", "decision_id"]), obj({ acted: bool }, ["acted"]), { audience: "owner", timeout_ms: 1000 });
+add("service:reflex", "virtual.close", "request", obj({ expected_generation: nonnegativeSafe, owner_turn: id, decision_id: id },
+  ["expected_generation", "owner_turn", "decision_id"]), obj({ acted: bool }, ["acted"]), { audience: "owner", timeout_ms: 10000 });
+const decisionMeta = { decision_id: id, route: id, route_version: positiveSafe, trigger_id: id };
+add("service:reflex", "decision.started", "event", obj({ ...decisionMeta, evidence_ids: array(id), state_fingerprint: sha },
+  ["decision_id", "route", "route_version", "trigger_id", "evidence_ids", "state_fingerprint"]), undefined, { direction: "out" });
+add("service:reflex", "decision.judged", "event", obj({ ...decisionMeta, outcome: { type: "object" }, stage: str,
+  confidence: { type: "number", minimum: 0, maximum: 1 }, fallback: str, latency_ms: nonnegativeSafe },
+  ["decision_id", "route", "route_version", "trigger_id", "outcome", "stage", "latency_ms"]), undefined, { direction: "out" });
+add("service:reflex", "decision.applied", "event", obj({ ...decisionMeta, outcome: { type: "object" }, acted: bool, skipped: str, effects: array(str) },
+  ["decision_id", "route", "route_version", "trigger_id", "acted"]), undefined, { direction: "out" });
 add("service:work", "run", "request", obj({ flow: workName }, ["flow"]), obj({ run: workRunId }, ["run"]), { audience: "owner" });
 add("service:work", "runs", "request", obj({ flow: workName, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ runs: { type: "array", items: workRunInfo, maxItems: 100 } }, ["runs"]), { audience: "owner" });

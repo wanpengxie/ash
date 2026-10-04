@@ -1,87 +1,45 @@
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
+import { wordContract } from "../../../sdk/src/words";
 import type { Member } from "../world/member";
-import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from "../world/router";
-import { judgeStopKeyword } from "./reflex-keywords";
-import type { JevReflexClient, JevReflexState } from "./reflex-jev";
+import { WorldRouter, type RouteHandlerContext } from "../world/router";
+import { DecisionRuntime, type DecisionRoute } from "../world/decision/runtime";
+import { ConversationControlRoute, type ConversationControlOptions } from "./reflex/conversation-control";
+import { ScreenReconcileRoute, type ScreenHost } from "./reflex/screen-reconcile";
+import type { DecisionModel } from "../world/decision/jev";
 
-const context: TrustedRouteContext = { member: "service:reflex", transport: "service", transportPrincipal: "service:reflex",
-  local: true, remote: false, ownerProxy: false };
-
-/** Watches newly accepted owner say requests; it never handles an inbound word. */
+/** Stable world identity for Ash's extensible peripheral decision runtime. */
 export class ReflexMember implements Member {
   readonly id = "service:reflex";
   readonly kind = "service" as const;
-  readonly name = "Reflex";
+  readonly name = "Decisions";
   readonly online = true;
-  private closed = false;
+  readonly runtime: DecisionRuntime;
   private readonly stop: () => void;
-  private readonly tasks = new Set<Promise<void>>();
-  private failure: Error | null = null;
-
   constructor(private readonly router: WorldRouter, private readonly busyTurn: () => string | null,
-    private readonly options: { jev?: Pick<JevReflexClient, "judge"> & { available?(): boolean }; context?: (message: Message, turn: string) => JevReflexState;
-      threshold?: number } = {}) {
-    this.stop = router.subscribe((message) => this.observe(message));
+    private readonly options: ConversationControlOptions & { model?: DecisionModel; screenHost?: ScreenHost;
+      conversationEnabled?: boolean; screenEnabled?: boolean;
+      ready?: () => boolean; paused?: () => boolean; routes?: DecisionRoute[] } = {}) {
+    this.runtime = new DecisionRuntime(router);
+    if (options.conversationEnabled !== false) this.runtime.register(new ConversationControlRoute(router, busyTurn, options));
+    if (options.screenHost && options.screenEnabled !== false) this.runtime.register(new ScreenReconcileRoute(router, options.model, busyTurn,
+      options.ready ?? (() => busyTurn() === null), () => this.runtime.supersede("phone-screen"), options.paused ?? (() => false), options.screenHost));
+    for (const route of options.routes ?? []) this.runtime.register(route);
+    this.stop = router.subscribe((message) => this.runtime.observe(message));
   }
-  words(): readonly WordSpec[] { return []; }
-  handle(_message: Message, _context: RouteHandlerContext): ResponseBody {
-    return { ok: false, error: { code: "not_found", message: "reflex has no inbound word" } };
+  words(): readonly WordSpec[] {
+    return ["before_turn", "surface.get", "screen.get", "screen.return", "virtual.close"].map((word) => wordContract(this.id, word)!);
   }
-  get lastError(): Error | null { return this.failure; }
-
-  private observe(message: Message): void {
-    if (this.closed || message.kind !== "request" || message.from !== "person:owner" || message.to !== "agent:main" || message.word !== "say") return;
-    // Capture the durable turn at message acceptance, not a later status label.
-    const turn = this.busyTurn();
-    const judgement = judgeStopKeyword(typeof message.body.text === "string" ? message.body.text : "");
-    if (!turn && judgement.intent !== "pause") return;
-    const task = this.judge(message, turn, judgement).catch((error) => { this.failure = error instanceof Error ? error : new Error(String(error)); });
-    this.tasks.add(task);
-    void task.finally(() => this.tasks.delete(task));
-  }
-
-  private async judge(message: Message, turn: string | null, judgement: ReturnType<typeof judgeStopKeyword>): Promise<void> {
-    let stage: "keyword" | "jev" = "keyword";
-    let fallback: { fallback: "timeout" | "unavailable" | "invalid" | "error"; fallback_ms: number } | undefined;
-    // While a turn runs, every message that is not already an explicit command goes to JEV: "够了", "闭嘴" or
-    // "hold on" carry no stop keyword, yet they are the owner trying to stop the reply.
-    if (turn && (judgement.intent === "unclear" || judgement.intent === "unrelated") && this.options.jev && (this.options.jev.available?.() ?? true) && this.options.context) {
-      const asked = Date.now();
-      try {
-        const result = await this.options.jev.judge(this.options.context(message, turn));
-        stage = "jev";
-        judgement = { intent: result.intent === "stop" && result.confidence >= (this.options.threshold ?? 0.6) ? "stop" : "unrelated",
-          confidence: result.confidence };
-      } catch (error) {
-        // The no-Key keyword rule remains the fallback on timeout or failure; the record says which, without any secret.
-        const text = error instanceof Error ? `${error.name} ${error.message}` : "";
-        fallback = { fallback: /abort|timeout/iu.test(text) ? "timeout" : /JEV answer/u.test(text) ? "invalid" : /JEV unavailable|fetch failed/u.test(text) ? "unavailable" : "error",
-          fallback_ms: Math.max(0, Date.now() - asked) };
-      }
+  async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
+    if (message.word === "before_turn") {
+      if (message.turn !== message.body.turn || this.busyTurn() !== message.body.turn) return { ok: true, result: { captured: false } };
+      try { return { ok: true, result: await this.runtime.beforeTurn(String(message.body.turn), context.signal) }; }
+      catch { return { ok: true, result: { captured: false } }; }
     }
-    let acted = false;
-    if (judgement.intent === "pause" && !this.closed) {
-      try {
-        const sent = await this.router.send(context, { to: "service:admin", kind: "request", word: "pause",
-          body: { by: message.id }, client_id: `reflex:pause:${message.id}`, wait: true });
-        acted = sent.reply?.body.ok === true &&
-          (sent.reply.body.result as { paused?: unknown } | undefined)?.paused === true;
-      } catch (error) { this.failure = error instanceof Error ? error : new Error(String(error)); }
-    } else if (judgement.intent === "stop" && turn && !this.closed && this.busyTurn() === turn) {
-      try {
-        const sent = await this.router.send({ ...context, turn }, { to: "agent:main", kind: "request", word: "cancel_turn",
-          body: { reason: "Owner asked to stop", by: message.id }, client_id: `reflex:cancel:${message.id}`, wait: true });
-        const result = sent.reply?.body.result;
-        acted = sent.reply?.body.ok === true && Boolean(result && typeof result === "object" && "cancelled" in result && result.cancelled === true);
-      } catch (error) { this.failure = error instanceof Error ? error : new Error(String(error)); }
-    }
-    if (this.closed) return;
-    await this.router.send(context, { to: null, kind: "event", word: "reflex.judged",
-      body: { message_id: message.id, stage, intent: judgement.intent, confidence: judgement.confidence, acted, ...fallback },
-      client_id: `reflex:judged:${message.id}` });
+    if (!this.options.screenHost) return { ok: false, error: { code: "offline", message: "screen host unavailable" } };
+    try { return { ok: true, result: await this.options.screenHost.decisionCall(message.word, { ...message.body, turn: message.turn }, context.signal) }; }
+    catch { return { ok: false, error: { code: "offline", message: "screen host unavailable" } }; }
   }
-
-  /** Waits only for the local decision tasks; a cancelled DSH session may quiesce later. */
-  async settled(): Promise<void> { await Promise.all([...this.tasks]); if (this.failure) throw this.failure; }
-  async close(): Promise<void> { this.stop(); await Promise.all([...this.tasks]); this.closed = true; }
+  get lastError(): Error | null { return this.runtime.lastError; }
+  settled(): Promise<void> { return this.runtime.settled(); }
+  async close(): Promise<void> { this.stop(); await this.runtime.close(); }
 }

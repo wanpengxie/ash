@@ -38,6 +38,7 @@ import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
 import { JevReflexClient } from "./members/reflex-jev";
+import { JevClient, type DecisionModel } from "./world/decision/jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
 import { CostMember, type UsageRecord } from "./members/cost";
@@ -71,6 +72,7 @@ export interface Config {
   mcp?: Record<string, McpServerSpec>;
   delivery?: WorldConfigV2["delivery"];
   reflex?: WorldConfigV2["reflex"];
+  decision?: WorldConfigV2["decision"];
 }
 
 const log = (...args: unknown[]) => console.log(new Date().toISOString(), ...args);
@@ -277,6 +279,11 @@ export async function startOwner(config: Config): Promise<Running> {
     const mindRunner = dsh ? new DshMindRunner(dsh) : container ? new ContainerMindRunner({ host: container, binding: mindBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
       mcp: () => ({ url: agentTools!.url, token: mindBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope), onActive: (active) => { running.mind += active ? 1 : -1; } }) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
+      ...(hostLink ? { beforeTurn: async (turn: string) => {
+        await world.send({ member: "service:reflex", transport: "service", transportPrincipal: "service:reflex", local: true,
+          remote: false, ownerProxy: false, turn }, { to: "service:reflex", kind: "request", word: "before_turn",
+          body: { turn }, client_id: `decision:before:${turn}`, wait: true });
+      } } : {}),
       ...(live ? { mind: () => mind } : {}),
       ...(live ? { managedSnapshot: async () => {
         if (!self) throw new Error("managed files unavailable");
@@ -314,13 +321,24 @@ export async function startOwner(config: Config): Promise<Running> {
     agentSystem.prepare();
     // The JEV key lives in the vault and is read on each judgement, so saving or removing it needs no restart.
     const jevRef = "OPENROUTER_API_KEY";
-    const jevUrl = worldConfig.reflex.jev.url;
-    const jev = jevUrl && worldConfig.reflex.jev.key_credential === "jev" ? {
+    const decisions = worldConfig.decision;
+    const jevUrl = decisions.jev.url;
+    const decisionModel: DecisionModel | undefined = jevUrl && decisions.jev.key_credential === "jev" ? {
       available: () => vaultStore.has(jevRef),
-      judge: (state: Parameters<JevReflexClient["judge"]>[0]) => new JevReflexClient(jevUrl, vaultStore.get(jevRef) ?? "", worldConfig.reflex.timeout_ms).judge(state),
+      evaluate: (state, questions, signal) => new JevClient(jevUrl, vaultStore.get(jevRef) ?? "", decisions.jev.timeout_ms, fetch,
+        decisions.jev.model || undefined).evaluate(state, questions, signal),
     } : undefined;
-    reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null, { jev,
-      threshold: worldConfig.reflex.threshold,
+    const jev = decisionModel ? {
+      available: () => vaultStore.has(jevRef),
+      judge: (state: Parameters<JevReflexClient["judge"]>[0], signal?: AbortSignal) => new JevReflexClient(jevUrl, "adapter", decisions.jev.timeout_ms, fetch, decisionModel).judge(state, signal),
+    } : undefined;
+    reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null, { jev, model: decisionModel,
+      ...(hostLink ? { screenHost: hostLink } : {}),
+      conversationEnabled: decisions.routes["conversation.control"].enabled,
+      screenEnabled: decisions.routes["screen.reconcile"].enabled,
+      ready: () => !agent!.inbox.activeTurn() && !agent!.waitingForQuiescence,
+      paused: () => clock?.journal.isPaused() ?? false,
+      threshold: decisions.routes["conversation.control"].threshold,
       context: (message, turn) => {
         const first = agent!.inbox.turnIds(turn).map((id) => ledger.byId(id)).find((item) => item?.word === "say");
         return { current_task: String(first?.body.text ?? "").slice(0, 500),
@@ -363,7 +381,8 @@ export async function startOwner(config: Config): Promise<Running> {
       })().catch((error) => log("first meeting wake failed", error));
     });
     if (hostLink) members.registerDevice(hostLink.device());
-    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault });
+    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault,
+      ...(config.host ? { nativeUiToken: createHash("sha256").update(`${config.host.token}:home`).digest("hex") } : {}) });
     screensNow = () => ownerScreensLine(edge.screens);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
@@ -517,6 +536,7 @@ export async function startOwner(config: Config): Promise<Running> {
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], nativeMode: "disabled", adapter: mindRunner as DshMindRunner });
       mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
     }
+    await reflex.runtime.recover();
     await world.recover();
     await post.start();
     await agent.start();

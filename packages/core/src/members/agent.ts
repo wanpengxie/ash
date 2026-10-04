@@ -40,6 +40,8 @@ export interface AgentMemberOptions {
   isPaused?: () => boolean;
   currentAdminPauseTargets?: (requestId: unknown, turn: unknown) => boolean;
   managedSnapshot?: () => Promise<MindSnapshot>;
+  /** Ash lifecycle capture, after durable start and before dispatching the runner. Bounded by the router. */
+  beforeTurn?: (turn: string) => Promise<void>;
   mind?: () => AgentMind | null;
 }
 
@@ -67,6 +69,7 @@ export class AgentMember implements Member {
   private readonly isPaused: () => boolean;
   private readonly currentAdminPauseTargets: (requestId: unknown, turn: unknown) => boolean;
   private readonly managedSnapshot?: () => Promise<MindSnapshot>;
+  private readonly beforeTurn?: (turn: string) => Promise<void>;
   private readonly mind?: () => AgentMind | null;
   private lastManagedSeq: number;
   private started = false;
@@ -95,6 +98,7 @@ export class AgentMember implements Member {
     this.isPaused = options.isPaused ?? (() => false);
     this.currentAdminPauseTargets = options.currentAdminPauseTargets ?? (() => false);
     this.managedSnapshot = options.managedSnapshot;
+    this.beforeTurn = options.beforeTurn;
     this.mind = options.mind;
     this.lastManagedSeq = options.ledger.list({ before: Number.MAX_SAFE_INTEGER, limit: 1 }).at(-1)?.seq ?? 0;
     this.inbox = new AgentInbox(options.stateDir);
@@ -355,6 +359,9 @@ export class AgentMember implements Member {
         currentTurn = turn.id;
         const managedSnapshot = this.managedSnapshot ? await this.managedSnapshot() : undefined;
         await this.turnEvents(turn);
+        if (this.beforeTurn && !this.closed && this.inbox.turn(turn.id).status === "active") {
+          try { await this.beforeTurn(turn.id); } catch { /* unavailable peripheral capture does not prevent a turn */ }
+        }
         if (this.closed) break; // close during read/start must not dispatch a fresh runner
         if (this.inbox.turn(turn.id).status !== "active") { currentTurn = null; continue; }
         const controller = new AbortController();
