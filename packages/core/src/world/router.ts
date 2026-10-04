@@ -841,7 +841,9 @@ export class WorldRouter {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
-      const gateBypass = request.from === "person:owner";
+      // Only what reaches outside ash is judged: a capability of the phone or another device. ash's own system, human
+      // and agent words (agents, timers, the owner's files, talking to the owner) are internal and never asked about.
+      const gateBypass = request.from === "person:owner" || !request.to?.startsWith("device:");
       const effect = wordEffect(endpoint.spec);
       if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
@@ -865,7 +867,7 @@ export class WorldRouter {
           if (!judged.passed) { this.askOwner(pending, identity, effect, judged.verdict); return; }
         }
       }
-      if (!this.durableGate && request.from !== "person:owner" && pending.phase === "accepted" && effect !== "read") {
+      if (!this.durableGate && !gateBypass && pending.phase === "accepted" && effect !== "read") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";

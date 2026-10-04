@@ -158,11 +158,11 @@ test("an expired risk ask denies the effect and withdraws its notification", asy
   const f = await fixture();
   let effects = 0;
   try {
-    f.router.register({ member: "service:fake", spec: { word: "run", kind: "request", risk: "outward", timeout_ms: 1_000,
+    f.router.register({ member: "device:fake", spec: { word: "run", kind: "request", risk: "outward", timeout_ms: 1_000,
       description: "Synthetic outward effect", input_schema: { type: "object", additionalProperties: false } },
     handle: () => { effects++; return { ok: true, result: {} }; } });
     f.router.enableDurableGate();
-    const request = await f.router.send(agent, { to: "service:fake", kind: "request", word: "run", body: {} });
+    const request = await f.router.send(agent, { to: "device:fake", kind: "request", word: "run", body: {} });
     for (let i = 0; i < 40 && !f.ledger.gateCase(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 5));
     const askId = f.ledger.gateCase(request.id)!.askId;
     assert.equal((await f.wait(askId)).channel, "notification");

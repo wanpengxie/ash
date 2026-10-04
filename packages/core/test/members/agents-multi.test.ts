@@ -22,8 +22,6 @@ async function world(scripts: Record<string, Script>) {
   const ledger = await Ledger.open(join(dir, "ash.db"));
   const router = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(router);
-  // Creating, changing and removing agents are structural: they pass the gate (here, one that allows).
-  router.setGate(async () => ({ allow: true, by: "rule" }));
   router.register({ member: "person:owner", spec: wordContract("person:owner", "say")!, handle: () => ({ ok: true, result: { accepted: true } }) });
   const tools = new AgentMcpServer({ router, members, ledger, status: () => ({}), confirm: async () => "rejected", maxWaitMs: 3_000, fastPathMs: 3_000 });
   await tools.start();
@@ -158,5 +156,28 @@ test("the main agent manages agents through its system tools; other agents canno
     assert.deepEqual((await w.call("agent:main", "agent_remove", { agent: "agent:helper" }) as { result: unknown }).result, { removed: true });
     assert.ok(!w.members.describe("agent").members.some((m) => m.id === "agent:helper"));
     mainTurn.abort(); keeperTurn.abort();
+  } finally { await w.close(); }
+});
+
+test("only what reaches outside ash is judged: managing agents passes, a device action is asked about", async () => {
+  const w = await world({});
+  try {
+    w.router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => undefined });
+    w.router.enableDurableGate();
+    w.router.setReviewer(async () => ({ decision: "ask", reason: "always ask in this test" }));
+    w.router.register({ member: "device:phone", spec: { word: "clipboard.set", kind: "request", risk: "outward", label: "改剪贴板", timeout_ms: 5_000,
+      description: "Synthetic device action", input_schema: { type: "object", additionalProperties: true } }, handle: () => ({ ok: true, result: {} }) });
+    const turn = new AbortController();
+    w.bindings.get("agent:main")!.begin("t_judge1", turn.signal);
+    const created = await w.call("agent:main", "agent_create", { id: "agent:scout", name: "侦察员", summary: "看看", brief: "随便看看。" }) as { ok: boolean };
+    assert.equal(created.ok, true);
+    const declare = w.ledger.list({ after: 0, limit: 1000 }).find((m) => m.to === "service:agents" && m.word === "declare")!;
+    assert.equal(w.ledger.gateCase(declare.id), null, "an internal system word never reaches the gate");
+    const action = await w.call("agent:main", "capability_call", { member: "device:phone", word: "clipboard.set", body: { text: "x" }, wait: false }) as { status: string; request_id: string };
+    assert.equal(action.status, "accepted");
+    await w.waitFor(() => w.ledger.gateCase(action.request_id) !== null);
+    w.router.cancel([action.request_id]);
+    await sleep(50);
+    turn.abort();
   } finally { await w.close(); }
 });
