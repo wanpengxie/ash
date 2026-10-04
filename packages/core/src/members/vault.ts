@@ -22,6 +22,11 @@ const KNOWN: Record<string, { label: string; kind: Kind }> = {
 };
 
 export interface VaultInfo { ref: string; label: string; kind: Kind; configured: boolean; updated_at?: number }
+export interface VaultAvailability { available: boolean }
+
+export class VaultUnavailableError extends Error {
+  constructor() { super("secure credential storage is unavailable"); this.name = "VaultUnavailableError"; }
+}
 
 /**
  * The values themselves: one private file in ash's state directory, replaced atomically. Nothing here is on the ledger,
@@ -30,15 +35,26 @@ export interface VaultInfo { ref: string; label: string; kind: Kind; configured:
  */
 export class VaultStore {
   private entries: Record<string, Entry>;
+  private readonly unavailable: boolean;
 
   /**
    * With a seal key (on the phone: a key that only Android Keystore can unwrap), the file is AES-256-GCM encrypted, and a
    * plain file from before is sealed on first load. Without one the file stays plain, as in tests and on a computer.
    */
-  constructor(private readonly file: string, private readonly now: () => number = Date.now, private readonly sealKey?: Buffer) {
+  constructor(private readonly file: string, private readonly now: () => number = Date.now, private readonly sealKey?: Buffer,
+    unavailable = false) {
+    this.unavailable = unavailable;
+    if (unavailable) { this.entries = {}; return; }
     if (sealKey && sealKey.length !== 32) throw new TypeError("vault seal key must be 32 bytes");
     this.entries = existsSync(file) ? this.read() : {};
     if (sealKey && this.plainOnDisk) this.write(this.entries); // a vault from before sealing is sealed now
+  }
+
+  /** Android uses this path: no usable Keystore key means no read, write, rename, or plaintext fallback. */
+  static secure(file: string, now: () => number = Date.now, sealKey?: Buffer): VaultStore {
+    if (!sealKey) return new VaultStore(file, now, undefined, true);
+    try { return new VaultStore(file, now, sealKey); }
+    catch { return new VaultStore(file, now, undefined, true); }
   }
 
   private plainOnDisk = false;
@@ -74,11 +90,14 @@ export class VaultStore {
 
   static validRef(ref: unknown): ref is string { return typeof ref === "string" && REF.test(ref); }
 
+  availability(): VaultAvailability { return { available: !this.unavailable }; }
+
   /** The value, for ash's own code only. */
   get(ref: string): string | null { return this.entries[ref]?.value ?? null; }
   has(ref: string): boolean { return this.entries[ref] !== undefined; }
 
   set(ref: string, value: string): void {
+    if (this.unavailable) throw new VaultUnavailableError();
     if (!VaultStore.validRef(ref)) throw new TypeError("invalid credential name");
     if (typeof value !== "string" || !value.trim() || value.length > MAX_VALUE) throw new TypeError("invalid credential value");
     const known = KNOWN[ref];
@@ -86,6 +105,7 @@ export class VaultStore {
   }
 
   remove(ref: string): boolean {
+    if (this.unavailable) throw new VaultUnavailableError();
     if (!this.entries[ref]) return false;
     const next = { ...this.entries };
     delete next[ref];

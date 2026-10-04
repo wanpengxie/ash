@@ -403,6 +403,38 @@ test("the vault section saves and removes keys through the owner route, clears t
   } finally { delete globalThis.document; delete globalThis.location; }
 });
 
+test("an unavailable Android vault is explained and cannot be changed from settings", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "http://127.0.0.1" };
+  const calls = [];
+  const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
+    async request(path, init) {
+      calls.push({ path, method: init.method });
+      return { ok: true, json: async () => ({ entries: [], available: false }) };
+    } };
+  try {
+    const panel = new Element("div");
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    const wait = async (check) => { for (let i = 0; i < 50 && !check(); i++) await new Promise((resolve) => setImmediate(resolve)); };
+    panel.find("settingsVaultRow").click();
+    const status = panel.find("settingsVault_DEEPSEEK_API_KEY_status");
+    await wait(() => /安全存储暂时不可用/.test(status.textContent));
+    const field = panel.find("settingsVault_DEEPSEEK_API_KEY_value");
+    const actions = panel.find("settingsVault_DEEPSEEK_API_KEY").children.at(-1);
+    const save = actions.children.find((item) => item.textContent === "保存");
+    const remove = actions.children.find((item) => item.textContent === "移除");
+    assert.match(status.textContent, /原有密钥未被读取或修改/);
+    assert.equal(field.disabled, true);
+    assert.equal(save.disabled, true);
+    assert.equal(remove.disabled, true);
+    field.value = "sk-must-not-save";
+    save.click(); remove.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.filter((call) => call.method !== "GET").length, 0);
+  } finally { delete globalThis.document; delete globalThis.location; }
+});
+
 test("opening settings reads what each row should say: quiet hours, pause, keys, devices and today's spend", async () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
   globalThis.location = { origin: "http://127.0.0.1" };

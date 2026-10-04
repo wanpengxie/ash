@@ -132,6 +132,8 @@ class CoreProcess(private val ctx: Context) {
         return proxyEnv(proxy) + mapOf(
             // Core's own fetch (model calls it forwards for the agent) honours HTTP(S)_PROXY.
             "NODE_USE_ENV_PROXY" to "1",
+            // Android never permits Core to fall back to an unsealed credential file.
+            "ASH_VAULT_SEAL_REQUIRED" to "1",
             "HOME" to p.files.path,
             "PATH" to "$pl/bin:$pl/runtime/bin:${p.files.path}/.npm-global/bin:/system/bin:/system/xbin",
             "TMPDIR" to p.tmp.path,

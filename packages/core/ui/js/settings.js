@@ -46,6 +46,7 @@ function group(header, ...rows) {
 function armed(control, label, confirmLabel, onWarn, run) {
   let ready = false;
   control.addEventListener("click", () => {
+    if (control.disabled) return;
     if (!ready) { ready = true; control.textContent = confirmLabel; onWarn?.(); return; }
     ready = false;
     control.textContent = label;
@@ -329,10 +330,23 @@ export class SettingsControls {
         status.textContent = saved ? "已保存。" : `还没有保存。${hint}`;
         status.className = saved ? "set-status ok" : "set-status warn";
         field.placeholder = saved ? "粘贴新的 Key 替换" : "粘贴 Key";
+        field.disabled = false;
+        save.disabled = false;
+        remove.disabled = false;
         remove.hidden = !saved;
       };
-      vaultViews.push({ ref, show, status });
+      const lock = () => {
+        status.textContent = "手机安全存储暂时不可用。原有密钥未被读取或修改，请重启手机后再试。";
+        status.className = "set-status warn";
+        field.value = "";
+        field.disabled = true;
+        save.disabled = true;
+        remove.disabled = true;
+        remove.hidden = true;
+      };
+      vaultViews.push({ ref, show, lock, status });
       save.addEventListener("click", () => { void (async () => {
+        if (save.disabled) return;
         const value = field.value.trim();
         field.value = "";
         if (!value) { status.textContent = "请先粘贴 Key。"; return; }
@@ -360,14 +374,15 @@ export class SettingsControls {
     }
     const readVault = async () => {
       const reply = await vaultRequest("GET");
-      return Array.isArray(reply?.entries) ? reply.entries : null;
+      return Array.isArray(reply?.entries) ? { entries: reply.entries, available: reply.available !== false } : null;
     };
     const refreshVault = async () => {
       try {
-        const entries = await readVault();
+        const vault = await readVault();
         if (!live()) return;
+        if (vault?.available === false) { for (const view of vaultViews) view.lock(); return; }
         for (const view of vaultViews) {
-          const entry = entries?.find((item) => item.ref === view.ref);
+          const entry = vault?.entries.find((item) => item.ref === view.ref);
           if (entry) view.show(entry.configured === true); else view.status.textContent = "读取失败，请重试。";
         }
       } catch { if (live()) for (const view of vaultViews) view.status.textContent = "读取失败，请重试。"; }
@@ -726,10 +741,13 @@ export class SettingsControls {
       if (approvalMode === "auto" || approvalMode === "always") showApproval(approvalMode);
       if (usage?.ok === true) showUsage(usage.result);
       else usageMore.textContent = "用量暂时读不到";
-      if (vault) {
-        const parts = KEYS.map(({ ref, title }) => `${title} ${vault.find((entry) => entry.ref === ref)?.configured === true ? "已保存" : "未设置"}`);
+      if (vault?.available === false) {
+        vaultRow.sub.textContent = "手机安全存储暂时不可用";
+        vaultRow.sub.className = "set-sub warn";
+      } else if (vault) {
+        const parts = KEYS.map(({ ref, title }) => `${title} ${vault.entries.find((entry) => entry.ref === ref)?.configured === true ? "已保存" : "未设置"}`);
         vaultRow.sub.textContent = parts.join(" · ");
-        vaultRow.sub.className = vault.find((entry) => entry.ref === KEYS[0].ref)?.configured === true ? "set-sub" : "set-sub warn";
+        vaultRow.sub.className = vault.entries.find((entry) => entry.ref === KEYS[0].ref)?.configured === true ? "set-sub" : "set-sub warn";
       }
       if (gateway?.ok === true) {
         const state = gateway.result ?? {};

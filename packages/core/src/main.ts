@@ -120,6 +120,8 @@ export async function startOwner(config: Config): Promise<Running> {
   // The phone hands over the vault's seal key, unwrapped by Android Keystore; no child process inherits it.
   const sealText = process.env.ASH_VAULT_SEAL_KEY;
   delete process.env.ASH_VAULT_SEAL_KEY;
+  const vaultSealRequired = process.env.ASH_VAULT_SEAL_REQUIRED === "1";
+  delete process.env.ASH_VAULT_SEAL_REQUIRED;
   const vaultSealKey = sealText ? Buffer.from(sealText, "base64url") : undefined;
   const mainEntry = (config.agents ?? []).find((item) => item.id === "agent:main") ?? { id: "agent:main", runtime: "dsh" as const };
   const agents = [{ ...mainEntry, runtime: mainEntry.runtime ?? "dsh" }];
@@ -203,10 +205,14 @@ export async function startOwner(config: Config): Promise<Running> {
     world.setMemberNames((id) => { try { return members.describe("owner", id).members[0]?.name; } catch { return undefined; } });
     const vaultFile = join(config.stateDir, "vault.json");
     let vaultStore: VaultStore;
-    try { vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey); }
+    if (vaultSealRequired) {
+      vaultStore = VaultStore.secure(vaultFile, Date.now, vaultSealKey);
+      if (!vaultStore.availability().available)
+        log("secure credential storage is unavailable; the vault was left untouched and credential changes are disabled");
+    } else try { vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey); }
     catch (error) {
-      // A sealed vault whose key is gone (the phone's Keystore was reset) cannot be opened again. Keep the file aside and
-      // start empty, so the owner can enter the keys again instead of facing an assistant that never starts.
+      // Legacy non-Android launches did not require a seal. Preserve their recovery behavior; Android takes the secure
+      // branch above and never moves or replaces a vault when Keystore access fails.
       if (!readFileSync(vaultFile, "utf8").includes('"sealed"')) throw error;
       const aside = `${vaultFile}.unreadable-${Date.now()}`;
       renameSync(vaultFile, aside);
