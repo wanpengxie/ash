@@ -337,7 +337,10 @@ test("the upcoming page removes a scheduled item after its confirmed cancel", as
   await page.locator("#agentTabs [data-tab=upcoming]").click();
   const item = page.locator("#agentPanel [data-tab=upcoming] .upcoming-timer").filter({ hasText: label });
   await expect(item).toHaveCount(1);
-  await item.getByRole("button", { name: "删除计划" }).click();
+  await item.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(item).toContainText("就取消了");
+  expect(recentMessages().filter((message) => message.to === "service:clock" && message.word === "cancel")).toHaveLength(0);
+  await item.getByRole("button", { name: "确认删除" }).click();
   await expect(item).toHaveCount(0);
   await expect(page.locator("#agentPanel [data-tab=upcoming]")).toContainText("暂无计划");
   expect(recentMessages().filter((message) => message.to === "service:clock" && message.word === "cancel" && message.kind === "request" && message.from === "person:owner")).toHaveLength(1);
@@ -413,7 +416,7 @@ test("a committed background run appears in its own activity group with human st
   const activity = page.locator(`#agentPanel [data-tab=activity] .activity-turn[data-turn="${started.run}"]`);
   await expect(activity).toContainText("整理记忆");
   await expect(activity.locator(".activity-step")).toHaveText("提取记忆");
-  await expect(page.locator("#agentPanel [data-tab=activity] .activity-group")).toContainText(["对话", "后台任务"]);
+  await expect(page.locator("#agentPanel [data-tab=activity] .activity-group")).toContainText(["今天", "后台任务"]);
   await expect(activity).not.toContainText(/service:work|\bextract\b/);
   await expect(page.locator("#progress")).not.toContainText("提取记忆");
 });
@@ -502,7 +505,7 @@ test("the approval page saves an exact calendar rule and revokes it", async ({ p
   await page.locator("#agentTabs [data-tab=approvals]").click();
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toContainText("first event");
-  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Allow this calendar for 30 days" }).click();
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "30 天内允许这个日历" }).click();
   await expect.poll(() => effects).toBe(1);
   expect(running.ledger.responseTo(first.id)?.body.ok).toBe(true);
 
@@ -517,15 +520,17 @@ test("the approval page saves an exact calendar rule and revokes it", async ({ p
   const other = await create(8, "different calendar");
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
   expect(effects).toBe(2);
-  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "不允许" }).click();
   await expect.poll(() => running.ledger.responseTo(other.id)?.body.ok).toBe(false);
 
-  await page.locator("#agentPanel .sheet-rule").getByRole("button", { name: "撤销规则" }).click();
+  await page.locator("#agentPanel .sheet-rule").getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(page.locator("#agentPanel .sheet-rule")).toContainText("下次做这件事前会先问你");
+  await page.locator("#agentPanel .sheet-rule").getByRole("button", { name: "确认撤销" }).click();
   await expect(page.locator("#agentPanel .sheet-rule")).toHaveCount(0);
   const revoked = await create(7, "after revoke");
   await expect(page.locator("#agentPanel .sheet-approval.pending")).toHaveCount(1);
   expect(effects).toBe(2);
-  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "Deny" }).click();
+  await page.locator("#agentPanel .sheet-approval.pending").getByRole("button", { name: "不允许" }).click();
   await expect.poll(() => running.ledger.responseTo(revoked.id)?.body.ok).toBe(false);
 });
 
@@ -533,9 +538,9 @@ test("local settings change quiet hours through the live admin word", async ({ p
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
   await page.locator("#menu").click();
+  await page.locator("#settingsQuietRow").click();
   await expect(page.locator("#settingsQuiet")).toBeVisible();
-  await page.locator("#settingsQuiet").getByRole("button", { name: "读取时段" }).click();
-  await expect(page.locator("#settingsQuietStatus")).toHaveText("已读取当前时段。");
+  await expect(page.locator("#settingsQuietStatus")).toBeHidden();
   await page.locator("#settingsQuietStart").fill("22:00");
   await page.locator("#settingsQuietEnd").fill("08:00");
   await page.locator("#settingsQuietSave").click();
@@ -545,7 +550,8 @@ test("local settings change quiet hours through the live admin word", async ({ p
   expect(saved?.body).toEqual({ delivery: { quiet: "22:00-08:00" } });
   await page.reload();
   await page.locator("#menu").click();
-  await page.locator("#settingsQuiet").getByRole("button", { name: "读取时段" }).click();
+  await expect(page.locator("#settingsQuietRow")).toContainText("每天 22:00 到 08:00");
+  await page.locator("#settingsQuietRow").click();
   await expect(page.locator("#settingsQuietStart")).toHaveValue("22:00");
   await expect(page.locator("#settingsQuietEnd")).toHaveValue("08:00");
 });
@@ -562,6 +568,8 @@ test("visible heartbeats stop in the background and resume when the screen retur
     Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
     document.dispatchEvent(new Event("visibilitychange"));
   });
+  // Leaving the foreground tells delivery at once, so replies in the next minute notify.
+  await expect.poll(() => running.ledger.list({ limit: 1000 }).filter((message) => message.to === "service:post" && message.word === "hidden").length).toBe(1);
   await page.clock.fastForward(60_000);
   expect(visibleCount()).toBe(before);
   await page.evaluate(() => {
@@ -591,18 +599,19 @@ test("an approval can allow once but becomes inert after its deadline", async ({
   await expect(page.locator("#connection")).toContainText("已连接");
   const allowed = await ask("approved");
   const first = page.locator("#log .card.ask").filter({ hasText: "approved" });
-  await expect(first.getByRole("button", { name: "Allow once" })).toBeEnabled();
-  await first.getByRole("button", { name: "Allow once" }).click();
+  await expect(first.getByRole("button", { name: "允许这一次" })).toBeEnabled();
+  await first.getByRole("button", { name: "允许这一次" }).click();
   await expect.poll(() => effects).toBe(1);
   expect(running.ledger.responseTo(allowed.id)?.body.ok).toBe(true);
+  await expect(first).toContainText("已允许这一次");
+  await expect(first.getByRole("button")).toHaveCount(0);
 
   const expired = await ask("expires");
   const second = page.locator("#log .card.ask").filter({ hasText: "expires" });
-  await expect(second.getByRole("button", { name: "Allow once" })).toBeEnabled();
+  await expect(second.getByRole("button", { name: "允许这一次" })).toBeEnabled();
   await page.clock.fastForward(601_000);
   await expect(second).toContainText("已过期");
-  await expect(second.getByRole("button", { name: "Allow once" })).toBeDisabled();
-  await expect(second.getByRole("button", { name: "Deny" })).toBeDisabled();
+  await expect(second.getByRole("button")).toHaveCount(0);
   expect(running.ledger.responseTo(expired.id)).toBeNull();
   expect(effects).toBe(1);
 });
@@ -633,20 +642,20 @@ test("local proactive preferences save through self and survive a page reload", 
   await page.goto(`${running.url}/?token=${ownerToken}`);
   await expect(page.locator("#connection")).toContainText("已连接");
   await page.locator("#menu").click();
+  await page.locator("#settingsProactiveRow").click();
   const preferences = page.locator("#settingsProactive");
   await expect(preferences).toBeVisible();
-  await preferences.getByRole("button", { name: "加载偏好" }).click();
-  await expect(preferences.getByRole("status")).toContainText(/已读取当前偏好|偏好文件尚不存在/);
+  await expect(preferences.getByRole("status")).toContainText(/已读取当前偏好|还没有写过/);
   const content = `Only useful updates. ${Date.now()}\n`;
   await page.locator("#settingsProactiveText").fill(content);
-  await preferences.getByRole("button", { name: "保存偏好" }).click();
-  await expect(preferences.getByRole("status")).toHaveText("已保存并重新核对。");
+  await preferences.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(preferences.getByRole("status")).toHaveText("已保存。");
   const writes = running.ledger.list({ limit: 1000 }).filter((message) =>
     message.from === "person:owner" && message.to === "service:self" && message.word === "write" && message.body.path === "PROACTIVE.md");
   expect(writes.at(-1)?.body.content).toBe(content);
   await page.reload();
   await page.locator("#menu").click();
-  await page.locator("#settingsProactive").getByRole("button", { name: "加载偏好" }).click();
+  await page.locator("#settingsProactiveRow").click();
   await expect(page.locator("#settingsProactiveText")).toHaveValue(content);
 });
 
@@ -657,20 +666,26 @@ test("memory page shows a versioned USER file and can roll back a snapshot", asy
   await page.locator('#agentTabs button[data-tab="memory"]').click();
   const editor = page.locator('#agentPanel section[data-tab="memory"]');
   await expect(editor.locator(".markdown-source")).toBeEnabled();
+  await expect(editor.locator(".markdown-source")).toBeHidden();
+  await editor.locator(".editor-edit").click();
   await editor.locator(".markdown-source").fill("Name: E2E first\n");
   await editor.locator(".editor-save").click();
-  await expect(editor.locator(".editor-status")).toHaveText("已保存并核对当前版本。");
-  await expect(editor.locator(".editor-version")).toHaveText("版本 1");
+  await expect(editor.locator(".editor-status")).toHaveText("已保存。");
+  await expect(editor.locator(".editor-version")).toContainText("第 1 版");
+  await expect(editor.locator(".doc-body")).toContainText("Name: E2E first");
+  await expect(editor).not.toContainText(/version:|哈希|核对/);
+  await editor.locator(".editor-edit").click();
   const first = await editor.locator(".markdown-source").inputValue();
+  expect(first).not.toContain("version:");
   await editor.locator(".markdown-source").fill(first.replace("Name: E2E first", "Name: E2E second"));
   await editor.locator(".editor-save").click();
-  await expect(editor.locator(".editor-version")).toHaveText("版本 2");
+  await expect(editor.locator(".editor-version")).toContainText("第 2 版");
   await editor.locator(".editor-history").click();
   await expect(editor.locator(".editor-rollback")).toHaveCount(1);
   page.once("dialog", (dialog) => dialog.accept());
   await editor.locator(".editor-rollback").click();
   await expect(editor.locator(".markdown-source")).toHaveValue(/Name: E2E first/);
-  await expect(editor.locator(".editor-version")).toHaveText("版本 3");
+  await expect(editor.locator(".editor-version")).toContainText("第 3 版");
   const writes = running.ledger.list({ limit: 1000 }).filter((message) =>
     message.to === "service:self" && message.body.path === "USER.md" && ["write", "rollback"].includes(message.word));
   expect(writes.map((message) => message.word)).toEqual(["write", "write", "rollback"]);
@@ -682,15 +697,15 @@ test("memory editor keeps the owner draft when a background file change makes it
   await page.locator("#presence").click();
   await page.locator('#agentTabs button[data-tab="memory"]').click();
   const editor = page.locator('#agentPanel section[data-tab="memory"]');
-  await editor.getByRole("button", { name: "MEMORY.md" }).click();
+  await editor.getByRole("button", { name: "她记下的事" }).click();
   await expect(editor.locator(".markdown-source")).toBeEnabled();
   writeFileSync(join(home, "MEMORY.md"), "Before background update\n");
-  await editor.locator(".editor-refresh").click();
+  await editor.locator(".editor-edit").click();
   await expect(editor.locator(".markdown-source")).toHaveValue("Before background update\n");
   await editor.locator(".markdown-source").fill("Owner draft must remain\n");
   writeFileSync(join(home, "MEMORY.md"), "Background update wins\n");
   await editor.locator(".editor-save").click();
-  await expect(editor.locator(".editor-warning")).toContainText("文件已被其他操作修改");
+  await expect(editor.locator(".editor-warning")).toContainText("刚在别处改过，未覆盖");
   await expect(editor.locator(".markdown-source")).toHaveValue("Owner draft must remain\n");
   expect(readFileSync(join(home, "MEMORY.md"), "utf8")).toBe("Background update wins\n");
 });

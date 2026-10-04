@@ -63,7 +63,11 @@ test("local owner reads plugin and gateway state as admin words; remote owner ca
     const synced = await f.router.send(owner, { to: "service:admin", kind: "request", word: "gateway.op",
       body: { op: "sync" }, wait: true });
     assert.deepEqual(synced.reply?.body, { ok: true, result: { performed: "sync" } });
+    const ticket = await f.router.send(owner, { to: "service:admin", kind: "request", word: "gateway.op", body: { op: "ticket" }, wait: true });
+    assert.deepEqual(ticket.reply?.body, { ok: true, result: { performed: "ticket" } });
     const before = f.ledger.lastSeq();
+    await assert.rejects(f.router.send(owner, { to: "service:admin", kind: "request", word: "gateway.op",
+      body: { op: "ticket", ticket: "caller-supplied" } }), denied("bad_request"));
     await assert.rejects(f.router.send(owner, { to: "service:admin", kind: "request", word: "gateway.op",
       body: { op: "configure", url: "https://gateway", secret: "credential" } }), denied("bad_request"));
     assert.equal(f.ledger.lastSeq(), before);

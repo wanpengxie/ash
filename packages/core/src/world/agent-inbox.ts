@@ -59,8 +59,8 @@ export class AgentInbox {
     if (!columns.some((column) => column.name === "reason_v2")) this.db.exec("ALTER TABLE turns ADD COLUMN reason_v2 TEXT CHECK(reason_v2 IN ('completed','cancelled','error'))");
   }
 
-  accept(message: Message): boolean {
-    if (message.kind !== "request" || message.to !== "agent:main" || message.word !== "say") throw new TypeError("not an agent say request");
+  accept(message: Message, agent = "agent:main"): boolean {
+    if (message.kind !== "request" || message.to !== agent || message.word !== "say") throw new TypeError("not an agent say request");
     const result = this.db.prepare("INSERT OR IGNORE INTO inbox(message_id,seq,state) VALUES (?,?,'pending')").run(message.id, message.seq);
     const row = this.db.prepare("SELECT seq FROM inbox WHERE message_id=?").get(message.id) as Row | undefined;
     if (!row || Number(row.seq) !== message.seq) throw new Error("inbox message identity collision");
@@ -77,19 +77,40 @@ export class AgentInbox {
 
   markReceived(id: string): void { this.db.prepare("UPDATE inbox SET received_logged=1 WHERE message_id=?").run(id); }
 
+  /** Claim the oldest pending messages, in order, as one new turn (a turn takes messages meant for one audience). */
   claim(ids: readonly string[]): StoredTurn | null {
     if (!ids.length) return null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const pending = this.pendingIds();
-      if (pending.length !== ids.length || pending.some((id, index) => id !== ids[index])) throw new Error("pending inbox changed before claim");
+      if (pending.length < ids.length || ids.some((id, index) => id !== pending[index])) throw new Error("pending inbox changed before claim");
       const id = turnId();
       this.db.prepare("INSERT INTO turns(id,status,created_at) VALUES (?,'active',?)").run(id, Date.now());
-      const change = this.db.prepare("UPDATE inbox SET state='read',turn_id=? WHERE state='pending'").run(id);
-      if (Number(change.changes) !== ids.length) throw new Error("incomplete inbox claim");
+      let changed = 0;
+      for (const message of ids) changed += Number(this.db.prepare("UPDATE inbox SET state='read',turn_id=? WHERE message_id=? AND state='pending'").run(id, message).changes);
+      if (changed !== ids.length) throw new Error("incomplete inbox claim");
       this.db.exec("COMMIT");
       return this.turn(id);
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** Pending messages the running turn took in mid-work (a steer). They become part of that turn. */
+  attach(ids: readonly string[], turn: string): void {
+    if (!ids.length) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.turn(turn).status !== "active") throw new Error("steer target turn is not active");
+      for (const id of ids) {
+        const change = this.db.prepare("UPDATE inbox SET state='read',turn_id=? WHERE message_id=? AND state='pending'").run(turn, id);
+        if (Number(change.changes) !== 1) throw new Error("steered message is no longer pending");
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  /** Give steered messages back to the queue when their turn was stopped, so the next turn answers them. */
+  release(ids: readonly string[], turn: string): void {
+    for (const id of ids) this.db.prepare("UPDATE inbox SET state='pending',turn_id=NULL WHERE message_id=? AND turn_id=? AND state='read'").run(id, turn);
   }
 
   turn(id: string): StoredTurn {

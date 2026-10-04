@@ -319,13 +319,13 @@ export class DshDoor {
     return [
       descriptor("ash_describe", "Discover members and their available words before sending.", shape({ member: { type: "string" } }), async (args) =>
         typeof args.member === "string" ? this.options.members.describe("agent", args.member) : this.options.members.describe("agent")),
-      descriptor("ash_send", "Send a validated request to a member and wait for its result.", shape({ to: { type: "string" }, word: { type: "string" }, body: { type: "object" } }, ["to", "word", "body"]),
+      descriptor("ash_send", "Send a validated request to a member and wait for its result. The first time you use a phone capability, or any risky action, the owner gets an approval card and this call waits for the answer; just make the call, and if it comes back denied, say so plainly instead of retrying or inventing another way to ask.", shape({ to: { type: "string" }, word: { type: "string" }, body: { type: "object" } }, ["to", "word", "body"]),
         (args, exec) => send({ to: args.to as string, kind: "request", word: args.word as string, body: args.body as Record<string, unknown> }, exec)),
       descriptor("ash_say", "Say one message to the owner; may be called repeatedly.", shape({ text: { type: "string" }, kind: { type: "string", enum: ["reply", "offer", "heads_up", "due"] } }, ["text"]),
         (args, exec) => send({ to: "person:owner", kind: "request", word: "say", body: { text: args.text, kind: args.kind ?? "reply" } }, exec)),
       descriptor("ash_react", "React to a specific owner message.", shape({ message_id: { type: "string" }, emoji: { type: "string" } }, ["message_id", "emoji"]),
         (args, exec) => send({ to: "person:owner", kind: "request", word: "react", body: { message_id: args.message_id, emoji: args.emoji } }, exec)),
-      descriptor("ash_show", "Show one owner card, including options or permission cards.", shape({ card: { type: "object" } }, ["card"]),
+      descriptor("ash_show", "Show one owner card, including options or permission cards. A permission card only names an Android setting to switch on (calendar, notifications, battery, accessibility, all_files, usage, write_settings, overlay, shizuku), never access to a phone capability.", shape({ card: { type: "object" } }, ["card"]),
         (args, exec) => send({ to: "person:owner", kind: "request", word: "show", body: { card: args.card } }, exec)),
     ];
   }

@@ -21,21 +21,27 @@ export class ProactivePreferences {
     this.loaded = false;
     this.pending = null;
     this.busy = false;
-    const heading = element("h2", "主动联系偏好");
-    this.status = element("p", "尚未读取偏好文件。请连接本地屏幕后加载。");
+    this.status = element("p", "");
+    this.status.className = "set-status";
     this.status.setAttribute("role", "status");
-    this.loadButton = element("button", "加载偏好");
+    this.loadButton = element("button", "重新读取");
+    this.loadButton.className = "btn gray";
+    this.loadButton.id = "settingsProactiveLoad";
     this.loadButton.type = "button";
-    this.saveButton = element("button", "保存偏好");
+    this.saveButton = element("button", "保存");
+    this.saveButton.className = "btn";
+    this.saveButton.id = "settingsProactiveSave";
     this.saveButton.type = "button";
     this.editor = document.createElement("textarea");
     this.editor.id = "settingsProactiveText";
+    this.editor.className = "set-editor";
+    this.editor.placeholder = "比如：早上 9 点前别找我；快递和日程变化可以直接说；别的事攒到晚上一起说。";
     this.editor.maxLength = MAX_CHARS;
     this.editor.disabled = true;
     this.saveButton.disabled = true;
     this.loadButton.addEventListener("click", () => { void this.load(); });
     this.saveButton.addEventListener("click", () => { void this.save(); });
-    root.append(heading, this.status, this.loadButton, this.editor, this.saveButton);
+    root.append(this.editor, this.saveButton, this.loadButton, this.status);
   }
 
   current() {
@@ -72,7 +78,7 @@ export class ProactivePreferences {
     this.busy = true;
     this.loadButton.disabled = true;
     this.saveButton.disabled = true;
-    this.status.textContent = "正在核对偏好文件…";
+    this.status.textContent = "正在读取…";
     try {
       const result = await this.request("read", { path: PATH }, crypto.randomUUID());
       if (!this.current()) return;
@@ -82,19 +88,19 @@ export class ProactivePreferences {
         this.editor.value = result.body.result.content;
         this.loaded = true;
         this.pending = null;
-        this.status.textContent = "已读取当前偏好；保存时会核对版本。";
+        this.status.textContent = "已读取当前偏好。";
       } else if (result.body?.ok === false && result.body.error?.code === "not_found") {
         this.baseline = null;
         this.editor.value = "";
         this.loaded = true;
         this.pending = null;
-        this.status.textContent = "偏好文件尚不存在；保存会创建它。";
+        this.status.textContent = "还没有写过，写下来保存就行。";
       } else {
         this.loaded = false;
-        this.status.textContent = "未能核实偏好文件；请重试加载。";
+        this.status.textContent = "没读到偏好，请点「重新读取」。";
       }
     } catch {
-      if (this.current()) { this.loaded = false; this.status.textContent = "连接中断，未读取偏好文件。"; }
+      if (this.current()) { this.loaded = false; this.status.textContent = "连接断了，没读到偏好。"; }
     } finally {
       this.busy = false;
       if (this.current()) {
@@ -108,7 +114,7 @@ export class ProactivePreferences {
   async save() {
     if (!this.current() || !this.loaded || this.busy) return;
     if (!this.pending && this.editor.value.length > MAX_CHARS) {
-      this.status.textContent = "内容过长，尚未发送。";
+      this.status.textContent = "内容太长了，没有保存。";
       return;
     }
     const pending = this.pending ?? { content: this.editor.value, expected_hash: this.baseline, client_id: crypto.randomUUID() };
@@ -117,7 +123,7 @@ export class ProactivePreferences {
     this.editor.disabled = true;
     this.saveButton.disabled = true;
     this.loadButton.disabled = true;
-    this.status.textContent = "等待文件写入和复核…";
+    this.status.textContent = "正在保存…";
     try {
       const result = await this.request("write", { path: PATH, content: pending.content,
         expected_hash: pending.expected_hash, why: "Owner updated proactive preferences" }, pending.client_id);
@@ -125,11 +131,11 @@ export class ProactivePreferences {
       if (result.body?.ok === false) {
         this.pending = null;
         this.status.textContent = result.body.error?.code === "bad_request"
-          ? "文件版本已变化，未覆盖；请重新加载后核对。" : "写入被拒绝，未标记为已保存。";
+          ? "这段偏好刚在别处改过，未覆盖；请点「重新读取」后再改。" : "保存被拒绝了。";
         return;
       }
       if (result.body?.ok !== true || !/^[0-9a-f]{64}$/.test(result.body.result?.hash)) {
-        this.status.textContent = "写入结果未确认；可重试同一请求。";
+        this.status.textContent = "保存结果未确认，请再点一次保存。";
         return;
       }
       const verification = await this.request("read", { path: PATH }, crypto.randomUUID());
@@ -138,10 +144,10 @@ export class ProactivePreferences {
         verification.body.result?.content === pending.content) {
         this.baseline = result.body.result.hash;
         this.pending = null;
-        this.status.textContent = "已保存并重新核对。";
-      } else this.status.textContent = "写入回执已到，但复核未完成；请重试同一请求。";
+        this.status.textContent = "已保存。";
+      } else this.status.textContent = "保存结果未确认，请再点一次保存。";
     } catch {
-      if (this.current()) this.status.textContent = "写入结果未确认；可重试同一请求。";
+      if (this.current()) this.status.textContent = "保存结果未确认，请再点一次保存。";
     } finally {
       this.busy = false;
       if (this.current()) {

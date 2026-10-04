@@ -37,11 +37,11 @@ test("embedded route inventory is exact and never falls back to ambient fetch", 
   await transport.request("/api/stream?follow=false&summary=true", { method: "GET" });
   await transport.request("/api/send", { method: "POST", body: "{}" });
   await transport.request("/api/workspaces/home/files?path=notes%2Ftoday.txt", { method: "GET" });
-  assert.deepEqual(calls.map((call) => call.op), ["stream", "send", "file"]);
-  for (const path of ["/api/admin", "//other/api/send", "http://127.0.0.1:4700/api/send", "/api/workspaces/home/files?path=..%2Fsecret", "/api/stream?follow=true&follow=false", "/api/workspaces/home/files?path=notes.txt&extra=1"]) {
-    assert.throws(() => transport.request(path), /unapproved/);
+  assert.deepEqual(calls.map((call) => call.op), ["stream", "request", "request"]);
+  // Only the destination is checked here: a path on this core. Which paths exist is the core's business.
+  for (const path of ["//other/api/send", "http://127.0.0.1:4700/api/send", "https://elsewhere.example/api/stream", "/api\\send", "/api/send#x", "api/send"]) {
+    assert.throws(() => transport.request(path), /unapproved/, path);
   }
-  assert.throws(() => transport.request("/api/workspaces/home/files?path=notes.txt", { method: "POST" }), /unapproved/);
   assert.throws(() => validateCoreEndpoint("http://127.0.0.1:4700/?token=secret"), /invalid/);
   assert.throws(() => validateCoreEndpoint("http://localhost:4700"), /invalid/);
 });
@@ -49,7 +49,7 @@ test("embedded route inventory is exact and never falls back to ambient fetch", 
 test("workspace bytes cross only the validated read action", async () => {
   const bytes = Uint8Array.of(0, 1, 2, 255);
   const transport = embeddedUiTransport({ endpoint: "http://127.0.0.1:4700", request: async (op, path) => {
-    assert.equal(op, "file");
+    assert.equal(op, "request");
     assert.equal(path, "/api/workspaces/home/files?path=notes%2Ftoday.txt");
     return new Response(bytes, { headers: { "content-type": "application/octet-stream" } });
   } });
@@ -96,4 +96,14 @@ test("embedded boot does not open its new-origin pending database before READY",
     assert.equal(await net.pendingReady, null);
     assert.equal(opens, 1);
   } finally { globalThis.indexedDB = original; }
+});
+
+test("the native transport carries any path on the core and leaves authorization to the core", () => {
+  const calls = [];
+  const transport = embeddedUiTransport({ endpoint: "http://127.0.0.1:4700", request: (op, path, options) => { calls.push([op, path, options.method]); return Promise.resolve(new Response("")); } });
+  transport.authorizeReady();
+  transport.request("/api/vault", { method: "GET" });
+  transport.request("/api/vault/DEEPSEEK_API_KEY", { method: "PUT", body: "{}" });
+  transport.request("/api/anything/new", { method: "DELETE" });
+  assert.deepEqual(calls.map((call) => call[1]), ["/api/vault", "/api/vault/DEEPSEEK_API_KEY", "/api/anything/new"]);
 });

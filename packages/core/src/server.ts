@@ -1,4 +1,4 @@
-// The only production HTTP edge. The ash-api/1 test harness lives under test/legacy.
+// The only production HTTP edge.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, closeSync } from "node:fs";
@@ -26,7 +26,7 @@ export interface EdgeCaller {
 export interface EdgeRequest { method: string; url: URL; headers: Record<string, string>; body: Buffer | null }
 export type EdgeResponse = { status: number; headers?: Record<string, string>; body?: string | Buffer } |
   { status: number; headers?: Record<string, string>; stream: (write: (chunk: string) => void, onClose: (fn: () => void) => void, end: () => void) => void };
-export interface EdgeOptions { authScopeKey: Buffer; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
+export interface EdgeOptions { authScopeKey: Buffer; /** Where the owner saves and removes credentials; values never take the message route. */ vault?: { save(ref: string, value: string): Promise<void>; remove(ref: string): Promise<boolean>; store: { list(): unknown[]; availability?(): { available: boolean } } }; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
 
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
@@ -86,6 +86,7 @@ export class ScreenRegistry {
   valid(token: string): boolean { return Boolean(this.registrations.get(token) && this.now() < this.registrations.get(token)!.expiresAt); }
   renew(token: string): void { const entry = this.registrations.get(token); if (entry) { entry.expiresAt = this.now() + SCREEN_REGISTRATION_TTL_MS; entry.visibleAt = this.now(); } }
   markVisible(screen: string): void { const entry = this.find(screen); if (entry && entry.connections > 0) entry.visibleAt = this.now(); }
+  markHidden(screen: string): void { const entry = this.find(screen); if (entry) entry.visibleAt = null; }
   connect(token: string): void { const entry = this.registrations.get(token); if (entry) entry.connections++; }
   disconnect(token: string): void {
     const entry = this.registrations.get(token);
@@ -222,6 +223,8 @@ export class EdgeRouter {
       }
       case "GET /api/stream": return this.stream(req, caller!);
       }
+      const secret = /^\/api\/vault(?:\/([A-Za-z_][A-Za-z0-9_]{0,63}))?$/.exec(path);
+      if (secret && this.options.vault) return await this.vault(secret[1], req, caller!);
       const file = /^\/api\/workspaces\/([a-z0-9_-]+)\/files$/.exec(path);
       if (file && (req.method === "GET" || req.method === "PUT")) return this.file(file[1], req, caller!);
       return encode(404, { error: "not_found", message: "route not found" });
@@ -351,6 +354,27 @@ export class EdgeRouter {
       }, this.options.streamBeatMs ?? 25_000);
       onClose(cleanup);
     } };
+  }
+
+  /** The one way a credential enters ash: the local owner's own screen, over a route that never writes to the ledger. */
+  private async vault(ref: string | undefined, req: EdgeRequest, caller: EdgeCaller): Promise<EdgeResponse> {
+    if (!caller.ownerProxy || !caller.local || caller.remote || caller.member !== "person:owner") fail(403, "forbidden", "credentials are managed from the local owner screen only");
+    const vault = this.options.vault!;
+    const available = vault.store.availability?.().available !== false;
+    if (!ref) {
+      if (req.method !== "GET") fail(405, "method_not_allowed", "use GET to list");
+      return encode(200, { entries: vault.store.list(), available });
+    }
+    if (!available) fail(503, "vault_unavailable", "secure credential storage is unavailable; credentials were not changed");
+    if (req.method === "PUT") {
+      const body = jsonBody(req.body) as { value?: unknown } | null;
+      if (!body || typeof body !== "object" || typeof body.value !== "string") fail(400, "bad_request", "body must be {value}");
+      try { await vault.save(ref, (body as { value: string }).value); }
+      catch (error) { if (error instanceof TypeError) fail(400, "bad_request", error.message); throw error; }
+      return encode(200, { ok: true });
+    }
+    if (req.method === "DELETE") return encode(200, { ok: true, removed: await vault.remove(ref) });
+    return fail(405, "method_not_allowed", "use PUT or DELETE");
   }
 
   private file(workspace: string, req: EdgeRequest, caller: EdgeCaller): EdgeResponse {

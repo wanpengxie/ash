@@ -3,11 +3,35 @@ import { join } from "node:path";
 import { Connection, DeviceKey, GatewayClient } from "ash-gateway/client/client";
 import { b64u, fromB64u, LIMITS, type Permission, PERMISSIONS, randomToken, shortFingerprint } from "ash-gateway/src/protocol";
 import type { CallResult, CapabilitySpec, DeviceKind } from "../../../sdk/src/api";
+import { isWordEffect } from "../../../sdk/src/words";
 import { DeviceMember } from "../members/device";
 import type { EdgeCaller, EdgeResponse, EdgeRouter } from "../server";
 import type { DeviceCapability } from "../world/router";
 
 export interface Signer { readonly id: string; readonly publicKey: string; sign(data: Uint8Array): Promise<string> }
+
+/** A paired device's own name, safe to show inside owner-facing labels. */
+function deviceLabel(name: unknown): string {
+  return String(name ?? "").replace(/[\p{C}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 40) || "另一台设备";
+}
+
+/**
+ * Capabilities a paired device lends. Only a read-only claim (risk none) is honoured; any other claim, or
+ * none at all, is structure risk. The owner writes every label, naming the device and the capability.
+ */
+export function borrowedCapabilities(raw: unknown[], deviceName: unknown): DeviceCapability[] {
+  const device = deviceLabel(deviceName);
+  return raw.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid remote capability");
+    const cap = value as DeviceCapability;
+    if (typeof cap.name !== "string" || !cap.name.trim() || typeof cap.description !== "string" || !cap.input_schema || typeof cap.input_schema !== "object")
+      throw new TypeError("invalid remote capability");
+    const name = cap.name.replace(/[\p{C}\s]+/gu, " ").trim().slice(0, 80);
+    // A lent effect is believed only when it is not a read: another device can never make a call look harmless.
+    const effect = cap.risk === "none" ? "read" as const : isWordEffect(cap.effect) && cap.effect !== "read" ? cap.effect : "write" as const;
+    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, effect, label: `在${device}上用 ${name}` };
+  });
+}
 
 export async function fileSigner(stateDir: string): Promise<Signer> {
   const file = join(stateDir, "device.jwk");
@@ -90,6 +114,8 @@ export class OwnerLink extends Link {
   private readonly incoming = new Map<string, Inbound>();
   private readonly outbound = new Map<string, Outbound>();
   private readonly remoteDevices = new Map<string, { member: DeviceMember; manifest: string }>();
+  /** Every paired, unrevoked device as the gateway lists it (browsers included), for listing and revoking. */
+  private paired: { id: string; name: string; permissions: string[]; online: boolean }[] = [];
   private readonly streams = new Map<string, { end: () => void; from: string }>();
   private serving = false;
   private ready = false;
@@ -207,6 +233,8 @@ export class OwnerLink extends Link {
     if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
     const list = result.devices as { id: string; name: string; permissions: string[]; revoked: boolean; online: boolean }[];
     if (!Array.isArray(list)) throw new Error("gateway device list unavailable");
+    this.paired = list.filter((item) => typeof item.id === "string" && /^[A-Za-z0-9_-]+$/.test(item.id) && !item.revoked)
+      .map((item) => ({ id: item.id, name: String(item.name ?? item.id), permissions: Array.isArray(item.permissions) ? item.permissions.map(String) : [], online: Boolean(item.online) }));
     const seen = new Set<string>();
     for (const item of list) {
       if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
@@ -226,13 +254,7 @@ export class OwnerLink extends Link {
         if (response.status !== 200) throw new Error("remote manifest unavailable");
         const raw = JSON.parse(response.body.toString("utf8")) as { name?: unknown; capabilities?: unknown };
         if (!raw || !Array.isArray(raw.capabilities) || typeof raw.name !== "string" || !raw.name.trim()) throw new TypeError("invalid remote manifest");
-        const capabilities: DeviceCapability[] = raw.capabilities.map((value) => {
-          if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid remote capability");
-          const cap = value as DeviceCapability;
-          if (!["none", "outward", "structure"].includes(cap.risk) || typeof cap.label !== "string" || !cap.label.trim()) throw new TypeError("remote capability lacks risk or label");
-          // Device claims cannot downgrade owner approval risk; MCP hints are not authority.
-          return { ...cap, risk: "structure" as const, label: `Use ${cap.name}` };
-        });
+        const capabilities = borrowedCapabilities(raw.capabilities, item.name);
         const manifest = JSON.stringify({ name: item.name, capabilities });
         if (previous?.manifest === manifest) { previous.member.setOnline(true); continue; }
         const member = new DeviceMember(memberId, item.name, capabilities, async (message, context) => {
@@ -298,7 +320,8 @@ export class OwnerLink extends Link {
   }
   state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined,
     pending: [...this.pending.values()],
-    devices: [...this.remoteDevices].map(([id, value]) => ({ id: `device:${id}`, name: value.member.name, online: value.member.online })) }; }
+    devices: this.paired.map((item) => ({ id: `device:${item.id}`, name: item.name, online: this.remoteDevices.get(item.id)?.member.online ?? item.online,
+      permissions: item.permissions, lends: this.remoteDevices.has(item.id), capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0 })) }; }
 }
 
 export interface LocalCapabilities {
@@ -335,7 +358,7 @@ export class ClientLink extends Link {
     if (inbound.method === "GET" && path === "/ash/manifest") {
       const manifest = await this.local.manifest();
       return this.reply(sid, json(200, { ...manifest, capabilities: manifest.capabilities.map((capability) => ({
-        ...capability, risk: "structure", label: `Use ${capability.name}`,
+        ...capability, risk: capability.risk === "none" ? "none" : "structure", label: `Use ${capability.name}`,
       })) }));
     }
     if (inbound.method === "POST" && path === "/ash/call") {

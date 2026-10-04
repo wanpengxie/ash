@@ -21,6 +21,9 @@ export class PresenceBar {
     this.dot = root.querySelector("#dot");
     this.connection = root.querySelector("#connection");
     this.notice = root.querySelector("#presenceNotice");
+    // The person page repeats the same face and state in its header; it is optional in reduced shells.
+    this.sheetAvatar = root.querySelector("#agentAvatar");
+    this.sheetState = root.querySelector("#agentState");
     this.bar.addEventListener("click", () => {
       if (typeof onOpen === "function") onOpen();
       else this.notice.textContent = "人物页尚未接入";
@@ -40,6 +43,7 @@ export class PresenceBar {
       this.state.title = "";
       this.avatar.src = `${AVATAR_ROOT}/default.webp`;
       this.dot.className = "";
+      this.mirror();
       return;
     }
     const value = typeof presence.text === "string" && presence.text ? presence.text : DEFAULT_TEXT[presence.state];
@@ -49,6 +53,15 @@ export class PresenceBar {
     this.avatar.src = `${AVATAR_ROOT}/${face}.webp`;
     this.dot.className = ["listening", "thinking", "working", "waiting_you"].includes(presence.state) ? "running" :
       ["idle", "done"].includes(presence.state) ? "idle" : "";
+    this.mirror();
+  }
+
+  mirror() {
+    if (this.sheetAvatar && this.sheetAvatar.src !== this.avatar.src) this.sheetAvatar.src = this.avatar.src;
+    if (this.sheetState) {
+      this.sheetState.textContent = this.state.textContent || "在线";
+      this.sheetState.dataset.dot = this.dot.className;
+    }
   }
 
   network(status, detail = "") {

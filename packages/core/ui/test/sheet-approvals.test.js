@@ -23,6 +23,20 @@ const gateAsk = (id, seq, from = "service:gate", expires_at = 9000) => ({ seq, i
     options: [{ id: "once", label: "Only once" }, { id: "deny", label: "No" }],
     source: { to: "device:fixture", word: "send", body_preview: "synthetic" } } });
 
+test("the approvals sheet retains the entire original beside its bounded summary", () => {
+  const original = "x".repeat(65000) + "\nTAIL <img src=x>\t  spaces";
+  const message = gateAsk("full-original", 1);
+  message.body.source.body_full = original;
+  const view = fold(initialView(), message);
+  const { root, sections } = draw(view);
+  assert.equal(sections.pending[0].original, original);
+  const article = root.children[0].children.find((node) => node.tag === "article");
+  const disclosure = article.children.find((node) => node.tag === "details");
+  assert.equal(disclosure.children[0].textContent, "查看原文");
+  assert.equal(disclosure.children[1].textContent, original);
+  assert.equal(disclosure.children[1].children.length, 0);
+});
+
 test("gate page accepts only paired current-screen replies", async () => {
   const net = { token: "screen-token", screen: "screen:local", currentScope: "scope-a", generation: 1,
     request: async (_path, options) => {
@@ -57,8 +71,8 @@ test("only a live gate ask from trusted ledger origin appears; other asks and ol
   assert.deepEqual(sections.pending.map((ask) => ask.id), ["gate-live"]);
   assert.deepEqual(nodes.filter((node) => node.tag === "article").map((node) => node.dataset.askId), ["gate-live"]);
   assert.equal(nodes.some((node) => node.tag === "button"), false);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /审批历史暂不可用/);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /不能据此判断没有规则/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂时读不到审批记录（不代表没有）/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂时读不到这些规则（不代表没有）/);
 });
 
 test("missing or body-spoofed source fails closed and empty state never claims rules are empty", () => {
@@ -68,8 +82,8 @@ test("missing or body-spoofed source fails closed and empty state never claims r
   assert.deepEqual(approvalSections(view, 9000).pending, [], "at the exact expiry no action is displayed");
   const { nodes } = draw({ asks: [{ id: "legacy", seq: 3, state: "pending", title: "Legacy", expires_at: 9000, options: [{ id: "deny", label: "No" }] }] });
   assert.equal(nodes.some((node) => node.tag === "article"), false);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /缺少可验证来源/);
-  assert.match(nodes.map((node) => node.textContent).join(" "), /暂不可用/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /看不出来自哪里/);
+  assert.match(nodes.map((node) => node.textContent).join(" "), /暂时读不到/);
 });
 
 test("malformed raw options cannot be laundered into a valid approval by projection", () => {
@@ -156,4 +170,49 @@ test("5xx, timeout and rate limiting are unknown ACKs, not definitive rejection"
   }
   net.request = async () => ({ ok: false, status: 403 });
   await assert.rejects(answerGateAsk(net, () => true, ask, "once", "stable", () => null, { now: () => 5000 }), /无权回答/);
+});
+
+test("history says when she judged an action herself and why; a capability-wide rule names no object", () => {
+  globalThis.document = { createElement: (tag) => new Node(tag), createDocumentFragment: () => new Node("fragment") };
+  try {
+    const root = new Node("root");
+    renderApprovalsSheet(root, initialView(), { now: 5000, rules: [
+      { id: "rule-star", to: "device:phone", word: "file.delete", object_pattern: "*", risk: "outward", expires_at: 90_000 },
+    ], history: [
+      { id: "h-review", source: "current", request_id: "m_1", to: "device:phone", word: "browser.click", risk: "outward",
+        decision: "review", reason: "你让她打开推特，你来登录", at: 4000 },
+      { id: "h-carry", source: "current", request_id: "m_2", to: "device:phone", word: "browser.click", risk: "outward",
+        decision: "carry", reason: "你几分钟前刚允许过同样的操作", at: 4500 },
+      { id: "h-once", source: "current", request_id: "m_3", to: "device:phone", word: "shell.run", risk: "structure", decision: "once", at: 4800 },
+    ] });
+    const text = root.textContent;
+    assert.match(text, /在网页上点击由她判断后放行 · .*你让她打开推特，你来登录/);
+    assert.match(text, /刚允许过，沿用 · .*你几分钟前刚允许过同样的操作/);
+    assert.match(text, /执行命令仅这一次/);
+    assert.doesNotMatch(text, /\*/);
+  } finally { delete globalThis.document; }
+});
+
+test("a history record opens to its evidence: what was done, what the reviewer saw and said, the card, the answer, and whether it ran", () => {
+  globalThis.document = { createElement: (tag) => new Node(tag), createDocumentFragment: () => new Node("fragment") };
+  try {
+    const history = [{ id: "h1", request_id: "r1", source: "current", word: "clipboard.set", risk: "outward", label: "改剪贴板", decision: "review", reason: "你要的", at: 4000 },
+      { id: "h2", request_id: "r2", source: "current", word: "rules.set", risk: "structure", decision: "deny", at: 4100 }];
+    const opened = [];
+    const evidence = new Map([["r1", { status: "ready", entry: { request_id: "r1", requester: "agent:main", word: "clipboard.set", label: "改剪贴板", effect: "act",
+      content: "开会", facts: { owner_said: ["把开会复制一下"], context: ["read 日历"] }, review: { decision: "allow", reason: "主人明确要求", ms: 1200 },
+      decision: "review", decided_by: "review", executed: { ok: true } } }], ["r2", { status: "missing" }]]);
+    const root = new Node("root");
+    renderApprovalsSheet(root, { asks: [] }, { now: 5000, history, rules: [], name: "小安", evidence, onEvidence: (id) => opened.push(id) });
+    const all = root.children[0].textContent;
+    for (const expected of ["小安", "改剪贴板（操作）", "开会", "「把开会复制一下」", "read 日历", "可以直接做，用了 1.2 秒：主人明确要求", "裁判看到的前几步", "裁判（模型判断）", "做成了", "收起", "修改审批规则", "没有留下依据"])
+      assert.ok(all.includes(expected), expected);
+    const find = (node, label) => node.tag === "button" && node.value === label ? node : node.children.map((child) => find(child, label)).find(Boolean);
+    find(root.children[0], "收起").listeners.click();
+    assert.deepEqual(opened, ["r1"]);
+    const closed = new Node("root");
+    renderApprovalsSheet(closed, { asks: [] }, { now: 5000, history, rules: [], evidence: new Map(), onEvidence: () => {} });
+    assert.ok(closed.children[0].textContent.includes("查看依据"));
+    assert.ok(!closed.children[0].textContent.includes("裁判结论"));
+  } finally { delete globalThis.document; }
 });

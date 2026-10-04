@@ -1,6 +1,6 @@
 import type { ClockFiredBodyV2, Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema } from "../../../sdk/src/schema";
-import { wordContract } from "../../../sdk/src/words";
+import { AGENT_ID, wordContract } from "../../../sdk/src/words";
 import type { Member } from "../world/member";
 import type { Ledger, RequestContextSnapshot } from "../world/ledger";
 import { ClockJournal, type ClockFire, type ClockPayload, type ClockTimer } from "../world/clock-journal";
@@ -52,15 +52,17 @@ export class ClockMember implements Member {
     if (!caller || caller.member !== message.from || !caller.transportPrincipal) return false;
     if (message.from === "person:owner") return caller.ownerProxy &&
       (caller.transportPrincipal.startsWith("token:") || Boolean(caller.remote && caller.pairedDeviceId));
-    return message.from === "agent:main" && caller.local && !caller.remote && caller.transportPrincipal === "agent:main";
+    return AGENT_ID.test(message.from) && caller.local && !caller.remote && caller.transportPrincipal === message.from;
   }
-  private allowedPayload(value: Record<string, unknown>): ClockPayload | null {
+  private allowedPayload(value: Record<string, unknown>, from: string): ClockPayload | null {
     const to = value.to;
     const word = value.word;
     const body = value.body;
     const label = value.label;
     if (typeof label !== "string" || !label.trim() || !body || typeof body !== "object" || Array.isArray(body)) return null;
-    if (!((to === "agent:main" && (word === "wake" || word === "say")) ||
+    // An agent's timer speaks to that agent itself; the owner's go to the main agent or to the owner.
+    const self = typeof to === "string" && AGENT_ID.test(to) && (to === from || (from === "person:owner" && to === "agent:main"));
+    if (!((self && (word === "say" || (to === "agent:main" && word === "wake"))) ||
       (to === "person:owner" && word === "say" && (body as Record<string, unknown>).kind === "due"))) return null;
     const contract = wordContract(to, word);
     if (!contract?.input_schema || !matchesSchema(contract.input_schema, body) || !this.options.router.acceptsRequest(to, word, body)) return null;
@@ -86,7 +88,7 @@ export class ClockMember implements Member {
       return { ok: true, result: { timers } };
     }
     if (message.word === "set") {
-      const payload = this.allowedPayload(message.body);
+      const payload = this.allowedPayload(message.body, message.from);
       if (!payload) return error("bad_request", "unsupported scheduled target or body");
       const now = this.now();
       const at = message.body.at;
@@ -96,6 +98,12 @@ export class ClockMember implements Member {
         return error("bad_request", "invalid scheduled time");
       const next = at === undefined ? now + (every as number) * 1000 : at as number;
       if (!safeNow(next)) return error("bad_request", "scheduled time out of range");
+      // The model sometimes sets one reminder twice in a row. The same delegate asking for the same thing at the same
+      // minute is the same reminder: answer with the timer already pending rather than ringing twice.
+      const same = this.journal.list().find((item) => item.createdBy === message.from && !item.blocked && item.every === (every === undefined ? null : every) &&
+        Math.abs(item.next - next) < 60_000 && item.payload?.to === payload.to && item.payload?.word === payload.word &&
+        item.payload?.label === payload.label && JSON.stringify(item.payload?.body) === JSON.stringify(payload.body));
+      if (same) return { ok: true, result: { id: same.id, next: same.next } };
       const result = this.journal.set(message.id, payload, context.caller, message.from, next, every === undefined ? null : every as number);
       try { await this.rearm(); } catch { return error("offline", "host alarm acknowledgement unavailable; timer is durably pending"); }
       return { ok: true, result };

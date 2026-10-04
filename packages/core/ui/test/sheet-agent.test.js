@@ -39,14 +39,20 @@ test("five tabs show safe activity, and failed clock never claims empty", async 
     f.sheet.open();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(f.root.named["#agentTabs"].children.length, 5);
+    assert.deepEqual(f.root.named["#agentTabs"].children.map((button) => button.textContent), ["身份", "记忆", "活动", "计划", "审批"]);
+    assert.equal(f.sheet.activeTab, "identity", "the page opens on who she is");
     await f.sheet.show("activity");
     assert.match(f.sheet.panels.get("activity").textContent, /还没有活动记录/);
     assert.doesNotMatch(f.sheet.panels.get("activity").textContent, /service:|bash|web_search/);
     await f.sheet.show("upcoming");
-    assert.match(f.sheet.panels.get("upcoming").textContent, /不能据此判断待办为空/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂时读不到计划（不代表没有）/);
+    assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /暂无计划/);
+    assert.ok(findAll(f.sheet.panels.get("upcoming"), (item) => item.tag === "button" && item.textContent === "重试").length, "failure offers a plain retry");
     await f.sheet.show("approvals");
-    assert.match(f.sheet.panels.get("approvals").textContent, /当前没有可确认的待批请求/);
-    assert.match(f.sheet.panels.get("approvals").textContent, /不能据此判断没有规则/);
+    assert.match(f.sheet.panels.get("approvals").textContent, /正在读取/, "history and rules load by themselves");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(f.sheet.panels.get("approvals").textContent, /现在没有要你决定的事/);
+    assert.match(f.sheet.panels.get("approvals").textContent, /暂时读不到这些规则（不代表没有）/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -58,7 +64,10 @@ test("activity question passes a turn-linked prefill to the composer callback", 
     await new Promise((resolve) => setImmediate(resolve));
     await f.sheet.show("activity");
     const section = f.sheet.panels.get("activity");
-    const button = section.children.find((child) => child.dataset.turn === "t_one").children.find((child) => child.tag === "button");
+    const turn = findAll(section, (child) => child.dataset.turn === "t_one")[0];
+    assert.match(section.textContent, /今天|\d+月\d+日/, "turns are grouped under a day");
+    const button = findAll(turn, (child) => child.tag === "button")[0];
+    assert.equal(button.textContent, "问问她这件事");
     button.listeners.click();
     assert.deepEqual(asked, { turn: "t_one", text: "关于查天气，" });
   } finally { f.sheet.reset(); delete globalThis.document; }
@@ -67,7 +76,7 @@ test("activity question passes a turn-linked prefill to the composer callback", 
 test("activity strips raw route words; a paired live clock list offers cancellation", async () => {
   const view = { turns: { t_one: { title: "查天气", started: 1000, steps: [
     { label: "service:self · write", requestId: "raw" }, { label: "calendar.search", ts: 1000 },
-    { label: "正在查找", ts: 1001 },
+    { label: "正在查找", ts: 1001 }, { label: "在看网页 · nba.com", ts: 1002 },
   ] }, r_one: { title: "memory", background: true, started: 2000, steps: [
     { label: "extract", state: "done", ts: 2000 }, { label: "service:self", ts: 2001 },
   ] } } };
@@ -83,12 +92,13 @@ test("activity strips raw route words; a paired live clock list offers cancellat
     await new Promise((resolve) => setImmediate(resolve));
     await f.sheet.show("activity");
     const activity = f.sheet.panels.get("activity").textContent;
-    assert.match(activity, /查天气.*正在查找/s);
+    assert.match(activity, /查天气.*正在查找.*在看网页 · nba\.com/s);
     assert.match(activity, /整理记忆.*提取记忆/s);
     assert.doesNotMatch(activity, /service:self|secret flow|write/);
     await f.sheet.show("upcoming");
     assert.match(f.sheet.panels.get("upcoming").textContent, /带伞/);
-    assert.match(f.sheet.panels.get("upcoming").textContent, /删除计划/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /删除/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /只一次/);
     assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /service:/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
@@ -124,11 +134,11 @@ test("clock reply mismatch and malformed timer cannot produce a false empty list
     f.sheet.open();
     await new Promise((resolve) => setImmediate(resolve));
     await f.sheet.show("upcoming");
-    assert.match(f.sheet.panels.get("upcoming").textContent, /暂不可用/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂时读不到计划/);
     assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /暂无计划/);
     invalid = "timer";
     await f.sheet.show("upcoming");
-    assert.match(f.sheet.panels.get("upcoming").textContent, /暂不可用/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂时读不到计划/);
     assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /暂无计划/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
@@ -146,12 +156,12 @@ test("clock labels and blocked reasons cannot expose raw route names", async () 
     f.sheet.open();
     await new Promise((resolve) => setImmediate(resolve));
     await f.sheet.show("upcoming");
-    assert.match(f.sheet.panels.get("upcoming").textContent, /暂不可用/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂时读不到计划/);
     assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /service:clock/);
     blocked = null;
     label = "calendar.search";
     await f.sheet.show("upcoming");
-    assert.match(f.sheet.panels.get("upcoming").textContent, /暂不可用/);
+    assert.match(f.sheet.panels.get("upcoming").textContent, /暂时读不到计划/);
     assert.doesNotMatch(f.sheet.panels.get("upcoming").textContent, /calendar.search/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
@@ -172,7 +182,11 @@ test("cancel keeps the timer until a paired acknowledgement and authoritative li
     f.sheet.open();
     await f.sheet.show("upcoming");
     const section = f.sheet.panels.get("upcoming");
-    const button = section.children[0].children.find((child) => child.tag === "button");
+    const button = findAll(section, (child) => child.tag === "button")[0];
+    await button.listeners.click();
+    assert.equal(calls.filter((wire) => wire.word === "cancel").length, 0, "the first tap only explains what will be lost");
+    assert.equal(button.textContent, "确认删除");
+    assert.match(section.textContent, /删除后，.*「带伞」就取消了/);
     const pending = button.listeners.click();
     await button.listeners.click();
     assert.equal(calls.filter((wire) => wire.word === "cancel").length, 1, "double click cannot duplicate an effect");
@@ -205,9 +219,10 @@ test("lost cancel acknowledgement retries only on a new click with the same clie
     f.sheet.open();
     await f.sheet.show("upcoming");
     const section = f.sheet.panels.get("upcoming");
-    const button = section.children[0].children.find((child) => child.tag === "button");
+    const button = findAll(section, (child) => child.tag === "button")[0];
     await button.listeners.click();
-    assert.match(section.textContent, /带伞.*结果未确认/s);
+    await button.listeners.click();
+    assert.match(section.textContent, /带伞.*还没确认结果/s);
     assert.equal(cancels, 1, "no automatic retry of an ambiguous effect");
     await button.listeners.click();
     assert.deepEqual(ids, ["cancel-client-one", "cancel-client-one"]);
@@ -221,17 +236,17 @@ test("cancelled false, rejected HTTP, forged pairing and stale scope never remov
     kind: "response", reply_to: "request-a", from: "service:clock", to: "person:owner", word,
     body: { ok: true, result }, ...overrides } }) });
   net.request = async () => accepted("cancel", { cancelled: false });
-  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /未确认删除/);
+  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /没能删除/);
   net.request = async () => ({ ok: false, status: 403 });
-  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /无权修改/);
+  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /不能修改计划/);
   net.request = async () => accepted("cancel", { cancelled: true }, { reply_to: "other" });
-  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /未配对/);
+  await assert.rejects(cancelClockForScreen(net, () => true, "timer-a", "client-a"), /还没确认结果/);
   let release;
   net.request = async () => new Promise((resolve) => { release = resolve; });
   const pending = cancelClockForScreen(net, () => true, "timer-a", "client-a");
   net.currentScope = "scope-b";
   release(accepted("cancel", { cancelled: true }));
-  await assert.rejects(pending, /身份已变化/);
+  await assert.rejects(pending, /连接已经换过/);
 });
 
 test("late cancel acknowledgement after sheet scope loss cannot revive rows or reuse intent", async () => {
@@ -247,7 +262,8 @@ test("late cancel acknowledgement after sheet scope loss cannot revive rows or r
   try {
     f.sheet.open();
     await f.sheet.show("upcoming");
-    const button = f.sheet.panels.get("upcoming").children[0].children.find((child) => child.tag === "button");
+    const button = findAll(f.sheet.panels.get("upcoming"), (child) => child.tag === "button")[0];
+    await button.listeners.click();
     const pending = button.listeners.click();
     f.net.currentScope = "scope-b";
     f.sheet.registration();
@@ -296,14 +312,18 @@ test("approval page loads gate history and rules, then removes a revoked rule af
     await f.sheet.show("approvals");
     await new Promise((resolve) => setImmediate(resolve));
     const panel = f.sheet.panels.get("approvals");
-    assert.match(panel.textContent, /历史.*仅这一次.*以后都允许的规则.*撤销规则/s);
-    const button = findAll(panel, (item) => item.tag === "button" && item.textContent === "撤销规则")[0];
+    assert.match(panel.textContent, /以后都允许.*撤销.*最近的决定.*仅这一次/s);
+    assert.doesNotMatch(panel.textContent, /device:|service:/);
+    const button = findAll(panel, (item) => item.tag === "button" && item.textContent === "撤销")[0];
     assert.ok(button);
     button.listeners.click();
+    assert.deepEqual(calls.map((item) => item.word), ["history", "rules.list"], "the first tap only explains the consequence");
+    assert.match(panel.textContent, /撤销后，Ash 下次做这件事前会先问你/);
+    findAll(panel, (item) => item.tag === "button" && item.textContent === "确认撤销")[0].listeners.click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(calls.map((item) => item.word), ["history", "rules.list", "rules.revoke", "history", "rules.list"]);
-    assert.match(panel.textContent, /当前没有生效的规则/);
-    assert.equal(findAll(panel, (item) => item.tag === "button" && item.textContent === "撤销规则").length, 0);
+    assert.match(panel.textContent, /没有正在生效的规则/);
+    assert.equal(findAll(panel, (item) => item.tag === "button" && /撤销/.test(item.textContent)).length, 0);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -319,8 +339,8 @@ test("remote approval page can inspect rules but cannot offer a revoke button", 
     f.sheet.open();
     await f.sheet.show("approvals");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.match(f.sheet.panels.get("approvals").textContent, /以后都允许的规则/);
-    assert.doesNotMatch(f.sheet.panels.get("approvals").textContent, /撤销规则/);
+    assert.match(f.sheet.panels.get("approvals").textContent, /以后都允许/);
+    assert.doesNotMatch(f.sheet.panels.get("approvals").textContent, /撤销/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -359,14 +379,14 @@ test("remote approval double click is single-flight; unknown ACK retries only th
     releaseFirst();
     await first;
     assert.equal(f.sheet.answerIntents.get(ask.id).status, "uncertain");
-    assert.match(f.sheet.panels.get("approvals").textContent, /结果未确认/);
+    assert.match(f.sheet.panels.get("approvals").textContent, /还没确认你的回答送到了.*仅这次/);
     await f.sheet.answerApproval(shown, "deny", binding, epoch);
     assert.equal(calls.length, 1, "unknown ACK cannot change the intended choice");
     await f.sheet.answerApproval(shown, "once", binding, epoch);
     assert.deepEqual(calls.map((call) => call.client_id), ["stable-answer-id", "stable-answer-id"]);
     assert.deepEqual(calls.map((call) => call.body.result.choice), ["once", "once"]);
     assert.equal(f.sheet.answerIntents.get(ask.id).status, "confirmed");
-    assert.match(f.sheet.panels.get("approvals").textContent, /记录中确认/);
+    assert.match(f.sheet.panels.get("approvals").textContent, /已收到你的回答/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -390,7 +410,7 @@ test("late remote approval ACK after auth-scope change cannot confirm or retain 
     await pending;
     assert.equal(f.sheet.answerIntents.size, 0);
     assert.equal(f.root.classList.contains("open"), false);
-    assert.doesNotMatch(f.root.textContent, /记录中确认/);
+    assert.doesNotMatch(f.root.textContent, /已收到你的回答/);
   } finally { f.sheet.reset(); delete globalThis.document; }
 });
 
@@ -427,4 +447,33 @@ test("dirty or uncertain editor blocks voluntary close, but disconnect clears it
     assert.equal(f.sheet.identity, null);
     assert.equal(f.root.named["#agentPanel"].textContent, "");
   } finally { f.sheet.reset(); delete globalThis.document; }
+});
+
+test("pending approvals put a count on the tab; the rename row asks her instead of opening a form", async () => {
+  const ask = pendingGateAsk();
+  let prefill = null;
+  globalThis.document = { createElement: (tag) => new Element(tag), createDocumentFragment: () => new Element("fragment") };
+  const root = new Element("aside");
+  root.named = { "#agentTabs": new Element("nav"), "#agentPanel": new Element("div"), "#agentClose": new Element("button") };
+  const net = { token: "token-a", screen: "screen:a", currentScope: "scope-a", generation: 1, localManagement: true,
+    request: async (_path, options) => {
+      const wire = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ id: "id", reply: { kind: "response", reply_to: "id", from: "service:self",
+        to: "person:owner", word: wire.word, body: { ok: true, result: { content: "# 我的名片\n- 名字：小舟\n", hash: "a".repeat(64) } } } }) };
+    } };
+  const sheet = new AgentSheet(root, net, { getView: () => ({ asks: [ask], turns: {} }), onPrefill: (text) => { prefill = text; } });
+  try {
+    sheet.setName("小舟");
+    sheet.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    const approvals = root.named["#agentTabs"].children.find((button) => button.dataset.tab === "approvals");
+    assert.equal(approvals.dataset.badge, "1");
+    const identity = sheet.panels.get("identity");
+    assert.match(identity.textContent, /这些决定了小舟是谁/);
+    assert.match(identity.textContent, /性格.*名片/s);
+    assert.doesNotMatch(identity.textContent, /SOUL\.md|IDENTITY\.md|哈希|版本/);
+    const rename = findAll(identity, (item) => item.tag === "button" && /想给小舟换个名字/.test(item.textContent))[0];
+    rename.listeners.click();
+    assert.equal(prefill, "我想给你换个名字，以后叫你");
+  } finally { sheet.reset(); delete globalThis.document; }
 });

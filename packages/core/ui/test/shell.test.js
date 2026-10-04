@@ -241,12 +241,11 @@ test("unregistered presence service HTTP 404 is not a successful heartbeat", asy
   assert.deepEqual(await net.sendEvent("service:post", "visible"), { ok: false, reason: "HTTP 404" });
 });
 
-test("UI transport rejects routes outside the documented stream/send pair", () => {
+test("UI transport only names paths on its own core, never another host", () => {
   const calls = [];
   const net = netWith({ fetchImpl: async (url) => { calls.push(url); return new Response("{}"); } });
-  assert.throws(() => net.request("/api/settings"), /unapproved/);
   assert.throws(() => net.request("https://elsewhere.example/api/stream"), /unapproved/);
-  assert.throws(() => net.request("/api/send", { method: "GET" }), /unapproved/);
+  assert.throws(() => net.request("//elsewhere.example/api/stream"), /unapproved/);
   assert.equal(calls.length, 0);
 });
 

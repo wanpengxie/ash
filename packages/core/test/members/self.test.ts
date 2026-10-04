@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -30,8 +30,17 @@ async function fixture(failpoint?: (stage: SelfStage) => void) {
 test("self enforces canonical paths, byte hashes, USER frontmatter and authentic by", async () => {
   const f = await fixture();
   try {
-    for (const path of ["../outside", "SOUL.md.bak"])
-      await assert.rejects(f.send("write", { path, content: "bad", why: "test", expected_hash: null }), /schema/);
+    // F-S22: a path outside the managed set is refused as forbidden and nothing is written.
+    for (const path of ["../outside", "SOUL.md.bak", "memory/../SOUL.md"]) {
+      const refused = await f.send("write", { path, content: "bad", why: "test", expected_hash: null });
+      assert.equal((refused.reply?.body as { error?: { code?: string } }).error?.code, "forbidden");
+    }
+    for (const path of ["USER.md", "../memory/2026-01-01.md"]) {
+      const refused = await f.send("append", { path, text: "x" });
+      assert.equal((refused.reply?.body as { error?: { code?: string } }).error?.code, "forbidden", path);
+    }
+    assert.equal(existsSync(join(f.home, "SOUL.md.bak")), false);
+    assert.equal(existsSync(join(f.dir, "outside")), false);
     const created = await f.send("write", { path: "USER.md", content: "Notes\n", why: "test", expected_hash: null }, agent);
     assert.equal(created.reply?.body.ok, true);
     const written = readFileSync(join(f.home, "USER.md"), "utf8");
@@ -419,4 +428,11 @@ test("self rejects symbolic and hard-link aliases and retains only the latest 50
     assert.equal((history.reply?.body.result as { versions: unknown[] }).versions.length, 50);
     assert.equal(readdirSync(join(g.home, ".ash", "versions", "MEMORY.md")).length, 50);
   } finally { await g.self.close(); g.ledger.close(); }
+});
+
+test("a change summary names the lines that were added and removed", async () => {
+  const { lineChanges } = await import("../../src/members/self");
+  assert.equal(lineChanges("- 温和\n", "- 温和\n- 说话更短，能一句说完就一句。\n"), '; added: "- 说话更短，能一句说完就一句。"');
+  assert.equal(lineChanges("- 旧说法\n- 保留\n", "- 保留\n"), '; removed: "- 旧说法"');
+  assert.equal(lineChanges("---\nversion: 1\n---\nA\n", "---\nversion: 2\n---\nA\n"), "");
 });

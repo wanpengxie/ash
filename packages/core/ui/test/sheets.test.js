@@ -20,6 +20,9 @@ class Node {
   set textContent(value) { this.value = value; this.children = []; }
   get textContent() { return (this.value || "") + this.children.map((child) => child.textContent).join(""); }
 }
+function findAll(element, predicate) {
+  return [...(predicate(element) ? [element] : []), ...(element.children ?? []).flatMap((child) => findAll(child, predicate))];
+}
 const withDom = async (fn) => { globalThis.document = { createElement: (tag) => new Node(tag) }; try { await fn(); } finally { delete globalThis.document; } };
 const message = (seq, fields) => ({ seq, ts: seq * 1000, id: `m${seq}`, kind: "event", to: null, body: {}, ...fields });
 const replay = (messages) => messages.reduce((view, item) => fold(view, item), initialView());
@@ -77,16 +80,22 @@ test("activity groups a real batch by turn, separates background, and omits tool
   ]);
   const root = new Node("root");
   let prefill;
-  renderActivitySheet(root, view, { askAbout: (value) => { prefill = value; } });
+  let opened = null;
+  renderActivitySheet(root, view, { askAbout: (value) => { prefill = value; }, now: 9000, onToggleBackground: (open) => { opened = open; } });
   assert.equal(root.children.length, 4);
-  assert.equal(root.children[0].textContent, "对话");
+  assert.equal(root.children[0].textContent, "今天", "conversations are grouped by day");
+  assert.match(root.children[0].className, /activity-group/);
   assert.match(root.children[1].textContent, /查一下天气 · 2 条/);
   assert.match(root.children[1].textContent, /device:phone · calendar.list/);
-  assert.equal(root.children[2].textContent, "后台任务");
-  assert.equal(root.children[3].dataset.turn, "r_one");
+  assert.match(root.children[1].textContent, /完成了 · 用时 3 秒/, "the outcome is said in plain words");
+  assert.match(root.children[2].textContent, /^后台任务 · 1 项/);
+  assert.equal(root.children[3].hidden, true, "background work starts collapsed");
+  assert.equal(root.children[3].children[0].dataset.turn, "r_one");
+  root.children[2].listeners.click();
+  assert.equal(opened, true);
   assert.equal(JSON.stringify(view).includes("SECRET_"), false);
   assert.equal(root.textContent.includes("SECRET_"), false);
-  root.children[1].children.find((child) => child.tag === "button").listeners.click();
+  findAll(root.children[1], (child) => child.tag === "button")[0].listeners.click();
   assert.deepEqual(prefill, { turn: "t_one", text: "关于查一下天气 · 2 条，" });
 }));
 
@@ -110,7 +119,10 @@ test("clock projection and upcoming sheet use production list shape; cancel refr
   });
   await sheet.load();
   assert.match(root.textContent, /带伞/);
-  await root.children[0].children.find((child) => child.tag === "button").listeners.click();
+  const cancel = findAll(root, (child) => child.tag === "button")[0];
+  await cancel.listeners.click();
+  assert.equal(calls.length, 1, "the first tap only arms the delete");
+  await cancel.listeners.click();
   assert.match(root.textContent, /暂无计划/);
   assert.deepEqual(calls.map((item) => item.word), ["list", "cancel", "list"]);
   assert.deepEqual(calls.map((item) => item.to), ["service:clock", "service:clock", "service:clock"]);
@@ -122,14 +134,16 @@ test("failed cancel leaves timer visible; failed list gives error, not stale suc
     ? { reply: { body: { ok: true, result: { timers: [{ id: "t", next: 999999999999, every: null, to: "agent:main", word: "say", label: "later", blocked: null }] } } } }
     : { reply: { body: { ok: false, error: { code: "forbidden" } } } });
   await sheet.load();
-  await assert.rejects(sheet.cancel("t"), /未能删除/);
+  await assert.rejects(sheet.cancel("t"), /没能删除/);
   assert.match(root.textContent, /later/);
-  await root.children[0].children.find((child) => child.tag === "button").listeners.click();
-  assert.match(root.textContent, /未能删除计划/);
+  const cancel = findAll(root, (child) => child.tag === "button")[0];
+  await cancel.listeners.click();
+  await cancel.listeners.click();
+  assert.match(root.textContent, /没能删除/);
   assert.match(root.textContent, /later/);
   const offline = new UpcomingSheet(root, async () => ({ reply: { body: { ok: false, error: { code: "offline" } } } }));
-  await assert.rejects(offline.load(), /暂不可用/);
-  assert.match(root.textContent, /暂不可用/);
+  await assert.rejects(offline.load(), /暂时读不到计划/);
+  assert.match(root.textContent, /暂时读不到计划（不代表没有）/);
 }));
 
 test("clock blocked diagnostic is rendered as a fixed human message", async () => withDom(async () => {
@@ -138,6 +152,6 @@ test("clock blocked diagnostic is rendered as a fixed human message", async () =
   ] } } });
   const root = new Node("root");
   renderUpcomingSheet(root, timers);
-  assert.match(root.textContent, /无法执行：请稍后查看/);
+  assert.match(root.textContent, /暂时没法执行：请稍后再看/);
   assert.doesNotMatch(root.textContent, /internal_adapter_timeout/);
 }));

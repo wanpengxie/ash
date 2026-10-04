@@ -56,7 +56,7 @@ async function world() {
   await host.start();
   const running = await startOwner({ stateDir: join(root, "state"), listen: "127.0.0.1:0", workspaces: { home },
     agents: [{ id: "agent:main", runtime: "dsh" }], host: { url: host.url, token: host.token },
-    dsh: { root: install!, home: join(root, "dsh"), env: { DSH_TELEMETRY_DISABLED: "1", DSH_PERMISSION_MODE: "danger-full-access",
+    dsh: { root: install!, home: join(root, "dsh"), costRoot: join(process.cwd(), "packages/ash-cost"), env: { DSH_TELEMETRY_DISABLED: "1", DSH_PERMISSION_MODE: "danger-full-access",
       DEEPSEEK_API_KEY: "sk-synthetic", DEEPSEEK_BASE_URL: model.url } } });
   const ownerToken = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")![0];
   const owner: TrustedRouteContext = { member: "person:owner", transport: "api", local: true, remote: false, ownerProxy: true,
@@ -133,14 +133,18 @@ test("each inbound word rejects a schema-violating body from its authorized send
       "person:owner/say": w.agent, "person:owner/react": w.agent, "person:owner/show": w.agent, "person:owner/ask": w.agent,
       "screen:*/ui.open": w.agent,
       "service:clock/set": w.owner, "service:clock/cancel": w.owner, "service:clock/list": w.owner,
-      "service:post/deliver": w.service("service:work"), "service:post/visible": w.screen,
+      "service:post/deliver": w.service("service:work"), "service:post/visible": w.screen, "service:post/hidden": w.screen,
       "service:self/read": w.owner, "service:self/write": w.owner, "service:self/append": w.owner, "service:self/apply_plan": w.owner,
       "service:self/rollback": w.owner, "service:self/history": w.owner,
       "service:work/run": w.owner, "service:work/runs": w.owner,
+      "service:cost/usage.get": w.owner, "service:cost/balance.get": w.owner,
+      "service:vault/list": w.owner, "service:vault/describe": w.owner,
     };
-    for (const word of ["rules.list", "rules.revoke", "history", "access.list", "access.grant", "access.revoke"]) senders[`service:gate/${word}`] = w.owner;
+    for (const word of ["rules.list", "rules.revoke", "rules.set", "mode.set", "history", "audit", "access.list", "access.grant", "access.revoke"]) senders[`service:gate/${word}`] = w.owner;
     for (const word of ["settings.get", "settings.set", "plugins.list", "plugins.op", "gateway.state", "gateway.op", "model.set", "pause"]) senders[`service:admin/${word}`] = w.owner;
     senders["service:admin/resume"] = w.screen;
+    for (const word of ["list", "describe", "declare", "update", "start", "stop", "restart", "remove"]) senders[`service:agents/${word}`] = w.owner;
+    for (const word of ["ask", "tell", "answer"]) senders[`service:agents/${word}`] = w.agent;
     for (const word of ["extract", "verify_claims", "reconcile", "verify_plan", "proactive", "opener"]) senders[`worker:${word}/${word}`] = w.service("service:work");
     for (const word of ["sense.calendar", "sense.battery", "sense.screen", "sense.notification"]) senders[`service:senses/${word}`] = w.phone;
     const internalOnly = new Set(["agent:main/cancel_turn", "agent:main/wake", "service:post/deliver",
@@ -198,9 +202,16 @@ test("a real scenario writes only contract-conforming messages and covers every 
     // A conversation turn: received/read/turn.start/status/turn.end and a delivered reply.
     const said = await world_.send(w.owner, { to: "agent:main", kind: "request", word: "say", body: { text: "你好" }, wait: true });
     await waitFor((rows) => rows.some((row) => row.word === "turn.end" && rows.find((x) => x.word === "turn.start" && (x.body.ids as string[])?.includes(said.id))), "turn end");
+    // A credential saved and removed through the owner route: the ledger gets the names, never a value.
+    const ownerToken = Object.entries(w.running.tokens.api).find(([, member]) => member === "person:owner")![0];
+    const vaultHeaders = { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" };
+    await fetch(`${w.running.url}/api/vault/CONTRACT_PROBE_KEY`, { method: "PUT", headers: vaultHeaders, body: JSON.stringify({ value: "sk-contract-probe" }) });
+    await fetch(`${w.running.url}/api/vault/CONTRACT_PROBE_KEY`, { method: "DELETE", headers: vaultHeaders });
+    assert.doesNotMatch(JSON.stringify(ledger.list({ limit: 100000 })), /sk-contract-probe/);
     // Presence and visibility from a registered screen.
     await world_.send(w.screen, { to: "agent:main", kind: "event", word: "typing", body: {} });
     await world_.send(w.screen, { to: "service:post", kind: "event", word: "visible", body: {} });
+    await world_.send(w.screen, { to: "service:post", kind: "event", word: "hidden", body: {} });
     // Managed file change.
     const read = await world_.send(w.owner, { to: "service:self", kind: "request", word: "read", body: { path: "HEARTBEAT.md" }, wait: true });
     const expected = (read.reply!.body.result as { hash?: string } | undefined)?.hash ?? null;

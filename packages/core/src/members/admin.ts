@@ -113,8 +113,19 @@ export class AdminMember implements Member {
     if (message.word === "settings.get" || message.word === "settings.set") {
       if (message.from !== "person:owner" || !context.caller.local || context.caller.remote || !this.options.delivery)
         return { ok: false, error: { code: "forbidden", message: "local settings unavailable" } };
-      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet }, ...(this.options.modelGet ? { model: this.options.modelGet() } : {}) } };
+      if (message.word === "settings.get") return { ok: true, result: { delivery: { quiet: this.options.delivery.quiet }, paused: this.journal.isPaused(),
+        approval: { mode: this.journal.approvalMode() }, ...(this.options.modelGet ? { model: this.options.modelGet() } : {}) } };
       const body = message.body;
+      if (Object.hasOwn(body, "approval")) {
+        const approval = body.approval;
+        const mode = approval && typeof approval === "object" && !Array.isArray(approval) ? (approval as Record<string, unknown>).mode : undefined;
+        if (Object.keys(body).length !== 1 || !approval || typeof approval !== "object" || Array.isArray(approval) ||
+          Object.keys(approval).length !== 1 || (mode !== "auto" && mode !== "always"))
+          return { ok: false, error: { code: "bad_request", message: "expected approval.mode as auto or always" } };
+        if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "settings request settled" } };
+        this.journal.setApprovalMode(mode);
+        return { ok: true, result: { approval: { mode } } };
+      }
       const section = body.delivery;
       const quiet = section && typeof section === "object" && !Array.isArray(section) ? (section as Record<string, unknown>).quiet : undefined;
       if (Object.keys(body).length !== 1 || !section || typeof section !== "object" || Array.isArray(section) ||

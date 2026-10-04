@@ -144,12 +144,12 @@ test("model selection requires a provider and model, not an opaque settings body
   assert.ok(matchesSchema(contract.result_schema!, { provider: "deepseek", model: "chat", restart_required: true }));
 });
 
-test("gateway operations are closed and cannot carry bootstrap secrets or pairing tickets", () => {
+test("gateway operations are closed: no bootstrap secrets or caller-supplied tickets; the owner may only ask for a new pairing code", () => {
   const schema = wordContract("service:admin", "gateway.op")!.input_schema!;
   for (const body of [{ op: "approve", request_id: "request-1", permissions: ["chat", "web_ui"] },
-    { op: "reject", request_id: "request-1" }, { op: "revoke", device: "device:phone_1" }, { op: "sync" }])
+    { op: "reject", request_id: "request-1" }, { op: "revoke", device: "device:phone_1" }, { op: "sync" }, { op: "ticket" }])
     assert.ok(matchesSchema(schema, body));
-  for (const body of [{ op: "configure", url: "https://gateway", secret: "credential" }, { op: "ticket" },
+  for (const body of [{ op: "configure", url: "https://gateway", secret: "credential" }, { op: "ticket", ticket: "forged" },
     { op: "approve", request_id: "request-1", permissions: ["admin"] }, { op: "sync", secret: "credential" },
     { op: "revoke", device: "phone_1" }]) assert.ok(!matchesSchema(schema, body));
 });
@@ -331,10 +331,10 @@ test("managed writes require a valid base hash, while dated append has no base h
   assert.ok(matchesSchema(write, { ...base, expected_hash: null }));
   assert.ok(!matchesSchema(write, { path: base.path, content: base.content, why: base.why }));
   assert.ok(!matchesSchema(write, { ...base, expected_hash: "A".repeat(64) }));
-  assert.ok(!matchesSchema(write, { ...base, path: "../USER.md" }));
+  assert.ok(matchesSchema(write, { ...base, path: "../USER.md" }), "service:self refuses foreign paths as forbidden, not the schema");
   const append = wordContract("service:self", "append")!.input_schema!;
   assert.ok(matchesSchema(append, { path: "memory/1999-12-31.md", text: "x" }));
-  assert.ok(!matchesSchema(append, { path: "USER.md", text: "x" }));
+  assert.ok(matchesSchema(append, { path: "USER.md", text: "x" }), "service:self refuses a non-dated append as forbidden");
   assert.ok(!matchesSchema(append, { path: "memory/1999-12-31.md", text: "x", expected_hash: null }));
 });
 
@@ -401,7 +401,7 @@ test("config fills defaults, preserves legacy root keys, and rejects invalid nes
   assert.deepEqual(resolved.existing, input.existing);
   assert.equal(resolved.delivery.quiet, DEFAULT_WORLD_CONFIG_V2.delivery.quiet);
   assert.equal(resolved.delivery.dedupe_minutes, 0);
-  assert.equal(resolved.reflex.timeout_ms, 1000);
+  assert.equal(resolved.reflex.timeout_ms, 6000);
   assert.deepEqual(resolved.workers.model, { provider: "p", model: "m" });
   assert.ok(matchesSchema(WORLD_CONFIG_SCHEMA_V2, resolved));
   assert.equal(resolveWorldConfigV2({ reflex: { jev: { key_credential: "vault/team-prod/key" } } }).reflex.jev.key_credential, "vault/team-prod/key");

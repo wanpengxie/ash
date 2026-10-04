@@ -1,4 +1,4 @@
-import type { Card, JsonSchema, WordSpec } from "./api";
+import type { Card, JsonSchema, WordEffect, WordSpec } from "./api";
 import { matchesSchema } from "./schema";
 
 export interface WordContract extends WordSpec { member: string; direction: "in" | "out" }
@@ -26,23 +26,28 @@ const deliveryDedupeKey: JsonSchema = { type: "string", minLength: 1, maxLength:
 const empty = obj();
 const accepted = obj({ accepted: bool }, ["accepted"]);
 const attachmentInput = obj({ name: nonempty, mime_type: nonempty, data: nonempty }, ["name", "mime_type", "data"]);
-const sayExtras = { attachments: array(attachmentInput), in_reply_to: id, option_id: id };
+// from_agent: the agent whose question or news the Agent system delivers; reply_from: the agent whose answer it passes back.
+const sayExtras = { attachments: array(attachmentInput), in_reply_to: id, option_id: id, from_agent: id, reply_from: id };
 const askChoice = choice("once", "always", "deny");
 const askOption = obj({ id: askChoice, label: nonempty }, ["id", "label"]);
 const origin = obj({ screen: nonempty, label: str }, ["screen", "label"]);
 const cardOption = obj({ id: nonempty, text: nonempty }, ["id", "text"]);
+export const PHONE_PERMISSIONS = ["calendar", "notifications", "battery", "accessibility", "all_files", "usage", "write_settings", "overlay", "shizuku"] as const;
 export const CARD_SCHEMA: JsonSchema = { oneOf: [
   obj({ type: { const: "options" }, prompt: str, options: { type: "array", items: cardOption, minItems: 1 }, allow_custom: bool }, ["type", "options"]),
   obj({ type: { const: "file" }, workspace: nonempty, path: nonempty, name: nonempty, mime_type: nonempty, size: { type: "integer", minimum: 0 } }, ["type", "workspace", "path", "name", "mime_type", "size"]),
   obj({ type: { const: "image" }, workspace: nonempty, path: nonempty, alt: str }, ["type", "workspace", "path"]),
   obj({ type: { const: "link" }, url: nonempty, title: nonempty, summary: str }, ["type", "url", "title"]),
-  obj({ type: { const: "permission" }, permission: nonempty, why: nonempty }, ["type", "permission", "why"]),
+  // An Android setting the owner switches on by hand; the phone app opens exactly that page.
+  obj({ type: { const: "permission" }, permission: choice(...PHONE_PERMISSIONS), why: nonempty }, ["type", "permission", "why"]),
 ] };
 const sha = { type: "string", pattern: "^[0-9a-f]{64}$" } as const satisfies JsonSchema;
 const positiveSafe: JsonSchema = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
 const nonnegativeSafe: JsonSchema = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const datePath = { type: "string", pattern: "^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
 const selfPath = { type: "string", pattern: "^(SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE)\\.md$|^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
+// Requests accept any short path so that service:self answers a non-managed one with forbidden (F-S22).
+const selfPathRequest = { type: "string", minLength: 1, maxLength: 256 } as const satisfies JsonSchema;
 const edit = obj({ op: choice("replace", "delete", "insert_after"), start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 }, guard: str, text: str, reason: choice("promote", "correct", "complete", "expire", "dedupe", "condense", "demote"), evidence: strings }, ["op", "start", "end", "guard", "reason", "evidence"]);
 const claim = obj({ text: nonempty, type: choice("fact", "preference", "relationship", "event", "boundary", "correction"), salience: choice("low", "medium", "high"), evidence: strings, quote: str, supersedes: str, valid_until: str }, ["text", "type", "salience", "evidence"]);
 const message = obj({ seq: integer, id, ts: num, from: id, to: { anyOf: [str, { type: "null" }] }, kind: choice("request", "response", "event"), word: id, body: obj({}, [], true), reply_to: str, origin, turn: str }, ["seq", "id", "ts", "from", "to", "kind", "word", "body"]);
@@ -54,7 +59,7 @@ const guidance: Record<string, string> = {
   "agent:main/say": "Use to tell the agent something or answer an active option card. It acknowledges receipt immediately; read later conversation messages for the answer.",
   "person:owner/say": "Use to reply or offer a heads-up to the owner. This records immediately; it does not wait for a response or replace ask.",
   "person:owner/react": "Use for a brief reaction to a known message. Do not use for a new explanation; send say instead.",
-  "person:owner/show": "Use to present a file, image, link, permission, or choices. Showing choices does not itself authorize an action.",
+  "person:owner/show": "Use to present a file, image, link, permission, or choices. Showing choices does not itself authorize an action. A permission card only names an Android setting the owner must switch on (calendar, notifications, battery, accessibility, all_files, usage, write_settings, overlay, shizuku); never use it to ask for access to a phone capability, because calling the capability asks the owner by itself.",
   "person:owner/ask": "Use when the owner must choose before an action continues. It waits for the first valid unexpired answer; do not treat mere presentation as consent.",
   "screen:*/ui.open": "Use to ask a named screen to show a view. A suggested opening may be declined; check opened in the response.",
   "service:clock/set": "Use for a future or repeating message, not for immediate delivery. Record the returned timer id for cancellation.",
@@ -63,9 +68,9 @@ const guidance: Record<string, string> = {
   "service:gate/rules.list": "Use to inspect current approval rules, not to assume a risky action is already allowed.",
   "service:gate/rules.revoke": "Use to remove a known rule with local owner authority; this changes future decisions, not past actions.",
   "service:gate/history": "Use to review earlier gate decisions; this is read-only.",
-  "service:gate/access.list": "Inspect device access grants; access alone never approves a protected action.",
-  "service:gate/access.grant": "As the local owner, grant one exact agent and device capability for 30 days; risk approval remains separate.",
-  "service:gate/access.revoke": "As the local owner, revoke one device access grant; already executed actions cannot be undone.",
+  "service:gate/access.list": "Inspect the earlier device access grants. They are kept as a record only: agents no longer need one, and none approves an action.",
+  "service:gate/access.grant": "Legacy: record one exact agent and device capability for 30 days. Agents no longer need a grant; the approval gate judges each action.",
+  "service:gate/access.revoke": "Legacy: revoke one recorded device access grant. It changes no approval decision; already executed actions cannot be undone.",
   "service:self/read": "Use to read an allowed managed file and its hash before editing. Do not infer a stable baseline from stale conversation context.",
   "service:self/write": "Use for a complete managed-file replacement with the exact baseline hash; null creates only a missing file. Do not use native file tools for managed writes.",
   "service:self/append": "Use to atomically add text to an allowed dated log, including an older date. No baseline hash is required.",
@@ -75,8 +80,20 @@ const guidance: Record<string, string> = {
   "service:work/run": "Use for an authorized manual background-flow trigger, not for a conversational answer. Follow its run id for outcome.",
   "service:work/runs": "Use to inspect recent background runs; this does not start a run.",
 };
-function add(member: string, word: string, kind: "request" | "event", input_schema: JsonSchema, result_schema?: JsonSchema, options: Partial<Pick<WordSpec, "risk" | "label" | "audience" | "timeout_ms">> & { direction?: "in" | "out"; description?: string } = {}) {
-  entries.push({ member, word, kind, description: options.description ?? guidance[`${member}/${word}`] ?? (kind === "event" ? `Status event ${word} from ${member}; observe rather than call it.` : `Use ${word} on ${member} for the declared input only; inspect the result before following up.`), input_schema, ...(result_schema ? { result_schema } : {}), risk: options.risk ?? "none", label: options.label ?? "Working", audience: options.audience ?? "all", ...(options.timeout_ms ? { timeout_ms: options.timeout_ms } : {}), direction: options.direction ?? "in" });
+function add(member: string, word: string, kind: "request" | "event", input_schema: JsonSchema, result_schema?: JsonSchema, options: Partial<Pick<WordSpec, "risk" | "effect" | "label" | "audience" | "timeout_ms">> & { direction?: "in" | "out"; description?: string } = {}) {
+  entries.push({ member, word, kind, description: options.description ?? guidance[`${member}/${word}`] ?? (kind === "event" ? `Status event ${word} from ${member}; observe rather than call it.` : `Use ${word} on ${member} for the declared input only; inspect the result before following up.`), input_schema, ...(result_schema ? { result_schema } : {}), risk: options.risk ?? "none", ...(options.effect ? { effect: options.effect } : {}), label: options.label ?? "Working", audience: options.audience ?? "all", ...(options.timeout_ms ? { timeout_ms: options.timeout_ms } : {}), direction: options.direction ?? "in" });
+}
+
+export const WORD_EFFECTS: readonly WordEffect[] = Object.freeze(["read", "act", "write", "send", "execute", "structure"]);
+export const isWordEffect = (value: unknown): value is WordEffect => typeof value === "string" && (WORD_EFFECTS as readonly string[]).includes(value);
+/**
+ * The effect a word declares; without one it follows risk (none -> read, outward -> act, structure -> write).
+ * A word that claims to only read while its risk says otherwise is treated by its risk: a mismatch never relaxes the gate.
+ */
+export function wordEffect(spec: Pick<WordSpec, "risk" | "effect">): WordEffect {
+  const derived: WordEffect = spec.risk === "outward" ? "act" : spec.risk === "structure" ? "write" : "read";
+  if (!isWordEffect(spec.effect)) return derived;
+  return spec.effect === "read" && derived !== "read" ? derived : spec.effect;
 }
 
 // Main agent: a queued conversation and a separately driven secondary session.
@@ -99,10 +116,50 @@ add("person:owner", "say", "request", { oneOf: [
 ] }, accepted, { label: "Replying", description: "Send a short message; it is acknowledged when recorded. Proactive offers may carry an opaque stable dedupe_key at initial acceptance. facts are source message or fact IDs after the flow maps worker-local numeric indices, never those indices themselves." });
 add("person:owner", "react", "request", obj({ message_id: id, emoji: nonempty }, ["message_id", "emoji"]), accepted, { description: "React to one existing message; unknown ids fail." });
 add("person:owner", "show", "request", obj({ card: CARD_SCHEMA }, ["card"]), accepted, { description: "Show a result or choice card; it is acknowledged when recorded." });
-add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, options: { type: "array", items: askOption, minItems: 1 }, expires_at: num, source: obj({ word: nonempty, to: id, body_preview: str }, ["word", "to", "body_preview"]) }, ["title", "detail", "options", "expires_at", "source"]), obj({ choice: askChoice }, ["choice"]), { timeout_ms: 600_000, description: "Ask the owner; await the first valid answer or expiry." });
+add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, options: { type: "array", items: askOption, minItems: 1 }, expires_at: num, source: obj({ word: nonempty, to: id, body_preview: str, body_full: str }, ["word", "to", "body_preview"]) }, ["title", "detail", "options", "expires_at", "source"]), obj({ choice: askChoice }, ["choice"]), { timeout_ms: 600_000, description: "Ask the owner; await the first valid answer or expiry." });
 
 add("screen:*", "ui.open", "request", obj({ target: choice("activity", "upcoming", "approvals", "identity", "memory", "settings", "turn"), id: str, mode: choice("perform", "suggest") }, ["target", "mode"]), obj({ opened: bool }, ["opened"]), { description: "Open or suggest a view on a named screen." });
+// The Agent system: ash holds every agent's declaration, runs their lifecycle and carries what they say to each other.
+// Discovery and communication (agent words) are for every agent; management (system words) for those granted it.
+const agentRef: JsonSchema = { type: "string", pattern: "^agent:[a-z][a-z0-9_-]{0,31}$" };
+const agentFields: Record<string, JsonSchema> = { name: nonempty, summary: nonempty, brief: nonempty, tools: strings, words: strings, every: { type: "integer", minimum: 600 } };
+const agentInfo = obj({ id: agentRef, name: str, summary: str, state: choice("idle", "working", "stopped", "error"), main: bool, manage: bool,
+  brief: str, tools: { anyOf: [strings, { type: "null" }] }, words: { anyOf: [strings, { type: "null" }] }, every: { anyOf: [integer, { type: "null" }] }, built_in: bool },
+  ["id", "name", "summary", "state"]);
+add("service:agents", "list", "request", empty, obj({ agents: array(agentInfo) }, ["agents"]), { label: "Looking at the agents", description: "Every agent: id, name, what it does, and whether it is idle, working or stopped." });
+add("service:agents", "describe", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Looking at an agent", description: "One agent's declaration and state." });
+add("service:agents", "ask", "request", obj({ agent: agentRef, text: nonempty }, ["agent", "text"]), obj({ agent: agentRef, answer: str }, ["agent", "answer"]),
+  { label: "Asking another agent", timeout_ms: 600_000, description: "Put a question to another agent; the answer it gives in the turn that takes the question is the result." });
+add("service:agents", "tell", "request", obj({ agent: agentRef, text: nonempty }, ["agent", "text"]), obj({ sent: bool, message_id: id }, ["sent", "message_id"]),
+  { label: "Telling another agent", description: "Deliver news to another agent; what it says back is passed to the sender later as a message." });
+add("service:agents", "answer", "request", obj({ in_reply_to: id, text: nonempty }, ["in_reply_to", "text"]), accepted, { audience: "owner", description: "Internal: an agent's words in a turn that answers a delivered question or news." });
+add("service:agents", "declare", "request", obj({ id: agentRef, ...agentFields }, ["id", "name", "summary", "brief"]), agentInfo,
+  { label: "Creating an agent", description: "Create a new agent from a declaration. It starts at once, in its own session and workspace." });
+add("service:agents", "update", "request", obj({ agent: agentRef, ...agentFields }, ["agent"]), agentInfo,
+  { label: "Changing an agent", description: "Change an agent's declaration; it applies from its next turn." });
+add("service:agents", "start", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Starting an agent", description: "Let a stopped agent take turns again." });
+add("service:agents", "stop", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Stopping an agent", description: "Stop an agent: its current turn is cancelled and it takes no new ones; messages wait for it." });
+add("service:agents", "restart", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Restarting an agent", description: "Cancel an agent's current turn and reopen its session; its history is kept." });
+add("service:agents", "remove", "request", obj({ agent: agentRef }, ["agent"]), obj({ removed: bool }, ["removed"]),
+  { label: "Removing an agent", description: "Remove a declared agent. The main agent cannot be removed; built-in agents can only be stopped." });
 add("service:clock", "set", "request", obj({ at: num, every: { type: "integer", minimum: 60 }, to: id, word: id, body: obj({}, [], true), label: nonempty }, ["to", "word", "body", "label"]), obj({ id, next: num }, ["id", "next"]));
+// Secure vault: the agent may look, never touch. Values enter through the owner's settings route and leave only to ash's own code.
+const vaultEntry = obj({ ref: nonempty, label: nonempty, kind: choice("model", "login", "api", "other"), configured: bool, updated_at: nonnegativeSafe }, ["ref", "label", "kind", "configured"]);
+add("service:vault", "list", "request", empty, obj({ entries: { type: "array", items: vaultEntry } }, ["entries"]),
+  { label: "Checking saved credentials", description: "Which credentials are saved (names and kinds only, never a value)." });
+add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vaultEntry,
+  { label: "Checking a saved credential", description: "Whether one credential is saved, and what it is for. A value is never returned." });
+add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
+  { direction: "out", audience: "owner", description: "A credential was saved or removed. Names only; the value is never on the ledger." });
+add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "review", "other"), provider: str, model: str,
+  input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
+  cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },
+["scope", "provider", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "cost_source", "ms", "ok"]), undefined,
+{ direction: "out", audience: "owner", description: "One model call as the DSH side measured it, priced from the installed model catalog; cost_usd is null when no price is known, never zero." });
+add("service:cost", "usage.get", "request", obj({ days: { type: "integer", minimum: 1, maximum: 90 } }), obj({}, [], true),
+  { audience: "owner", label: "Reading usage", description: "What the models used and cost: today, 7 and 30 days, by part of Ash, by day, and the latest calls." });
+add("service:cost", "balance.get", "request", empty, obj({}, [], true),
+  { audience: "owner", label: "Reading balance", description: "The provider account balance for the configured API key; fails rather than reporting zero when it cannot be read." });
 add("service:clock", "cancel", "request", obj({ id }, ["id"]), obj({ cancelled: bool }, ["cancelled"]));
 add("service:clock", "list", "request", empty, obj({ timers: array(any) }, ["timers"]));
 add("service:clock", "clock.fired", "event", obj({ timer_id: id, scheduled_at: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
@@ -110,6 +167,7 @@ add("service:clock", "clock.fired", "event", obj({ timer_id: id, scheduled_at: {
 { direction: "out", description: "Durable scheduled occurrence outcome; dispatched records router acceptance, not external completion." });
 add("service:post", "deliver", "request", obj({ message_id: id, kind: choice("reply", "offer", "heads_up", "approval", "due"), dedupe_key: deliveryDedupeKey }, ["message_id", "kind"]), obj({ channel: choice("inapp", "notification", "held", "dropped") }, ["channel"]), { audience: "owner" });
 add("service:post", "visible", "event", empty, undefined, { audience: "owner", description: "Presence from the authenticated screen only." });
+add("service:post", "hidden", "event", empty, undefined, { audience: "owner", description: "The authenticated screen left the foreground; deliveries notify again at once." });
 add("service:post", "post.changed", "event", obj({ held: { type: "integer", minimum: 0 } }, ["held"]), undefined, { direction: "out", audience: "owner", label: "Updating deliveries", description: "Authoritative current held-delivery count for the owner; never infer a count from deliver results." });
 add("service:post", "post.delivery", "event", obj({ message_id: id, state: choice("held", "released", "dropped") }, ["message_id", "state"]), undefined,
   { direction: "out", audience: "owner", label: "Updating message visibility", description: "Per-message chat visibility for a new offer or heads-up; released is in-app visibility, not a host notification." });
@@ -132,11 +190,12 @@ export function postDeliverySnapshotErrors(value: unknown): string[] {
 }
 const gateRisk = choice("outward", "structure");
 const gateRule = obj({ id, subject: nonempty, device_id: id, capability_id: id, to: id, word: id, object_pattern: nonempty,
-  risk: gateRisk, contract_fingerprint: sha, created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
+  risk: choice("none", "outward", "structure"), contract_fingerprint: sha, created_at: nonnegativeSafe, expires_at: nonnegativeSafe, revoked_at: nonnegativeSafe },
 ["id", "subject", "to", "word", "object_pattern", "risk", "contract_fingerprint", "created_at", "expires_at"]);
-const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: gateRisk,
-  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule"), at: nonnegativeSafe, rule_id: id,
-  source: { const: "current" } },
+// A word whose effect is not read is gated even when its legacy risk says none.
+const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: choice("none", "outward", "structure"),
+  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule", "review", "carry"), at: nonnegativeSafe, rule_id: id,
+  reason: { type: "string", maxLength: 500 }, label: { type: "string", maxLength: 120 }, source: { const: "current" } },
 ["id", "request_id", "decision", "at", "source"]);
 const gateLegacyScope: JsonSchema = { type: "string", pattern: "^(\\*|device:[A-Za-z0-9_-]+/(\\*|[A-Za-z0-9_.-]+))$" };
 const gateLegacyHistory = obj({ id, subject: nonempty, to: id, word: id, risk: gateRisk,
@@ -149,30 +208,46 @@ const gateAccessItem = obj({ id, member: { type: "string", pattern: "^agent:[A-Z
 ["id", "member", "scope", "source", "created_at", "expires_at"]);
 // A current case always names its accepted request; a migrated row is never an actionable ask.
 add("service:gate", "rules.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
-  obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe }, ["rules"]), { audience: "owner" });
-add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure" });
+  obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe, mode: choice("auto", "always") }, ["rules"]), { audience: "owner" });
+add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "history", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 1000 } }),
   obj({ items: { type: "array", items: { oneOf: [gateCurrentHistory, gateLegacyHistory] }, maxItems: 1000 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
+// Evidence of every approval decision, for the owner and for an agent helping to look into one.
+const gateEvidence = obj({ request_id: id, at: nonnegativeSafe, requester: str, member: str, word: str, label: str, effect: str, turn: str,
+  content: str, facts: any, review: any, card: any, decision: str, decided_by: str, reason: str, rule_id: str, answered_at: any,
+  executed: any }, ["request_id", "at", "requester", "member", "word"], true);
+add("service:gate", "audit", "request", obj({ request_id: id, requester: str, word: str, decision: str, before: positiveSafe,
+  limit: { type: "integer", minimum: 1, maximum: 50 } }), obj({ entries: array(gateEvidence), next_before: any }, ["entries"]),
+  { label: "Reading approval records", description: "Approval evidence, newest first: what was asked, the facts the reviewer saw and its verdict, the card shown, the owner's answer, and whether the action then ran." });
+// Changing approval rules always asks the owner when an agent asks for it; it is never covered by a rule, the mode or the reviewer.
+add("service:gate", "rules.set", "request", obj({ agent: { type: "string", pattern: "^agent:[a-z][a-z0-9_-]{0,31}$" }, member: id, word: id,
+  target: nonempty, days: { type: "integer", minimum: 1, maximum: 30 } }, ["agent", "member", "word"]), obj({ id, expires_at: nonnegativeSafe }, ["id", "expires_at"]),
+  { audience: "owner", risk: "structure", effect: "structure", label: "Changing approval rules",
+    description: "Allow one agent to use one outside capability without asking, for up to 30 days, optionally only for one target (site:<host>, a calendar id, a recipient id, browse)." });
+add("service:gate", "mode.set", "request", obj({ mode: choice("auto", "always") }, ["mode"]), obj({ mode: choice("auto", "always") }, ["mode"]),
+  { audience: "owner", risk: "structure", effect: "structure", label: "Changing the approval mode",
+    description: "Switch the approval mode: auto asks only when an outside action needs it; always asks about every outside action that is not a read." });
 add("service:gate", "access.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ items: { type: "array", items: gateAccessItem, maxItems: 100 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
 add("service:gate", "access.grant", "request", obj({ member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope }, ["member", "scope"]),
   obj({ id, member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope, expires_at: nonnegativeSafe }, ["id", "member", "scope", "expires_at"]),
-  { audience: "owner", risk: "structure" });
+  { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "access.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]),
-  { audience: "owner", risk: "structure" });
-add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: gateRisk, to: id, word: id,
+  { audience: "owner", risk: "structure", effect: "structure" });
+add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: choice("none", "outward", "structure"), to: id, word: id,
   expires_at: nonnegativeSafe }, ["request_id", "ask_id", "risk", "to", "word", "expires_at"]), undefined, { direction: "out" });
-add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer"), rule_id: id, ask_id: id },
-  ["request_id", "by"]), undefined, { direction: "out" });
+// by review: the reviewer judged the action reversible or already asked for; carry: the same thing was allowed minutes ago.
+add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer", "review", "carry"), rule_id: id, ask_id: id,
+  reason: { type: "string", minLength: 1, maxLength: 500 } }, ["request_id", "by"]), undefined, { direction: "out" });
 add("service:gate", "gate.denied", "event", obj({ request_id: id, by: choice("answer", "timeout"), ask_id: id },
   ["request_id", "by"]), undefined, { direction: "out" });
 
-add("service:self", "read", "request", obj({ path: selfPath }, ["path"]), obj({ content: str, hash: sha, version: integer }, ["content", "hash"]));
-add("service:self", "write", "request", obj({ path: selfPath, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });
-add("service:self", "append", "request", obj({ path: datePath, text: str }, ["path", "text"]), obj({ hash: sha }, ["hash"]), { label: "Adding to a log", description: "Atomically append to any allowed dated log." });
-add("service:self", "apply_plan", "request", obj({ path: selfPath, expected_hash: sha, edits: array(edit) }, ["path", "expected_hash", "edits"]), obj({ applied: integer, hash: sha }, ["applied", "hash"]));
-add("service:self", "rollback", "request", obj({ path: selfPath, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure" });
-add("service:self", "history", "request", obj({ path: selfPath }, ["path"]), obj({ versions: array(any) }, ["versions"]));
+add("service:self", "read", "request", obj({ path: selfPathRequest }, ["path"]), obj({ content: str, hash: sha, version: integer }, ["content", "hash"]));
+add("service:self", "write", "request", obj({ path: selfPathRequest, content: str, why: str, expected_hash: { anyOf: [sha, { type: "null" }] } }, ["path", "content", "why", "expected_hash"]), obj({ hash: sha, version: integer }, ["hash"]), { label: "Updating a file", description: "Write a managed file with its exact baseline hash; null only creates a new file." });
+add("service:self", "append", "request", obj({ path: selfPathRequest, text: str }, ["path", "text"]), obj({ hash: sha }, ["hash"]), { label: "Adding to a log", description: "Atomically append to any allowed dated log." });
+add("service:self", "apply_plan", "request", obj({ path: selfPathRequest, expected_hash: sha, edits: array(edit) }, ["path", "expected_hash", "edits"]), obj({ applied: integer, hash: sha }, ["applied", "hash"]));
+add("service:self", "rollback", "request", obj({ path: selfPathRequest, to_ts: num, expected_hash: sha }, ["path", "to_ts", "expected_hash"]), empty, { risk: "structure", effect: "write" });
+add("service:self", "history", "request", obj({ path: selfPathRequest }, ["path"]), obj({ versions: array(any) }, ["versions"]));
 add("service:self", "self.changed", "event", obj({ path: selfPath, by: id, summary: str, version: integer }, ["path", "by", "summary"]), undefined, { direction: "out" });
 
 const calendarEvent = obj({ id, title: str, start: num, end: num, important: bool }, ["id", "title", "start", "end"]);
@@ -180,7 +255,9 @@ add("service:senses", "sense.calendar", "event", obj({ kind: choice("upcoming", 
 add("service:senses", "sense.battery", "event", obj({ level: { type: "number", minimum: 0, maximum: 100 } }, ["level"]), undefined, { audience: "owner" });
 add("service:senses", "sense.screen", "event", obj({ state: choice("on", "app_open"), away_ms: { type: "number", minimum: 0 } }, ["state", "away_ms"]), undefined, { audience: "owner" });
 add("service:senses", "sense.notification", "event", obj({ app: str, title: str, text: str }, ["app", "title", "text"]), undefined, { audience: "owner" });
-add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined, { direction: "out" });
+add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool,
+  fallback: choice("timeout", "unavailable", "invalid", "error"), fallback_ms: { type: "integer", minimum: 0 } }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined,
+  { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });
 add("service:work", "run", "request", obj({ flow: workName }, ["flow"]), obj({ run: workRunId }, ["run"]), { audience: "owner" });
 add("service:work", "runs", "request", obj({ flow: workName, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ runs: { type: "array", items: workRunInfo, maxItems: 100 } }, ["runs"]), { audience: "owner" });
@@ -209,7 +286,7 @@ const worker = (name: string, input: JsonSchema, normal: JsonSchema) => add(`wor
 worker("extract", obj({ chunk: array(message), summary: str, known: strings }, ["chunk", "summary", "known"]), obj({ claims: array(claim) }, ["claims"]));
 worker("verify_claims", obj({ claims: array(claim), evidence: array(message) }, ["claims", "evidence"]), obj({ verdicts: array(obj({ i: integer, lens: choice("refute", "grounded"), pass: bool, confidence: { type: "number", minimum: 0, maximum: 1 }, why: str }, ["i", "lens", "pass", "confidence", "why"])) }, ["verdicts"]));
 worker("reconcile", obj({ file: choice("MEMORY.md", "USER.md"), numbered: str, claims: array(claim) }, ["file", "numbered", "claims"]), obj({ edits: array(edit) }, ["edits"]));
-worker("verify_plan", obj({ file: choice("MEMORY.md", "USER.md"), before: str, edits: array(edit) }, ["file", "before", "edits"]), obj({ verdicts: array(obj({ i: integer, lens: choice("evidence", "temporal", "preservation"), pass: bool, why: str }, ["i", "lens", "pass", "why"])) }, ["verdicts"]));
+worker("verify_plan", obj({ file: choice("MEMORY.md", "USER.md"), before: str, edits: array(edit), evidence: array(message) }, ["file", "before", "edits"]), obj({ verdicts: array(obj({ i: integer, lens: choice("evidence", "temporal", "preservation"), pass: bool, why: str }, ["i", "lens", "pass", "why"])) }, ["verdicts"]));
 worker("proactive", obj({ prefs: str, recent: array(message), facts: array(obj({ n: integer, text: str }, ["n", "text"])), upcoming: array(any), delivered: array(any) }, ["prefs", "recent", "facts", "upcoming", "delivered"]), obj({ suggestion: obj({ kind: choice("offer", "heads_up"), title: str, text: str, urgency: choice("regular", "high"), facts: array(integer) }, ["kind", "title", "text", "urgency", "facts"]) }, ["suggestion"]));
 worker("opener", obj({ away_ms: num, last_topic: str, pending: array(any), changes: array(any) }, ["away_ms", "last_topic", "pending", "changes"]), obj({ speak: bool, why: str, hint: str }, ["speak", "why"]));
 
@@ -227,24 +304,31 @@ for (const [word, input, result] of [
     obj({ op: { const: "reject" }, request_id: nonempty }, ["op", "request_id"]),
     obj({ op: { const: "revoke" }, device: { type: "string", pattern: "^device:[A-Za-z0-9_-]+$" } }, ["op", "device"]),
     obj({ op: { const: "sync" } }, ["op"]),
+    // A short-lived one-time code a new browser or computer presents; the phone still asks the owner before anything is granted.
+    obj({ op: { const: "ticket" } }, ["op"]),
   ] }, obj({}, [], true)],
   ["model.set", obj({ provider: nonempty, model: nonempty }, ["provider", "model"]),
     obj({ provider: nonempty, model: nonempty, restart_required: bool }, ["provider", "model", "restart_required"])],
-] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", risk: word === "plugins.op" || word === "gateway.op" ? "structure" : "none", description: "Local owner administration; never available to a remote screen." });
+] as [string, JsonSchema, JsonSchema][]) add("service:admin", word, "request", input, result, { audience: "owner", ...(word === "plugins.op" || word === "gateway.op" ? { risk: "structure" as const, effect: "structure" as const } : { risk: "none" as const }), description: "Local owner administration; never available to a remote screen." });
 add("service:admin", "pause", "request", { oneOf: [empty, obj({ by: id }, ["by"]) ] },
   obj({ paused: { const: true } }, ["paused"]), { audience: "owner", description: "Durably pause activity; a trusted local reflex may cite one authenticated owner message once." });
 add("service:admin", "resume", "request", obj({ confirmed: { const: true } }, ["confirmed"]),
   obj({ paused: { const: false } }, ["paused"]), { audience: "owner", description: "Resume only after explicit confirmation on a verified local owner screen." });
 
 export const WORD_CONTRACTS: readonly WordContract[] = Object.freeze(entries);
+/** An agent member id: agent:main is the one the owner talks with; the others are declared. */
+export const AGENT_ID = /^agent:[a-z][a-z0-9_-]{0,31}$/;
 export function wordContract(member: string, word: string): WordContract | undefined {
-  return WORD_CONTRACTS.find((item) => item.word === word && (item.member === member || (item.member === "screen:*" && /^screen:[^:]+$/.test(member))));
+  // Every agent speaks the same words; they are written once under the main agent.
+  return WORD_CONTRACTS.find((item) => item.word === word && (item.member === member || (item.member === "screen:*" && /^screen:[^:]+$/.test(member)) ||
+    (item.member === "agent:main" && AGENT_ID.test(member))));
 }
-export function deviceWordSpec(capability: { name: string; description: string; input_schema: JsonSchema; result_schema?: JsonSchema; risk: "none" | "outward" | "structure"; label: string }): WordSpec {
+export function deviceWordSpec(capability: { name: string; description: string; input_schema: JsonSchema; result_schema?: JsonSchema; risk: "none" | "outward" | "structure"; effect?: WordEffect; label: string }): WordSpec {
   if (typeof capability.name !== "string" || !capability.name.trim() || typeof capability.description !== "string" || !capability.description.trim() || typeof capability.label !== "string" || !capability.label.trim() || !["none", "outward", "structure"].includes(capability.risk)) throw new TypeError("device capability needs valid name, description, risk and label");
+  if (capability.effect !== undefined && !isWordEffect(capability.effect)) throw new TypeError("device capability effect must be read, act, write, send, execute or structure");
   if (!capability.input_schema || typeof capability.input_schema !== "object" || Array.isArray(capability.input_schema) || capability.input_schema.type !== "object") throw new TypeError("device capability needs an object input schema");
   // Full externally supplied JSON Schemas must be compiled by a standards-compliant validator at registration.
-  return { word: capability.name, kind: "request", description: capability.description, input_schema: capability.input_schema, result_schema: capability.result_schema ?? obj({}, [], true), risk: capability.risk, label: capability.label, audience: "all" };
+  return { word: capability.name, kind: "request", description: capability.description, input_schema: capability.input_schema, result_schema: capability.result_schema ?? obj({}, [], true), risk: capability.risk, ...(capability.effect ? { effect: capability.effect } : {}), label: capability.label, audience: "all" };
 }
 
 /** Cross-field checks that JSON Schema alone cannot express for a choice card. */

@@ -20,6 +20,7 @@ object Present {
     private const val ACTION = "action:"
     private const val CONSUMED = "consumed:"
     private const val RETIRED = "retired:"
+    private const val AT = "at:"
     private val kinds = setOf("reply", "approval", "due", "offer", "heads_up")
     private val choices = setOf("once", "always", "deny")
     private val serial = PresentSerialGate()
@@ -75,13 +76,14 @@ object Present {
                         return 409 to JSONObject().put("error", "presentation_id_consumed")
                 }
             }
-            if (!duplicate && !prefs(ctx).edit().putString(ITEM + id, record.toString()).commit())
+            if (!duplicate && !prefs(ctx).edit().putString(ITEM + id, record.toString()).putLong(AT + id, System.currentTimeMillis()).commit())
                 return 500 to JSONObject().put("error", "store_failed")
             if (expired(record)) {
                 if (!retireLocked(ctx, id)) return 500 to JSONObject().put("error", "store_failed")
                 return 200 to JSONObject().put("ok", true).put("expired", true)
             }
-            if (PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false)))
+            if (PresentChat.isChat(kind)) refreshChatLocked(ctx)
+            else if (PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false)))
                 Notifications.present(ctx, record)
             if (record.has("expires_at")) scheduleExpiry(ctx, id, record.optLong("expires_at"))
             200 to JSONObject().put("ok", true).apply { if (duplicate) put("duplicate", true) }
@@ -90,14 +92,50 @@ object Present {
 
     /** Caller holds serial so a later render cannot overtake the cancellation. */
     private fun retireLocked(ctx: Context, id: String): Boolean {
-        val stored = prefs(ctx).edit().remove(ITEM + id).putBoolean(RETIRED + id, true).commit()
+        val chat = item(ctx, id)?.optString("kind")?.let(PresentChat::isChat) == true
+        val stored = prefs(ctx).edit().remove(ITEM + id).remove(AT + id).putBoolean(RETIRED + id, true).commit()
         if (!stored) return false
         Notifications.hidePresent(ctx, id)
         cancelExpiry(ctx, id)
+        if (chat) refreshChatLocked(ctx)
         return true
     }
 
     fun hide(ctx: Context, id: String): Boolean = serial.run { retireLocked(ctx, id) }
+
+    /** Swiping the conversation away, or opening the app, clears every chat message at once. */
+    fun dismiss(ctx: Context, id: String) {
+        if (item(ctx, id)?.optString("kind")?.let(PresentChat::isChat) == true) clearChat(ctx) else hide(ctx, id)
+    }
+
+    fun clearChat(ctx: Context) = serial.run { clearChatLocked(ctx) }
+
+    private fun chatIds(ctx: Context): List<String> = prefs(ctx).all.keys.filter { it.startsWith(ITEM) }.map { it.removePrefix(ITEM) }
+        .filter { id -> (try { item(ctx, id) } catch (_: Exception) { null })?.optString("kind")?.let(PresentChat::isChat) == true }
+
+    private fun clearChatLocked(ctx: Context) {
+        val edit = prefs(ctx).edit()
+        for (id in chatIds(ctx)) edit.remove(ITEM + id).remove(AT + id).putBoolean(RETIRED + id, true)
+        edit.commit()
+        Notifications.presentChat(ctx, emptyList())
+    }
+
+    /** Caller holds serial. Renders the newest chat messages as one notification and retires older ones. */
+    private fun refreshChatLocked(ctx: Context, alert: Boolean = true) {
+        val live = chatIds(ctx).mapNotNull { id ->
+            val record = try { item(ctx, id) } catch (_: Exception) { null } ?: return@mapNotNull null
+            if (expired(record) || !PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false))) null
+            else Triple(id, record, prefs(ctx).getLong(AT + id, 0))
+        }
+        val (keep, drop) = PresentChat.split(live.map { it.first to it.third })
+        if (drop.isNotEmpty()) {
+            val edit = prefs(ctx).edit()
+            for (id in drop) edit.remove(ITEM + id).remove(AT + id).putBoolean(RETIRED + id, true)
+            edit.commit()
+        }
+        val byId = live.associateBy { it.first }
+        Notifications.presentChat(ctx, keep.map { byId.getValue(it).second to byId.getValue(it).third }, alert)
+    }
 
     fun restore(ctx: Context) {
         for (key in prefs(ctx).all.keys) {
@@ -105,7 +143,9 @@ object Present {
             val id = key.removePrefix(ITEM)
             serial.run {
                 val record = try { item(ctx, id) } catch (_: Exception) { null } ?: return@run
-                if (expired(record)) retireLocked(ctx, id)
+                // Earlier builds gave every chat message its own notification.
+                if (PresentChat.isChat(record.optString("kind"))) Notifications.hidePresent(ctx, id)
+                else if (expired(record)) retireLocked(ctx, id)
                 else if (!PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false)))
                     Notifications.hidePresent(ctx, id)
                 else {
@@ -114,13 +154,16 @@ object Present {
                 }
             }
         }
+        serial.run { refreshChatLocked(ctx, alert = false) } // a service restart re-shows, it does not ring again
         flushAsync(ctx)
     }
 
     /** Persist before network I/O. The same client_id is reused on every offline retry. */
     fun act(ctx: Context, id: String, choice: String?, replyText: String?) {
         serial.run {
-            val record = item(ctx, id) ?: return
+            // A reply typed into the conversation notification still counts after its message was cleared from it.
+            val record = item(ctx, id) ?: if (replyText != null && prefs(ctx).getBoolean(RETIRED + id, false))
+                JSONObject().put("id", id).put("kind", "reply") else return
             if (expired(record) || prefs(ctx).getBoolean(CONSUMED + id, false)) return
             val route = try { when (record.optString("kind")) {
                 "approval" -> {
@@ -128,7 +171,7 @@ object Present {
                     PresentRoutes.approval(record.getString("reply_to"), record.getString("reply_target"),
                         offeredSet(record), choice, record.getLong("expires_at"), System.currentTimeMillis())
                 }
-                "reply" -> {
+                "reply", "offer", "heads_up" -> {
                     PresentRoutes.reply(replyText ?: return)
                 }
                 else -> return
@@ -142,7 +185,8 @@ object Present {
             val entry = JSONObject().put("id", actionId).put("presentation", id).put("payload", outbound).put("state", "queued")
             if (!prefs(ctx).edit().putString(ACTION + actionId, entry.toString()).putBoolean(CONSUMED + id, true).commit()) return
         }
-        Notifications.hidePresent(ctx, id)
+        // Answering the conversation reads it, as opening the app would.
+        if (PresentChat.isChat(item(ctx, id)?.optString("kind") ?: "")) clearChat(ctx) else Notifications.hidePresent(ctx, id)
         cancelExpiry(ctx, id)
         CoreService.start(ctx)
         flushAsync(ctx)
@@ -221,7 +265,7 @@ class PresentActionReceiver : BroadcastReceiver() {
         val pending = goAsync()
         Thread {
             try {
-                if (action.choice == "dismiss") Present.hide(ctx.applicationContext, action.id)
+                if (action.choice == "dismiss") Present.dismiss(ctx.applicationContext, action.id)
                 else Present.act(ctx.applicationContext, action.id, action.choice, text)
             } finally { pending.finish() }
         }.start()

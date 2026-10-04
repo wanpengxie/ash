@@ -8,7 +8,7 @@ import type { WorldRouter } from "../../core/src/world/router";
 import { createDshDoor, type DoorAgent, type DoorOptions, type DshDoor } from "./door";
 import type { WorkerRates } from "../../core/src/workers/cost";
 
-export interface DshHostOptions { root: string; home: string; skillsRoot?: string; env?: Record<string, string> }
+export interface DshHostOptions { root: string; home: string; skillsRoot?: string; costRoot?: string; vaultRoot?: string; env?: Record<string, string> }
 export interface DshRootAgent extends DoorAgent {
   id: string;
   followup(message: { id: string; role: "user"; content: unknown[]; source: { kind: "user" } }): void;
@@ -20,6 +20,12 @@ export interface DoorTurnAdapter {
   /** Attach the 206 turn lifecycle before this session receives any application input. */
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void;
   attachManagedPrompt?(agentContext: unknown): () => void;
+}
+export interface DshUsageCollector {
+  label(sessionId: string, scope: string): void;
+  onUsage(listener: (record: { at: number; ms: number; scope: string; provider: string; model: string; input: number; output: number;
+    cacheRead: number; cacheWrite: number; ok: boolean }) => void): () => void;
+  balance(options?: { credential?: string; baseURL?: string; timeoutMs?: number }): Promise<unknown>;
 }
 export interface MainSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
 export interface MindSession { agent: DshRootAgent; door: DshDoor; sessionId: string }
@@ -75,8 +81,9 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
     } else if (event.type === "turn/end") {
       const turn = event.data?.turn;
       const reason = event.data?.reason?.kind;
-      if (openTurn !== turn || typeof reason !== "string") throw new Error("invalid DSH turn end in history");
-      finishedTurns.set(turn, reason);
+      // A cancelled turn ends without a reason.
+      if (openTurn !== turn || (typeof reason !== "string" && event.data?.reason !== null)) throw new Error("invalid DSH turn end in history");
+      finishedTurns.set(turn, reason ?? "cancelled");
       openTurn = null;
     }
     if (event.type === "user/message") {
@@ -93,6 +100,17 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
         else if (keys === "form,kind,sections" && source.form === "snapshot" && Array.isArray(source.sections) && source.sections.length > 0 &&
           source.sections.every((section: { name?: unknown; text?: unknown }) => typeof section?.name === "string" && section.name.length > 0 && typeof section?.text === "string" && section.text.length > 0))
           runtimeContext = content[0].text === `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n${source.sections.map((section: { text: string }) => section.text).join("\n\n")}`;
+      }
+      // Workspace instructions (AGENTS.md) and the repeated-tool-call notice are DSH-owned user-role items, not prompts.
+      // Each must match the exact form DSH renders; anything else still needs a core turn.
+      if (typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) && Array.isArray(content) && content.length > 0 &&
+        content.every((part: { type?: unknown; text?: unknown }) => part?.type === "text" && typeof part.text === "string")) {
+        const texts = content.map((part: { text: string }) => part.text);
+        if (source?.kind === "agent-instructions" && source.form === "instructions" && Array.isArray(source.changes))
+          runtimeContext = texts.every((text: string) => /^<system-reminder>\n[\s\S]*\n<\/system-reminder>\s*$/u.test(text) &&
+            text.indexOf("</system-reminder>") === text.lastIndexOf("</system-reminder>"));
+        else if (source?.kind === "repeat-tool-reminder" && source.form === "notice" && oneText)
+          runtimeContext = texts[0] === GENTLE_REMINDER || DETAILED_REMINDER.test(texts[0]);
       }
       if (!runtimeContext && (typeof id !== "string" || !id.startsWith("core-") || !startedTurns.has(id.slice(5))))
         throw new Error("DSH history contains a user message without a core turn");
@@ -125,6 +143,23 @@ export function assertResumableHistory(events: readonly { type: string; data?: a
   if (pending["next-turn"].length || pending["next-step"].length) throw new Error("DSH has queued work that cannot be automatically resumed safely");
 }
 
+// The repeated-tool-call notices DSH renders (dsh-repeat-tool-reminder): the first threshold, then the detailed form.
+const GENTLE_REMINDER = "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.";
+const DETAILED_REMINDER = /^Repeated tool call detected:\n- tool: [A-Za-z0-9_.:-]{1,128}\n- consecutive_calls: [0-9]{1,6}\n- arguments: [^\n]*\nThe repeated calls are not making progress\. Do not call this tool with these exact arguments again\. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered\.$/u;
+
+// Deliberately replaces the approval and permission rows whole: ash owns this DSH home and the door needs ask
+// under every preset, so a narrower user default (if one were ever configured here) is not carried over.
+const APPROVAL_PATCH = `- id: approval
+  config:
+    policy: ask
+- id: permission
+  config:
+    presets:
+      read-only: { sandbox: read-only, approval: ask }
+      workspace-write: { sandbox: workspace-write, approval: ask }
+      danger-full-access: { sandbox: danger-full-access, approval: ask }
+`;
+
 /** Core-only DSH host. It never installs the retired tool surface or starts an unbound model session. */
 export class DshHost {
   ctx: any;
@@ -133,6 +168,8 @@ export class DshHost {
   private main: MainSession | null = null;
   private mind: MindSession | null = null;
   private managedPromptCleanup: (() => void) | null = null;
+  private collector: DshUsageCollector | null = null;
+  private vaultBridge: { attach(lookup: (ref: string) => Promise<string | null>): void } | null = null;
   private readonly listeners = new Set<(sessionId: string, event: DshSessionEvent) => void>();
 
   constructor(private readonly options: DshHostOptions) {
@@ -152,18 +189,32 @@ export class DshHost {
       const path = join(profile, file);
       if (!existsSync(path)) writeFileSync(path, "[]\n", { mode: 0o600 });
     }
+    // The door hands every tool call through DSH approval, so the policy is always "ask", even where the
+    // deployment drops the file sandbox (Android has no sandbox runner and sets danger-full-access).
+    const approvalPatch = join(home, "ash-approval.patch.yml");
+    writeFileSync(approvalPatch, APPROVAL_PATCH, { mode: 0o600 });
     process.env.DSH_HOME = home;
     // A later root in this process must not inherit an earlier test/deployment's
     // provider endpoint; explicit trusted host config wins over stale ambient env.
     for (const [key, value] of Object.entries(this.options.env ?? {})) process.env[key] = value;
     const { loadLayeredEnv } = await this.imp("@deepseek-ai/dsh-app-boot");
     const { runProfile } = await import(pathToFileURL(join(root, "lib", "profile-boot.js")).href);
-    const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash-v2", patchFiles: [], args: [] });
+    const { ctx, shutdown } = await runProfile({ environment: loadLayeredEnv("dsh"), profile: "ash-v2", patchFiles: [approvalPatch], args: [] });
     this.ctx = ctx;
     this.shutdownHandle = shutdown;
     if (this.options.skillsRoot) {
       const plugin = await import(pathToFileURL(join(this.options.skillsRoot, "index.mjs")).href);
       await ctx.plugin(plugin);
+    }
+    if (this.options.vaultRoot) {
+      const plugin = await import(pathToFileURL(join(this.options.vaultRoot, "index.mjs")).href);
+      await ctx.plugin(plugin);
+      this.vaultBridge = plugin.vault as { attach(lookup: (ref: string) => Promise<string | null>): void };
+    }
+    if (this.options.costRoot) {
+      const plugin = await import(pathToFileURL(join(this.options.costRoot, "index.mjs")).href);
+      await ctx.plugin(plugin);
+      this.collector = plugin.collector as DshUsageCollector;
     }
     ctx.on("session/event", (session: { id?: string; header?: { id?: string } }, event: DshSessionEvent) => {
       const id = session?.id ?? session?.header?.id ?? "";
@@ -178,13 +229,31 @@ export class DshHost {
 
   /** The worker's non-session llm service remains available without creating a model agent. */
   llm(): unknown { if (!this.ctx) throw new Error("DSH host not booted"); return this.ctx.get("llm"); }
+  /**
+   * False only when the selected provider is ash's DeepSeek default and no key can be resolved for it. Answering that case
+   * with a plain request for the key beats a turn that fails silently; other providers are not second-guessed here.
+   */
+  async modelKeyMissing(): Promise<boolean> {
+    if (!this.ctx || this.agentOptions()?.provider !== "deepseek-official") return false;
+    try {
+      const hit = await this.ctx.get("credentials")?.resolve("DEEPSEEK_API_KEY");
+      if (typeof hit?.value === "string" && hit.value) return false;
+    } catch { /* fall back to the environment, as DSH's own provider does */ }
+    return !process.env.DEEPSEEK_API_KEY;
+  }
+  /** Point DSH's credential lookups at ash's vault. DSH asks by name, per request; ash answers or says nothing. */
+  attachVault(lookup: (ref: string) => Promise<string | null>): void { this.vaultBridge?.attach(lookup); }
+  /** The DSH-world usage collector, present when the deployment ships the cost plugin. */
+  cost(): DshUsageCollector | null { return this.collector; }
   /** Read prices from the model catalog shipped with this DSH install, never from a guessed rate table. */
   async modelRates(provider: string, model: string): Promise<WorkerRates | null> {
     const file = join(this.options.root, "node_modules", "@earendil-works", "pi-ai", "dist", "providers", "all.js");
     if (!existsSync(file)) return null;
     try {
       const catalog = await import(pathToFileURL(file).href) as { getBuiltinModel?: (provider: string, model: string) => { cost?: WorkerRates } | undefined };
-      return catalog.getBuiltinModel?.(provider, model)?.cost ?? null;
+      // ash's DeepSeek profile names its provider "deepseek-official"; the catalog files the same models under "deepseek".
+      const key = provider === "deepseek-official" ? "deepseek" : provider;
+      return catalog.getBuiltinModel?.(key, model)?.cost ?? null;
     } catch { return null; }
   }
   agentOptions(): { provider: string; model: string } | undefined {
@@ -201,6 +270,7 @@ export class DshHost {
     let door: DshDoor | null = null;
     try {
       const sessionId = options.resume ? loadOrCreateSessionId(options.resume.file, options.resume.startedTurns) : `session-${randomUUID()}`;
+      this.collector?.label(sessionId, "chat");
       const agentOptions = this.agentOptions();
       door = createDshDoor({ tools: this.ctx.tools, members: options.members, router: options.router,
         workspace: options.workspace, managedRoot: options.managedRoot, protectedRoots: options.protectedRoots,
@@ -224,7 +294,14 @@ export class DshHost {
           preparedDoor.bind(rawAgent);
           options.adapter!.attach(rawAgent, preparedDoor, sessionId);
           this.managedPromptCleanup = options.adapter!.attachManagedPrompt?.(agentCtx) ?? null;
-          return { commit() { preparedDoor.assertReady(); } };
+          // A session recorded under "never" (an earlier Android build) would refuse every door tool.
+          const approval = this.ctx.get("approval");
+          const session = (rawAgent as { session?: { append(type: string, data: object): void } }).session;
+          if (approval?.effectivePolicy?.(session) !== "ask") session?.append("approval/policy", { policy: "ask" });
+          return { commit() {
+            preparedDoor.assertReady();
+            if (approval?.effectivePolicy?.(session) !== "ask") throw new Error("DSH approval policy is not ask; door tools cannot run");
+          } };
         } });
       const agent = handle.agent as DshRootAgent;
       this.main = { agent, door, sessionId };
@@ -246,6 +323,7 @@ export class DshHost {
     if (!this.ctx || !this.main || this.mind) throw new Error("main session must start before the mind session");
     const scope = await this.imp("@deepseek-ai/dsh-scope");
     const sessionId = `session-${randomUUID()}`;
+    this.collector?.label(sessionId, "mind");
     const door = createDshDoor({ ...options, tools: this.ctx.tools, scopeChainOf: scope.scopeChainOf,
       nativeMode: "disabled" });
     try {

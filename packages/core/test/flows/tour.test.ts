@@ -37,6 +37,7 @@ async function fixture() {
     return message;
   };
   const run = async (slot: string) => {
+    now += 1; // runs are ordered by start time; distinct times keep the newest findable
     const id = work.trigger("tour", "event", slot);
     assert.ok(id);
     await wait(() => ledger.workRuns("tour").find((item) => item.run === id)?.state !== "running");
@@ -73,4 +74,28 @@ test("owner replying 不用了 after a tour stops later hints", async () => {
     assert.equal(await f.run("next-day"), "no_change");
     assert.deepEqual(f.wakes.map((wake) => wake.day), [1]);
   } finally { await f.close(); }
+});
+
+test("a polite decline still stops hints after many quiet runs and a long ledger", async () => {
+  const f = await fixture();
+  try {
+    // The first owner turn lands after more than a page of other history.
+    for (let i = 0; i < 1100; i++) f.ledger.append({ from: "agent:main", to: null, kind: "event", word: "status", body: { state: "idle" } });
+    f.ownerSays("你好");
+    assert.equal(await f.run("first-day"), "done");
+    f.ownerSays("不用了，谢谢");
+    // Every reply triggers a tour run; a busy day leaves far more than fifty no_change runs and messages.
+    for (let i = 0; i < 60; i++) assert.equal(await f.run(`same-day-${i}`), "no_change");
+    for (let i = 0; i < 1100; i++) f.ledger.append({ from: "agent:main", to: null, kind: "event", word: "status", body: { state: "idle" } });
+    f.advanceDay();
+    assert.equal(await f.run("next-day"), "no_change");
+    assert.deepEqual(f.wakes.map((wake) => wake.day), [1]);
+  } finally { await f.close(); }
+});
+
+test("only a decline of the hints stops them", async () => {
+  const { declinesTour } = await import("../../src/flows/tour");
+  for (const text of ["不用了", " 不用了，谢谢", "不需要了", "别发了", "不要再发了"]) assert.equal(declinesTour(text), true, text);
+  for (const text of ["你好", "这个不用了解", "我不用了解细节吗", "不用了解释，直接说结论", "不需要翻译，帮我总结", "不需要", "不用了解细节"])
+    assert.equal(declinesTour(text), false, text);
 });

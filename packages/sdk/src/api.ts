@@ -38,6 +38,8 @@ export interface CapabilitySpec {
   confirm?: boolean;
   /** Hint for callers and projections; ash does not enforce it. */
   timeout_ms?: number;
+  /** "none" only for a tool its server marks read-only and non-destructive; anything else asks first. */
+  risk?: "none" | "structure";
 }
 
 export type DeviceKind = "phone" | "laptop" | "browser" | "server" | "other";
@@ -407,14 +409,15 @@ export interface GateRuleItemV2 {
   capability_id?: string;
   to: string;
   word: string;
+  /** The rule's target (site, calendar, recipient) or "*" for every use of the capability. */
   object_pattern: string;
-  risk: "outward" | "structure";
+  risk: "none" | "outward" | "structure";
   contract_fingerprint: string;
   created_at: number;
   expires_at: number;
   revoked_at?: number;
 }
-/** Device access is distinct from an approval rule and never waives a risk ask. */
+/** The earlier per-capability access list, kept as a record: agents no longer need a grant and nothing is gated on it. */
 export interface GateAccessItemV2 {
   id: string;
   member: string;
@@ -425,14 +428,18 @@ export interface GateAccessItemV2 {
   revoked_at?: number;
 }
 export type GateHistoryDecisionV2 =
-  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule"
+  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"
   | "legacy_unresolved" | "legacy_approved" | "legacy_denied" | "legacy_expired" | "legacy_cancelled"
   | "legacy_access_imported" | "legacy_access_expired" | "legacy_access_invalid";
 export type GateHistoryItemV2 =
-  | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
-      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule"; at: number; rule_id?: string; source: "current" }
+  | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "none" | "outward" | "structure";
+      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"; at: number; rule_id?: string;
+      /** Why the reviewer let it pass (decision review) — plain words for the owner. */
+      reason?: string;
+      /** The capability's own name for the action, from the evidence kept with it. */
+      label?: string; source: "current" }
   | { id: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
-      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule">;
+      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry">;
       at: number; legacy_scope?: string; source: "legacy" };
 /** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
 export interface LegacyConversationMetadata {
@@ -468,10 +475,17 @@ export interface WordSpec {
   input_schema?: JsonSchema;
   result_schema?: JsonSchema;
   risk?: "none" | "outward" | "structure";
+  /** What the word does to the world; absent means derived from risk (see wordEffect). */
+  effect?: WordEffect;
   label?: string;
   timeout_ms?: number;
   audience?: "agent" | "owner" | "all";
 }
+/**
+ * read: only looks · act: operates the phone, reversible · write: changes the owner's data ·
+ * send: speaks or acts for the owner toward others · execute: runs a command · structure: changes how ash itself is set up.
+ */
+export type WordEffect = "read" | "act" | "write" | "send" | "execute" | "structure";
 export interface MemberInfo { id: string; kind: "person" | "screen" | "agent" | "device" | "service" | "worker"; name: string; online?: boolean }
 export interface DescribeSummary { members: (MemberInfo & { words: string[] })[] }
 export interface DescribeDetail { members: (MemberInfo & { words: WordSpec[] })[] }
@@ -502,7 +516,7 @@ export interface WorkerInputMap {
   extract: { chunk: Message[]; summary: string; known: string[] };
   verify_claims: { claims: Claim[]; evidence: Message[] };
   reconcile: { file: "MEMORY.md" | "USER.md"; numbered: string; claims: Claim[] };
-  verify_plan: { file: "MEMORY.md" | "USER.md"; before: string; edits: Edit[] };
+  verify_plan: { file: "MEMORY.md" | "USER.md"; before: string; edits: Edit[]; evidence?: Message[] };
   proactive: { prefs: string; recent: Message[]; facts: { n: number; text: string }[]; upcoming: unknown[]; delivered: unknown[] };
   opener: { away_ms: number; last_topic: string; pending: unknown[]; changes: unknown[] };
 }

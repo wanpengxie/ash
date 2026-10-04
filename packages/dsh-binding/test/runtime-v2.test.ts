@@ -93,7 +93,7 @@ test("runner uses followup once, waits for real idle outside listener, and suppr
   let followups = 0;
   let cancelled = 0;
   const events = (event: DshSessionEvent) => { for (const listener of listeners) listener("session-test", event); };
-  const host = { ctx: { get() { return undefined; } }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as DshHost;
+  const host = { ctx: { get() { return undefined; } }, async modelKeyMissing() { return false; }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as DshHost;
   const agent = { id: "root", followup(message: { id: string }) {
     followups++;
     events({ type: "user/message", data: { id: message.id } });
@@ -136,7 +136,7 @@ test("DSH session tool call and result enter the core ledger under the current t
   const router = new WorldRouter(ledger, () => true);
   const listeners = new Set<(id: string, event: DshSessionEvent) => void>();
   const events = (event: DshSessionEvent) => { for (const listener of listeners) listener("session-test", event); };
-  const host = { ctx: { get() { return undefined; } }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) {
+  const host = { ctx: { get() { return undefined; } }, async modelKeyMissing() { return false; }, onSessionEvent(listener: (id: string, event: DshSessionEvent) => void) {
     listeners.add(listener); return () => listeners.delete(listener);
   } } as unknown as DshHost;
   const agent = { id: "root", followup(message: { id: string }) {
@@ -163,4 +163,15 @@ test("DSH session tool call and result enter the core ledger under the current t
     await router.recover();
     assert.equal((ledger.responseTo(orphan.id)?.body.error as { code?: string } | undefined)?.code, "failed");
   } finally { ledger.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a closing message that only retells what ash_say already said is recognised; a real continuation is not", async () => {
+  const { retells } = await import("../src/runtime");
+  const said = ["标题：Example Domain。可点的只有一处：「Learn more」链接，指向 iana.org/help/example-domains，它在页面下方（要滚动一点才看得到）。页面已关掉。"];
+  assert.equal(retells("标题：Example Domain。可点的只有一处：「Learn more」链接，指向 iana.org/help/example-domains，位置在页面下方（要滚动一点才看得到）。页面已关掉。", said), true);
+  assert.equal(retells("页面标题是 Example Domain，只有一个「Learn more」链接，指向 iana.org/help/example-domains。", said), true);
+  // A short heads-up followed by the actual answer is not a retelling.
+  assert.equal(retells("明天 10:00–12:00 读书会，20:00–21:00 健身，下午整段留给家人，没有别的安排。", ["我先查一下你的日历。"]), false);
+  assert.equal(retells("好。", said), false);
+  assert.equal(retells("根据日历，周六下午 3 点有读书会，周日上午 10 点还有一场，两场都是两个小时。", said), false);
 });

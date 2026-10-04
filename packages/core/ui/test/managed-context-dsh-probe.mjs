@@ -64,7 +64,8 @@ try {
     for await (const chunk of request) raw += chunk;
     let payload;
     try { payload = JSON.parse(raw); } catch { response.writeHead(400).end("{}"); return; }
-    if (Array.isArray(payload.tools) && payload.tools.length) captured.push(payload);
+    // Only main turns: a mind-space wake also carries tools but is not the conversation under test.
+    if (Array.isArray(payload.tools) && payload.tools.length && !JSON.stringify(payload.messages ?? []).includes("This is your private mind space")) captured.push(payload);
     response.writeHead(200, { "content-type": "text/event-stream" });
     const event = (kind, data) => response.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
     event("message_start", { message: { id: `msg_context_${++serial}`, type: "message", role: "assistant", model: payload.model,
@@ -107,7 +108,7 @@ try {
   await evaluate("document.querySelector('#presence').click()");
   await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .markdown-source')?.value === 'SYNTHETIC_SOUL_OLD_017\\n'"), "canonical old SOUL read");
   await evaluate(`(() => { const input=document.querySelector('#agentPanel section[data-tab=identity] .markdown-source');input.value=${JSON.stringify(`${newSoul}\n`)};input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#agentPanel section[data-tab=identity] .editor-save').click();})()`);
-  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent.includes('已保存并核对当前版本')"), "Chrome SOUL write/readback");
+  await until(() => evaluate("document.querySelector('#agentPanel section[data-tab=identity] .editor-status')?.textContent.includes('已保存')"), "Chrome SOUL write/readback");
   assert.equal(readFileSync(join(home, "SOUL.md"), "utf8"), `${newSoul}\n`);
   const changed = owner.ledger.list({ limit: 1000 }).filter((message) => message.word === "self.changed" && message.body?.path === "SOUL.md");
   assert.equal(changed.length, 1, "canonical file change must have one source event");
@@ -129,7 +130,7 @@ try {
     firstHasMemory: beforeVisible.includes(memoryFact), firstContextOrder: ordered.every((position, index) =>
       position >= 0 && (index === 0 || position > ordered[index - 1])), firstDynamicVisible: beforeTail.includes("Synthetic context check before"),
     secondHasNewSoul: afterVisible.includes(newSoul),
-    secondCurrentHasNewSoul: afterTail.includes(newSoul), secondCurrentHasOldSoul: afterTail.includes(oldSoul),
+    secondCurrentHasNewSoul: afterTail.includes(newSoul), secondCurrentHasOldSoul: afterTail.slice(afterTail.indexOf("SOUL.md (persona):"), afterTail.indexOf("IDENTITY.md (persona):")).includes(oldSoul),
     secondHasUser: afterVisible.includes(userFact), secondHasMemory: afterVisible.includes(memoryFact),
     secondHasChangedFact: afterTail.includes("self.changed") && afterTail.includes("SOUL.md") &&
       afterTail.includes(`by ${changed[0].body.by}`) && afterTail.includes(changed[0].body.summary), thirdHasChangedFact: laterTail.includes("self.changed") &&

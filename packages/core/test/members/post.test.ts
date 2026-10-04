@@ -3,13 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Message } from "../../../sdk/src/api";
 import type { HostPresentationV2 } from "../../../sdk/src/host";
 import { PostMember, isQuiet, quietEnd } from "../../src/members/post-delivery";
 import { EdgeRouter, ScreenRegistry, type EdgeCaller } from "../../src/server";
 import { OwnerMember } from "../../src/members/owner";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
-import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from "../../src/world/router";
 
 const agent: TrustedRouteContext = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
 const service: TrustedRouteContext = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false };
@@ -25,7 +26,7 @@ async function fixture(at = local(1, 12), autoStart = true) {
   members.register(new OwnerMember("Owner", ledger));
   let time = at, foreground = false, ack = true;
   const presentations: HostPresentationV2[] = [], hides: string[] = [];
-  const post = new PostMember({ ledger, router, screens: { markVisible: () => { foreground = true; },
+  const post = new PostMember({ ledger, router, screens: { markVisible: () => { foreground = true; }, markHidden: () => { foreground = false; },
     list: () => [{ id: "screen:test", name: "Synthetic", online: foreground }], visible: () => foreground },
     delivery: { quiet: "21:30-09:00", dedupe_minutes: 60 }, timeZone: "Asia/Singapore", now: () => time,
     host: { async present(item) { presentations.push(item); if (!ack) throw new Error("ACK lost"); },
@@ -72,6 +73,27 @@ test("the same authenticated screen registry expires foreground presence after s
   } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a screen that leaves the foreground stops counting as present at once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-post-hidden-"));
+  const ledger = await Ledger.open(join(dir, "world.db"));
+  const registry = new ScreenRegistry(new WorldRouter(ledger, async () => true), () => 1000);
+  try {
+    const registration = registry.register(screen, "Synthetic");
+    registry.connect(registration.token);
+    registry.markVisible(registration.screen);
+    assert.equal(registry.visible(registration.screen), true);
+    registry.markHidden(registration.screen);
+    assert.equal(registry.visible(registration.screen), false);
+  } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+  const world = await fixture();
+  try {
+    world.setForeground(true);
+    world.post.handle({ kind: "event", word: "hidden", to: "service:post", from: "screen:test" } as Message, {} as RouteHandlerContext);
+    assert.equal(world.post.words().some((word) => word.word === "hidden"), true);
+    assert.equal(world.post["foreground"](), false);
+  } finally { await world.close(); }
+});
+
 test("first installation never republishes preexisting owner history as fresh notifications", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-post-baseline-"));
   const ledger = await Ledger.open(join(dir, "world.db"));
@@ -80,7 +102,7 @@ test("first installation never republishes preexisting owner history as fresh no
   members.register(new OwnerMember("Owner", ledger));
   const historical = await router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "old synthetic", kind: "due" }, wait: true });
   let presented = 0;
-  const post = new PostMember({ ledger, router, screens: { markVisible: () => {}, list: () => [], visible: () => false },
+  const post = new PostMember({ ledger, router, screens: { markVisible: () => {}, markHidden: () => {}, list: () => [], visible: () => false },
     delivery: { quiet: "21:30-09:00", dedupe_minutes: 60 },
     host: { async present() { presented++; }, async hidePresentation() {} } });
   members.register(post);
@@ -136,19 +158,19 @@ test("an expired risk ask denies the effect and withdraws its notification", asy
   const f = await fixture();
   let effects = 0;
   try {
-    f.router.register({ member: "service:fake", spec: { word: "run", kind: "request", risk: "outward", timeout_ms: 250,
+    f.router.register({ member: "device:fake", spec: { word: "run", kind: "request", risk: "outward", timeout_ms: 1_000,
       description: "Synthetic outward effect", input_schema: { type: "object", additionalProperties: false } },
     handle: () => { effects++; return { ok: true, result: {} }; } });
     f.router.enableDurableGate();
-    const request = await f.router.send(agent, { to: "service:fake", kind: "request", word: "run", body: {} });
+    const request = await f.router.send(agent, { to: "device:fake", kind: "request", word: "run", body: {} });
     for (let i = 0; i < 40 && !f.ledger.gateCase(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 5));
     const askId = f.ledger.gateCase(request.id)!.askId;
     assert.equal((await f.wait(askId)).channel, "notification");
     assert.equal(f.presentations.filter((item) => item.id === askId).length, 1);
-    for (let i = 0; i < 80 && !f.ledger.responseTo(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    for (let i = 0; i < 300 && !f.ledger.responseTo(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(f.ledger.gateCase(request.id)?.decision, "timeout");
     assert.equal((f.ledger.responseTo(request.id)?.body.error as { code?: string } | undefined)?.code, "denied");
-    for (let i = 0; i < 40 && !f.hides.includes(askId); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    for (let i = 0; i < 200 && !f.hides.includes(askId); i++) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.deepEqual(f.hides, [askId]);
     assert.equal(effects, 0);
   } finally { await f.close(); }

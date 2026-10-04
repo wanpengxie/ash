@@ -73,6 +73,31 @@ export function materializeFile(root: string, id: string, index: number, data: B
 }
 
 /** Separate conversational paragraphs, never a fenced code block. */
+/** Character pairs of a message with spacing and punctuation removed; two retellings of one answer share most of them. */
+function pairs(text: string): Set<string> {
+  const chars = [...text.toLowerCase().replace(/[\s，。！？、：；,.!?:;"“”「」（）()\-—*_`]/gu, "")];
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < chars.length; i++) out.add(chars[i] + chars[i + 1]);
+  return out;
+}
+
+/** True when `text` only retells something already said: nearly the same pairs, in either direction. */
+export function retells(text: string, said: Iterable<string>): boolean {
+  const mine = pairs(text);
+  if (mine.size < 6) return false;
+  for (const earlier of said) {
+    const theirs = pairs(earlier);
+    if (theirs.size < 6) continue;
+    let shared = 0;
+    for (const pair of mine) if (theirs.has(pair)) shared++;
+    const jaccard = shared / (mine.size + theirs.size - shared);
+    const contained = shared / Math.min(mine.size, theirs.size);
+    const similarSize = Math.min(mine.size, theirs.size) / Math.max(mine.size, theirs.size) >= 0.3;
+    if (jaccard >= 0.5 || (contained >= 0.85 && similarSize)) return true;
+  }
+  return false;
+}
+
 export function splitAssistantText(text: string): string[] {
   const parts: string[] = [];
   let lines: string[] = [];
@@ -196,6 +221,30 @@ export async function turnContent(host: DshHost, input: AgentTurnInput, attachme
   return content;
 }
 
+/** The model has no clock; without this it runs a shell command just to learn the time. Stated afresh every turn. */
+/** Shown when a message arrives and no model key has been set. Plain words, and where to go. */
+export const NO_MODEL_KEY = "我还没有模型的 Key，现在没法回你。请打开 设置 → 密钥，把 DeepSeek Key 填进去保存，马上就能聊了。";
+
+/** What the owner is told when a model call fails: the likely cause in plain words, never the provider's raw payload. */
+export function modelFailureText(failure: unknown): string {
+  const detail = failure && typeof failure === "object" ? failure as { code?: unknown; status?: unknown; message?: unknown } : {};
+  const text = `${String(detail.code ?? "")} ${String(detail.status ?? "")} ${String(detail.message ?? "")}`;
+  if (/\b(401|403)\b|auth|api.?key|unauthori[sz]ed|forbidden/i.test(text))
+    return "模型那边没认我的 Key，这次没能回你。请到 设置 → 密钥 检查一下 DeepSeek Key，换成有效的再保存。";
+  if (/\b402\b|balance|insufficient|quota/i.test(text)) return "模型账户余额不足，这次没能回你。充值后再发一次就行。";
+  if (/\b429\b|rate/i.test(text)) return "模型那边在限流，这次没能回你。过一会儿再发一次。";
+  if (/network|fetch|timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN|offline/i.test(text)) return "连不上模型，这次没能回你。看看手机网络（或代理）是否通，再发一次。";
+  return "模型那边出了点问题，这次没能回你。再发一次试试；还不行的话告诉我。";
+}
+
+export function clockLine(now: number): string {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const part = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-US", { timeZone: zone, ...options }).format(new Date(now));
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now));
+  return `Now: ${part({ weekday: "long" })} ${date} ${time} (${zone}, ${part({ timeZoneName: "shortOffset" }).split(", ").pop()}); epoch ms ${now}. Use this for dates and timers instead of running a command to read the clock.`;
+}
+
 /** A single real DSH session; cancellation is not proof of idle. */
 export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
   renderBudgetBytes = TOTAL_TEXT_BYTES - MAX_SOURCE_BYTES - MAX_PREFIX_BYTES;
@@ -203,7 +252,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
   private busy = false;
   private currentManagedPrompt: string | null = null;
   constructor(private readonly host: DshHost, private readonly attachmentRoot: string, private readonly workspaceRoot: string,
-    private readonly router?: WorldRouter) {}
+    private readonly router?: WorldRouter, private readonly devices?: () => string) {}
   primeManagedSnapshot(snapshot: ManagedPromptSnapshot): void { this.currentManagedPrompt = renderMainContext(snapshot); }
   attach(agent: DshRootAgent, door: DshDoor, sessionId: string): void {
     if (this.session) throw new Error("runner already attached");
@@ -222,12 +271,23 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     if (!session || this.busy) throw new Error("DSH session unavailable or still busy");
     if (signal.aborted) return { reason: "error", error: "turn cancelled before dispatch" };
     if (input.managedSnapshot) this.currentManagedPrompt = renderMainContext(input.managedSnapshot);
+    // Without a model key a turn would die inside DSH and the owner would see nothing at all.
+    if (await this.host.modelKeyMissing()) {
+      // Only an owner's own message earns the reply; the clock and the senses wake her without anyone waiting for an answer.
+      if (input.messages.some((message) => message.from === "person:owner")) await emit({ id: `${input.turn}:no-model-key`, text: NO_MODEL_KEY });
+      // Never "completed": DSH ran no turn, and restart checks every completed core turn against DSH history.
+      return { reason: "error", error: "no model key" };
+    }
     this.busy = true;
     // A stable one-to-one bridge from the durable core turn to DSH history.
     // An interrupted core turn is never re-followed-up after restart.
     const messageId = `core-${input.turn}`;
     const seen = new Set<string>();
     const toolCalls = new Map<string, string>();
+    // Models often close with the same words they just sent through ash_say; the owner hears them once.
+    const said = new Set<string>();
+    const sayCalls = new Map<string, string>();
+    const sameWords = (text: string) => text.replace(/\s+/gu, " ").trim();
     let pending = Promise.resolve();
     let emitError: unknown;
     let finish!: (value: { reason: "completed" | "error"; error?: string }) => void;
@@ -239,6 +299,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
       settled = true;
       finish(value);
     };
+    let failure: unknown;
     const onEvent = (sid: string, event: DshSessionEvent) => {
       if (sid !== session.id || settled) return;
       if (!mine) {
@@ -255,7 +316,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
         if (seen.has(key)) return;
         seen.add(key);
         for (const [index, part] of splitAssistantText(text).entries()) {
-          pending = pending.then(() => signal.aborted || emitError ? undefined : emit({ id: `${key}:${index}`, text: part }))
+          // After real ash_say messages, a closing aside wrapped whole in brackets is narration to nobody, not speech.
+          const aside = () => said.size > 0 && /^[（(][^]*[）)]$/u.test(part.trim());
+          pending = pending.then(() => signal.aborted || emitError || said.has(sameWords(part)) || retells(part, said) || aside() ? undefined : emit({ id: `${key}:${index}`, text: part }))
             .catch((error) => { emitError ??= error; });
         }
       } else if (event.type === "tool/call" && this.router) {
@@ -265,6 +328,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
           const args = event.data?.arguments;
           if (typeof callId !== "string" || typeof name !== "string" || typeof args !== "string") throw new TypeError("invalid DSH tool call");
           toolCalls.set(callId, this.router.recordDshToolCall(input.turn, callId, name, args).id);
+          if (name === "ash_say") {
+            try { const text = (JSON.parse(args) as { text?: unknown }).text; if (typeof text === "string") sayCalls.set(callId, text); } catch { /* the tool reports bad arguments */ }
+          }
         } catch (error) { emitError ??= error; }
       } else if (event.type === "tool/result" && this.router) {
         try {
@@ -273,11 +339,17 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
           if (!requestId) throw new TypeError("unmatched DSH tool result");
           const preview = Array.isArray(message?.content) ? message.content.filter((block: { type?: string }) => block?.type === "text")
             .map((block: { text?: string }) => block.text ?? "").join("") : "";
-          this.router.recordDshToolResult(requestId, !message.isError && !event.data?.error, preview);
+          const succeeded = !message.isError && !event.data?.error;
+          this.router.recordDshToolResult(requestId, succeeded, preview);
+          // Only words the owner actually received count as said; a failed ash_say leaves the closing text to deliver them.
+          const sayText = sayCalls.get(message.toolCallId);
+          sayCalls.delete(message.toolCallId);
+          if (succeeded && sayText !== undefined) for (const part of splitAssistantText(sayText)) said.add(sameWords(part));
           toolCalls.delete(message.toolCallId);
         } catch (error) { emitError ??= error; }
       } else if (event.type === "turn/end") {
         const reason = event.data?.reason?.kind;
+        if (reason === "error") failure = event.data?.reason?.error;
         settle(reason === "completed" ? { reason: "completed" } : { reason: "error", error: `DSH turn ${String(reason ?? "unknown")}` });
       }
     };
@@ -286,13 +358,20 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     signal.addEventListener("abort", abort, { once: true });
     try {
       session.door.beginTurn(input.turn, signal);
-      const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, this.currentManagedPrompt ?? undefined);
+      // Devices and their capabilities change (a permission granted, a laptop asleep); each turn states them afresh
+      // so an earlier "no calendar" in the history never outlives the change.
+      const devices = this.devices?.();
+      const managed = [this.currentManagedPrompt, clockLine(Date.now()), devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : null].filter(Boolean).join("\n\n");
+      const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, managed || undefined);
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
       session.agent.followup({ id: messageId, role: "user", content, source: { kind: "user" } });
       const result = await ended;
       await this.proveIdle(session.agent); // never await inside a DSH event listener
       await pending;
       if (emitError) return { reason: "error", error: emitError instanceof Error ? emitError.message : "agent output failed" };
+      // A model call that fails must not leave the owner staring at silence.
+      if (failure !== undefined && !signal.aborted && input.messages.some((message) => message.from === "person:owner"))
+        await emit({ id: `${input.turn}:model-failed`, text: modelFailureText(failure) }).catch(() => {});
       return signal.aborted ? { reason: "error", error: "turn cancelled" } : result;
     } catch (error) {
       await this.proveIdle(session.agent);

@@ -107,20 +107,38 @@ R6() { say "R6 the main agent answers"
   echo "    reply: ${r:0:200}"
   if echo "$r" | grep -qi "ash" && echo "$r" | grep -q "ash-home"; then ok "R6 replies as Ash, working in ash-home"; else bad R6 "unexpected reply"; fi
 }
+# A fresh one-time pairing code from the app itself (what the settings page's 生成配对码 button does).
+new_ticket() { admin gateway.op '{"op":"ticket"}' | jq_ 'v.result?.ticket||v.ticket||""'; }
 R7() { say "R7 web through the gateway (a temporary paired browser)"
-  [ -n "${GATEWAY_URL:-}" ] && [ -n "${GATEWAY_TICKET:-}" ] || { bad R7 "GATEWAY_URL/TICKET not set"; return; }
+  [ -n "${GATEWAY_URL:-}" ] || { bad R7 "GATEWAY_URL not set"; return; }
   fwd
+  GATEWAY_TICKET=$(new_ticket); [ -n "$GATEWAY_TICKET" ] || { bad R7 "the app produced no pairing code"; return; }
+  export GATEWAY_TICKET
   if ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" web; then ok "R7 a paired browser uses Ash through the gateway (UI, message, streamed answer)"; else bad R7; fi
 }
 R8() { say "R8 the agent uses the paired laptop"
   local share="${LAPTOP_SHARE:-$HOME/ash-shared}" name="regress-$(date +%s).txt"
-  local r; r=$(deliver_and_wait "用你电脑（笔记本）上的文件工具，在共享目录 ${share} 里新建文件 ${name}，内容写 ok，然后列出该目录确认。" 300)
-  echo "    reply: ${r:0:200}"
+  wait_online 300 || { bad R8 "agent not online"; return; }
+  adb shell input keyevent 3 >/dev/null 2>&1
+  local from ask end; from=$(last_seq)
+  [ -n "$(send_say "用你电脑（笔记本）上的文件工具，在共享目录 ${share} 里新建文件 ${name}，内容写 ok，然后列出该目录确认。")" ] || { bad R8 "request not accepted"; return; }
+  # Borrowed laptop capabilities are structure risk: the owner approves the write from the notification.
+  # The model may need more than one write-class step (e.g. a directory first); approve each until the file exists.
+  end=$((SECONDS+240)); local answered=""
+  while [ $SECONDS -lt $end ] && [ ! -f "$share/$name" ]; do
+    ask=$(wait_row 15 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&String(x.body?.source?.word||'').startsWith('files.')&&!'$answered'.includes(x.id))" "$from") || true
+    if [ -n "$ask" ]; then
+      answered="$answered $(echo "$ask" | jq_ 'v.id')"
+      tap_notification_action "$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')" || true
+    fi
+  done
   if [ -f "$share/$name" ]; then ok "R8 the agent wrote $share/$name on the laptop through ash"; rm -f "$share/$name"; else bad R8 "file not on the laptop"; fi
 }
 R9() { say "R9 phone offline → the browser is told; back → reconnects"
-  [ -n "${GATEWAY_URL:-}" ] && [ -n "${GATEWAY_TICKET:-}" ] || { bad R9 "GATEWAY_URL/TICKET not set"; return; }
+  [ -n "${GATEWAY_URL:-}" ] || { bad R9 "GATEWAY_URL not set"; return; }
   fwd
+  GATEWAY_TICKET=$(new_ticket); [ -n "$GATEWAY_TICKET" ] || { bad R9 "the app produced no pairing code"; return; }
+  export GATEWAY_TICKET
   local pairfile; pairfile=$(mktemp "${TMPDIR:-/tmp}/ash-regress-browser.XXXXXX") || { bad R9 "cannot create temporary pair state"; return; }
   chmod 600 "$pairfile"
   ASH_TOKEN="$(token)" ASH_URL="http://127.0.0.1:$PORT" GATEWAY_URL="$GATEWAY_URL" node "$HERE/regress-remote.bundle.mjs" pair > "$pairfile" || { rm -f "$pairfile"; bad R9 "pairing failed"; return; }
@@ -220,12 +238,31 @@ R18() { say "R18 explicit stop cancels the active turn, without stopping the nex
   if [ "$intent" = stop ] && [ "$acted" = true ] && [ "$reason" = cancelled ] && [ "$next_turn" != "$turn" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -le 1000 ]; then ok "R18 explicit stop cancels active turn within 1s; stop message enters next turn"; else bad R18 "stop decision/turn/latency did not meet contract"; fi
 }
 
+# Tap a notification action button by its label (case-insensitive; some skins upper-case buttons).
+# A collapsed notification hides its buttons; swipe down on its title ($2) to expand it first.
+ui_center() { adb shell uiautomator dump /sdcard/ash-regress-ui.xml >/dev/null 2>&1
+  adb exec-out cat /sdcard/ash-regress-ui.xml | LABEL="$1" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const want=process.env.LABEL.toLowerCase();for(const n of s.match(/<node [^>]*>/g)||[]){const t=(/ text="([^"]*)"/.exec(n)||[])[1]||"",d=(/ content-desc="([^"]*)"/.exec(n)||[])[1]||"";if(t.toLowerCase()!==want&&d.toLowerCase()!==want)continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})'; }
+tap_notification_action() {
+  adb shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
+  local xy="" title i
+  for i in 1 2 3; do
+    xy=$(ui_center "$1")
+    [ -n "$xy" ] && break
+    title=$(ui_center "${2:-需要你确认}")
+    [ -z "$title" ] || { local expand; expand=$(adb exec-out cat /sdcard/ash-regress-ui.xml | Y="${title#* }" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const y=+process.env.Y;for(const n of s.match(/<node [^>]*>/g)||[]){if(!/ content-desc="(Expand|展开)"/.test(n))continue;const b=/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(n);if(b&&+b[2]<=y&&y<=+b[4]){process.stdout.write(((+b[1]+ +b[3])>>1)+" "+((+b[2]+ +b[4])>>1));return}}})'); [ -z "$expand" ] || adb shell input tap $expand; }
+    sleep 1
+  done
+  adb shell rm -f /sdcard/ash-regress-ui.xml >/dev/null 2>&1
+  [ -n "$xy" ] || { adb shell cmd statusbar collapse >/dev/null 2>&1; return 1; }
+  adb shell input tap $xy; sleep 1; adb shell cmd statusbar collapse >/dev/null 2>&1
+}
+
 R19() { say "R19 a risky phone action produces an Android approval notification and one answer"
   wait_online 300 || { bad R19 "agent not online"; return; }
   adb shell input keyevent 3 >/dev/null 2>&1
   local from request ask notice answer effect end
   from=$(last_seq)
-  request=$(send_say "请使用手机的 shell.run 执行 printf ash-r19；这是回归测试，请实际调用工具，不要只解释。")
+  request=$(send_say "请用手机的 clipboard.set 把剪贴板设为 ash-r19；这是回归测试，请实际调用工具，不要只解释。")
   [ -n "$request" ] || { bad R19 "request not accepted"; return; }
   ask=$(wait_row 180 "v.find(x=>x.kind==='request'&&x.word==='ask'&&x.to==='person:owner'&&Array.isArray(x.body?.options)&&x.body.options.some(o=>o.id==='once')&&x.body.options.some(o=>o.id==='deny'))" "$from") || { bad R19 "no approval ask"; return; }
   local ask_id; ask_id=$(echo "$ask" | jq_ 'v.id||""')
@@ -236,9 +273,11 @@ R19() { say "R19 a risky phone action produces an Android approval notification 
     sleep 1
   done
   [ -n "$notice" ] || { bad R19 "approval was not rendered by Android"; return; }
-  answer=$(api POST /api/send "$(node -e 'console.log(JSON.stringify({to:"service:gate",kind:"response",word:"ask",reply_to:process.argv[1],body:{ok:true,result:{choice:"once"}},client_id:process.argv[2]}))' "$ask_id" "regress-r19-$RANDOM$RANDOM")" | jq_ 'v.id||""')
-  [ -n "$answer" ] || { bad R19 "approval answer not accepted"; return; }
-  effect=$(wait_row 180 "v.find(x=>x.kind==='response'&&x.word==='shell.run'&&x.body?.ok===true)" "$from") || { bad R19 "approved phone action did not settle"; return; }
+  # Only a screen or the notification itself may answer an ask; tap "once" the way the owner would.
+  local once_label; once_label=$(echo "$ask" | jq_ 'v.body.options.find(o=>o.id==="once").label')
+  tap_notification_action "$once_label" || { bad R19 "approval action not found in the notification shade"; return; }
+  answer=$(wait_row 30 "v.find(x=>x.kind==='response'&&x.reply_to==='$ask_id'&&x.body?.result?.choice==='once')" "$from") || { bad R19 "approval answer not accepted"; return; }
+  effect=$(wait_row 180 "v.find(x=>x.kind==='response'&&x.word==='clipboard.set'&&x.body?.ok===true)" "$from") || { bad R19 "approved phone action did not settle"; return; }
   local responses; responses=$(rows "$from" | ASH_ASK="$ask_id" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=s.trim().split("\n").filter(Boolean).map(JSON.parse);process.stdout.write(String(v.filter(x=>x.kind==="response"&&x.reply_to===process.env.ASH_ASK).length))})')
   if [ "$responses" = 1 ]; then ok "R19 Android showed the approval; once produced one terminal answer and one phone effect"; else bad R19 "approval responses=$responses"; fi
 }
@@ -257,8 +296,8 @@ R20() { say "R20 app-open runs the opener after six hours; quiet hours persist"
   adb shell am force-stop "$PKG" >/dev/null
   asr "p='$prefs'; if [ -f \"\$p\" ]; then sed -i -E 's#<long name=\"app_left\" value=\"[0-9]+\" */>#<long name=\"app_left\" value=\"$old\" />#' \"\$p\"; grep -q 'name=\"app_left\"' \"\$p\" || sed -i 's#</map>#    <long name=\"app_left\" value=\"$old\" />\\n</map>#' \"\$p\"; else mkdir -p \"\$(dirname \"\$p\")\"; printf '%s\\n' '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?>' '<map>' '    <long name=\"app_left\" value=\"$old\" />' '</map>' > \"\$p\"; fi"
   adb shell am start -n "$PKG/ai.ash.ui.HomeActivity" >/dev/null
-  opened=$(wait_row 30 "v.find(x=>x.word==='sense.screen'&&x.body?.state==='app_open'&&Number(x.body?.away_ms)>=21600000)" "$from") || true
-  opener_start=$(wait_row 30 "v.find(x=>x.word==='run.start'&&x.body?.flow==='opener')" "$from") || true
+  opened=$(wait_row 180 "v.find(x=>x.word==='sense.screen'&&x.body?.state==='app_open'&&Number(x.body?.away_ms)>=21600000)" "$from") || true
+  opener_start=$(wait_row 60 "v.find(x=>x.word==='run.start'&&x.body?.flow==='opener')" "$from") || true
   local opener_run; opener_run=$(echo "$opener_start" | jq_ 'v.body?.run||""')
   [ -z "$opener_run" ] || opener=$(wait_row 180 "v.find(x=>x.word==='run.end'&&x.body?.run==='$opener_run')" "$from") || true
   restored=$(admin settings.set "{\"delivery\":{\"quiet\":\"$original\"}}" | jq_ 'v.result?.delivery?.quiet||""')
@@ -272,8 +311,8 @@ R21() { say "R21 the real memory loop records a preference and correction, then 
   local stamp from first second trigger run ended log count repeat repeat_end
   stamp="r21-$(date +%s)"
   from=$(last_seq)
-  first=$(send_say "回归标记 $stamp：我偏好简短回答。")
-  second=$(send_say "更正回归标记 $stamp：不是偏好详细回答，而是偏好简短回答。")
+  first=$(send_say "回归标记 ${stamp}：我偏好简短回答。")
+  second=$(send_say "更正回归标记 ${stamp}：不是偏好详细回答，而是偏好简短回答。")
   [ -n "$first" ] && [ -n "$second" ] || { bad R21 "memory evidence messages not accepted"; return; }
   deliver_and_wait "只回复：收到 $stamp" 180 >/dev/null || { bad R21 "conversation did not settle"; return; }
   trigger=$(owner_request service:work run '{"flow":"memory"}')

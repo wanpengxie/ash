@@ -35,6 +35,18 @@ class Paths(ctx: Context) {
 
     val tmp = File(cache, "tmp")
 
+    /**
+     * The agent container (proot + Ubuntu + DSH), shipped in the APK and extracted by ContainerInstaller.
+     * Everything but ubuntu/root is replaced on an upgrade; ubuntu/root (workspace, DSH home) is the user's.
+     */
+    val containers = File(files, "container")
+    val containerRoot = File(containers, "main")
+    val containerStaging = File(containers, "main.new")
+    val containerOld = File(containers, "main.old")
+    val containerVersion = File(containerRoot, "VERSION")
+    /** DSH_HOME of the agent inside the container (/root/.dsh there). */
+    val containerDshHome = File(containerRoot, "ubuntu/root/.dsh")
+
     // ---- the payload's own layout
     val node = File(payload, "runtime/bin/node")
     val coreBundle = File(payload, "ash/ash-core.mjs")

@@ -32,6 +32,15 @@ test("No-Key stop grammar matches only complete short commands", () => {
   assert.deepEqual(judgeStopKeyword("hello"), { intent: "unrelated", confidence: 0 });
 });
 
+test("a stop said as a few short stop clauses is still an explicit command", () => {
+  for (const text of ["停，别做了", "停下，不用了", "别写了，不用了。", "停一下", "算了 别发了"]) {
+    assert.deepEqual(judgeStopKeyword(text), { intent: "stop", confidence: 1 }, text);
+  }
+  for (const text of ["等等，你说的第二点是什么意思", "停，我停在楼下了", "我停在楼下了，等下", "别忘了，不用了解释"]) {
+    assert.notEqual(judgeStopKeyword(text).intent, "stop", text);
+  }
+});
+
 test("an authenticated local owner saying 暂停 uses the existing durable admin pause", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-reflex-pause-"));
   const running = await startOwner({ stateDir: join(dir, "state"), listen: "127.0.0.1:0",
@@ -159,8 +168,10 @@ test("a confident JEV judgement stops an ambiguous command; JEV failure falls ba
     await active;
     const unclear = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "stop the timer" }, wait: true });
     await wait(() => ledger.list({ limit: 1000 }).some((row) => row.word === "reflex.judged" && row.body.message_id === unclear.id));
-    assert.deepEqual(ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === unclear.id)?.body,
-      { message_id: unclear.id, stage: "keyword", intent: "unclear", confidence: 0, acted: false });
+    const fellBack = ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === unclear.id)!.body;
+    assert.equal(typeof fellBack.fallback_ms, "number");
+    assert.deepEqual({ ...fellBack, fallback_ms: 0 },
+      { message_id: unclear.id, stage: "keyword", intent: "unclear", confidence: 0, acted: false, fallback: "error", fallback_ms: 0 });
     assert.equal(ledger.list({ limit: 1000 }).filter((row) => row.word === "cancel_turn").length, 0);
     fail = false;
     const stop = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "stop that search" }, wait: true });
@@ -168,5 +179,38 @@ test("a confident JEV judgement stops an ambiguous command; JEV failure falls ba
     assert.deepEqual(ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === stop.id)?.body,
       { message_id: stop.id, stage: "jev", intent: "stop", confidence: 0.95, acted: true });
     assert.equal(ledger.list({ limit: 1000 }).filter((row) => row.word === "cancel_turn" && row.kind === "request").length, 1);
+  } finally { await reflex.close(); await agent.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("while busy, a keyword-free stop such as 够了 reaches JEV and the default bar is 0.6", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-reflex-busy-"));
+  const ledger = await Ledger.open(join(dir, "world.db"));
+  const router = new WorldRouter(ledger, async () => true);
+  let entered!: () => void;
+  const active = new Promise<void>((resolve) => { entered = resolve; });
+  const agent = createAgentMember({ ledger, router, stateDir: join(dir, "agent"), runner: { async runTurn(_input, _emit, signal) {
+    entered();
+    await new Promise<void>((resolve) => { if (signal.aborted) resolve(); else signal.addEventListener("abort", () => resolve(), { once: true }); });
+    return { reason: "error" as const, error: "synthetic stop" };
+  } } });
+  const asked: string[] = [];
+  const confidence: Record<string, number> = { "够了": 0.65, "差不多了": 0.55 };
+  const reflex = new ReflexMember(router, () => agent.inbox.activeTurn()?.id ?? null, {
+    context: (message, turn) => ({ current_task: turn, latest_user_message: String(message.body.text), recent_messages: [] }),
+    jev: { async judge(state) { asked.push(state.latest_user_message); return { intent: "stop", confidence: confidence[state.latest_user_message] ?? 0.9 }; } },
+  });
+  const members = new WorldMembers(router); members.register(agent); members.register(reflex);
+  const judged = async (text: string) => {
+    const sent = await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text }, wait: true });
+    await wait(() => ledger.list({ limit: 1000 }).some((row) => row.word === "reflex.judged" && row.body.message_id === sent.id));
+    return ledger.list({ limit: 1000 }).find((row) => row.word === "reflex.judged" && row.body.message_id === sent.id)!.body;
+  };
+  try {
+    agent.prepareRecovery(); await router.recover(); await agent.start();
+    await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "write a long plan" }, wait: true });
+    await active;
+    assert.deepEqual({ ...(await judged("差不多了")), message_id: undefined }, { message_id: undefined, stage: "jev", intent: "unrelated", confidence: 0.55, acted: false });
+    assert.deepEqual({ ...(await judged("够了")), message_id: undefined }, { message_id: undefined, stage: "jev", intent: "stop", confidence: 0.65, acted: true });
+    assert.deepEqual(asked, ["差不多了", "够了"]);
   } finally { await reflex.close(); await agent.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -17,6 +17,30 @@ function draw(entries, options) {
   finally { delete globalThis.document; }
 }
 
+test("gate approval originals are folded and shown in a closed plain-text disclosure, including decided cards", () => {
+  const original = "x".repeat(65000) + "\nTAIL <script>not HTML</script>\t  spaces";
+  const message = { id: "ask-original", seq: 1, ts: 1, from: "service:gate", to: "person:owner", kind: "request", word: "ask",
+    body: { title: "确认", detail: "摘要", expires_at: Date.now() + 60_000, options: [{ id: "once", label: "允许这一次" }],
+      source: { word: "shell.run", to: "device:phone", body_preview: "摘要", body_full: original } } };
+  const view = fold(initialView(), message);
+  assert.equal(view.asks[0].original, original);
+  for (const state of ["pending", "answered", "expired", "closed"]) {
+    const rendered = draw([{ ...view.conversation[0], ask: { ...view.asks[0], state } }]);
+    const disclosure = rendered.children[0].children.find((node) => node.tag === "details");
+    assert.ok(disclosure);
+    assert.notEqual(disclosure.open, true);
+    assert.equal(disclosure.children[0].tag, "summary");
+    assert.equal(disclosure.children[0].textContent, "查看原文");
+    assert.equal(disclosure.children[1].tag, "pre");
+    assert.equal(disclosure.children[1].textContent, original);
+    assert.equal(disclosure.children[1].children.length, 0, "markup is text, never executable HTML");
+  }
+  const ordinary = fold(initialView(), { ...message, from: "agent:main" });
+  assert.equal(ordinary.asks[0].original, undefined, "only a gate-authored snapshot is accepted");
+  const legacy = fold(initialView(), { ...message, body: { ...message.body, source: { body_preview: "summary only" } } });
+  assert.equal(legacy.asks[0].original, undefined, "old summaries are not relabeled as original text");
+});
+
 test("conversation shows receipt stages, grouped agent burst, and reactions on the correct bubble", () => {
   const fragment = draw([
     { id: "m1", seq: 1, type: "say", side: "owner", text: "first", delivery: "sent", reactions: [] },
@@ -98,13 +122,21 @@ test("file, image, and link cards open safe references and approval buttons expi
     expires_at: Date.now() + 60_000, options: ["once", "always", "deny"].map((id) => ({ id, label: id })) };
   const choices = [];
   let rendered = draw([{ type: "ask", ask }], { onAnswerAsk: async (_ask, choice) => choices.push(choice) });
-  const buttons = rendered.children[0].children.filter((node) => node.tag === "button");
+  // Title, detail and the choices each sit on their own line.
+  assert.deepEqual(rendered.children[0].children.map((node) => node.className), ["ask-title", "ask-detail", "ask-actions"]);
+  const buttons = rendered.children[0].children[2].children.filter((node) => node.tag === "button");
   assert.equal(buttons.length, 3);
   await buttons[1].listeners.click();
   assert.deepEqual(choices, ["always"]);
   rendered = draw([{ type: "ask", ask: { ...ask, expires_at: Date.now() - 1 } }], { onAnswerAsk: async () => choices.push("unexpected") });
-  assert.ok(rendered.children[0].children.filter((node) => node.tag === "button").every((node) => node.disabled));
+  assert.equal(rendered.children[0].children.filter((node) => node.tag === "button").length, 0);
   assert.match(rendered.textContent, /已过期/);
+  // Answered elsewhere (a notification, another screen): the card states the outcome and offers no buttons.
+  for (const [choice, outcome] of [["deny", /已拒绝/], ["once", /已允许这一次/], ["always", /已选择：always/]]) {
+    rendered = draw([{ type: "ask", ask: { ...ask, state: "answered", choice } }], { onAnswerAsk: async () => choices.push("unexpected") });
+    assert.equal(rendered.children[0].children.filter((node) => node.tag === "button").length, 0, choice);
+    assert.match(rendered.textContent, outcome);
+  }
 });
 
 test("permission card delegates one owner tap to the native settings action", () => {

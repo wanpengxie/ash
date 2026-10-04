@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -55,6 +56,14 @@
             android:name=".ui.OnboardingActivity"
             android:exported="false"
             android:label="Ash 权限引导" />
+
+        <!-- The agent's browser, shown to the owner when they must log in or pass a check. -->
+        <activity
+            android:name=".ui.BrowserActivity"
+            android:exported="false"
+            android:label="Ash 浏览器"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
 
         <!-- Diagnostics: core process, logs, permissions, payload. -->
         <activity

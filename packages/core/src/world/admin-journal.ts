@@ -36,6 +36,18 @@ export class AdminJournal {
       .run(value);
   }
 
+  /** "auto" (the default) asks only when an action matters; "always" asks for every non-read agent action. Unknown values ask. */
+  approvalMode(): "auto" | "always" {
+    const row = this.db.prepare("SELECT value FROM kv WHERE key='v3:approval:mode'").get() as Row | undefined;
+    return !row ? "auto" : String(row.value) === "auto" ? "auto" : "always";
+  }
+
+  setApprovalMode(mode: "auto" | "always"): void {
+    if (mode !== "auto" && mode !== "always") throw new TypeError("invalid approval mode");
+    this.db.prepare("INSERT INTO kv(key,value) VALUES('v3:approval:mode',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(mode);
+  }
+
   /** The latest command and KV must agree before a pause can affect restart reconciliation. */
   currentCommand(): { requestId: string; seq: number; paused: boolean; targetTurn: string | null } | null {
     const row = this.db.prepare("SELECT request_id,seq,paused,target_turn FROM admin_pause_commands ORDER BY seq DESC LIMIT 1").get() as Row | undefined;

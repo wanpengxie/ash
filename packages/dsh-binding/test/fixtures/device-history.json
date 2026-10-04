@@ -1,0 +1,418 @@
+[
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_wtWbk18wpbkr"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 1
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_wtWbk18wpbkr",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "user/message",
+"data": {
+"content": [
+{
+"type": "text",
+"text": "<system-reminder>\nThe following workspace instructions may be relevant to your work. Use them as guidance when applicable. More specific instructions take precedence over broader ones. They do not override system, developer, or direct user instructions.\n\nInstructions from: AGENTS.md\n\n# Ash\n\n你是 Ash，常驻在用户这台安卓手机上的个人助理 Agent，运行在 DeepSeek Harness（DSH）之上。\n\n- 你只服务这台手机的主人。回答简洁，默认用中文。\n- 当前工作目录是你的家目录，重启后仍在；需要长期记住的事写进这里的 MEMORY.md，下次先读它。\n- 能用手机相关工具（通知、剪贴板、定时任务、读屏等）直接完成的事就直接做；涉及发消息、删除、安装、付款等不可逆操作，先向主人确认。\n\n</system-reminder>"
+}
+],
+"source": {
+"kind": "agent-instructions",
+"form": "instructions",
+"baseline": true,
+"baselineIdentity": "{\"projectRoot\":\"\",\"projectRootMarkers\":[\".git\"],\"maxBytes\":65536,\"maxSourceBytes\":1048576,\"instructionFileCandidates\":[\"AGENTS.md\",\"CLAUDE.md\"],\"localInstructionFileCandidates\":[\"AGENTS.local.md\",\"CLAUDE.local.md\"]}",
+"changes": [
+{
+"action": "set",
+"scope": ".\u0000AGENTS.md",
+"path": "AGENTS.md",
+"digest": "c3f20f70012a9174ec2084eff4e2e8e3733bb48a"
+}
+]
+},
+"role": "user",
+"id": "50ab64fb-d432-44f7-8096-5a440c9431a7"
+}
+},
+{
+"type": "user/message",
+"data": {
+"content": [
+{
+"type": "text",
+"text": "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations.\n\nApproval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
+}
+],
+"source": {
+"kind": "runtime-context",
+"form": "snapshot",
+"sections": [
+{
+"name": "sandbox:policy",
+"text": "Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations."
+},
+{
+"name": "approval:policy",
+"text": "Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set `sandbox_permissions`)."
+}
+]
+},
+"role": "user",
+"id": "e3886384-3788-4184-9ef8-882493d40fca"
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 1,
+"reason": {
+"kind": "completed"
+}
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_4w5JIc5h2Eih"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 2
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_4w5JIc5h2Eih",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 2,
+"reason": {
+"kind": "completed"
+}
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_0gwIZKrEv_Jn"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 3
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_0gwIZKrEv_Jn",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 3,
+"reason": {
+"kind": "completed"
+}
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_0Y9AXzuPUpQl"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 4
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_0Y9AXzuPUpQl",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 4,
+"reason": {
+"kind": "completed"
+}
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_3y_celWt4MVU"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 5
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_3y_celWt4MVU",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 5,
+"reason": null
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_XBGRu2ilQs05"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 6
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_XBGRu2ilQs05",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 6,
+"reason": {
+"kind": "completed"
+}
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"inserted": [
+{
+"id": "core-t_uzYrojBN13PW"
+}
+]
+}
+},
+{
+"type": "turn/start",
+"data": {
+"turn": 7
+}
+},
+{
+"type": "agent/inbox/spliced",
+"data": {
+"target": "next-turn",
+"start": 0,
+"removedCount": 1,
+"inserted": []
+}
+},
+{
+"type": "user/message",
+"data": {
+"id": "core-t_uzYrojBN13PW",
+"role": "user",
+"source": {
+"kind": "user"
+},
+"content": [
+{
+"type": "text",
+"text": "(prompt)"
+}
+]
+}
+},
+{
+"type": "turn/end",
+"data": {
+"turn": 7,
+"reason": {
+"kind": "completed"
+}
+}
+}
+]

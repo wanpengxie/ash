@@ -11,7 +11,7 @@ object Capabilities {
 
     /** Every module contributes its list here (system, screen/accessibility, shell/Shizuku, virtual screen). */
     val all: List<Capability> by lazy {
-        SystemCapabilities.list + ScreenCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list
+        SystemCapabilities.list + ScreenCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list
     }
 
     fun manifest(ctx: Context): JSONObject {
@@ -21,7 +21,7 @@ object Capabilities {
             if (!ok) continue
             val policy = CapabilityPolicies.require(c.name)
             caps.put(JSONObject().put("name", c.name).put("description", c.description).put("input_schema", c.schema)
-                .put("risk", policy.risk).put("label", policy.label).apply { if (c.confirm) put("confirm", true) })
+                .put("risk", policy.risk).put("effect", policy.effect).put("label", policy.label).apply { if (c.confirm) put("confirm", true) })
         }
         return JSONObject().put("name", deviceName()).put("kind", "phone").put("capabilities", caps)
     }

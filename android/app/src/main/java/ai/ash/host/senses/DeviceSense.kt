@@ -40,9 +40,34 @@ class DeviceSense(private val ctx: Context) {
         registered = true
     }
 
-    fun appOpen() { serial.submit { screen("app_open", prefs.getLong("app_left", 0)) } }
+    /** Opening the app often cold-starts the core, so the event waits until the core can take it. */
+    fun appOpen() {
+        serial.submit {
+            val now = System.currentTimeMillis()
+            val away = SensePolicy.awayMs(now, prefs.getLong("app_left", 0))
+            // A permission dialog during a cold start pauses and resumes the app; that must not erase the long absence.
+            val pending = prefs.getString("open_pending", null)?.takeIf { now - prefs.getLong("open_at", 0) <= SensePolicy.OPEN_PENDING_MS }
+            if (pending == null) prefs.edit().putString("open_pending", UUID.randomUUID().toString()).putLong("open_at", now).putLong("open_away_ms", away).commit()
+            else prefs.edit().putLong("open_away_ms", maxOf(away, prefs.getLong("open_away_ms", 0))).commit()
+            appOpenPending()
+        }
+    }
     fun appLeft() { serial.submit { prefs.edit().putLong("app_left", System.currentTimeMillis()).apply() } }
-    fun retryBattery() {
+    fun retryPending() {
+        serial.submit { appOpenPending() }
+        retryBattery()
+    }
+    private fun appOpenPending() {
+        val id = prefs.getString("open_pending", null) ?: return
+        // A stale open (the core never came up for minutes) no longer describes this visit.
+        if (System.currentTimeMillis() - prefs.getLong("open_at", 0) > SensePolicy.OPEN_PENDING_MS) {
+            prefs.edit().remove("open_pending").remove("open_at").remove("open_away_ms").commit()
+            return
+        }
+        if (send("sense.screen", JSONObject().put("state", "app_open").put("away_ms", prefs.getLong("open_away_ms", 0)), id))
+            prefs.edit().remove("open_pending").remove("open_at").remove("open_away_ms").commit()
+    }
+    private fun retryBattery() {
         val intent = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)

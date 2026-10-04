@@ -2,6 +2,7 @@ import type { CallResult } from "../../sdk/src/api";
 import type { HostManifestV2 } from "../../sdk/src/host";
 import { hostPresentationErrors, type HostPresentationV2 } from "../../sdk/src/host";
 import { DeviceMember } from "./members/device";
+import { isWordEffect } from "../../sdk/src/words";
 import type { Signer } from "./gateway/link";
 import type { DeviceCapability } from "./world/router";
 import type { WorldMembers } from "./world/member";
@@ -25,7 +26,8 @@ export class HostDeviceLink {
     for (const capability of manifest.capabilities) {
       if (!capability || typeof capability.name !== "string" || !capability.name.trim() || typeof capability.description !== "string" || !capability.description.trim() ||
         typeof capability.label !== "string" || !capability.label.trim() || !["none", "outward", "structure"].includes(capability.risk) ||
-        !capability.input_schema || typeof capability.input_schema !== "object" || Array.isArray(capability.input_schema)) throw new TypeError("host capability lacks required v2 metadata");
+        !capability.input_schema || typeof capability.input_schema !== "object" || Array.isArray(capability.input_schema) ||
+        (capability.effect !== undefined && !isWordEffect(capability.effect))) throw new TypeError("host capability lacks required v2 metadata");
     }
     return structuredClone(manifest);
   }
@@ -47,7 +49,7 @@ export class HostDeviceLink {
   device(): DeviceMember {
     if (this.closed) throw new Error("device host is closed");
     if (this.member) return this.member;
-    const capabilities: DeviceCapability[] = this.currentManifest.capabilities.map((item) => ({ name: item.name, description: item.description, input_schema: item.input_schema, risk: item.risk, label: item.label }));
+    const capabilities: DeviceCapability[] = this.currentManifest.capabilities.map((item) => ({ name: item.name, description: item.description, input_schema: item.input_schema, risk: item.risk, ...(item.effect ? { effect: item.effect } : {}), label: item.label }));
     const member = new DeviceMember("device:phone", this.currentManifest.name, capabilities, async (message, context) => {
       try {
         const result = await this.request("POST", "/call", { capability: message.word, args: message.body, caller: message.from }, 180_000, context.signal) as CallResult;

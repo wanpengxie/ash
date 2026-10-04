@@ -1,10 +1,11 @@
-import type { AskOption, CallResult, JsonSchema, SendRequestV2 } from "./api";
+import type { AskOption, CallResult, JsonSchema, SendRequestV2, WordEffect } from "./api";
 
 export interface HostCapabilityV2 {
   name: string;
   description: string;
   input_schema: JsonSchema;
   risk: "none" | "outward" | "structure";
+  effect?: WordEffect;
   label: string;
   confirm?: boolean;
 }

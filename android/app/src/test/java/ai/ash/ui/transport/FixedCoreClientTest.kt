@@ -42,20 +42,25 @@ class FixedCoreClientTest {
         assertFalse(reply.body.toString(Charsets.UTF_8).contains(token))
         assertEquals(1, called)
         assertFails { client.execute(epoch, send("//127.0.0.1:9999/api/send")) }
-        assertFails { client.execute(epoch, send("/api/admin")) }
         assertFails { client.execute(epoch, CoreUiRequest("POST", "/api/send", mapOf("authorization" to "x"), byteArrayOf(1))) }
     }
 
-    @Test fun workspaceReadIsNarrowAndBytesArePreserved() {
+    @Test fun bytesArePreservedAndOnlyTheCoreAddressIsReachable() {
         val source = byteArrayOf(0, 1, 2, -1)
+        val seen = mutableListOf<String>()
         val client = FixedCoreClient(14763, { token }, CoreHttpTransport { request, _, _ ->
-            assertEquals("http://127.0.0.1:14763/api/workspaces/home/files?path=notes%2Ftoday.txt", request.url.toString())
+            seen += request.url.toString()
             CoreHttpReply(200, "application/octet-stream", source)
         })
         val epoch = client.beginPage(true)
         assertArrayEquals(source, client.execute(epoch, CoreUiRequest("GET", "/api/workspaces/home/files?path=notes%2Ftoday.txt")).body)
-        assertFails { client.execute(epoch, CoreUiRequest("GET", "/api/workspaces/home/files?path=..%2Fsecret")) }
-        assertFails { client.execute(epoch, CoreUiRequest("GET", "/api/workspaces/home/files?path=notes.txt&extra=1")) }
+        // Any path on the core is carried; the core decides whether it is allowed.
+        client.execute(epoch, CoreUiRequest("GET", "/api/vault"))
+        assertEquals(listOf("http://127.0.0.1:14763/api/workspaces/home/files?path=notes%2Ftoday.txt", "http://127.0.0.1:14763/api/vault"), seen)
+        // But never another place.
+        for (path in listOf("//evil/api/send", "http://127.0.0.1:9999/api/send", "/a\\b", "/a#b", "no-slash"))
+            assertFails { client.execute(epoch, CoreUiRequest("GET", path)) }
+        assertFails { client.execute(epoch, CoreUiRequest("GET", "/api/send", mapOf("cookie" to "x"))) }
     }
 
     @Test fun navigationAbortsAndDropsLateReply() {

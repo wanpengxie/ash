@@ -13,7 +13,7 @@ import ai.ash.BuildConfig
 
 /**
  * The resident part of the app: a foreground service that
- *   1. installs/updates the payload when the APK carries a new one,
+ *   1. installs/updates the payload and the agent container when the APK carries new ones,
  *   2. serves the host bridge (the phone's capabilities, notifications, Keystore),
  *   3. keeps exactly one ash core process running (restart with backoff, stop on request).
  * The UI is optional: after boot or an update nothing needs to be opened for the agent to work.
@@ -60,6 +60,7 @@ class CoreService : Service() {
             }
             ACTION_CALENDAR_ALARM, ACTION_CALENDAR_REFRESH -> calendarSense?.refresh()
             ACTION_APP_OPEN -> {
+                Present.clearChat(this)
                 deviceSense?.appOpen()
                 calendarSense?.refresh()
             }
@@ -97,6 +98,21 @@ class CoreService : Service() {
                     }
                     installProgress = 100
                 }
+                if (ContainerInstaller.needsWork(this, paths)) {
+                    core.stop()
+                    state = "preparing"
+                    installProgress = -1
+                    Notifications.updateService(this, "正在准备 Ash 的工作环境…")
+                    var shown = -1
+                    ContainerInstaller.ensure(this, paths) { pct ->
+                        installProgress = pct
+                        if (pct >= 0 && pct / 5 != shown) {
+                            shown = pct / 5
+                            Notifications.updateService(this, "正在准备 Ash 的工作环境… $pct%")
+                        }
+                    }
+                    installProgress = 100
+                }
 
                 val pid = core.pid()
                 if (secrets.stopped) {
@@ -125,7 +141,7 @@ class CoreService : Service() {
                     unhealthySince = 0L
                     if (state != "running") Notifications.updateService(this, "在线")
                     if (state != "running") {
-                        deviceSense?.retryBattery()
+                        deviceSense?.retryPending()
                         calendarSense?.refresh()
                     }
                     state = "running"
@@ -163,7 +179,7 @@ class CoreService : Service() {
         const val ACTION_APP_OPEN = "ai.ash.APP_OPEN"
         const val ACTION_APP_LEFT = "ai.ash.APP_LEFT"
 
-        /** "starting" | "installing" | "running" | "stopped" | "error: …" — for the UI. */
+        /** "starting" | "installing" | "preparing" | "running" | "stopped" | "error: …" — for the UI. */
         @Volatile var state: String = "stopped"
         @Volatile var installProgress: Int = -1
 

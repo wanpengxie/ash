@@ -1,47 +1,72 @@
 package ai.ash.host.cap
 
-/** Explicit owner-facing classification for every capability exposed by the phone. */
-data class CapabilityPolicy(val risk: String, val label: String)
+/**
+ * Explicit owner-facing classification for every capability exposed by the phone.
+ *
+ * `effect` says what the word does to the world, for the gate: "read" (only looks), "act" (operates
+ * the phone or an app as the owner would), "write" (changes stored data or settings), "send"
+ * (speaks to other people), "execute" (runs arbitrary code), "structure" (changes ash itself).
+ */
+data class CapabilityPolicy(val risk: String, val effect: String, val label: String) {
+    init {
+        require(effect in EFFECTS) { "unknown effect $effect" }
+    }
+
+    companion object {
+        val EFFECTS = setOf("read", "act", "write", "send", "execute", "structure")
+    }
+}
 
 object CapabilityPolicies {
     val byName: Map<String, CapabilityPolicy> = mapOf(
-        "clipboard.get" to CapabilityPolicy("none", "Reading the clipboard"),
-        "clipboard.set" to CapabilityPolicy("structure", "Changing the clipboard"),
-        "device.status" to CapabilityPolicy("none", "Checking phone status"),
-        "apps.list" to CapabilityPolicy("none", "Listing apps"),
-        "apps.open" to CapabilityPolicy("outward", "Opening an app"),
-        "apps.info" to CapabilityPolicy("none", "Checking an app"),
-        "apps.usage" to CapabilityPolicy("none", "Checking app usage"),
-        "settings.open" to CapabilityPolicy("outward", "Opening settings"),
-        "settings.get" to CapabilityPolicy("none", "Reading settings"),
-        "settings.put" to CapabilityPolicy("structure", "Changing settings"),
-        "intent.view" to CapabilityPolicy("outward", "Opening a link or file"),
-        "input.key" to CapabilityPolicy("outward", "Pressing a phone key"),
-        "screen.read" to CapabilityPolicy("none", "Reading the screen"),
-        "screen.see" to CapabilityPolicy("none", "Looking at the screen"),
-        "screen.screenshot" to CapabilityPolicy("none", "Taking a screenshot"),
-        "screen.tap" to CapabilityPolicy("outward", "Tapping the screen"),
-        "screen.type" to CapabilityPolicy("outward", "Typing on the screen"),
-        "screen.scroll" to CapabilityPolicy("outward", "Scrolling the screen"),
-        "screen.swipe" to CapabilityPolicy("outward", "Swiping the screen"),
-        "screen.hold" to CapabilityPolicy("outward", "Holding the screen"),
-        "screen.touch" to CapabilityPolicy("outward", "Touching the screen"),
-        "screen.gesture" to CapabilityPolicy("outward", "Using a screen gesture"),
-        "screen.touch_status" to CapabilityPolicy("none", "Checking screen touch state"),
-        "screen.global_action" to CapabilityPolicy("outward", "Controlling the phone screen"),
-        "shell.run" to CapabilityPolicy("structure", "Running a privileged command"),
-        "shell.status" to CapabilityPolicy("none", "Checking privileged access"),
-        "vscreen.create" to CapabilityPolicy("structure", "Creating a virtual screen"),
-        "vscreen.status" to CapabilityPolicy("none", "Checking the virtual screen"),
-        "vscreen.launch" to CapabilityPolicy("outward", "Opening an app virtually"),
-        "vscreen.see" to CapabilityPolicy("none", "Looking at the virtual screen"),
-        "vscreen.tap" to CapabilityPolicy("outward", "Tapping the virtual screen"),
-        "vscreen.swipe" to CapabilityPolicy("outward", "Swiping the virtual screen"),
-        "vscreen.key" to CapabilityPolicy("outward", "Pressing a virtual key"),
-        "vscreen.type" to CapabilityPolicy("outward", "Typing on the virtual screen"),
-        "vscreen.close" to CapabilityPolicy("structure", "Closing the virtual screen"),
-        "calendar.search" to CapabilityPolicy("none", "Checking your calendar"),
-        "calendar.create" to CapabilityPolicy("outward", "Adding a calendar event"),
+        "clipboard.get" to CapabilityPolicy("none", "read", "读剪贴板"),
+        "clipboard.set" to CapabilityPolicy("structure", "act", "改剪贴板"),
+        "device.status" to CapabilityPolicy("none", "read", "看手机状态"),
+        "apps.list" to CapabilityPolicy("none", "read", "看装了哪些应用"),
+        "apps.open" to CapabilityPolicy("outward", "act", "打开应用"),
+        "apps.info" to CapabilityPolicy("none", "read", "查看应用信息"),
+        "apps.usage" to CapabilityPolicy("none", "read", "看应用使用情况"),
+        "settings.open" to CapabilityPolicy("outward", "act", "打开设置"),
+        "settings.get" to CapabilityPolicy("none", "read", "读系统设置"),
+        "settings.put" to CapabilityPolicy("structure", "write", "改系统设置"),
+        "intent.view" to CapabilityPolicy("outward", "act", "打开链接或文件"),
+        "input.key" to CapabilityPolicy("outward", "act", "按手机按键"),
+        "screen.read" to CapabilityPolicy("none", "read", "读屏幕内容"),
+        "screen.see" to CapabilityPolicy("none", "read", "看屏幕"),
+        "screen.screenshot" to CapabilityPolicy("none", "read", "截屏"),
+        "screen.tap" to CapabilityPolicy("outward", "act", "点屏幕"),
+        "screen.type" to CapabilityPolicy("outward", "act", "在屏幕上输入"),
+        "screen.scroll" to CapabilityPolicy("outward", "act", "滚动屏幕"),
+        "screen.swipe" to CapabilityPolicy("outward", "act", "滑动屏幕"),
+        "screen.hold" to CapabilityPolicy("outward", "act", "长按屏幕"),
+        "screen.touch" to CapabilityPolicy("outward", "act", "触摸屏幕"),
+        "screen.gesture" to CapabilityPolicy("outward", "act", "做屏幕手势"),
+        "screen.touch_status" to CapabilityPolicy("none", "read", "看触控状态"),
+        "screen.global_action" to CapabilityPolicy("outward", "act", "操作手机屏幕"),
+        "shell.run" to CapabilityPolicy("structure", "execute", "在手机上执行命令"),
+        "shell.status" to CapabilityPolicy("none", "read", "看命令权限"),
+        "vscreen.create" to CapabilityPolicy("structure", "act", "创建虚拟屏"),
+        "vscreen.status" to CapabilityPolicy("none", "read", "看虚拟屏状态"),
+        "vscreen.launch" to CapabilityPolicy("outward", "act", "在虚拟屏里打开应用"),
+        "vscreen.see" to CapabilityPolicy("none", "read", "看虚拟屏"),
+        "vscreen.tap" to CapabilityPolicy("outward", "act", "点虚拟屏"),
+        "vscreen.swipe" to CapabilityPolicy("outward", "act", "滑动虚拟屏"),
+        "vscreen.key" to CapabilityPolicy("outward", "act", "在虚拟屏按键"),
+        "vscreen.type" to CapabilityPolicy("outward", "act", "在虚拟屏输入"),
+        "vscreen.close" to CapabilityPolicy("structure", "act", "关闭虚拟屏"),
+        "calendar.search" to CapabilityPolicy("none", "read", "看日历"),
+        "calendar.create" to CapabilityPolicy("outward", "write", "添加日历事件"),
+        "browser.open" to CapabilityPolicy("none", "read", "打开网页"),
+        "browser.read" to CapabilityPolicy("none", "read", "读网页"),
+        "browser.click" to CapabilityPolicy("outward", "act", "在网页上点击"),
+        "browser.type" to CapabilityPolicy("outward", "act", "在网页上输入"),
+        "browser.scroll" to CapabilityPolicy("none", "read", "滚动网页"),
+        "browser.back" to CapabilityPolicy("none", "read", "回到上一页"),
+        "browser.screenshot" to CapabilityPolicy("none", "read", "给网页截图"),
+        "browser.show" to CapabilityPolicy("none", "read", "请你看一下浏览器"),
+        "browser.close" to CapabilityPolicy("none", "read", "关闭浏览器"),
+        "browser.spaces" to CapabilityPolicy("none", "read", "看打开了哪些网页"),
+        "browser.run" to CapabilityPolicy("outward", "act", "在浏览器里连续操作"),
     )
 
     fun require(name: String): CapabilityPolicy = requireNotNull(byName[name]) { "missing capability policy: $name" }

@@ -20,6 +20,32 @@ val copyPayload by tasks.registering(Copy::class) {
     }
 }
 
+// The agent container (arm64 Ubuntu + node + DSH + proot) from `npm run build:container`
+// (repo root build/container): shipped as assets/container/{ash-container.tgz,VERSION}
+// (not .tar.gz: the asset merger would gunzip anything named *.gz).
+val containerDir = rootProject.file("../build/container")
+val containerAssets = layout.buildDirectory.dir("generated/container-assets")
+
+// A plain task, not part of the Copy: a Copy with nothing to copy is skipped as NO-SOURCE.
+val checkContainer by tasks.registering {
+    doLast {
+        val version = containerDir.resolve("VERSION")
+        if (!version.exists()) throw GradleException("no container: run `npm run build:container` at the repo root first")
+        val v = version.readText().trim()
+        val all = containerDir.listFiles { f -> f.name.matches(Regex("ash-container-.*\\.tar\\.gz")) }.orEmpty().map { it.name }
+        if (all != listOf("ash-container-$v.tar.gz")) {
+            throw GradleException("build/container/VERSION is $v but the archives are $all: run `npm run build:container` again")
+        }
+    }
+}
+
+val copyContainer by tasks.registering(Sync::class) {
+    dependsOn(checkContainer)
+    from(containerDir) { include("ash-container-*.tar.gz", "VERSION") }
+    into(containerAssets.map { it.dir("container") })
+    rename("ash-container-.*\\.tar\\.gz", "ash-container.tgz")
+}
+
 android {
     namespace = "ai.ash"
     compileSdk = 35
@@ -40,6 +66,8 @@ android {
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild { ndkBuild { path = file("src/main/jni/Android.mk") } }
 
     signingConfigs {
         create("release") {
@@ -86,11 +114,13 @@ android {
     }
 
     sourceSets["main"].assets.srcDir(payloadAssets)
+    sourceSets["main"].assets.srcDir(containerAssets)
     buildFeatures { buildConfig = true }
 
     androidResources {
-        // The payload is extracted with java.util.zip: store it, do not compress it twice.
-        noCompress += listOf("zip")
+        // The payload is extracted with java.util.zip and the container with tar -z: store both,
+        // do not compress them twice (stored assets also report their length for progress).
+        noCompress += listOf("zip", "tgz")
     }
 
     compileOptions {
@@ -104,6 +134,8 @@ android {
 }
 
 tasks.named("preBuild") { dependsOn(copyPayload) }
+// Only packaging needs the container (unit tests do not merge assets, so they run without it).
+tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer) }
 
 dependencies {
     implementation(files("libs/shizuku-api.aar", "libs/shizuku-provider.aar", "libs/shizuku-aidl.aar"))

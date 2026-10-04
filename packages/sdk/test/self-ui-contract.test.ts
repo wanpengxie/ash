@@ -9,13 +9,13 @@ test("managed editor writes require exact hash or explicit new-file null", () =>
   const plan = wordContract("service:self", "apply_plan")!;
   const sha = "a".repeat(64);
   assert.equal(matchesSchema(read.input_schema!, { path: "SOUL.md" }), true);
-  assert.equal(matchesSchema(read.input_schema!, { path: "../SOUL.md" }), false);
+  // A foreign path passes the schema so that service:self can refuse it as forbidden (F-S22).
+  assert.equal(matchesSchema(read.input_schema!, { path: "../SOUL.md" }), true);
   assert.equal(matchesSchema(write.input_schema!, { path: "USER.md", content: "text", why: "owner edit", expected_hash: sha }), true);
   assert.equal(matchesSchema(write.input_schema!, { path: "USER.md", content: "text", why: "owner edit", expected_hash: null }), true);
   for (const body of [
     { path: "USER.md", content: "text", why: "owner edit" },
     { path: "USER.md", content: "text", why: "owner edit", expected_hash: "wrong" },
-    { path: "../USER.md", content: "text", why: "owner edit", expected_hash: sha },
   ]) assert.equal(matchesSchema(write.input_schema!, body), false);
   assert.equal(matchesSchema(plan.input_schema!, { path: "MEMORY.md", expected_hash: sha, edits: [{ op: "replace", start: 1, end: 1, guard: "old", text: "new", reason: "correct", evidence: ["m1"] }] }), true);
   assert.equal(matchesSchema(plan.input_schema!, { path: "MEMORY.md", edits: [] }), false);

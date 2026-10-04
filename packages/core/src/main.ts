@@ -1,14 +1,26 @@
 // Production ash-api/2 entrypoint. The retired event writer is test-only.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAuthScopeKey } from "./auth-scope";
+import { protectProcessMemory } from "./harden";
 import { DshHost } from "../../dsh-binding/src/host";
 import { DshMindRunner } from "../../dsh-binding/src/mind";
 import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { dshWorkerModel } from "../../dsh-binding/src/workers";
+import { ModelEgress } from "../../agent-container/src/egress";
+import { ContainerHost } from "../../agent-container/src/host";
+import { DEFAULT_MODEL, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
+import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
+import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
+import { AgentMcpServer, TOOL_NAMES, type AgentBinding, type AgentPolicy } from "./agent-mcp/server";
+import { AgentSystem, type AgentRuntime } from "./agent-system/system";
+import { agentName, resolveAgents, wordAllowed, type AgentDeclaration, type ConfiguredAgent } from "./agents";
+import { AGENT_RULES } from "./workers/rules.generated";
+import type { Message } from "../../sdk/src/api";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
@@ -28,7 +40,11 @@ import { ReflexMember } from "./members/reflex";
 import { JevReflexClient } from "./members/reflex-jev";
 import { createSelfMember, type SelfMember } from "./members/self";
 import { SensesMember } from "./members/senses";
+import { CostMember, type UsageRecord } from "./members/cost";
+import { VaultMember, VaultStore } from "./members/vault";
+import { deepseekReviewer } from "./review/reviewer";
 import { WorkMember } from "./members/work";
+import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
 import { EchoTurnRunner } from "./runtimes/echo";
 import { EdgeRouter, startEdgeServer, type EdgeTokens } from "./server";
@@ -36,6 +52,7 @@ import { Ledger } from "./world/ledger";
 import { WorldMembers } from "./world/member";
 import { WorldRouter } from "./world/router";
 import { registerWorkerMembers } from "./workers/llm";
+import { estimateWorkerCost } from "./workers/cost";
 
 export interface Config {
   role?: "owner" | "client";
@@ -44,8 +61,11 @@ export interface Config {
   listen?: string;
   stateDir: string;
   workspaces?: Record<string, string>;
-  agents?: { id: "agent:main"; name?: string; runtime: "echo" | "dsh" }[];
-  dsh?: { root: string; home?: string; skillsRoot?: string; env?: Record<string, string> };
+  /** The main agent (agent:main, with its runtime) and any other declared agents; the keeper is added by default in the container. */
+  agents?: (ConfiguredAgent & { runtime?: "echo" | "dsh" | "container" })[];
+  /** The agent runtime in its Linux container (runtime "container"); ash stays outside. */
+  container?: ContainerConfig;
+  dsh?: { root: string; home?: string; skillsRoot?: string; costRoot?: string; vaultRoot?: string; env?: Record<string, string> };
   host?: HostConnection & { coreToken?: string };
   gateway?: { url: string };
   mcp?: Record<string, McpServerSpec>;
@@ -78,15 +98,52 @@ export interface Running {
   edge: EdgeRouter;
   link: OwnerLink | null;
   dsh: DshHost | null;
+  container: ContainerHost | null;
+  /** Every agent member, the main one first. */
+  agents: () => ReturnType<typeof createAgentMember>[];
   close(): Promise<void>;
 }
 
 /** No old Store/Core is instantiated here; Ledger.open owns the one-way migration. */
+/** One line per device for the agent's turn context: online state and capability names, bounded. */
+function deviceSummary(members: WorldMembers): string {
+  const summary = members.describe("agent") as { members?: { id: string; kind?: string; name?: string; online?: boolean; words?: (string | { word: string })[] }[] };
+  return (summary.members ?? []).filter((member) => member.id.startsWith("device:")).map((member) => {
+    const words = (member.words ?? []).map((word) => typeof word === "string" ? word : word.word).join(", ");
+    return `- ${member.id} (${member.name ?? member.id}, ${member.online ? "online" : "offline"}): ${words || "no capabilities"}`;
+  }).join("\n").slice(0, 2000);
+}
+
 export async function startOwner(config: Config): Promise<Running> {
-  const agents = config.agents ?? [{ id: "agent:main" as const, runtime: "dsh" as const }];
-  if (agents.length !== 1 || agents[0].id !== "agent:main") throw new Error("v2 requires one real agent:main member");
-  if (agents[0].runtime !== "echo" && agents[0].runtime !== "dsh") throw new Error("unsupported agent runtime");
+  // Before any secret is read: the agent container must not be able to read this process's memory.
+  protectProcessMemory(log);
+  // The phone hands over the vault's seal key, unwrapped by Android Keystore; no child process inherits it.
+  const sealText = process.env.ASH_VAULT_SEAL_KEY;
+  delete process.env.ASH_VAULT_SEAL_KEY;
+  const vaultSealRequired = process.env.ASH_VAULT_SEAL_REQUIRED === "1";
+  delete process.env.ASH_VAULT_SEAL_REQUIRED;
+  const vaultSealKey = sealText ? Buffer.from(sealText, "base64url") : undefined;
+  const mainEntry = (config.agents ?? []).find((item) => item.id === "agent:main") ?? { id: "agent:main", runtime: "dsh" as const };
+  const agents = [{ ...mainEntry, runtime: mainEntry.runtime ?? "dsh" }];
+  if (agents[0].runtime !== "echo" && agents[0].runtime !== "dsh" && agents[0].runtime !== "container") throw new Error("unsupported agent runtime");
+  // Declared agents run in the container next to the main one; the in-process runtimes host only the main agent.
+  const declarations = resolveAgents(config.agents, agents[0].runtime === "container");
   if (!config.stateDir) throw new Error("stateDir is required");
+  if (agents[0].runtime === "container") {
+    if (!config.container?.root && !config.container?.direct) throw new Error("container runtime requires container.root");
+    // Persona and memory files live in the agent's own workspace, where the agent reads them like any file.
+    const home = config.container.direct?.workspace ?? join(config.container.root, "ubuntu", "root", "work");
+    mkdirSync(home, { recursive: true });
+    // Once, on the first start in the container: bring the persona, memory and files over from the old home.
+    const previous = config.workspaces?.home;
+    const moved = join(config.stateDir, "container-home-migrated");
+    if (previous && previous !== home && existsSync(previous) && !existsSync(moved)) {
+      cpSync(previous, home, { recursive: true, force: false, errorOnExist: false, verbatimSymlinks: true });
+      mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(moved, `${previous}\n`, { mode: 0o600 });
+    }
+    config = { ...config, workspaces: { ...(config.workspaces ?? {}), home } };
+  }
   if (agents[0].runtime === "dsh" && (!config.dsh?.root || !config.workspaces?.home || !existsSync(join(config.dsh.root, "package.json")) || !existsSync(config.workspaces.home))) {
     throw new Error("DSH runtime requires an installed root and existing home workspace; no database was opened");
   }
@@ -96,6 +153,8 @@ export async function startOwner(config: Config): Promise<Running> {
   // Probe before migrating: old host protocols must fail closed without modifying the DB.
   const hostLink = config.host ? await HostDeviceLink.probe(config.host) : null;
   const worldConfig = resolveWorldConfigV2(config as unknown as Record<string, unknown>);
+  // Filled once the edge exists; the first turn cannot run before it.
+  let screensNow = () => "";
   const delivery = worldConfig.delivery;
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const tokens = loadTokens(config);
@@ -107,9 +166,15 @@ export async function startOwner(config: Config): Promise<Running> {
   let post: PostMember | null = null;
   let reflex: ReflexMember | null = null;
   let dsh: DshHost | null = null;
+  let container: ContainerHost | null = null;
+  let egress: ModelEgress | null = null;
+  let agentTools: AgentMcpServer | null = null;
+  let agentSystem: AgentSystem | null = null;
+  let provisioning: ChildProcess | null = null;
   let self: SelfMember | null = null;
   let work: WorkMember | null = null;
   let senses: SensesMember | null = null;
+  let cost: CostMember | null = null;
   let stopTour: (() => void) | null = null;
   let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
@@ -121,9 +186,10 @@ export async function startOwner(config: Config): Promise<Running> {
       // Current token membership, not a stale snapshot permission, decides recovery.
       if (caller.transportPrincipal?.startsWith("token:")) return Object.entries(tokens.api).some(([key, member]) =>
         member === caller.member && `token:${createHash("sha256").update(key).digest("hex")}` === caller.transportPrincipal);
-      if (caller.transportPrincipal === "agent:main" && caller.member === "agent:main") return true;
+      if (caller.transportPrincipal === caller.member && agentSystem?.declaration(caller.member) && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
+      if (caller.transportPrincipal === "service:cost" && caller.member === "service:cost" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:work" && caller.member === "service:work" && caller.local && !caller.remote)
         return Boolean(work?.ownsRequestTurn(request));
@@ -135,23 +201,124 @@ export async function startOwner(config: Config): Promise<Running> {
     });
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
-    members.register(new GateMember(ledger, world, members));
+    members.register(new GateMember(ledger, world, members, { get: () => admin?.journal.approvalMode() ?? "auto", set: (mode) => admin!.journal.setApprovalMode(mode) }));
+    world.setMemberNames((id) => { try { return members.describe("owner", id).members[0]?.name; } catch { return undefined; } });
+    const vaultFile = join(config.stateDir, "vault.json");
+    let vaultStore: VaultStore;
+    if (vaultSealRequired) {
+      vaultStore = VaultStore.secure(vaultFile, Date.now, vaultSealKey);
+      if (!vaultStore.availability().available)
+        log("secure credential storage is unavailable; the vault was left untouched and credential changes are disabled");
+    } else try { vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey); }
+    catch (error) {
+      // Legacy non-Android launches did not require a seal. Preserve their recovery behavior; Android takes the secure
+      // branch above and never moves or replaces a vault when Keystore access fails.
+      if (!readFileSync(vaultFile, "utf8").includes('"sealed"')) throw error;
+      const aside = `${vaultFile}.unreadable-${Date.now()}`;
+      renameSync(vaultFile, aside);
+      log("the sealed vault could not be opened; it was moved aside and ash starts with an empty vault", aside);
+      vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey);
+    }
+    const vault = new VaultMember(vaultStore, world);
+    members.register(vault);
     world.enableDurableGate();
-    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, env: config.dsh!.env });
-    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world) : new EchoTurnRunner();
-    const mindRunner = dsh ? new DshMindRunner(dsh) : null;
+    // ---- Approval: an agent's non-read action is judged by one reviewer call (key from the vault, read per review);
+    // the owner's mode lives in the admin journal and is read on every decision. No key, an error or a timeout asks the owner.
+    // Each review's tokens join the usage page under their own scope.
+    const reviewUsage = new Set<(record: UsageRecord) => void>();
+    world.setReviewer(deepseekReviewer(() => vaultStore.get("DEEPSEEK_API_KEY"), { onUsage: (usage) => {
+      const record: UsageRecord = { at: Date.now() - usage.ms, ms: usage.ms, scope: "review", provider: "deepseek-official", model: usage.model,
+        input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: 0, ok: true };
+      for (const listener of reviewUsage) listener(record);
+    } }));
+    world.setApprovalMode(() => admin?.journal.approvalMode() ?? "auto");
+    // ---- end approval
+    const containerMode = agents[0].runtime === "container";
+    const live = agents[0].runtime !== "echo";
+    // Which part of ash a model call belongs to, for the usage page: whoever is running when it is made.
+    const running = { chat: 0, mind: 0, background: 0 };
+    const modelFile = join(config.stateDir, "container-model.json");
+    const containerModel = (): { provider: string; model: string } => {
+      try { if (existsSync(modelFile)) { const stored = JSON.parse(readFileSync(modelFile, "utf8")) as { provider?: unknown; model?: unknown };
+        if (typeof stored.provider === "string" && typeof stored.model === "string") return { provider: stored.provider, model: stored.model }; } } catch { /* fall back */ }
+      return config.container?.model ?? DEFAULT_MODEL;
+    };
+    let agentPolicy: ((item: AgentDeclaration) => AgentPolicy) | null = null;
+    let mainBinding: AgentBinding | null = null;
+    let mindBinding: AgentBinding | null = null;
+    const otherBindings = new Map<string, AgentBinding>();
+    if (containerMode) {
+      const containerConfig = config.container!;
+      egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream });
+      const egressBase = await egress.start();
+      container = new ContainerHost({ stateDir: config.stateDir, log,
+        launch: () => prepareLaunch({ ...containerConfig, model: containerModel() }, egressBase, config.stateDir) });
+      const resultRoot = join(config.workspaces!.home, ".ash", "results");
+      agentTools = new AgentMcpServer({ router: world, members, ledger, log,
+        resultArtifacts: { hostDir: resultRoot, toAgentPath: (path) => containerConfig.direct ? path : `/root/work/.ash/results/${basename(path)}` },
+        status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }),
+        confirm: ({ binding, turn, callId, title, detail, signal }) => world.requestAgentConfirmation({ member: binding.member,
+          sessionId: `session-${createHash("sha256").update(binding.label).digest("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5")}`,
+          turn, callId, title, detail, signal }) });
+      await agentTools.start();
+      const mainDeclaration = declarations.find((item) => item.id === "agent:main")!;
+      const policyOf = (item: AgentDeclaration) => ({ ...(item.tools ? { tools: item.tools } : {}), ...(item.words ? { words: (member: string, word: string) => wordAllowed(item, member, word) } : {}) });
+      mainBinding = agentTools.bind("agent:main", "main", () => null, policyOf(mainDeclaration));
+      mindBinding = agentTools.bind("agent:main", "mind", () => null, policyOf(mainDeclaration));
+      agentPolicy = policyOf;
+    }
+    if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
+    const keyMissing = () => !vaultStore.has("DEEPSEEK_API_KEY");
+    const containerRunner = container ? new ContainerTurnRunner({ host: container, binding: mainBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
+      mcp: () => ({ url: agentTools!.url, token: mainBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
+      devices: () => `${deviceSummary(members)}\n${screensNow()}`, onActive: (active) => { running.chat += active ? 1 : -1; } }) : null;
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`)
+      : containerRunner ?? new EchoTurnRunner();
+    const mindRunner = dsh ? new DshMindRunner(dsh) : container ? new ContainerMindRunner({ host: container, binding: mindBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
+      mcp: () => ({ url: agentTools!.url, token: mindBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope), onActive: (active) => { running.mind += active ? 1 : -1; } }) : null;
     agent = createAgentMember({ ledger, router: world, stateDir: join(config.stateDir, "agent-main"), runner, name: agents[0].name,
-      ...(dsh ? { mind: () => mind } : {}),
-      ...(dsh ? { managedSnapshot: async () => {
+      ...(live ? { mind: () => mind } : {}),
+      ...(live ? { managedSnapshot: async () => {
         if (!self) throw new Error("managed files unavailable");
         return self.promptSnapshot();
       } } : {}),
       isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
-    const jevKey = worldConfig.reflex.jev.key_credential === "jev"
-      ? process.env.OPENROUTER_API_KEY ?? process.env.TYPESAFE_API_KEY : undefined;
-    const jev = worldConfig.reflex.jev.url && jevKey
-      ? new JevReflexClient(worldConfig.reflex.jev.url, jevKey, worldConfig.reflex.timeout_ms) : undefined;
+    // ash's Agent system holds the declarations and brings each declared agent to life in the container: its own member,
+    // inbox and turns, session, tool credential, workspace and schedule.
+    const agentRuntime: AgentRuntime | null = container ? {
+      create: (declaration) => {
+        const item = declaration();
+        const binding = agentTools!.bind(item.id, agentName(item.id), () => null, agentPolicy!(item));
+        otherBindings.set(item.id, binding);
+        const runner = new ContainerTurnRunner({ host: container!, binding, router: world, keyMissing, stateDir: config.stateDir, log,
+          sessionKey: item.id, agentName: agentName(item.id),
+          context: () => { const current = declaration(); return `[${current.name}（${current.id}）的职责]\n${current.brief ?? current.summary}\n\n[Ash 的规则]\n${AGENT_RULES}`; },
+          mcp: () => ({ url: agentTools!.url, token: binding.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
+          onActive: (active) => { running.background += active ? 1 : -1; } });
+        return createAgentMember({ id: item.id, ledger, router: world, stateDir: join(config.stateDir, "agents", agentName(item.id)), runner, name: item.name,
+          isPaused: () => clock!.journal.isPaused() });
+      },
+      reopen: async (id) => { await container!.closeSession(id); },
+      dispose: async (id) => {
+        const binding = otherBindings.get(id);
+        if (binding) agentTools!.retire(binding);
+        otherBindings.delete(id);
+        await container!.closeSession(id, true);
+      },
+      apply: (item) => { const binding = otherBindings.get(item.id); if (binding) binding.policy = agentPolicy!(item); },
+    } : null;
+    agentSystem = new AgentSystem({ router: world, members, stateDir: config.stateDir, defaults: declarations, main: agent, runtime: agentRuntime,
+      toolNames: TOOL_NAMES, isPaused: () => clock!.journal.isPaused(), log });
+    members.register(agentSystem);
+    agentSystem.prepare();
+    // The JEV key lives in the vault and is read on each judgement, so saving or removing it needs no restart.
+    const jevRef = "OPENROUTER_API_KEY";
+    const jevUrl = worldConfig.reflex.jev.url;
+    const jev = jevUrl && worldConfig.reflex.jev.key_credential === "jev" ? {
+      available: () => vaultStore.has(jevRef),
+      judge: (state: Parameters<JevReflexClient["judge"]>[0]) => new JevReflexClient(jevUrl, vaultStore.get(jevRef) ?? "", worldConfig.reflex.timeout_ms).judge(state),
+    } : undefined;
     reflex = new ReflexMember(world, () => agent!.inbox.activeTurn()?.id ?? null, { jev,
       threshold: worldConfig.reflex.threshold,
       context: (message, turn) => {
@@ -168,16 +335,16 @@ export async function startOwner(config: Config): Promise<Running> {
       ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
     members.register(clock);
     work = new WorkMember({ ledger, router: world, isPaused: () => clock!.journal.isPaused(),
-      flows: dsh && config.workspaces?.home ? [memoryFlow(ledger, (run) => {
+      flows: live && config.workspaces?.home ? [memoryFlow(ledger, (run) => {
         try { work!.trigger("proactive", "event", `memory:${run}`); } catch { /* a suggestion cannot undo committed memory */ }
       }), proactiveFlow(ledger), heartbeatFlow(), openerFlow(ledger), tourFlow(ledger)] : [] });
     members.register(work);
-    if (dsh) senses = new SensesMember({ router: world, heartbeat: async () => (await self!.promptSnapshot()).heartbeat,
+    if (live) senses = new SensesMember({ router: world, heartbeat: async () => (await self!.promptSnapshot()).heartbeat,
       isPaused: () => clock!.journal.isPaused(),
       opener: (slot) => { try { work!.trigger("opener", "event", slot); } catch { /* no run while paused or active */ } },
       proactive: (slot) => { try { work!.trigger("proactive", "event", slot); } catch { /* no run while paused or active */ } } });
     if (senses) members.register(senses);
-    stopTour = dsh ? world.subscribe((message) => {
+    stopTour = live ? world.subscribe((message) => {
       if (message.from !== "agent:main" || message.to !== "person:owner" || message.kind !== "request" || message.word !== "say") return;
       try { work!.trigger("tour", "event", `reply:${createHash("sha256").update(message.id).digest("hex").slice(0, 32)}`); }
       catch { /* no duplicate daily hint */ }
@@ -186,7 +353,7 @@ export async function startOwner(config: Config): Promise<Running> {
       self = createSelfMember({ home: config.workspaces.home, stateDir: join(config.stateDir, "self"), ledger, router: world });
       members.register(self);
     }
-    if (dsh && self) stopFirstMeeting = world.subscribe((message) => {
+    if (live && self) stopFirstMeeting = world.subscribe((message) => {
       if (message.to !== "service:post" || message.word !== "visible" || message.kind !== "event" || !message.from.startsWith("screen:")) return;
       void (async () => {
         if ((await self!.promptSnapshot()).identity !== null) return;
@@ -196,7 +363,8 @@ export async function startOwner(config: Config): Promise<Running> {
       })().catch((error) => log("first meeting wake failed", error));
     });
     if (hostLink) members.registerDevice(hostLink.device());
-    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir) });
+    const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault });
+    screensNow = () => ownerScreensLine(edge.screens);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       gatewayState: () => link ? { configured: true, ...link.state() } : { configured: false },
@@ -205,11 +373,12 @@ export async function startOwner(config: Config): Promise<Running> {
         switch (body.op) {
           case "approve":
             await link.approve(body.request_id as string, body.permissions as Parameters<OwnerLink["approve"]>[1]);
-            void link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
+            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
             return { approved: true };
           case "reject": await link.reject(body.request_id as string); return { rejected: true };
+          case "ticket": return { ...(await link.ticket()) };
           case "revoke": await link.revoke(body.device as string);
-            void link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
+            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error)); // the next state read no longer lists it
             return { revoked: true };
           case "sync": await link.refreshDevices(); return { configured: true, ...link.state() };
           default: throw new Error("unsupported gateway operation");
@@ -220,6 +389,28 @@ export async function startOwner(config: Config): Promise<Running> {
         if (!selector) throw new Error("DSH model selection unavailable");
         await selector.saveSelection({ provider, model });
         return { provider, model, restart_required: true };
+      } } : {}),
+      ...(container ? { modelGet: () => containerModel(), modelSet: async (provider: string, model: string) => {
+        if (!catalogRates(provider, model) && provider !== "deepseek-official") throw new Error("unknown model");
+        writeFileSync(modelFile, JSON.stringify({ provider, model }), { mode: 0o600 });
+        // Live sessions switch now; new sessions start with it from the launch patch.
+        let applied = true;
+        for (const sessionId of container!.openSessions()) {
+          try { await container!.setModel(sessionId, provider, model); }
+          catch (error) { applied = false; log("model switch for", sessionId, "failed", error); }
+        }
+        return { provider, model, restart_required: !applied };
+      } } : {}),
+      ...(container ? { pluginsList: async () => container!.plugins({ op: "list" }), pluginsOp: async (body: Record<string, unknown>) => {
+        if (body.op === "enable" || body.op === "disable") {
+          if (body.name === "@deepseek-ai/dsh-base" || body.name === "@deepseek-ai/dsh-acp-app") throw new Error("this bundle is required");
+          if (body.name === "dsh-ash-control" || body.name === "ash-skills") throw new Error("ash's own plugins are required");
+        }
+        const result = await container!.plugins({ op: body.op, name: body.name, id: body.id, enabled: body.enabled });
+        // A changed plugin set takes effect when the runtime starts again; restart it now, between turns if possible.
+        const restart = result?.application === "restart-required";
+        if (restart && !agent!.inbox.activeTurn()) await container!.restart();
+        return { ...result, restart_required: restart && Boolean(agent!.inbox.activeTurn()) };
       } } : {}),
       ...(dsh ? { pluginsList: async () => {
         const manager = dsh!.ctx?.get("pluginManager");
@@ -275,22 +466,61 @@ export async function startOwner(config: Config): Promise<Running> {
     post.prepareRecovery();
     admin.prepareRecovery();
     work.prepareRecovery();
+    // Install Python in the background once per container image; she can use apt herself for anything else.
+    const provision = () => {
+      const run = config.container ? provisionCommand(config.container) : null;
+      if (!run || provisioning) return;
+      const out = openSync(join(config.stateDir, "container-provision.log"), "a", 0o600);
+      provisioning = spawn(run.command, run.args, { env: run.env, stdio: ["ignore", out, out] });
+      provisioning.on("exit", (code) => { log("container provisioning finished", code); closeSync(out); provisioning = null; });
+      provisioning.on("error", (error) => log("container provisioning failed", error));
+    };
+    if (container) {
+      registerWorkerMembers(members, piWorkerModel(() => vaultStore.get("DEEPSEEK_API_KEY"), () => worldConfig.workers.model ?? containerModel()), ledger);
+      cost = new CostMember({ ledger, router: world, priceSource: "pi-ai-model-catalog", collector: { onUsage: (listener) => {
+        const stop = egress!.onUsage(listener);
+        reviewUsage.add(listener);
+        return () => { stop(); reviewUsage.delete(listener); };
+      }, balance: () => egress!.balance() },
+        price: async (record) => {
+          const rates = catalogRates(record.provider, record.model);
+          return rates ? estimateWorkerCost({ provider: record.provider, model: record.model, inputTokens: record.input, outputTokens: record.output,
+            cacheReadTokens: record.cacheRead, cacheWriteTokens: record.cacheWrite }, rates) : null;
+        } });
+      members.register(cost);
+      if (!self) throw new Error("managed files unavailable");
+      containerRunner!.primeManagedSnapshot(await self.promptSnapshot());
+      mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
+      // Start the runtime and open her session now, so the first message does not wait for it. A failure here is
+      // reported on that message instead of stopping ash.
+      void container.session("main", { url: agentTools!.url, token: mainBinding!.token })
+        .then(() => { log("agent runtime ready", JSON.stringify(container!.timings)); provision(); })
+        .catch((error) => { if (!container!.isClosed) log("agent runtime failed to start", error); });
+    }
     if (dsh) {
       const { startedTurns, completedTurns } = ledger.agentTurnHistory("agent:main");
       await dsh.boot();
     registerWorkerMembers(members, dshWorkerModel(dsh, () => worldConfig.workers.model), ledger);
+      dsh.attachVault(async (ref) => vaultStore.get(ref));
+      const collector = dsh.cost();
+      if (collector) { cost = new CostMember({ ledger, router: world, collector, price: async (record) => {
+        const rates = await dsh!.modelRates(record.provider, record.model);
+        return rates ? estimateWorkerCost({ provider: record.provider, model: record.model, inputTokens: record.input, outputTokens: record.output,
+          cacheReadTokens: record.cacheRead, cacheWriteTokens: record.cacheWrite }, rates) : null;
+      } }); members.register(cost); }
       if (!self) throw new Error("managed files unavailable");
       (runner as DshTurnRunner).primeManagedSnapshot(await self.promptSnapshot());
       await dsh.startMain({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], adapter: runner as DshTurnRunner,
         nativeMode: "audited", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });
       await dsh.startMind({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
-        protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], nativeMode: "disabled", adapter: mindRunner! });
+        protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], nativeMode: "disabled", adapter: mindRunner as DshMindRunner });
       mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
     }
     await world.recover();
     await post.start();
     await agent.start();
+    await agentSystem.start();
     await clock.start();
     work.start();
     server = await startEdgeServer(edge, host, port);
@@ -300,17 +530,17 @@ export async function startOwner(config: Config): Promise<Running> {
     writeFileSync(join(config.stateDir, "ui-url"), `${url}/?token=${ownerToken}\n`, { mode: 0o600 });
     hostLink?.startHealthChecks(members);
     link?.enable();
-    return { url, tokens, ledger, world, members, edge, link, dsh, async close() {
-      stopTour?.(); stopFirstMeeting?.(); senses?.close();
+    return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...(agentSystem?.agents() ?? [])], async close() {
+      stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
-    stopTour?.(); stopFirstMeeting?.(); senses?.close();
+    stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await mind?.close(); admin?.close(); await dsh?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

@@ -122,6 +122,7 @@ export function boot({ uiTransport } = {}) {
   const progressRoot = document.querySelector("#progress");
   const log = document.querySelector("#log");
   const pending = document.querySelector("#pending");
+  const pendingNote = document.querySelector(".pending-note");
   const suggestions = document.querySelector("#suggestions");
   const contextRoot = document.querySelector("#context");
   const context = composerContext(contextRoot, input);
@@ -177,6 +178,7 @@ export function boot({ uiTransport } = {}) {
       if (!net.localManagement) return false;
       if (!agentSheet.close()) return false;
       document.querySelector("#drawer").classList.add("open");
+      settings.opened();
       return true;
     }
     const tab = target === "turn" ? "activity" : target;
@@ -218,27 +220,53 @@ export function boot({ uiTransport } = {}) {
     onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
+      pendingNote.hidden = !count; // the storage notice matters only while something waits to be sent
       for (const item of outbox) if (item.in_reply_to && item.status === "rejected") optionPending.delete(item.in_reply_to);
       for (const item of outbox) if (item.in_reply_to && item.status !== "rejected") optionPending.add(item.in_reply_to);
       if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     },
   });
+  // Pages are counted in ledger records, and a page of background events can hold no conversation at all. Older pages
+  // otherwise load only by scrolling to the top, which a short page cannot do: keep reading back until the conversation
+  // fills the screen or the history ends.
+  let filling = false;
+  const fillScreen = async () => {
+    if (filling || !timeline) return;
+    filling = true;
+    try {
+      const log = document.querySelector("#log");
+      for (let pages = 0; pages < 20 && !timeline.exhausted && log && log.scrollHeight <= log.clientHeight + 80; pages++) {
+        if (!await timeline.older()) break;
+      }
+    } catch { /* the scroll handler can still load older pages */ }
+    finally { filling = false; }
+  };
   timeline = new Timeline(net, (view) => {
     render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     progress();
     agentSheet?.update();
+    setTimeout(fillScreen, 0);
   });
   identityName = new IdentityName(net, (name) => {
     presenceBar.setName(name);
     document.querySelector("#agentSheetHeader h2").textContent = name;
+    agentSheet?.setName(name);
+    settings?.setName(name);
   });
-  settings = new SettingsControls(document.querySelector("#panel"), net);
+  settings = new SettingsControls(document.querySelector("#panel"), net,
+    { onClose: () => document.querySelector("#drawer").classList.remove("open") });
   agentSheet = new AgentSheet(document.querySelector("#agentSheet"), net, { getView: () => timeline.view,
     getLedgerMessage: (id) => timeline.byId.get(id), onAskAbout: ({ turn, text: prefill }) => {
       if (!agentSheet.close()) return;
       context.askAbout({ turn, text: prefill });
+    }, onPrefill: (prefill) => {
+      if (!agentSheet.close()) return;
+      clearContext();
+      input.value = prefill;
+      input.focus();
     } });
   pending.textContent = net.queue.length ? `${net.queue.length} 条消息等待送达` : "";
+  pendingNote.hidden = !net.queue.length;
 
   async function visible() {
     if (document.hidden || !net.token) return;
@@ -274,6 +302,8 @@ export function boot({ uiTransport } = {}) {
   input.addEventListener("input", () => { void typing(); });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) { void visible(); void typing(); }
+    // Leaving the app must not keep deliveries in-app for the rest of the presence window.
+    else if (net.token) void net.sendEvent("service:post", "hidden");
   });
   const visibleTimer = setInterval(() => { if (!document.hidden) void visible(); }, 30_000);
   const typingTimer = setInterval(() => { if (!document.hidden) void typing(); }, 3_000);
@@ -297,7 +327,7 @@ export function boot({ uiTransport } = {}) {
   });
   document.querySelector("#menu").addEventListener("click", () => {
     if (!agentSheet.close()) return;
-    document.querySelector("#drawer").classList.toggle("open");
+    if (document.querySelector("#drawer").classList.toggle("open")) settings.opened();
   });
   window.addEventListener("pagehide", () => { clearInterval(progressTimer); net.stop(); });
   window.addEventListener("offline", () => agentSheet.reset());

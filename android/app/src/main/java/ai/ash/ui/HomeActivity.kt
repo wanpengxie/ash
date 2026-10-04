@@ -143,8 +143,8 @@ class HomeActivity : Activity() {
                         .put("endpoint", "http://127.0.0.1:${BuildConfig.CORE_PORT}").toString())
                     "cancel" -> requests.remove(input.optString("id"))?.cancel()
                     "request" -> handleNativeRequest(input, reply)
-                    "jev" -> handleJevSetting(input, reply)
                     "gateway_config" -> handleGatewaySetting(input, reply)
+                    "browser_logins" -> handleBrowserLogins(input, reply)
                 }
             }
         }
@@ -181,6 +181,7 @@ class HomeActivity : Activity() {
         val st = CoreService.state
         status.text = when {
             st == "installing" -> "正在安装运行环境… ${CoreService.installProgress.takeIf { it >= 0 }?.let { "$it%" } ?: ""}\n（首次安装或升级后需要一两分钟）"
+            st == "preparing" -> "正在准备 Ash 的工作环境… ${CoreService.installProgress.takeIf { it >= 0 }?.let { "$it%" } ?: ""}\n（首次安装或升级后需要一两分钟）"
             st == "stopped" -> "Ash 已停止"
             st.startsWith("error") -> "出错了：${st.removePrefix("error: ")}"
             else -> "正在启动…"
@@ -197,10 +198,12 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ai.ash.host.AppState.homeVisible = true
         CoreService.start(this, CoreService.ACTION_APP_OPEN)
     }
 
     override fun onPause() {
+        ai.ash.host.AppState.homeVisible = false
         CoreService.start(this, CoreService.ACTION_APP_LEFT)
         super.onPause()
     }
@@ -226,12 +229,9 @@ class HomeActivity : Activity() {
         val id = input.optString("id")
         if (!Regex("[1-9][0-9]{0,11}").matches(id) || requests.containsKey(id)) return
         val path = input.optString("path")
-        val operation = input.optString("operation")
         val method = input.optString("method")
-        if (operation !in setOf("send", "stream", "file") || path.length > 1024 ||
-            !(operation == "send" && method == "POST" && path == "/api/send" ||
-              operation == "stream" && method == "GET" && path.startsWith("/api/stream?") ||
-              operation == "file" && method == "GET" && path.startsWith("/api/workspaces/"))) return
+        // Which requests are allowed is the core's decision; the page can only reach the core's own address.
+        if (path.length > 1024 || method !in setOf("GET", "POST", "PUT", "DELETE")) return
         val headersJson = input.optJSONObject("headers") ?: JSONObject()
         val headers = headersJson.keys().asSequence().associateWith { headersJson.optString(it) }
         val rawBody = input.opt("body")
@@ -240,7 +240,7 @@ class HomeActivity : Activity() {
         val request = CoreUiRequest(method, path, headers, (rawBody as? String)?.toByteArray(Charsets.UTF_8))
         val cancellation = CoreCancellation()
         requests[id] = cancellation
-        val live = operation == "stream" && path.contains("follow=true")
+        val live = path.startsWith("/api/stream?") && path.contains("follow=true")
         fun respond(message: JSONObject) {
             ui.post { if (pageEpoch == epoch && !cancellation.cancelled) runCatching { reply.postMessage(message.put("id", id).toString()) } }
         }
@@ -258,29 +258,14 @@ class HomeActivity : Activity() {
         }.start()
     }
 
-    private fun handleJevSetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
+    private fun handleBrowserLogins(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
         val id = input.optString("id")
-        if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
+        if (!Regex("[1-9][0-9]{0,11}").matches(id) || input.optString("operation") != "clear") return
         val epoch = pageEpoch
-        val secrets = Secrets(this)
-        val operation = input.optString("operation")
-        val result = when (operation) {
-            "status" -> JSONObject().put("ok", true)
-            "save" -> {
-                val raw = input.opt("key")
-                val key = (raw as? String)?.trim()
-                if (key == null || key.length > 4096) JSONObject().put("ok", false)
-                else {
-                    val saved = secrets.saveJevApiKey(key)
-                    if (saved) CoreService.start(this, CoreService.ACTION_RESTART)
-                    JSONObject().put("ok", saved)
-                }
-            }
-            else -> return
-        }
-        result.put("type", "jev_result").put("id", id)
-            .put("configured", secrets.jevApiKey != null)
-        if (pageEpoch == epoch) reply.postMessage(result.toString())
+        Thread {
+            val ok = ai.ash.host.browser.BrowserSession.clearLogins(applicationContext)
+            runOnUiThread { if (pageEpoch == epoch) reply.postMessage(JSONObject().put("type", "browser_logins_result").put("id", id).put("ok", ok).toString()) }
+        }.start()
     }
 
     private fun handleGatewaySetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {

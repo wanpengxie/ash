@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,7 +50,7 @@ async function fixture(model: WorkerModel, afterApplied?: (run: string) => void)
     await wait(() => ledger.workRuns("memory")[0]?.state !== "running");
     return { id, state: ledger.workRuns("memory")[0].state };
   };
-  return { dir, home, ledger, self, work, errors, add, run, async close() { work.close(); await self.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); } };
+  return { dir, home, ledger, router, self, work, errors, add, run, async close() { work.close(); await self.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 test("memory flow verifies two claims, appends dated log, applies only approved edits, and then sees an empty window", async () => {
@@ -170,5 +171,74 @@ test("a failed plan can be retried without duplicating an already appended claim
     assert.equal((await f.run()).state, "done");
     assert.equal(readFileSync(logPath, "utf8"), firstLog);
     assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "Style: short answers\n");
+  } finally { await f.close(); }
+});
+
+test("a fresh install gets MEMORY.md from the loop, and the plan verifier sees the cited messages", async () => {
+  const seen: Message[][] = [];
+  const model = scripted((name, input) => {
+    if (name === "extract") return { claims: (input.chunk as Message[]).map((message): Claim =>
+      ({ text: "Prefers short answers", type: "preference", salience: "medium", evidence: [message.id], quote: String(message.body.text) })) };
+    if (name === "verify_claims") return { verdicts: (input.claims as Claim[]).flatMap((_, i) => [
+      { i, lens: "refute", pass: true, confidence: 0.9, why: "ok" }, { i, lens: "grounded", pass: true, confidence: 0.9, why: "ok" }]) };
+    if (name === "reconcile") return input.file === "MEMORY.md"
+      ? { edits: [{ op: "insert_after", start: 1, end: 1, guard: "", text: "- Prefers short answers", reason: "promote", evidence: [(input.claims as Claim[])[0].evidence[0]] }] }
+      : { no_change: { checked: ["USER.md"], details: "nothing for the profile" } };
+    if (name === "verify_plan") {
+      seen.push((input.evidence ?? []) as Message[]);
+      // A verifier that only passes edits whose cited words it can actually read.
+      const quotes = ((input.evidence ?? []) as Message[]).map((message) => String(message.body.text));
+      return { verdicts: (input.edits as unknown[]).flatMap((_, i) => (["evidence", "temporal", "preservation"] as const)
+        .map((lens) => ({ i, lens, pass: quotes.includes("I prefer short answers"), why: "read the cited message" }))) };
+    }
+    throw new Error(`unexpected ${name}`);
+  });
+  const f = await fixture(model);
+  try {
+    assert.equal(existsSync(join(f.home, "MEMORY.md")), false);
+    const said = f.add("I prefer short answers");
+    const done = await f.run(); assert.equal(done.state, "done", JSON.stringify({ calls: model.calls, errors: f.errors.map(String) }));
+    assert.deepEqual(seen.map((evidence) => evidence.map((message) => message.id)), [[said.id]]);
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "- Prefers short answers");
+    assert.equal(existsSync(join(f.home, "USER.md")), false);
+  } finally { await f.close(); }
+});
+
+test("background work may create a managed file but never overwrite one", async () => {
+  const f = await fixture(scripted(() => { throw new Error("no model"); }));
+  const work: TrustedRouteContext = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false };
+  const write = (body: Record<string, unknown>) => f.router.send(work, { to: "service:self", kind: "request", word: "write", body: { path: "MEMORY.md", why: "test", ...body }, wait: true })
+    .then((sent) => sent.reply?.body, (error: Error) => ({ ok: false, error: { code: (error as { code?: string }).code ?? error.message } }));
+  try {
+    assert.equal((await write({ content: "first\n", expected_hash: null }) as { ok: boolean }).ok, true);
+    const hash = createHash("sha256").update("first\n").digest("hex");
+    const overwrite = await write({ content: "second\n", expected_hash: hash }) as { ok: boolean; error?: { code: string } };
+    assert.equal(overwrite.ok, false);
+    assert.equal(overwrite.error?.code, "forbidden");
+    assert.equal((await write({ content: "third\n", expected_hash: null }) as { ok: boolean }).ok, false);
+    assert.equal(readFileSync(join(f.home, "MEMORY.md"), "utf8"), "first\n");
+  } finally { await f.close(); }
+});
+
+test("an edit that does not fit a new file drops that plan before any effect, and background work creates only memory files", async () => {
+  const model = scripted((name, input) => {
+    if (name === "extract") return { claims: (input.chunk as Message[]).map((message): Claim =>
+      ({ text: "Prefers tea", type: "preference", salience: "low", evidence: [message.id], quote: String(message.body.text) })) };
+    if (name === "verify_claims") return { verdicts: (input.claims as Claim[]).flatMap((_, i) => [
+      { i, lens: "refute", pass: true, confidence: 0.9, why: "ok" }, { i, lens: "grounded", pass: true, confidence: 0.9, why: "ok" }]) };
+    if (name === "reconcile") return { edits: [{ op: "replace", start: 1, end: 1, guard: "no such line", text: "- tea", reason: "promote", evidence: [(input.claims as Claim[])[0].evidence[0]] }] };
+    if (name === "verify_plan") return { verdicts: (input.edits as unknown[]).flatMap((_, i) => (["evidence", "temporal", "preservation"] as const)
+      .map((lens) => ({ i, lens, pass: true, why: "ok" }))) };
+    throw new Error(`unexpected ${name}`);
+  });
+  const f = await fixture(model);
+  const work: TrustedRouteContext = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false };
+  try {
+    f.add("I like tea");
+    const done = await f.run(); assert.equal(done.state, "done", JSON.stringify({ calls: model.calls, errors: f.errors.map(String) }));
+    assert.equal(existsSync(join(f.home, "MEMORY.md")), false);
+    assert.equal(existsSync(join(f.home, "USER.md")), false);
+    await assert.rejects(f.router.send(work, { to: "service:self", kind: "request", word: "write", wait: true,
+      body: { path: "SOUL.md", content: "x\n", why: "test", expected_hash: null } }), /local authority/);
   } finally { await f.close(); }
 });
