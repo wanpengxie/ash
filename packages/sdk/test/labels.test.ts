@@ -28,3 +28,12 @@ test("the web tools say which site she opened or what she searched for, and noth
     ["web_search", '{"queries":[]}'], ["read", '{"file_path":"x"}']] as const)
     assert.equal(nativeDetailLabel(word, args), null);
 });
+
+test("Ash's own services and tools read as plain words, not their English contract labels", () => {
+  assert.equal(statusLabel("service:gate", "mode.set", "Changing the approval mode"), "在申请改审批档位");
+  assert.equal(statusLabel("service:agents", "ask", "Asking another agent"), "在问帮手");
+  assert.equal(statusLabel("native", "mcp__ash__approval_log"), "在查审批记录");
+  assert.equal(statusLabel("native", "mcp__ash__agent_create"), "在新建帮手");
+  // A device capability keeps its own declared label.
+  assert.equal(statusLabel("device:phone", "clipboard.set", "改剪贴板"), "改剪贴板");
+});

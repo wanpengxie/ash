@@ -98,8 +98,9 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       }
       if (item.side === "owner" && !item.legacy) text(fragment, "span", deliveryText[item.delivery] || deliveryText.sent, "delivery r");
     } else if (item.type === "ask") {
-      const card = text(fragment, "div", item.ask.title, "card ask");
-      text(card, "small", item.ask.detail);
+      const card = text(fragment, "div", "", "card ask");
+      text(card, "b", item.ask.title, "ask-title");
+      if (item.ask.detail) text(card, "small", item.ask.detail, "ask-detail");
       const expired = item.ask.state === "expired" || item.ask.state === "pending" && item.ask.expires_at <= Date.now();
       // A decided card says how it ended instead of keeping buttons that look live but do nothing.
       if (expired || item.ask.state !== "pending") {
@@ -109,8 +110,9 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
         continue;
       }
       const answer = askIntents?.get(item.ask.id);
+      const actions = text(card, "div", "", "ask-actions");
       for (const option of item.ask.options || []) {
-        const button = text(card, "button", option.label, "btn gray");
+        const button = text(actions, "button", option.label, "btn gray");
         button.type = "button";
         button.disabled = expired || item.ask.state !== "pending" || item.ask.from !== "service:gate" || typeof onAnswerAsk !== "function" ||
           answer?.status === "pending" || answer?.status === "confirmed" || answer?.status === "rejected" || Boolean(answer?.choice && answer.choice !== option.id);

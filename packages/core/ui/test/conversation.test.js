@@ -98,7 +98,9 @@ test("file, image, and link cards open safe references and approval buttons expi
     expires_at: Date.now() + 60_000, options: ["once", "always", "deny"].map((id) => ({ id, label: id })) };
   const choices = [];
   let rendered = draw([{ type: "ask", ask }], { onAnswerAsk: async (_ask, choice) => choices.push(choice) });
-  const buttons = rendered.children[0].children.filter((node) => node.tag === "button");
+  // Title, detail and the choices each sit on their own line.
+  assert.deepEqual(rendered.children[0].children.map((node) => node.className), ["ask-title", "ask-detail", "ask-actions"]);
+  const buttons = rendered.children[0].children[2].children.filter((node) => node.tag === "button");
   assert.equal(buttons.length, 3);
   await buttons[1].listeners.click();
   assert.deepEqual(choices, ["always"]);

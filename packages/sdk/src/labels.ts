@@ -24,7 +24,70 @@ const nativeLabels: Readonly<Record<string, string>> = Object.freeze({
   mcp__ash__history_query: "在翻聊天记录",
   mcp__ash__timer_set: "在定提醒",
   mcp__ash__system_status: "在看时间",
+  mcp__ash__timer_list: "在看提醒",
+  mcp__ash__timer_cancel: "在取消提醒",
+  mcp__ash__vault_list: "在看保存的密钥",
+  mcp__ash__vault_describe: "在看保存的密钥",
+  mcp__ash__approval_log: "在查审批记录",
+  mcp__ash__approval_rules: "在看审批规则",
+  mcp__ash__approval_rule_add: "在申请新增审批规则",
+  mcp__ash__approval_rule_remove: "在申请撤销审批规则",
+  mcp__ash__approval_mode_set: "在申请改审批档位",
+  mcp__ash__agent_list: "在看有哪些帮手",
+  mcp__ash__agent_describe: "在看帮手",
+  mcp__ash__agent_ask: "在问帮手",
+  mcp__ash__agent_tell: "在告诉帮手",
+  mcp__ash__agent_create: "在新建帮手",
+  mcp__ash__agent_update: "在调整帮手",
+  mcp__ash__agent_start: "在启动帮手",
+  mcp__ash__agent_stop: "在停下帮手",
+  mcp__ash__agent_restart: "在重启帮手",
+  mcp__ash__agent_remove: "在删除帮手",
+  mcp__ash__list_pending: "在看还没完的事",
+  mcp__ash__cancel: "在取消",
 });
+
+/** Ash's own services declare English contract labels; the owner reads what she is doing in plain words. */
+const serviceLabels: Readonly<Record<string, string>> = Object.freeze({
+  "service:agents/list": "在看有哪些帮手",
+  "service:agents/describe": "在看帮手",
+  "service:agents/ask": "在问帮手",
+  "service:agents/tell": "在告诉帮手",
+  "service:agents/answer": "在回答",
+  "service:agents/declare": "在新建帮手",
+  "service:agents/update": "在调整帮手",
+  "service:agents/start": "在启动帮手",
+  "service:agents/stop": "在停下帮手",
+  "service:agents/restart": "在重启帮手",
+  "service:agents/remove": "在删除帮手",
+  "service:clock/set": "在定提醒",
+  "service:clock/list": "在看提醒",
+  "service:clock/cancel": "在取消提醒",
+  "service:vault/list": "在看保存的密钥",
+  "service:vault/describe": "在看保存的密钥",
+  "service:cost/usage.get": "在看用量",
+  "service:cost/balance.get": "在看余额",
+  "service:gate/audit": "在查审批记录",
+  "service:gate/history": "在查审批记录",
+  "service:gate/rules.list": "在看审批规则",
+  "service:gate/rules.set": "在申请新增审批规则",
+  "service:gate/rules.revoke": "在申请撤销审批规则",
+  "service:gate/mode.set": "在申请改审批档位",
+  "service:self/read": "在看资料",
+  "service:self/write": "在改资料",
+  "service:self/append": "在记日志",
+  "service:self/apply_plan": "在改资料",
+  "service:self/rollback": "在撤回改动",
+  "service:self/history": "在看改动记录",
+  "service:work/run": "在做后台任务",
+  "service:work/runs": "在看后台任务",
+});
+
+/** The plain status for one of Ash's own service words, or null for anything else. */
+export function serviceLabel(member: string, word: string): string | null {
+  const key = `${member}/${word}`;
+  return Object.hasOwn(serviceLabels, key) ? serviceLabels[key]! : null;
+}
 
 const clean = (value: string, max: number) => {
   const text = value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
@@ -58,6 +121,9 @@ export function nativeDetailLabel(word: string, args: unknown): string | null {
 /** The native namespace is display-only; it does not register a callable member. */
 export function statusLabel(member: string, word: string, declared?: string): string {
   if (member === "native") return Object.hasOwn(nativeLabels, word) ? nativeLabels[word] : STATUS_FALLBACK_LABEL;
+  // A label already written in Chinese is the service's own wording; only English contract labels are replaced.
+  const own = serviceLabel(member, word);
+  if (own && !/\p{Script=Han}/u.test(declared ?? "")) return own;
   const label = declared?.trim();
   if (!label || /[\p{Cc}\p{Cf}]/u.test(label) || label === "Working" || label === word || label === `${member}/${word}` ||
     (label.includes(":") && !/\s/.test(label)) || (label.includes("_") && !/\s/.test(label))) return STATUS_FALLBACK_LABEL;
