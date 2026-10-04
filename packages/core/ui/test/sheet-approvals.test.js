@@ -23,6 +23,20 @@ const gateAsk = (id, seq, from = "service:gate", expires_at = 9000) => ({ seq, i
     options: [{ id: "once", label: "Only once" }, { id: "deny", label: "No" }],
     source: { to: "device:fixture", word: "send", body_preview: "synthetic" } } });
 
+test("the approvals sheet retains the entire original beside its bounded summary", () => {
+  const original = "x".repeat(65000) + "\nTAIL <img src=x>\t  spaces";
+  const message = gateAsk("full-original", 1);
+  message.body.source.body_full = original;
+  const view = fold(initialView(), message);
+  const { root, sections } = draw(view);
+  assert.equal(sections.pending[0].original, original);
+  const article = root.children[0].children.find((node) => node.tag === "article");
+  const disclosure = article.children.find((node) => node.tag === "details");
+  assert.equal(disclosure.children[0].textContent, "查看原文");
+  assert.equal(disclosure.children[1].textContent, original);
+  assert.equal(disclosure.children[1].children.length, 0);
+});
+
 test("gate page accepts only paired current-screen replies", async () => {
   const net = { token: "screen-token", screen: "screen:local", currentScope: "scope-a", generation: 1,
     request: async (_path, options) => {

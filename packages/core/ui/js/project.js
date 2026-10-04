@@ -100,6 +100,7 @@ function record(m) {
     if (m.word === "show") { const card = safeCard(b.card); return card ? { ...base, type: "show", card } : null; }
     if (m.word === "ask" && typeof b.title === "string" && Array.isArray(b.options)) return {
       ...base, type: "ask", from: m.from, title: b.title, detail: string(b.detail), expires_at: number(b.expires_at),
+      ...(m.from === "service:gate" && object(b.source) && typeof b.source.body_full === "string" ? { original: b.source.body_full } : {}),
       options_valid: b.options.every((x) => object(x) && typeof x.id === "string" && typeof x.label === "string"),
       options: b.options.filter((x) => object(x) && typeof x.id === "string" && typeof x.label === "string").map((x) => ({ id: x.id, label: x.label })),
     };
@@ -183,7 +184,7 @@ function project(records, snapshots = new Map()) {
       const answer = answers.get(r.id);
       const state = !answer ? "pending" : answer.error === "timeout" || answer.choice === "deny" && answer.ts >= r.expires_at
         ? "expired" : answer.choice ? "answered" : "closed";
-      const ask = { id: r.id, seq: r.seq, ts: r.ts, from: r.from, title: r.title, detail: r.detail, options: r.options, options_valid: r.options_valid, expires_at: r.expires_at, state, choice: answer?.choice || null };
+      const ask = { id: r.id, seq: r.seq, ts: r.ts, from: r.from, title: r.title, detail: r.detail, ...(typeof r.original === "string" ? { original: r.original } : {}), options: r.options, options_valid: r.options_valid, expires_at: r.expires_at, state, choice: answer?.choice || null };
       view.asks.push(ask);
       view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "ask", side: "agent", ask, reactions: reactions.get(r.id) || [] });
     } else if (r.type === "turn.start" || r.type === "run.start") {

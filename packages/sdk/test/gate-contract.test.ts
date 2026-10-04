@@ -13,6 +13,15 @@ const current: GateHistoryItemV2 = { id: "history_1", request_id: "m_request", a
 const legacy: GateHistoryItemV2 = { id: "legacy_1", subject: "agent:main", decision: "legacy_access_imported",
   at: 1_727_740_800_000, legacy_scope: "device:isolated/message.send", source: "legacy" };
 
+test("approval source accepts an unabridged original while retaining old-card compatibility", () => {
+  const schema = wordContract("person:owner", "ask")!.input_schema!;
+  const body = { title: "Confirm", detail: "Summary", options: [{ id: "once", label: "Allow once" }], expires_at: 9000,
+    source: { word: "shell.run", to: "device:phone", body_preview: "Summary" } };
+  assert.ok(matchesSchema(schema, body));
+  assert.ok(matchesSchema(schema, { ...body, source: { ...body.source, body_full: "x".repeat(65000) + "\nTAIL" } }));
+  assert.ok(!matchesSchema(schema, { ...body, source: { ...body.source, body_full: { command: "not text" } } }));
+});
+
 test("gate rules list is bounded, owner-only, and exposes only explicit approval-rule fields", () => {
   const spec = wordContract("service:gate", "rules.list")!;
   assert.equal(spec.kind, "request");

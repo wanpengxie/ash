@@ -728,6 +728,18 @@ export class WorldRouter {
       ? `${command}${Object.keys(rest).length ? `\n${JSON.stringify(rest)}` : ""}` : JSON.stringify(request.body);
   }
 
+  /** Unabridged owner-readable snapshot of the same immutable request that approval authorizes. */
+  private actionOriginal(request: Message): string {
+    if (request.word === "shell.run") return this.actionText(request);
+    const texts = typeof request.body.text === "string" ? [`正文：\n${request.body.text}`] : [];
+    if (request.word === "browser.run" && Array.isArray(request.body.steps)) {
+      request.body.steps.forEach((step, index) => {
+        if (plainObject(step) && typeof step.text === "string") texts.push(`第 ${index + 1} 步原文：\n${step.text}`);
+      });
+    }
+    return [...texts, `完整参数：\n${JSON.stringify(request.body, null, 2)}`].join("\n\n");
+  }
+
   /** What an agent wants to change about approvals, in words the owner can judge. */
   private ruleChangeCard(request: Message): { title: string; detail: string } {
     const body = request.body as { agent?: string; member?: string; word?: string; target?: string; days?: number; id?: string; mode?: string };
@@ -868,7 +880,7 @@ export class WorldRouter {
       contractFingerprint: identity.fingerprint, expiresAt, ...(objectPattern ? { objectPattern } : {}),
       askBody: { title, detail,
         options: [{ id: "once", label: "允许这一次" }, ...(objectPattern ? [{ id: "always" as const, label: alwaysLabel }] : []), { id: "deny", label: "不允许" }],
-        source: { word: request.word, to: request.to!, body_preview: plain.detail } } });
+        source: { word: request.word, to: request.to!, body_preview: plain.detail, body_full: this.actionOriginal(request) } } });
     if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
     this.ledger.gateEvidence(request.id, { card: { ask_id: started.ask.id, title, detail, options: (started.ask.body.options as unknown[]) ?? [],
       ...(forced ? { forced: "rule changes always ask the owner" } : {}), ...(verdict?.decision === "ask" ? { by: "reviewer" } : { by: "plain" }) } });

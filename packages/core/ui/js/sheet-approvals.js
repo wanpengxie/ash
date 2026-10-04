@@ -1,6 +1,7 @@
 // All approval-page operations use the current registered screen and gate member.
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 import { named } from "./editor.js";
+import { appendApprovalOriginal } from "./approval-original.js";
 const safeText = (value, max = 240) => typeof value === "string" ? value.slice(0, max) : "";
 const validId = (value) => typeof value === "string" && value.length > 0 && value.length <= 256;
 const validTime = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
@@ -29,6 +30,7 @@ export function approvalSections(view, now = Date.now()) {
       new Set(offered.map((option) => option.id)).size !== offered.length) continue;
     pending.push({ id: ask.id, seq: ask.seq, from: "service:gate", state: "pending", options_valid: true,
       title: safeText(ask.title) || "待确认的操作", detail: safeText(ask.detail, 1000),
+      ...(typeof ask.original === "string" ? { original: ask.original } : {}),
       expires_at: ask.expires_at, options: offered.map((option) => ({ id: option.id, label: safeText(option.label, 80) })) });
   }
   pending.sort((a, b) => a.expires_at - b.expires_at || a.seq - b.seq);
@@ -122,6 +124,7 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
     card.dataset.askId = ask.id;
     text(card, "h4", ask.title);
     if (ask.detail) text(card, "p", ask.detail, "approval-detail");
+    appendApprovalOriginal(card, ask);
     text(card, "small", `${at(ask.expires_at, now)} 前有效`, "approval-expiry");
     if (!onAnswer) { text(card, "p", "这里暂时不能回答；请在对话里回答。", "set-status warn sheet-warning"); continue; }
     const state = answerState.get(ask.id);

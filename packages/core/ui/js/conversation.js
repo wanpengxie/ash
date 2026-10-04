@@ -1,5 +1,6 @@
-// Render only selected conversation facts. The projection never contains raw tool data.
+// Render selected conversation facts; gate originals appear only in an explicit plain-text disclosure.
 import { renderCard, workspaceFileUrl } from "./cards.js";
+import { appendApprovalOriginal } from "./approval-original.js";
 export { workspaceFileUrl } from "./cards.js";
 const text = (parent, tag, value, className = "") => {
   const node = document.createElement(tag);
@@ -101,6 +102,7 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       const card = text(fragment, "div", "", "card ask");
       text(card, "b", item.ask.title, "ask-title");
       if (item.ask.detail) text(card, "small", item.ask.detail, "ask-detail");
+      appendApprovalOriginal(card, item.ask);
       const expired = item.ask.state === "expired" || item.ask.state === "pending" && item.ask.expires_at <= Date.now();
       // A decided card says how it ended instead of keeping buttons that look live but do nothing.
       if (expired || item.ask.state !== "pending") {

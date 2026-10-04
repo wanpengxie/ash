@@ -20,6 +20,8 @@ const tick = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((
 const caps: { name: string; label: string; risk: "none" | "outward" | "structure"; effect?: WordEffect }[] = [
   { name: "browser.read", label: "读网页", risk: "none" },
   { name: "browser.click", label: "在网页上点击", risk: "outward", effect: "act" },
+  { name: "browser.type", label: "在网页上输入", risk: "outward", effect: "act" },
+  { name: "browser.run", label: "连续操作网页", risk: "outward", effect: "act" },
   { name: "post.publish", label: "发帖", risk: "outward", effect: "send" },
   { name: "shell.run", label: "执行命令", risk: "structure", effect: "execute" },
   { name: "pay.send", label: "付款", risk: "outward", effect: "send" },
@@ -42,10 +44,12 @@ async function setup(reviewer: Reviewer | null, options: { timeoutMs?: number; m
   const router = new WorldRouter(ledger, async () => true);
   router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => {} });
   const effects: string[] = [];
+  const executed: Record<string, unknown>[] = [];
   const schema = { type: "object", properties: { site: { type: "string" }, label: { type: "string" }, ref: { type: "integer" },
-    text: { type: "string" }, command: { type: "string" }, amount: { type: "number" } }, additionalProperties: false };
+    text: { type: "string" }, command: { type: "string" }, amount: { type: "number" }, submit: { type: "boolean" },
+    steps: { type: "array", items: { type: "object" } } }, additionalProperties: false };
   router.registerDeviceBatch("device:phone", caps.map((cap) => ({ ...cap, description: cap.label, input_schema: schema })),
-    (message) => { effects.push(message.word); return { ok: true, result: {} }; });
+    (message) => { effects.push(message.word); executed.push(structuredClone(message.body)); return { ok: true, result: {} }; });
   router.enableDurableGate();
   router.setReviewer(reviewer, options.timeoutMs ? { timeoutMs: options.timeoutMs } : {});
   if (options.mode) router.setApprovalMode(options.mode);
@@ -65,8 +69,43 @@ async function setup(reviewer: Reviewer | null, options: { timeoutMs?: number; m
   };
   const passes = () => ledger.list({ limit: 1000 }).filter((item) => item.word === "gate.passed");
   const close = () => { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); };
-  return { ledger, router, effects, send, card, answer, passes, close };
+  return { ledger, router, effects, executed, send, card, answer, passes, close };
 }
+
+test("approval originals preserve long commands and submitted text and authorize that exact request", async () => {
+  const world = await setup(null);
+  try {
+    const command = "echo " + "x".repeat(800) + "\nHIDDEN_COMMAND_TAIL";
+    const commandBody = { command };
+    const commandId = await world.send("shell.run", commandBody);
+    commandBody.command = "different command after acceptance";
+    const commandCard = world.card(commandId)!.ask;
+    assert.ok(!String(commandCard.body.detail).includes("HIDDEN_COMMAND_TAIL"));
+    assert.equal((commandCard.body.source as { body_full: string }).body_full, command);
+    assert.equal(world.effects.length, 0);
+    await world.answer(commandId, "once");
+    assert.deepEqual(world.executed.at(-1), { command });
+
+    const text = "x".repeat(2000) + "\nHIDDEN_SUBMITTED_TEXT\n<script>not HTML</script>\tspaces  stay";
+    const body = { site: "example.com", ref: 2, label: "正文", text, submit: true };
+    const id = await world.send("browser.type", body);
+    const card = world.card(id)!.ask;
+    assert.ok(!String(card.body.detail).includes("HIDDEN_SUBMITTED_TEXT"));
+    const full = (card.body.source as { body_full: string }).body_full;
+    assert.ok(full.includes(text), "the full unescaped text retains line breaks and markup");
+    assert.ok(full.includes('"submit": true'));
+    await world.answer(id, "once");
+    assert.deepEqual(world.executed.at(-1), body);
+
+    const steps = [{ op: "type", ...body }, { op: "type", ...body, text: "second\nfull text" }];
+    const run = await world.send("browser.run", { steps });
+    const scriptFull = (world.card(run)!.ask.body.source as { body_full: string }).body_full;
+    assert.ok(scriptFull.includes(text));
+    assert.ok(scriptFull.includes("第 2 步原文：\nsecond\nfull text"));
+    await world.answer(run, "once");
+    assert.deepEqual(world.executed.at(-1), { steps });
+  } finally { world.close(); }
+});
 
 test("decision order: the owner and reads bypass review; a reviewer allow passes with an audited reason", async () => {
   const fake = fakeReviewer({ decision: "allow", reason: "点开网页上的登录是可撤回的操作" });
