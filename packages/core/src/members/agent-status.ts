@@ -33,7 +33,7 @@ export class AgentStatus {
   private failure: Error | null = null;
 
   constructor(private readonly router: WorldRouter, private readonly now: () => number = Date.now,
-    private readonly isPaused: () => boolean = () => false) {
+    private readonly isPaused: () => boolean = () => false, private readonly agent = "agent:main") {
     this.lastActivity = now();
     this.unsubscribe = router.subscribe((message) => this.observe(message));
   }
@@ -43,14 +43,14 @@ export class AgentStatus {
   async settled(): Promise<void> { await this.tail; if (this.failure) throw this.failure; }
 
   private context(): TrustedRouteContext {
-    return { transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false };
+    return { transport: "agent", transportPrincipal: this.agent, member: this.agent, local: true, remote: false, ownerProxy: false };
   }
 
   async start(): Promise<void> {
     if (this.closed || this.running) throw new Error("agent status cannot start twice");
     this.running = true;
     this.lastActivity = this.now();
-    for (const request of this.router.pendingStatusInputs("agent:main")) this.pending.set(request.id, request);
+    for (const request of this.router.pendingStatusInputs(this.agent)) this.pending.set(request.id, request);
     this.publish({ state: "resting", text: DEFAULT_TEXT.resting });
     await this.settled();
     this.refresh();
@@ -77,7 +77,7 @@ export class AgentStatus {
   private derive(now: number): AgentStatusSnapshot {
     if (this.isPaused() || (this.activeTurn === null && this.pending.size === 0 && now - this.lastActivity >= REST_MS))
       return { state: "resting", text: DEFAULT_TEXT.resting };
-    const tool = [...this.pending.values()].reverse().find((item) => item.from === "agent:main" && !(item.to === "person:owner" && item.word === "ask"));
+    const tool = [...this.pending.values()].reverse().find((item) => item.from === this.agent && !(item.to === "person:owner" && item.word === "ask"));
     if (tool) return { state: "working", text: tool.detail ?? statusLabel(tool.to === "service:dsh-tool" ? "native" : tool.to,
       tool.word, this.router.registeredLabel(tool.to, tool.word)) };
     if ([...this.pending.values()].some((item) => item.to === "person:owner" && item.word === "ask"))
@@ -115,12 +115,12 @@ export class AgentStatus {
   }
 
   private observe(message: Message): void {
-    if (!this.running || this.closed || (message.from === "agent:main" && message.kind === "event" && message.word === "status")) return;
+    if (!this.running || this.closed || (message.from === this.agent && message.kind === "event" && message.word === "status")) return;
     const now = this.now();
-    if (message.kind === "event" && message.to === "agent:main" && message.word === "typing" && message.from.startsWith("screen:")) {
+    if (message.kind === "event" && message.to === this.agent && message.word === "typing" && message.from.startsWith("screen:")) {
       this.typingUntil = now + TYPING_MS;
       this.lastActivity = now;
-    } else if (message.from === "agent:main" && message.kind === "event") {
+    } else if (message.from === this.agent && message.kind === "event") {
       if (message.word === "read" && typeof message.body.turn === "string") {
         this.listeningUntil = now + LISTEN_MS;
         this.doneUntil = 0;
@@ -135,7 +135,7 @@ export class AgentStatus {
         this.lastActivity = now;
       }
     } else if (message.kind === "request" && message.to &&
-      (message.from === "agent:main" || (message.to === "person:owner" && message.word === "ask"))) {
+      (message.from === this.agent || (message.to === "person:owner" && message.word === "ask"))) {
       const detail = message.to === "service:dsh-tool" ? nativeDetailLabel(message.word, message.body.arguments)
         : pageDetailLabel(statusLabel(message.to, message.word, this.router.registeredLabel(message.to, message.word)), message.body);
       this.pending.set(message.id, { id: message.id, from: message.from, to: message.to, word: message.word,

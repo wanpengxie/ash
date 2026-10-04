@@ -49,6 +49,11 @@ export interface ContainerRunnerOptions {
   stateDir: string;
   /** The runner says when it is working, so model usage is booked to chat or mind. */
   onActive?: (active: boolean) => void;
+  /** A declared agent's session key and workspace name; the main agent uses "main" and /root/work. */
+  sessionKey?: string;
+  agentName?: string;
+  /** A declared agent's standing context (its brief and ash's rules); the main agent's comes from its managed files. */
+  context?: () => string;
   log?: (...args: unknown[]) => void;
 }
 
@@ -115,7 +120,7 @@ class TurnWatch {
   emitError: unknown;
   spoke = false;
   constructor(private readonly turn: string, private readonly emit: (output: AgentTurnOutput) => Promise<void>, private readonly signal: AbortSignal,
-    private readonly router?: WorldRouter) {}
+    private readonly router?: WorldRouter, private readonly actor = "agent:main") {}
 
   update(update: AcpUpdate): void {
     try {
@@ -142,7 +147,7 @@ class TurnWatch {
         if (this.router) {
           const callId = /^[A-Za-z0-9_-]{1,128}$/.test(update.toolCallId) ? update.toolCallId : createHash("sha256").update(update.toolCallId).digest("hex").slice(0, 40);
           const safeName = name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128) || "tool";
-          this.calls.set(update.toolCallId, this.router.recordDshToolCall(this.turn, callId, safeName, args.slice(0, 20_000)).id);
+          this.calls.set(update.toolCallId, this.router.recordDshToolCall(this.turn, callId, safeName, args.slice(0, 20_000), this.actor).id);
         }
       } else if (update.sessionUpdate === "tool_call_update" && typeof update.toolCallId === "string" && (update.status === "completed" || update.status === "failed")) {
         const ok = update.status === "completed";
@@ -182,7 +187,10 @@ export class ContainerTurnRunner implements AgentTurnRunner {
 
   primeManagedSnapshot(snapshot: ManagedPromptSnapshot): void { this.managed = renderMainContext(snapshot); }
 
-  private get contextFile(): string { return join(this.options.stateDir, "container-context.json"); }
+  private get contextFile(): string {
+    const key = this.options.sessionKey ?? "main";
+    return join(this.options.stateDir, key === "main" ? "container-context.json" : `container-context-${key.replace(/[^a-z0-9_-]/gi, "_")}.json`);
+  }
   private injected(): { session?: string; hash?: string; turns?: number } {
     try { return existsSync(this.contextFile) ? JSON.parse(readFileSync(this.contextFile, "utf8")) as { session?: string; hash?: string; turns?: number } : {}; }
     catch { return {}; }
@@ -204,18 +212,23 @@ export class ContainerTurnRunner implements AgentTurnRunner {
     const { host, binding } = this.options;
     const started = Date.now();
     let sessionId: string;
-    try { sessionId = await host.session("main", this.options.mcp()); }
+    try {
+      // A declared agent works in its own directory of the container; the session's cwd says so.
+      const cwd = this.options.agentName ? (await host.boot(), host.workspace!.agentHome(this.options.agentName).agent) : undefined;
+      sessionId = await host.session(this.options.sessionKey ?? "main", this.options.mcp(), cwd);
+    }
     catch (error) {
       this.options.log?.("agent session unavailable", error);
       if (fromOwner) await emit({ id: `${input.turn}:runtime-down`, text: "我的运行环境没能启动，这次没法回你。稍后再发一次试试；还不行的话重启一下 Ash。" }).catch(() => {});
       return { reason: "error", error: `agent runtime unavailable: ${error instanceof Error ? error.message : String(error)}` };
     }
-    const watch = new TurnWatch(input.turn, emit, signal, this.options.router);
+    const watch = new TurnWatch(input.turn, emit, signal, this.options.router, binding.member);
     const off = host.onUpdate((sid, update) => { if (sid === sessionId) watch.update(update); });
     const abort = () => host.cancel(sessionId);
     signal.addEventListener("abort", abort, { once: true });
     binding.begin(input.turn, signal);
     this.current = { turn: input.turn, sessionId };
+    if (this.options.context) this.managed = this.options.context();
     this.options.onActive?.(true);
     try {
       const content = containerContent(input, host);

@@ -7,7 +7,7 @@ import { dirname, basename, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { STREAM_RAW_PAGE_BYTES, type GateAccessItemV2, type GateHistoryItemV2, type GateRuleItemV2, type LegacyConversationMetadata, type Message, type MessageSummaryV2, type PostDeliveryBodyV2, type ResponseBody, type StreamPageEndV2, type WorkRunInfoV2, type WorkRunStepBodyV2 } from "../../../sdk/src/api";
 import { matchesSchema } from "../../../sdk/src/schema";
-import { wordContract, workRunTurn, workRunsResultErrors } from "../../../sdk/src/words";
+import { AGENT_ID, wordContract, workRunTurn, workRunsResultErrors } from "../../../sdk/src/words";
 import { readSummaryPage, type StreamPageQuery } from "./stream-page";
 
 type Row = Record<string, unknown>;
@@ -500,23 +500,25 @@ export class Ledger {
   }
 
   /** No public route accepts this word. A call identity and parent request commit together. */
-  acceptInternalApproval(input: { sessionId: string; turn: string; callId: string; toolName: string;
+  acceptInternalApproval(input: { member?: string; sessionId: string; turn: string; callId: string; toolName: string;
     contractFingerprint: string; deadlineAt: number }): Message {
     if (!/^session-[0-9a-f-]{36}$/.test(input.sessionId) || !/^t_[A-Za-z0-9_-]+$/.test(input.turn) ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(input.callId) || !/^[A-Za-z0-9_-]{1,128}$/.test(input.toolName) ||
       !/^[a-f0-9]{64}$/.test(input.contractFingerprint) || !Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= Date.now())
       throw new TypeError("invalid internal approval identity");
+    const member = input.member ?? "agent:main";
+    if (!AGENT_ID.test(member)) throw new TypeError("invalid internal approval identity");
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const id = newId(); const at = Date.now();
       this.db.prepare(`INSERT INTO internal_approval_calls(session_id,turn,call_id,request_id) VALUES(?,?,?,?)`)
         .run(input.sessionId, input.turn, input.callId, id);
       this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .run(id, at, "agent:main", "service:gate", "request", "internal.approval", JSON.stringify({ session_id: input.sessionId,
+        .run(id, at, member, "service:gate", "request", "internal.approval", JSON.stringify({ session_id: input.sessionId,
           tool_name: input.toolName, call_id: input.callId, contract_fingerprint: input.contractFingerprint }), null, null, input.turn);
       this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,?,?,?,?)")
-        .run(id, "accepted", input.deadlineAt, JSON.stringify({ member: "agent:main", local: true, remote: false,
-          ownerProxy: false, transportPrincipal: "agent:main" }), at);
+        .run(id, "accepted", input.deadlineAt, JSON.stringify({ member, local: true, remote: false,
+          ownerProxy: false, transportPrincipal: member }), at);
       this.db.exec("COMMIT");
       return this.byId(id)!;
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
@@ -525,7 +527,7 @@ export class Ledger {
   /** A DSH session cannot resume a borrowed approval call after process death. */
   failInternalApproval(requestId: string): Message | null {
     const request = this.byId(requestId);
-    if (!request || request.from !== "agent:main" || request.to !== "service:gate" || request.word !== "internal.approval") return null;
+    if (!request || !AGENT_ID.test(request.from) || request.to !== "service:gate" || request.word !== "internal.approval") return null;
     const prior = this.responseTo(requestId);
     if (prior) return prior;
     const gate = this.gateCase(requestId);

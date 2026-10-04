@@ -6,7 +6,7 @@ import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
 import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordEffect, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema, schemaErrors } from "../../../sdk/src/schema";
-import { deviceWordSpec, isWordEffect, optionReplyErrors, wordContract, wordEffect } from "../../../sdk/src/words";
+import { AGENT_ID, deviceWordSpec, isWordEffect, optionReplyErrors, wordContract, wordEffect } from "../../../sdk/src/words";
 import type { ReviewFacts, Reviewer, ReviewVerdict } from "../review/reviewer";
 import { gateBodyDigest, gateRulePattern, gateTarget, Ledger, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
@@ -49,6 +49,8 @@ export interface InternalApprovalIngress {
   contractFingerprint: string;
   signal: AbortSignal;
   stillValid: () => boolean;
+  /** The agent asking; the main agent unless said otherwise. */
+  member?: string;
   /** The card's words when the agent itself asks for confirmation; otherwise a generic tool question. */
   title?: string;
   detail?: string;
@@ -151,7 +153,7 @@ export class WorldRouter {
   async requestInternalApproval(input: InternalApprovalIngress): Promise<InternalApprovalOutcome> {
     if (!this.durableGate || input.signal.aborted || !input.stillValid() || !this.endpoint("person:owner", "ask")) return "unavailable";
     let parent: Message;
-    try { parent = this.ledger.acceptInternalApproval({ sessionId: input.sessionId, turn: input.turn, callId: input.callId,
+    try { parent = this.ledger.acceptInternalApproval({ member: input.member, sessionId: input.sessionId, turn: input.turn, callId: input.callId,
       toolName: input.toolName, contractFingerprint: input.contractFingerprint, deadlineAt: Date.now() + 600_000 }); }
     catch { return "unavailable"; }
     this.publish(parent);
@@ -170,7 +172,7 @@ export class WorldRouter {
       // The ask shares the parent's durable deadline. Recomputing from parent.ts
       // can exceed it by even one millisecond and sporadically reject beginGate.
       const expiresAt = accepted.deadlineAt;
-      const started = this.ledger.beginGate(parent.id, { subject: hash({ member: "agent:main", sessionId: input.sessionId }),
+      const started = this.ledger.beginGate(parent.id, { subject: hash({ member: input.member ?? "agent:main", sessionId: input.sessionId }),
         risk: "structure", contractFingerprint: input.contractFingerprint, expiresAt,
         askBody: { title: input.title ?? "需要你确认", detail: input.detail ?? `允许使用 ${input.toolName} 一次？`,
           options: [{ id: "once", label: "允许这一次" }, { id: "deny", label: "不允许" }],
@@ -185,7 +187,7 @@ export class WorldRouter {
       if (input.signal.aborted || !input.stillValid()) return "cancelled";
       const tracked = this.ledger.trackedRequests().find((item) => item.message.id === parent.id);
       if (!tracked || !await this.currentlyAuthorized(parent, tracked.context) || input.signal.aborted || !input.stillValid()) return "unavailable";
-      if (!this.ledger.dispatchAllowedGate(parent.id, hash({ member: "agent:main", sessionId: input.sessionId }), input.contractFingerprint))
+      if (!this.ledger.dispatchAllowedGate(parent.id, hash({ member: input.member ?? "agent:main", sessionId: input.sessionId }), input.contractFingerprint))
         return "unavailable";
       const response = this.ledger.settle(parent.id, "service:gate", { ok: true, result: { outcome: "allowed-once" } }).message;
       this.publish(response);
@@ -206,10 +208,10 @@ export class WorldRouter {
   }
 
   /** The agent asks the owner to confirm something it is about to do: the same durable card as any approval. */
-  async requestAgentConfirmation(input: { sessionId: string; turn: string; callId: string; title: string; detail: string; signal: AbortSignal;
+  async requestAgentConfirmation(input: { member?: string; sessionId: string; turn: string; callId: string; title: string; detail: string; signal: AbortSignal;
     stillValid?: () => boolean }): Promise<"approved" | "rejected" | "cancelled" | "unavailable"> {
     const fingerprint = hash({ confirm: input.title, detail: input.detail });
-    const outcome = await this.requestInternalApproval({ sessionId: input.sessionId, turn: input.turn, callId: input.callId, toolName: "human_confirm",
+    const outcome = await this.requestInternalApproval({ member: input.member, sessionId: input.sessionId, turn: input.turn, callId: input.callId, toolName: "human_confirm",
       contractFingerprint: fingerprint, signal: input.signal, stillValid: input.stillValid ?? (() => true), title: input.title, detail: input.detail });
     return outcome === "allowed-once" ? "approved" : outcome;
   }
@@ -357,17 +359,17 @@ export class WorldRouter {
     this.publish(stored);
   }
   /** The bound DSH session reports its own tool events; these are audit facts, not dispatch requests. */
-  recordDshToolCall(turn: string, callId: string, name: string, argumentsText: string): Message {
-    if (!/^t_[A-Za-z0-9_-]+$/.test(turn) || !/^[A-Za-z0-9_-]{1,128}$/.test(callId) ||
+  recordDshToolCall(turn: string, callId: string, name: string, argumentsText: string, actor = "agent:main"): Message {
+    if (!/^t_[A-Za-z0-9_-]+$/.test(turn) || !/^[A-Za-z0-9_-]{1,128}$/.test(callId) || !AGENT_ID.test(actor) ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(name) || typeof argumentsText !== "string") throw new TypeError("invalid DSH tool event");
-    const stored = this.ledger.append({ from: "agent:main", to: "service:dsh-tool", kind: "request", word: name,
+    const stored = this.ledger.append({ from: actor, to: "service:dsh-tool", kind: "request", word: name,
       body: { call_id: callId, arguments: argumentsText }, turn }, { transportPrincipal: `dsh:${turn}`, clientId: callId });
     if (!stored.duplicate) this.publish(stored.message);
     return stored.message;
   }
   recordDshToolResult(requestId: string, ok: boolean, preview: string): Message {
     const request = this.ledger.byId(requestId);
-    if (!request || request.from !== "agent:main" || request.to !== "service:dsh-tool" || request.kind !== "request")
+    if (!request || !AGENT_ID.test(request.from) || request.to !== "service:dsh-tool" || request.kind !== "request")
       throw new TypeError("unknown DSH tool call");
     const body: ResponseBody = ok ? { ok: true, result: { preview: preview.slice(0, 1000) } }
       : { ok: false, error: { code: "failed", message: "DSH tool failed" } };
@@ -448,7 +450,8 @@ export class WorldRouter {
       // Background work never overwrites: it appends, applies hash-guarded plans, or creates a file that does not exist yet.
       const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan" ||
         (request.word === "write" && request.body.expected_hash === null && (request.body.path === "MEMORY.md" || request.body.path === "USER.md")));
-      if (ctx.remote || !ctx.local || !(from === "person:owner" || from === "agent:main" || workFlowWrite)) fail("forbidden", "managed writes require local authority");
+      const agentWrite = AGENT_ID.test(from) && ctx.transport === "agent" && ctx.transportPrincipal === from;
+      if (ctx.remote || !ctx.local || !(from === "person:owner" || agentWrite || workFlowWrite)) fail("forbidden", "managed writes require local authority");
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
       fail("forbidden", "only owner may inspect or start background work");
@@ -456,8 +459,17 @@ export class WorldRouter {
     if (request.to === "service:gate" && (request.word === "rules.revoke" || request.word.startsWith("access.")) &&
       (ctx.remote || !ctx.local || !ctx.ownerProxy || (request.word.startsWith("access.") && !["api", "web_ui"].includes(ctx.transport))))
       fail("forbidden", "gate change requires current local owner");
-    if (request.to === "agent:main" && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
-    if (request.to === "agent:main" && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
+    const toAgent = typeof request.to === "string" && AGENT_ID.test(request.to);
+    if (toAgent && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
+    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
+    // The owner talks with the main agent; the other agents hear from agents, their own timers and their schedule.
+    if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") && !(
+      (AGENT_ID.test(from) && from !== request.to && ctx.transport === "agent" && ctx.transportPrincipal === from && ctx.local && !ctx.remote) ||
+      (ctx.transport === "service" && ["service:clock", "service:work"].includes(from) && ctx.local && !ctx.remote)))
+      fail("forbidden", "only agents and ash's schedule may speak to this agent");
+    if (toAgent && request.to === "agent:main" && request.word === "say" && AGENT_ID.test(from) &&
+      (from === "agent:main" || ctx.transport !== "agent" || ctx.transportPrincipal !== from || !ctx.local || ctx.remote))
+      fail("forbidden", "agent messages require that agent's own context");
     if (["typing", "visible", "hidden"].includes(request.word) && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
     if (request.to === "service:post" && request.word === "deliver" && ctx.transport !== "service") fail("forbidden", "delivery is internal only");
     // Workers are single judgement steps of a background run; nobody else may spend model calls on them.
@@ -489,7 +501,7 @@ export class WorldRouter {
     const sourceEvent = outbound?.kind === "event" && outbound.direction === "out";
     // Model-facing MCP/API agent credentials may request work, but cannot forge
     // the agent's code-derived receipt, turn, or status control events.
-    if (sourceEvent && from === "agent:main" && (ctx.transport !== "agent" || ctx.transportPrincipal !== "agent:main"))
+    if (sourceEvent && AGENT_ID.test(from) && (ctx.transport !== "agent" || ctx.transportPrincipal !== from))
       fail("forbidden", "agent control events require the internal agent context");
     const senseContract = request.kind === "event" && ctx.transport === "phone" && from === "device:phone" && request.to === null ? wordContract("service:senses", request.word) : undefined;
     const phoneSense = senseContract?.kind === "event" && senseContract.direction === "in" && request.word.startsWith("sense.");
@@ -974,11 +986,11 @@ export class WorldRouter {
       const { message, phase, context, deadlineAt } = tracked;
       if (this.ledger.responseTo(message.id)) continue;
       if (this.pending.has(message.id)) continue;
-      if (message.to === "service:dsh-tool" && message.from === "agent:main") {
+      if (message.to === "service:dsh-tool" && AGENT_ID.test(message.from)) {
         this.publish(this.ledger.settle(message.id, "service:dsh-tool", errors("failed", "DSH tool result unknown after restart")).message);
         continue;
       }
-      if (message.from === "agent:main" && message.to === "service:gate" && message.word === "internal.approval") {
+      if (AGENT_ID.test(message.from) && message.to === "service:gate" && message.word === "internal.approval") {
         const askId = this.ledger.gateCase(message.id)?.askId;
         const priorAskResponse = askId ? this.ledger.responseTo(askId) : null;
         const response = this.ledger.failInternalApproval(message.id);

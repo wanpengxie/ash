@@ -85,20 +85,20 @@ export class ContainerHost {
   }
 
   /** The live session for an ash agent: resumed from ash's record when possible, created otherwise. */
-  async session(key: string, mcp: McpEndpoint): Promise<string> {
+  async session(key: string, mcp: McpEndpoint, cwd?: string): Promise<string> {
     const live = this.sessions.get(key);
     if (live && this.client?.alive) return live.id;
     const opening = this.opening.get(key);
     if (opening) return opening;
     const task = (async () => {
       const client = await this.boot();
-      const spec = this.spec!;
+      const workspace = cwd ?? this.spec!.agentWorkspace;
       const servers = [{ type: "http", name: "ash", url: mcp.url, headers: [{ name: "authorization", value: `Bearer ${mcp.token}` }] }];
       const previous = this.stored()[key];
       const started = Date.now();
       if (previous) {
         try {
-          await client.request("session/resume", { sessionId: previous, cwd: spec.agentWorkspace, mcpServers: servers });
+          await client.request("session/resume", { sessionId: previous, cwd: workspace, mcpServers: servers });
           this.sessions.set(key, { id: previous, mcp });
           this.timings[`resume:${key}`] = Date.now() - started;
           return previous;
@@ -108,7 +108,7 @@ export class ContainerHost {
           this.options.log?.(`session ${key} could not be resumed (${error.message}); starting a new one`);
         }
       }
-      const created = await client.request<{ sessionId: string }>("session/new", { cwd: spec.agentWorkspace, mcpServers: servers });
+      const created = await client.request<{ sessionId: string }>("session/new", { cwd: workspace, mcpServers: servers });
       if (typeof created?.sessionId !== "string") throw new Error("agent runtime returned no session id");
       this.store(key, created.sessionId);
       this.sessions.set(key, { id: created.sessionId, mcp });
@@ -133,6 +133,9 @@ export class ContainerHost {
   /** Put context in front of the agent's next step without starting work. */
   async inject(sessionId: string, content: ContentBlock[]): Promise<void> { await (await this.boot()).request("_ash/inject", { sessionId, content }); }
   cancel(sessionId: string): void { this.client?.notify("session/cancel", { sessionId }); }
+
+  /** The sessions open in the running runtime right now. */
+  openSessions(): string[] { return this.client?.alive ? [...this.sessions.values()].map((item) => item.id) : []; }
 
   /** DSH's plugin manager inside the container: list, or switch a bundle or plugin (applies when the runtime restarts). */
   async plugins(body: Record<string, unknown>): Promise<Record<string, unknown>> {

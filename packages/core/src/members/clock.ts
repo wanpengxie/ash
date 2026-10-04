@@ -1,6 +1,6 @@
 import type { ClockFiredBodyV2, Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema } from "../../../sdk/src/schema";
-import { wordContract } from "../../../sdk/src/words";
+import { AGENT_ID, wordContract } from "../../../sdk/src/words";
 import type { Member } from "../world/member";
 import type { Ledger, RequestContextSnapshot } from "../world/ledger";
 import { ClockJournal, type ClockFire, type ClockPayload, type ClockTimer } from "../world/clock-journal";
@@ -52,15 +52,17 @@ export class ClockMember implements Member {
     if (!caller || caller.member !== message.from || !caller.transportPrincipal) return false;
     if (message.from === "person:owner") return caller.ownerProxy &&
       (caller.transportPrincipal.startsWith("token:") || Boolean(caller.remote && caller.pairedDeviceId));
-    return message.from === "agent:main" && caller.local && !caller.remote && caller.transportPrincipal === "agent:main";
+    return AGENT_ID.test(message.from) && caller.local && !caller.remote && caller.transportPrincipal === message.from;
   }
-  private allowedPayload(value: Record<string, unknown>): ClockPayload | null {
+  private allowedPayload(value: Record<string, unknown>, from: string): ClockPayload | null {
     const to = value.to;
     const word = value.word;
     const body = value.body;
     const label = value.label;
     if (typeof label !== "string" || !label.trim() || !body || typeof body !== "object" || Array.isArray(body)) return null;
-    if (!((to === "agent:main" && (word === "wake" || word === "say")) ||
+    // An agent's timer speaks to that agent itself; the owner's go to the main agent or to the owner.
+    const self = typeof to === "string" && AGENT_ID.test(to) && (to === from || (from === "person:owner" && to === "agent:main"));
+    if (!((self && (word === "say" || (to === "agent:main" && word === "wake"))) ||
       (to === "person:owner" && word === "say" && (body as Record<string, unknown>).kind === "due"))) return null;
     const contract = wordContract(to, word);
     if (!contract?.input_schema || !matchesSchema(contract.input_schema, body) || !this.options.router.acceptsRequest(to, word, body)) return null;
@@ -86,7 +88,7 @@ export class ClockMember implements Member {
       return { ok: true, result: { timers } };
     }
     if (message.word === "set") {
-      const payload = this.allowedPayload(message.body);
+      const payload = this.allowedPayload(message.body, message.from);
       if (!payload) return error("bad_request", "unsupported scheduled target or body");
       const now = this.now();
       const at = message.body.at;

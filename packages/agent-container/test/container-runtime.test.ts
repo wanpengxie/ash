@@ -14,7 +14,7 @@ const skip = !install || !existsSync(join(install, "lib", "bin.js")) ? "ASH_TEST
 const plugin = fileURLToPath(new URL("../../dsh-ash-control/index.mjs", import.meta.url));
 const VAULT_KEY = "sk-vault-only-test-value-0123456789";
 
-type Seen = { headers: IncomingHttpHeaders; tools: string[]; user: string; toolResult: boolean; mind: boolean };
+type Seen = { headers: IncomingHttpHeaders; tools: string[]; user: string; toolResult: boolean; mind: boolean; raw: string };
 
 /** An Anthropic-style model that scripts each step from what it is asked. */
 function fakeModel(script: (request: Seen, index: number) => { tool?: { name: string; input: object }; text?: string }) {
@@ -30,7 +30,7 @@ function fakeModel(script: (request: Seen, index: number) => { tool?: { name: st
         Array.isArray(message.content) ? message.content.filter((part: { type?: string }) => part.type === "text").map((part: { text?: string }) => part.text ?? "") : []).join("\n");
       const entry: Seen = { headers: req.headers, tools: (request.tools ?? []).map((tool) => tool.name), user,
         toolResult: Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === "tool_result"),
-        mind: user.includes("This is your private mind space") };
+        mind: user.includes("This is your private mind space"), raw };
       seen.push(entry);
       const step = entry.mind ? { text: "ok" } : script(entry, seen.filter((item) => !item.mind).length);
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -154,6 +154,52 @@ test("the container runtime answers through ACP, uses ash tools over MCP, takes 
     assert.ok(running.container!.timings["resume:main"] !== undefined, "the main session was resumed");
   } finally {
     await running?.close();
+    server.close();
+  }
+});
+
+test("agents work together: the main agent asks the keeper, which answers from its own session and tools", { skip, timeout: 240_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "ash-agents-"));
+  const keeperTurns: Seen[] = [];
+  const { seen, server } = fakeModel((request) => {
+    if (request.user.includes("后台整理者")) {
+      keeperTurns.push(request);
+      if (!request.toolResult) return { tool: { name: "mcp__ash__capability_call", input: { member: "service:self", word: "read", body: { path: "MEMORY.md" } } } };
+      return { text: "记录里写的是 3 月 4 日" };
+    }
+    if (request.user.includes("我生日哪天") && !request.toolResult) return { tool: { name: "mcp__ash__agent_ask", input: { agent: "agent:keeper", text: "主人的生日记的是哪天？" } } };
+    if (request.user.includes("我生日哪天")) return { text: request.raw.includes("3 月 4 日") ? "你的生日是 3 月 4 日" : `我没问到 ${request.raw.slice(-600)}` };
+    return { text: "plain" };
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const upstream = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const work = join(root, "work");
+  const config = { stateDir: join(root, "state"), listen: "127.0.0.1:0", agents: [{ id: "agent:main" as const, runtime: "container" as const }],
+    container: { root: "", modelUpstream: upstream, direct: { dshBin: join(install!, "lib", "bin.js"), dshHome: join(root, "dsh-home"), workspace: work, pluginPath: plugin } } };
+  new VaultStore(join(root, "state", "vault.json")).set("DEEPSEEK_API_KEY", VAULT_KEY);
+  const running = await startOwner(config);
+  const owner = { transport: "api" as const, member: "person:owner", transportPrincipal: "token:test", local: true, remote: false, ownerProxy: true };
+  try {
+    assert.deepEqual(running.agents().map((agent) => agent.id), ["agent:main", "agent:keeper"]);
+    const ended = new Promise<Message>((resolve) => { const off = running.world.subscribe((m) => { if (m.from === "agent:main" && m.word === "turn.end") { off(); resolve(m); } }); });
+    await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "我生日哪天来着？" } });
+    assert.equal((await ended).body.reason, "completed");
+    const toOwner = running.ledger.list({ after: 0, limit: 1000 }).filter((m) => m.kind === "request" && m.from === "agent:main" && m.to === "person:owner" && m.word === "say").map((m) => String(m.body.text));
+    assert.deepEqual(toOwner, ["你的生日是 3 月 4 日"]);
+    // The keeper ran in its own session: its brief, its tools (no human_* tools), its own workspace.
+    assert.ok(keeperTurns.length >= 2);
+    assert.ok(!keeperTurns[0]!.tools.some((tool) => tool.includes("human_")), "the keeper cannot speak to the owner");
+    assert.ok(keeperTurns[0]!.tools.includes("mcp__ash__agent_tell"));
+    assert.ok(seen.find((item) => item.user.includes("我生日哪天"))!.tools.includes("mcp__ash__human_say"));
+    assert.ok(existsSync(join(root, "agents", "keeper")), "the keeper has its own workspace");
+    const keeperCall = running.ledger.list({ after: 0, limit: 1000 }).find((m) => m.from === "agent:keeper" && m.to === "service:dsh-tool");
+    assert.ok(keeperCall, "the keeper's tool calls are recorded as the keeper's");
+    const keeperRead = running.ledger.list({ after: 0, limit: 1000 }).find((m) => m.from === "agent:keeper" && m.to === "service:self" && m.word === "read");
+    assert.ok(keeperRead, "the keeper reached service:self as itself");
+    const sessions = JSON.parse(readFileSync(join(root, "state", "container-sessions.json"), "utf8")) as Record<string, string>;
+    assert.ok(sessions.main && sessions["agent:keeper"] && sessions.main !== sessions["agent:keeper"]);
+  } finally {
+    await running.close();
     server.close();
   }
 });

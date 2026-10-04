@@ -277,8 +277,12 @@ add("service:admin", "resume", "request", obj({ confirmed: { const: true } }, ["
   obj({ paused: { const: false } }, ["paused"]), { audience: "owner", description: "Resume only after explicit confirmation on a verified local owner screen." });
 
 export const WORD_CONTRACTS: readonly WordContract[] = Object.freeze(entries);
+/** An agent member id: agent:main is the one the owner talks with; the others are declared. */
+export const AGENT_ID = /^agent:[a-z][a-z0-9_-]{0,31}$/;
 export function wordContract(member: string, word: string): WordContract | undefined {
-  return WORD_CONTRACTS.find((item) => item.word === word && (item.member === member || (item.member === "screen:*" && /^screen:[^:]+$/.test(member))));
+  // Every agent speaks the same words; they are written once under the main agent.
+  return WORD_CONTRACTS.find((item) => item.word === word && (item.member === member || (item.member === "screen:*" && /^screen:[^:]+$/.test(member)) ||
+    (item.member === "agent:main" && AGENT_ID.test(member))));
 }
 export function deviceWordSpec(capability: { name: string; description: string; input_schema: JsonSchema; result_schema?: JsonSchema; risk: "none" | "outward" | "structure"; effect?: WordEffect; label: string }): WordSpec {
   if (typeof capability.name !== "string" || !capability.name.trim() || typeof capability.description !== "string" || !capability.description.trim() || typeof capability.label !== "string" || !capability.label.trim() || !["none", "outward", "structure"].includes(capability.risk)) throw new TypeError("device capability needs valid name, description, risk and label");

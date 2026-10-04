@@ -1,5 +1,5 @@
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
-import { wordContract } from "../../../sdk/src/words";
+import { AGENT_ID, wordContract } from "../../../sdk/src/words";
 import type { Member } from "../world/member";
 import { Ledger } from "../world/ledger";
 import { WorldRouter, type RouteHandlerContext, type TrustedRouteContext } from "../world/router";
@@ -30,6 +30,10 @@ export interface AgentTurnRunner {
 }
 
 export interface AgentMemberOptions {
+  /** agent:main (the default) is the one the owner talks with; any other id is a declared agent. */
+  id?: string;
+  /** An agent's answer to a question this agent is waiting on in its current turn: kept with that turn, not a new one. */
+  claimAnswer?: (message: Message, turn: string) => boolean;
   ledger: Ledger;
   router: WorldRouter;
   stateDir: string;
@@ -49,8 +53,10 @@ if (!say || say.kind !== "request" || !cancelTurn || cancelTurn.kind !== "reques
 
 /** Durable one-at-a-time intake. The secondary session is added by later work. */
 export class AgentMember implements Member {
-  readonly id = "agent:main";
+  readonly id: string;
   readonly kind = "agent" as const;
+  /** Only the main agent speaks in the owner's conversation. */
+  readonly main: boolean;
   readonly online = true;
   readonly idempotentRecovery = ["say", "cancel_turn", "wake"] as const;
   readonly name: string;
@@ -75,9 +81,15 @@ export class AgentMember implements Member {
   private receiptTask: Promise<void> | null = null;
   private steering: Promise<void> = Promise.resolve();
   private steered: { turn: string; ids: string[] } | null = null;
+  private activeAudience: string | null = null;
+  private readonly claimAnswer?: (message: Message, turn: string) => boolean;
   private error: Error | null = null;
 
   constructor(options: AgentMemberOptions) {
+    this.id = options.id ?? "agent:main";
+    if (!AGENT_ID.test(this.id)) throw new TypeError("invalid agent id");
+    this.main = this.id === "agent:main";
+    this.claimAnswer = options.claimAnswer;
     this.name = options.name ?? "Assistant";
     this.ledger = options.ledger;
     this.router = options.router;
@@ -88,10 +100,14 @@ export class AgentMember implements Member {
     this.mind = options.mind;
     this.lastManagedSeq = options.ledger.list({ before: Number.MAX_SAFE_INTEGER, limit: 1 }).at(-1)?.seq ?? 0;
     this.inbox = new AgentInbox(options.stateDir);
-    this.status = new AgentStatus(this.router, Date.now, options.isPaused);
+    this.status = new AgentStatus(this.router, Date.now, options.isPaused, this.id);
   }
 
-  words(): readonly WordSpec[] { return this.mind ? [say!, cancelTurn!, wake!, typing!] : [say!, cancelTurn!, typing!]; }
+  words(): readonly WordSpec[] {
+    const specs = !this.main ? [say!, cancelTurn!] : this.mind ? [say!, cancelTurn!, wake!, typing!] : [say!, cancelTurn!, typing!];
+    // The agent words are written once under the main agent; each agent registers them as its own.
+    return this.main ? specs : specs.map((spec) => ({ ...spec, member: this.id }) as WordSpec);
+  }
   get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
   /** Resample the single durable admin pause fact after a committed transition. */
@@ -107,8 +123,17 @@ export class AgentMember implements Member {
       return mind ? mind.handleWake(message, context.signal) : { ok: false, error: { code: "offline", message: "mind unavailable" } };
     }
     if (message.word !== "say") return { ok: false, error: { code: "not_found", message: "agent word not available" } };
-    this.inbox.accept(message); // sync durable commit before acknowledging the route
+    this.inbox.accept(message, this.id); // sync durable commit before acknowledging the route
     if (this.started) void this.receipts().catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
+    // The answer to an agent_ask this agent is waiting on belongs to the waiting turn; the tool call returns it.
+    const turn = this.activeTurn;
+    if (turn && this.claimAnswer?.(message, turn)) {
+      try {
+        this.inbox.attach([message.id], turn);
+        void this.event("read", { ids: [message.id], turn }, `read:${turn}:${message.id}`, turn).catch(() => {});
+        return { ok: true, result: { accepted: true } };
+      } catch { /* the turn just ended: it is an ordinary message then */ }
+    }
     this.schedule();
     if (this.started && this.activeTurn && this.runner.steer) this.steering = this.steering.then(() => this.steer()).catch(() => { /* left pending for the next turn */ });
     return { ok: true, result: { accepted: true } };
@@ -191,15 +216,42 @@ export class AgentMember implements Member {
     const turn = this.activeTurn;
     const controller = this.active;
     if (this.closed || !turn || !controller || controller.signal.aborted || !this.runner.steer || this.isPaused()) return;
-    const ids = this.inbox.pendingIds();
-    if (!ids.length) return;
-    const messages = ids.map((id) => this.message(id));
+    // Only words meant for the same audience join a running turn; anything else waits so its answer goes to the right place.
+    const leading = this.leadingBatch();
+    if (!leading.messages.length || leading.audience !== this.activeAudience) return;
+    const { ids, messages } = leading;
     const rendered = renderTurnBatch(messages, this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET, []);
     if (!await this.runner.steer({ turn, messages, rendered }, controller.signal)) return;
     if (this.closed || this.inbox.turn(turn).status !== "active") return;
     this.inbox.attach(ids, turn);
     this.steered = { turn, ids: [...(this.steered?.turn === turn ? this.steered.ids : []), ...ids] };
     await this.event("read", { ids, turn }, `read:${turn}:${ids[0]}`, turn);
+  }
+
+  /** Who hears a turn's words: the owner (main agent), the agent that wrote, or nobody (wakes, and replies to replies). */
+  private audienceOf(message: Message): string {
+    if (AGENT_ID.test(message.from)) return typeof message.body.in_reply_to === "string" ? "silent" : message.from;
+    return this.main ? "owner" : "silent";
+  }
+
+  /** The oldest pending messages that share one audience: a turn answers one audience at a time. */
+  private leadingBatch(): { ids: string[]; messages: Message[]; audience: string | null } {
+    const ids: string[] = [];
+    const messages: Message[] = [];
+    let audience: string | null = null;
+    for (const id of this.inbox.pendingIds()) {
+      const message = this.message(id);
+      const next = this.audienceOf(message);
+      if (audience !== null && next !== audience) break;
+      audience = next;
+      ids.push(id);
+      messages.push(message);
+    }
+    return { ids, messages, audience };
+  }
+
+  private steeredMessages(turn: string): Message[] {
+    return this.steered?.turn === turn ? this.steered.ids.map((id) => this.message(id)) : [];
   }
 
   private context(turn?: string): TrustedRouteContext {
@@ -281,9 +333,10 @@ export class AgentMember implements Member {
         await this.reconcile();
         if (this.closed) break;
         if (this.isPaused()) break;
-        const ids = this.inbox.pendingIds();
-        if (!ids.length) break;
-        const messages = ids.map((id) => this.message(id));
+        const batch = this.leadingBatch();
+        if (!batch.ids.length) break;
+        const { ids, messages } = batch;
+        const audience = batch.audience!;
         const budget = this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET;
         const stopFacts = this.inbox.stopFacts();
         const recent = this.managedSnapshot ? this.ledger.list({ after: this.lastManagedSeq, limit: 1000 }) : [];
@@ -301,18 +354,27 @@ export class AgentMember implements Member {
         const controller = new AbortController();
         this.active = controller;
         this.activeTurn = turn.id;
+        this.activeAudience = audience;
         let emitOpen = true;
         let result: { reason: "completed" | "error"; error?: string };
         try {
           result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text), managedSnapshot }, async (output) => {
             if (!emitOpen || this.closed || controller.signal.aborted || this.active !== controller) return;
             if (!output.id || output.id.length > 80 || !output.text.trim()) throw new TypeError("invalid agent output");
-            await this.router.send(this.context(turn.id), { to: "person:owner", kind: "request", word: "say",
-              body: { text: output.text, kind: "reply" }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
+            if (audience === "silent") return;
+            if (audience === "owner") {
+              await this.router.send(this.context(turn.id), { to: "person:owner", kind: "request", word: "say",
+                body: { text: output.text, kind: "reply" }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
+              return;
+            }
+            // Another agent wrote: the answer goes back to it, as a reply to the last thing it said in this turn.
+            const asked = [...messages, ...this.steeredMessages(turn.id)].filter((message) => message.from === audience).at(-1);
+            await this.router.send(this.context(turn.id), { to: audience, kind: "request", word: "say",
+              body: { text: output.text, ...(asked ? { in_reply_to: asked.id } : {}) }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
           }, controller.signal);
         } catch (error) {
           result = { reason: "error", error: error instanceof Error ? error.message : "runner failed" };
-        } finally { emitOpen = false; controller.abort(); this.active = null; this.activeTurn = null; this.quiescenceBlocked = false; }
+        } finally { emitOpen = false; controller.abort(); this.active = null; this.activeTurn = null; this.activeAudience = null; this.quiescenceBlocked = false; }
         if (this.closed) break; // an interrupted turn is closed and explained on restart
         const ended = this.inbox.finish(turn.id, result.reason, result.error);
         if (ended.reason === "completed") {

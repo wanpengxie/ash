@@ -22,6 +22,8 @@ export interface LaunchSpec {
   agentWorkspace: string;
   /** Map a host path inside the workspace to the path the agent sees. */
   toAgentPath(hostPath: string): string;
+  /** A declared agent's own workspace (created if missing), as the host and as the agent see it. */
+  agentHome(name: string): { host: string; agent: string };
   mode: "proot" | "direct";
 }
 
@@ -37,6 +39,7 @@ function writeIfChanged(file: string, text: string): void {
   renameSync(temp, file);
 }
 
+const safeName = (name: string) => { if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) throw new Error("invalid agent name"); return name; };
 const yamlString = (value: string) => `'${value.replace(/'/g, "''")}'`;
 
 /**
@@ -88,6 +91,7 @@ export function prepareLaunch(config: ContainerConfig, egressBase: string, state
       mode: "direct", command: dshBin, args: ["--profile", "acp", "--patch", patch],
       env: { HOME: process.env.HOME ?? dshHome, PATH: process.env.PATH ?? CONTAINER_PATH, DSH_HOME: dshHome, ...common },
       hostWorkspace: workspace, agentWorkspace: workspace, toAgentPath: (path) => path,
+      agentHome: (name) => { const home = join(dirname(workspace), "agents", safeName(name)); mkdirSync(home, { recursive: true }); return { host: home, agent: home }; },
     };
   }
   const root = config.root;
@@ -106,6 +110,7 @@ export function prepareLaunch(config: ContainerConfig, egressBase: string, state
   return {
     mode: "proot", command: run.command, args: run.args, env: run.env,
     hostWorkspace, agentWorkspace: "/root/work",
+    agentHome: (name) => { const home = join(rootfs, "root", "agents", safeName(name)); mkdirSync(home, { recursive: true }); return { host: home, agent: `/root/agents/${safeName(name)}` }; },
     toAgentPath: (path) => {
       if (path !== hostWorkspace && !path.startsWith(`${hostWorkspace}/`)) throw new Error("path is outside the agent workspace");
       return `/root/work${path.slice(hostWorkspace.length)}`;

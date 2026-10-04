@@ -23,6 +23,9 @@ const strings = (x) => Array.isArray(x) ? x.filter((v) => typeof v === "string")
 const knownState = (x) => faceForStatus(x) !== null;
 const turnId = (x) => typeof x === "string" && /^[tr]_[A-Za-z0-9_-]+$/.test(x);
 const memberId = (x) => typeof x === "string" && /^(agent|worker|device|service|person):[A-Za-z0-9_-]+$/.test(x);
+/** How another agent is named in the activity. */
+const AGENT_TITLES = { "agent:keeper": "整理者在后台整理" };
+const agentTitle = (id) => AGENT_TITLES[id] || `${id.slice(6)} 在后台工作`;
 const ownerPublisher = (from) => ["agent:main", "service:gate", "service:work"].includes(from);
 
 function safeCard(card) {
@@ -71,6 +74,12 @@ function record(m) {
   if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || (m.summary === true ? !isMessageSummaryV2(m) : !object(m.body))) return null;
   const b = m.summary === true ? m.body_summary : m.body;
   const base = { seq: m.seq, id: m.id, ts: number(m.ts), turn: turnId(m.turn) ? m.turn : "" };
+  // Another agent's turns appear in the activity, marked with who did them; its status and receipts do not.
+  if (m.kind === "event" && /^agent:[a-z][a-z0-9_-]*$/.test(m.from) && m.from !== "agent:main") {
+    if (m.word === "turn.start" && turnId(b.turn)) return { ...base, type: "turn.start", turn: b.turn, ids: strings(b.ids), agent: m.from };
+    if (m.word === "turn.end" && turnId(b.turn)) return { ...base, type: "turn.end", turn: b.turn, reason: string(b.reason), agent: m.from };
+    return null;
+  }
   if (m.kind === "event" && m.from === "agent:main") {
     if (m.word === "status" && knownState(b.state)) return { ...base, type: "status", state: b.state, text: string(b.text) };
     if (m.word === "received") return { ...base, type: "received", ids: strings(b.ids) };
@@ -120,7 +129,7 @@ function record(m) {
   }
   if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word };
   // Activity uses only routing metadata, never request arguments or tool results.
-  if (m.kind === "request" && turnId(m.turn) && (m.from === "agent:main" || m.from === "service:work") && memberId(m.to) && m.to !== "person:owner")
+  if (m.kind === "request" && turnId(m.turn) && (/^agent:[a-z][a-z0-9_-]*$/.test(m.from) || m.from === "service:work") && memberId(m.to) && m.to !== "person:owner")
     return { ...base, type: "activity.request", to: m.to, word: m.word };
   if (m.kind === "response" && typeof m.reply_to === "string" && object(b) && typeof b.ok === "boolean")
     return { ...base, type: "activity.response", reply_to: m.reply_to, ok: b.ok, error: b.ok === false && object(b.error) ? string(b.error.code) : "" };
@@ -180,8 +189,8 @@ function project(records, snapshots = new Map()) {
     } else if (r.type === "turn.start" || r.type === "run.start") {
       const batch = r.type === "turn.start" ? r.ids.map((id) => ownerTitles.get(id)).filter(Boolean) : [];
       const excerpt = batch.length ? [...batch[0]].slice(0, 48).join("") : "";
-      const title = r.type === "run.start" ? r.flow || "后台任务" : excerpt ? `${excerpt}${batch.length > 1 ? ` · ${batch.length} 条` : ""}` : "对话";
-      view.turns[r.turn] = { title, background: r.type === "run.start", started: r.ts, steps: [] };
+      const title = r.type === "run.start" ? r.flow || "后台任务" : r.agent ? agentTitle(r.agent) : excerpt ? `${excerpt}${batch.length > 1 ? ` · ${batch.length} 条` : ""}` : "对话";
+      view.turns[r.turn] = { title, background: r.type === "run.start" || Boolean(r.agent), started: r.ts, steps: [], ...(r.agent ? { agent: r.agent } : {}) };
     } else if (r.type === "turn.end" || r.type === "run.end") {
       if (view.turns[r.turn]) { view.turns[r.turn].ended = r.ts; view.turns[r.turn].outcome = r.reason || r.outcome; }
     } else if (r.type === "clock.list") view.timers = r.timers;

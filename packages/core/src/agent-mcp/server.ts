@@ -5,6 +5,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
+import { AGENT_ID } from "../../../sdk/src/words";
 import type { Ledger } from "../world/ledger";
 import type { WorldMembers } from "../world/member";
 import { RouterError, type TrustedRouteContext, type WorldRouter } from "../world/router";
@@ -20,11 +21,21 @@ export class AgentBinding {
   readonly token = randomBytes(24).toString("base64url");
   private current: { turn: string; signal: AbortSignal } | null = null;
   readonly jobs = new Map<string, Job>();
-  constructor(readonly member: string, readonly label: string, readonly sessionId: () => string | null) {}
+  constructor(readonly member: string, readonly label: string, readonly sessionId: () => string | null, readonly policy: AgentPolicy = {}) {}
+  /** The fixed tools this agent may use (its declaration); all when it says nothing. */
+  allowsTool(name: string): boolean { return !this.policy.tools || this.policy.tools.includes(name) || META_ALWAYS.has(name); }
+  allowsWord(member: string, word: string): boolean { return this.policy.words?.(member, word) ?? true; }
   begin(turn: string, signal: AbortSignal): void { this.current = { turn, signal }; }
   end(turn: string): void { if (this.current?.turn === turn) this.current = null; }
   get active(): { turn: string; signal: AbortSignal } | null { return this.current && !this.current.signal.aborted ? this.current : null; }
 }
+
+/** What an agent's declaration lets it use. */
+export interface AgentPolicy { tools?: readonly string[]; words?: (member: string, word: string) => boolean }
+// Receipts can always be collected and cancelled, whatever else an agent may use.
+const META_ALWAYS = new Set(["await_result", "list_pending", "cancel"]);
+interface PendingAsk { id: string; asker: string; target: string; askerTurn: string; targetTurn: string | null; texts: string[]; at: number;
+  resolve: (result: ToolResult) => void; settled: boolean }
 
 interface Job { id: string; member: string; word: string; label: string; turn: string; at: number; done: Promise<ToolResult>; result: ToolResult | null }
 
@@ -37,7 +48,7 @@ export interface AgentMcpOptions {
   /** Pause, quiet hours and similar facts for system_status. */
   status(): Record<string, unknown>;
   /** Other agents in this world (agent:main is the only one today). */
-  agents?: () => { id: string; name: string; summary: string }[];
+  agents?: () => { id: string; name: string; summary: string; busy?: boolean }[];
   fastPathMs?: number;
   maxWaitMs?: number;
   log?: (...args: unknown[]) => void;
@@ -117,9 +128,10 @@ const TOOLS = [
   { name: "human_confirm", description: "Ask the owner to approve something before you do it; they see an approval card with your title and detail. Use it when you are about to do something consequential that ash would not ask about by itself, or when you are unsure the owner wants it. Returns {decision: approved|rejected}. If the owner takes longer than 15 s you get {status:accepted, request_id}; then call await_result.",
     inputSchema: object({ title: text("One line: what you want to do"), detail: text("Exactly what will happen: the text to send, the command, the target") }, ["title", "detail"]) },
   // agents
-  { name: "agent_list", description: "The agents in this world and what each does. You are one of them.", inputSchema: object({}) },
-  { name: "agent_ask", description: "Ask another agent and wait for its answer.", inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The question") }, ["agent", "text"]) },
-  { name: "agent_tell", description: "Tell another agent something without waiting for an answer.", inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The message") }, ["agent", "text"]) },
+  { name: "agent_list", description: "The agents in this world: id, name, what each does, and which one is you. agent:main is the assistant the owner talks with and the only one that speaks to the owner.", inputSchema: object({}) },
+  { name: "agent_ask", description: "Ask another agent and wait for its answer: {ok, result: {agent, answer}}. It answers in a turn of its own; if that takes longer than 50 s (or wait=false) you get {status:accepted, request_id} and collect the answer with await_result.",
+    inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The question"), wait: { type: "boolean" } }, ["agent", "text"]) },
+  { name: "agent_tell", description: "Tell another agent something without waiting. It handles it in a turn of its own; whatever it says back arrives later as a message to you (you need not answer that).", inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The message") }, ["agent", "text"]) },
   // meta
   { name: "capability_list", description: "Everything else ash can do for you, live: each member (the phone, the owner's other devices, ash services) with its capabilities' names, one-line summaries and effect (read, act, write, send, execute, structure). New devices appear here as soon as they connect. Next: capability_describe, then capability_call.",
     inputSchema: object({ member: text("Only this member") }) },
@@ -147,16 +159,51 @@ export class AgentMcpServer {
   private callSeq = 0;
   url = "";
 
+  private readonly asks = new Map<string, PendingAsk>();
+
   constructor(private readonly options: AgentMcpOptions) {
     this.stopSubscription = options.router.subscribe((message) => {
-      if (message.kind !== "response" || !message.reply_to) return;
-      const waiter = this.waiters.get(message.reply_to);
-      if (waiter) { this.waiters.delete(message.reply_to); waiter(message); }
+      if (message.kind === "response" && message.reply_to) {
+        const waiter = this.waiters.get(message.reply_to);
+        if (waiter) { this.waiters.delete(message.reply_to); waiter(message); }
+        return;
+      }
+      this.followAsk(message);
     });
   }
 
-  bind(member: string, label: string, sessionId: () => string | null): AgentBinding {
-    const binding = new AgentBinding(member, label, sessionId);
+  /** An agent_ask is answered by everything the asked agent says back during the turn that takes the question. */
+  private followAsk(message: Message): void {
+    if (message.kind === "request" && message.word === "say" && typeof message.body.in_reply_to === "string") {
+      const ask = this.asks.get(message.body.in_reply_to);
+      if (ask && !ask.settled && message.from === ask.target && message.to === ask.asker && typeof message.body.text === "string") ask.texts.push(message.body.text);
+      return;
+    }
+    if (message.kind !== "event" || !AGENT_ID.test(message.from)) return;
+    if (message.word === "turn.start" && Array.isArray(message.body.ids)) {
+      for (const ask of this.asks.values()) if (!ask.settled && ask.target === message.from && (message.body.ids as unknown[]).includes(ask.id)) ask.targetTurn = String(message.body.turn);
+    } else if (message.word === "read" && Array.isArray(message.body.ids)) {
+      for (const ask of this.asks.values()) if (!ask.settled && ask.target === message.from && !ask.targetTurn && (message.body.ids as unknown[]).includes(ask.id)) ask.targetTurn = String(message.body.turn);
+    } else if (message.word === "turn.end") {
+      for (const ask of this.asks.values()) {
+        if (ask.settled || ask.target !== message.from || ask.targetTurn !== message.body.turn) continue;
+        ask.settled = true;
+        ask.resolve(message.body.reason === "completed"
+          ? { ok: true, result: { agent: ask.target, answer: ask.texts.join("\n\n") || "(it finished without answering in words)" } }
+          : failure("result_unknown", `${ask.target} stopped before answering (${String(message.body.reason)})`));
+      }
+    }
+    if (this.asks.size > 200) for (const [id, ask] of this.asks) if (ask.settled && Date.now() - ask.at > 600_000) this.asks.delete(id);
+  }
+
+  /** The answer to a question an agent is waiting on in its current turn: that turn keeps it, instead of a new turn. */
+  claimAnswer(message: Message, turn: string): boolean {
+    const ask = typeof message.body.in_reply_to === "string" ? this.asks.get(message.body.in_reply_to) : undefined;
+    return Boolean(ask && ask.asker === message.to && ask.target === message.from && ask.askerTurn === turn);
+  }
+
+  bind(member: string, label: string, sessionId: () => string | null, policy: AgentPolicy = {}): AgentBinding {
+    const binding = new AgentBinding(member, label, sessionId, policy);
     this.bindings.set(binding.token, binding);
     return binding;
   }
@@ -197,7 +244,7 @@ export class AgentMcpServer {
       let raw = "";
       for await (const chunk of request) { raw += chunk; if (raw.length > 4 * 1024 * 1024) { response.writeHead(413).end(); return; } }
       const server = new Server({ name: "ash", version: "3.0.0" }, { capabilities: { tools: {} } });
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.map((tool) => ({ ...tool })) }));
+      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((tool) => binding.allowsTool(tool.name)).map((tool) => ({ ...tool })) }));
       server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
         const result = await this.call(binding, call.params.name, (call.params.arguments ?? {}) as Record<string, unknown>, extra.signal);
         let body = JSON.stringify(result);
@@ -221,6 +268,7 @@ export class AgentMcpServer {
   /** One tool call. Exposed for tests; the HTTP path above is the only production entry. */
   async call(binding: AgentBinding, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult | Record<string, unknown>> {
     if (!TOOL_NAMES.includes(name)) return failure("payload_invalid", `unknown tool ${name}`);
+    if (!binding.allowsTool(name)) return failure("forbidden", `${name} is not one of your tools`);
     if (name === "await_result") return this.awaitResult(binding, args);
     if (name === "list_pending") return { ok: true, result: { pending: [...binding.jobs.values()].filter((job) => !job.result).map((job) => ({ request_id: job.id, member: job.member, word: job.word, label: job.label, since: job.at })) } };
     if (name === "cancel") {
@@ -257,16 +305,28 @@ export class AgentMcpServer {
         }
         case "human_show": return await this.send(binding, active.turn, "person:owner", "show", { card: args.card }, turnSignal);
         case "human_confirm": return await this.confirm(binding, active.turn, args, turnSignal);
-        case "agent_list": return { ok: true, result: { agents: [{ id: binding.member, name: "you", summary: `This agent (${binding.label})` }, ...(this.options.agents?.() ?? []).filter((agent) => agent.id !== binding.member)] } };
+        case "agent_list": return { ok: true, result: { you: binding.member, agents: (this.options.agents?.() ?? []).map((agent) => ({ ...agent, ...(agent.id === binding.member ? { you: true } : {}) })) } };
         case "agent_ask":
         case "agent_tell": {
-          const known = (this.options.agents?.() ?? []).some((agent) => agent.id === args.agent && agent.id !== binding.member);
-          return known ? failure("unreachable", "agent-to-agent messages are not available yet") : failure("payload_invalid", `no other agent named ${String(args.agent)}; agent_list shows who exists`);
+          const target = typeof args.agent === "string" ? args.agent : "";
+          if (typeof args.text !== "string" || !args.text.trim()) return failure("payload_invalid", "text is required");
+          if (target === binding.member) return failure("payload_invalid", "that is you; agent_list shows the others");
+          if (!(this.options.agents?.() ?? []).some((agent) => agent.id === target)) return failure("payload_invalid", `no agent named ${target}; agent_list shows who exists`);
+          const sent = await this.options.router.send(this.context(binding, active.turn), { to: target, kind: "request", word: "say", body: { text: args.text.trim() },
+            client_id: `mcp:${active.turn}:${++this.callSeq}:${randomBytes(4).toString("hex")}` }, turnSignal);
+          if (name === "agent_tell") return { ok: true, result: { sent: true, message_id: sent.id, note: "It handles this in a turn of its own; what it says back arrives as a message to you." } };
+          const done = new Promise<ToolResult>((resolve) => this.asks.set(sent.id, { id: sent.id, asker: binding.member, target, askerTurn: active.turn,
+            targetTurn: null, texts: [], at: Date.now(), resolve, settled: false }));
+          const job: Job = { id: sent.id, member: target, word: "ask", label: "Ask", turn: active.turn, at: Date.now(), done, result: null };
+          void done.then((result) => { job.result = result; });
+          binding.jobs.set(job.id, job);
+          return this.within(job, args.wait === false ? 0 : (this.options.maxWaitMs ?? MAX_WAIT_MS));
         }
-        case "capability_list": return this.list(typeof args.member === "string" ? args.member : undefined);
-        case "capability_describe": return this.describe(String(args.member ?? ""), typeof args.word === "string" ? args.word : undefined);
+        case "capability_list": return this.list(binding, typeof args.member === "string" ? args.member : undefined);
+        case "capability_describe": return this.describe(binding, String(args.member ?? ""), typeof args.word === "string" ? args.word : undefined);
         case "capability_call": {
           if (typeof args.member !== "string" || typeof args.word !== "string") return failure("payload_invalid", "member and word are required");
+          if (!binding.allowsWord(args.member, args.word)) return failure("forbidden", `${args.member}/${args.word} is not among the capabilities you may use`);
           if (args.body !== undefined && (typeof args.body !== "object" || args.body === null || Array.isArray(args.body))) return failure("payload_invalid", "body must be an object");
           return await this.job(binding, active.turn, args.member, args.word, (args.body ?? {}) as Record<string, unknown>,
             args.wait === false ? 0 : args.wait === true ? (this.options.maxWaitMs ?? MAX_WAIT_MS) : (this.options.fastPathMs ?? FAST_PATH_MS), turnSignal);
@@ -343,24 +403,25 @@ export class AgentMcpServer {
     return this.within(job, this.options.fastPathMs ?? FAST_PATH_MS);
   }
 
-  private list(only?: string): ToolResult {
+  private list(binding: AgentBinding, only?: string): ToolResult {
     const summary = this.options.members.describe("agent");
-    const members = summary.members.filter((member) => member.id !== "agent:main" && (!only || member.id === only)).map((member) => {
+    // Agents reach each other through the agent tools, not as capabilities.
+    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && (!only || member.id === only)).map((member) => {
       let words: WordSpec[] = [];
       try { words = this.options.members.describe("agent", member.id).members[0]?.words ?? []; } catch { /* vanished */ }
       return { id: member.id, kind: member.kind, name: member.name, ...(member.online === undefined ? {} : { online: member.online }),
-        capabilities: words.filter((word) => word.kind === "request").map((word) => ({ word: word.word, ...(word.label ? { label: word.label } : {}),
+        capabilities: words.filter((word) => word.kind === "request" && binding.allowsWord(member.id, word.word)).map((word) => ({ word: word.word, ...(word.label ? { label: word.label } : {}),
           summary: word.description.split(/(?<=[.。])\s/u)[0]!.slice(0, 160), effect: effectOf(word) })) };
     }).filter((member) => member.capabilities.length);
     if (only && !members.length) return failure("payload_invalid", `no member ${only}; call capability_list without member`);
     return { ok: true, result: { members } };
   }
 
-  private describe(member: string, word?: string): ToolResult {
+  private describe(binding: AgentBinding, member: string, word?: string): ToolResult {
     let words: WordSpec[];
     try { words = this.options.members.describe("agent", member).members[0]?.words ?? []; }
     catch { return failure("payload_invalid", `no member ${member}; capability_list shows what exists`); }
-    const chosen = words.filter((item) => item.kind === "request" && (!word || item.word === word));
+    const chosen = words.filter((item) => item.kind === "request" && binding.allowsWord(member, item.word) && (!word || item.word === word));
     if (!chosen.length) return failure("payload_invalid", `${member} has no capability ${word}; capability_describe without word lists them`);
     return { ok: true, result: { member, capabilities: chosen.map((item) => ({ word: item.word, label: item.label, description: item.description,
       input_schema: item.input_schema ?? { type: "object" }, output_schema: item.result_schema ?? null, effect: effectOf(item),
