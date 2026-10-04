@@ -116,11 +116,13 @@ const TOOLS = [
     inputSchema: object({ request_id: text("One request"), requester: text("Only this agent, e.g. agent:main"), word: text("Only this capability, e.g. clipboard.set"),
       decision: { type: "string", enum: ["rule", "review", "carry", "once", "always", "deny", "timeout", "cancelled", "waiting"] },
       before: { type: "integer", minimum: 1, description: "next_before from the previous page" }, limit: { type: "integer", minimum: 1, maximum: 50 } }) },
-  { name: "approval_rules", description: "The owner's approval rules: which agent may use which outside capability (and target) without asking, until when, and whether it was revoked.",
+  { name: "approval_rules", description: "The owner's approval rules: which agent may use which outside capability (and target) without asking, until when, and whether it was revoked; plus the approval mode (auto: ask only when needed; always: ask about every outside action that is not a read).",
     inputSchema: object({ before: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
   { name: "approval_rule_add", description: "Ask for a new approval rule: for up to 30 days, one agent may use one outside capability without asking, optionally only for one target (site:<host>, a calendar id, a recipient id, or browse). This ALWAYS asks the owner on a card, whatever else is allowed, and you get a receipt to collect with await_result. Running commands and payments can never be covered.",
     inputSchema: object({ agent: text("Agent id, e.g. agent:main"), member: text("Device member, e.g. device:phone"), word: text("Capability, e.g. clipboard.set"),
       target: text("Only this target; omit for every use of the capability"), days: { type: "integer", minimum: 1, maximum: 30 } }, ["agent", "member", "word"]) },
+  { name: "approval_mode_set", description: "Ask to switch the approval mode: auto (outside actions go by rules and review, and ask the owner only when needed) or always (every outside action that is not a read asks the owner). This ALWAYS asks the owner on a card; collect the result with await_result.",
+    inputSchema: object({ mode: { type: "string", enum: ["auto", "always"] } }, ["mode"]) },
   { name: "approval_rule_remove", description: "Ask to revoke an approval rule by id. This ALWAYS asks the owner on a card; collect the result with await_result.",
     inputSchema: object({ id: text("Rule id from approval_rules") }, ["id"]) },
   { name: "history_query", description: "Search the conversation history with the owner. Give text to search, or read_seq to read one message in full. Returns newest first, with seq numbers; page older with before_seq.",
@@ -296,6 +298,7 @@ export class AgentMcpServer {
         // Changing rules waits for the owner's card: a receipt comes back after the fast path.
         case "approval_rule_add": return await this.job(binding, active.turn, "service:gate", "rules.set", pick(args, ["agent", "member", "word", "target", "days"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
         case "approval_rule_remove": return await this.job(binding, active.turn, "service:gate", "rules.revoke", { id: args.id }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        case "approval_mode_set": return await this.job(binding, active.turn, "service:gate", "mode.set", { mode: args.mode }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
         case "human_say": return await this.send(binding, active.turn, "person:owner", "say", { text: args.text, kind: args.kind ?? "reply" }, turnSignal);
         case "human_notify": return await this.send(binding, active.turn, "person:owner", "say", { text: args.text, kind: "heads_up" }, turnSignal);
         case "human_ask": {

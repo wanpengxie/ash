@@ -93,7 +93,7 @@ const AGENT = /^agent:[A-Za-z0-9_-]+$/;
  * Written into ash, not configurable: when an agent asks to change how approvals work, the owner is asked every time.
  * No rule, mode, carry-over or reviewer can let it through, and the card offers no "always".
  */
-const ALWAYS_ASK_OWNER = new Set(["service:gate/rules.set", "service:gate/rules.revoke"]);
+const ALWAYS_ASK_OWNER = new Set(["service:gate/rules.set", "service:gate/rules.revoke", "service:gate/mode.set"]);
 /** Owner and agents may call device capabilities; the gate judges each action instead of a per-capability access list. */
 const deviceCaller = (from: string): boolean => from === "person:owner" || AGENT.test(from);
 const CARRY_MS = 5 * 60_000;
@@ -467,7 +467,7 @@ export class WorldRouter {
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
       fail("forbidden", "only owner may inspect or start background work");
     // An agent may read approval evidence and rules, and ask to change rules (which always asks the owner, see ALWAYS_ASK_OWNER).
-    const agentGateWord = ["audit", "history", "rules.list", "rules.set", "rules.revoke"].includes(request.word) &&
+    const agentGateWord = ["audit", "history", "rules.list", "rules.set", "rules.revoke", "mode.set"].includes(request.word) &&
       AGENT.test(from) && ctx.transport === "agent" && ctx.transportPrincipal === from && ctx.local && !ctx.remote;
     if (request.to === "service:gate" && from !== "person:owner" && !agentGateWord) fail("forbidden", "gate inspection requires owner");
     if (request.to === "service:gate" && request.word.startsWith("access.") && from !== "person:owner") fail("forbidden", "device access is the owner's");
@@ -730,12 +730,24 @@ export class WorldRouter {
 
   /** What an agent wants to change about approvals, in words the owner can judge. */
   private ruleChangeCard(request: Message): { title: string; detail: string } {
-    const body = request.body as { agent?: string; member?: string; word?: string; target?: string; days?: number; id?: string };
-    if (request.word === "rules.revoke") return { title: `${request.from} 想撤销一条审批规则`, detail: `规则 ${String(body.id)}：撤销后，这类操作会重新按正常流程判断或问你。` };
+    const body = request.body as { agent?: string; member?: string; word?: string; target?: string; days?: number; id?: string; mode?: string };
+    const who = this.nameOf(request.from);
+    if (request.word === "mode.set") {
+      const mode = body.mode === "always" ? "每次都问" : "有影响时才问";
+      return { title: `${who} 想把审批档位改成「${mode}」`, detail: body.mode === "always"
+        ? "改了以后，所有对外部有影响的操作（读除外）都会先问你。"
+        : "改了以后，对外部有影响的操作先按你的规则和她的判断处理，拿不准时才问你；执行命令和付款仍然每次都问。" };
+    }
+    if (request.word === "rules.revoke") return { title: `${who} 想撤销一条审批规则`, detail: `规则 ${String(body.id)}：撤销后，这类操作会重新按正常流程判断或问你。` };
     const label = body.member && body.word ? this.endpoint(body.member, body.word)?.spec.label ?? body.word : String(body.word);
-    return { title: `${request.from} 想新增一条审批规则`,
-      detail: `${body.days ?? 30} 天内，${body.agent} 使用「${label}」（${body.member}/${body.word}）${body.target ? `，目标 ${body.target}` : "，不限目标"}时不再问你。` };
+    return { title: `${who} 想新增一条审批规则`,
+      detail: `${body.days ?? 30} 天内，${body.agent ? this.nameOf(body.agent) : ""} 使用「${label}」${body.target ? `（目标 ${body.target}）` : "（不限目标）"}时不再问你。` };
   }
+
+  private memberName: (id: string) => string | undefined = () => undefined;
+  /** How cards name a member: its shown name when it has one, else its id. */
+  setMemberNames(lookup: (id: string) => string | undefined): void { this.memberName = lookup; }
+  private nameOf(id: string): string { return this.memberName(id) ?? id; }
 
   /** The identity a rule for one agent and one outside capability is matched by, as the gate computes it for that agent's requests. */
   ruleIdentity(agent: string, member: string, word: string): { subject: string; fingerprint: string; risk: string; effect: WordEffect; payment: boolean } | null {

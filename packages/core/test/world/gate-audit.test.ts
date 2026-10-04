@@ -27,7 +27,9 @@ async function setup(verdict: ReviewVerdict) {
   const router = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(router);
   router.register({ member: "person:owner", spec: wordContract("person:owner", "ask")!, handle: () => {} });
-  members.register(new GateMember(ledger, router, members));
+  let mode: "auto" | "always" = "auto";
+  members.register(new GateMember(ledger, router, members, { get: () => mode, set: (next) => { mode = next; } }));
+  router.setApprovalMode(() => mode);
   const effects: string[] = [];
   router.registerDeviceBatch("device:phone", caps.map((cap) => ({ ...cap, description: cap.label, input_schema: { type: "object", additionalProperties: true } })),
     (message) => { effects.push(message.word); return { ok: true, result: {} }; });
@@ -46,7 +48,7 @@ async function setup(verdict: ReviewVerdict) {
     await tick();
   };
   const audit = (query: Record<string, unknown> = {}) => ledger.gateAudit(query).entries;
-  return { ledger, router, effects, send, card, answer, audit, reviews: () => reviews,
+  return { ledger, router, effects, mode: () => mode, send, card, answer, audit, reviews: () => reviews,
     close: () => { router.cancel(ledger.trackedRequests().map((item) => item.message.id)); ledger.close(); } };
 }
 
@@ -62,6 +64,9 @@ test("every judged action leaves evidence: facts, verdict, card, decision, who d
     assert.equal((entry!.facts as { requester: string }).requester, "agent:main");
     assert.match(String(entry!.content), /开会/);
     assert.deepEqual(entry!.executed, { ok: true });
+    // The owner's history list names the action as the capability does.
+    const listed = w.ledger.gateHistoryPage().items.find((item) => item.source === "current" && item.request_id === allowed);
+    assert.equal(listed && "label" in listed ? listed.label : undefined, "改剪贴板");
     // A command is never reviewed: the card is the evidence, and the owner's answer is recorded with it.
     const command = await w.send(agent, "device:phone", "shell.run", { command: "ls" });
     await w.answer(command, "deny");
@@ -107,5 +112,29 @@ test("an agent's rule change always asks the owner, whatever the reviewer or rul
     // Reading evidence and rules needs no approval.
     const read = await w.router.send(keeper, { to: "service:gate", kind: "request", word: "audit", body: { limit: 5 }, wait: true });
     assert.equal((read.reply!.body as { ok: boolean }).ok, true);
+  } finally { w.close(); }
+});
+
+test("an agent may ask to switch the approval mode, but only the owner's card switches it", async () => {
+  const w = await setup({ decision: "allow", reason: "looks fine" });
+  try {
+    const ask = await w.send(agent, "service:gate", "mode.set", { mode: "always" });
+    const pending = w.card(ask)!;
+    assert.deepEqual((pending.ask.body.options as { id: string }[]).map((option) => option.id), ["once", "deny"]);
+    assert.match(String(pending.ask.body.title), /每次都问/);
+    assert.equal(w.mode(), "auto", "nothing changes before the owner answers");
+    await w.answer(ask, "deny");
+    assert.equal(w.mode(), "auto");
+    assert.equal(w.audit({ request_id: ask })[0]!.decided_by, "owner");
+    const again = await w.send(agent, "service:gate", "mode.set", { mode: "always" });
+    await w.answer(again, "once");
+    assert.equal(w.mode(), "always");
+    // In always mode the reviewer's allow no longer lets an outside action through on its own.
+    const write = await w.send(agent, "device:phone", "clipboard.set", { text: "x" });
+    assert.ok(w.card(write), "always mode asks the owner");
+    assert.deepEqual(w.effects, []);
+    // The agent sees the mode next to the rules, without a card.
+    const rules = await w.router.send(keeper, { to: "service:gate", kind: "request", word: "rules.list", body: {}, wait: true });
+    assert.equal((rules.reply!.body as { result: { mode: string } }).result.mode, "always");
   } finally { w.close(); }
 });

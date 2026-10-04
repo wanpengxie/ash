@@ -5,7 +5,7 @@ import type { Ledger } from "../world/ledger";
 import type { WorldMembers } from "../world/member";
 import type { RouteHandlerContext, WorldRouter } from "../world/router";
 
-const words = ["rules.list", "rules.revoke", "rules.set", "history", "audit", "access.list", "access.grant", "access.revoke"].map((word) => wordContract("service:gate", word));
+const words = ["rules.list", "rules.revoke", "rules.set", "mode.set", "history", "audit", "access.list", "access.grant", "access.revoke"].map((word) => wordContract("service:gate", word));
 const AGENT = /^agent:[a-z][a-z0-9_-]{0,31}$/;
 const TARGETED = new Set(["browser.click", "browser.type", "browser.run", "calendar.create", "message.send"]);
 if (words.some((word) => !word)) throw new TypeError("gate word contracts unavailable");
@@ -18,19 +18,22 @@ export class GateMember implements Member {
   readonly name = "Approval gate";
   readonly online = true;
   readonly idempotentRecovery = ["rules.list", "history", "audit", "access.list"] as const;
-  constructor(private readonly ledger: Ledger, private readonly router: WorldRouter, private readonly members: WorldMembers) {}
+  constructor(private readonly ledger: Ledger, private readonly router: WorldRouter, private readonly members: WorldMembers,
+    /** The approval mode lives with the owner's settings; the gate only carries an approved change to it. */
+    private readonly mode?: { get(): "auto" | "always"; set(mode: "auto" | "always"): void }) {}
   words(): readonly WordSpec[] { return words as WordSpec[]; }
   async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody | void> {
     // An agent reads evidence and rules, and changes rules only through a request the owner approved (the gate always asks).
     if (AGENT.test(message.from) && context.caller?.member === message.from && !context.signal.aborted &&
-      ["audit", "history", "rules.list", "rules.set", "rules.revoke"].includes(message.word)) return this.forAgent(message);
+      ["audit", "history", "rules.list", "rules.set", "rules.revoke", "mode.set"].includes(message.word)) return this.forAgent(message);
     if (message.to !== this.id || message.kind !== "request" || message.from !== "person:owner" ||
       context.caller?.member !== "person:owner" || context.signal.aborted ||
       !await this.router.currentlyAuthorized(message, context.caller) || context.signal.aborted)
       return error("forbidden", "current owner authorization unavailable");
     if (message.word === "audit") return { ok: true, result: this.ledger.gateAudit(message.body as Parameters<Ledger["gateAudit"]>[0]) };
     if (message.word === "rules.set") return this.setRule(message, "person:owner");
-    if (message.word === "rules.list") return { ok: true, result: this.ledger.gateRulesPage(message.body.before as number | undefined, message.body.limit as number | undefined) };
+    if (message.word === "mode.set") return this.setMode(message);
+    if (message.word === "rules.list") return { ok: true, result: this.rulesPage(message) };
     if (message.word === "history") return { ok: true, result: this.ledger.gateHistoryPage(message.body.before as number | undefined, message.body.limit as number | undefined) };
     if (message.word === "rules.revoke") {
       if (!context.caller.local || context.caller.remote) return error("forbidden", "rule revocation requires local owner");
@@ -61,12 +64,25 @@ export class GateMember implements Member {
     switch (message.word) {
       case "audit": return { ok: true, result: this.ledger.gateAudit(message.body as Parameters<Ledger["gateAudit"]>[0]) };
       case "history": return { ok: true, result: this.ledger.gateHistoryPage(message.body.before as number | undefined, message.body.limit as number | undefined) };
-      case "rules.list": return { ok: true, result: this.ledger.gateRulesPage(message.body.before as number | undefined, message.body.limit as number | undefined) };
+      case "rules.list": return { ok: true, result: this.rulesPage(message) };
       // The router only delivers these after the owner said yes on a card; the request id is the record of who made the change.
       case "rules.set": return this.setRule(message, message.id);
       case "rules.revoke": return { ok: true, result: { revoked: this.ledger.revokeGateRule(String(message.body.id), message.id) } };
+      case "mode.set": return this.setMode(message);
     }
     return error("not_found", "gate word unavailable");
+  }
+
+  private rulesPage(message: Message) {
+    const page = this.ledger.gateRulesPage(message.body.before as number | undefined, message.body.limit as number | undefined);
+    return this.mode ? { ...page, mode: this.mode.get() } : page;
+  }
+
+  private setMode(message: Message): ResponseBody {
+    if (!this.mode) return error("not_found", "the approval mode is not available here");
+    const mode = message.body.mode === "always" ? "always" : "auto";
+    this.mode.set(mode);
+    return { ok: true, result: { mode } };
   }
 
   private setRule(message: Message, by: string): ResponseBody {

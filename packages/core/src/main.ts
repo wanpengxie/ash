@@ -199,7 +199,8 @@ export async function startOwner(config: Config): Promise<Running> {
     });
     const members = new WorldMembers(world);
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
-    members.register(new GateMember(ledger, world, members));
+    members.register(new GateMember(ledger, world, members, { get: () => admin?.journal.approvalMode() ?? "auto", set: (mode) => admin!.journal.setApprovalMode(mode) }));
+    world.setMemberNames((id) => { try { return members.describe("owner", id).members[0]?.name; } catch { return undefined; } });
     const vaultFile = join(config.stateDir, "vault.json");
     let vaultStore: VaultStore;
     try { vaultStore = new VaultStore(vaultFile, Date.now, vaultSealKey); }

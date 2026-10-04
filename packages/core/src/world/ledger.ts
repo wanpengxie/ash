@@ -1073,8 +1073,8 @@ export class Ledger {
 
   gateHistoryPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { items: GateHistoryItemV2[]; next_before?: number } {
     if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new TypeError("invalid gate history page");
-    const rows = this.db.prepare(`SELECT h.*,m."from" AS caller_member,a.expires_at AS legacy_expires_at FROM gate_history h
-      LEFT JOIN messages m ON m.id=h.request_id LEFT JOIN gate_access a ON a.source_hash=h.legacy_source_hash
+    const rows = this.db.prepare(`SELECT h.*,m."from" AS caller_member,a.expires_at AS legacy_expires_at,e.label AS evidence_label FROM gate_history h
+      LEFT JOIN messages m ON m.id=h.request_id LEFT JOIN gate_access a ON a.source_hash=h.legacy_source_hash LEFT JOIN gate_evidence e ON e.request_id=h.request_id
       WHERE h.seq<? ORDER BY h.seq DESC LIMIT ?`).all(before, limit + 1) as Row[];
     const page = rows.slice(0, limit);
     return { items: page.map((row): GateHistoryItemV2 => row.source === "legacy"
@@ -1086,7 +1086,8 @@ export class Ledger {
         subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "none" | "outward" | "structure",
         decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry", at: Number(row.at),
         ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }),
-        ...(typeof row.reason === "string" && row.reason ? { reason: row.reason.slice(0, 500) } : {}), source: "current" }),
+        ...(typeof row.reason === "string" && row.reason ? { reason: row.reason.slice(0, 500) } : {}),
+        ...(typeof row.evidence_label === "string" && row.evidence_label && row.target !== "service:gate" ? { label: row.evidence_label.slice(0, 120) } : {}), source: "current" }),
       ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };
   }
 

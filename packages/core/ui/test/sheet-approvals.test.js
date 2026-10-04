@@ -178,3 +178,27 @@ test("history says when she judged an action herself and why; a capability-wide 
     assert.doesNotMatch(text, /\*/);
   } finally { delete globalThis.document; }
 });
+
+test("a history record opens to its evidence: what was done, what the reviewer saw and said, the card, the answer, and whether it ran", () => {
+  globalThis.document = { createElement: (tag) => new Node(tag), createDocumentFragment: () => new Node("fragment") };
+  try {
+    const history = [{ id: "h1", request_id: "r1", source: "current", word: "clipboard.set", risk: "outward", label: "改剪贴板", decision: "review", reason: "你要的", at: 4000 },
+      { id: "h2", request_id: "r2", source: "current", word: "rules.set", risk: "structure", decision: "deny", at: 4100 }];
+    const opened = [];
+    const evidence = new Map([["r1", { status: "ready", entry: { request_id: "r1", requester: "agent:main", word: "clipboard.set", label: "改剪贴板", effect: "act",
+      content: "开会", facts: { owner_said: ["把开会复制一下"], context: ["read 日历"] }, review: { decision: "allow", reason: "主人明确要求", ms: 1200 },
+      decision: "review", decided_by: "review", executed: { ok: true } } }], ["r2", { status: "missing" }]]);
+    const root = new Node("root");
+    renderApprovalsSheet(root, { asks: [] }, { now: 5000, history, rules: [], name: "小安", evidence, onEvidence: (id) => opened.push(id) });
+    const all = root.children[0].textContent;
+    for (const expected of ["小安", "改剪贴板（操作）", "开会", "「把开会复制一下」", "read 日历", "可以直接做，用了 1.2 秒：主人明确要求", "裁判看到的前几步", "裁判（模型判断）", "做成了", "收起", "修改审批规则", "没有留下依据"])
+      assert.ok(all.includes(expected), expected);
+    const find = (node, label) => node.tag === "button" && node.value === label ? node : node.children.map((child) => find(child, label)).find(Boolean);
+    find(root.children[0], "收起").listeners.click();
+    assert.deepEqual(opened, ["r1"]);
+    const closed = new Node("root");
+    renderApprovalsSheet(closed, { asks: [] }, { now: 5000, history, rules: [], evidence: new Map(), onEvidence: () => {} });
+    assert.ok(closed.children[0].textContent.includes("查看依据"));
+    assert.ok(!closed.children[0].textContent.includes("裁判结论"));
+  } finally { delete globalThis.document; }
+});

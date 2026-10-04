@@ -165,6 +165,7 @@ export class AgentSheet {
     this.approvalStatus = "";
     this.approvalHistory = null;
     this.approvalRules = null;
+    this.approvalEvidence = new Map();
     this.approvalsLoaded = false;
     this.armedRule = null;
     this.backgroundOpen = false;
@@ -210,7 +211,24 @@ export class AgentSheet {
       history: this.approvalHistory, rules: this.approvalRules, status: this.approvalStatus,
       onRetry: () => this.loadApprovalData(binding, epoch),
       armedRule: this.armedRule, onArm: (id) => { this.armedRule = id; this.renderApprovals(); },
-      onRevoke: binding.localManagement ? (id) => this.revokeApprovalRule(id, binding, epoch) : undefined });
+      onRevoke: binding.localManagement ? (id) => this.revokeApprovalRule(id, binding, epoch) : undefined,
+      evidence: this.approvalEvidence, onEvidence: (id) => this.toggleEvidence(id, binding, epoch) });
+  }
+
+  /** Opening a record reads its evidence from the gate; tapping again closes it. */
+  async toggleEvidence(id, binding, epoch) {
+    if (this.approvalEvidence.has(id)) { this.approvalEvidence.delete(id); this.renderApprovals(); return; }
+    this.approvalEvidence.set(id, { status: "loading" });
+    this.renderApprovals();
+    let next;
+    try {
+      const result = await gatePageRequest(this.net, () => this.current(binding), "audit", { request_id: id, limit: 1 });
+      const entry = Array.isArray(result?.entries) ? result.entries.find((item) => item?.request_id === id) : undefined;
+      next = entry ? { status: "ready", entry } : { status: "missing" };
+    } catch { next = { status: "failed" }; }
+    if (!this.current(binding) || this.activeTab !== "approvals" || epoch !== this.loadEpoch || !this.approvalEvidence.has(id)) return;
+    this.approvalEvidence.set(id, next);
+    this.renderApprovals();
   }
 
   async loadApprovalData(binding, epoch) {

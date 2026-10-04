@@ -9,6 +9,7 @@ const actionLabel = (item) => item?.word === "calendar.create" ? "创建日历�
   item?.word === "message.send" ? "发送消息" :
   item?.word === "browser.click" ? "在网页上点击" : item?.word === "browser.type" ? "在网页上输入" :
   item?.word === "shell.run" ? "执行命令" :
+  item?.word === "rules.set" || item?.word === "rules.revoke" ? "修改审批规则" : item?.word === "mode.set" ? "修改审批档位" :
   item?.risk === "outward" ? "对外操作" : item?.risk === "structure" ? "修改资料" : "受保护操作";
 export function approvalSections(view, now = Date.now()) {
   const pending = [];
@@ -54,6 +55,51 @@ const at = (value, now) => {
   return `${date.getFullYear() === new Date(now).getFullYear() ? "" : `${date.getFullYear()}年`}${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
 };
 const HISTORY_SHOWN = 20;
+const EFFECTS = { read: "读", act: "操作", write: "改数据", send: "对外发送", execute: "执行命令", structure: "改结构" };
+const DECIDED_BY = { rule: "你定的规则", review: "裁判（模型判断）", carry: "沿用你几分钟前的允许", owner: "你", timeout: "没人回答，过期", cancelled: "取消了", waiting: "还在等" };
+const ANSWERS = { once: "允许这一次", always: "以后都允许", deny: "不允许" };
+
+/** One record's evidence: what was asked, what the reviewer saw and said, the card, the answer, and whether it ran. */
+export function renderEvidence(parent, entry, { now = Date.now(), name = "Ash" } = {}) {
+  const box = text(parent, "div", "", "sheet-evidence");
+  const row = (label, value) => {
+    if (!value) return;
+    const line = text(box, "div", "", "sheet-evidence-row");
+    text(line, "span", label, "sheet-evidence-label");
+    text(line, "span", value, "sheet-evidence-value");
+  };
+  const effect = EFFECTS[entry.effect] ?? safeText(entry.effect, 40);
+  row("谁要做", entry.requester === "agent:main" ? name : safeText(entry.requester, 80));
+  // The gate's own words carry English contract labels; the owner reads them by what they do.
+  const what = entry.member === "service:gate" ? actionLabel(entry) : safeText(entry.label, 120) || safeText(entry.word, 80);
+  row("要做什么", `${what}${effect ? `（${effect}）` : ""}`);
+  row("具体内容", safeText(entry.content, 1200));
+  const facts = entry.facts && typeof entry.facts === "object" ? entry.facts : null;
+  if (facts) {
+    const said = Array.isArray(facts.owner_said) ? facts.owner_said.filter((item) => typeof item === "string").map((item) => `「${safeText(item, 300)}」`) : [];
+    row("裁判看到你说的", said.length ? said.join("\n") : "这一轮你没有说话");
+    const steps = Array.isArray(facts.context) ? facts.context.filter((item) => typeof item === "string").map((item) => safeText(item, 200)) : [];
+    if (steps.length) row("裁判看到的前几步", steps.join("\n"));
+  }
+  const review = entry.review && typeof entry.review === "object" ? entry.review : null;
+  if (review) {
+    const ms = Number.isSafeInteger(review.ms) ? `，用了 ${(review.ms / 1000).toFixed(1)} 秒` : "";
+    if (review.decision === "unavailable") row("裁判结论", `没判出来（${safeText(review.error, 200)}）${ms}，所以问你`);
+    else row("裁判结论", `${review.decision === "allow" ? "可以直接做" : "要问你"}${ms}${safeText(review.reason, 400) ? `：${safeText(review.reason, 400)}` : ""}`);
+  }
+  const card = entry.card && typeof entry.card === "object" ? entry.card : null;
+  if (card) {
+    row("卡片上写的", [safeText(card.title, 240), safeText(card.detail, 1000)].filter(Boolean).join("\n"));
+    if (card.forced) row("为什么一定问你", "改审批规则和档位，写死必须由你决定");
+  }
+  const answer = ANSWERS[entry.decision];
+  if (answer) row("你的回答", `${answer}${validTime(entry.answered_at) ? ` · ${at(entry.answered_at, now)}` : ""}`);
+  row("谁做的决定", DECIDED_BY[entry.decided_by] ?? safeText(entry.decided_by, 40));
+  if (entry.decided_by !== "review" && entry.decided_by !== "carry" && safeText(entry.reason, 400) && !review) row("理由", safeText(entry.reason, 400));
+  const executed = entry.executed && typeof entry.executed === "object" ? entry.executed : null;
+  row("最后", executed ? executed.ok ? "做成了" : entry.decision === "deny" ? "没有做" : `没做成（${safeText(executed.message, 200) || safeText(executed.error, 60)}）` : "还没有结果");
+  return box;
+}
 
 function group(parent, header, intro = "") {
   text(parent, "h3", header, "set-header");
@@ -63,7 +109,8 @@ function group(parent, header, intro = "") {
 
 /** Only authenticated ledger projections are shown; no optimistic approval or fake rule rows. */
 export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, answerState = new Map(),
-  history, rules, onRevoke, status = "", onRetry, name = "Ash", armedRule = null, onArm, loading = false } = {}) {
+  history, rules, onRevoke, status = "", onRetry, name = "Ash", armedRule = null, onArm, loading = false,
+  evidence = new Map(), onEvidence } = {}) {
   const sections = approvalSections(view, now);
   const fragment = document.createDocumentFragment();
   if (status) text(fragment, "p", status, "set-status warn sheet-status");
@@ -127,7 +174,7 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
   else if (!history) text(historyBox, "p", "暂时读不到审批记录（不代表没有）。", "set-line sheet-unavailable");
   else if (!items.length) text(historyBox, "p", "还没有审批记录。", "set-line sheet-empty");
   else for (const item of items.slice(0, HISTORY_SHOWN)) {
-    const label = item.source === "current" ? actionLabel(item) : "较早的审批";
+    const label = item.source === "current" ? safeText(item.label, 80) || actionLabel(item) : "较早的审批";
     const decision = { once: "仅这一次", always: "以后都允许", deny: "已拒绝", timeout: "过期没回答",
       cancelled: "已取消", rule: "按规则放行", review: "由她判断后放行", carry: "刚允许过，沿用" }[item.decision] || "已记录";
     const row = text(historyBox, "div", "", "set-line sheet-history");
@@ -136,6 +183,16 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
     text(body, "span", `${decision} · ${at(item.at, now)}`, "set-sub");
     if ((item.decision === "review" || item.decision === "carry") && safeText(item.reason, 200))
       text(body, "span", safeText(item.reason, 200), "set-sub sheet-reason");
+    if (item.source !== "current" || !validId(item.request_id) || typeof onEvidence !== "function") continue;
+    const shown = evidence.get(item.request_id);
+    const toggle = text(row, "button", shown ? "收起" : "查看依据", "sheet-link");
+    toggle.type = "button";
+    toggle.addEventListener("click", () => { void onEvidence(item.request_id); });
+    if (!shown) continue;
+    if (shown.status === "loading") text(body, "span", "正在读取…", "set-sub");
+    else if (shown.status === "missing") text(body, "span", "这条没有留下依据（多半是证据记录上线之前的）。", "set-sub");
+    else if (shown.status === "failed") text(body, "span", "暂时读不到依据（不代表没有），稍后再点一次。", "set-sub warn");
+    else renderEvidence(body, shown.entry, { now, name });
   }
   if (items.length > HISTORY_SHOWN) text(fragment, "p", `只显示最近 ${HISTORY_SHOWN} 条。`, "sheet-empty");
   if (!loading && (!history || !rules) && typeof onRetry === "function") {

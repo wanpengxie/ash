@@ -435,7 +435,9 @@ export type GateHistoryItemV2 =
   | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "none" | "outward" | "structure";
       decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"; at: number; rule_id?: string;
       /** Why the reviewer let it pass (decision review) — plain words for the owner. */
-      reason?: string; source: "current" }
+      reason?: string;
+      /** The capability's own name for the action, from the evidence kept with it. */
+      label?: string; source: "current" }
   | { id: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
       decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry">;
       at: number; legacy_scope?: string; source: "legacy" };

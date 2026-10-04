@@ -195,7 +195,7 @@ const gateRule = obj({ id, subject: nonempty, device_id: id, capability_id: id, 
 // A word whose effect is not read is gated even when its legacy risk says none.
 const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: choice("none", "outward", "structure"),
   decision: choice("once", "always", "deny", "timeout", "cancelled", "rule", "review", "carry"), at: nonnegativeSafe, rule_id: id,
-  reason: { type: "string", maxLength: 500 }, source: { const: "current" } },
+  reason: { type: "string", maxLength: 500 }, label: { type: "string", maxLength: 120 }, source: { const: "current" } },
 ["id", "request_id", "decision", "at", "source"]);
 const gateLegacyScope: JsonSchema = { type: "string", pattern: "^(\\*|device:[A-Za-z0-9_-]+/(\\*|[A-Za-z0-9_.-]+))$" };
 const gateLegacyHistory = obj({ id, subject: nonempty, to: id, word: id, risk: gateRisk,
@@ -208,7 +208,7 @@ const gateAccessItem = obj({ id, member: { type: "string", pattern: "^agent:[A-Z
 ["id", "member", "scope", "source", "created_at", "expires_at"]);
 // A current case always names its accepted request; a migrated row is never an actionable ask.
 add("service:gate", "rules.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
-  obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe }, ["rules"]), { audience: "owner" });
+  obj({ rules: { type: "array", items: gateRule, maxItems: 100 }, next_before: positiveSafe, mode: choice("auto", "always") }, ["rules"]), { audience: "owner" });
 add("service:gate", "rules.revoke", "request", obj({ id }, ["id"]), obj({ revoked: bool }, ["revoked"]), { audience: "owner", risk: "structure", effect: "structure" });
 add("service:gate", "history", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 1000 } }),
   obj({ items: { type: "array", items: { oneOf: [gateCurrentHistory, gateLegacyHistory] }, maxItems: 1000 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
@@ -224,6 +224,9 @@ add("service:gate", "rules.set", "request", obj({ agent: { type: "string", patte
   target: nonempty, days: { type: "integer", minimum: 1, maximum: 30 } }, ["agent", "member", "word"]), obj({ id, expires_at: nonnegativeSafe }, ["id", "expires_at"]),
   { audience: "owner", risk: "structure", effect: "structure", label: "Changing approval rules",
     description: "Allow one agent to use one outside capability without asking, for up to 30 days, optionally only for one target (site:<host>, a calendar id, a recipient id, browse)." });
+add("service:gate", "mode.set", "request", obj({ mode: choice("auto", "always") }, ["mode"]), obj({ mode: choice("auto", "always") }, ["mode"]),
+  { audience: "owner", risk: "structure", effect: "structure", label: "Changing the approval mode",
+    description: "Switch the approval mode: auto asks only when an outside action needs it; always asks about every outside action that is not a read." });
 add("service:gate", "access.list", "request", obj({ before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
   obj({ items: { type: "array", items: gateAccessItem, maxItems: 100 }, next_before: positiveSafe }, ["items"]), { audience: "owner" });
 add("service:gate", "access.grant", "request", obj({ member: { type: "string", pattern: "^agent:[A-Za-z0-9_-]+$" }, scope: gateAccessScope }, ["member", "scope"]),
