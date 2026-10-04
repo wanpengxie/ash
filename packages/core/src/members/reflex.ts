@@ -6,6 +6,7 @@ import { DecisionRuntime, type DecisionRoute } from "../world/decision/runtime";
 import { ConversationControlRoute, type ConversationControlOptions } from "./reflex/conversation-control";
 import { ScreenReconcileRoute, type ScreenHost } from "./reflex/screen-reconcile";
 import type { DecisionModel } from "../world/decision/jev";
+import { ScreenExecutionRoute, screenExecutionContext } from "./reflex/screen-execution";
 
 /** Stable world identity for Ash's extensible peripheral decision runtime. */
 export class ReflexMember implements Member {
@@ -14,15 +15,20 @@ export class ReflexMember implements Member {
   readonly name = "Decisions";
   readonly online = true;
   readonly runtime: DecisionRuntime;
+  private readonly execution?: ScreenExecutionRoute;
   private readonly stop: () => void;
   constructor(private readonly router: WorldRouter, private readonly busyTurn: () => string | null,
     private readonly options: ConversationControlOptions & { model?: DecisionModel; screenHost?: ScreenHost;
-      conversationEnabled?: boolean; screenEnabled?: boolean;
+      conversationEnabled?: boolean; screenEnabled?: boolean; screenExecutionEnabled?: boolean;
       ready?: () => boolean; paused?: () => boolean; routes?: DecisionRoute[] } = {}) {
     this.runtime = new DecisionRuntime(router);
     if (options.conversationEnabled !== false) this.runtime.register(new ConversationControlRoute(router, busyTurn, options));
+    if (options.screenHost && options.screenExecutionEnabled !== false) {
+      this.execution = new ScreenExecutionRoute(router, options.screenHost, busyTurn, options.model);
+      this.runtime.register(this.execution);
+    }
     if (options.screenHost && options.screenEnabled !== false) this.runtime.register(new ScreenReconcileRoute(router, options.model, busyTurn,
-      options.ready ?? (() => busyTurn() === null), () => this.runtime.supersede("phone-screen"), options.paused ?? (() => false), options.screenHost));
+      options.ready ?? (() => busyTurn() === null), () => this.runtime.supersede("phone-screen"), options.paused ?? (() => false), options.screenHost, this.execution));
     for (const route of options.routes ?? []) this.runtime.register(route);
     this.stop = router.subscribe((message) => this.runtime.observe(message));
   }
@@ -40,6 +46,17 @@ export class ReflexMember implements Member {
     catch { return { ok: false, error: { code: "offline", message: "screen host unavailable" } }; }
   }
   get lastError(): Error | null { return this.runtime.lastError; }
+  executionContext(turn: string): string | undefined {
+    const plan = this.execution?.plan(turn);
+    return plan ? screenExecutionContext(plan) : undefined;
+  }
+  executionViolation(message: Message): string | null { return this.execution?.violation(message) ?? null; }
   settled(): Promise<void> { return this.runtime.settled(); }
-  async close(): Promise<void> { this.stop(); await this.runtime.close(); }
+  async close(): Promise<void> {
+    this.stop();
+    // Stop accepted lifecycle hooks too, not just observed post-turn jobs. Their
+    // timers and late handler replies must not outlive the service/ledger.
+    this.router.cancel(this.router.ledger.trackedRequests().filter((row) => row.message.to === this.id).map((row) => row.message.id));
+    await this.runtime.close();
+  }
 }

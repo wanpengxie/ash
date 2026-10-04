@@ -175,7 +175,8 @@ object SystemCapabilities {
 
     private val appsOpen = Cap(
         "apps.open",
-        "Open (launch or bring to front) an app on the phone's screen, by package name or launcher label. Android 10+ blocks " +
+        "Open (launch or bring to front) an app on the REAL foreground phone screen, by package name or launcher label. " +
+            "Use this when the owner asks you to open an app for them to use; leave it visible, not on a virtual display. Android 10+ blocks " +
             "background apps from opening screens, so this works when ash is in the foreground, ash's accessibility service is " +
             "enabled, or Shizuku is running with ash authorized (it then goes through the Shizuku shell); otherwise the result says it may have been blocked.",
         schema("app" to prop("string", "Package name (e.g. com.tencent.mm) or launcher label (e.g. \"WeChat\").", required = true)),

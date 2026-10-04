@@ -1,8 +1,8 @@
 # Ash peripheral decision runtime
 
-Status: design proposal, 2026-10-05. This document defines the intended
-replacement for the current stop-specific `service:reflex` implementation. It
-does not describe an additional Agent.
+Status: implemented, 2026-10-05. This document records the peripheral decision
+runtime replacing the stop-specific `service:reflex` implementation, with the
+execution-screen extension in section 19. It does not describe an additional Agent.
 
 ## 1. Role in the system
 
@@ -87,6 +87,7 @@ packages/core/src/world/decision/
   jev.ts                  generic typed JEV transport
 packages/core/src/members/reflex/
   conversation-control.ts route semantics and restricted cancel/pause executor
+  screen-execution.ts     pre-run screen choice, scoped runner context and constraint
   screen-reconcile.ts     route semantics and restricted screen executor
 android/.../host/
   ScreenDecisionHost.kt   atomic host comparisons and screen effects
@@ -175,7 +176,7 @@ The runtime uses three lifecycle hook classes:
 
 | Hook | Typical trigger | Purpose |
 |---|---|---|
-| `before_turn` | internal request immediately after durable `turn.start` | capture origin state and initialize route-local observation |
+| `before_turn` | internal request immediately after durable `turn.start` | capture origin state, choose execution screen and initialize route-local observation |
 | `during_turn` | owner `say`, device request/result, approval result | pre-empt or accumulate facts while the Agent is active |
 | `after_turn` | `turn.end` | reconcile product state created by the completed turn |
 
@@ -183,7 +184,7 @@ The runtime uses three lifecycle hook classes:
 into a narrow `before_turn` ordering barrier: after the Agent has durably
 emitted `turn.start`, but before it invokes the DSH runner, it sends a local
 internal `before_turn {turn}` request to `service:reflex` and
-waits for bounded local state capture. Without this barrier an asynchronous
+waits for bounded local state capture and eligible execution-screen judgment. Without this barrier an asynchronous
 subscriber can lose the race to the Agent's first effect, making the supposed
 baseline state false. A timeout or failed snapshot returns `captured:false`
 and the turn continues; peripheral observation must never strand the Agent
@@ -289,7 +290,9 @@ memory read plus localhost IPC and should normally complete in milliseconds.
 Use a short bounded timeout; failure simply leaves the route unarmed and starts
 the task.
 
-The shipped hook deadline is 2 seconds, with an 800 ms host-read deadline. This
+The original capture-only hook deadline was 2 seconds; with section 19's
+execution-screen judgment it is now 10 seconds, with an 800 ms host-read deadline
+and a maximum 6-second execution judgment. The local state capture budget
 allows for durable ledger writes and scheduling on a loaded phone, while the
 visibility read itself remains an in-memory operation. The emulator measured an
 11 ms direct bridge round trip; complete audited hook responses in successful
@@ -303,9 +306,10 @@ At `turn.start`, capture:
 - `homeVisible` and `visibility_epoch` from Android `AppState`;
 - triggering owner message ids and origin screen.
 
-This capture uses the bounded `before_turn` barrier described above. It is a
-snapshot operation only: no JEV request is made and no screen effect is applied
-before the DSH turn begins. It also means no full general-purpose pre-turn
+This capture uses the bounded `before_turn` barrier described above. The
+reconcile route itself only captures; section 19's execution route may also ask
+JEV before dispatch. No screen effect is applied before the DSH turn begins.
+It also means no full general-purpose pre-turn
 screen snapshot is necessary: eligibility itself establishes that the real
 screen originated in Ash.
 
@@ -377,8 +381,10 @@ as general model tools. The Android host performs compare-and-act atomically
 where possible. `return_to_ash` launches the existing Ash activity; it does not
 simulate Back, because Back has app-specific and stack-specific consequences.
 
-`surface.get` reads Android lifecycle state and does not depend on Shizuku
-or the accessibility service. `screen.get` is only needed after the
+`surface.get` reads Android lifecycle state without requiring Shizuku
+or the accessibility service. It now also reports a cheap Shizuku readiness
+boolean (`virtual_available`), but does not start Shizuku or create a display.
+`screen.get` is only needed after the
 turn and for the final freshness check; it is not on the normal task-start
 critical path.
 
@@ -493,7 +499,8 @@ configuration during one migration window:
     },
     "routes": {
       "conversation.control": { "enabled": true, "threshold": 0.6 },
-      "screen.reconcile": { "enabled": true }
+      "screen.reconcile": { "enabled": true },
+      "screen.execution": { "enabled": true }
     }
   }
 }
@@ -616,3 +623,84 @@ core, then configure its test credentials. The script reads the existing
 temporary DeepSeek test key, does not print it, and does not delete it. JEV's
 synthetic credential is used only with the local endpoint. Do not reuse this
 configuration as a production JEV setup.
+
+## 19. Execution-screen selection and visible app delivery
+
+An app opened *for the owner to use* is a different deliverable from work done
+*inside an app on the owner's behalf*. A virtual launch does not satisfy the
+first request. The `screen.execution` route now shares one pre-run capture and
+preparation promise with `screen.reconcile`; it does not launch an app itself.
+
+```text
+native owner message -> local visible-page check -> JEV execution-screen choice
+  -> trusted per-turn runner context + device execution constraint
+  -> DSH performs the task -> JEV completion cleanup + freshness guard
+```
+
+JEV receives the triggering native owner messages, bounded recent conversation,
+and real host readiness. Its closed outcomes are:
+
+| Outcome | Execution intent |
+|---|---|
+| `foreground_handoff` | “帮我打开闲鱼”: open visibly on the real screen and leave the app for the owner |
+| `virtual_task` | “在闲鱼帮我查一下价格”: prefer a usable virtual display, then report the result |
+| `foreground_task` | Real-screen work or owner login/OTP is needed, or virtual capabilities are unavailable |
+| `no_preference` | Chat, headless information lookup or another task needing no native app screen |
+
+These examples are model criteria, not a deterministic phrase classifier. The
+selection is independent of stop/pause and completion reconciliation; its route
+can be disabled separately without disabling either. Old configs enable it by
+default. Its plan, confidence, fallback and origin are durable in the internal
+`before_turn` response under `captures[].state.execution`.
+
+The Agent member passes only a trusted instruction string into the container
+runner's pre-prompt injection and the legacy DSH runner's managed context.
+Every turn explicitly supersedes older screen preferences, including turns with
+no armed plan. Current app capability descriptions distinguish real foreground
+delivery from virtual delegated work. The owner's task text is not rewritten.
+
+The router checks the plan before asking for approval and again immediately
+before device dispatch. Foreground plans reject `vscreen.create`, `launch` and
+virtual input rather than silently rewriting them; read/status and cleanup
+remain available. This constraint is scoped to `agent:main`, this turn and
+`device:phone`, and does not override the owner's direct actions or bypass the
+approval gate. It constrains declared virtual capabilities, not arbitrary shell
+programs. The completion executor will not return to Ash when that would undo a
+`foreground_handoff`, even if the cleanup model incorrectly selects return.
+
+Missing/invalid/low-confidence/timed-out JEV uses a disclosed conservative
+foreground-task fallback, never an unverified virtual plan. Selecting virtual
+requires true readiness both at capture and immediately before runner dispatch.
+User focus changes, turn cancellation or shutdown during judgment discard the
+plan. The fast eligibility check remains local; model choice is a network call,
+not a millisecond operation. The whole hook is bounded at 10 seconds so task
+intake cannot be stranded by an uncooperative model.
+
+`virtual_task` is a preference, not a guarantee that every Android app supports
+a virtual display. Android may reuse an existing real-screen window. The runner
+instruction requires checking `vscreen.see` after launch and explaining failures
+or owner-login needs before switching to visible work. This extension does not
+change the low-level virtual-display implementation or auto-start Shizuku.
+
+Validation includes pre-run ordering, persisted plans, deliberately incorrect
+virtual launch rejection, erroneous cleanup rejection, virtual-task cleanup,
+unavailable Shizuku, malformed/low-confidence/missing/timed-out JEV, stale user
+focus, cancellation during the pre-run judgment, remote/hidden input and both runner context adapters. These are automated
+fixtures; no new live JEV or physical Xianyu/Shizuku success is claimed.
+
+Final verification: 674 Core/SDK/runner/UI tests, 673 passed, 1 skipped, 0 failed
+(installed DSH included); all 80 Android unit tests passed. Typechecking,
+architecture gate (zero findings), APK signature and alignment checks passed.
+The first full run had one loopback HTTP `fetch failed` in the existing DSH
+approval-policy test; its five-test file passed separately and the final full
+rerun passed without weakening assertions. The final focused screen/runner
+regression passed all 27 tests, including pre-run stop and late-model handling.
+
+The updated production-package APK is `build/delivery/ash-screen-execution.apk`,
+SHA-256 `14facbf29840c2cc91fa38bd1909837cadc9d9d6f110b1f1f8ea90074fa1daf0`.
+Its payload Core SHA-256 is
+`1a65072a8ab20cce1b0f8d4457d62c158e87d9f5550e3750b540f663307e43c3`, verified
+against both the build bundle and APK-embedded payload. The older
+`ash-decision.apk` is preserved as the prior delivery, not the latest build.
+The mac-mini remained offline during this extension, so this new APK was not
+installed there and no additional live simulator/physical-phone result is claimed.

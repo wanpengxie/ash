@@ -15,6 +15,8 @@ export interface AgentTurnInput {
   rendered: string;
   stopFacts: readonly string[];
   managedSnapshot?: MindSnapshot;
+  /** Trusted per-turn peripheral instruction, never derived from the owner message renderer. */
+  peripheralContext?: string;
 }
 export interface AgentTurnOutput { id: string; text: string }
 export interface AgentTurnRunner {
@@ -41,7 +43,7 @@ export interface AgentMemberOptions {
   currentAdminPauseTargets?: (requestId: unknown, turn: unknown) => boolean;
   managedSnapshot?: () => Promise<MindSnapshot>;
   /** Ash lifecycle capture, after durable start and before dispatching the runner. Bounded by the router. */
-  beforeTurn?: (turn: string) => Promise<void>;
+  beforeTurn?: (turn: string) => Promise<string | void>;
   mind?: () => AgentMind | null;
 }
 
@@ -69,7 +71,7 @@ export class AgentMember implements Member {
   private readonly isPaused: () => boolean;
   private readonly currentAdminPauseTargets: (requestId: unknown, turn: unknown) => boolean;
   private readonly managedSnapshot?: () => Promise<MindSnapshot>;
-  private readonly beforeTurn?: (turn: string) => Promise<void>;
+  private readonly beforeTurn?: (turn: string) => Promise<string | void>;
   private readonly mind?: () => AgentMind | null;
   private lastManagedSeq: number;
   private started = false;
@@ -359,8 +361,9 @@ export class AgentMember implements Member {
         currentTurn = turn.id;
         const managedSnapshot = this.managedSnapshot ? await this.managedSnapshot() : undefined;
         await this.turnEvents(turn);
+        let peripheralContext: string | void = undefined;
         if (this.beforeTurn && !this.closed && this.inbox.turn(turn.id).status === "active") {
-          try { await this.beforeTurn(turn.id); } catch { /* unavailable peripheral capture does not prevent a turn */ }
+          try { peripheralContext = await this.beforeTurn(turn.id); } catch { /* unavailable peripheral capture does not prevent a turn */ }
         }
         if (this.closed) break; // close during read/start must not dispatch a fresh runner
         if (this.inbox.turn(turn.id).status !== "active") { currentTurn = null; continue; }
@@ -371,7 +374,8 @@ export class AgentMember implements Member {
         let emitOpen = true;
         let result: { reason: "completed" | "error"; error?: string };
         try {
-          result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text), managedSnapshot }, async (output) => {
+          result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text), managedSnapshot,
+            ...(typeof peripheralContext === "string" ? { peripheralContext } : {}) }, async (output) => {
             if (!emitOpen || this.closed || controller.signal.aborted || this.active !== controller) return;
             if (!output.id || output.id.length > 80 || !output.text.trim()) throw new TypeError("invalid agent output");
             if (audience === "silent") return;

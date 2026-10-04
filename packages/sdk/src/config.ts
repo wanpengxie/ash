@@ -5,7 +5,7 @@ export interface WorldConfigV2 {
   delivery: { quiet: string; dedupe_minutes: number };
   reflex: { jev: { url: string; key_credential: string }; threshold: number; timeout_ms: number };
   decision: { jev: { url: string; key_credential: string; model: string; timeout_ms: number };
-    routes: { "conversation.control": { enabled: boolean; threshold: number }; "screen.reconcile": { enabled: boolean } } };
+    routes: { "conversation.control": { enabled: boolean; threshold: number }; "screen.reconcile": { enabled: boolean }; "screen.execution": { enabled: boolean } } };
   workers: { model: null | { provider: string; model: string } };
   memory: { idle_minutes: number; every_minutes: number };
   heartbeat: { every_minutes: number };
@@ -16,7 +16,7 @@ export const DEFAULT_WORLD_CONFIG_V2: WorldConfigV2 = {
   delivery: { quiet: "21:30-09:00", dedupe_minutes: 60 },
   reflex: { jev: { url: "", key_credential: "jev" }, threshold: 0.6, timeout_ms: 6000 },
   decision: { jev: { url: "", key_credential: "jev", model: "", timeout_ms: 6000 },
-    routes: { "conversation.control": { enabled: true, threshold: 0.6 }, "screen.reconcile": { enabled: true } } },
+    routes: { "conversation.control": { enabled: true, threshold: 0.6 }, "screen.reconcile": { enabled: true }, "screen.execution": { enabled: true } } },
   workers: { model: null },
   memory: { idle_minutes: 5, every_minutes: 60 },
   heartbeat: { every_minutes: 30 },
@@ -37,7 +37,8 @@ export const WORLD_CONFIG_SCHEMA_V2: JsonSchema = {
       routes: { type: "object", properties: {
         "conversation.control": { type: "object", properties: { enabled: { type: "boolean" }, threshold: { type: "number", minimum: 0, maximum: 1 } }, required: ["enabled", "threshold"], additionalProperties: false },
         "screen.reconcile": { type: "object", properties: { enabled: { type: "boolean" } }, required: ["enabled"], additionalProperties: false },
-      }, required: ["conversation.control", "screen.reconcile"], additionalProperties: false },
+        "screen.execution": { type: "object", properties: { enabled: { type: "boolean" } }, required: ["enabled"], additionalProperties: false },
+      }, required: ["conversation.control", "screen.reconcile", "screen.execution"], additionalProperties: false },
     }, required: ["jev", "routes"], additionalProperties: false },
     workers: { type: "object", properties: { model: { anyOf: [{ type: "null" }, model] } }, required: ["model"], additionalProperties: false },
     memory: { type: "object", properties: { idle_minutes: positive, every_minutes: positive }, required: ["idle_minutes", "every_minutes"], additionalProperties: false },
@@ -70,12 +71,13 @@ export function resolveWorldConfigV2<T extends Record<string, unknown>>(input: T
   if (supplied?.jev !== undefined && !plainObject(supplied.jev)) throw new TypeError("decision.jev: expected object");
   if (supplied?.routes !== undefined && !plainObject(supplied.routes)) throw new TypeError("decision.routes: expected object");
   const routes = supplied?.routes;
-  for (const id of ["conversation.control", "screen.reconcile"] as const)
+  for (const id of ["conversation.control", "screen.reconcile", "screen.execution"] as const)
     if (routes?.[id] !== undefined && !plainObject(routes[id])) throw new TypeError(`decision.routes.${id}: expected object`);
   merged.decision = { ...(merged.decision as object), jev: { ...DEFAULT_WORLD_CONFIG_V2.decision.jev,
     ...legacy.jev, timeout_ms: legacy.timeout_ms, ...supplied?.jev }, routes: { ...routes,
     "conversation.control": { enabled: true, threshold: legacy.threshold, ...routes?.["conversation.control"] },
-    "screen.reconcile": { enabled: true, ...routes?.["screen.reconcile"] } } };
+    "screen.reconcile": { enabled: true, ...routes?.["screen.reconcile"] },
+    "screen.execution": { enabled: true, ...routes?.["screen.execution"] } } };
   const errors = schemaErrors(WORLD_CONFIG_SCHEMA_V2, merged);
   if (errors.length) throw new TypeError(errors.join("; "));
   return merged as T & WorldConfigV2;

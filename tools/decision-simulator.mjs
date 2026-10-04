@@ -25,6 +25,8 @@ if (process.argv[2] === "serve") {
       res.setHeader("content-type", "application/json");
       if (req.url === "/seen") return void res.end(JSON.stringify(seen));
       const { state, questions } = JSON.parse(data);
+      if (questions.execution_screen) return void res.end(JSON.stringify({ answers: {
+        execution_screen: { choice: JSON.stringify(state.owner_request).includes("SIM-STAY") ? "foreground_handoff" : "foreground_task", confidence: 0.99 } } }));
       if (!questions.real_screen) return void res.end(JSON.stringify({ answers: {
         intent: { choice: "unrelated", confidence: 0.99 }, targets_current: { noul: 0 }, urgency: { score: 0 } } }));
       const text = JSON.stringify(state.owner_request ?? "");

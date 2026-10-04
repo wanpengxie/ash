@@ -330,6 +330,13 @@ export class WorldRouter {
     return prepared;
   }
 
+  private deviceExecutionGuard: ((message: Message) => string | null) | null = null;
+  /** A peripheral execution constraint, independent of approval. No request rewriting or bypass. */
+  setDeviceExecutionGuard(guard: (message: Message) => string | null): void { this.deviceExecutionGuard = guard; }
+  private screenConstraint(request: Message): string | null {
+    return request.kind === "request" && request.to?.startsWith("device:") && AGENT.test(request.from)
+      ? this.deviceExecutionGuard?.(detached(request)) ?? null : null;
+  }
   setGate(gate: GateHook): void { this.gate = gate; }
   /** The reviewer judges an agent's non-read action when no owner rule covers it; null means every such action asks. */
   setReviewer(reviewer: Reviewer | null, options: { timeoutMs?: number } = {}): void {
@@ -905,6 +912,8 @@ export class WorldRouter {
     const { request, endpoint } = pending;
     if (pending.settled) return;
     try {
+      const constraint = this.screenConstraint(request);
+      if (constraint) { this.finish(pending, errors("forbidden", constraint), request.to!, false); return; }
       // Only what reaches outside ash is judged: a capability of the phone or another device. ash's own system, human
       // and agent words (agents, timers, the owner's files, talking to the owner) are internal and never asked about.
       const forced = AGENT.test(request.from) && ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`);
@@ -965,6 +974,8 @@ export class WorldRouter {
       if (this.durableGate && request.to?.startsWith("device:") && !deviceCaller(request.from)) {
         this.finish(pending, errors("forbidden", "device caller not allowed"), request.to, false); return;
       }
+      const currentConstraint = this.screenConstraint(request);
+      if (currentConstraint) { this.finish(pending, errors("forbidden", currentConstraint), request.to!, false); return; }
       if (pending.phase === "accepted" || pending.phase === "gate_waiting") {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
         pending.phase = "dispatching";

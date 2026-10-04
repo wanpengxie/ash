@@ -130,6 +130,27 @@ test("runner uses followup once, waits for real idle outside listener, and suppr
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("DSH runner receives only the current turn's trusted screen execution preference", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-screen-plan-")), texts: string[] = [];
+  let listener: ((id: string, event: DshSessionEvent) => void) | undefined;
+  const host = { async modelKeyMissing() { return false; }, onSessionEvent(next: typeof listener) { listener = next; return () => { listener = undefined; }; } } as unknown as DshHost;
+  const agent = { followup(message: { id: string; content: { text?: string }[] }) {
+    texts.push(message.content.map((block) => block.text ?? "").join("\n"));
+    listener!("screen-session", { type: "user/message", data: { id: message.id } });
+    listener!("screen-session", { type: "turn/end", data: { reason: { kind: "completed" } } });
+  }, cancel() {}, async whenIdle() {} } as unknown as DshRootAgent;
+  const runner = new DshTurnRunner(host, join(root, "inbox"), root);
+  runner.attach(agent, { beginTurn() {}, endTurn() {} } as unknown as DshDoor, "screen-session");
+  try {
+    const input: AgentTurnInput = { turn: "t_screen", messages: [], rendered: "帮我打开闲鱼", stopFacts: [],
+      peripheralContext: "[Ash screen execution decision for THIS turn]\nMode: foreground_handoff; REAL phone screen" };
+    assert.equal((await runner.runTurn(input, async () => {}, new AbortController().signal)).reason, "completed");
+    assert.equal((await runner.runTurn({ ...input, turn: "t_next", peripheralContext: undefined }, async () => {}, new AbortController().signal)).reason, "completed");
+    assert.match(texts[0], /Mode: foreground_handoff/); assert.doesNotMatch(texts[1], /Mode: foreground_handoff/);
+    assert.match(texts[1], /Earlier turn-specific screen preferences do not apply/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("DSH session tool call and result enter the core ledger under the current turn", async () => {
   const root = mkdtempSync(join(tmpdir(), "runtime-tool-ledger-"));
   const ledger = await Ledger.open(join(root, "ash.db"));

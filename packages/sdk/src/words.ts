@@ -260,8 +260,8 @@ add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: cho
   { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });
 add("service:reflex", "before_turn", "request", obj({ turn: id }, ["turn"]), obj({ captured: bool,
   captures: array(obj({ route: id, state: { type: "object" } }, ["route", "state"])) }, ["captured"]),
-  { audience: "owner", timeout_ms: 2000, description: "Internal bounded pre-run capture for peripheral decision routes." });
-add("service:reflex", "surface.get", "request", obj({}), obj({ home_visible: bool, page_live: bool, visibility_epoch: nonnegativeSafe },
+  { audience: "owner", timeout_ms: 10000, description: "Internal bounded pre-run capture and execution-screen judgment for peripheral decision routes." });
+add("service:reflex", "surface.get", "request", obj({}), obj({ home_visible: bool, page_live: bool, visibility_epoch: nonnegativeSafe, virtual_available: bool },
   ["home_visible", "page_live", "visibility_epoch"]), { audience: "owner", timeout_ms: 1000 });
 add("service:reflex", "screen.get", "request", obj({}), obj({ foreground_package: str, state_epoch: nonnegativeSafe,
   virtual_generation: nonnegativeSafe, virtual_owner_turn: str, virtual_open: bool },

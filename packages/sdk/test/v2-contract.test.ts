@@ -33,12 +33,14 @@ test("decision configuration preserves legacy JEV settings and allows independen
   const legacy = resolveWorldConfigV2({ reflex: { jev: { url: "https://fixture/jev", key_credential: "fixture" }, threshold: 0.7, timeout_ms: 1234 } });
   assert.deepEqual(legacy.decision.jev, { url: "https://fixture/jev", key_credential: "fixture", model: "", timeout_ms: 1234 });
   assert.equal(legacy.decision.routes["conversation.control"].threshold, 0.7);
+  assert.equal(legacy.decision.routes["screen.execution"].enabled, true);
   const explicit = resolveWorldConfigV2({ reflex: { timeout_ms: 1234 }, decision: {
     jev: { model: "fixture-model", timeout_ms: 2000 }, routes: { "screen.reconcile": { enabled: false } } } });
   assert.equal(explicit.decision.jev.timeout_ms, 2000);
   assert.equal(explicit.decision.jev.model, "fixture-model");
   assert.equal(explicit.decision.routes["conversation.control"].enabled, true);
   assert.equal(explicit.decision.routes["screen.reconcile"].enabled, false);
+  assert.equal(resolveWorldConfigV2({ decision: { routes: { "screen.execution": { enabled: false } } } }).decision.routes["screen.execution"].enabled, false);
   for (const decision of [{ jev: null }, { routes: [] }, { routes: { "screen.reconcile": null } },
     { routes: { unknown: { enabled: true } } }, { jev: { timeout_ms: 0 } }])
     assert.throws(() => resolveWorldConfigV2({ decision }));

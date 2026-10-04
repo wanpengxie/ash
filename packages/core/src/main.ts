@@ -283,6 +283,7 @@ export async function startOwner(config: Config): Promise<Running> {
         await world.send({ member: "service:reflex", transport: "service", transportPrincipal: "service:reflex", local: true,
           remote: false, ownerProxy: false, turn }, { to: "service:reflex", kind: "request", word: "before_turn",
           body: { turn }, client_id: `decision:before:${turn}`, wait: true });
+        return reflex?.executionContext(turn);
       } } : {}),
       ...(live ? { mind: () => mind } : {}),
       ...(live ? { managedSnapshot: async () => {
@@ -336,6 +337,7 @@ export async function startOwner(config: Config): Promise<Running> {
       ...(hostLink ? { screenHost: hostLink } : {}),
       conversationEnabled: decisions.routes["conversation.control"].enabled,
       screenEnabled: decisions.routes["screen.reconcile"].enabled,
+      screenExecutionEnabled: decisions.routes["screen.execution"].enabled,
       ready: () => !agent!.inbox.activeTurn() && !agent!.waitingForQuiescence,
       paused: () => clock?.journal.isPaused() ?? false,
       threshold: decisions.routes["conversation.control"].threshold,
@@ -348,6 +350,7 @@ export async function startOwner(config: Config): Promise<Running> {
             .slice(-2).map((item) => String(item.body.text).slice(0, 500)) };
       } });
     members.register(reflex);
+    world.setDeviceExecutionGuard((message) => reflex?.executionViolation(message) ?? null);
     clock = new ClockMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"),
       isPaused: () => clock!.journal.isPaused(),
       ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });

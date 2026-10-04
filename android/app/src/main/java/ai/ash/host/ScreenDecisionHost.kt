@@ -4,11 +4,13 @@ import ai.ash.host.a11y.A11yService
 import ai.ash.host.cap.CapResult
 import ai.ash.host.cap.Capabilities
 import ai.ash.host.shizuku.VScreenClient
+import ai.ash.host.shizuku.ShizukuState
 import ai.ash.ui.HomeActivity
 import ai.ash.ui.VScreenPreview
 import android.content.Context
 import android.content.Intent
 import android.os.Handler
+import android.os.Build
 import android.os.Looper
 import org.json.JSONObject
 import java.util.concurrent.FutureTask
@@ -23,6 +25,7 @@ class ScreenDecisionHost(private val ctx: Context) {
         state.beginTurn(b.optString("turn"))
         return JSONObject().put("home_visible", AppState.homeVisible).put("page_live", AppState.homePageLive)
             .put("visibility_epoch", AppState.visibilityEpoch.get())
+            .put("virtual_available", Build.VERSION.SDK_INT >= 29 && ShizukuState.ready())
     }
     private fun epoch(): Long = state.epoch + AppState.screenEpoch.get() + AppState.visibilityEpoch.get()
     private fun foreground(): String = if (AppState.homeVisible) ctx.packageName else A11yService.instance?.foregroundPackage().orEmpty()

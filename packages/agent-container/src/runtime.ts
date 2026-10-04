@@ -244,6 +244,7 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       if (restate) context.push({ type: "text", text: `[Current Ash context; supersedes earlier context snapshots]\n${this.managed}` });
       const devices = this.options.devices?.();
       context.push({ type: "text", text: [clockLine(Date.now()), devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : ""].filter(Boolean).join("\n\n") });
+      context.push({ type: "text", text: input.peripheralContext ?? "[Ash screen execution decision for THIS turn]\nNo scoped screen decision is armed. Earlier turn-specific screen preferences do not apply. An app opened for the owner must be visible on the real screen, not an invisible virtual launch." });
       await host.inject(sessionId, context);
       if (this.managed) this.rememberInjected({ session: sessionId, hash, turns: restate ? 1 : (before.turns ?? 0) + 1 });
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };

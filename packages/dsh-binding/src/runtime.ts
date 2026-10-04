@@ -361,7 +361,8 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
       // Devices and their capabilities change (a permission granted, a laptop asleep); each turn states them afresh
       // so an earlier "no calendar" in the history never outlives the change.
       const devices = this.devices?.();
-      const managed = [this.currentManagedPrompt, clockLine(Date.now()), devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : null].filter(Boolean).join("\n\n");
+      const managed = [this.currentManagedPrompt, clockLine(Date.now()), devices ? `Devices now (supersedes anything earlier in this conversation):\n${devices}` : null,
+        input.peripheralContext ?? "[Ash screen execution decision for THIS turn]\nNo scoped screen decision is armed. Earlier turn-specific screen preferences do not apply. An app opened for the owner must be visible on the real screen, not an invisible virtual launch."].filter(Boolean).join("\n\n");
       const content = await turnContent(this.host, input, this.attachmentRoot, this.workspaceRoot, managed || undefined);
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
       session.agent.followup({ id: messageId, role: "user", content, source: { kind: "user" } });

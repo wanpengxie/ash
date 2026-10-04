@@ -84,7 +84,8 @@ object VScreenCapabilities {
 
     private val launch = vcap(
         "vscreen.launch",
-        "Launch an app onto the virtual screen (it opens there, not on the owner's screen). `app` is a package name " +
+        "Launch an app onto the virtual screen for delegated work, NOT to deliver an opened app to the owner " +
+            "(use apps.open for visible delivery). `app` is a package name " +
             "(e.g. com.android.settings) or an app label as shown in the launcher (e.g. \"Settings\"). If the app is already " +
             "open on the owner's screen Android may bring that existing window instead. Wait a moment, then vscreen.see.",
         schema("app" to prop("string", "Package name or launcher label of the app.", required = true)),
