@@ -226,10 +226,26 @@ export function boot({ uiTransport } = {}) {
       if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     },
   });
+  // Pages are counted in ledger records, and a page of background events can hold no conversation at all. Older pages
+  // otherwise load only by scrolling to the top, which a short page cannot do: keep reading back until the conversation
+  // fills the screen or the history ends.
+  let filling = false;
+  const fillScreen = async () => {
+    if (filling || !timeline) return;
+    filling = true;
+    try {
+      const log = document.querySelector("#log");
+      for (let pages = 0; pages < 20 && !timeline.exhausted && log && log.scrollHeight <= log.clientHeight + 80; pages++) {
+        if (!await timeline.older()) break;
+      }
+    } catch { /* the scroll handler can still load older pages */ }
+    finally { filling = false; }
+  };
   timeline = new Timeline(net, (view) => {
     render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     progress();
     agentSheet?.update();
+    setTimeout(fillScreen, 0);
   });
   identityName = new IdentityName(net, (name) => {
     presenceBar.setName(name);
