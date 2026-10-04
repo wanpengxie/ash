@@ -134,6 +134,13 @@ export class ContainerHost {
   async inject(sessionId: string, content: ContentBlock[]): Promise<void> { await (await this.boot()).request("_ash/inject", { sessionId, content }); }
   cancel(sessionId: string): void { this.client?.notify("session/cancel", { sessionId }); }
 
+  /** Close one agent's session; its next turn resumes it from its kept history. */
+  async closeSession(key: string): Promise<void> {
+    const live = this.sessions.get(key);
+    this.sessions.delete(key);
+    if (live && this.client?.alive) await this.client.request("session/close", { sessionId: live.id }).catch((error) => this.options.log?.("session close failed", key, error));
+  }
+
   /** The sessions open in the running runtime right now. */
   openSessions(): string[] { return this.client?.alive ? [...this.sessions.values()].map((item) => item.id) : []; }
 

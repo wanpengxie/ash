@@ -16,7 +16,8 @@ import { ContainerHost } from "../../agent-container/src/host";
 import { DEFAULT_MODEL, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
 import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
 import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
-import { AgentMcpServer, type AgentBinding } from "./agent-mcp/server";
+import { AgentMcpServer, TOOL_NAMES, type AgentBinding, type AgentPolicy } from "./agent-mcp/server";
+import { AgentSystem, type AgentRuntime } from "./agent-system/system";
 import { agentName, resolveAgents, wordAllowed, type AgentDeclaration, type ConfiguredAgent } from "./agents";
 import { AGENT_RULES } from "./workers/rules.generated";
 import type { Message } from "../../sdk/src/api";
@@ -125,7 +126,6 @@ export async function startOwner(config: Config): Promise<Running> {
   if (agents[0].runtime !== "echo" && agents[0].runtime !== "dsh" && agents[0].runtime !== "container") throw new Error("unsupported agent runtime");
   // Declared agents run in the container next to the main one; the in-process runtimes host only the main agent.
   const declarations = resolveAgents(config.agents, agents[0].runtime === "container");
-  const others = agents[0].runtime === "container" ? declarations.filter((item) => item.id !== "agent:main") : [];
   if (!config.stateDir) throw new Error("stateDir is required");
   if (agents[0].runtime === "container") {
     if (!config.container?.root && !config.container?.direct) throw new Error("container runtime requires container.root");
@@ -167,8 +167,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let container: ContainerHost | null = null;
   let egress: ModelEgress | null = null;
   let agentTools: AgentMcpServer | null = null;
-  let stopSchedule: (() => void) | null = null;
-  let extraMembers: () => ReturnType<typeof createAgentMember>[] = () => [];
+  let agentSystem: AgentSystem | null = null;
   let provisioning: ChildProcess | null = null;
   let self: SelfMember | null = null;
   let work: WorkMember | null = null;
@@ -185,7 +184,7 @@ export async function startOwner(config: Config): Promise<Running> {
       // Current token membership, not a stale snapshot permission, decides recovery.
       if (caller.transportPrincipal?.startsWith("token:")) return Object.entries(tokens.api).some(([key, member]) =>
         member === caller.member && `token:${createHash("sha256").update(key).digest("hex")}` === caller.transportPrincipal);
-      if (caller.transportPrincipal === caller.member && declarations.some((item) => item.id === caller.member) && caller.local && !caller.remote) return true;
+      if (caller.transportPrincipal === caller.member && agentSystem?.declaration(caller.member) && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:cost" && caller.member === "service:cost" && caller.local && !caller.remote) return true;
@@ -237,40 +236,10 @@ export async function startOwner(config: Config): Promise<Running> {
         if (typeof stored.provider === "string" && typeof stored.model === "string") return { provider: stored.provider, model: stored.model }; } } catch { /* fall back */ }
       return config.container?.model ?? DEFAULT_MODEL;
     };
+    let agentPolicy: ((item: AgentDeclaration) => AgentPolicy) | null = null;
     let mainBinding: AgentBinding | null = null;
     let mindBinding: AgentBinding | null = null;
     const otherBindings = new Map<string, AgentBinding>();
-    const extraAgents = new Map<string, ReturnType<typeof createAgentMember>>();
-    extraMembers = () => [...extraAgents.values()];
-    // A declared agent with `every` is woken on that interval when it is idle and ash is not paused. The last wake is
-    // kept across restarts, so a restart neither skips nor doubles one.
-    const scheduleAgents = (items: AgentDeclaration[], live: Map<string, ReturnType<typeof createAgentMember>>): (() => void) => {
-      const file = join(config.stateDir, "agent-schedule.json");
-      const last: Record<string, number> = (() => { try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Record<string, number> : {}; } catch { return {}; } })();
-      const save = () => { try { writeFileSync(file, JSON.stringify(last), { mode: 0o600 }); } catch (error) { log("agent schedule not saved", error); } };
-      // A newly added agent first wakes half an hour later, then on its interval.
-      for (const item of items) if (item.every && typeof last[item.id] !== "number") last[item.id] = Date.now() - Math.max(0, item.every * 1000 - 30 * 60_000);
-      save();
-      const tick = () => {
-        for (const item of items) {
-          const member = live.get(item.id);
-          if (!item.every || !member || clock!.journal.isPaused()) continue;
-          if (Date.now() - (last[item.id] ?? 0) < item.every * 1000) continue;
-          const counts = member.counts();
-          if (counts.active || counts.pending) continue;
-          last[item.id] = Date.now();
-          save();
-          const slot = Math.floor(Date.now() / (item.every * 1000));
-          void world.send({ member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false },
-            { to: item.id, kind: "request", word: "say", body: { text: `[定时唤醒] 按你的职责做一次例行工作。现在是 ${new Date().toISOString()}。` },
-              client_id: `schedule:${item.id}:${slot}` }).catch((error) => log("scheduled wake failed", item.id, error));
-        }
-      };
-      const timer = setInterval(tick, 60_000);
-      timer.unref();
-      return () => clearInterval(timer);
-    };
-    const claimAnswer = (message: Message, turn: string) => agentTools?.claimAnswer(message, turn) ?? false;
     if (containerMode) {
       const containerConfig = config.container!;
       egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream, scope: () => running.chat ? "chat" : running.mind ? "mind" : running.background ? "background" : "other" });
@@ -279,8 +248,6 @@ export async function startOwner(config: Config): Promise<Running> {
         launch: () => prepareLaunch({ ...containerConfig, model: containerModel() }, egressBase, config.stateDir) });
       agentTools = new AgentMcpServer({ router: world, members, ledger, log,
         status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }),
-        agents: () => declarations.filter((item) => item.id === "agent:main" || others.includes(item)).map((item) => ({ id: item.id, name: item.name, summary: item.summary,
-          busy: Boolean(item.id === "agent:main" ? agent?.inbox.activeTurn() : extraAgents.get(item.id)?.inbox.activeTurn()) })),
         confirm: ({ binding, turn, callId, title, detail, signal }) => world.requestAgentConfirmation({ member: binding.member,
           sessionId: `session-${createHash("sha256").update(binding.label).digest("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5")}`,
           turn, callId, title, detail, signal }) });
@@ -289,7 +256,7 @@ export async function startOwner(config: Config): Promise<Running> {
       const policyOf = (item: AgentDeclaration) => ({ ...(item.tools ? { tools: item.tools } : {}), ...(item.words ? { words: (member: string, word: string) => wordAllowed(item, member, word) } : {}) });
       mainBinding = agentTools.bind("agent:main", "main", () => null, policyOf(mainDeclaration));
       mindBinding = agentTools.bind("agent:main", "mind", () => null, policyOf(mainDeclaration));
-      for (const item of others) otherBindings.set(item.id, agentTools.bind(item.id, agentName(item.id), () => null, policyOf(item)));
+      agentPolicy = policyOf;
     }
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const keyMissing = () => !vaultStore.has("DEEPSEEK_API_KEY");
@@ -306,23 +273,31 @@ export async function startOwner(config: Config): Promise<Running> {
         if (!self) throw new Error("managed files unavailable");
         return self.promptSnapshot();
       } } : {}),
-      claimAnswer,
       isPaused: () => clock!.journal.isPaused(), currentAdminPauseTargets: (requestId, turn) => admin!.currentPauseTargets(requestId, turn) });
     members.register(agent);
-    // Every declared agent: its own member, inbox and turns, session, credential and workspace in the container.
-    for (const item of others) {
-      const binding = otherBindings.get(item.id)!;
-      const name = agentName(item.id);
-      const brief = `[${item.name}（${item.id}）的职责]\n${item.brief ?? item.summary}\n\n[Ash 的规则]\n${AGENT_RULES}`;
-      const otherRunner = new ContainerTurnRunner({ host: container!, binding, router: world, keyMissing, stateDir: config.stateDir, log,
-        sessionKey: item.id, agentName: name, context: () => brief,
-        mcp: () => ({ url: agentTools!.url, token: binding.token }), failuresSince: (at) => egress!.failuresSince(at),
-        onActive: (active) => { running.background += active ? 1 : -1; } });
-      const member = createAgentMember({ id: item.id, ledger, router: world, stateDir: join(config.stateDir, "agents", name), runner: otherRunner, name: item.name,
-        claimAnswer, isPaused: () => clock!.journal.isPaused() });
-      members.register(member);
-      extraAgents.set(item.id, member);
-    }
+    // ash's Agent system holds the declarations and brings each declared agent to life in the container: its own member,
+    // inbox and turns, session, tool credential, workspace and schedule.
+    const agentRuntime: AgentRuntime | null = container ? {
+      create: (declaration) => {
+        const item = declaration();
+        const binding = agentTools!.bind(item.id, agentName(item.id), () => null, agentPolicy!(item));
+        otherBindings.set(item.id, binding);
+        const runner = new ContainerTurnRunner({ host: container!, binding, router: world, keyMissing, stateDir: config.stateDir, log,
+          sessionKey: item.id, agentName: agentName(item.id),
+          context: () => { const current = declaration(); return `[${current.name}（${current.id}）的职责]\n${current.brief ?? current.summary}\n\n[Ash 的规则]\n${AGENT_RULES}`; },
+          mcp: () => ({ url: agentTools!.url, token: binding.token }), failuresSince: (at) => egress!.failuresSince(at),
+          onActive: (active) => { running.background += active ? 1 : -1; } });
+        return createAgentMember({ id: item.id, ledger, router: world, stateDir: join(config.stateDir, "agents", agentName(item.id)), runner, name: item.name,
+          isPaused: () => clock!.journal.isPaused() });
+      },
+      reopen: async (id) => { await container!.closeSession(id); },
+      dispose: (id) => { const binding = otherBindings.get(id); if (binding) agentTools!.unbind(binding); otherBindings.delete(id); },
+      apply: (item) => { const binding = otherBindings.get(item.id); if (binding) binding.policy = agentPolicy!(item); },
+    } : null;
+    agentSystem = new AgentSystem({ router: world, members, stateDir: config.stateDir, defaults: declarations, main: agent, runtime: agentRuntime,
+      toolNames: TOOL_NAMES, isPaused: () => clock!.journal.isPaused(), log });
+    members.register(agentSystem);
+    agentSystem.prepare();
     // The JEV key lives in the vault and is read on each judgement, so saving or removing it needs no restart.
     const jevRef = "OPENROUTER_API_KEY";
     const jevUrl = worldConfig.reflex.jev.url;
@@ -473,7 +448,6 @@ export async function startOwner(config: Config): Promise<Running> {
     const committedPause = admin.currentCommittedPause();
     if (committedPause) agent.reconcileCommittedPause(committedPause.requestId, committedPause.targetTurn);
     agent.prepareRecovery();
-    for (const member of extraAgents.values()) member.prepareRecovery();
     await self?.prepareRecovery();
     post.prepareRecovery();
     admin.prepareRecovery();
@@ -532,8 +506,7 @@ export async function startOwner(config: Config): Promise<Running> {
     await world.recover();
     await post.start();
     await agent.start();
-    for (const member of extraAgents.values()) await member.start();
-    stopSchedule = scheduleAgents(others, extraAgents);
+    await agentSystem.start();
     await clock.start();
     work.start();
     server = await startEdgeServer(edge, host, port);
@@ -543,17 +516,17 @@ export async function startOwner(config: Config): Promise<Running> {
     writeFileSync(join(config.stateDir, "ui-url"), `${url}/?token=${ownerToken}\n`, { mode: 0o600 });
     hostLink?.startHealthChecks(members);
     link?.enable();
-    return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...extraMembers()], async close() {
+    return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...(agentSystem?.agents() ?? [])], async close() {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
       link?.stop(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); stopSchedule?.(); for (const member of extraMembers()) await member.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
     link?.stop(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); stopSchedule?.(); for (const member of extraMembers()) await member.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

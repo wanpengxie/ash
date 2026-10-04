@@ -110,6 +110,14 @@ export class WorldMembers {
     this.router.cancelMember(memberId);
   }
 
+  /** Take a removed declared agent out of the world. */
+  unregisterAgent(memberId: string): void {
+    if (!this.members.has(memberId)) return;
+    this.router.unregisterAgent(memberId);
+    this.members.delete(memberId);
+    this.router.cancelMember(memberId);
+  }
+
   describe(audience: "owner" | "agent"): DescribeSummary;
   describe(audience: "owner" | "agent", memberId: string): DescribeDetail;
   describe(audience: "owner" | "agent", memberId?: string): DescribeSummary | DescribeDetail {

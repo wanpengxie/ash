@@ -26,7 +26,8 @@ const deliveryDedupeKey: JsonSchema = { type: "string", minLength: 1, maxLength:
 const empty = obj();
 const accepted = obj({ accepted: bool }, ["accepted"]);
 const attachmentInput = obj({ name: nonempty, mime_type: nonempty, data: nonempty }, ["name", "mime_type", "data"]);
-const sayExtras = { attachments: array(attachmentInput), in_reply_to: id, option_id: id };
+// from_agent: the agent whose question or news the Agent system delivers; reply_from: the agent whose answer it passes back.
+const sayExtras = { attachments: array(attachmentInput), in_reply_to: id, option_id: id, from_agent: id, reply_from: id };
 const askChoice = choice("once", "always", "deny");
 const askOption = obj({ id: askChoice, label: nonempty }, ["id", "label"]);
 const origin = obj({ screen: nonempty, label: str }, ["screen", "label"]);
@@ -118,6 +119,29 @@ add("person:owner", "show", "request", obj({ card: CARD_SCHEMA }, ["card"]), acc
 add("person:owner", "ask", "request", obj({ title: nonempty, detail: str, options: { type: "array", items: askOption, minItems: 1 }, expires_at: num, source: obj({ word: nonempty, to: id, body_preview: str }, ["word", "to", "body_preview"]) }, ["title", "detail", "options", "expires_at", "source"]), obj({ choice: askChoice }, ["choice"]), { timeout_ms: 600_000, description: "Ask the owner; await the first valid answer or expiry." });
 
 add("screen:*", "ui.open", "request", obj({ target: choice("activity", "upcoming", "approvals", "identity", "memory", "settings", "turn"), id: str, mode: choice("perform", "suggest") }, ["target", "mode"]), obj({ opened: bool }, ["opened"]), { description: "Open or suggest a view on a named screen." });
+// The Agent system: ash holds every agent's declaration, runs their lifecycle and carries what they say to each other.
+// Discovery and communication (agent words) are for every agent; management (system words) for those granted it.
+const agentRef: JsonSchema = { type: "string", pattern: "^agent:[a-z][a-z0-9_-]{0,31}$" };
+const agentFields: Record<string, JsonSchema> = { name: nonempty, summary: nonempty, brief: nonempty, tools: strings, words: strings, every: { type: "integer", minimum: 600 } };
+const agentInfo = obj({ id: agentRef, name: str, summary: str, state: choice("idle", "working", "stopped", "error"), main: bool, manage: bool,
+  brief: str, tools: { anyOf: [strings, { type: "null" }] }, words: { anyOf: [strings, { type: "null" }] }, every: { anyOf: [integer, { type: "null" }] }, built_in: bool },
+  ["id", "name", "summary", "state"]);
+add("service:agents", "list", "request", empty, obj({ agents: array(agentInfo) }, ["agents"]), { label: "Looking at the agents", description: "Every agent: id, name, what it does, and whether it is idle, working or stopped." });
+add("service:agents", "describe", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Looking at an agent", description: "One agent's declaration and state." });
+add("service:agents", "ask", "request", obj({ agent: agentRef, text: nonempty }, ["agent", "text"]), obj({ agent: agentRef, answer: str }, ["agent", "answer"]),
+  { label: "Asking another agent", timeout_ms: 600_000, description: "Put a question to another agent; the answer it gives in the turn that takes the question is the result." });
+add("service:agents", "tell", "request", obj({ agent: agentRef, text: nonempty }, ["agent", "text"]), obj({ sent: bool, message_id: id }, ["sent", "message_id"]),
+  { label: "Telling another agent", description: "Deliver news to another agent; what it says back is passed to the sender later as a message." });
+add("service:agents", "answer", "request", obj({ in_reply_to: id, text: nonempty }, ["in_reply_to", "text"]), accepted, { audience: "owner", description: "Internal: an agent's words in a turn that answers a delivered question or news." });
+add("service:agents", "declare", "request", obj({ id: agentRef, ...agentFields }, ["id", "name", "summary", "brief"]), agentInfo,
+  { label: "Creating an agent", risk: "structure", effect: "structure", description: "Create a new agent from a declaration. It starts at once, in its own session and workspace." });
+add("service:agents", "update", "request", obj({ agent: agentRef, ...agentFields }, ["agent"]), agentInfo,
+  { label: "Changing an agent", risk: "structure", effect: "structure", description: "Change an agent's declaration; it applies from its next turn." });
+add("service:agents", "start", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Starting an agent", risk: "outward", effect: "act", description: "Let a stopped agent take turns again." });
+add("service:agents", "stop", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Stopping an agent", risk: "outward", effect: "act", description: "Stop an agent: its current turn is cancelled and it takes no new ones; messages wait for it." });
+add("service:agents", "restart", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Restarting an agent", risk: "outward", effect: "act", description: "Cancel an agent's current turn and reopen its session; its history is kept." });
+add("service:agents", "remove", "request", obj({ agent: agentRef }, ["agent"]), obj({ removed: bool }, ["removed"]),
+  { label: "Removing an agent", risk: "structure", effect: "structure", description: "Remove a declared agent. The main agent cannot be removed; built-in agents can only be stopped." });
 add("service:clock", "set", "request", obj({ at: num, every: { type: "integer", minimum: 60 }, to: id, word: id, body: obj({}, [], true), label: nonempty }, ["to", "word", "body", "label"]), obj({ id, next: num }, ["id", "next"]));
 // Secure vault: the agent may look, never touch. Values enter through the owner's settings route and leave only to ash's own code.
 const vaultEntry = obj({ ref: nonempty, label: nonempty, kind: choice("model", "login", "api", "other"), configured: bool, updated_at: nonnegativeSafe }, ["ref", "label", "kind", "configured"]);

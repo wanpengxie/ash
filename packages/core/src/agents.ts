@@ -18,11 +18,14 @@ export interface AgentDeclaration {
   /** Seconds between scheduled wakes; absent means it only wakes when spoken to. */
   every?: number;
   enabled?: boolean;
+  /** May create, change, start, stop and remove agents. Only the owner grants it; the main agent has it. */
+  manage?: boolean;
 }
 
 export const MAIN_AGENT: AgentDeclaration = {
   id: "agent:main", name: "Ash",
   summary: "The assistant the owner talks with. The only agent that speaks to the owner; tell it what the owner should hear.",
+  manage: true,
 };
 
 export const KEEPER_AGENT: AgentDeclaration = {
@@ -39,7 +42,7 @@ export const KEEPER_AGENT: AgentDeclaration = {
     "6. 没什么要改的就什么都不做，也不用汇报。",
     "别的 Agent 问你问题或告诉你事情时，用正文直接回答；要记下的就照上面的方法记。",
   ].join("\n"),
-  tools: ["system_status", "timer_set", "timer_list", "timer_cancel", "history_query", "agent_list", "agent_ask", "agent_tell",
+  tools: ["system_status", "timer_set", "timer_list", "timer_cancel", "history_query", "agent_list", "agent_describe", "agent_ask", "agent_tell",
     "capability_list", "capability_describe", "capability_call", "await_result", "list_pending", "cancel"],
   words: ["service:self/*", "service:clock/*"],
   every: 6 * 3600,
@@ -55,8 +58,11 @@ export interface ConfiguredAgent {
   words?: string[];
   every?: number;
   enabled?: boolean;
+  manage?: boolean;
 }
 
+/** The built-in agents: they can be changed and stopped, never removed. */
+export const BUILT_IN_IDS = new Set(["agent:main", "agent:keeper"]);
 const BUILT_IN = [MAIN_AGENT, KEEPER_AGENT];
 
 /** The agents of this world: the configured ones over the built-in defaults; the keeper is on unless switched off. */
@@ -68,9 +74,10 @@ export function resolveAgents(configured: readonly ConfiguredAgent[] | undefined
     const base = out.get(item.id) ?? { id: item.id, name: item.id.slice(6), summary: "" };
     out.set(item.id, { ...base, ...(item.name ? { name: item.name } : {}), ...(item.summary ? { summary: item.summary } : {}),
       ...(item.brief ? { brief: item.brief } : {}), ...(item.tools ? { tools: item.tools } : {}), ...(item.words ? { words: item.words } : {}),
-      ...(typeof item.every === "number" ? { every: item.every } : {}), ...(typeof item.enabled === "boolean" ? { enabled: item.enabled } : {}) });
+      ...(typeof item.every === "number" ? { every: item.every } : {}), ...(typeof item.enabled === "boolean" ? { enabled: item.enabled } : {}),
+      ...(typeof item.manage === "boolean" ? { manage: item.manage } : {}) });
   }
-  const agents = [...out.values()].filter((agent) => agent.enabled !== false || agent.id === "agent:main");
+  const agents = [...out.values()];
   if (!agents.some((agent) => agent.id === "agent:main")) throw new Error("the main agent is required");
   for (const agent of agents) if (agent.every !== undefined && (!Number.isSafeInteger(agent.every) || agent.every < 600)) throw new Error(`${agent.id}: every must be at least 600 seconds`);
   return agents;

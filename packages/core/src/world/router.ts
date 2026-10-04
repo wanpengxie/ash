@@ -298,6 +298,12 @@ export class WorldRouter {
     for (const key of this.endpoints.keys()) if (key.startsWith(`${member}/`)) this.endpoints.delete(key);
   }
 
+  /** A removed declared agent: its words go away with it. The main agent is never removed. */
+  unregisterAgent(member: string): void {
+    if (!AGENT_ID.test(member) || member === "agent:main") throw new TypeError("declared agent required");
+    for (const key of this.endpoints.keys()) if (key.startsWith(`${member}/`)) this.endpoints.delete(key);
+  }
+
   cancelMember(member: string): Message[] {
     return this.cancel([...this.pending.values()].filter((item) => item.request.to === member).map((item) => item.request.id));
   }
@@ -462,14 +468,16 @@ export class WorldRouter {
     const toAgent = typeof request.to === "string" && AGENT_ID.test(request.to);
     if (toAgent && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
     if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
-    // The owner talks with the main agent; the other agents hear from agents, their own timers and their schedule.
-    if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") && !(
-      (AGENT_ID.test(from) && from !== request.to && ctx.transport === "agent" && ctx.transportPrincipal === from && ctx.local && !ctx.remote) ||
-      (ctx.transport === "service" && ["service:clock", "service:work"].includes(from) && ctx.local && !ctx.remote)))
-      fail("forbidden", "only agents and ash's schedule may speak to this agent");
-    if (toAgent && request.to === "agent:main" && request.word === "say" && AGENT_ID.test(from) &&
-      (from === "agent:main" || ctx.transport !== "agent" || ctx.transportPrincipal !== from || !ctx.local || ctx.remote))
-      fail("forbidden", "agent messages require that agent's own context");
+    // The owner talks with the main agent. Agents speak to each other only through the Agent system; a declared agent
+    // otherwise hears only its own timers and its schedule.
+    const service = ctx.transport === "service" && ctx.local && !ctx.remote;
+    if (toAgent && request.word === "say" && AGENT_ID.test(from)) fail("forbidden", "agents speak to each other through the Agent system");
+    if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") &&
+      !(service && ["service:agents", "service:clock", "service:work"].includes(from)))
+      fail("forbidden", "only the Agent system and ash's schedule may speak to this agent");
+    if (request.to === "service:agents" && request.word === "answer" &&
+      !(AGENT_ID.test(from) && ctx.transport === "agent" && ctx.transportPrincipal === from && ctx.local && !ctx.remote))
+      fail("forbidden", "only an agent answers through its own turn");
     if (["typing", "visible", "hidden"].includes(request.word) && (ctx.transport !== "web_ui" || !from.startsWith("screen:"))) fail("forbidden", "presence requires registered screen");
     if (request.to === "service:post" && request.word === "deliver" && ctx.transport !== "service") fail("forbidden", "delivery is internal only");
     // Workers are single judgement steps of a background run; nobody else may spend model calls on them.

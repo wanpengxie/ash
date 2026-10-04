@@ -21,7 +21,9 @@ export class AgentBinding {
   readonly token = randomBytes(24).toString("base64url");
   private current: { turn: string; signal: AbortSignal } | null = null;
   readonly jobs = new Map<string, Job>();
-  constructor(readonly member: string, readonly label: string, readonly sessionId: () => string | null, readonly policy: AgentPolicy = {}) {}
+  /** Replaced when the owner or a manager changes the agent's declaration; applies from the next call. */
+  policy: AgentPolicy;
+  constructor(readonly member: string, readonly label: string, readonly sessionId: () => string | null, policy: AgentPolicy = {}) { this.policy = policy; }
   /** The fixed tools this agent may use (its declaration); all when it says nothing. */
   allowsTool(name: string): boolean { return !this.policy.tools || this.policy.tools.includes(name) || META_ALWAYS.has(name); }
   allowsWord(member: string, word: string): boolean { return this.policy.words?.(member, word) ?? true; }
@@ -34,8 +36,6 @@ export class AgentBinding {
 export interface AgentPolicy { tools?: readonly string[]; words?: (member: string, word: string) => boolean }
 // Receipts can always be collected and cancelled, whatever else an agent may use.
 const META_ALWAYS = new Set(["await_result", "list_pending", "cancel"]);
-interface PendingAsk { id: string; asker: string; target: string; askerTurn: string; targetTurn: string | null; texts: string[]; at: number;
-  resolve: (result: ToolResult) => void; settled: boolean }
 
 interface Job { id: string; member: string; word: string; label: string; turn: string; at: number; done: Promise<ToolResult>; result: ToolResult | null }
 
@@ -48,13 +48,13 @@ export interface AgentMcpOptions {
   /** Pause, quiet hours and similar facts for system_status. */
   status(): Record<string, unknown>;
   /** Other agents in this world (agent:main is the only one today). */
-  agents?: () => { id: string; name: string; summary: string; busy?: boolean }[];
   fastPathMs?: number;
   maxWaitMs?: number;
   log?: (...args: unknown[]) => void;
 }
 
 const FAST_PATH_MS = 15_000;
+const pick = (args: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
 // The agent runtime gives each MCP call 60 s; a wait must answer before that.
 const MAX_WAIT_MS = 50_000;
 const MAX_RESULT_CHARS = 60_000;
@@ -128,10 +128,24 @@ const TOOLS = [
   { name: "human_confirm", description: "Ask the owner to approve something before you do it; they see an approval card with your title and detail. Use it when you are about to do something consequential that ash would not ask about by itself, or when you are unsure the owner wants it. Returns {decision: approved|rejected}. If the owner takes longer than 15 s you get {status:accepted, request_id}; then call await_result.",
     inputSchema: object({ title: text("One line: what you want to do"), detail: text("Exactly what will happen: the text to send, the command, the target") }, ["title", "detail"]) },
   // agents
-  { name: "agent_list", description: "The agents in this world: id, name, what each does, and which one is you. agent:main is the assistant the owner talks with and the only one that speaks to the owner.", inputSchema: object({}) },
-  { name: "agent_ask", description: "Ask another agent and wait for its answer: {ok, result: {agent, answer}}. It answers in a turn of its own; if that takes longer than 50 s (or wait=false) you get {status:accepted, request_id} and collect the answer with await_result.",
+  { name: "agent_list", description: "Every agent in ash: id, name, what it does, and whether it is idle, working or stopped. agent:main is the assistant the owner talks with and the only one that speaks to the owner.", inputSchema: object({}) },
+  { name: "agent_describe", description: "One agent's declaration: what it is for, its job, the tools and ash capabilities it was given, its schedule, its state.",
+    inputSchema: object({ agent: text("Agent id, e.g. agent:keeper") }, ["agent"]) },
+  { name: "agent_ask", description: "Ask another agent and get its answer: {ok, result: {agent, answer}}. It answers in a turn of its own; if that takes longer than 50 s (or wait=false) you get {status:accepted, request_id} and collect the answer with await_result.",
     inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The question"), wait: { type: "boolean" } }, ["agent", "text"]) },
-  { name: "agent_tell", description: "Tell another agent something without waiting. It handles it in a turn of its own; whatever it says back arrives later as a message to you (you need not answer that).", inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The message") }, ["agent", "text"]) },
+  { name: "agent_tell", description: "Tell another agent something without waiting. It handles it in a turn of its own; what it says back arrives later as a message to you, which you need not answer.",
+    inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The message") }, ["agent", "text"]) },
+  // system: managing agents (only for agents given it)
+  { name: "agent_create", description: "Create a new agent. It runs at once in its own session and workspace. Give id (agent:<lowercase name>), name, summary (what others are told it does), brief (its job, in its own words), and optionally tools (fixed tool names; default: discovery, talking to agents, history, status), words (ash capabilities as member/word patterns, e.g. service:self/read; default none) and every (seconds between scheduled wakes, >= 600). It may need the owner's approval.",
+    inputSchema: object({ id: text("agent:<lowercase name>"), name: text("Short name"), summary: text("One line others see"), brief: text("Its job"),
+      tools: { type: "array", items: { type: "string" } }, words: { type: "array", items: { type: "string" } }, every: { type: "integer", minimum: 600 } }, ["id", "name", "summary", "brief"]) },
+  { name: "agent_update", description: "Change an agent's declaration (name, summary, brief, tools, words, every); it applies from its next turn. It may need the owner's approval.",
+    inputSchema: object({ agent: text("Agent id"), name: text("Short name"), summary: text("One line others see"), brief: text("Its job"),
+      tools: { type: "array", items: { type: "string" } }, words: { type: "array", items: { type: "string" } }, every: { type: "integer", minimum: 600 } }, ["agent"]) },
+  { name: "agent_start", description: "Let a stopped agent take turns again.", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
+  { name: "agent_stop", description: "Stop an agent: its current turn is cancelled and it takes no new ones until started; messages wait for it.", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
+  { name: "agent_restart", description: "Cancel an agent's current turn and reopen its session (history is kept).", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
+  { name: "agent_remove", description: "Remove an agent you created. Built-in agents can only be stopped. It may need the owner's approval.", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
   // meta
   { name: "capability_list", description: "Everything else ash can do for you, live: each member (the phone, the owner's other devices, ash services) with its capabilities' names, one-line summaries and effect (read, act, write, send, execute, structure). New devices appear here as soon as they connect. Next: capability_describe, then capability_call.",
     inputSchema: object({ member: text("Only this member") }) },
@@ -159,48 +173,16 @@ export class AgentMcpServer {
   private callSeq = 0;
   url = "";
 
-  private readonly asks = new Map<string, PendingAsk>();
-
   constructor(private readonly options: AgentMcpOptions) {
     this.stopSubscription = options.router.subscribe((message) => {
-      if (message.kind === "response" && message.reply_to) {
-        const waiter = this.waiters.get(message.reply_to);
-        if (waiter) { this.waiters.delete(message.reply_to); waiter(message); }
-        return;
-      }
-      this.followAsk(message);
+      if (message.kind !== "response" || !message.reply_to) return;
+      const waiter = this.waiters.get(message.reply_to);
+      if (waiter) { this.waiters.delete(message.reply_to); waiter(message); }
     });
   }
 
-  /** An agent_ask is answered by everything the asked agent says back during the turn that takes the question. */
-  private followAsk(message: Message): void {
-    if (message.kind === "request" && message.word === "say" && typeof message.body.in_reply_to === "string") {
-      const ask = this.asks.get(message.body.in_reply_to);
-      if (ask && !ask.settled && message.from === ask.target && message.to === ask.asker && typeof message.body.text === "string") ask.texts.push(message.body.text);
-      return;
-    }
-    if (message.kind !== "event" || !AGENT_ID.test(message.from)) return;
-    if (message.word === "turn.start" && Array.isArray(message.body.ids)) {
-      for (const ask of this.asks.values()) if (!ask.settled && ask.target === message.from && (message.body.ids as unknown[]).includes(ask.id)) ask.targetTurn = String(message.body.turn);
-    } else if (message.word === "read" && Array.isArray(message.body.ids)) {
-      for (const ask of this.asks.values()) if (!ask.settled && ask.target === message.from && !ask.targetTurn && (message.body.ids as unknown[]).includes(ask.id)) ask.targetTurn = String(message.body.turn);
-    } else if (message.word === "turn.end") {
-      for (const ask of this.asks.values()) {
-        if (ask.settled || ask.target !== message.from || ask.targetTurn !== message.body.turn) continue;
-        ask.settled = true;
-        ask.resolve(message.body.reason === "completed"
-          ? { ok: true, result: { agent: ask.target, answer: ask.texts.join("\n\n") || "(it finished without answering in words)" } }
-          : failure("result_unknown", `${ask.target} stopped before answering (${String(message.body.reason)})`));
-      }
-    }
-    if (this.asks.size > 200) for (const [id, ask] of this.asks) if (ask.settled && Date.now() - ask.at > 600_000) this.asks.delete(id);
-  }
-
-  /** The answer to a question an agent is waiting on in its current turn: that turn keeps it, instead of a new turn. */
-  claimAnswer(message: Message, turn: string): boolean {
-    const ask = typeof message.body.in_reply_to === "string" ? this.asks.get(message.body.in_reply_to) : undefined;
-    return Boolean(ask && ask.asker === message.to && ask.target === message.from && ask.askerTurn === turn);
-  }
+  /** A removed agent's credential stops working at once. */
+  unbind(binding: AgentBinding): void { this.bindings.delete(binding.token); }
 
   bind(member: string, label: string, sessionId: () => string | null, policy: AgentPolicy = {}): AgentBinding {
     const binding = new AgentBinding(member, label, sessionId, policy);
@@ -305,27 +287,24 @@ export class AgentMcpServer {
         }
         case "human_show": return await this.send(binding, active.turn, "person:owner", "show", { card: args.card }, turnSignal);
         case "human_confirm": return await this.confirm(binding, active.turn, args, turnSignal);
-        case "agent_list": return { ok: true, result: { you: binding.member, agents: (this.options.agents?.() ?? []).map((agent) => ({ ...agent, ...(agent.id === binding.member ? { you: true } : {}) })) } };
-        case "agent_ask":
-        case "agent_tell": {
-          const target = typeof args.agent === "string" ? args.agent : "";
-          if (typeof args.text !== "string" || !args.text.trim()) return failure("payload_invalid", "text is required");
-          if (target === binding.member) return failure("payload_invalid", "that is you; agent_list shows the others");
-          if (!(this.options.agents?.() ?? []).some((agent) => agent.id === target)) return failure("payload_invalid", `no agent named ${target}; agent_list shows who exists`);
-          const sent = await this.options.router.send(this.context(binding, active.turn), { to: target, kind: "request", word: "say", body: { text: args.text.trim() },
-            client_id: `mcp:${active.turn}:${++this.callSeq}:${randomBytes(4).toString("hex")}` }, turnSignal);
-          if (name === "agent_tell") return { ok: true, result: { sent: true, message_id: sent.id, note: "It handles this in a turn of its own; what it says back arrives as a message to you." } };
-          const done = new Promise<ToolResult>((resolve) => this.asks.set(sent.id, { id: sent.id, asker: binding.member, target, askerTurn: active.turn,
-            targetTurn: null, texts: [], at: Date.now(), resolve, settled: false }));
-          const job: Job = { id: sent.id, member: target, word: "ask", label: "Ask", turn: active.turn, at: Date.now(), done, result: null };
-          void done.then((result) => { job.result = result; });
-          binding.jobs.set(job.id, job);
-          return this.within(job, args.wait === false ? 0 : (this.options.maxWaitMs ?? MAX_WAIT_MS));
-        }
+        // Discovery and communication (agent words) and management (system words) are the Agent system's; these tools
+        // only carry the request, as this agent. What each agent may use is its declaration's business.
+        case "agent_list": return await this.send(binding, active.turn, "service:agents", "list", {}, turnSignal);
+        case "agent_describe": return await this.send(binding, active.turn, "service:agents", "describe", { agent: args.agent }, turnSignal);
+        case "agent_tell": return await this.send(binding, active.turn, "service:agents", "tell", { agent: args.agent, text: args.text }, turnSignal);
+        case "agent_ask": return await this.job(binding, active.turn, "service:agents", "ask", { agent: args.agent, text: args.text },
+          args.wait === false ? 0 : (this.options.maxWaitMs ?? MAX_WAIT_MS), turnSignal);
+        case "agent_create": return await this.job(binding, active.turn, "service:agents", "declare", pick(args, ["id", "name", "summary", "brief", "tools", "words", "every"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        case "agent_update": return await this.job(binding, active.turn, "service:agents", "update", pick(args, ["agent", "name", "summary", "brief", "tools", "words", "every"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        case "agent_start":
+        case "agent_stop":
+        case "agent_restart":
+        case "agent_remove": return await this.job(binding, active.turn, "service:agents", name.slice("agent_".length), { agent: args.agent }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
         case "capability_list": return this.list(binding, typeof args.member === "string" ? args.member : undefined);
         case "capability_describe": return this.describe(binding, String(args.member ?? ""), typeof args.word === "string" ? args.word : undefined);
         case "capability_call": {
           if (typeof args.member !== "string" || typeof args.word !== "string") return failure("payload_invalid", "member and word are required");
+          if (args.member === "service:agents") return failure("forbidden", "use the agent tools for other agents");
           if (!binding.allowsWord(args.member, args.word)) return failure("forbidden", `${args.member}/${args.word} is not among the capabilities you may use`);
           if (args.body !== undefined && (typeof args.body !== "object" || args.body === null || Array.isArray(args.body))) return failure("payload_invalid", "body must be an object");
           return await this.job(binding, active.turn, args.member, args.word, (args.body ?? {}) as Record<string, unknown>,
@@ -406,7 +385,7 @@ export class AgentMcpServer {
   private list(binding: AgentBinding, only?: string): ToolResult {
     const summary = this.options.members.describe("agent");
     // Agents reach each other through the agent tools, not as capabilities.
-    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && (!only || member.id === only)).map((member) => {
+    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && (!only || member.id === only)).map((member) => {
       let words: WordSpec[] = [];
       try { words = this.options.members.describe("agent", member.id).members[0]?.words ?? []; } catch { /* vanished */ }
       return { id: member.id, kind: member.kind, name: member.name, ...(member.online === undefined ? {} : { online: member.online }),
@@ -418,6 +397,7 @@ export class AgentMcpServer {
   }
 
   private describe(binding: AgentBinding, member: string, word?: string): ToolResult {
+    if (member === "service:agents") return failure("payload_invalid", "other agents are reached with the agent tools");
     let words: WordSpec[];
     try { words = this.options.members.describe("agent", member).members[0]?.words ?? []; }
     catch { return failure("payload_invalid", `no member ${member}; capability_list shows what exists`); }

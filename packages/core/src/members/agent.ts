@@ -32,8 +32,6 @@ export interface AgentTurnRunner {
 export interface AgentMemberOptions {
   /** agent:main (the default) is the one the owner talks with; any other id is a declared agent. */
   id?: string;
-  /** An agent's answer to a question this agent is waiting on in its current turn: kept with that turn, not a new one. */
-  claimAnswer?: (message: Message, turn: string) => boolean;
   ledger: Ledger;
   router: WorldRouter;
   stateDir: string;
@@ -57,7 +55,8 @@ export class AgentMember implements Member {
   readonly kind = "agent" as const;
   /** Only the main agent speaks in the owner's conversation. */
   readonly main: boolean;
-  readonly online = true;
+  /** A stopped agent keeps its inbox but takes no turns; the Agent system starts and stops it. */
+  get online(): boolean { return this.enabled; }
   readonly idempotentRecovery = ["say", "cancel_turn", "wake"] as const;
   readonly name: string;
   readonly inbox: AgentInbox;
@@ -82,14 +81,13 @@ export class AgentMember implements Member {
   private steering: Promise<void> = Promise.resolve();
   private steered: { turn: string; ids: string[] } | null = null;
   private activeAudience: string | null = null;
-  private readonly claimAnswer?: (message: Message, turn: string) => boolean;
+  private enabled = true;
   private error: Error | null = null;
 
   constructor(options: AgentMemberOptions) {
     this.id = options.id ?? "agent:main";
     if (!AGENT_ID.test(this.id)) throw new TypeError("invalid agent id");
     this.main = this.id === "agent:main";
-    this.claimAnswer = options.claimAnswer;
     this.name = options.name ?? "Assistant";
     this.ledger = options.ledger;
     this.router = options.router;
@@ -110,6 +108,13 @@ export class AgentMember implements Member {
   }
   get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
+  /** The Agent system's switch: a stopped agent's turn is cancelled and it takes no new ones until started again. */
+  setEnabled(enabled: boolean, reason = "Stopped by ash"): void {
+    this.enabled = enabled;
+    if (!enabled && this.inbox.activeTurn()) this.cancelActive(`agent-stop:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`, reason, undefined);
+    if (enabled) this.schedule();
+  }
+
   /** Resample the single durable admin pause fact after a committed transition. */
   resamplePause(): void { this.status.refresh(); this.schedule(); }
   counts(): { pending: number; read: number; active: number } { return this.inbox.counts(); }
@@ -125,15 +130,6 @@ export class AgentMember implements Member {
     if (message.word !== "say") return { ok: false, error: { code: "not_found", message: "agent word not available" } };
     this.inbox.accept(message, this.id); // sync durable commit before acknowledging the route
     if (this.started) void this.receipts().catch((error) => { this.error = error instanceof Error ? error : new Error(String(error)); this.later(); });
-    // The answer to an agent_ask this agent is waiting on belongs to the waiting turn; the tool call returns it.
-    const turn = this.activeTurn;
-    if (turn && this.claimAnswer?.(message, turn)) {
-      try {
-        this.inbox.attach([message.id], turn);
-        void this.event("read", { ids: [message.id], turn }, `read:${turn}:${message.id}`, turn).catch(() => {});
-        return { ok: true, result: { accepted: true } };
-      } catch { /* the turn just ended: it is an ordinary message then */ }
-    }
     this.schedule();
     if (this.started && this.activeTurn && this.runner.steer) this.steering = this.steering.then(() => this.steer()).catch(() => { /* left pending for the next turn */ });
     return { ok: true, result: { accepted: true } };
@@ -153,11 +149,17 @@ export class AgentMember implements Member {
     // cancel a newer turn that happened to start before this request dispatched.
     if (message.from === "service:reflex" && message.turn && active?.id !== message.turn)
       return { ok: true, result: { cancelled: false } };
+    return this.cancelActive(message.id, reason, by);
+  }
+
+  /** Stop the running turn, durably, before anything else can replay its effects. */
+  private cancelActive(requestId: string, reason: string, by: string | undefined): ResponseBody {
+    const active = this.inbox.activeTurn();
     const inFlight = active ? this.ledger.trackedRequests().filter((item) => item.message.from === this.id && item.message.turn === active.id) : [];
     const action = inFlight.at(-1)?.message;
     const safeReason = [...reason].slice(0, 160).join("");
     const fact = `The previous turn was stopped${action ? ` while ${action.to}/${action.word} was pending` : "; the exact last action is unknown"}. Reason: ${safeReason}. Any external effect may be unknown.`;
-    const receipt = this.inbox.recordCancel(message.id, reason, by, fact); // durable before cross-database settlement or abort
+    const receipt = this.inbox.recordCancel(requestId, reason, by, fact); // durable before cross-database settlement or abort
     if (!receipt.cancelled || !receipt.turn) return { ok: true, result: { cancelled: false } };
     this.router.cancelTurn(this.id, receipt.turn); // wake pending tool promises before aborting the runtime
     const ended = this.inbox.finish(receipt.turn, "cancelled", "External effect may be unknown; waiting for runner to become idle");
@@ -218,7 +220,7 @@ export class AgentMember implements Member {
     if (this.closed || !turn || !controller || controller.signal.aborted || !this.runner.steer || this.isPaused()) return;
     // Only words meant for the same audience join a running turn; anything else waits so its answer goes to the right place.
     const leading = this.leadingBatch();
-    if (!leading.messages.length || leading.audience !== this.activeAudience) return;
+    if (!leading.messages.length || leading.audience !== "owner" || this.activeAudience !== "owner") return;
     const { ids, messages } = leading;
     const rendered = renderTurnBatch(messages, this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET, []);
     if (!await this.runner.steer({ turn, messages, rendered }, controller.signal)) return;
@@ -230,8 +232,11 @@ export class AgentMember implements Member {
 
   /** Who hears a turn's words: the owner (main agent), the agent that wrote, or nobody (wakes, and replies to replies). */
   private audienceOf(message: Message): string {
-    if (AGENT_ID.test(message.from)) return typeof message.body.in_reply_to === "string" ? "silent" : message.from;
-    return this.main ? "owner" : "silent";
+    // A question or news from another agent comes through the Agent system, which takes the answer; an answer it passes
+    // back is the end of that exchange, so the turn that reads it says nothing (no ping-pong).
+    if (message.from === "service:agents") return typeof message.body.reply_from === "string" ? "silent" : "service:agents";
+    if (message.from === "person:owner" || !AGENT_ID.test(message.from)) return this.main ? "owner" : "silent";
+    return "silent";
   }
 
   /** The oldest pending messages that share one audience: a turn answers one audience at a time. */
@@ -246,6 +251,7 @@ export class AgentMember implements Member {
       audience = next;
       ids.push(id);
       messages.push(message);
+      if (audience === "service:agents") break; // each delivered question gets a turn of its own, so its answer is its own
     }
     return { ids, messages, audience };
   }
@@ -313,7 +319,7 @@ export class AgentMember implements Member {
   }
 
   private schedule(): void {
-    if (!this.started || this.closed || this.draining) return;
+    if (!this.started || this.closed || this.draining || !this.enabled) return;
     try { if (this.isPaused()) return; }
     catch (error) { this.error = error instanceof Error ? error : new Error(String(error)); return; }
     this.draining = true;
@@ -332,7 +338,7 @@ export class AgentMember implements Member {
       while (!this.closed) {
         await this.reconcile();
         if (this.closed) break;
-        if (this.isPaused()) break;
+        if (this.isPaused() || !this.enabled) break;
         const batch = this.leadingBatch();
         if (!batch.ids.length) break;
         const { ids, messages } = batch;
@@ -367,10 +373,9 @@ export class AgentMember implements Member {
                 body: { text: output.text, kind: "reply" }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
               return;
             }
-            // Another agent wrote: the answer goes back to it, as a reply to the last thing it said in this turn.
-            const asked = [...messages, ...this.steeredMessages(turn.id)].filter((message) => message.from === audience).at(-1);
-            await this.router.send(this.context(turn.id), { to: audience, kind: "request", word: "say",
-              body: { text: output.text, ...(asked ? { in_reply_to: asked.id } : {}) }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
+            // A delivered question or news: the words go back to the Agent system, which answers the asker.
+            await this.router.send(this.context(turn.id), { to: "service:agents", kind: "request", word: "answer",
+              body: { in_reply_to: messages[0]!.id, text: output.text }, client_id: `reply:${turn.id}:${output.id}` }, controller.signal);
           }, controller.signal);
         } catch (error) {
           result = { reason: "error", error: error instanceof Error ? error.message : "runner failed" };
