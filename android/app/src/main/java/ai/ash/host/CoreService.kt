@@ -38,8 +38,8 @@ class CoreService : Service() {
         host = h
         calendarSense = CalendarSense(this, BuildConfig.SENSE_RESCAN_MS).also { it.start() }
         deviceSense = DeviceSense(this).also { it.start() }
-        supervisor = Thread({ supervise(h.port) }, "ash-supervisor").apply { start() }
         state = "starting"
+        supervisor = Thread({ supervise(h.port) }, "ash-supervisor").apply { start() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -66,7 +66,11 @@ class CoreService : Service() {
             }
             ACTION_APP_LEFT -> deviceSense?.appLeft()
         }
-        supervisor?.interrupt()
+        // APP_OPEN / APP_LEFT arrive as onboarding and HomeActivity replace one another. Interrupting
+        // Process.waitFor() while the first-install tar is running leaves the UI on a transient
+        // "error: null" even though the next supervisor pass recovers. Only lifecycle commands need
+        // to wake the supervisor, and even those wait for an atomic installer swap to finish.
+        if (shouldInterruptSupervisor(intent?.action, state)) supervisor?.interrupt()
         return START_STICKY
     }
 
@@ -182,6 +186,10 @@ class CoreService : Service() {
         /** "starting" | "installing" | "preparing" | "running" | "stopped" | "error: …" — for the UI. */
         @Volatile var state: String = "stopped"
         @Volatile var installProgress: Int = -1
+
+        internal fun shouldInterruptSupervisor(action: String?, currentState: String): Boolean =
+            action in setOf(ACTION_START, ACTION_STOP, ACTION_RESTART) &&
+                currentState != "installing" && currentState != "preparing"
 
         fun start(ctx: Context, action: String? = null) {
             val i = Intent(ctx, CoreService::class.java).setAction(action)
