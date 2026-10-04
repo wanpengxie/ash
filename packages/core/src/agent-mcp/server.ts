@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server as HttpServer, type Ser
 import type { AddressInfo } from "node:net";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListResourcesRequestSchema, ListResourceTemplatesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { AGENT_ID } from "../../../sdk/src/words";
 import type { Ledger } from "../world/ledger";
@@ -225,7 +225,10 @@ export class AgentMcpServer {
       if (!binding) { response.writeHead(401).end(); return; }
       let raw = "";
       for await (const chunk of request) { raw += chunk; if (raw.length > 4 * 1024 * 1024) { response.writeHead(413).end(); return; } }
-      const server = new Server({ name: "ash", version: "3.0.0" }, { capabilities: { tools: {} } });
+      // No resources, said explicitly: the agent runtime asks, and otherwise prints a warning on its protocol stream.
+      const server = new Server({ name: "ash", version: "3.0.0" }, { capabilities: { tools: {}, resources: {} } });
+      server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+      server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((tool) => binding.allowsTool(tool.name)).map((tool) => ({ ...tool })) }));
       server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
         const result = await this.call(binding, call.params.name, (call.params.arguments ?? {}) as Record<string, unknown>, extra.signal);
