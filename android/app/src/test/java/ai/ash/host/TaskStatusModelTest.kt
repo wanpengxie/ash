@@ -6,6 +6,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TaskStatusModelTest {
+    @Test fun replyAndApprovalOriginalAreNotFlattenedOrTruncated() {
+        val original = "x".repeat(2500) + "\n尾部原文"
+        val card = JSONObject().put("id", "m_ask").put("pending_id", "m_action").put("to", "service:gate").put("turn", "t_a")
+            .put("kind", "approval").put("title", "提交").put("detail", "摘要").put("original", original)
+            .put("options", JSONArray().put(JSONObject().put("id", "once").put("label", "允许这一次")))
+            .put("expires_at", 10000).put("state", "waiting")
+        val b = JSONObject().put("session", "s").put("revision", 1).put("turn", "t_a").put("started_at", 1000)
+            .put("state", "waiting_you").put("text", "等待你回应").put("steps", JSONArray()).put("can_stop", false)
+            .put("reply", "你想选择哪个？\n\nA 或 B").put("cards", JSONArray().put(card))
+        val f = TaskFrame.parse(b)
+        assertEquals(original, f.cards.single().original)
+        assertEquals("你想选择哪个？\n\nA 或 B", f.reply)
+        assertTrue(f.cards.single().actionable(9000)); assertFalse(f.cards.single().actionable(10000))
+        assertFalse(f.cards.single().copy(state = "answered").actionable(9000))
+        assertFalse(f.cards.single().copy(state = "withdrawn").actionable(9000))
+    }
     private fun frame(revision: Long = 1, session: String = "session-a", turn: String? = "t_a", state: String = "working", canStop: Boolean = true) =
         TaskFrame(session, revision, turn, 1000, state, "在搜索", listOf("在想", "在搜索"), canStop)
     @Test fun staleSnapshotsNeverRestoreAnOldTurnOrSession() {
@@ -20,12 +36,12 @@ class TaskStatusModelTest {
         assertTrue(m.visible(18000)); assertTrue(m.stale(18000)); assertFalse(m.canStop("t_a", 18000))
         assertTrue(m.visible(32000)); assertTrue(m.stale(32000)); assertFalse(m.canStop("t_a", 32000))
     }
-    @Test fun completedTaskHasBriefFixedDurationEvenIfReplayed() {
+    @Test fun endedReplyStaysUntilExplicitlyDismissedEvenAtHome() {
         val m = TaskStatusModel(); m.accept(frame(), 2000)
         m.accept(frame(2, state = "done", canStop = false), 4000)
         assertEquals(3L, m.elapsed(7000)); assertTrue(m.visible(7000)); assertFalse(m.canStop("t_a", 7000))
         m.accept(frame(3, state = "done", canStop = false), 7500)
-        assertFalse(m.visible(8000))
+        assertTrue(m.visible(8000)); assertTrue(m.dismiss("t_a")); assertFalse(m.visible(9000))
     }
     @Test fun idleAndRestartClearTaskVisibility() {
         val m = TaskStatusModel(); m.accept(frame(), 2000); m.clear(); assertFalse(m.visible(2100))
@@ -59,10 +75,10 @@ class TaskStatusModelTest {
         assertFalse(m.visible(63000, homeVisible = false))
         m.accept(frame(4, turn = "t_next"), 64000); assertTrue(m.visible(65000, homeVisible = false))
     }
-    @Test fun returningHomeConsumesCompletedNoticeButNeverClosesAnActiveComposer() {
+    @Test fun returningHomeDoesNotConsumeAReplyOrQuestion() {
         val m = TaskStatusModel(); m.accept(frame(2, state = "done", canStop = false), 4000)
         assertTrue(m.visible(9000, homeVisible = true, editing = true))
-        assertFalse(m.visible(10000, homeVisible = true, editing = false))
-        assertFalse("leaving Ash must not resurrect the old completion", m.visible(11000, homeVisible = false))
+        assertTrue(m.visible(10000, homeVisible = true, editing = false))
+        assertTrue(m.visible(11000, homeVisible = false))
     }
 }

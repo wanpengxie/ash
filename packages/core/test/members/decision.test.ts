@@ -116,7 +116,7 @@ async function fixture(options: { native?: boolean; visible?: boolean; action?: 
     async close() { await agent.close(); await reflex.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
-test("phone turn waits for the fast local surface snapshot, then JEV can return its real screen to Ash", async () => {
+test("phone turn captures the surface but capsule delivery never judges or returns the real screen", async () => {
   let release!: () => void;
   const hold = new Promise<void>((r) => { release = r; });
   const f = await fixture({ surface: async () => hold });
@@ -125,10 +125,8 @@ test("phone turn waits for the fast local surface snapshot, then JEV can return 
     assert.equal(f.runnerCalls, 0);
     release(); await f.done();
     assert.deepEqual(f.order, ["surface", "runner"]);
-    assert.equal(f.calls, 1); assert.equal(f.returns, 1);
-    assert.equal(f.state.owner_request[0], "帮我查一下设置，然后告诉我结果");
-    assert.deepEqual(f.state.final_replies, ["检查完成，请看结果"]);
-    assert.equal(f.rows().filter((row) => row.word === "decision.applied" && row.body.acted).length, 1);
+    assert.equal(f.calls, 0); assert.equal(f.returns, 0);
+    assert.equal(f.rows().filter((row) => row.word === "decision.applied" && row.body.acted).length, 0);
   } finally { release(); await f.close(); }
 });
 
@@ -152,7 +150,7 @@ test("surface timeout releases the task without enabling screen reconciliation",
 test("JEV stay preserves a destination/login screen; virtual-only work closes only its owned screen", async () => {
   for (const options of [{ real: "stay" }, { action: "vscreen.create", real: "return_to_ash", virtual: "close" }]) {
     const f = await fixture(options);
-    try { await f.send(); await f.done(); assert.equal(f.calls, 1); assert.equal(f.returns, 0);
+    try { await f.send(); await f.done(); assert.equal(f.calls, options.virtual === "close" ? 1 : 0); assert.equal(f.returns, 0);
       assert.equal(f.closes, options.virtual === "close" ? 1 : 0); }
     finally { await f.close(); }
   }
@@ -161,7 +159,7 @@ test("JEV stay preserves a destination/login screen; virtual-only work closes on
 test("user screen changes while JEV is pending invalidate its answer", async () => {
   let release!: (raw: unknown) => void;
   const pending = new Promise<unknown>((r) => { release = r; });
-  const f = await fixture({ evaluate: async () => pending });
+  const f = await fixture({ action: "vscreen.create", evaluate: async () => pending });
   try { await f.send(); await wait(() => f.calls === 1); f.screen.state_epoch++;
     release(answer()); await f.done(); assert.equal(f.returns, 0);
     assert.equal(f.rows().find((row) => row.word === "decision.applied")?.body.skipped, "stale"); }
@@ -171,7 +169,7 @@ test("user screen changes while JEV is pending invalidate its answer", async () 
 test("a newer turn supersedes an old screen judgment even when a model ignores abort", async () => {
   let release!: (raw: unknown) => void, evals = 0;
   const pending = new Promise<unknown>((r) => { release = r; });
-  const f = await fixture({ evaluate: async () => ++evals === 1 ? pending : answer("stay") });
+  const f = await fixture({ action: "vscreen.create", evaluate: async () => ++evals === 1 ? pending : answer("stay") });
   try { await f.send(); await wait(() => f.calls === 1); await f.send(); await wait(() => f.runnerCalls === 2);
     release(answer()); await f.done(); assert.equal(f.returns, 0);
     assert.ok(f.rows().some((row) => row.word === "decision.applied" && row.body.skipped === "superseded")); }
@@ -188,7 +186,7 @@ test("invalid/unavailable JEV and errored turns leave the screen unchanged", asy
 });
 
 test("peripheral host words are inaccessible to owners/agents; repeated triggers apply once", async () => {
-  const f = await fixture();
+  const f = await fixture({ action: "vscreen.create", virtual: "close" });
   try {
     await assert.rejects(f.router.send(owner, { to: "service:reflex", kind: "request", word: "screen.return",
       body: { expected_package: "app", expected_state_epoch: 1, decision_id: "forged" }, wait: true }), /trusted local runtime/);
@@ -197,7 +195,7 @@ test("peripheral host words are inaccessible to owners/agents; repeated triggers
     assert.equal(f.reflex.words().every((word) => word.audience === "owner"), true);
     await f.send(); await f.done();
     const end = f.rows().find((row) => row.word === "turn.end")!;
-    f.reflex.runtime.observe(end); await f.reflex.settled(); assert.equal(f.returns, 1);
+    f.reflex.runtime.observe(end); await f.reflex.settled(); assert.equal(f.returns, 0); assert.equal(f.closes, 1);
     assert.ok(f.ledger.retryMessage("service:reflex", `decision:${f.rows().find((r) => r.word === "decision.started")!.body.decision_id}:started`));
   } finally { await f.close(); }
 });
@@ -210,7 +208,7 @@ test("an independent third route registers without runtime or JEV transport chan
       current: () => true, apply: async () => { applied++; return { acted: false }; } };
   } };
   const f = await fixture({ extraRoute: route });
-  try { await f.send(); await f.done(); assert.equal(applied, 1); assert.equal(f.calls, 1); }
+  try { await f.send(); await f.done(); assert.equal(applied, 1); assert.equal(f.calls, 0); }
   finally { await f.close(); }
 });
 
@@ -226,9 +224,9 @@ test("open-app delivery is planned before the runner and cannot be undone by com
     await f.done();
     assert.deepEqual(f.order, ["surface", "execution", "surface", "runner"]);
     assert.match(f.inputContext!, /foreground_handoff/); assert.match(f.inputContext!, /REAL phone screen/);
-    assert.equal(f.state.execution_plan.mode, "foreground_handoff");
+    assert.equal(f.calls, 0);
     assert.equal(f.returns, 0, "even an erroneous return verdict must not undo visible app delivery");
-    assert.equal(f.rows().find((r) => r.word === "decision.applied")?.body.skipped, "foreground_handoff");
+    assert.equal(f.rows().filter((r) => r.word === "screen.return").length, 0);
     const hook = f.rows().find((r) => r.kind === "request" && r.word === "before_turn")!;
     const captures = (f.ledger.responseTo(hook.id)!.body.result as { captures: any[] }).captures;
     assert.equal(captures.find((c) => c.route === "screen.execution").state.execution.mode, "foreground_handoff");
@@ -264,7 +262,7 @@ test("unavailable Shizuku, invalid/low-confidence/missing JEV cannot silently se
     { virtualAvailable: true, evaluate: async () => { throw new Error("JEV unavailable"); } }]) {
     const f = await fixture({ execution });
     try { await f.send(); await f.done(); assert.match(f.inputContext!, /Mode: foreground_task; stage: fallback/);
-      assert.equal(f.state.execution_plan.mode, "foreground_task"); assert.equal(f.returns, 1); }
+      assert.equal(f.calls, 0); assert.equal(f.returns, 0); }
     finally { await f.close(); }
   }
 });
@@ -294,7 +292,7 @@ test("a user changing focus during the execution judgment invalidates its screen
 test("an execution decision timeout releases the runner with a foreground fallback", async () => {
   const f = await fixture({ execution: { evaluate: async () => new Promise(() => {}) } });
   try { await f.send(); await f.done(); assert.equal(f.runnerCalls, 1);
-    assert.match(f.inputContext!, /stage: fallback/); assert.equal(f.state.execution_plan.fallback, "timeout"); }
+    assert.match(f.inputContext!, /stage: fallback/); assert.equal(f.calls, 0); }
   finally { await f.close(); }
 });
 

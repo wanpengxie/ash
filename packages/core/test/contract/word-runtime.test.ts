@@ -153,6 +153,7 @@ test("each inbound word rejects a schema-violating body from its authorized send
       "worker:proactive/proactive", "worker:opener/opener"]);
     const unchecked: string[] = [];
     senders["service:reflex/task.stop"] = w.owner;
+    senders["service:reflex/task.end"] = w.owner;
     senders["service:reflex/before_turn"] = w.service("service:reflex");
     for (const word of ["surface.get", "screen.get", "screen.return", "virtual.close"]) senders[`service:reflex/${word}`] = w.service("service:reflex");
     for (const contract of WORD_CONTRACTS.filter((item) => item.direction === "in")) {

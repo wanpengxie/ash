@@ -264,6 +264,8 @@ add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: cho
   { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });
 add("service:reflex", "task.stop", "request", obj({ turn: id }, ["turn"]), obj({ cancelled: bool }, ["cancelled"]),
   { audience: "owner", timeout_ms: 3000, description: "Stop only the owner's explicitly selected current task, never a newer turn." });
+add("service:reflex", "task.end", "request", obj({ turn: id, pending_ids: { type: "array", items: id, maxItems: 100, uniqueItems: true } }, ["turn", "pending_ids"]),
+  obj({ ended: bool }, ["ended"]), { audience: "owner", timeout_ms: 5000, description: "End the selected capsule interaction: stop its current turn and withdraw only the explicitly displayed pending requests. Never stop a newer turn." });
 add("service:reflex", "before_turn", "request", obj({ turn: id }, ["turn"]), obj({ captured: bool,
   captures: array(obj({ route: id, state: { type: "object" } }, ["route", "state"])) }, ["captured"]),
   { audience: "owner", timeout_ms: 10000, description: "Internal bounded pre-run capture and execution-screen judgment for peripheral decision routes." });

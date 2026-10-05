@@ -25,7 +25,9 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ScrollView
 import ai.ash.host.TaskStatus
+import ai.ash.host.TaskCard
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -46,6 +48,12 @@ object TaskCapsule {
     private var editor: EditText? = null
     private var sendButton: Button? = null
     private var inputNotice: TextView? = null
+    private var cardBox: LinearLayout? = null
+    private var replyText: TextView? = null
+    private var contentScroll: ScrollView? = null
+    private var cardKey = ""
+    private var answerTarget: String? = null
+    private val submitted = mutableMapOf<String, String>()
     @Volatile private var editing = false
     private var completed = false
     private var draft = ""
@@ -68,12 +76,13 @@ object TaskCapsule {
     private fun dp(ctx: Context, n: Int) = (ctx.resources.displayMetrics.density * n).toInt()
 
     fun isEditing(): Boolean = editing
-    fun update(ctx: Context, text: String, steps: List<String>, canStop: Boolean, task: String, visible: Boolean, subtitle: String = "", finished: Boolean = false, success: Boolean = false) {
+    fun update(ctx: Context, text: String, steps: List<String>, canStop: Boolean, task: String, visible: Boolean, subtitle: String = "", finished: Boolean = false, success: Boolean = false,
+        reply: String = "", cards: List<TaskCard> = emptyList(), interactive: Boolean = true) {
         check(Looper.myLooper() == Looper.getMainLooper())
         if (turn != task) { expanded = false; turn = task }
         app = ctx.applicationContext
         completed = finished
-        restore = { update(ctx, text, steps, canStop, task, visible, subtitle, finished, success) }
+        restore = { update(ctx, text, steps, canStop, task, visible, subtitle, finished, success, reply, cards, interactive) }
         val unlocked = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
             ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
         if (!visible || !unlocked || suppressed > 0 || !Settings.canDrawOverlays(ctx)) {
@@ -83,19 +92,22 @@ object TaskCapsule {
         runCatching {
             if (root == null) attach(ctx)
             applyTouchMode()
-            (root?.background as? GradientDrawable)?.setColor(if (finished && success) Color.rgb(20, 92, 58) else Color.rgb(29, 34, 40))
+            (root?.background as? GradientDrawable)?.setColor(Color.rgb(29, 34, 40))
             val headingText = "$text  ${if (expanded) "▴" else "▾"}"
             if (title?.text?.toString() != headingText) title?.text = headingText
             val detailText = (listOf(subtitle) + if (expanded) steps.takeLast(5).map { "· $it" } else emptyList()).filter { it.isNotBlank() }.joinToString("\n")
             if (details?.text?.toString() != detailText) details?.text = detailText
             details?.visibility = if (detailText.isNotBlank()) View.VISIBLE else View.GONE
-            actions?.visibility = if (expanded || finished) View.VISIBLE else View.GONE
-            dismissButton?.visibility = if (finished) View.VISIBLE else View.GONE
-            stop?.visibility = if (finished) View.GONE else View.VISIBLE
-            collapseButton?.visibility = if (expanded) View.VISIBLE else View.GONE
-            stop?.isEnabled = canStop
+            actions?.visibility = View.VISIBLE
+            dismissButton?.isEnabled = interactive
+            if (replyText?.text?.toString() != reply) replyText?.text = reply
+            replyText?.visibility = if (reply.isNotBlank()) View.VISIBLE else View.GONE
+            replyText?.maxLines = if (expanded) Int.MAX_VALUE else 6
+            contentScroll?.visibility = if (reply.isNotBlank() || cards.isNotEmpty()) View.VISIBLE else View.GONE
+            val key = cards.toString() + interactive + cards.map { it.actionable(System.currentTimeMillis()) } + submitted.toString()
+            if (key != cardKey) { renderCards(ctx, cards, interactive); cardKey = key }
             composer?.visibility = if (editing) View.VISIBLE else View.GONE
-            inputToggle?.text = if (editing) "收起输入" else "继续输入"
+            inputToggle?.text = if (editing) "收起" else "输入"
             sendButton?.isEnabled = !sending
             editor?.isEnabled = !sending
             inputNotice?.text = inputMessage
@@ -118,12 +130,13 @@ object TaskCapsule {
             val id = saved.getString("pending_id", "").orEmpty()
             if (id.isNotBlank()) {
                 attemptId = id; attemptText = saved.getString("pending_text", "").orEmpty()
+                answerTarget = saved.getString("pending_question", null)
                 if (draft.isBlank()) draft = attemptText
                 inputMessage = "上次发送未确认，可使用原消息重试"
             }
         }
         val wm = ctx.getSystemService(WindowManager::class.java)
-        val p = lp ?: WindowManager.LayoutParams(dp(ctx, 244), WindowManager.LayoutParams.WRAP_CONTENT,
+        val p = lp ?: WindowManager.LayoutParams(minOf(dp(ctx, 320), ctx.resources.displayMetrics.widthPixels - dp(ctx, 24)), WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; x = ((ctx.resources.displayMetrics.widthPixels - width) / 2).coerceAtLeast(0); y = dp(ctx, 48); setTitle("AshTaskCapsule") }.also { lp = it }
@@ -155,22 +168,25 @@ object TaskCapsule {
         }
         heading.setOnClickListener { if (passingTouches == 0) { expanded = !expanded; restore?.invoke() } }
         val detail = TextView(ctx).apply { textSize = 12f; setTextColor(Color.LTGRAY); setPadding(0, dp(ctx, 4), 0, dp(ctx, 4)) }
-        val controls = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val controls = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         fun button(text: String, click: () -> Unit) = Button(ctx).apply { this.text = text; textSize = 12f; setOnClickListener { click() } }
-        val completedRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        completedRow.addView(button("回到 Ash") {
+        val input = button("输入") { answerTarget = null; editor?.hint = "补充信息或发新指令…"; setEditing(!editing) }
+        controls.addView(input, LinearLayout.LayoutParams(0, dp(ctx, 42), 1f))
+        controls.addView(button("回 Ash") {
             setEditing(false)
-            if (completed) turn?.let { TaskStatus.dismiss(it) }
             ctx.startActivity(Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         }, LinearLayout.LayoutParams(0, dp(ctx, 42), 1f))
-        val dismiss = button("关闭通知") { turn?.let { TaskStatus.dismiss(it) } }
-        completedRow.addView(dismiss, LinearLayout.LayoutParams(0, dp(ctx, 42), 1f))
-        controls.addView(completedRow)
-        val stopButton = button("停止本次任务") { turn?.let { TaskStatus.stop(it) } }
-        controls.addView(stopButton)
-        val collapse = button("收起") { expanded = false; restore?.invoke() }
-        controls.addView(collapse)
-        val input = button("继续输入") { setEditing(!editing) }.apply { minHeight = 0; minimumHeight = 0; setPadding(0, 0, 0, 0) }
+        val dismiss = button("结束") { setEditing(false); turn?.let { TaskStatus.end(it) } }
+        controls.addView(dismiss, LinearLayout.LayoutParams(0, dp(ctx, 42), 1f))
+        val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val replyView = TextView(ctx).apply { textSize = 14f; setTextColor(Color.WHITE); setPadding(0, dp(ctx, 6), 0, dp(ctx, 8)); setTextIsSelectable(true) }
+        val cardsView = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(replyView); content.addView(cardsView)
+        val scroll = object : ScrollView(ctx) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(minOf(dp(ctx, 280), ctx.resources.displayMetrics.heightPixels / 3), View.MeasureSpec.AT_MOST))
+            }
+        }.apply { addView(content); isFillViewport = false }
         val inputBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val field = object : EditText(ctx) {
             override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
@@ -199,13 +215,58 @@ object TaskCapsule {
         val send = button("发送") { submitInput() }
         val inputStatus = TextView(ctx).apply { textSize = 11f; setTextColor(Color.LTGRAY) }
         inputBox.addView(field); inputBox.addView(send); inputBox.addView(inputStatus)
-        box.addView(heading); box.addView(detail); box.addView(controls)
-        box.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(ctx, 36)))
+        box.addView(heading); box.addView(detail); box.addView(scroll); box.addView(controls)
         box.addView(inputBox)
         wm.addView(box, p)
         manager = wm
-        root = box; title = heading; details = detail; actions = controls; stop = stopButton
-        dismissButton = dismiss; collapseButton = collapse; inputToggle = input; composer = inputBox; editor = field; sendButton = send; inputNotice = inputStatus
+        root = box; title = heading; details = detail; actions = controls
+        cardBox = cardsView; replyText = replyView; contentScroll = scroll; cardKey = ""
+        dismissButton = dismiss; inputToggle = input; composer = inputBox; editor = field; sendButton = send; inputNotice = inputStatus
+    }
+    private fun renderCards(ctx: Context, cards: List<TaskCard>, interactive: Boolean) {
+        val box = cardBox ?: return
+        box.removeAllViews()
+        for (card in cards) {
+            fun label(value: String) = TextView(ctx).apply { text = value; textSize = 13f; setTextColor(Color.WHITE); setPadding(0, dp(ctx, 5), 0, dp(ctx, 5)); setTextIsSelectable(true) }
+            box.addView(label(card.title))
+            box.addView(label(card.detail))
+            val original = label(card.original).apply { visibility = View.GONE; typeface = android.graphics.Typeface.MONOSPACE }
+            val view = Button(ctx).apply {
+                text = "查看原文"; textSize = 12f
+                setOnClickListener { original.visibility = if (original.visibility == View.GONE) View.VISIBLE else View.GONE; text = if (original.visibility == View.VISIBLE) "收起原文" else "查看原文" }
+            }
+            box.addView(view); box.addView(original)
+            val status = when {
+                submitted.containsKey(card.id) && card.state == "waiting" -> submitted[card.id]!!
+                card.state == "waiting" && card.expiresAt <= System.currentTimeMillis() -> "已过期"
+                card.state == "answered" -> if (card.kind == "approval") "已批准，等待继续" else "已回答"
+                card.state == "denied" -> "已拒绝"
+                card.state == "redeemed" -> "已提交执行，结果见后续回复"
+                card.state == "withdrawn" -> "已撤回"
+                card.state == "skipped" -> "未执行"
+                card.state == "expired" -> "已过期"
+                else -> ""
+            }
+            if (status.isNotBlank()) box.addView(label(status))
+            if (!card.actionable(System.currentTimeMillis())) continue
+            for ((choice, title) in card.options.filter { card.kind == "question" || it.first in setOf("once", "deny") }) {
+                box.addView(Button(ctx).apply {
+                    text = if (card.kind != "question" && choice == "once") "允许并继续" else title
+                    textSize = 12f; isEnabled = interactive && !submitted.containsKey(card.id)
+                    setOnClickListener {
+                        submitted[card.id] = "正在提交…"; restore?.invoke()
+                        TaskStatus.answerCard(card.id, choice) { ok, message ->
+                            if (ok) submitted[card.id] = message else submitted.remove(card.id)
+                            android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_LONG).show(); restore?.invoke()
+                        }
+                    }
+                })
+            }
+            if (card.kind == "question" && card.allowCustom) box.addView(Button(ctx).apply {
+                text = "输入回答"; textSize = 12f; isEnabled = interactive && !submitted.containsKey(card.id)
+                setOnClickListener { answerTarget = card.id; setEditing(true); editor?.hint = "回答：${card.title}" }
+            })
+        }
     }
     private fun setEditing(value: Boolean) {
         if (value && passingTouches > 0) return
@@ -233,20 +294,25 @@ object TaskCapsule {
         // Reuse the exact identity after an ambiguous network failure. Never blindly submit a new copy.
         if (text != attemptText || attemptId.isBlank()) { attemptText = text; attemptId = java.util.UUID.randomUUID().toString() }
         val saved = app?.getSharedPreferences("ash_capsule_input", Context.MODE_PRIVATE) ?: return
-        if (!saved.edit().putString("pending_id", attemptId).putString("pending_text", text).commit()) {
+        if (!saved.edit().putString("pending_id", attemptId).putString("pending_text", text).putString("pending_question", answerTarget).commit()) {
             inputMessage = "未能保存发送状态，请重试"; restore?.invoke(); return
         }
         draft = text; sending = true; inputMessage = "正在发送…"; setEditing(false)
-        TaskStatus.sendInput(text, attemptId) { ok, message ->
+        val target = answerTarget
+        val callback: (Boolean, String) -> Unit = { ok, message ->
             sending = false; inputMessage = message
             if (ok) {
-                saved.edit().remove("pending_id").remove("pending_text").commit()
+                saved.edit().remove("pending_id").remove("pending_text").remove("pending_question").commit()
+                if (target != null) submitted[target] = message
+                answerTarget = null
                 draft = ""; attemptText = ""; attemptId = ""; editor?.setText("")
                 setEditing(false)
                 android.widget.Toast.makeText(app, message, android.widget.Toast.LENGTH_SHORT).show()
             } else setEditing(true)
             restore?.invoke()
         }
+        if (target != null) TaskStatus.answerCard(target, "custom", text, callback)
+        else TaskStatus.sendInput(text, attemptId, callback)
     }
     private fun detach() {
         draft = editor?.text?.toString() ?: draft
@@ -258,6 +324,7 @@ object TaskCapsule {
                 .onFailure { android.util.Log.w("ash.capsule", "could not detach task window", it) }
         }
         root = null; title = null; details = null; actions = null; stop = null
+        cardBox = null; replyText = null; contentScroll = null; cardKey = ""
         composer = null; editor = null; inputToggle = null; inputNotice = null; sendButton = null; dismissButton = null; collapseButton = null
         manager = null
     }

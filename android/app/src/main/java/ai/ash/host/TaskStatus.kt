@@ -54,7 +54,8 @@ object TaskStatus {
         val text = "Ash · $title"
         val detail = listOf(frame.tool, if (frame.tool.isNotBlank()) "这一步 ${((now - frame.stepStartedAt).coerceAtLeast(0) / 1000)} 秒" else "本次任务 ${model.elapsed(now)} 秒").filter { it.isNotBlank() }.joinToString(" · ")
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, true, detail, frame.state == "done", frame.outcome == "completed")
+        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, true, detail, frame.state == "done", false,
+            frame.reply, frame.cards, !model.stale(now) && stopping == null)
         // Update at phase/turn changes, not every elapsed second. Notification works without overlay.
         val key = "${frame.turn}:$title:$canStop:${frame.state}"
         if (!ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) lastNotification = null
@@ -78,6 +79,60 @@ object TaskStatus {
     }
     fun dismiss(turn: String) { main.post {
         if (model.dismiss(turn)) { TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); lastNotification = null }
+    } }
+    /** Explicit end, not a UI-only dismissal: withdraw pending actions before stopping this exact turn. */
+    fun end(turn: String) { main.post {
+        val ctx = app ?: return@post
+        val frame = model.frame ?: return@post
+        if (frame.turn != turn || stopping != null || model.stale(System.currentTimeMillis()) ||
+            ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return@post
+        stopping = turn; notice = "正在结束…"; render()
+        val ids = frame.cards.filter { it.state == "waiting" || it.kind == "approval" && it.state == "answered" }.map { it.pendingId }.distinct()
+        Thread({
+            val accepted = runCatching {
+                val out = CoreClient(ctx).sendPresentAction(JSONObject().put("to", "service:reflex").put("kind", "request")
+                    .put("word", "task.end").put("body", JSONObject().put("turn", turn).put("pending_ids", org.json.JSONArray(ids)))
+                    .put("wait", true).put("client_id", "capsule-end:${frame.session}:$turn"))
+                val reply = out.optJSONObject("reply")
+                reply?.optString("reply_to") == out.optString("id") && reply?.optJSONObject("body")?.optBoolean("ok") == true &&
+                    reply.optJSONObject("body")?.optJSONObject("result")?.optBoolean("ended") == true
+            }.getOrDefault(false)
+            main.post {
+                stopping = null
+                if (model.frame?.turn == turn) {
+                    if (accepted) dismiss(turn) else { notice = "结束未确认，请重试或回 Ash 检查"; render() }
+                }
+            }
+        }, "ash-capsule-end").start()
+    } }
+    /** Exact ask response. Persist the chosen answer before transport, so retries cannot become a different approval. */
+    fun answerCard(id: String, choice: String, text: String? = null, done: (Boolean, String) -> Unit) { main.post {
+        val ctx = app
+        val card = model.frame?.cards?.find { it.id == id }
+        if (ctx == null || card == null || model.stale(System.currentTimeMillis()) ||
+            ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            done(false, "状态不可用，请回 Ash 核对"); return@post
+        }
+        val route = runCatching {
+            if (card.kind == "question") PresentRoutes.question(card.id, card.target, card.options.map { it.first }.toSet(), choice, text,
+                card.allowCustom, card.expiresAt, System.currentTimeMillis())
+            else PresentRoutes.approval(card.id, card.target, card.options.map { it.first }.toSet(), choice, card.expiresAt, System.currentTimeMillis())
+        }.getOrNull()
+        if (route == null || card.state != "waiting") { done(false, "此请求已处理或已过期"); return@post }
+        val prefs = ctx.getSharedPreferences("ash_capsule_answers", Context.MODE_PRIVATE)
+        val result = JSONObject().put("choice", choice).apply { if (route.text != null) put("text", route.text) }
+        val value = result.toString()
+        val prior = prefs.getString(id, null)
+        if (prior != null && prior != value) { done(false, "已有答复发送中，请回 Ash 核对"); return@post }
+        if (!prefs.edit().putString(id, value).commit()) { done(false, "无法保存答复，请重试"); return@post }
+        Thread({
+            val ok = runCatching {
+                CoreClient(ctx).sendPresentAction(JSONObject().put("to", route.to).put("kind", "response").put("word", "ask")
+                    .put("reply_to", id).put("body", JSONObject().put("ok", true).put("result", result))
+                    .put("client_id", "capsule-answer:$id")).optString("id").isNotBlank()
+            }.getOrDefault(false)
+            main.post { done(ok, if (ok) { if (choice == "deny") "已拒绝" else if (card.kind == "question") "已回答" else "已批准，等待继续" } else "答复未确认，可原样重试") }
+        }, "ash-capsule-answer").start()
     } }
     /** Same authenticated phone-owner path as notification replies; stable client id makes retries safe. */
     fun sendInput(text: String, clientId: String, done: (Boolean, String) -> Unit) { main.post {

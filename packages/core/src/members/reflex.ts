@@ -34,9 +34,48 @@ export class ReflexMember implements Member {
     this.stop = router.subscribe((message) => this.runtime.observe(message));
   }
   words(): readonly WordSpec[] {
-    return ["task.stop", "before_turn", "surface.get", "screen.get", "screen.return", "virtual.close"].map((word) => wordContract(this.id, word)!);
+    return ["task.stop", "task.end", "before_turn", "surface.get", "screen.get", "screen.return", "virtual.close"].map((word) => wordContract(this.id, word)!);
   }
   async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
+    if (message.word === "task.end") {
+      if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "owner only" } };
+      const turn = String(message.body.turn), active = this.busyTurn();
+      if (active && active !== turn) return { ok: true, result: { ended: false } };
+      const rows = this.router.ledger.turnMessages(turn);
+      if (!rows.some((r) => r.from === "agent:main" && r.word === "turn.start")) return { ok: true, result: { ended: false } };
+      const ids = message.body.pending_ids as string[];
+      const legacyAskOwned = (id: string) => {
+        const ask = this.router.ledger.byId(id);
+        if (!ask || ask.turn !== turn || ask.to !== "person:owner" || ask.word !== "ask" || ask.kind !== "request") return false;
+        if (ask.from === "agent:main") return true;
+        const gate = this.router.ledger.gateCaseByAsk(id);
+        return ask.from === "service:gate" && !!gate && this.router.ledger.byId(gate.requestId)?.from === "agent:main";
+      };
+      if (ids.some((id) => {
+        const p = this.router.ledger.humanPending(id);
+        return p ? p.agent !== "agent:main" || !this.router.ledger.humanOwnedBy("agent:main", p.pending_id) : !legacyAskOwned(id);
+      }))
+        return { ok: false, error: { code: "forbidden", message: "pending request is not owned by this agent" } };
+      const withdraw = () => {
+        // Include requests created in this exact turn since the last displayed frame.
+        // Other turns are touched only when the owner explicitly saw and selected their cards.
+        const selected = new Set(ids);
+        for (const p of this.router.ledger.activeHumanPending()) {
+          if (p.agent !== "agent:main" || !(p.turn === turn || selected.has(p.pending_id))) continue;
+          if (p.state === "waiting") this.router.withdrawHuman("agent:main", p.pending_id, "主人结束了本次交互");
+          else if (p.state === "answered" && p.type === "approval") this.router.withdrawHuman("agent:main", p.pending_id, "主人结束了本次交互，未执行", true);
+        }
+        // Internal DSH confirmations and old synchronous approvals have no human_pending row.
+        this.router.cancel(this.router.ledger.trackedRequests().map((p) => p.message.id).filter(legacyAskOwned));
+      };
+      withdraw();
+      if (!active) return { ok: true, result: { ended: true } };
+      const sent = await this.router.send({ ...decisionContext, turn }, { to: "agent:main", kind: "request", word: "cancel_turn",
+        body: { reason: "Owner ended the capsule interaction", by: message.id }, client_id: `task-end:${message.id}`, wait: true });
+      const ended = sent.reply?.body.ok === true && ((sent.reply.body.result as { cancelled?: unknown })?.cancelled === true || this.busyTurn() === null);
+      if (ended) withdraw();
+      return { ok: true, result: { ended } };
+    }
     if (message.word === "task.stop") {
       if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "owner only" } };
       if (this.busyTurn() !== message.body.turn) return { ok: true, result: { cancelled: false } };

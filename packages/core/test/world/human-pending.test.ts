@@ -11,6 +11,8 @@ import { GateMember } from "../../src/members/gate";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { ReflexMember } from "../../src/members/reflex";
+import { TaskStatusBridge, type TaskStatusFrame } from "../../src/task-status";
 
 const owner: TrustedRouteContext = { member: "person:owner", transport: "web_ui", transportPrincipal: "owner", screenId: "screen:test", screenLabel: "Test", local: true, remote: false, ownerProxy: true };
 async function fixture(file = join(mkdtempSync(join(tmpdir(), "ash-human-")), "ledger.db")) {
@@ -46,6 +48,54 @@ async function fixture(file = join(mkdtempSync(join(tmpdir(), "ash-human-")), "l
     holdExecution: () => { holdExecution = true; },
     close: async () => { router.dispose(); await server.close(); ledger.close(); } };
 }
+
+test("capsule restores durable approvals, sends exact phone responses, and explicitly ends unused approvals", async () => {
+  const w = await fixture();
+  const frames: TaskStatusFrame[] = [];
+  let bridge: TaskStatusBridge | undefined;
+  let active: string | null = null;
+  const reflex = new ReflexMember(w.router, () => active);
+  w.members.register(reflex);
+  try {
+    w.ledger.append({ from: "agent:main", to: null, kind: "event", word: "turn.start", turn: "t_original", body: { turn: "t_original", ids: [] } });
+    const first = await w.request();
+    bridge = new TaskStatusBridge(w.router, async (frame) => { frames.push(frame); });
+    await bridge.settled();
+    assert.equal(frames.at(-1)!.state, "waiting_you");
+    assert.match(frames.at(-1)!.cards![0]!.original, /frozen/);
+    const card = frames.at(-1)!.cards![0]!;
+    const phone = { ...owner, member: "device:phone", transport: "phone" as const };
+    const response = { to: card.to, kind: "response" as const, word: "ask", reply_to: card.id,
+      body: { ok: true, result: { choice: "once" } }, client_id: `capsule-answer:${card.id}` };
+    await w.router.send(phone, response); await w.router.send(phone, response);
+    await w.router.refreshHumanPending(); await bridge.settled();
+    assert.equal(frames.at(-1)!.cards![0]!.state, "answered"); assert.equal(w.executions.length, 0);
+    const second = await w.request();
+    const notYetDisplayed = await w.request();
+    const helper = await w.request({}, w.helper);
+    const legacy = w.router.requestInternalApproval({ member: "agent:main", sessionId: "session-00000000-0000-0000-0000-000000000001",
+      turn: "t_original", callId: "capsule_legacy", toolName: "legacy_tool", contractFingerprint: "a".repeat(64),
+      signal: w.controller.signal, stillValid: () => true });
+    const legacyAsk = w.ledger.trackedRequests().find((p) => p.message.word === "ask" &&
+      (p.message.body.source as { word?: string })?.word === "internal.approval")!.message.id;
+    assert.equal(w.ledger.humanPending(legacyAsk), null);
+    const end = { to: "service:reflex", kind: "request" as const, word: "task.end",
+      body: { turn: "t_original", pending_ids: [first.pending_id, second.pending_id, legacyAsk] }, wait: true };
+    await assert.rejects(w.router.send({ ...owner, remote: true, local: false }, end), /local owner/);
+    active = "t_newer";
+    assert.deepEqual((await w.router.send(phone, end)).reply?.body, { ok: true, result: { ended: false } });
+    assert.equal(w.ledger.humanPending(second.pending_id)?.state, "waiting");
+    active = null;
+    assert.deepEqual((await w.router.send(phone, end)).reply?.body, { ok: true, result: { ended: true } });
+    assert.equal(await legacy, "cancelled");
+    assert.equal(w.ledger.humanPending(first.pending_id)?.state, "skipped");
+    assert.equal(w.ledger.humanPending(second.pending_id)?.state, "withdrawn");
+    assert.equal(w.ledger.humanPending(notYetDisplayed.pending_id)?.state, "withdrawn");
+    assert.equal(w.ledger.humanPending(helper.pending_id)?.state, "waiting");
+    assert.equal(w.executions.length, 0);
+    assert.equal((await w.call("human_pending_redeem", { pending_id: first.pending_id })).ok, false);
+  } finally { await bridge?.close(); await reflex.close(); await w.close(); }
+});
 
 test("approval is immediate; ending a turn or answering never executes; redemption is exact and one-shot", async () => {
   const w = await fixture();

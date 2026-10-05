@@ -2,9 +2,29 @@ package ai.ash.host
 
 import org.json.JSONObject
 
+data class TaskCard(val id: String, val pendingId: String, val target: String, val turn: String, val kind: String,
+    val title: String, val detail: String, val original: String, val options: List<Pair<String, String>>,
+    val expiresAt: Long, val allowCustom: Boolean, val state: String) {
+    fun actionable(now: Long) = state == "waiting" && expiresAt > now
+    companion object {
+        fun parse(b: JSONObject): TaskCard {
+            val options = b.getJSONArray("options")
+            require(options.length() <= 8)
+            return TaskCard(b.getString("id"), b.getString("pending_id"), b.getString("to"), b.getString("turn"),
+                b.getString("kind"), b.getString("title"), b.getString("detail"), b.getString("original"),
+                (0 until options.length()).map { options.getJSONObject(it).let { o -> o.getString("id") to o.getString("label") } },
+                b.getLong("expires_at"), b.optBoolean("allow_custom"), b.getString("state")).also {
+                require(it.id.isNotBlank() && it.pendingId.isNotBlank() && PresentRoutes.member.matches(it.target))
+                require(it.options.map { o -> o.first }.distinct().size == it.options.size)
+            }
+        }
+    }
+}
+
 internal data class TaskFrame(val session: String, val revision: Long, val turn: String?, val startedAt: Long,
     val state: String, val text: String, val steps: List<String>, val canStop: Boolean,
-    val tool: String = "", val stepStartedAt: Long = startedAt, val outcome: String = "") {
+    val tool: String = "", val stepStartedAt: Long = startedAt, val outcome: String = "",
+    val reply: String = "", val cards: List<TaskCard> = emptyList()) {
     companion object {
         fun parse(b: JSONObject): TaskFrame {
             val session = b.getString("session")
@@ -20,9 +40,11 @@ internal data class TaskFrame(val session: String, val revision: Long, val turn:
             require(a.length() <= 5)
             val canStop = b.getBoolean("can_stop")
             require(!canStop || turn != null && state !in setOf("idle", "resting", "done"))
+            val cards = b.optJSONArray("cards")
             return TaskFrame(session, revision, turn, started, state, safe(b.getString("text")),
                 (0 until a.length()).map { safe(a.getString(it)) }, canStop, safe(b.optString("tool", "")),
-                b.optLong("step_started_at", started).coerceAtLeast(started), safe(b.optString("outcome", "")))
+                b.optLong("step_started_at", started).coerceAtLeast(started), safe(b.optString("outcome", "")),
+                b.optString("reply", ""), if (cards == null) emptyList() else (0 until cards.length()).map { TaskCard.parse(cards.getJSONObject(it)) })
         }
     }
 }
@@ -46,13 +68,12 @@ internal class TaskStatusModel {
     }
     fun stale(now: Long): Boolean = frame?.state != "done" && now - received > 15_000
     fun dismiss(turn: String): Boolean {
-        if (frame?.turn != turn || frame?.state != "done") return false
+        if (frame?.turn != turn) return false
         dismissed = true; return true
     }
     fun visible(now: Long, homeVisible: Boolean = true, editing: Boolean = false): Boolean = frame?.let {
-        if (it.state == "done" && homeVisible && !editing && now - finished >= 4_000) dismissed = true
         it.turn != null && it.state !in setOf("idle", "resting") &&
-            !dismissed && (it.state != "done" || !homeVisible || editing || now - finished < 4_000)
+            !dismissed
     } ?: false
     fun canStop(turn: String, now: Long): Boolean = frame?.let { it.turn == turn && it.canStop && !stale(now) && visible(now) } ?: false
     fun elapsed(now: Long): Long = frame?.let { ((if (it.state == "done") finished else now) - it.startedAt).coerceAtLeast(0) / 1000 } ?: 0

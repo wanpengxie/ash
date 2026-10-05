@@ -37,10 +37,10 @@ test("capsule follows facts, strips query details, bounds history and marks comp
     f.emit("turn.end", { turn: "t_a", reason: "completed" });
     f.emit("status", { state: "done", text: "" });
     await f.bridge.settled();
-    assert.equal(f.frames.at(-1)!.text, "已完成"); assert.equal(f.frames.at(-1)!.can_stop, false);
+    assert.equal(f.frames.at(-1)!.text, "本轮回复"); assert.equal(f.frames.at(-1)!.can_stop, false);
     assert.equal(f.frames.at(-1)!.outcome, "completed", "native completion color uses the actual outcome");
     f.emit("status", { state: "idle", text: "在线" });
-    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.turn, "t_a"); assert.equal(f.frames.at(-1)!.text, "已完成");
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.turn, "t_a"); assert.equal(f.frames.at(-1)!.text, "本轮回复");
   } finally { await f.bridge.close(); }
 });
 test("task remains visible through transient idle and shows step purpose, not raw command or input", async () => {
@@ -65,7 +65,7 @@ test("task remains visible through transient idle and shows step purpose, not ra
     assert.equal(JSON.stringify(f.frames).includes("SECRET"), false);
     f.emit("turn.end", { turn: "t_a", reason: "completed" });
     f.emit("status", { state: "idle", text: "在线" });
-    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "已完成"); assert.equal(f.frames.at(-1)!.can_stop, false);
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "本轮回复"); assert.equal(f.frames.at(-1)!.can_stop, false);
   } finally { await f.bridge.close(); }
 });
 test("gate approval beats a held tool's working status; helpers cannot overwrite main state", async () => {
@@ -77,7 +77,7 @@ test("gate approval beats a held tool's working status; helpers cannot overwrite
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "在动手");
     f.emit("ask", {}, { id: "m_ask", from: "service:gate", to: "person:owner", kind: "request", turn: "t_a" });
     f.emit("status", { state: "working", text: "在跑命令" }, { from: "agent:helper" });
-    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "等待你确认");
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "等待你回应");
     f.emit("ask", {}, { from: "person:owner", kind: "response", reply_to: "m_ask" });
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "在动手");
     f.emit("turn.end", { turn: "t_a", reason: "cancelled" });
@@ -114,7 +114,46 @@ test("caption and real tool share one step; late summaries and another agent's r
   } finally { await f.bridge.close(); }
 });
 
-test("task stop is owner-only, turn-bound and actually cancels a running task", async () => {
+test("capsule keeps the last reply group verbatim without calling a question completed", async () => {
+  const f = fixture();
+  try {
+    f.emit("turn.start", { turn: "t_a" });
+    const say = (text: string) => f.emit("say", { text }, { kind: "request", to: "person:owner", turn: "t_a" });
+    say("我先查一下");
+    f.emit("screen.read", {}, { kind: "request", to: "device:phone", turn: "t_a" });
+    say("## 找到两个方案\n\n- A\n- B");
+    f.emit("mcp__ash__human_say", {}, { kind: "request", to: "service:dsh-tool", turn: "t_a" });
+    say("你想选哪个？");
+    f.emit("say", { text: "别的 Agent 的内容" }, { from: "agent:helper", kind: "request", to: "person:owner", turn: "t_a" });
+    f.emit("turn.end", { turn: "t_a", reason: "completed" });
+    await f.bridge.settled();
+    assert.equal(f.frames.at(-1)!.reply, "## 找到两个方案\n\n- A\n- B\n\n你想选哪个？");
+    assert.equal(f.frames.at(-1)!.text, "本轮回复");
+  } finally { await f.bridge.close(); }
+});
+
+test("capsule questions retain exact original and remain actionable across turns, then expire", async () => {
+  const f = fixture();
+  try {
+    f.emit("turn.start", { turn: "t_a" });
+    const original = "x".repeat(2000) + "\nEND";
+    f.emit("ask", { title: "请确认", detail: "摘要", source: { body_full: original },
+      options: [{ id: "once", label: "允许这一次" }, { id: "deny", label: "拒绝" }], expires_at: Date.now() + 60000 },
+      { id: "m_card", from: "service:gate", to: "person:owner", kind: "request", turn: "t_a" });
+    f.emit("turn.end", { turn: "t_a", reason: "completed" });
+    f.emit("turn.start", { turn: "t_b" });
+    await f.bridge.settled();
+    assert.equal(f.frames.at(-1)!.state, "waiting_you");
+    assert.equal(f.frames.at(-1)!.cards![0]!.original, original);
+    f.emit("ask", { ok: true, result: { choice: "once" } }, { from: "person:owner", kind: "response", reply_to: "m_card" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.cards![0]!.state, "answered");
+    f.emit("ask", { title: "过期", options: [], expires_at: Date.now() - 1 },
+      { id: "m_expired", from: "service:gate", to: "person:owner", kind: "request", turn: "t_b" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.cards![1]!.state, "expired");
+  } finally { await f.bridge.close(); }
+});
+
+for (const word of ["task.stop", "task.end"]) test(`${word} is owner-only, turn-bound and actually cancels a running task`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-task-stop-"));
   const ledger = await Ledger.open(join(dir, "ledger.db"));
   const router = new WorldRouter(ledger, () => true);
@@ -126,16 +165,17 @@ test("task stop is owner-only, turn-bound and actually cancels a running task", 
   const reflex = new ReflexMember(router, () => agent.inbox.activeTurn()?.id ?? null);
   const members = new WorldMembers(router); members.register(agent); members.register(reflex);
   const owner: TrustedRouteContext = { member: "person:owner", transport: "api", transportPrincipal: "token:test", local: true, remote: false, ownerProxy: true };
-  const stop = { to: "service:reflex", kind: "request" as const, word: "task.stop", body: { turn: "t_stale" }, wait: true };
+  const resultKey = word === "task.end" ? "ended" : "cancelled";
+  const stop = { to: "service:reflex", kind: "request" as const, word, body: { turn: "t_stale", ...(word === "task.end" ? { pending_ids: [] } : {}) }, wait: true };
   try {
     agent.prepareRecovery(); await router.recover(); await agent.start();
     await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "start" }, wait: true });
     await running; const turn = agent.inbox.activeTurn()!.id;
-    const stale = await router.send(owner, stop); assert.deepEqual(stale.reply?.body, { ok: true, result: { cancelled: false } });
+    const stale = await router.send(owner, stop); assert.deepEqual(stale.reply?.body, { ok: true, result: { [resultKey]: false } });
     await assert.rejects(router.send({ ...owner, local: false, remote: true }, stop), /local owner/);
     await assert.rejects(router.send({ ...owner, member: "agent:main", transport: "agent", ownerProxy: false }, stop), /local owner/);
-    const stopped = await router.send({ ...owner, member: "device:phone", transport: "phone" }, { ...stop, body: { turn } });
-    assert.deepEqual(stopped.reply?.body, { ok: true, result: { cancelled: true } });
+    const stopped = await router.send({ ...owner, member: "device:phone", transport: "phone" }, { ...stop, body: { ...stop.body, turn } });
+    assert.deepEqual(stopped.reply?.body, { ok: true, result: { [resultKey]: true } });
     assert.equal(agent.inbox.activeTurn(), null);
   } finally { await reflex.close(); await agent.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
 });
