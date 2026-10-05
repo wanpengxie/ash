@@ -117,6 +117,12 @@ export class HostDeviceLink {
   async taskStatus(frame: TaskStatusFrame): Promise<void> {
     if (!this.closed) await this.request("POST", "/task/status", frame, 1500);
   }
+  /** Whether the task island is on the phone's screen right now. */
+  async islandShown(): Promise<boolean> {
+    if (this.closed) return false;
+    const result = await this.request("POST", "/island", {}, 1000) as { showing?: unknown };
+    return result?.showing === true;
+  }
   async hidePresentation(id: string): Promise<void> {
     if (this.closed || !id) throw new TypeError("invalid presentation id");
     const result = await this.request("POST", "/present/hide", { id }) as { ok?: unknown };

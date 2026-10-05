@@ -84,6 +84,9 @@ internal object NativeIsland : IslandView.Actions {
     fun ownsWindow(bounds: Rect) = if (trusted) attached && padBounds == bounds else screenBounds == bounds
     private val padBounds = Rect()
     fun isEditing() = editing
+    /** On screen for the owner now (asked from Ash's delivery, off the main thread). */
+    @Volatile private var shown = false
+    fun showing() = shown
     private fun dp(v: Float) = Math.round(v * (app?.resources?.displayMetrics?.density ?: 1f))
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
         ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
@@ -339,7 +342,7 @@ internal object NativeIsland : IslandView.Actions {
         runCatching {
             box.visibility = View.VISIBLE; box.alpha = 1f
             host!!.addView(box, windowParams(ctx))
-            attached = true
+            attached = true; shown = true
             follow(islandW.takeIf { it > 0 } ?: dp(IslandTokens.SIZE_COMPACT_W), islandH.takeIf { it > 0 } ?: dp(IslandTokens.SIZE_COMPACT_H))
             if (trusted) padParams?.let { ctx.getSystemService(WindowManager::class.java).addView(pad, it) }
             applyTouchMode()
@@ -360,10 +363,10 @@ internal object NativeIsland : IslandView.Actions {
         ctx.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(box.windowToken, 0)
         pad?.takeIf { it.isAttachedToWindow }?.let { runCatching { ctx.getSystemService(WindowManager::class.java).removeViewImmediate(it) } }
         runCatching { host?.removeViewImmediate(box) }
-        attached = false; screenBounds = null
+        attached = false; shown = false; screenBounds = null
     }
     fun hide() { main.post {
-        visible = false; setEditing(false); restore = null
+        visible = false; shown = false; setEditing(false); restore = null
         val view = island
         if (attached && view != null) view.leave { if (!visible) detach() } else detach()
     } }

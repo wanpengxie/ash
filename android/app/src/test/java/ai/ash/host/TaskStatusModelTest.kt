@@ -33,8 +33,8 @@ class TaskStatusModelTest {
     @Test fun stoppedButtonsAreExactAndExpireBeforeStatusDisappears() {
         val m = TaskStatusModel(); m.accept(frame(), 2000)
         assertTrue(m.canStop("t_a", 2000)); assertFalse(m.canStop("t_old", 2000))
-        assertTrue(m.visible(18000)); assertTrue(m.stale(18000)); assertFalse(m.canStop("t_a", 18000))
-        assertTrue(m.visible(32000)); assertTrue(m.stale(32000)); assertFalse(m.canStop("t_a", 32000))
+        assertTrue(m.visible(103000)); assertTrue(m.stale(103000)); assertFalse(m.canStop("t_a", 103000))
+        assertTrue(m.visible(117000)); assertTrue(m.stale(117000)); assertFalse(m.canStop("t_a", 117000))
     }
     @Test fun endedReplyStaysUntilExplicitlyDismissedEvenAtHome() {
         val m = TaskStatusModel(); m.accept(frame(), 2000)

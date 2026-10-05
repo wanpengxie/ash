@@ -44,7 +44,7 @@ object TaskCapsule {
     private var root: FrameLayout? = null
     private var web: WebView? = null
     private var params: WindowManager.LayoutParams? = null
-    private var attached = false
+    @Volatile private var attached = false
     private var ready = false
     /** The page has laid the island out and said how large it is; until then the window stays away (no blank first frame). */
     private var sized = false
@@ -71,6 +71,8 @@ object TaskCapsule {
     private fun native() = nativeMode == true
     fun ownsWindow(bounds: Rect): Boolean = if (native()) ai.ash.ui.island.NativeIsland.ownsWindow(bounds) else screenBounds == bounds
     fun isEditing(): Boolean = if (native()) ai.ash.ui.island.NativeIsland.isEditing() else editing
+    /** The island is on screen for the owner now: what it shows needs no notification. */
+    fun showing(): Boolean = if (native()) ai.ash.ui.island.NativeIsland.showing() else attached
     private fun dp(n: Double) = (n * (app?.resources?.displayMetrics?.density ?: 1f)).toInt()
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
         ctx.getSystemService(android.os.PowerManager::class.java).isInteractive

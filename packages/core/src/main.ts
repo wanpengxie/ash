@@ -473,7 +473,7 @@ export async function startOwner(config: Config): Promise<Running> {
       currentScreenBinding: (screen, principal) => edge.screens.currentBinding(screen, principal) });
     delivery.quiet = admin.journal.quietHours() ?? delivery.quiet;
     members.register(admin);
-    post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink } : {}) });
+    post = new PostMember({ ledger, router: world, screens: edge.screens, delivery, ...(hostLink ? { host: hostLink, island: () => hostLink.islandShown() } : {}) });
     members.register(post);
     edge.attachPostJournal(post.journal);
     const gatewayFile = join(config.stateDir, "gateway.json");

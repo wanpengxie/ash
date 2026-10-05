@@ -54,6 +54,7 @@ internal data class TaskFrame(val session: String, val revision: Long, val turn:
 
 /** Ephemeral only. A host/core restart never resurrects an old task or stop button. */
 internal class TaskStatusModel {
+    companion object { const val STALE_MS = 100_000L }
     var frame: TaskFrame? = null; private set
     private var received = 0L
     private var finished = 0L
@@ -70,7 +71,8 @@ internal class TaskStatusModel {
         frame = next; received = now
         return true
     }
-    fun stale(now: Long): Boolean = frame?.state != "done" && now - received > 15_000
+    /** A turn under way that has sent no status for this long shows as disconnected. */
+    fun stale(now: Long): Boolean = frame?.state != "done" && now - received > STALE_MS
     fun dismiss(turn: String): Boolean {
         if (frame?.turn != turn) return false
         dismissed = true; return true

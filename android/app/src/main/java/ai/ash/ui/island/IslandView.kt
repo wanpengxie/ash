@@ -58,7 +58,7 @@ internal class IslandKind(val label: String?, val title: String, val face: Strin
             "listening" to IslandKind("在听", "在听", face.getValue("listening"), IslandIndicator.Mark.BARS, R, run = true, note = "刚收到你的消息"),
             "thinking" to IslandKind("在想", "正在处理", face.getValue("thinking"), IslandIndicator.Mark.DOTS, R, run = true, note = WORK_NOTE),
             "working" to IslandKind(null, "正在处理", face.getValue("working"), IslandIndicator.Mark.RING, R, run = true, note = WORK_NOTE),
-            "stale" to IslandKind("连接中断", "连接中断", face.getValue("stale"), IslandIndicator.Mark.OFF, O, note = "15 秒没收到新状态，Ash 可能仍在运行"),
+            "stale" to IslandKind("连接中断", "连接中断", face.getValue("stale"), IslandIndicator.Mark.OFF, O, note = "100 秒没收到新状态，Ash 可能仍在运行"),
             "ask" to IslandKind("等你回答", "等你回答", face.getValue("ask"), IslandIndicator.Mark.PULSE, N, placeholder = "或者直接告诉 Ash…"),
             "approval" to IslandKind("需要批准", "需要你批准", face.getValue("approval"), IslandIndicator.Mark.PULSE, N),
             "in_app" to IslandKind("去 Ash 操作", "需要你在 Ash 里操作", face.getValue("in_app"), IslandIndicator.Mark.PULSE, N),
