@@ -1,29 +1,45 @@
 /* Local packaged content only. Native owns authorization, transport, window focus and capture. */
 (() => {
   'use strict';
-  // A turn ending is not proof that its task succeeded. Keep the agreed neutral fallback.
-  KIND.reply={label:'本轮回复',title:'本轮回复',face:'default',ind:'off',tone:'offline',clamp:true};
+  // A turn ending is not proof that its task succeeded. Keep the agreed neutral fallback, marked by a quiet grey dot:
+  // the dashed ring belongs to a lost connection.
+  KIND.reply={label:'本轮回复',title:'本轮回复',face:'default',ind:'dot',tone:'offline',clamp:true};
+  const vendorIndicator=indicator;
+  indicator=(ind,tone)=>ind==='dot'?'<span class="ind-pulse"></span>':vendorIndicator(ind,tone);
+  // The card shows the agent's words as plain text, as the reference does; Markdown marks would show as stray symbols.
+  const plain=text=>String(text??'').split('\n').filter(line=>!/^\s*(```|\|?\s*:?-{3,})/.test(line)).map(line=>line
+    .replace(/^\s*#{1,6}\s+/,'').replace(/^\s*>\s?/,'').replace(/^(\s*)[-*+]\s+/,'$1• ')
+    .replace(/^\s*\|(.*)\|\s*$/,(_,cells)=>cells.split('|').map(c=>c.trim()).filter(Boolean).join(' · '))
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/(\*\*|__)(.+?)\1/g,'$2').replace(/`([^`]*)`/g,'$1'))
+    .join('\n').replace(/\n{3,}/g,'\n\n').trim();
   const root=document.getElementById('root'), el=document.createElement('div');
   el.className='isl'; root.append(el);
   let snapshot=null, form='compact', selected=null, expandedOriginal=false, more=false;
   let episode='', lastKey='', draft='', customTarget=null, busy=false, notice='', lastSize='';
+  // While the island changes form (width and radius over .5s), the window keeps the larger of the two sizes, so the
+  // whole change plays inside it instead of the window chasing it frame by frame. Room around it: see host.css.
+  const PAD_X=40, PAD_Y=40, MORPH_MS=560;
+  let hold=null, holdTimer=0;
   const post=(action,extra={}) => window.AshIslandNative?.postMessage(JSON.stringify({action,turn:snapshot?.turn,...extra}));
   const activeCard=() => snapshot?.cards.find(c=>c.id===selected);
   const pending=c=>c.state==='waiting';
   function display() {
     const c=activeCard();
-    if(snapshot.stale) return {...snapshot,kind:'stale',form,body:snapshot.reply};
-    if(!c) return {...snapshot,form,body:snapshot.reply};
+    if(snapshot.stale) return {...snapshot,kind:'stale',form,body:plain(snapshot.reply)};
+    if(!c) return {...snapshot,form,body:plain(snapshot.reply)};
     const approval=c.kind==='approval';
     const state=c.localState || c.state;
     const ap={waiting:'pending',sending:'pending',answered:'approved',denied:'denied',expired:'expired'}[state] || 'settled';
-    const body=[c.title,c.detail].filter(Boolean).join('\n\n');
-    return {...snapshot,kind:approval?'approval':'ask',form,body,quote:'',approval:ap,
+    // An approval reads as the reference lays it out: what Ash wants to do, then exactly what it would send, quoted.
+    const quote=approval&&c.detail&&c.detail!==c.title?c.detail:'';
+    const body=approval?c.title:plain([c.title,c.detail].filter(Boolean).join('\n\n'));
+    return {...snapshot,kind:approval?'approval':'ask',form,body,quote,approval:ap,
       options:pending(c)&&!c.localState?c.options.map(o=>o.label):[],card:c};
   }
   function measure() {
     const rect=el.getBoundingClientRect();
-    const size={width:Math.ceil(rect.width)+24,height:Math.ceil(rect.height)+24,form};
+    const w=hold?Math.max(rect.width,hold.w):rect.width, h=hold?Math.max(rect.height,hold.h):rect.height;
+    const size={width:Math.ceil(w)+PAD_X,height:Math.ceil(h)+PAD_Y,form};
     const key=JSON.stringify(size);
     if(key!==lastSize) { lastSize=key; post('size',size); }
   }
@@ -36,8 +52,10 @@
     el.style.setProperty('--card-width',snapshot.cardWidth+'px');
     el.style.setProperty('--max-height',snapshot.maxHeight+'px');
     el.dataset.motion=snapshot.reduceMotion?'reduce':'normal';
+    const was=el.dataset.form; let before=null;
     if(key!==lastKey) {
       lastKey=key;
+      before=was?el.getBoundingClientRect():null;
       el.dataset.form=form;
       el.style.setProperty('--tone',TONE[(KIND[m.kind]||KIND.working).tone]);
       // The vendor mount() redraws innerHTML every tick. Reuse the real input node instead,
@@ -55,7 +73,7 @@
       const field=el.querySelector('input');
       if(field) {
         field.maxLength=4000; if(field.value!==draft) field.value=draft; field.disabled=busy;
-        field.placeholder=customTarget?'回答此问题…':(KIND[m.kind]?.ph||'回复 Ash…');
+        field.placeholder=answering()?(KIND.ask.ph):'回复 Ash…';
         if(wasInput && document.activeElement!==field) { field.focus({preventScroll:true}); if(selection) field.setSelectionRange(...selection); }
       }
       const card=el.querySelector('.isl-card');
@@ -74,20 +92,11 @@
           status.textContent={answered:'已回答',withdrawn:'已撤回',skipped:'未执行',redeemed:'已提交执行，结果见后续回复',expired:'已过期',denied:'已拒绝'}[c.state]||'已处理';
           content.append(status);
         }
-        if(c?.kind!=='approval' && c?.allow_custom && pending(c)) {
-          const custom=document.createElement('button'); custom.className='opt'; custom.dataset.act='custom'; custom.textContent='填写回答';
-          content.append(custom);
-        }
         if(c && snapshot.cards.length>1 && !snapshot.stale) {
           const nav=document.createElement('div'); nav.className='island-nav';
           nav.innerHTML='<button data-act="prev" aria-label="上一项">‹</button><span></span><button data-act="next" aria-label="下一项">›</button>';
           nav.querySelector('span').textContent=`${snapshot.cards.findIndex(x=>x.id===selected)+1} / ${snapshot.cards.length}`;
           content.prepend(nav);
-        }
-        foot.querySelector('.reply-target')?.remove();
-        if(customTarget) {
-          const target=document.createElement('div'); target.className='reply-target';
-          target.innerHTML='<span>正在回答此问题</span><button data-act="ordinary">取消</button>'; foot.prepend(target);
         }
         if(!foot.querySelector('.send-notice')) {
           const status=document.createElement('p'); status.className='send-notice'; status.setAttribute('role','status'); foot.prepend(status);
@@ -103,6 +112,11 @@
         const send=el.querySelector('[data-act=send]'); if(send) send.disabled=busy;
       }
     }
+    if(before && was!==form) {
+      const after=el.getBoundingClientRect(), target=form==='card'?snapshot.cardWidth:form==='edge'?52:236;
+      hold={w:Math.max(before.width,after.width,target),h:Math.max(before.height,after.height)};
+      clearTimeout(holdTimer); holdTimer=setTimeout(()=>{ hold=null; measure(); },snapshot.reduceMotion?0:MORPH_MS);
+    }
     // Clock pulses never replace DOM, replay entrance animations, or dismiss the keyboard.
     const t=fmt(snapshot.elapsed), k=KIND[m.kind]||KIND.working;
     const time=el.querySelector('.isl-time'); if(time) time.textContent=t.short;
@@ -115,12 +129,17 @@
     if(value!=='card') { el.querySelector('input')?.blur(); post('focus',{value:false}); }
     form=value; lastKey=''; draw();
   }
+  // While a question that takes free-form answers is open, what the owner types answers it.
+  // While a question that takes free-form answers is open, what the owner types answers it.
+  const openQuestion=c=>c && c.kind!=='approval' && c.allow_custom && pending(c) && !c.localState;
+  function answering() { if(customTarget) return customTarget; const c=activeCard(); return openQuestion(c) ? c.id : null; }
   function send() {
     if(busy) return;
     const text=el.querySelector('input')?.value.trim()||'';
     if(!text) return;
-    draft=text; busy=true; notice='正在发送…'; lastKey=''; draw();
-    post('send',{text,requestId:customTarget});
+    const requestId=answering();
+    draft=text; customTarget=requestId; busy=true; notice='正在发送…'; lastKey=''; draw();
+    post('send',{text,requestId});
   }
   let dragged=false;
   el.addEventListener('click',event=>{
@@ -135,8 +154,6 @@
       selected=snapshot.cards[(i+delta+snapshot.cards.length)%snapshot.cards.length].id;
       expandedOriginal=false; more=false; lastKey=''; return draw();
     }
-    if(action==='custom') { customTarget=c.id; lastKey=''; draw(); post('focus',{value:true}); return el.querySelector('input')?.focus(); }
-    if(action==='ordinary') { customTarget=null; lastKey=''; return draw(); }
     if(action==='send') return send();
     if(action==='allow'||action==='deny'||action==='choose') {
       if(!c||!snapshot.interactive||!pending(c)) return;
@@ -147,7 +164,8 @@
     if(action==='open') { el.querySelector('input')?.blur(); post('focus',{value:false}); return post('open'); }
     if(action==='stop' && snapshot.canStop && snapshot.interactive) post('stop');
   });
-  el.addEventListener('input',event=>{ if(event.target.matches('input')) draft=event.target.value; });
+  // A draft started under an open question belongs to it, even if the question closes before it is sent.
+  el.addEventListener('input',event=>{ if(!event.target.matches('input')) return; draft=event.target.value; if(!customTarget&&draft) customTarget=answering(); });
   el.addEventListener('pointerdown',event=>{
     if(event.target.matches('input')) { post('focus',{value:true}); return; }
     const area=event.target.closest('.isl-compact,.card-head');
@@ -184,7 +202,13 @@
     focusInput() { el.querySelector('input')?.focus({preventScroll:true}); },
     blurInput() { el.querySelector('input')?.blur(); },
     restoreDraft(text,target) { draft=text; customTarget=target||null; const input=el.querySelector('input'); if(input) input.value=text; },
-    sent(ok,message) { busy=false; notice=message; if(ok) { draft=''; customTarget=null; const input=el.querySelector('input'); if(input) input.value=''; } lastKey=''; draw(); },
+    sent(ok,message) {
+      busy=false; notice=message;
+      if(ok) { draft=''; customTarget=null; const input=el.querySelector('input'); if(input) input.value=''; }
+      // A question that closed under the draft refuses it once, with this notice; sending again is an ordinary message.
+      else if(customTarget && !openQuestion(snapshot?.cards.find(x=>x.id===customTarget))) customTarget=null;
+      lastKey=''; draw();
+    },
     restored() { el.classList.remove('isl-restored'); void el.offsetWidth; el.classList.add('isl-restored'); lastSize=''; measure(); }
   };
   post('ready');

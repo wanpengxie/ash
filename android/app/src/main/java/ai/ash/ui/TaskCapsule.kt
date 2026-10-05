@@ -133,7 +133,8 @@ object TaskCapsule {
             if (!attached) return@addOnGlobalLayoutListener
             val frame = Rect(); box.getWindowVisibleDisplayFrame(frame)
             val top = IntArray(2); box.getLocationOnScreen(top)
-            val available = ((frame.bottom - top[1] - dp(24.0)) / ctx.resources.displayMetrics.density).toInt().coerceAtLeast(220)
+            // The page keeps 8dp above the island and 32dp below it for its shadow (ash-island/host.css).
+            val available = ((frame.bottom - top[1] - dp(40.0)) / ctx.resources.displayMetrics.density).toInt().coerceAtLeast(220)
             if (available != maxHeight) { maxHeight = available; push() }
         }
         root = box; web = browser
@@ -169,7 +170,8 @@ object TaskCapsule {
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.LEFT
-            x = (ctx.resources.displayMetrics.widthPixels - width) / 2; y = dp(8.0)
+            // The island sits 8dp below the status bar; that gap is the page's own top padding.
+            x = (ctx.resources.displayMetrics.widthPixels - width) / 2; y = 0
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             windowAnimations = R.style.CapsuleWindowAnimation
             setTitle("AshTaskCapsule")

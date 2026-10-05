@@ -90,12 +90,12 @@ test('untrusted reply is inert; questions use exact ids; expired and stale are n
   try{
     assert.equal(await p.locator('.island-content img').count(),0);
     await p.locator('[data-act=choose]').nth(1).click(); assert.equal(await p.evaluate(()=>messages.filter(m=>m.action==='answer').at(-1).choice),'option-8');
-    await p.locator('[data-act=custom]').click(); await p.locator('input').fill('自定义回答'); await p.locator('[data-act=send]').click();
+    await p.locator('input').fill('自定义回答'); await p.locator('[data-act=send]').click();
     assert.equal(await p.evaluate(()=>messages.filter(m=>m.action==='send').at(-1).requestId),'m_a');
     await p.evaluate(()=>AshIsland.sent(true,'已回答'));
-    await p.locator('[data-act=custom]').click(); await p.locator('input').fill('尚未提交的回答');
+    await p.locator('input').fill('尚未提交的回答');
     await p.evaluate(m=>AshIsland.receive(m),{...normal,canStop:false,cards:[{...q,state:'expired'}]});
-    assert.equal(await p.locator('[data-act=choose],[data-act=custom]').count(),0);
+    assert.equal(await p.locator('[data-act=choose]').count(),0);
     await p.locator('[data-act=send]').click();
     assert.equal(await p.evaluate(()=>messages.filter(m=>m.action==='send').at(-1).requestId),'m_a','expired question draft must not become ordinary input');
     await p.evaluate(m=>AshIsland.receive(m),{...normal,stale:true,interactive:false,canStop:false,cards:[card]});
