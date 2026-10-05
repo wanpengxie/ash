@@ -156,6 +156,8 @@ tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { depen
 dependencies {
     implementation(files("libs/shizuku-api.aar", "libs/shizuku-provider.aar", "libs/shizuku-aidl.aar"))
     implementation("androidx.webkit:webkit:1.17.1")
+    // Spring physics for the island's transitions (SpringAnimation).
+    implementation("androidx.dynamicanimation:dynamicanimation:1.0.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

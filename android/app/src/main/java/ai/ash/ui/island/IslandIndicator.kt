@@ -30,8 +30,17 @@ internal class IslandIndicator(ctx: Context) : View(ctx) {
     private val path = Path()
     private val rect = RectF()
 
+    // The mark being replaced, shrinking out while the new one grows in (SF Symbols replace).
+    private var previous = Mark.NONE; private var previousTone = 0; private var swap = 1f
+    private val swapAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = IslandMotion.MARK_MS; interpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
+        addUpdateListener { swap = it.animatedValue as Float; invalidate() }
+    }
     fun set(mark: Mark, tone: Int) {
         if (this.mark == mark && this.tone == tone) return
+        if (this.mark != mark && this.mark != Mark.NONE && isAttachedToWindow && !reduceMotion) {
+            previous = this.mark; previousTone = this.tone; swapAnim.cancel(); swapAnim.start()
+        } else { previous = Mark.NONE; swap = 1f }
         this.mark = mark; this.tone = tone
         if (animated() && isAttachedToWindow) ticker.takeIf { !it.isStarted }?.start() else if (!animated()) ticker.cancel()
         invalidate()
@@ -54,7 +63,16 @@ internal class IslandIndicator(ctx: Context) : View(ctx) {
 
     override fun onDraw(canvas: Canvas) {
         val unit = width / 18f
-        canvas.save(); canvas.scale(unit, unit)
+        if (previous != Mark.NONE && swap < 1f) {
+            drawMark(canvas, previous, previousTone, unit, 1f - swap, 1f - 0.4f * swap)
+            drawMark(canvas, mark, tone, unit, swap, 0.6f + 0.4f * swap)
+        } else drawMark(canvas, mark, tone, unit, 1f, 1f)
+    }
+
+    private fun drawMark(canvas: Canvas, mark: Mark, tone: Int, unit: Float, alpha: Float, scale: Float) {
+        if (alpha <= 0f) return
+        canvas.save(); canvas.scale(unit, unit); canvas.scale(scale, scale, 9f, 9f)
+        if (alpha < 1f) canvas.saveLayerAlpha(0f, 0f, 18f, 18f, (alpha * 255).toInt())
         when (mark) {
             // .ind-bars i { width 3px; height 6->(5,15); radius 2; gap 2 } over .9s with delays -.3 -.6 -.1 -.45
             Mark.BARS -> {
@@ -120,6 +138,7 @@ internal class IslandIndicator(ctx: Context) : View(ctx) {
             }
             Mark.NONE -> {}
         }
+        if (alpha < 1f) canvas.restore()
         canvas.restore()
     }
     override fun onMeasure(w: Int, h: Int) {

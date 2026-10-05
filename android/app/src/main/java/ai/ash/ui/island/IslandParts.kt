@@ -60,9 +60,18 @@ internal class IslandAvatar(ctx: Context, private val focusY: Float, private val
         set(value) {
             if (field == value) return
             field = value
-            bitmap = runCatching { context.assets.open("ash-island/avatars/$value.webp").use { BitmapFactory.decodeStream(it) } }.getOrNull()
+            bitmap = faces[value] ?: decode(context, value)
             invalidate()
         }
+    companion object {
+        /** Decoded once, shared by every avatar: a transition never decodes on the main thread. */
+        private val faces = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+        private val ALL = listOf("default", "focused", "listening", "resting", "success", "thinking")
+        private fun decode(ctx: Context, face: String): Bitmap? = runCatching {
+            ctx.assets.open("ash-island/avatars/$face.webp").use { BitmapFactory.decodeStream(it) }
+        }.getOrNull()?.also { faces[face] = it }
+        fun preload(ctx: Context) { Thread({ for (f in ALL) if (!faces.containsKey(f)) decode(ctx, f) }, "ash-island-faces").start() }
+    }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val back = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = IslandSpec.AVATAR_BACKGROUND }
     private val matrix = Matrix(); private val clipPath = Path(); private val box = RectF()
@@ -89,7 +98,15 @@ internal class IslandAvatar(ctx: Context, private val focusY: Float, private val
  */
 internal class IslandDot(ctx: Context) : View(ctx) {
     var tone = IslandTokens.COLOR_RUNNING
-        set(value) { field = value; invalidate() }
+        set(value) {
+            if (field == value) return
+            // Colours blend rather than switch.
+            if (isAttachedToWindow) android.animation.ValueAnimator.ofArgb(field, value).apply {
+                duration = IslandMotion.COLOUR_MS; addUpdateListener { shown = it.animatedValue as Int; invalidate() }; start()
+            } else shown = value
+            field = value
+        }
+    private var shown = IslandTokens.COLOR_RUNNING
     var pulsing = false
         set(value) { if (field != value) { field = value; if (value && isAttachedToWindow) ticker.start() else ticker.cancel(); invalidate() } }
     private var t = 0L
@@ -102,10 +119,10 @@ internal class IslandDot(ctx: Context) : View(ctx) {
         val r = width / 2f
         if (pulsing) {
             val p = ease.getInterpolation((t % IslandTokens.MOTION_PULSE_MS).toFloat() / IslandTokens.MOTION_PULSE_MS)
-            paint.color = tone; paint.alpha = (0.55f * (1 - p) * 255).toInt()
+            paint.color = shown; paint.alpha = (0.55f * (1 - p) * 255).toInt()
             canvas.drawCircle(r, r, r + IslandSpec.dp(context, 7f) * p, paint)
         }
-        paint.color = tone; paint.alpha = 255; canvas.drawCircle(r, r, r, paint)
+        paint.color = shown; paint.alpha = 255; canvas.drawCircle(r, r, r, paint)
     }
 }
 
@@ -137,4 +154,25 @@ internal class RoundedBackground(private val color: Int, private val radiusPx: F
     override fun setAlpha(alpha: Int) { paint.alpha = alpha }
     override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { paint.colorFilter = colorFilter }
     @Deprecated("Deprecated in Java") override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
+}
+
+/**
+ * Text that changes by cross-fading (the framework's TextSwitcher): the old words fade out while the new fade in, so
+ * a changed label is never blank for a frame. [style] sets up both of its text views alike.
+ */
+internal class FadeText(ctx: Context, private val style: (android.widget.TextView) -> Unit) : android.widget.TextSwitcher(ctx) {
+    init {
+        setFactory { android.widget.TextView(ctx).also(style) }
+        measureAllChildren = false
+        inAnimation = android.view.animation.AlphaAnimation(0f, 1f).apply { duration = IslandMotion.TEXT_IN_MS; startOffset = IslandMotion.TEXT_IN_DELAY_MS }
+        outAnimation = android.view.animation.AlphaAnimation(1f, 0f).apply { duration = IslandMotion.TEXT_OUT_MS }
+    }
+    val current: android.widget.TextView get() = currentView as android.widget.TextView
+    val text: String get() = current.text.toString()
+    /** Shows [value], cross-fading from the old text when [animate]. */
+    fun set(value: String, animate: Boolean) {
+        if (text == value) return
+        if (animate) setText(value) else setCurrentText(value)
+    }
+    fun each(action: (android.widget.TextView) -> Unit) { for (i in 0 until childCount) action(getChildAt(i) as android.widget.TextView) }
 }

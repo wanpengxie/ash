@@ -18,6 +18,10 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.dynamicanimation.animation.DynamicAnimation
+import androidx.dynamicanimation.animation.FloatValueHolder
+import androidx.dynamicanimation.animation.SpringAnimation
+import androidx.dynamicanimation.animation.SpringForce
 
 /** What the island shows: the reference's `renderIsland` model. */
 internal data class IslandModel(
@@ -52,26 +56,29 @@ internal class IslandKind(val label: String?, val title: String, val face: Strin
 }
 
 /**
- * The island's content and morph. A change of form (capsule <-> card) animates the shell's width and radius over the
- * reference's 500ms curve while the new content enters (340ms after 100ms: fade, -4dp, 98%, blur 3dp). Within a form
- * the content is updated in place; only text that changed fades in. [onFrame] is called with the shell's size on
- * every frame of a morph and on every content change, so the window can follow in the same frame.
+ * The island's content and its transitions (see [IslandMotion]). Static layout is the reference's; [onFrame] is called
+ * with the shell's size on every frame of a transition and on every content change.
  */
 internal class IslandView(ctx: Context, private val actions: Actions) {
     interface Actions { fun tap(); fun collapse(); fun close(); fun open(); fun stop(); fun send(text: String); fun focus(editing: Boolean) }
     val shell = IslandShell(ctx)
     var onFrame: (widthPx: Int, heightPx: Int) -> Unit = { _, _ -> }
+    /** A transition is about to need this height (the window grows first); and the height once it has settled. */
+    var onReserve: (heightPx: Int) -> Unit = {}
+    var onSettled: (heightPx: Int) -> Unit = {}
     private val d = ctx.resources.displayMetrics.density
     private fun px(v: Float) = Math.round(v * d)
     private var model: IslandModel? = null
     private var form = ""
     private var cardWidthDp = IslandTokens.SIZE_CARD_W
     private var widthPx = 0; private var heightPx = 0
-    private var morph: ValueAnimator? = null
     private var expanded = false
     var reduceMotion = false
-    private val morphCurve = PathInterpolator(IslandTokens.MOTION_MORPH_EASING[0], IslandTokens.MOTION_MORPH_EASING[1], IslandTokens.MOTION_MORPH_EASING[2], IslandTokens.MOTION_MORPH_EASING[3])
+    /** Development check: log each spring step's time and progress. */
+    var traceMotion = false
     private val cssEaseOut = PathInterpolator(0f, 0f, 0.58f, 1f)
+    // Material's emphasised decelerate, for both sides of the fade through.
+    private val fadeIn = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
 
     // ---- capsule ----
     private val compact = LinearLayout(ctx).apply {
@@ -80,9 +87,9 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         setOnClickListener { actions.tap() }
     }
     private val compactAvatar = IslandAvatar(ctx, IslandSpec.AVATAR_FOCUS_COMPACT)
-    private val compactLabel = TextView(ctx).apply {
-        IslandSpec.text(this, IslandTokens.TYPE_COMPACT_LABEL_SIZE, IslandTokens.COLOR_TEXT, IslandTokens.TYPE_COMPACT_LABEL_WEIGHT)
-        letterSpacing = IslandSpec.LABEL_LETTER_SPACING; isSingleLine = true; ellipsize = TextUtils.TruncateAt.END
+    private val compactLabel = FadeText(ctx) {
+        IslandSpec.text(it, IslandTokens.TYPE_COMPACT_LABEL_SIZE, IslandTokens.COLOR_TEXT, IslandTokens.TYPE_COMPACT_LABEL_WEIGHT)
+        it.letterSpacing = IslandSpec.LABEL_LETTER_SPACING; it.isSingleLine = true; it.ellipsize = TextUtils.TruncateAt.END
     }
     private val compactTime = TextView(ctx).apply {
         IslandSpec.text(this, IslandTokens.TYPE_COMPACT_TIME_SIZE, IslandTokens.COLOR_TEXT_SECONDARY, cjk = false); fontFeatureSettings = "tnum"; isSingleLine = true
@@ -106,7 +113,7 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     }
     private val cardAvatar = IslandAvatar(ctx, IslandSpec.AVATAR_FOCUS_CARD, IslandTokens.AVATAR_CARD_RADIUS)
     private val titleDot = IslandDot(ctx)
-    private val title = TextView(ctx).apply { IslandSpec.text(this, IslandTokens.TYPE_CARD_TITLE_SIZE, IslandTokens.COLOR_TEXT, IslandTokens.TYPE_CARD_TITLE_WEIGHT); isSingleLine = true }
+    private val title = FadeText(ctx) { IslandSpec.text(it, IslandTokens.TYPE_CARD_TITLE_SIZE, IslandTokens.COLOR_TEXT, IslandTokens.TYPE_CARD_TITLE_WEIGHT); it.isSingleLine = true }
     private val meta = TextView(ctx).apply { IslandSpec.text(this, IslandTokens.TYPE_CARD_META_SIZE, IslandTokens.COLOR_TEXT_SECONDARY); fontFeatureSettings = "tnum"; isSingleLine = true }
     private val collapseButton = IslandIcon(ctx, IslandIcon.Kind.UP).apply {
         background = RoundedBackground(IslandTokens.COLOR_ICON_BUTTON, IslandSpec.dp(ctx, IslandSpec.ICON_BUTTON / 2))
@@ -120,10 +127,10 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     }
     private val activityMark = IslandIndicator(ctx)
     // .activity b inherits the outer span's line-height: 1.5
-    private val activityTitle = TextView(ctx).apply { IslandSpec.text(this, IslandSpec.ACTIVITY_TITLE_SIZE, IslandTokens.COLOR_TEXT, 600f, lineHeight = IslandSpec.ACTIVITY_NOTE_LINE_HEIGHT) }
+    private val activityTitle = FadeText(ctx) { IslandSpec.text(it, IslandSpec.ACTIVITY_TITLE_SIZE, IslandTokens.COLOR_TEXT, 600f, lineHeight = IslandSpec.ACTIVITY_NOTE_LINE_HEIGHT) }
     private val activityNote = TextView(ctx).apply { IslandSpec.text(this, IslandSpec.ACTIVITY_NOTE_SIZE, IslandTokens.COLOR_TEXT_SECONDARY, lineHeight = IslandSpec.ACTIVITY_NOTE_LINE_HEIGHT) }
     private val textColumn = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-    private val body = TextView(ctx).apply { IslandSpec.text(this, IslandTokens.TYPE_BODY_SIZE, IslandTokens.COLOR_BODY, lineHeight = IslandTokens.TYPE_BODY_LINE_HEIGHT) }
+    private val body = FadeText(ctx) { IslandSpec.text(it, IslandTokens.TYPE_BODY_SIZE, IslandTokens.COLOR_BODY, lineHeight = IslandTokens.TYPE_BODY_LINE_HEIGHT) }
     private val more = TextView(ctx).apply {
         IslandSpec.text(this, IslandSpec.MORE_SIZE, IslandTokens.COLOR_RUNNING); gravity = Gravity.CENTER_VERTICAL
         setOnClickListener { expanded = !expanded; model?.let { render(it, force = true) } }
@@ -213,11 +220,11 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             out.put(name, org.json.JSONArray(listOf((at[0] - origin[0]) / d, (at[1] - origin[1]) / d, v.width / d, v.height / d).map { Math.round(it * 10) / 10.0 }))
         }
         put("shell", shell)
-        if (form == "compact") { put("av", compactAvatar); put("label", compactLabel); put("time", compactTime); put("ind", compactMark) }
+        if (form == "compact") { put("av", compactAvatar); put("label", compactLabel.current); put("time", compactTime); put("ind", compactMark) }
         else {
-            put("av", cardAvatar); put("dot", titleDot); put("title", title); put("meta", meta); put("icon-btn", collapseButton)
-            put("activity", activityBlock); put("activity-ind", activityMark); put("activity-b", activityTitle); put("activity-span", activityNote)
-            put("body", body); put("more", more); put("primary", primary); put("divider", divider)
+            put("av", cardAvatar); put("dot", titleDot); put("title", title.current); put("meta", meta); put("icon-btn", collapseButton)
+            put("activity", activityBlock); put("activity-ind", activityMark); put("activity-b", activityTitle.current); put("activity-span", activityNote)
+            put("body", body.current); put("more", more); put("primary", primary); put("divider", divider)
             put("input", input); put("send", sendButton); put("stop", stopLink); put("open", openLink); put("close", closeLink)
         }
         return out
@@ -229,7 +236,11 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     }
     fun clearInput() { input.setText("") }
 
-    fun setCardWidth(dpWidth: Float) { cardWidthDp = dpWidth }
+    fun setCardWidth(dpWidth: Float) {
+        if (cardWidthDp == dpWidth) return
+        cardWidthDp = dpWidth
+        (card.layoutParams as? FrameLayout.LayoutParams)?.let { it.width = px(dpWidth); card.layoutParams = it }
+    }
 
     /** Shows [next]. A new form morphs; the same form updates in place. */
     fun render(next: IslandModel, force: Boolean = false) {
@@ -240,13 +251,13 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         // ---- fill both forms' fields (in place); text that changed fades ----
         compactAvatar.face = k.face
         val label = k.label ?: next.activity.ifBlank { "在忙" }
-        swapText(compactLabel, label, !reform)
+        compactLabel.set(label, !reform)
         compactTime.visibility = if (k.run || next.kind == "stale") View.VISIBLE else View.GONE
         compactTime.text = clock(next.elapsedSec, short = true)
         compactMark.reduceMotion = reduceMotion; compactMark.set(k.mark, k.tone)
         cardAvatar.face = k.face
         titleDot.tone = k.tone; titleDot.pulsing = k.tone == IslandTokens.COLOR_NEEDS_YOU && !reduceMotion
-        swapText(title, k.title, !reform)
+        title.set(k.title, !reform)
         meta.text = "Ash · " + when {
             k.run -> "已用 ${clock(next.elapsedSec, short = false)}"
             next.kind in setOf("result", "reply", "stopped", "incomplete") -> "用时 ${clock(next.elapsedSec, short = false)}"
@@ -258,30 +269,28 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         if (running) {
             activityMark.reduceMotion = reduceMotion
             activityMark.set(if (k.mark == IslandIndicator.Mark.BARS) IslandIndicator.Mark.DOTS else k.mark, k.tone)
-            swapText(activityTitle, if (next.kind == "stale") "状态待确认" else next.activity.ifBlank { k.label ?: "在忙" }, !reform)
+            activityTitle.set(if (next.kind == "stale") "状态待确认" else next.activity.ifBlank { k.label ?: "在忙" }, !reform)
             activityNote.text = k.note
         } else {
-            swapText(body, next.body, !reform)
             val clamp = k.clamp && !expanded
-            body.maxLines = if (clamp) IslandTokens.TYPE_BODY_COLLAPSED_LINES.toInt() else Int.MAX_VALUE
-            body.ellipsize = if (clamp) TextUtils.TruncateAt.END else null
+            body.each { it.maxLines = if (clamp) IslandTokens.TYPE_BODY_COLLAPSED_LINES.toInt() else Int.MAX_VALUE; it.ellipsize = if (clamp) TextUtils.TruncateAt.END else null }
+            body.set(next.body, !reform)
             more.visibility = if (k.clamp) View.VISIBLE else View.GONE
             more.text = if (expanded) "收起" else "展开全文"
         }
         primary.visibility = if (next.kind == "in_app") View.VISIBLE else View.GONE
         stopLink.visibility = if (k.run && next.canStop) View.VISIBLE else View.GONE
         input.hint = k.placeholder ?: next.placeholder
+        // The window keeps room for this content's card at all times, so opening it never has to resize the window
+        // (a resize stalls the frame it lands in).
+        cardHeightPx = targetSize("card").second
+        onReserve(maxOf(cardHeightPx, heightPx))
         // ---- form ----
         if (reform || force) {
             if (reform) morphTo(next.form) else layoutNow()
         } else layoutNow()
     }
 
-    private fun swapText(view: TextView, text: String, fade: Boolean) {
-        if (view.text.toString() == text) return
-        view.text = text
-        if (fade && !reduceMotion) { view.alpha = 0f; view.animate().alpha(1f).setDuration(IslandSpec.TEXT_FADE_MS).setInterpolator(cssEaseOut).start() }
-    }
 
     private fun clock(sec: Long, short: Boolean): String {
         val e = (sec / 5) * 5; val m = e / 60; val s = (e % 60).toString().padStart(2, '0')
@@ -297,59 +306,153 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     private fun content(form: String): View = if (form == "card") card else compact
     private fun radiusPx(form: String) = IslandSpec.dp(shell.context, if (form == "card") IslandTokens.SIZE_CARD_RADIUS else IslandTokens.SIZE_COMPACT_RADIUS)
 
-    /** Same form, new content: size the shell to it now. */
+    // ---- shared avatar: one face that travels between the capsule's and the card's places ----
+    private val overlay = FrameLayout(ctx).apply { isClickable = false }
+    private val flyFrom = IslandAvatar(ctx, IslandSpec.AVATAR_FOCUS_CARD, IslandTokens.AVATAR_CARD_RADIUS)
+    private val flyTo = IslandAvatar(ctx, IslandSpec.AVATAR_FOCUS_CARD, IslandTokens.AVATAR_CARD_RADIUS)
+    init {
+        // Both forms are built and laid out from the start; the one not shown is invisible. A transition only changes
+        // what is visible, never builds or first lays out a view.
+        shell.clip.addView(compact, FrameLayout.LayoutParams(px(IslandTokens.SIZE_COMPACT_W), px(IslandTokens.SIZE_COMPACT_H)))
+        shell.clip.addView(card, FrameLayout.LayoutParams(px(cardWidthDp), ViewGroup.LayoutParams.WRAP_CONTENT))
+        compact.visibility = View.INVISIBLE; card.visibility = View.INVISIBLE
+        shell.clip.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        overlay.addView(flyFrom, FrameLayout.LayoutParams(0, 0)); overlay.addView(flyTo, FrameLayout.LayoutParams(0, 0))
+        overlay.visibility = View.GONE
+    }
+    /** The avatar's box (left, top, size) in each form, in px from the shell's corner (reference layout). */
+    private fun avatarBox(form: String): FloatArray = if (form == "card") {
+        val p = IslandTokens.SIZE_CARD_PADDING
+        // .card-head centres a 40dp avatar on its 44dp row (the collapse button sets the row's height).
+        floatArrayOf(p[3] * d, p[0] * d + (IslandSpec.ICON_BUTTON - IslandTokens.AVATAR_CARD_SIZE) / 2 * d, IslandTokens.AVATAR_CARD_SIZE * d)
+    } else floatArrayOf(IslandSpec.COMPACT_PAD_LEFT * d, (IslandTokens.SIZE_COMPACT_H - IslandTokens.AVATAR_COMPACT) / 2 * d, IslandTokens.AVATAR_COMPACT * d)
+    private fun placeFly(view: View, box: FloatArray) {
+        val lp = view.layoutParams as FrameLayout.LayoutParams
+        val size = Math.round(box[2])
+        if (lp.width != size) { lp.width = size; lp.height = size; view.layoutParams = lp }
+        view.translationX = box[0]; view.translationY = box[1]
+    }
+    private fun avatarOf(form: String) = if (form == "card") cardAvatar else compactAvatar
+
+    private var spring: SpringAnimation? = null
+    private var cardHeightPx = 0
+    private var fades: ValueAnimator? = null
+
+    /** Same form, new content: a changed height springs to its new size; a changed width (screen) is set at once. */
     private fun layoutNow() {
         if (form.isEmpty()) return
         val (w, h) = targetSize(form)
-        if (morph?.isRunning == true) { heightPx = h; apply(widthPx, h, shell.radius); return }
-        widthPx = w; heightPx = h; apply(w, h, radiusPx(form))
+        if (spring?.isRunning == true) return
+        if (heightPx == 0 || reduceMotion || w != widthPx) { onReserve(h); widthPx = w; heightPx = h; apply(w, h, radiusPx(form)); onSettled(maxOf(h, cardHeightPx)); return }
+        if (h == heightPx) return
+        val from = heightPx
+        onReserve(maxOf(from, h))
+        springTo(IslandMotion.RESIZE_STIFFNESS, IslandMotion.RESIZE_DAMPING, onEnd = { onSettled(maxOf(heightPx, cardHeightPx)) }) { t -> heightPx = Math.round(from + (h - from) * t); apply(widthPx, heightPx, shell.radius) }
+    }
+
+    private fun springTo(stiffness: Float, damping: Float, onEnd: () -> Unit = {}, step: (Float) -> Unit) {
+        spring?.cancel()
+        spring = SpringAnimation(FloatValueHolder(0f)).apply {
+            spring = SpringForce(1f).setStiffness(stiffness).setDampingRatio(damping)
+            setMinimumVisibleChange(DynamicAnimation.MIN_VISIBLE_CHANGE_SCALE)
+            addUpdateListener { _, value, _ ->
+                if (traceMotion) android.util.Log.i("ash.island.motion", "t=${android.os.SystemClock.uptimeMillis()} v=$value")
+                step(value)
+            }
+            addEndListener { _, canceled, _, _ -> if (!canceled) { step(1f); onEnd() } }
+            start()
+        }
     }
 
     private fun morphTo(next: String) {
         val from = form; form = next
         val (toW, toH) = targetSize(next)
-        val view = content(next); val other = content(if (next == "card") "compact" else "card")
-        // The content keeps its final width and sits at the shell's left, clipped while the shell is narrower.
-        shell.clip.removeView(other)
-        if (view.parent == null) shell.clip.addView(view, FrameLayout.LayoutParams(if (next == "card") toW else toW, if (next == "card") ViewGroup.LayoutParams.WRAP_CONTENT else toH))
-        morph?.cancel()
-        if (from.isEmpty() || reduceMotion) { widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next)); enter(view, instant = from.isEmpty() || reduceMotion); return }
-        val fromW = widthPx; val fromR = shell.radius; val toR = radiusPx(next)
-        heightPx = toH // the reference snaps height and animates width and radius
-        enter(view, instant = false)
-        morph = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = IslandTokens.MOTION_MORPH_MS; interpolator = morphCurve
-            addUpdateListener { a ->
-                val t = a.animatedValue as Float
-                widthPx = Math.round(fromW + (toW - fromW) * t)
-                apply(widthPx, heightPx, fromR + (toR - fromR) * t)
+        val incoming = content(next); val outgoing = if (from.isEmpty()) null else content(from)
+        spring?.cancel(); fades?.cancel()
+        settle(incoming); incoming.visibility = View.VISIBLE
+        if (outgoing == null) { onReserve(toH); widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next)); onSettled(maxOf(toH, cardHeightPx)); return }
+        if (reduceMotion) {
+            // Reduce motion: the island takes its new size at once and its content cross-fades.
+            onReserve(maxOf(heightPx, toH)); widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next)); onSettled(maxOf(toH, cardHeightPx))
+            incoming.alpha = 0f
+            fades = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = IslandMotion.REDUCED_FADE_MS
+                addUpdateListener { incoming.alpha = it.animatedValue as Float; outgoing.alpha = 1f - incoming.alpha }
+                addListener(object : AnimatorListenerAdapter() { override fun onAnimationEnd(animation: Animator) { if (form == next) outgoing.visibility = View.INVISIBLE; outgoing.alpha = 1f } })
+                start()
             }
-            addListener(object : AnimatorListenerAdapter() { override fun onAnimationEnd(animation: Animator) { widthPx = toW; apply(toW, heightPx, toR) } })
+            return
+        }
+        // Shared avatar: hide the two in place, fly one face between their boxes.
+        val a = avatarBox(from); val b = avatarBox(next)
+        flyFrom.face = (avatarOf(from) as IslandAvatar).face; flyTo.face = (avatarOf(next) as IslandAvatar).face
+        compactAvatar.alpha = 0f; cardAvatar.alpha = 0f
+        overlay.visibility = View.VISIBLE; overlay.bringToFront()
+        val fromW = widthPx; val fromH = heightPx; val fromR = shell.radius; val toR = radiusPx(next)
+        val opening = next == "card"
+        onReserve(maxOf(fromH, toH))
+        springTo(if (opening) IslandMotion.OPEN_STIFFNESS else IslandMotion.CLOSE_STIFFNESS,
+            if (opening) IslandMotion.OPEN_DAMPING else IslandMotion.CLOSE_DAMPING,
+            onEnd = {
+                overlay.visibility = View.GONE; compactAvatar.alpha = 1f; cardAvatar.alpha = 1f
+                if (form == next) { outgoing.visibility = View.INVISIBLE; settle(outgoing) }
+                onSettled(maxOf(heightPx, cardHeightPx))
+            }) { t ->
+            // Closing, the height leads (done by ~60% of the way) so the box never stands empty below the capsule row.
+            val ht = if (opening) t else (t / IslandMotion.CLOSE_HEIGHT_LEAD).coerceAtMost(1f)
+            widthPx = Math.round(fromW + (toW - fromW) * t); heightPx = Math.round(fromH + (toH - fromH) * ht)
+            apply(widthPx, heightPx, (fromR + (toR - fromR) * t).coerceAtLeast(0f))
+            // Container transform, fit to width: both contents scale with the container from its top-left corner, so
+            // they travel with it instead of sitting still in a growing box.
+            val inScale = widthPx.toFloat() / toW; val outScale = widthPx.toFloat() / fromW
+            incoming.scaleX = inScale; incoming.scaleY = inScale; outgoing.scaleX = outScale; outgoing.scaleY = outScale
+            val c = t.coerceIn(0f, 1f)
+            val box = floatArrayOf(a[0] + (b[0] - a[0]) * c, a[1] + (b[1] - a[1]) * c, a[2] + (b[2] - a[2]) * c)
+            placeFly(flyFrom, box); placeFly(flyTo, box)
+        }
+        // Fade through (container transform): two different texts in the same place must not show at once, so the
+        // outgoing content leaves quickly and the incoming one comes up just behind it. Both travel with the container
+        // and the shared avatar stays, so the island is never an empty box.
+        incoming.pivotX = 0f; incoming.pivotY = 0f; outgoing.pivotX = 0f; outgoing.pivotY = 0f
+        incoming.alpha = 0f
+        // Opening, the card's content lies mostly below the capsule row, so it can start at once.
+        val delay = if (opening) 0L else IslandMotion.IN_DELAY_MS
+        val total = delay + IslandMotion.IN_MS
+        fades = ValueAnimator.ofFloat(0f, total.toFloat()).apply {
+            duration = total
+            addUpdateListener { anim ->
+                val ms = anim.animatedValue as Float
+                outgoing.alpha = 1f - fadeIn.getInterpolation((ms / IslandMotion.OUT_MS).coerceIn(0f, 1f))
+                val t = fadeIn.getInterpolation(((ms - delay) / IslandMotion.IN_MS).coerceIn(0f, 1f))
+                incoming.alpha = t
+                // The face cross-fades too when the kind changed along the way.
+                flyTo.alpha = t; flyFrom.alpha = 1f - t
+            }
             start()
         }
     }
 
-    /** `.isl-in`: from opacity 0, translateY(-4px), scale(.98), blur(3px), 340ms ease-out after 100ms. */
-    private fun enter(view: View, instant: Boolean) {
-        view.animate().cancel()
-        if (instant) { view.alpha = 1f; view.translationY = 0f; view.scaleX = 1f; view.scaleY = 1f; if (Build.VERSION.SDK_INT >= 31) view.setRenderEffect(null); return }
-        view.alpha = IslandTokens.MOTION_CONTENT_IN_FROM_OPACITY
-        view.translationY = IslandSpec.dp(view.context, IslandTokens.MOTION_CONTENT_IN_FROM_TRANSLATE_Y)
-        view.scaleX = IslandTokens.MOTION_CONTENT_IN_FROM_SCALE; view.scaleY = IslandTokens.MOTION_CONTENT_IN_FROM_SCALE
-        val blur = IslandSpec.dp(view.context, IslandSpec.CONTENT_IN_FROM_BLUR)
-        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = IslandTokens.MOTION_CONTENT_IN_MS; startDelay = IslandTokens.MOTION_CONTENT_IN_DELAY_MS; interpolator = cssEaseOut
-            addUpdateListener { a ->
-                val t = a.animatedValue as Float
-                view.alpha = t
-                view.translationY = IslandSpec.dp(view.context, IslandTokens.MOTION_CONTENT_IN_FROM_TRANSLATE_Y) * (1 - t)
-                val s = IslandTokens.MOTION_CONTENT_IN_FROM_SCALE + (1 - IslandTokens.MOTION_CONTENT_IN_FROM_SCALE) * t
-                view.scaleX = s; view.scaleY = s
-                if (Build.VERSION.SDK_INT >= 31) { val r = blur * (1 - t); view.setRenderEffect(if (r > 0.01f) RenderEffect.createBlurEffect(r, r, Shader.TileMode.DECAL) else null) }
-            }
-        }
-        if (Build.VERSION.SDK_INT >= 31) view.setRenderEffect(RenderEffect.createBlurEffect(blur, blur, Shader.TileMode.DECAL))
-        anim.start()
+    /** Back to rest: full opacity, no offset, scale or blur. */
+    private fun settle(view: View) {
+        view.alpha = 1f; view.translationY = 0f; view.scaleX = 1f; view.scaleY = 1f
+        if (Build.VERSION.SDK_INT >= 31) view.setRenderEffect(null)
+    }
+
+    /** Appearing: springs out of the top centre. */
+    fun appear() {
+        if (reduceMotion) { shell.alpha = 0f; shell.animate().alpha(1f).setDuration(IslandMotion.REDUCED_FADE_MS).start(); return }
+        shell.pivotX = shell.width / 2f; shell.pivotY = 0f
+        shell.scaleX = IslandMotion.APPEAR_FROM_SCALE; shell.scaleY = IslandMotion.APPEAR_FROM_SCALE; shell.alpha = 0f
+        SpringAnimation(shell, DynamicAnimation.SCALE_X, 1f).apply { spring.setStiffness(IslandMotion.APPEAR_STIFFNESS).setDampingRatio(IslandMotion.APPEAR_DAMPING); start() }
+        SpringAnimation(shell, DynamicAnimation.SCALE_Y, 1f).apply { spring.setStiffness(IslandMotion.APPEAR_STIFFNESS).setDampingRatio(IslandMotion.APPEAR_DAMPING); start() }
+        shell.animate().alpha(1f).setDuration(IslandMotion.TEXT_IN_MS).setInterpolator(cssEaseOut).start()
+    }
+    /** Leaving: shrinks back into the top centre, then [done]. */
+    fun leave(done: () -> Unit) {
+        shell.pivotX = shell.width / 2f; shell.pivotY = 0f
+        val to = if (reduceMotion) 1f else IslandMotion.APPEAR_FROM_SCALE
+        shell.animate().alpha(0f).scaleX(to).scaleY(to).setDuration(IslandMotion.LEAVE_MS).setInterpolator(PathInterpolator(0.3f, 0f, 1f, 1f))
+            .withEndAction { settle(shell); done() }.start()
     }
 
     private fun apply(w: Int, h: Int, radius: Float) {

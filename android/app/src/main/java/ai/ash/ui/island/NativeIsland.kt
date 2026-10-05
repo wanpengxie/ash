@@ -46,6 +46,8 @@ internal object NativeIsland : IslandView.Actions {
     private var pad: View? = null
     private var padParams: WindowManager.LayoutParams? = null
     private var islandW = 0; private var islandH = 0
+    /** The window was taken away for a capture; coming back is a quiet fade, not an entrance. */
+    private var capturedAway = false
     private var visible = false
     private var suppressed = 0
     private var passingTouches = 0
@@ -70,6 +72,7 @@ internal object NativeIsland : IslandView.Actions {
     private fun ensure(ctx: Context) {
         if (island != null) return
         app = ctx.applicationContext
+        IslandAvatar.preload(app!!)
         val view = IslandView(app!!, this)
         val box = FrameLayout(app!!).apply { clipChildren = false; clipToPadding = false; contentDescription = "AshTaskCapsule" }
         box.addView(view.shell, FrameLayout.LayoutParams(dp(IslandTokens.SIZE_COMPACT_W), dp(IslandTokens.SIZE_COMPACT_H)).apply {
@@ -78,6 +81,8 @@ internal object NativeIsland : IslandView.Actions {
         @SuppressLint("ClickableViewAccessibility")
         view.input.setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_DOWN) setEditing(true); false }
         view.onFrame = { w, h -> follow(w, h) }
+        view.onReserve = { h -> fitBand(h, grow = true) }
+        view.onSettled = { h -> fitBand(h, grow = false) }
         root = box; island = view
         pad = object : View(app!!) {
             @SuppressLint("ClickableViewAccessibility")
@@ -113,6 +118,22 @@ internal object NativeIsland : IslandView.Actions {
         p.x = centreX - p.width / 2
         if (attached) runCatching { host?.updateViewLayout(root, p) }
     }
+    /**
+     * The trusted band is as tall as the island needs, plus room for a spring's overshoot: never moved sideways, it
+     * grows before a transition needs the room and shrinks once the island has settled (top-anchored, so a change of
+     * height never shifts what is drawn). A band the height of the screen costs composition on every frame.
+     */
+    private fun fitBand(islandHeight: Int, grow: Boolean) {
+        if (!trusted) return
+        val ctx = app ?: return; val p = windowParams(ctx)
+        val need = islandHeight + dp(IslandTokens.SIZE_WINDOW_INSET_TOP) + dp(IslandTokens.SIZE_WINDOW_INSET_BOTTOM) + dp(BAND_HEADROOM)
+        if (grow && p.height >= need) return
+        if (p.height == need) return
+        p.height = need
+        if (attached) runCatching { host?.updateViewLayout(root, p) }
+    }
+    private const val BAND_HEADROOM = 24f
+
     /** The touch window over the island (trusted mode); it draws nothing, so its own moves are never seen. */
     private fun placePad(ctx: Context, left: Int, top: Int, w: Int, h: Int) {
         val band = params ?: return
@@ -128,7 +149,8 @@ internal object NativeIsland : IslandView.Actions {
 
     private fun windowParams(ctx: Context): WindowManager.LayoutParams = params ?: (if (trusted) WindowManager.LayoutParams(
         // The band: the screen's width, and tall enough for the tallest card with its inset. It never changes.
-        ctx.resources.displayMetrics.widthPixels, (ctx.resources.displayMetrics.heightPixels * 0.9f).toInt(),
+        ctx.resources.displayMetrics.widthPixels,
+        dp(IslandTokens.SIZE_COMPACT_H + IslandTokens.SIZE_WINDOW_INSET_TOP + IslandTokens.SIZE_WINDOW_INSET_BOTTOM + BAND_HEADROOM),
         WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, PixelFormat.TRANSLUCENT)
@@ -168,6 +190,7 @@ internal object NativeIsland : IslandView.Actions {
         if (next != episode && (incoming.isNotEmpty() || reply.isNotEmpty() || ended)) form = "card"
         episode = next
         island?.reduceMotion = Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+        island?.traceMotion = runCatching { java.io.File(ctx.filesDir, "ash/island-native").readText().contains("motion") }.getOrDefault(false)
         island?.setCardWidth(minOf(IslandTokens.SIZE_CARD_W, ctx.resources.displayMetrics.widthPixels / ctx.resources.displayMetrics.density - 24f))
         render()
         if (!allowed()) { if (!unlocked(ctx) || AppState.homeVisible) setEditing(false); detach(); return }
@@ -212,8 +235,8 @@ internal object NativeIsland : IslandView.Actions {
             if (trusted) padParams?.let { ctx.getSystemService(WindowManager::class.java).addView(pad, it) }
             applyTouchMode()
             box.post { rememberBounds() }
-            // Back after a capture: fade in rather than pop (reference §2).
-            box.alpha = 0f; box.animate().alpha(1f).setDuration(180).start()
+            if (capturedAway) { capturedAway = false; box.alpha = 0f; box.animate().alpha(1f).setDuration(180).start() }
+            else box.post { island?.appear() }
         }.onFailure { android.util.Log.w("ash.island", "could not attach island", it) }
     }
     private fun rememberBounds() {
@@ -230,7 +253,11 @@ internal object NativeIsland : IslandView.Actions {
         runCatching { host?.removeViewImmediate(box) }
         attached = false; screenBounds = null
     }
-    fun hide() { main.post { visible = false; setEditing(false); detach(); restore = null } }
+    fun hide() { main.post {
+        visible = false; setEditing(false); restore = null
+        val view = island
+        if (attached && view != null) view.leave { if (!visible) detach() } else detach()
+    } }
     fun release() { main.post { visible = false; setEditing(false); detach(); root = null; island = null; params = null; snapshot = null; restore = null; episode = ""; form = "compact" } }
 
     private fun setEditing(value: Boolean) {
@@ -308,7 +335,7 @@ internal object NativeIsland : IslandView.Actions {
         val latch = CountDownLatch(1); var entered = false
         main.post {
             if (editing) { latch.countDown(); return@post }
-            entered = true; suppressed++; detach()
+            entered = true; suppressed++; if (attached) capturedAway = true; detach()
             Choreographer.getInstance().postFrameCallback { Choreographer.getInstance().postFrameCallback { latch.countDown() } }
         }
         try {
