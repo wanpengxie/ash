@@ -13,6 +13,8 @@ export interface TaskStatusFrame {
   state: string; text: string; steps: string[]; can_stop: boolean;
   tool?: string; step_started_at?: number;
   outcome?: string;
+  /** How a normally ended turn left things for the owner, once judged (task.outcome route); empty until then. */
+  verdict?: string;
   reply?: string; cards?: TaskCard[];
 }
 const states = new Set(["idle", "listening", "thinking", "working", "done", "waiting_you", "resting"]);
@@ -32,6 +34,7 @@ export class TaskStatusBridge {
   private summary = "";
   private ended = false;
   private outcome = "";
+  private verdict = "";
   private closed = false;
   private queued = false;
   private sending: Promise<void> | null = null;
@@ -64,7 +67,7 @@ export class TaskStatusBridge {
         this.turn = m.body.turn; this.started = m.ts; this.ended = false; this.steps = []; this.activity = new ActivitySteps(); this.summary = "";
         for (const [id, card] of this.asks) if (card.state !== "waiting" && !(card.kind === "approval" && card.state === "answered")) this.asks.delete(id);
         this.replies = []; this.replyInterrupted = false;
-        this.outcome = ""; this.state = "thinking"; this.text = "等待模型响应";
+        this.outcome = ""; this.verdict = ""; this.state = "thinking"; this.text = "等待模型响应";
       } else if (m.word === "turn.end" && m.body.turn === this.turn) {
         this.ended = true; this.state = "done";
         this.outcome = String(m.body.reason ?? "");
@@ -82,6 +85,10 @@ export class TaskStatusBridge {
           : String(m.body.text ?? "").split(" · ")[0].replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 80));
         if (this.state === "idle" || this.state === "resting") { this.turn = null; this.started = 0; this.ended = false; this.steps = []; }
       } else return;
+    } else if (m.from === "service:reflex" && m.kind === "event" && m.word === "decision.applied" && m.body.route === "task.outcome") {
+      // A late verdict for an earlier turn says nothing about the current one.
+      if (!this.turn || m.turn !== this.turn || !this.ended || m.body.acted !== true) return;
+      this.verdict = String((m.body.outcome as { kind?: unknown } | undefined)?.kind ?? "");
     } else if (this.turn && m.kind === "request" && m.to === "person:owner" && m.word === "ask") {
       // Gate holds the outer tool request while asking. That is waiting, not ongoing work.
       if (m.turn !== this.turn) return;
@@ -124,7 +131,8 @@ export class TaskStatusBridge {
     return { session: this.session, revision: ++this.revision, turn: this.turn, started_at: this.started,
       state: waiting ? "waiting_you" : this.state, text: waiting ? "等待你回应" : this.text,
       reply: this.replies.join("\n\n"), cards,
-      steps: [...this.steps], can_stop: !!this.turn && !this.ended, tool: action?.tool ?? "", step_started_at: action?.ts ?? this.started, outcome: this.outcome };
+      steps: [...this.steps], can_stop: !!this.turn && !this.ended, tool: action?.tool ?? "", step_started_at: action?.ts ?? this.started, outcome: this.outcome,
+      ...(this.ended && this.verdict ? { verdict: this.verdict } : {}) };
   }
   private enqueue(): void {
     if (this.closed) return;

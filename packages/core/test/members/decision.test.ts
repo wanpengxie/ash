@@ -84,6 +84,7 @@ async function fixture(options: { native?: boolean; visible?: boolean; action?: 
     } } });
   const reflex = new ReflexMember(router, () => agent.inbox.activeTurn()?.id ?? null, {
     screenExecutionEnabled: Boolean(options.execution), // Original route fixtures remain independent.
+    taskOutcomeEnabled: false, // These fixtures count screen judgments only.
     ready: () => !agent.inbox.activeTurn() && !agent.waitingForQuiescence,
     routes: options.extraRoute ? [options.extraRoute] : [],
     model: { async evaluate(state, questions, signal) {

@@ -7,6 +7,7 @@ import { ConversationControlRoute, type ConversationControlOptions } from "./ref
 import { ScreenReconcileRoute, type ScreenHost } from "./reflex/screen-reconcile";
 import type { DecisionModel } from "../world/decision/jev";
 import { ScreenExecutionRoute, screenExecutionContext } from "./reflex/screen-execution";
+import { TaskOutcomeRoute } from "./reflex/task-outcome";
 import { decisionContext } from "../world/decision/runtime";
 
 /** Stable world identity for Ash's extensible peripheral decision runtime. */
@@ -20,7 +21,7 @@ export class ReflexMember implements Member {
   private readonly stop: () => void;
   constructor(private readonly router: WorldRouter, private readonly busyTurn: () => string | null,
     private readonly options: ConversationControlOptions & { model?: DecisionModel; screenHost?: ScreenHost;
-      conversationEnabled?: boolean; screenEnabled?: boolean; screenExecutionEnabled?: boolean;
+      conversationEnabled?: boolean; screenEnabled?: boolean; screenExecutionEnabled?: boolean; taskOutcomeEnabled?: boolean;
       ready?: () => boolean; paused?: () => boolean; routes?: DecisionRoute[] } = {}) {
     this.runtime = new DecisionRuntime(router);
     if (options.conversationEnabled !== false) this.runtime.register(new ConversationControlRoute(router, busyTurn, options));
@@ -30,6 +31,7 @@ export class ReflexMember implements Member {
     }
     if (options.screenHost && options.screenEnabled !== false) this.runtime.register(new ScreenReconcileRoute(router, options.model, busyTurn,
       options.ready ?? (() => busyTurn() === null), () => this.runtime.supersede("phone-screen"), options.paused ?? (() => false), options.screenHost, this.execution));
+    if (options.model && options.taskOutcomeEnabled !== false) this.runtime.register(new TaskOutcomeRoute(router, options.model));
     for (const route of options.routes ?? []) this.runtime.register(route);
     this.stop = router.subscribe((message) => this.runtime.observe(message));
   }

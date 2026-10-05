@@ -7,6 +7,8 @@
   const vendorIndicator=indicator;
   indicator=(ind,tone)=>ind==='dot'?'<span class="ind-pulse"></span>':vendorIndicator(ind,tone);
   // The card shows the agent's words as plain text, as the reference does; Markdown marks would show as stray symbols.
+  // How a turn can end: neutral, or as judged (result, waiting for an answer, waiting in Ash, not finished), or stopped.
+  const ENDED=['reply','result','ask','in_app','incomplete','stopped'];
   const plain=text=>String(text??'').split('\n').filter(line=>!/^\s*(```|\|?\s*:?-{3,})/.test(line)).map(line=>line
     .replace(/^\s*#{1,6}\s+/,'').replace(/^\s*>\s?/,'').replace(/^(\s*)[-*+]\s+/,'$1• ')
     .replace(/^\s*\|(.*)\|\s*$/,(_,cells)=>cells.split('|').map(c=>c.trim()).filter(Boolean).join(' · '))
@@ -196,14 +198,17 @@
       const next=typeof raw==='string'?JSON.parse(raw):raw;
       const newTurn=snapshot?.turn!==next.turn || snapshot?.session!==next.session;
       const incoming=next.cards.find(c=>pending(c)&&!c.localState);
-      const nextEpisode=[next.session,next.turn,next.kind,incoming?.id||'',next.reply].join('|');
+      // A turn's end is one episode however it is labelled: a verdict arriving later re-labels the card but must not
+      // pop it open again after the owner collapsed it.
+      const ended=ENDED.includes(next.kind);
+      const nextEpisode=[next.session,next.turn,ended?'ended':next.kind,incoming?.id||'',next.reply].join('|');
       if(newTurn) { selected=null; more=false; expandedOriginal=false; if(!busy) notice=''; if(!next.reply&&!incoming) form='compact'; }
       const current=next.cards.find(c=>c.id===selected);
       if(incoming && (!current || !pending(current) || current.localState)) selected=incoming.id;
-      else if(!incoming && ((next.reply&&['reply','incomplete','stopped'].includes(next.kind)) ||
+      else if(!incoming && ((next.reply&&ended) ||
           (next.canStop&&!next.cards.some(pending)))) selected=null;
       else if(!current) selected=(incoming||next.cards.at(-1))?.id||null;
-      if(nextEpisode!==episode && (incoming||next.reply||['reply','result','incomplete','stopped'].includes(next.kind))) form='card';
+      if(nextEpisode!==episode && (incoming||next.reply||ended)) form='card';
       episode=nextEpisode;
       snapshot=next;
       // An expired/replaced question must not silently turn its draft into an ordinary message.

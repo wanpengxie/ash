@@ -24,8 +24,10 @@ data class TaskCard(val id: String, val pendingId: String, val target: String, v
 internal data class TaskFrame(val session: String, val revision: Long, val turn: String?, val startedAt: Long,
     val state: String, val text: String, val steps: List<String>, val canStop: Boolean,
     val tool: String = "", val stepStartedAt: Long = startedAt, val outcome: String = "",
-    val reply: String = "", val cards: List<TaskCard> = emptyList()) {
+    val reply: String = "", val cards: List<TaskCard> = emptyList(), val verdict: String = "") {
     companion object {
+        /** How a normally ended turn left things for the owner (core's task.outcome route); anything else is no verdict. */
+        val VERDICTS = setOf("delivered", "needs_reply", "needs_action_in_ash", "incomplete")
         fun parse(b: JSONObject): TaskFrame {
             val session = b.getString("session")
             val revision = b.getLong("revision")
@@ -44,7 +46,8 @@ internal data class TaskFrame(val session: String, val revision: Long, val turn:
             return TaskFrame(session, revision, turn, started, state, safe(b.getString("text")),
                 (0 until a.length()).map { safe(a.getString(it)) }, canStop, safe(b.optString("tool", "")),
                 b.optLong("step_started_at", started).coerceAtLeast(started), safe(b.optString("outcome", "")),
-                b.optString("reply", ""), if (cards == null) emptyList() else (0 until cards.length()).map { TaskCard.parse(cards.getJSONObject(it)) })
+                b.optString("reply", ""), if (cards == null) emptyList() else (0 until cards.length()).map { TaskCard.parse(cards.getJSONObject(it)) },
+                b.optString("verdict", "").takeIf { it in VERDICTS }.orEmpty())
         }
     }
 }
