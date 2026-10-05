@@ -133,8 +133,7 @@ object TaskCapsule {
             if (!attached) return@addOnGlobalLayoutListener
             val frame = Rect(); box.getWindowVisibleDisplayFrame(frame)
             val top = IntArray(2); box.getLocationOnScreen(top)
-            // The page keeps 8dp above the island and 32dp below it for its shadow (ash-island/host.css).
-            val available = ((frame.bottom - top[1] - dp(40.0)) / ctx.resources.displayMetrics.density).toInt().coerceAtLeast(220)
+            val available = ((frame.bottom - top[1] - dp(32.0)) / ctx.resources.displayMetrics.density).toInt().coerceAtLeast(220)
             if (available != maxHeight) { maxHeight = available; push() }
         }
         root = box; web = browser
@@ -164,13 +163,13 @@ object TaskCapsule {
     private fun attach() {
         if (attached || !allowed()) return
         val ctx = app ?: return; val box = root ?: return
-        val p = params ?: WindowManager.LayoutParams(dp(260.0), dp(64.0),
+        val p = params ?: WindowManager.LayoutParams(dp(268.0), dp(72.0),
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.LEFT
-            // The island sits 8dp below the status bar; that gap is the page's own top padding.
+            // The page keeps an 8dp inset above the island for its shadow, so the island itself sits 8dp below the status bar.
             x = (ctx.resources.displayMetrics.widthPixels - width) / 2; y = 0
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             windowAnimations = R.style.CapsuleWindowAnimation

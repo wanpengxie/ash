@@ -7,7 +7,12 @@
     "edge": { "w": 52, "h": 52, "radius": 26 },
     "topBelowStatusBar": 8,
     "topHugCamera": 5,
-    "minTouch": 44
+    "minTouch": 44,
+    "windowInset": { "top": 8, "side": 16, "bottom": 24 }
+  },
+  "shadow": {
+    "css": "0 8px 16px rgba(0,0,0,.30), 0 1px 3px rgba(0,0,0,.22)",
+    "note": "Fits the overlay window inset exactly: spills 8 up, 16 sideways, 24 down. A smaller inset clips it to a hard edge."
   },
   "color": {
     "island": "#101011",

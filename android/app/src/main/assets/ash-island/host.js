@@ -16,10 +16,6 @@
   el.className='isl'; root.append(el);
   let snapshot=null, form='compact', selected=null, expandedOriginal=false, more=false;
   let episode='', lastKey='', draft='', customTarget=null, busy=false, notice='', lastSize='';
-  // While the island changes form (width and radius over .5s), the window keeps the larger of the two sizes, so the
-  // whole change plays inside it instead of the window chasing it frame by frame. Room around it: see host.css.
-  const PAD_X=40, PAD_Y=40, MORPH_MS=560;
-  let hold=null, holdTimer=0;
   const post=(action,extra={}) => window.AshIslandNative?.postMessage(JSON.stringify({action,turn:snapshot?.turn,...extra}));
   const activeCard=() => snapshot?.cards.find(c=>c.id===selected);
   const pending=c=>c.state==='waiting';
@@ -36,12 +32,27 @@
     return {...snapshot,kind:approval?'approval':'ask',form,body,quote,approval:ap,
       options:pending(c)&&!c.localState?c.options.map(o=>o.label):[],card:c};
   }
+  // Window inset around the island; see host.css. Native sizes the overlay window to island + inset.
+  const INSET_X=32, INSET_Y=32;
+  const target=()=>({compact:236,card:snapshot?.cardWidth||362,edge:52})[form]||0;
+  // During a width morph the window must already be at least as large as both ends, or the CSS animation
+  // outruns the asynchronous window resize and is clipped. Hold the larger size until the transition ends.
+  let morphing=false, hold=null, lastPosted=null, morphTimer=0;
+  function startMorph() {
+    if(snapshot?.reduceMotion) return;
+    morphing=true; hold=lastPosted; clearTimeout(morphTimer); morphTimer=setTimeout(endMorph,700);
+  }
+  function endMorph() { if(!morphing) return; morphing=false; hold=null; clearTimeout(morphTimer); lastSize=''; measure(); }
+  el.addEventListener('transitionend',e=>{ if(e.target===el&&e.propertyName==='width') endMorph(); });
+  el.addEventListener('transitioncancel',e=>{ if(e.target===el&&e.propertyName==='width') endMorph(); });
   function measure() {
     const rect=el.getBoundingClientRect();
-    const w=hold?Math.max(rect.width,hold.w):rect.width, h=hold?Math.max(rect.height,hold.h):rect.height;
-    const size={width:Math.ceil(w)+PAD_X,height:Math.ceil(h)+PAD_Y,form};
+    let width=Math.ceil(Math.max(rect.width,target()))+INSET_X, height=Math.ceil(rect.height)+INSET_Y;
+    if(morphing&&hold) { width=Math.max(width,hold.width); height=Math.max(height,hold.height); }
+    const size={width,height,form};
+    if(morphing) hold={width,height};
     const key=JSON.stringify(size);
-    if(key!==lastSize) { lastSize=key; post('size',size); }
+    if(key!==lastSize) { lastSize=key; lastPosted={width,height}; post('size',size); }
   }
   function draw() {
     if(!snapshot) return;
@@ -52,10 +63,13 @@
     el.style.setProperty('--card-width',snapshot.cardWidth+'px');
     el.style.setProperty('--max-height',snapshot.maxHeight+'px');
     el.dataset.motion=snapshot.reduceMotion?'reduce':'normal';
-    const was=el.dataset.form; let before=null;
     if(key!==lastKey) {
       lastKey=key;
-      before=was?el.getBoundingClientRect():null;
+      if(el.dataset.form && el.dataset.form!==form) {
+        // Growing: give the native window ~3 frames to reach the target size before the shell starts to widen.
+        el.style.transitionDelay=target()>el.getBoundingClientRect().width?'60ms':'';
+        startMorph();
+      }
       el.dataset.form=form;
       el.style.setProperty('--tone',TONE[(KIND[m.kind]||KIND.working).tone]);
       // The vendor mount() redraws innerHTML every tick. Reuse the real input node instead,
@@ -94,7 +108,8 @@
         }
         if(c && snapshot.cards.length>1 && !snapshot.stale) {
           const nav=document.createElement('div'); nav.className='island-nav';
-          nav.innerHTML='<button data-act="prev" aria-label="上一项">‹</button><span></span><button data-act="next" aria-label="下一项">›</button>';
+          const chev=d=>`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+          nav.innerHTML=`<button data-act="prev" aria-label="上一项">${chev('M15 6l-6 6 6 6')}</button><span></span><button data-act="next" aria-label="下一项">${chev('M9 6l6 6-6 6')}</button>`;
           nav.querySelector('span').textContent=`${snapshot.cards.findIndex(x=>x.id===selected)+1} / ${snapshot.cards.length}`;
           content.prepend(nav);
         }
@@ -111,11 +126,6 @@
         const stop=el.querySelector('[data-act=stop]'); if(stop) stop.disabled=!snapshot.interactive;
         const send=el.querySelector('[data-act=send]'); if(send) send.disabled=busy;
       }
-    }
-    if(before && was!==form) {
-      const after=el.getBoundingClientRect(), target=form==='card'?snapshot.cardWidth:form==='edge'?52:236;
-      hold={w:Math.max(before.width,after.width,target),h:Math.max(before.height,after.height)};
-      clearTimeout(holdTimer); holdTimer=setTimeout(()=>{ hold=null; measure(); },snapshot.reduceMotion?0:MORPH_MS);
     }
     // Clock pulses never replace DOM, replay entrance animations, or dismiss the keyboard.
     const t=fmt(snapshot.elapsed), k=KIND[m.kind]||KIND.working;
