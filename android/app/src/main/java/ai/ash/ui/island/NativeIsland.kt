@@ -28,10 +28,11 @@ import java.util.concurrent.TimeUnit
 /**
  * The task island drawn natively. Android moves an overlay window before the app's next frame reaches the screen, so
  * an island whose window moves while it morphs shows off its place for a frame or more. With Ash's accessibility
- * service connected the island is drawn in a trusted accessibility overlay that never moves or resizes: a fixed band
- * across the top of the screen that takes no touch (trusted overlays pass touches through), with the island morphing
- * inside it; a transparent touch window follows the island and hands its touches over. Without the service, one app
- * overlay window wraps the island plus the reference's shadow inset and follows it frame by frame.
+ * service connected the island is drawn in a trusted accessibility overlay that covers the screen and never moves or
+ * resizes (trusted overlays pass touches through): the island morphs inside it, and the keyboard reaches it as the
+ * window's insets, as in any full-screen window. A transparent touch window over the island hands its touches over.
+ * Without the service, one app overlay window wraps the island plus the reference's shadow inset and follows it frame
+ * by frame; the system pans it above the keyboard.
  */
 internal object NativeIsland : IslandView.Actions {
     private val main = Handler(Looper.getMainLooper())
@@ -76,7 +77,12 @@ internal object NativeIsland : IslandView.Actions {
     /** The WebView island stays available behind a switch until the native one has been checked on phones. */
     fun enabled(ctx: Context) = !java.io.File(ctx.filesDir, "ash/island-web").exists()
     private fun switchText() = runCatching { app?.let { java.io.File(it.filesDir, "ash/island-native").readText() } }.getOrNull().orEmpty()
-    fun ownsWindow(bounds: Rect) = screenBounds == bounds
+    /**
+     * The island's app-overlay window on screen: the touch window over the island (trusted), or the island's own. (The
+     * trusted window covers the screen; matching by its bounds would claim any full-screen system window.)
+     */
+    fun ownsWindow(bounds: Rect) = if (trusted) attached && padBounds == bounds else screenBounds == bounds
+    private val padBounds = Rect()
     fun isEditing() = editing
     private fun dp(v: Float) = Math.round(v * (app?.resources?.displayMetrics?.density ?: 1f))
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
@@ -88,15 +94,28 @@ internal object NativeIsland : IslandView.Actions {
         app = ctx.applicationContext
         IslandAvatar.preload(app!!)
         val view = IslandView(app!!, this)
-        val box = FrameLayout(app!!).apply { clipChildren = false; clipToPadding = false; contentDescription = "AshTaskCapsule" }
+        val box = object : FrameLayout(app!!) {
+            // The window takes focus a moment after it is made focusable; a keyboard asked for before that is ignored,
+            // so it is asked for again once the focus arrives.
+            override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+                super.onWindowFocusChanged(hasWindowFocus)
+                if (hasWindowFocus && editing) island?.input?.let { showKeyboard(it) }
+            }
+            // Back while typing ends the typing (and so the keyboard), as in the WebView island.
+            override fun dispatchKeyEventPreIme(event: android.view.KeyEvent): Boolean {
+                if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK && editing) {
+                    if (event.action == android.view.KeyEvent.ACTION_UP) setEditing(false)
+                    return true
+                }
+                return super.dispatchKeyEventPreIme(event)
+            }
+        }.apply { clipChildren = false; clipToPadding = false; contentDescription = "AshTaskCapsule" }
         box.addView(view.shell, FrameLayout.LayoutParams(dp(IslandTokens.SIZE_COMPACT_W), dp(IslandTokens.SIZE_COMPACT_H)).apply {
             leftMargin = dp(IslandTokens.SIZE_WINDOW_INSET_SIDE); topMargin = dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
         })
         @SuppressLint("ClickableViewAccessibility")
         view.input.setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_DOWN) setEditing(true); false }
         view.onFrame = { w, h -> follow(w, h) }
-        view.onReserve = { h -> fitBand(h, grow = true) }
-        view.onSettled = { h -> fitBand(h, grow = false) }
         view.input.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -104,7 +123,11 @@ internal object NativeIsland : IslandView.Actions {
             override fun afterTextChanged(s: android.text.Editable?) { if (customTarget == null && !s.isNullOrEmpty()) customTarget = answering() }
         })
         // The card is never taller than the screen below it (the keyboard included); its middle scrolls instead.
-        box.viewTreeObserver.addOnGlobalLayoutListener { if (attached && fitCard()) render() }
+        // The window's insets (status bar, keyboard) place the island and limit the card.
+        box.setOnApplyWindowInsetsListener { v, insets ->
+            if (attached) { if (fitCard()) render(); if (islandW > 0) follow(islandW, islandH) }
+            v.onApplyWindowInsets(insets)
+        }
         root = box; island = view
         val prefs = app!!.getSharedPreferences("ash_capsule_input", Context.MODE_PRIVATE)
         attemptId = prefs.getString("pending_id", "").orEmpty(); attemptText = prefs.getString("pending_text", "").orEmpty()
@@ -122,45 +145,38 @@ internal object NativeIsland : IslandView.Actions {
         }.apply { contentDescription = "AshTaskCapsule"; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
     }
 
-    /** Places the island for its size this frame: inside the fixed band (trusted), or by moving its own window. */
+    /**
+     * Places the island for its size this frame. The shell keeps its layout; it is only shifted (translation), so a
+     * frame redraws without a layout pass. In the trusted band nothing else moves during a transition: the touch window
+     * follows once the island has settled. Without the band, the island's own window follows every frame.
+     */
     private fun follow(w: Int, h: Int) {
         val ctx = app ?: return; val p = windowParams(ctx)
         val screen = ctx.resources.displayMetrics.widthPixels
         if (centreX < 0) centreX = screen / 2
         islandW = w; islandH = h
         val side = dp(IslandTokens.SIZE_WINDOW_INSET_SIDE); val top = dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
-        val shell = island?.shell ?: return
+        val view = island ?: return; val shell = view.shell
         val lp = shell.layoutParams as FrameLayout.LayoutParams
+        val margin = if (trusted) 0 else side
+        // The trusted window covers the screen: the island sits below the status bar, dragged down by offsetY.
+        val marginTop = if (trusted) statusBar(ctx) + top else top
+        if (lp.leftMargin != margin || lp.topMargin != marginTop) { lp.leftMargin = margin; lp.topMargin = marginTop; shell.layoutParams = lp }
+        val inShell = (lp.width - w) / 2
         if (trusted) {
-            // The band never changes; only the island moves and resizes in it, in the band's own frame.
+            // The window never changes; only the island moves and resizes in it.
             val left = (centreX - w / 2).coerceIn(0, (screen - w).coerceAtLeast(0))
-            if (lp.leftMargin != left || lp.topMargin != top) { lp.leftMargin = left; lp.topMargin = top; shell.layoutParams = lp }
-            placePad(ctx, left, top, w, h)
+            shell.translationX = (left - inShell).toFloat(); shell.translationY = offsetY.toFloat()
+            if (!view.animating) placePad(ctx, left, marginTop + offsetY, w, h)
             return
         }
-        if (lp.leftMargin != side || lp.topMargin != top) { lp.leftMargin = side; lp.topMargin = top; shell.layoutParams = lp }
+        shell.translationX = -inShell.toFloat()
         p.width = w + 2 * side
         p.height = h + top + dp(IslandTokens.SIZE_WINDOW_INSET_BOTTOM)
         p.x = (centreX - p.width / 2).coerceIn(-side, (screen - p.width + side).coerceAtLeast(-side))
         p.y = offsetY
         if (attached) runCatching { host?.updateViewLayout(root, p) }
     }
-    /**
-     * The trusted band is as tall as the island needs, plus room for a spring's overshoot: never moved sideways, it
-     * grows before a transition needs the room and shrinks once the island has settled (top-anchored, so a change of
-     * height never shifts what is drawn). A band the height of the screen costs composition on every frame.
-     */
-    private fun fitBand(islandHeight: Int, grow: Boolean) {
-        if (!trusted) return
-        val ctx = app ?: return; val p = windowParams(ctx)
-        val need = islandHeight + dp(IslandTokens.SIZE_WINDOW_INSET_TOP) + dp(IslandTokens.SIZE_WINDOW_INSET_BOTTOM) + dp(BAND_HEADROOM)
-        if (grow && p.height >= need) return
-        if (p.height == need) return
-        p.height = need
-        if (attached) runCatching { host?.updateViewLayout(root, p) }
-    }
-    private const val BAND_HEADROOM = 24f
-
     /** The touch window over the island (trusted mode); it draws nothing, so its own moves are never seen. */
     private fun placePad(ctx: Context, left: Int, top: Int, w: Int, h: Int) {
         val band = params ?: return
@@ -170,14 +186,14 @@ internal object NativeIsland : IslandView.Actions {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; windowAnimations = R.style.CapsuleWindowAnimation; setTitle("AshTaskCapsule") }.also { padParams = it }
         t.width = w; t.height = h; t.x = band.x + left; t.y = band.y + top
+        padBounds.set(t.x, t.y, t.x + w, t.y + h)
         if (attached && pad?.isAttachedToWindow == true) runCatching { ctx.getSystemService(WindowManager::class.java).updateViewLayout(pad, t) }
     }
     private fun overlayType() = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
     private fun windowParams(ctx: Context): WindowManager.LayoutParams = params ?: (if (trusted) WindowManager.LayoutParams(
-        // The band: the screen's width, and tall enough for the tallest card with its inset. It never changes.
-        ctx.resources.displayMetrics.widthPixels,
-        dp(IslandTokens.SIZE_COMPACT_H + IslandTokens.SIZE_WINDOW_INSET_TOP + IslandTokens.SIZE_WINDOW_INSET_BOTTOM + BAND_HEADROOM),
+        // The whole screen, whatever the island shows. It never changes.
+        WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, PixelFormat.TRANSLUCENT)
@@ -190,14 +206,22 @@ internal object NativeIsland : IslandView.Actions {
         gravity = Gravity.TOP or Gravity.LEFT
         // The window's own 8dp top inset keeps the island 8dp below the status bar (tokens: topBelowStatusBar).
         x = if (trusted) 0 else (ctx.resources.displayMetrics.widthPixels - width) / 2
-        y = if (trusted) statusBar(ctx) + offsetY else offsetY
-        softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        y = if (trusted) 0 else offsetY
+        // The full-screen window takes the keyboard as insets and fits the card above it (fitCard); the island-sized
+        // one cannot, so the system pans it to keep the input above the keyboard.
+        softInputMode = if (trusted) WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING else WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
+        if (trusted) {
+            // Really the whole screen: from Android 11 a window keeps clear of the system bars unless told not to.
+            if (Build.VERSION.SDK_INT >= 30) fitInsetsTypes = 0
+            if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            flags = flags or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        }
         windowAnimations = R.style.CapsuleWindowAnimation
         setTitle("AshTaskCapsule")
     }.also { params = it }
 
     fun prewarm(ctx: Context) { main.post { ensure(ctx) } }
-    /** The trusted band is laid out in the whole screen; app overlays already start below the status bar. */
+    /** The status bar's height (an accessibility overlay is not told it in its insets). */
     private fun statusBar(ctx: Context): Int {
         val id = ctx.resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (id > 0) ctx.resources.getDimensionPixelSize(id) else 0
@@ -282,13 +306,25 @@ internal object NativeIsland : IslandView.Actions {
         if (switchText().contains("dump"))
             view.shell.postDelayed({ android.util.Log.i("ash.island.dump", JSONObject().put("kind", shown.kind).put("form", form).put("bounds", view.debugBounds()).toString()) }, 2500)
     }
-    /** The card's limit: the screen below the island, above the keyboard. True when it changed. */
+    /**
+     * The card's limit: half the screen at most, and the screen below the island above the navigation bar and (in the
+     * full-screen window) the keyboard, read from the window's insets. True when it changed.
+     */
     private fun fitCard(): Boolean {
         val ctx = app ?: return false; val box = root ?: return false
-        val frame = Rect()
-        val bottom = if (attached) { box.getWindowVisibleDisplayFrame(frame); frame.bottom } else ctx.resources.displayMetrics.heightPixels
-        val top = (if (trusted || !attached) statusBar(ctx) else 0) + offsetY + dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
-        val limit = (bottom - top - dp(IslandSpec.CARD_BOTTOM_ROOM)).coerceAtLeast(dp(IslandSpec.CARD_MIN_LIMIT))
+        val screen = ctx.resources.displayMetrics.heightPixels.let { h ->
+            if (Build.VERSION.SDK_INT >= 30) ctx.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds.height() else h
+        }
+        val covered = box.rootWindowInsets?.let { insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+                val keyboard = if (trusted) insets.getInsets(android.view.WindowInsets.Type.ime()).bottom else 0
+                maxOf(bars, keyboard)
+            } else @Suppress("DEPRECATION") insets.systemWindowInsetBottom
+        } ?: 0
+        val top = statusBar(ctx) + offsetY + dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
+        val limit = minOf((screen - covered - top - dp(IslandSpec.CARD_BOTTOM_ROOM)).coerceAtLeast(dp(IslandSpec.CARD_MIN_LIMIT)),
+            (screen * IslandSpec.CARD_MAX_SCREEN_SHARE).toInt())
         if (limit == maxCard) return false
         maxCard = limit; island?.setMaxCardHeight(limit)
         return true
@@ -343,8 +379,18 @@ internal object NativeIsland : IslandView.Actions {
         applyTouchMode()
         val input = island?.input ?: return
         val ime = app?.getSystemService(InputMethodManager::class.java)
-        if (value) input.post { input.requestFocus(); ime?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT) }
+        if (value) input.post { showKeyboard(input) }
         else { ime?.hideSoftInputFromWindow(input.windowToken, 0); input.clearFocus() }
+        // Done typing: the card may take back the room the keyboard had.
+        if (!value && fitCard()) render()
+    }
+    /** Asks for the keyboard. From Android 11 the window's insets controller holds the request until the window is
+     *  the keyboard's target, where showSoftInput before that point is dropped. */
+    private fun showKeyboard(input: android.widget.EditText) {
+        input.requestFocus()
+        val controller = if (Build.VERSION.SDK_INT >= 30) input.windowInsetsController else null
+        if (controller != null) controller.show(android.view.WindowInsets.Type.ime())
+        else app?.getSystemService(InputMethodManager::class.java)?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
     }
     private fun applyTouchMode() {
         val p = params ?: return
@@ -366,9 +412,11 @@ internal object NativeIsland : IslandView.Actions {
     // ---- owner actions ----
     override fun tap() { if (form != "card") { form = "card"; render() } }
     override fun collapse() { setEditing(false); if (form != "compact") { form = "compact"; render() } }
+    /** Closes the island for this turn, whatever it shows; something new waiting on the owner brings it back. */
     override fun close() {
         val model = snapshot ?: return
-        if (model.optBoolean("mayClose")) TaskStatus.dismiss(model.getString("turn")) else collapse()
+        setEditing(false)
+        TaskStatus.dismiss(model.getString("turn"))
     }
     override fun open() {
         setEditing(false)
@@ -413,8 +461,6 @@ internal object NativeIsland : IslandView.Actions {
                 centreX = (dragFromX + dx.toInt()).coerceIn(islandW / 2, (screen - islandW / 2).coerceAtLeast(islandW / 2))
                 val room = ctx.resources.displayMetrics.heightPixels - statusBar(ctx) - islandH - dp(48f)
                 offsetY = (dragFromY + dy.toInt()).coerceIn(0, room.coerceAtLeast(0))
-                val p = params ?: return
-                if (trusted && p.y != statusBar(ctx) + offsetY) { p.y = statusBar(ctx) + offsetY; if (attached) runCatching { host?.updateViewLayout(root, p) } }
                 follow(islandW, islandH)
             }
             "end" -> { if (fitCard()) render(); root?.post { rememberBounds() } }

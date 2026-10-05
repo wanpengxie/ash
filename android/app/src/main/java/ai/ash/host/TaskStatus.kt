@@ -47,26 +47,41 @@ object TaskStatus {
         val ctx = app ?: return
         val now = System.currentTimeMillis()
         val frame = model.frame
-        if (!model.visible(now, AppState.homeVisible, TaskCapsule.isEditing()) || frame == null) {
+        if (!model.active() || frame == null) {
             TaskCapsule.hide(); ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
         }
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
+        // Closed by the owner, the island stays away for the rest of the turn and the notification says what it would.
+        val closed = if (!model.visible(now, AppState.homeVisible, TaskCapsule.isEditing())) closedNotice(frame, now) else null
+        if (model.dismissed) TaskCapsule.hide()
+        else TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
         // Update at phase/turn changes, not every elapsed second. Notification works without overlay.
-        val key = "${frame.turn}:$title:$canStop:${frame.state}"
+        val key = "${frame.turn}:$title:$canStop:${frame.state}:${closed?.hashCode()}"
         if (!ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) lastNotification = null
         else if (key != lastNotification) {
-            runCatching { notify(ctx, frame, title, canStop) }.onSuccess { lastNotification = key }
+            runCatching { notify(ctx, frame, closed?.first ?: title, canStop, closed?.second) }.onSuccess { lastNotification = key }
         }
     }
-    private fun notify(ctx: Context, f: TaskFrame, title: String, canStop: Boolean) {
+    /** What the island would show once the owner has closed it: a card waiting on them, or how the turn ended. */
+    private fun closedNotice(f: TaskFrame, now: Long): Pair<String, String>? {
+        f.cards.firstOrNull { it.actionable(now) }?.let { return (if (it.kind == "approval") "需要你批准" else "等你回答") to it.title }
+        if (f.state != "done") return null
+        val label = when {
+            f.outcome == "cancelled" -> "已停止"
+            f.outcome.isNotBlank() && f.outcome != "completed" -> "未完成"
+            else -> when (f.verdict) { "delivered" -> "已完成"; "needs_reply" -> "等你回复"; "needs_action_in_ash" -> "需要你在 Ash 里操作"; "incomplete" -> "未完成"; else -> "本轮回复" }
+        }
+        return label to ai.ash.ui.island.IslandText.plain(f.reply).take(600).ifBlank { "点此回到 Ash 查看" }
+    }
+    private fun notify(ctx: Context, f: TaskFrame, title: String, canStop: Boolean, body: String? = null) {
         val manager = ctx.getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Ash 任务进度", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
         val open = PendingIntent.getActivity(ctx, ID, Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         @Suppress("DEPRECATION") val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(ctx, CHANNEL) else Notification.Builder(ctx)
-        b.setSmallIcon(R.drawable.ic_launcher).setContentTitle("Ash · $title").setContentText("点此回到 Ash 查看任务")
+        b.setSmallIcon(R.drawable.ic_launcher).setContentTitle("Ash · $title").setContentText(body ?: "点此回到 Ash 查看任务")
             .setContentIntent(open).setOnlyAlertOnce(true).setOngoing(f.canStop).setVisibility(Notification.VISIBILITY_PRIVATE)
+        if (body != null) b.setStyle(Notification.BigTextStyle().bigText(body))
         if (canStop) {
             val i = Intent(ctx, TaskStopReceiver::class.java).setData(Uri.Builder().scheme("ash").authority("task-stop").appendPath(f.turn).build())
             val stop = PendingIntent.getBroadcast(ctx, ID, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -74,8 +89,10 @@ object TaskStatus {
         }
         manager.notify(ID, b.build())
     }
+    /** Closes the island for the rest of this turn; the notification carries on, and then carries the result. */
     fun dismiss(turn: String) { main.post {
-        if (model.dismiss(turn)) { TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); lastNotification = null }
+        if (!model.dismiss(turn)) return@post
+        TaskCapsule.hide(); render()
     } }
     /** Explicit end, not a UI-only dismissal: withdraw pending actions before stopping this exact turn. */
     fun end(turn: String) { main.post {

@@ -16,45 +16,104 @@ import android.widget.FrameLayout
 
 /**
  * The island's body: the reference's shadow (`.isl` box-shadow), dark fill and 1px inner stroke, with its children
- * clipped to the same rounded shape (overflow: hidden). Width, height and radius are set per frame by the morph.
+ * clipped to the same rounded shape (overflow: hidden). The view itself keeps one size (the card's width, and the
+ * tallest the island needs); the island's own box inside it is set per frame ([setBox]) and only redraws, so a
+ * transition never lays anything out. The box is centred horizontally and starts at the top.
  */
 internal class IslandShell(ctx: Context) : FrameLayout(ctx) {
-    var radius = 0f
-        set(value) { if (field != value) { field = value; invalidate(); clip.invalidateOutline() } }
+    /** The island's box in this view, in px. */
+    val box = android.graphics.Rect()
+    var radius = 0f; private set
+    fun setBox(w: Int, h: Int, cornerRadius: Float, viewWidth: Int = width) {
+        // A corner is never larger than half the box (CSS clamps border-radius the same way).
+        val radius = minOf(cornerRadius, w / 2f, h / 2f)
+        val left = (viewWidth - w) / 2
+        if (box.left == left && box.width() == w && box.height() == h && this.radius == radius) return
+        box.set(left, 0, left + w, h); this.radius = radius
+        invalidate(); clip.invalidateOutline()
+    }
     val clip = object : FrameLayout(ctx) {}.apply {
         clipToOutline = true
         outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(view: View, outline: Outline) { outline.setRoundRect(0, 0, view.width, view.height, radius) }
+            override fun getOutline(view: View, outline: Outline) { outline.setRoundRect(box, radius) }
         }
     }
     private val density = ctx.resources.displayMetrics.density
-    private val shadowPaints = IslandTokens.SHADOW_LAYERS.mapIndexed { i, layer ->
-        // CSS blur B is a Gaussian of sigma B/2; Android's shadow radius r gives sigma 0.57735r + 0.5.
-        val sigma = layer[2] * density / 2f
-        val r = ((sigma - 0.5f) / 0.57735f).coerceAtLeast(0.01f)
-        Paint(Paint.ANTI_ALIAS_FLAG).apply { color = IslandTokens.COLOR_ISLAND; setShadowLayer(r, layer[0] * density, layer[1] * density, IslandTokens.SHADOW_COLORS[i]) }
-    }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = IslandTokens.COLOR_ISLAND }
     // inset 0 0 0 1px rgba(255,255,255,.06): a 1px line just inside the edge.
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = density; color = IslandTokens.COLOR_ISLAND_STROKE }
-    private val box = RectF()
+    private val shadowPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val rect = RectF()
+    // The shadow is blurred once per corner radius, off screen, and drawn as nine slices (as CardView does): a
+    // Gaussian blur on every frame of a transition costs more than the rest of the frame.
+    private val compactShadow by lazy { IslandShadow(IslandSpec.dp(ctx, IslandTokens.SIZE_COMPACT_RADIUS), density) }
+    private val cardShadow by lazy { IslandShadow(IslandSpec.dp(ctx, IslandTokens.SIZE_CARD_RADIUS), density) }
     init {
         setWillNotDraw(false); clipChildren = false; clipToPadding = false
-        // Shadow layers on shapes need software rendering before API 28.
-        if (Build.VERSION.SDK_INT < 28) setLayerType(LAYER_TYPE_SOFTWARE, null)
         addView(clip, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
     override fun onDraw(canvas: Canvas) {
-        box.set(0f, 0f, width.toFloat(), height.toFloat())
-        for (p in shadowPaints) canvas.drawRoundRect(box, radius, radius, p)
-        canvas.drawRoundRect(box, radius, radius, fill)
-        val half = stroke.strokeWidth / 2; box.inset(half, half)
-        canvas.drawRoundRect(box, (radius - half).coerceAtLeast(0f), (radius - half).coerceAtLeast(0f), stroke)
+        if (box.isEmpty) return
+        // Between the two forms' radii the two shadows cross-fade.
+        val a = compactShadow; val b = cardShadow
+        val t = ((radius - a.radius) / (b.radius - a.radius)).coerceIn(0f, 1f)
+        if (t < 1f) a.draw(canvas, box, radius, ((1 - t) * 255).toInt(), shadowPaint)
+        if (t > 0f) b.draw(canvas, box, radius, (t * 255).toInt(), shadowPaint)
+        rect.set(box); canvas.drawRoundRect(rect, radius, radius, fill)
+        val half = stroke.strokeWidth / 2; rect.inset(half, half)
+        canvas.drawRoundRect(rect, (radius - half).coerceAtLeast(0f), (radius - half).coerceAtLeast(0f), stroke)
+    }
+}
+
+/**
+ * The reference's box-shadow layers around a rounded rectangle of corner [radius], rendered once into a bitmap whose
+ * middle row and column stretch: corners are drawn as they are, edges stretched along the box. The shape itself is
+ * cleared out of it, as a CSS box-shadow is never drawn under its box.
+ */
+internal class IslandShadow(val radius: Float, density: Float) {
+    /** How far the shadow reaches past the box on any side: three sigmas of the widest blur, plus its offset. */
+    private val reach: Int
+    private val bitmap: Bitmap
+    private val corner: Int
+    init {
+        reach = IslandTokens.SHADOW_LAYERS.maxOf { l -> Math.ceil((3 * l[2] / 2 + Math.abs(l[0]) + Math.abs(l[1])) * density.toDouble()).toInt() }
+        corner = reach + Math.ceil(radius.toDouble()).toInt()
+        val size = 2 * corner + 1
+        bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val shape = RectF(reach.toFloat(), reach.toFloat(), (size - reach).toFloat(), (size - reach).toFloat())
+        IslandTokens.SHADOW_LAYERS.forEachIndexed { i, layer ->
+            // CSS blur B is a Gaussian of sigma B/2; Android's shadow radius r gives sigma 0.57735r + 0.5.
+            val sigma = layer[2] * density / 2f
+            val r = ((sigma - 0.5f) / 0.57735f).coerceAtLeast(0.01f)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = IslandTokens.COLOR_ISLAND; setShadowLayer(r, layer[0] * density, layer[1] * density, IslandTokens.SHADOW_COLORS[i]) }
+            canvas.drawRoundRect(shape, radius, radius, paint)
+        }
+        canvas.drawRoundRect(shape, radius, radius, Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) })
+    }
+    private val src = android.graphics.Rect(); private val dst = RectF()
+    /** Draws the shadow of [box] whose corners have radius [atRadius] (corners scale with it). */
+    fun draw(canvas: Canvas, box: android.graphics.Rect, atRadius: Float, alpha: Int, paint: Paint) {
+        paint.alpha = alpha
+        val c = reach + atRadius
+        val xs = floatArrayOf(box.left - reach.toFloat(), box.left - reach + c, box.right + reach - c, box.right + reach.toFloat())
+        val ys = floatArrayOf(box.top - reach.toFloat(), box.top - reach + c, box.bottom + reach - c, box.bottom + reach.toFloat())
+        val n = bitmap.width
+        val sx = intArrayOf(0, corner, corner + 1, n); val sy = sx
+        for (i in 0..2) for (j in 0..2) {
+            if (i == 1 && j == 1) continue
+            if (xs[i + 1] <= xs[i] || ys[j + 1] <= ys[j]) continue
+            src.set(sx[i], sy[j], sx[i + 1], sy[j + 1]); dst.set(xs[i], ys[j], xs[i + 1], ys[j + 1])
+            canvas.drawBitmap(bitmap, src, dst, paint)
+        }
     }
 }
 
 /** `.isl-av`: the face, object-fit cover at a vertical focus, on #2A2A2D, clipped to a circle or rounded square. */
-internal class IslandAvatar(ctx: Context, private val focusY: Float, private val cornerDp: Float? = null) : View(ctx) {
+internal class IslandAvatar(ctx: Context, private val focusY: Float, cornerDp: Float? = null) : View(ctx) {
+    /** Corner radius in dp of this view's own size; null is a circle. */
+    var cornerDp: Float? = cornerDp
+        set(value) { if (field != value) { field = value; invalidate() } }
     private var bitmap: Bitmap? = null
     var face = ""
         set(value) {
@@ -77,7 +136,7 @@ internal class IslandAvatar(ctx: Context, private val focusY: Float, private val
     private val matrix = Matrix(); private val clipPath = Path(); private val box = RectF()
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
-        val r = cornerDp?.let { IslandSpec.dp(context, it) } ?: (w / 2)
+        val r = cornerDp?.let { minOf(IslandSpec.dp(context, it), w / 2) } ?: (w / 2)
         box.set(0f, 0f, w, h); clipPath.reset(); clipPath.addRoundRect(box, r, r, Path.Direction.CW)
         canvas.save(); canvas.clipPath(clipPath)
         canvas.drawRect(box, back)

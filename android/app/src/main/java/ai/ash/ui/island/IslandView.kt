@@ -85,16 +85,14 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     }
     val shell = IslandShell(ctx)
     var onFrame: (widthPx: Int, heightPx: Int) -> Unit = { _, _ -> }
-    /** A transition is about to need this height (the window grows first); and the height once it has settled. */
-    var onReserve: (heightPx: Int) -> Unit = {}
-    var onSettled: (heightPx: Int) -> Unit = {}
+    /** A transition is running: its frames only redraw (nothing is laid out or moved between windows). */
+    var animating = false; private set
     private val d = ctx.resources.displayMetrics.density
     private fun px(v: Float) = Math.round(v * d)
     private var model: IslandModel? = null
     private var form = ""
     private var cardWidthDp = IslandTokens.SIZE_CARD_W
     private var widthPx = 0; private var heightPx = 0
-    private var expanded = false
     var reduceMotion = false
     /** Development check: log each spring step's time and progress. */
     var traceMotion = false
@@ -159,7 +157,7 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     private val body = FadeText(ctx) { IslandSpec.text(it, IslandTokens.TYPE_BODY_SIZE, IslandTokens.COLOR_BODY, lineHeight = IslandTokens.TYPE_BODY_LINE_HEIGHT) }
     private val more = TextView(ctx).apply {
         IslandSpec.text(this, IslandSpec.MORE_SIZE, IslandTokens.COLOR_RUNNING); gravity = Gravity.CENTER_VERTICAL
-        setOnClickListener { if (model?.kind == "approval") actions.toggleOriginal() else { expanded = !expanded; model?.let { render(it, force = true) } } }
+        setOnClickListener { actions.toggleOriginal() }
     }
     private val quote = TextView(ctx).apply {
         IslandSpec.text(this, IslandSpec.QUOTE_SIZE, IslandTokens.COLOR_TEXT, lineHeight = IslandSpec.QUOTE_LINE_HEIGHT)
@@ -252,7 +250,8 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         val titles = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         // The title dot's pulse spreads past it; these do not clip it.
         val titleRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false }
-        head.clipChildren = false; titles.clipChildren = false; card.clipChildren = false
+        // (Within the head: the card itself clips, so its scrolling middle never shows past the head or the foot.)
+        head.clipChildren = false; titles.clipChildren = false
         titleRow.addView(titleDot, LinearLayout.LayoutParams(px(IslandSpec.TITLE_DOT), px(IslandSpec.TITLE_DOT)))
         titleRow.addView(title, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = px(IslandSpec.TITLE_GAP) })
         titles.addView(titleRow); titles.addView(meta, LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(IslandSpec.TITLES_GAP) })
@@ -306,12 +305,13 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     /** Development check: each part's box in dp, relative to the shell, named as in the reference's DOM. */
     fun debugBounds(): org.json.JSONObject {
         val out = org.json.JSONObject(); val origin = IntArray(2); shell.getLocationInWindow(origin)
+        origin[0] += shell.box.left
         fun put(name: String, v: View) {
             if (!v.isShown) return
             val at = IntArray(2); v.getLocationInWindow(at)
             out.put(name, org.json.JSONArray(listOf((at[0] - origin[0]) / d, (at[1] - origin[1]) / d, v.width / d, v.height / d).map { Math.round(it * 10) / 10.0 }))
         }
-        put("shell", shell)
+        out.put("shell", org.json.JSONArray(listOf(0.0, 0.0, Math.round(shell.box.width() / d * 10) / 10.0, Math.round(shell.box.height() / d * 10) / 10.0)))
         if (form == "compact") { put("av", compactAvatar); put("label", compactLabel.current); put("time", compactTime); put("ind", compactMark) }
         else {
             put("av", cardAvatar); put("dot", titleDot); put("title", title.current); put("meta", meta); put("icon-btn", collapseButton)
@@ -334,7 +334,7 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     private var maxCardPx = Int.MAX_VALUE / 2
     /** The tallest the card may be (the screen below it); its middle scrolls beyond that. */
     fun setMaxCardHeight(px: Int) { maxCardPx = px }
-    fun resetMore() { expanded = false; content.scrollTo(0, 0) }
+    fun resetMore() { content.scrollTo(0, 0) }
 
     /** A press on the capsule or the card's head that moves past the slop drags the island instead of tapping it. */
     @android.annotation.SuppressLint("ClickableViewAccessibility")
@@ -369,7 +369,6 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         val prev = model; model = next
         val k = IslandKind.of(next.kind)
         val reform = next.form != form
-        if (prev?.kind != next.kind) expanded = false
         // ---- fill both forms' fields (in place); text that changed fades ----
         compactAvatar.face = k.face
         // An approval's answer shows on its capsule (renderIsland: approved / denied / expired).
@@ -399,14 +398,15 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             activityTitle.set(if (next.kind == "stale") "状态待确认" else next.activity.ifBlank { k.label ?: "在忙" }, !reform)
             activityNote.text = k.note
         } else {
-            val clamp = k.clamp && !expanded
-            body.each { it.maxLines = if (clamp) IslandTokens.TYPE_BODY_COLLAPSED_LINES.toInt() else Int.MAX_VALUE; it.ellipsize = if (clamp) TextUtils.TruncateAt.END else null }
+            // The whole reply, in a card at most half the screen tall that scrolls (not the reference's four lines and
+            // "展开全文": the island is never unfolded into a reader).
             body.set(next.body, !reform)
             quote.visibility = if (next.quote.isNotBlank()) View.VISIBLE else View.GONE
             quote.text = next.quote
             val approval = next.kind == "approval"
-            more.visibility = if (approval || k.clamp) View.VISIBLE else View.GONE
-            more.text = if (approval) (if (next.showOriginal) "收起原文" else "查看完整原文") else if (expanded) "收起" else "展开全文"
+            // An approval's full original, to check exactly what would be sent.
+            more.visibility = if (approval) View.VISIBLE else View.GONE
+            more.text = if (next.showOriginal) "收起原文" else "查看完整原文"
         }
         if (next.options != shownOptions) {
             shownOptions = next.options; options.removeAllViews()
@@ -432,13 +432,11 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         usable(stopLink, next.interactive)
         input.isEnabled = !next.busy; usable(sendButton, !next.busy)
         input.hint = next.placeholder
-        // The window keeps room for this content's card at all times, so opening it never has to resize the window
-        // (a resize stalls the frame it lands in).
+        // The shell is always laid out as tall as this content's card, so opening it lays nothing out.
         cardHeightPx = targetSize("card").second
         // The card is laid out at its own height whatever the island's size this frame: a transition clips it, never
         // reflows it.
         (card.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.height != cardHeightPx }?.let { it.height = cardHeightPx; card.layoutParams = it }
-        onReserve(maxOf(cardHeightPx, heightPx))
         // ---- form ----
         if (reform || force) {
             if (reform) morphTo(next.form) else layoutNow()
@@ -471,7 +469,9 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         shell.clip.addView(card, FrameLayout.LayoutParams(px(cardWidthDp), ViewGroup.LayoutParams.WRAP_CONTENT))
         compact.visibility = View.INVISIBLE; card.visibility = View.INVISIBLE
         shell.clip.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        overlay.addView(flyFrom, FrameLayout.LayoutParams(0, 0)); overlay.addView(flyTo, FrameLayout.LayoutParams(0, 0))
+        val fly = px(IslandTokens.AVATAR_CARD_SIZE)
+        flyFrom.pivotX = 0f; flyFrom.pivotY = 0f; flyTo.pivotX = 0f; flyTo.pivotY = 0f
+        overlay.addView(flyFrom, FrameLayout.LayoutParams(fly, fly)); overlay.addView(flyTo, FrameLayout.LayoutParams(fly, fly))
         overlay.visibility = View.GONE
     }
     /** The avatar's box (left, top, size) in each form, in px from the shell's corner (reference layout). */
@@ -480,11 +480,12 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         // .card-head centres a 40dp avatar on its 44dp row (the collapse button sets the row's height).
         floatArrayOf(p[3] * d, p[0] * d + (IslandSpec.ICON_BUTTON - IslandTokens.AVATAR_CARD_SIZE) / 2 * d, IslandTokens.AVATAR_CARD_SIZE * d)
     } else floatArrayOf(IslandSpec.COMPACT_PAD_LEFT * d, (IslandTokens.SIZE_COMPACT_H - IslandTokens.AVATAR_COMPACT) / 2 * d, IslandTokens.AVATAR_COMPACT * d)
-    private fun placeFly(view: View, box: FloatArray) {
-        val lp = view.layoutParams as FrameLayout.LayoutParams
-        val size = Math.round(box[2])
-        if (lp.width != size) { lp.width = size; lp.height = size; view.layoutParams = lp }
-        view.translationX = box[0]; view.translationY = box[1]
+    /** The flying face is the card's 40dp avatar, scaled: its corners stay 14dp on screen, a circle at the capsule's size. */
+    private fun placeFly(view: IslandAvatar, box: FloatArray) {
+        val s = box[2] / (IslandTokens.AVATAR_CARD_SIZE * d)
+        view.scaleX = s; view.scaleY = s
+        view.translationX = shell.box.left + box[0]; view.translationY = box[1]
+        view.cornerDp = IslandTokens.AVATAR_CARD_RADIUS / s
     }
     private fun avatarOf(form: String) = if (form == "card") cardAvatar else compactAvatar
 
@@ -497,15 +498,14 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         if (form.isEmpty()) return
         val (w, h) = targetSize(form)
         if (spring?.isRunning == true) return
-        if (heightPx == 0 || reduceMotion || w != widthPx) { onReserve(h); widthPx = w; heightPx = h; apply(w, h, radiusPx(form)); onSettled(maxOf(h, cardHeightPx)); return }
+        if (heightPx == 0 || reduceMotion || w != widthPx) { widthPx = w; heightPx = h; apply(w, h, radiusPx(form)); return }
         if (h == heightPx) return
         val from = heightPx
-        onReserve(maxOf(from, h))
-        springTo(IslandMotion.RESIZE_STIFFNESS, IslandMotion.RESIZE_DAMPING, onEnd = { onSettled(maxOf(heightPx, cardHeightPx)) }) { t -> heightPx = Math.round(from + (h - from) * t); apply(widthPx, heightPx, shell.radius) }
+        springTo(IslandMotion.RESIZE_STIFFNESS, IslandMotion.RESIZE_DAMPING) { t -> heightPx = Math.round(from + (h - from) * t); apply(widthPx, heightPx, shell.radius) }
     }
 
     private fun springTo(stiffness: Float, damping: Float, onEnd: () -> Unit = {}, step: (Float) -> Unit) {
-        spring?.cancel()
+        spring?.cancel(); animating = false
         spring = SpringAnimation(FloatValueHolder(0f)).apply {
             spring = SpringForce(1f).setStiffness(stiffness).setDampingRatio(damping)
             setMinimumVisibleChange(DynamicAnimation.MIN_VISIBLE_CHANGE_SCALE)
@@ -513,7 +513,8 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
                 if (traceMotion) android.util.Log.i("ash.island.motion", "t=${android.os.SystemClock.uptimeMillis()} v=$value")
                 step(value)
             }
-            addEndListener { _, canceled, _, _ -> if (!canceled) { step(1f); onEnd() } }
+            addEndListener { _, canceled, _, _ -> if (!canceled) { animating = false; step(1f); onEnd() } }
+            animating = true
             start()
         }
     }
@@ -524,10 +525,10 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         val incoming = content(next); val outgoing = if (from.isEmpty()) null else content(from)
         spring?.cancel(); fades?.cancel()
         settle(incoming); incoming.visibility = View.VISIBLE
-        if (outgoing == null) { onReserve(toH); widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next)); onSettled(maxOf(toH, cardHeightPx)); return }
+        if (outgoing == null) { widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next)); return }
         if (reduceMotion) {
             // Reduce motion: the island takes its new size at once and its content cross-fades.
-            onReserve(maxOf(heightPx, toH)); widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next)); onSettled(maxOf(toH, cardHeightPx))
+            widthPx = toW; heightPx = toH; apply(toW, toH, radiusPx(next))
             incoming.alpha = 0f
             fades = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = IslandMotion.REDUCED_FADE_MS
@@ -537,6 +538,9 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             }
             return
         }
+        // Each side is drawn once into a layer and then only moved, scaled and faded (Android's advice for animating
+        // views whose content does not change).
+        incoming.setLayerType(View.LAYER_TYPE_HARDWARE, null); outgoing.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         // Shared avatar: hide the two in place, fly one face between their boxes.
         val a = avatarBox(from); val b = avatarBox(next)
         flyFrom.face = (avatarOf(from) as IslandAvatar).face; flyTo.face = (avatarOf(next) as IslandAvatar).face
@@ -544,13 +548,12 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         overlay.visibility = View.VISIBLE; overlay.bringToFront()
         val fromW = widthPx; val fromH = heightPx; val fromR = shell.radius; val toR = radiusPx(next)
         val opening = next == "card"
-        onReserve(maxOf(fromH, toH))
         springTo(if (opening) IslandMotion.OPEN_STIFFNESS else IslandMotion.CLOSE_STIFFNESS,
             if (opening) IslandMotion.OPEN_DAMPING else IslandMotion.CLOSE_DAMPING,
             onEnd = {
+                compact.setLayerType(View.LAYER_TYPE_NONE, null); card.setLayerType(View.LAYER_TYPE_NONE, null)
                 overlay.visibility = View.GONE; compactAvatar.alpha = 1f; cardAvatar.alpha = 1f
                 if (form == next) { outgoing.visibility = View.INVISIBLE; settle(outgoing) }
-                onSettled(maxOf(heightPx, cardHeightPx))
             }) { t ->
             // Closing, the height leads (done by ~60% of the way) so the box never stands empty below the capsule row.
             val ht = if (opening) t else (t / IslandMotion.CLOSE_HEIGHT_LEAD).coerceAtMost(1f)
@@ -609,10 +612,17 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             .withEndAction { settle(shell); done() }.start()
     }
 
+    /**
+     * One frame: the island's box is [w] x [h]. The shell keeps one size (the card's width, the tallest height it may
+     * need), so this only redraws; it is laid out again only when the card grows past it.
+     */
     private fun apply(w: Int, h: Int, radius: Float) {
         val lp = shell.layoutParams
-        if (lp != null && (lp.width != w || lp.height != h)) { lp.width = w; lp.height = h; shell.layoutParams = lp }
-        shell.radius = radius
+        val shellW = px(cardWidthDp); val shellH = maxOf(cardHeightPx, px(IslandTokens.SIZE_COMPACT_H), h)
+        if (lp != null && (lp.width != shellW || lp.height < shellH || (!animating && lp.height != shellH))) { lp.width = shellW; lp.height = shellH; shell.layoutParams = lp }
+        shell.setBox(w, h, radius, shellW)
+        val left = shell.box.left.toFloat()
+        compact.translationX = left; card.translationX = left
         onFrame(w, h)
     }
 }

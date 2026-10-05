@@ -53,8 +53,9 @@ internal object IslandSpec {
     const val NAV_SIZE = 12f; const val NOTICE_SIZE = 12f
     // host.css .isl button:disabled { opacity: .5 }
     const val DISABLED_ALPHA = 0.5f
-    // host: the card is at most as tall as the screen below it less 32px, and never limited below 220px
-    const val CARD_BOTTOM_ROOM = 32f; const val CARD_MIN_LIMIT = 220f
+    // host: the card is at most as tall as the screen below it less 32px, and never limited below 220px; and the island
+    // is a glance, not a reader: never taller than half the screen
+    const val CARD_BOTTOM_ROOM = 32f; const val CARD_MIN_LIMIT = 220f; const val CARD_MAX_SCREEN_SHARE = 0.5f
     // host.js drag: a press that moves more than 8px drags the island
     const val DRAG_SLOP = 8f
     // .isl-in { from: blur(3px) }
