@@ -46,6 +46,8 @@ object TaskCapsule {
     private var params: WindowManager.LayoutParams? = null
     private var attached = false
     private var ready = false
+    /** The page has laid the island out and said how large it is; until then the window stays away (no blank first frame). */
+    private var sized = false
     private var visible = false
     private var model: JSONObject? = null
     private var lastModel = ""
@@ -115,7 +117,7 @@ object TaskCapsule {
                 return WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
             }
             override fun onPageStarted(view: WebView, url: String, icon: android.graphics.Bitmap?) {
-                ready = false
+                ready = false; sized = false
                 if (url != PAGE) view.stopLoading()
             }
         }
@@ -126,7 +128,7 @@ object TaskCapsule {
             val body = runCatching { JSONObject(text) }.getOrNull() ?: return@addWebMessageListener
             handle(body)
         }
-        box.addView(browser, FrameLayout.LayoutParams(-1, -1))
+        box.addView(browser, FrameLayout.LayoutParams(pageWidth(ctx), -1))
         box.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> rememberBounds() }
         box.viewTreeObserver.addOnPreDrawListener { rememberBounds(); true }
         box.viewTreeObserver.addOnGlobalLayoutListener {
@@ -155,15 +157,37 @@ object TaskCapsule {
     private fun push() {
         val value = model ?: return
         val ctx = app ?: return
-        value.put("cardWidth", minOf(362, (ctx.resources.displayMetrics.widthPixels / ctx.resources.displayMetrics.density).toInt() - 24))
+        value.put("cardWidth", cardWidth(ctx))
             .put("maxHeight", maxHeight).put("reduceMotion", Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f)
         val json = value.toString()
         if (ready && json != lastModel) { lastModel = json; js("window.AshIsland.receive(${JSONObject.quote(json)})") }
     }
+    private fun cardWidth(ctx: Context) = minOf(362, (ctx.resources.displayMetrics.widthPixels / ctx.resources.displayMetrics.density).toInt() - 24)
+    /** The page is always as wide as the widest island plus its inset (host.css), whatever the window's width. */
+    private fun pageWidth(ctx: Context) = dp(cardWidth(ctx) + 32.0).coerceAtMost(ctx.resources.displayMetrics.widthPixels)
+    /**
+     * The window is a viewport onto a page of constant width: resizing it moves the page by the matching offset in the
+     * same native frame, and the page never relays out. A page that resized with the window would show its previous
+     * layout, off centre or clipped, for the frames it takes to lay out again.
+     */
+    private fun fitPage(ctx: Context, p: WindowManager.LayoutParams) {
+        val browser = web ?: return; val width = pageWidth(ctx)
+        val lp = browser.layoutParams
+        if (lp != null && lp.width != width) { lp.width = width; browser.layoutParams = lp }
+        browser.translationX = (p.width - width) / 2f
+    }
     private fun attach() {
-        if (attached || !allowed()) return
+        if (attached || !ready || !sized || !allowed()) return
         val ctx = app ?: return; val box = root ?: return
-        val p = params ?: WindowManager.LayoutParams(dp(268.0), dp(72.0),
+        val p = windowParams(ctx)
+        fitPage(ctx, p)
+        runCatching {
+            box.visibility = View.VISIBLE
+            ctx.getSystemService(WindowManager::class.java).addView(box, p)
+            attached = true; applyTouchMode(); rememberBounds(); js("window.AshIsland.restored()")
+        }.onFailure { android.util.Log.w("ash.capsule", "could not attach island", it) }
+    }
+    private fun windowParams(ctx: Context): WindowManager.LayoutParams = params ?: WindowManager.LayoutParams(dp(268.0), dp(72.0),
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
@@ -175,12 +199,6 @@ object TaskCapsule {
             windowAnimations = R.style.CapsuleWindowAnimation
             setTitle("AshTaskCapsule")
         }.also { params = it }
-        runCatching {
-            box.visibility = View.VISIBLE
-            ctx.getSystemService(WindowManager::class.java).addView(box, p)
-            attached = true; applyTouchMode(); rememberBounds(); js("window.AshIsland.restored()")
-        }.onFailure { android.util.Log.w("ash.capsule", "could not attach island", it) }
-    }
     private fun rememberBounds() {
         if (!attached) { screenBounds = null; return }
         val box = root ?: return; val at = IntArray(2); box.getLocationOnScreen(at)
@@ -201,7 +219,7 @@ object TaskCapsule {
     fun hide() { main.post { visible = false; setEditing(false); detach(); restore = null } }
     fun release() { main.post {
         visible = false; setEditing(false); detach(); web?.destroy(); root = null; web = null; params = null
-        ready = false; lastModel = ""; model = null; restore = null; submitted.clear()
+        ready = false; sized = false; lastModel = ""; model = null; restore = null; submitted.clear()
     } }
     private fun setEditing(value: Boolean) {
         if (value && (!allowed() || passingTouches > 0)) return
@@ -232,7 +250,7 @@ object TaskCapsule {
             return
         }
         if (action == "size") {
-            val ctx = app ?: return; val p = params ?: return
+            val ctx = app ?: return; val p = windowParams(ctx)
             val width = body.optDouble("width"); val height = body.optDouble("height")
             if (!width.isFinite() || !height.isFinite() || width !in 64.0..450.0 || height !in 32.0..2000.0) return
             val oldWidth = p.width
@@ -241,7 +259,9 @@ object TaskCapsule {
             p.x = (if (dragged) p.x + (oldWidth - p.width) / 2 else (ctx.resources.displayMetrics.widthPixels - p.width) / 2)
                 .coerceIn(0, (ctx.resources.displayMetrics.widthPixels - p.width).coerceAtLeast(0))
             p.y = p.y.coerceIn(0, (ctx.resources.displayMetrics.heightPixels - p.height - dp(48.0)).coerceAtLeast(0))
-            if (attached) ctx.getSystemService(WindowManager::class.java).updateViewLayout(root, p)
+            fitPage(ctx, p)
+            sized = true
+            if (attached) ctx.getSystemService(WindowManager::class.java).updateViewLayout(root, p) else if (visible) attach()
             return
         }
         if (!attached || !allowed() || passingTouches > 0) return

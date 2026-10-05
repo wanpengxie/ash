@@ -3,6 +3,8 @@ html,body{background:transparent;overflow:hidden;margin:0;width:100%;height:100%
 /* The window inset is the room the reference shadow spills into (8 up, 16 sideways, 24 down). The island is
    centred so that a window held at the larger size during a morph never clips either side. */
 #root{box-sizing:border-box;padding:8px 16px 24px;width:100%;min-width:max-content;display:flex;justify-content:center;align-items:flex-start}
+/* Nothing shows before the island has a form: without one it would be an unrounded dark block. */
+.isl:not([data-form]){visibility:hidden}
 .isl[data-form=card]{width:var(--card-width,362px);max-height:var(--max-height,700px)}
 .isl-card{max-height:var(--max-height,700px)}
 .card-head,.foot{flex-shrink:0}
