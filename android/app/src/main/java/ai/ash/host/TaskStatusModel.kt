@@ -42,7 +42,7 @@ internal class TaskStatusModel {
     }
     fun stale(now: Long): Boolean = now - received > 15_000
     fun visible(now: Long): Boolean = frame?.let {
-        it.turn != null && now - received < 30_000 && it.state !in setOf("idle", "resting") &&
+        it.turn != null && it.state !in setOf("idle", "resting") &&
             (it.state != "done" || now - finished < 4_000)
     } ?: false
     fun canStop(turn: String, now: Long): Boolean = frame?.let { it.turn == turn && it.canStop && !stale(now) && visible(now) } ?: false

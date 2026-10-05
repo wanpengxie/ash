@@ -53,7 +53,7 @@ object TaskStatus {
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
         val text = "Ash · $title · ${(model.elapsed(now) / 5) * 5} 秒"
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, !AppState.homeVisible)
+        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, true)
         // Update at phase/turn changes, not every elapsed second. Notification works without overlay.
         val key = "${frame.turn}:$title:$canStop"
         if (!ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) lastNotification = null

@@ -1,5 +1,7 @@
 // The ash Android host: keeps ash core alive, lends the phone's abilities to it, shows its UI.
 // Everything agent-related lives in ash core (the payload); this app has no business logic.
+import java.security.KeyStore
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -91,10 +93,24 @@ android {
                 buildConfigField("int", "SENSE_PORT", "14763")
                 buildConfigField("boolean", "ISOLATED_PROBE", "true")
             }
-            // A stable debug key across machines (so updates install over each other).
+            // Production debug updates must match Claude's last installed/re-signed APK.
+            // Isolated probes may use another key, but never silently sign the owner's package with it.
+            val probe = providers.gradleProperty("ashIsolatedProbe").orNull == "true"
             val shared = System.getenv("ASH_DEBUG_KEYSTORE")
-            if (shared != null) signingConfig = signingConfigs.create("sharedDebug") {
-                storeFile = file(shared); storePassword = "android"; keyAlias = System.getenv("ASH_DEBUG_ALIAS") ?: "ash"; keyPassword = "android"
+            val signingFile = file(shared ?: "${System.getProperty("user.home")}/.android/debug.keystore")
+            val signingAlias = System.getenv("ASH_DEBUG_ALIAS") ?: if (shared == null) "androiddebugkey" else "ash"
+            if (!probe) {
+                require(signingFile.isFile) { "Missing installed-app signing key: $signingFile. Do not generate a replacement." }
+                val ks = KeyStore.getInstance(signingFile, "android".toCharArray())
+                val cert = ks.getCertificate(signingAlias) ?: error("Missing signing alias $signingAlias")
+                val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
+                    .joinToString("") { "%02x".format(it.toInt() and 255) }
+                require(digest == "ace7c87cd62abfdf850a829f473fa4bad222565463570f463a525913fc669cdc") {
+                    "Signing certificate does not match the owner's installed Ash/Claude's last APK ($digest). Refusing incompatible update."
+                }
+            }
+            signingConfig = signingConfigs.create("installedDebug") {
+                storeFile = signingFile; storePassword = "android"; keyAlias = signingAlias; keyPassword = "android"
             }
         }
         create("sensesProbe") {

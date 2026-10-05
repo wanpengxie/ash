@@ -176,7 +176,7 @@ if (process.argv[2] === "serve") {
         await waitFor("expanded window exposes controls", () => /Requested w=\d+ h=([4-9]\d\d|\d{4})/.test(capsuleWindow() ?? ""), 5000);
         shot("expanded");
         tapLabel("返回 Ash"); await waitFor("return Ash button", () => foreground().includes(`${pkg}/ai.ash.ui.HomeActivity`));
-        await waitFor("hidden inside Ash", () => !visible());
+        await waitFor("task remains visible inside Ash", visible);
         await turnEnd(before, "SIM-CAPSULE-RETURN"); console.log("CAPSULE return/expand/collapse passed");
 
         before = (await rows()).at(-1).seq;

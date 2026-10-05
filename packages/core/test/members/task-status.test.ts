@@ -37,7 +37,32 @@ test("capsule follows facts, strips query details, bounds history and marks comp
     await f.bridge.settled();
     assert.equal(f.frames.at(-1)!.text, "已完成"); assert.equal(f.frames.at(-1)!.can_stop, false);
     f.emit("status", { state: "idle", text: "在线" });
-    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.turn, null);
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.turn, "t_a"); assert.equal(f.frames.at(-1)!.text, "已完成");
+  } finally { await f.bridge.close(); }
+});
+test("task remains visible through transient idle and shows step purpose, not raw command or input", async () => {
+  const f = fixture();
+  try {
+    f.emit("turn.start", { turn: "t_a" });
+    f.emit("status", { state: "idle", text: "在线" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.turn, "t_a"); assert.equal(f.frames.at(-1)!.can_stop, true);
+    f.emit("bash", { arguments: JSON.stringify({ command: "SECRET COMMAND", description: "正在整理订单列表" }) },
+      { id: "bash_1", kind: "request", to: "service:dsh-tool", turn: "t_a" });
+    f.emit("status", { state: "working", text: "在跑命令" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "正在整理订单列表");
+    f.emit("bash", {}, { kind: "response", reply_to: "bash_1" });
+    f.emit("status", { state: "thinking", text: "在想" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "正在分析返回结果");
+    f.emit("mcp__ash__capability_call", { arguments: JSON.stringify({ member: "device:phone", word: "screen.type", body: { text: "SECRET BODY" }, purpose: "正在填写搜索条件" }) },
+      { id: "cap_1", kind: "request", to: "service:dsh-tool", turn: "t_a" });
+    f.emit("screen.type", { text: "SECRET BODY" }, { id: "screen_1", kind: "request", to: "device:phone", turn: "t_a" });
+    f.emit("status", { state: "working", text: "输入文字" });
+    // The inner capability's generic label must not override the outer step purpose.
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "正在填写搜索条件");
+    assert.equal(JSON.stringify(f.frames).includes("SECRET"), false);
+    f.emit("turn.end", { turn: "t_a", reason: "completed" });
+    f.emit("status", { state: "idle", text: "在线" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "已完成"); assert.equal(f.frames.at(-1)!.can_stop, false);
   } finally { await f.bridge.close(); }
 });
 test("gate approval beats a held tool's working status; helpers cannot overwrite main state", async () => {

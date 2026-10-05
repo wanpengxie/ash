@@ -103,7 +103,7 @@ class A11yService : AccessibilityService() {
         if (event == null) return
         val facts = runCatching { windows.map { w ->
             val bounds = Rect(); w.getBoundsInScreen(bounds)
-            ai.ash.host.ScreenWindowFact(w.id, w.title?.toString().orEmpty(), w.isFocused, w.isActive, bounds.toShortString())
+            ai.ash.host.ScreenWindowFact(w.id, windowTitle(w), w.isFocused, w.isActive, bounds.toShortString())
         } }.getOrDefault(emptyList())
         if (capsuleWindows.presentationOnly(event.windowId, facts, event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED,
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
@@ -175,7 +175,27 @@ class A11yService : AccessibilityService() {
 
     /** Package of the foreground app. */
     fun foregroundPackage(): String =
-        try { rootInActiveWindow?.packageName?.toString() } catch (_: Throwable) { null } ?: activePackage
+        try { pageRoot()?.packageName?.toString() } catch (_: Throwable) { null } ?: activePackage
+
+    /** Owner-only progress is never an automation target, even if Android makes it active. */
+    private fun windowTitle(w: android.view.accessibility.AccessibilityWindowInfo): String {
+        val bounds = Rect(); w.getBoundsInScreen(bounds)
+        // Android often leaves overlay accessibility titles null. Never query our own node root
+        // from this main-thread callback: the accessibility IPC would wait on this same UI thread.
+        return if (w.title?.toString() == "AshTaskCapsule" ||
+            w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM && ai.ash.ui.TaskCapsule.ownsWindow(bounds)) "AshTaskCapsule"
+            else w.title?.toString().orEmpty()
+    }
+
+    private fun pageRoot(): AccessibilityNodeInfo? {
+        val current = try { rootInActiveWindow } catch (_: Throwable) { null }
+        val visible = try { windows } catch (_: Throwable) { emptyList() }
+        if (current != null && visible.none { it.id == current.windowId && windowTitle(it) == "AshTaskCapsule" }) return current
+        return visible.filter { windowTitle(it) != "AshTaskCapsule" &&
+            (it.isFocused || it.isActive || it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION) }
+            .sortedByDescending { if (it.isFocused) 2 else if (it.isActive) 1 else 0 }
+            .firstNotNullOfOrNull { try { it.root } catch (_: Throwable) { null } }
+    }
 
     /**
      * Waits until no accessibility event arrived for [quietMs] (the UI settled after an action or a
@@ -198,7 +218,7 @@ class A11yService : AccessibilityService() {
      */
     fun root(): AccessibilityNodeInfo? {
         for (i in 0 until 3) {
-            val r = try { rootInActiveWindow } catch (_: Throwable) { null }
+            val r = pageRoot()
             if (r != null) return r
             SystemClock.sleep(150)
         }

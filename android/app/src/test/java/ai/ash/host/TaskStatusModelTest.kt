@@ -18,7 +18,7 @@ class TaskStatusModelTest {
         val m = TaskStatusModel(); m.accept(frame(), 2000)
         assertTrue(m.canStop("t_a", 2000)); assertFalse(m.canStop("t_old", 2000))
         assertTrue(m.visible(18000)); assertTrue(m.stale(18000)); assertFalse(m.canStop("t_a", 18000))
-        assertFalse(m.visible(32000))
+        assertTrue(m.visible(32000)); assertTrue(m.stale(32000)); assertFalse(m.canStop("t_a", 32000))
     }
     @Test fun completedTaskHasBriefFixedDurationEvenIfReplayed() {
         val m = TaskStatusModel(); m.accept(frame(), 2000)

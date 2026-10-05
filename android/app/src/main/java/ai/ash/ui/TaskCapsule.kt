@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
@@ -35,9 +36,15 @@ object TaskCapsule {
     private var lp: WindowManager.LayoutParams? = null
     private var expanded = false
     private var turn: String? = null
-    private var dismissed: String? = null
     private var suppressed = 0
+    private var passingTouches = 0
     private var restore: (() -> Unit)? = null
+    @Volatile private var screenBounds: Rect? = null
+    fun ownsWindow(bounds: Rect): Boolean = screenBounds == bounds
+    private fun rememberBounds(view: View) {
+        val point = IntArray(2); view.getLocationOnScreen(point)
+        screenBounds = Rect(point[0], point[1], point[0] + view.width, point[1] + view.height)
+    }
     private fun dp(ctx: Context, n: Int) = (ctx.resources.displayMetrics.density * n).toInt()
 
     fun update(ctx: Context, text: String, steps: List<String>, canStop: Boolean, task: String, visible: Boolean) {
@@ -47,9 +54,10 @@ object TaskCapsule {
         restore = { update(ctx, text, steps, canStop, task, visible) }
         val unlocked = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
             ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
-        if (!visible || ai.ash.host.AppState.homeVisible || !unlocked || dismissed == task || suppressed > 0 || !Settings.canDrawOverlays(ctx)) { detach(); return }
+        if (!visible || !unlocked || suppressed > 0 || !Settings.canDrawOverlays(ctx)) { detach(); return }
         runCatching {
             if (root == null) attach(ctx)
+            applyTouchMode()
             val headingText = "$text  ${if (expanded) "▴" else "▾"}"
             if (title?.text?.toString() != headingText) title?.text = headingText
             val detailText = (steps.takeLast(5).map { "· $it" } + "仅显示执行阶段，不代表完成百分比").joinToString("\n")
@@ -58,6 +66,7 @@ object TaskCapsule {
             actions?.visibility = if (expanded) View.VISIBLE else View.GONE
             stop?.isEnabled = canStop
             root?.let { box ->
+                rememberBounds(box)
                 val p = lp ?: return@let
                 box.measure(View.MeasureSpec.makeMeasureSpec(p.width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(ctx.resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST))
@@ -74,15 +83,18 @@ object TaskCapsule {
         val p = lp ?: WindowManager.LayoutParams(dp(ctx, 244), WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; x = dp(ctx, 8); y = dp(ctx, 72); setTitle("AshTaskCapsule") }.also { lp = it }
+            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; x = ((ctx.resources.displayMetrics.widthPixels - width) / 2).coerceAtLeast(0); y = dp(ctx, 48); setTitle("AshTaskCapsule") }.also { lp = it }
         val box = LinearLayout(ctx).apply {
+            contentDescription = "AshTaskCapsule"
             orientation = LinearLayout.VERTICAL; setPadding(dp(ctx, 10), dp(ctx, 6), dp(ctx, 10), dp(ctx, 6))
             background = GradientDrawable().apply { setColor(Color.rgb(29, 34, 40)); cornerRadius = dp(ctx, 18).toFloat() }
             elevation = dp(ctx, 6).toFloat()
+            addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ -> rememberBounds(view) }
         }
         val heading = TextView(ctx).apply { textSize = 13f; setTextColor(Color.WHITE); setPadding(0, dp(ctx, 6), 0, dp(ctx, 6)); maxLines = 2; contentDescription = "Ash 任务状态，点击展开或拖动" }
         var downX = 0f; var downY = 0f; var originX = 0; var originY = 0; var dragged = false
         heading.setOnTouchListener { v, e ->
+            if (passingTouches > 0) return@setOnTouchListener true
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; originX = p.x; originY = p.y; dragged = false }
                 MotionEvent.ACTION_MOVE -> {
@@ -98,20 +110,21 @@ object TaskCapsule {
                 MotionEvent.ACTION_UP -> if (!dragged) v.performClick()
             }; true
         }
-        heading.setOnClickListener { expanded = !expanded; restore?.invoke() }
+        heading.setOnClickListener { if (passingTouches == 0) { expanded = !expanded; restore?.invoke() } }
         val detail = TextView(ctx).apply { textSize = 12f; setTextColor(Color.LTGRAY); setPadding(0, dp(ctx, 4), 0, dp(ctx, 4)) }
         val controls = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         fun button(text: String, click: () -> Unit) = Button(ctx).apply { this.text = text; textSize = 12f; setOnClickListener { click() } }
         controls.addView(button("返回 Ash") { ctx.startActivity(Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)) })
         val stopButton = button("停止本次任务") { turn?.let { TaskStatus.stop(it) } }
         controls.addView(stopButton)
-        controls.addView(button("收起并隐藏本次悬浮窗") { dismissed = turn; detach() })
+        controls.addView(button("收起") { expanded = false; restore?.invoke() })
         box.addView(heading); box.addView(detail); box.addView(controls)
         wm.addView(box, p)
         manager = wm
         root = box; title = heading; details = detail; actions = controls; stop = stopButton
     }
     private fun detach() {
+        screenBounds = null
         root?.let { view ->
             view.visibility = View.INVISIBLE
             runCatching { manager?.removeViewImmediate(view) }
@@ -122,7 +135,39 @@ object TaskCapsule {
     }
     fun hide() { if (Looper.myLooper() == Looper.getMainLooper()) { detach(); restore = null } else main.post { detach(); restore = null } }
 
-    /** Hide around real-screen reads/touches, so neither screenshots nor taps hit our UI. */
+    private fun applyTouchMode() {
+        val p = lp ?: return
+        val flags = if (passingTouches > 0) p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            else p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        // Android's untrusted-overlay touch protection permits passthrough only below its opacity limit.
+        val alpha = if (passingTouches > 0) 0.7f else 1f
+        if (p.flags != flags || p.alpha != alpha) {
+            p.flags = flags; p.alpha = alpha
+            root?.let { manager?.updateViewLayout(it, p) }
+        }
+    }
+
+    /** Keep progress visible during gestures, but let input pass through to the target app. */
+    fun <T> withTouchPassthrough(action: () -> T): T {
+        val latch = CountDownLatch(1)
+        var applied = false
+        main.post {
+            passingTouches++
+            runCatching { applyTouchMode(); applied = true }
+                .onFailure { android.util.Log.w("ash.capsule", "could not release overlay input", it) }
+            run {
+                Choreographer.getInstance().postFrameCallback {
+                    Choreographer.getInstance().postFrameCallback { main.postDelayed({ latch.countDown() }, 100) }
+                }
+            }
+        }
+        try {
+            if (!latch.await(1000, TimeUnit.MILLISECONDS) || !applied) throw IllegalStateException("status overlay input could not be released")
+            return action()
+        } finally { main.postDelayed({ passingTouches = (passingTouches - 1).coerceAtLeast(0); runCatching { applyTouchMode() } }, 120) }
+    }
+
+    /** Briefly hide only for real-screen capture, so the model sees the underlying page. */
     fun <T> withoutOverlay(action: () -> T): T {
         val latch = CountDownLatch(1)
         main.post {
