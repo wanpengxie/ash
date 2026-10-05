@@ -209,6 +209,7 @@ object TaskCapsule {
     }
     private fun setEditing(value: Boolean) {
         if (value && passingTouches > 0) return
+        if (value && !editing && !sending && attemptId.isBlank()) inputMessage = ""
         editing = value
         val ctx = app ?: return
         if (!value) {
