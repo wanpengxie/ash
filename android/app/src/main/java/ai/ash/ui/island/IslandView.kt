@@ -23,10 +23,27 @@ import androidx.dynamicanimation.animation.FloatValueHolder
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
 
-/** What the island shows: the reference's `renderIsland` model. */
+/**
+ * What the island shows: the reference's `renderIsland` model, plus what the host adds to it (host.js `decorate`): the
+ * card's own end, its full original, the pager, the send notice and which buttons can be used.
+ */
 internal data class IslandModel(
     val kind: String, val form: String, val elapsedSec: Long, val activity: String = "", val body: String = "",
     val canStop: Boolean = false, val placeholder: String = "回复 Ash…",
+    /** approval: what Ash would send, quoted; and pending | approved | denied | expired | settled. */
+    val quote: String = "", val approval: String = "",
+    /** ask: the answers to tap. */
+    val options: List<String> = emptyList(),
+    /** How a question or approval ended ("已回答"…), shown under it. */
+    val status: String = "",
+    val original: String = "", val showOriginal: Boolean = false,
+    /** "2 / 3" when several questions wait. */
+    val pager: String = "",
+    val notice: String = "",
+    /** The owner can act now (not stale), and this card's buttons are still live. */
+    val interactive: Boolean = true, val actionable: Boolean = true,
+    /** A message is on its way: the composer waits. */
+    val busy: Boolean = false,
 )
 
 /** The reference's KIND table (island.html), one row per card type. */
@@ -60,7 +77,12 @@ internal class IslandKind(val label: String?, val title: String, val face: Strin
  * with the shell's size on every frame of a transition and on every content change.
  */
 internal class IslandView(ctx: Context, private val actions: Actions) {
-    interface Actions { fun tap(); fun collapse(); fun close(); fun open(); fun stop(); fun send(text: String); fun focus(editing: Boolean) }
+    interface Actions {
+        fun tap(); fun collapse(); fun close(); fun open(); fun stop(); fun send(text: String); fun focus(editing: Boolean)
+        fun choose(index: Int); fun allow(); fun deny(); fun toggleOriginal(); fun page(delta: Int)
+        /** The island is dragged by [dx], [dy] px since the press ("start", "move", "end"). */
+        fun drag(phase: String, dx: Float, dy: Float)
+    }
     val shell = IslandShell(ctx)
     var onFrame: (widthPx: Int, heightPx: Int) -> Unit = { _, _ -> }
     /** A transition is about to need this height (the window grows first); and the height once it has settled. */
@@ -130,11 +152,60 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     private val activityTitle = FadeText(ctx) { IslandSpec.text(it, IslandSpec.ACTIVITY_TITLE_SIZE, IslandTokens.COLOR_TEXT, 600f, lineHeight = IslandSpec.ACTIVITY_NOTE_LINE_HEIGHT) }
     private val activityNote = TextView(ctx).apply { IslandSpec.text(this, IslandSpec.ACTIVITY_NOTE_SIZE, IslandTokens.COLOR_TEXT_SECONDARY, lineHeight = IslandSpec.ACTIVITY_NOTE_LINE_HEIGHT) }
     private val textColumn = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+    private val content = android.widget.ScrollView(ctx).apply { isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER; isFillViewport = false }
+    private val contentColumn = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL; showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE; dividerDrawable = gap(px(IslandTokens.SIZE_CARD_GAP))
+    }
     private val body = FadeText(ctx) { IslandSpec.text(it, IslandTokens.TYPE_BODY_SIZE, IslandTokens.COLOR_BODY, lineHeight = IslandTokens.TYPE_BODY_LINE_HEIGHT) }
     private val more = TextView(ctx).apply {
         IslandSpec.text(this, IslandSpec.MORE_SIZE, IslandTokens.COLOR_RUNNING); gravity = Gravity.CENTER_VERTICAL
-        setOnClickListener { expanded = !expanded; model?.let { render(it, force = true) } }
+        setOnClickListener { if (model?.kind == "approval") actions.toggleOriginal() else { expanded = !expanded; model?.let { render(it, force = true) } } }
     }
+    private val quote = TextView(ctx).apply {
+        IslandSpec.text(this, IslandSpec.QUOTE_SIZE, IslandTokens.COLOR_TEXT, lineHeight = IslandSpec.QUOTE_LINE_HEIGHT)
+        setPadding(px(IslandSpec.QUOTE_PAD_H), px(IslandSpec.QUOTE_PAD_V), px(IslandSpec.QUOTE_PAD_H), px(IslandSpec.QUOTE_PAD_V))
+        background = RoundedBackground(IslandTokens.COLOR_SURFACE, IslandSpec.dp(ctx, IslandSpec.QUOTE_RADIUS), IslandSpec.QUOTE_STROKE, d)
+    }
+    // ---- the card's action: answers, allow / deny, how an approval ended, or "go to Ash" ----
+    private val options = IslandWrap(ctx, px(IslandSpec.OPTIONS_GAP))
+    private val approvalRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE; dividerDrawable = gap(px(IslandSpec.APPROVAL_GAP)) }
+    private val allowButton = pill("允许并继续", IslandTokens.COLOR_PRIMARY, 0xFFFFFFFF.toInt(), IslandTokens.TYPE_PRIMARY_BUTTON_WEIGHT).apply { setOnClickListener { actions.allow() } }
+    private val denyButton = pill("拒绝", IslandTokens.COLOR_NEUTRAL_BUTTON, IslandSpec.NEUTRAL_INK, 600f).apply { setOnClickListener { actions.deny() } }
+    private val approved = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+        background = RoundedBackground(IslandSpec.APPROVED_BACKGROUND, IslandSpec.dp(ctx, IslandSpec.PRIMARY_RADIUS))
+        addView(IslandIcon(ctx, IslandIcon.Kind.TICK, IslandSpec.TICK).apply { ink = IslandTokens.COLOR_DONE_TEXT }, LinearLayout.LayoutParams(px(IslandSpec.TICK), px(IslandSpec.TICK)))
+        addView(TextView(ctx).apply { IslandSpec.text(this, IslandTokens.TYPE_PRIMARY_BUTTON_SIZE, IslandTokens.COLOR_DONE_TEXT, 600f); text = "已批准，等待继续" },
+            LinearLayout.LayoutParams(-2, -2).apply { leftMargin = px(IslandSpec.APPROVED_GAP) })
+    }
+    private val apFinal = finalLine()
+    private val original = TextView(ctx).apply {
+        IslandSpec.text(this, IslandSpec.ORIGINAL_SIZE, IslandTokens.COLOR_TEXT, lineHeight = IslandSpec.ORIGINAL_LINE_HEIGHT, cjk = false)
+        typeface = android.graphics.Typeface.MONOSPACE; setTextIsSelectable(false)
+        val pad = px(IslandSpec.ORIGINAL_PAD); setPadding(pad, pad, pad, pad)
+        background = RoundedBackground(IslandTokens.COLOR_SURFACE, IslandSpec.dp(ctx, IslandSpec.ORIGINAL_RADIUS))
+    }
+    /** host.js decorate: how a question or approval ended. */
+    private val status = finalLine()
+    private val pager = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+    private val pagerText = TextView(ctx).apply { IslandSpec.text(this, IslandSpec.NAV_SIZE, IslandTokens.COLOR_TEXT_SECONDARY, cjk = false); gravity = Gravity.CENTER }
+    private val notice = TextView(ctx).apply { IslandSpec.text(this, IslandSpec.NOTICE_SIZE, IslandTokens.COLOR_NEEDS_YOU_TEXT) }
+    private fun pill(text: String, fill: Int, ink: Int, weight: Float) = TextView(shell.context).apply {
+        IslandSpec.text(this, IslandTokens.TYPE_PRIMARY_BUTTON_SIZE, ink, weight); this.text = text; gravity = Gravity.CENTER
+        background = RoundedBackground(fill, IslandSpec.dp(context, IslandSpec.PRIMARY_RADIUS))
+    }
+    private fun finalLine() = TextView(shell.context).apply {
+        IslandSpec.text(this, IslandSpec.FINAL_SIZE, IslandSpec.FINAL_INK); gravity = Gravity.CENTER
+        background = RoundedBackground(IslandTokens.COLOR_SURFACE, IslandSpec.dp(context, IslandSpec.PRIMARY_RADIUS))
+    }
+    private fun option(label: String, index: Int) = TextView(shell.context).apply {
+        IslandSpec.text(this, IslandTokens.TYPE_BUTTON_SIZE, IslandTokens.COLOR_NEEDS_YOU_TEXT, IslandTokens.TYPE_BUTTON_WEIGHT); text = label
+        gravity = Gravity.CENTER_VERTICAL; isSingleLine = true; ellipsize = TextUtils.TruncateAt.END
+        setPadding(px(IslandSpec.OPTION_PAD), 0, px(IslandSpec.OPTION_PAD), 0)
+        background = RoundedBackground(IslandSpec.OPTION_BACKGROUND, IslandSpec.dp(context, IslandSpec.OPTION_HEIGHT / 2), IslandTokens.COLOR_NEEDS_YOU, IslandSpec.dp(context, IslandSpec.OPTION_BORDER))
+        setOnClickListener { actions.choose(index) }
+    }
+    private fun usable(view: View, enabled: Boolean) { view.isEnabled = enabled; view.alpha = if (enabled) 1f else IslandSpec.DISABLED_ALPHA }
     private val primary = TextView(ctx).apply {
         IslandSpec.text(this, IslandTokens.TYPE_PRIMARY_BUTTON_SIZE, 0xFFFFFFFF.toInt(), IslandTokens.TYPE_PRIMARY_BUTTON_WEIGHT); gravity = Gravity.CENTER
         background = RoundedBackground(IslandTokens.COLOR_PRIMARY, IslandSpec.dp(ctx, IslandSpec.PRIMARY_RADIUS)); text = "去 Ash 里操作"
@@ -188,19 +259,40 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         head.addView(titles, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = px(IslandSpec.HEAD_GAP) })
         head.addView(collapseButton, LinearLayout.LayoutParams(px(IslandSpec.ICON_BUTTON), px(IslandSpec.ICON_BUTTON)).apply { leftMargin = px(IslandSpec.HEAD_GAP) })
         card.addView(head)
+        draggable(head); draggable(compact)
         activityBlock.addView(activityMark, LinearLayout.LayoutParams(-2, -2))
         val activityTexts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         activityTexts.addView(activityTitle); activityTexts.addView(activityNote)
         activityBlock.addView(activityTexts, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = px(IslandSpec.ACTIVITY_GAP) })
-        card.addView(activityBlock, LinearLayout.LayoutParams(-1, -2).apply { topMargin = gap })
+        // host.css .island-content: everything between the head and the foot scrolls when the card meets its limit.
+        val navButton = { kind: IslandIcon.Kind, delta: Int, label: String -> IslandIcon(ctx, kind).apply { contentDescription = label; setOnClickListener { actions.page(delta) } } }
+        pager.addView(navButton(IslandIcon.Kind.PREV, -1, "上一项"), LinearLayout.LayoutParams(px(IslandSpec.ICON_BUTTON), px(IslandSpec.ICON_BUTTON)))
+        pager.addView(pagerText, LinearLayout.LayoutParams(0, -2, 1f))
+        pager.addView(navButton(IslandIcon.Kind.NEXT, 1, "下一项"), LinearLayout.LayoutParams(px(IslandSpec.ICON_BUTTON), px(IslandSpec.ICON_BUTTON)))
+        contentColumn.addView(pager, LinearLayout.LayoutParams(-1, -2))
+        contentColumn.addView(activityBlock, LinearLayout.LayoutParams(-1, -2))
+        textColumn.showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE; textColumn.dividerDrawable = gap(px(IslandSpec.TEXT_GAP))
         textColumn.addView(body)
-        textColumn.addView(more, LinearLayout.LayoutParams(-2, px(IslandSpec.MORE_HEIGHT)).apply { topMargin = px(IslandSpec.TEXT_GAP) })
-        card.addView(textColumn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = gap })
-        card.addView(primary, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)).apply { topMargin = gap })
+        textColumn.addView(quote, LinearLayout.LayoutParams(-1, -2))
+        textColumn.addView(more, LinearLayout.LayoutParams(-2, px(IslandSpec.MORE_HEIGHT)))
+        contentColumn.addView(textColumn, LinearLayout.LayoutParams(-1, -2))
+        contentColumn.addView(options, LinearLayout.LayoutParams(-1, -2))
+        approvalRow.addView(allowButton, LinearLayout.LayoutParams(0, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT), IslandSpec.ALLOW_FLEX))
+        approvalRow.addView(denyButton, LinearLayout.LayoutParams(0, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT), IslandSpec.DENY_FLEX))
+        contentColumn.addView(approvalRow, LinearLayout.LayoutParams(-1, -2))
+        contentColumn.addView(approved, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        contentColumn.addView(apFinal, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        contentColumn.addView(primary, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        contentColumn.addView(original, LinearLayout.LayoutParams(-1, -2))
+        contentColumn.addView(status, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        content.addView(contentColumn, FrameLayout.LayoutParams(-1, -2))
+        // Its natural height, shrunk (weight) only when the card would pass its limit.
+        card.addView(content, LinearLayout.LayoutParams(-1, -2, 1f).apply { topMargin = gap })
         // foot: divider is the border-top of .foot
         val inputRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         inputRow.addView(input, LinearLayout.LayoutParams(0, px(IslandSpec.INPUT_HEIGHT), 1f))
         inputRow.addView(sendButton, LinearLayout.LayoutParams(px(IslandSpec.INPUT_HEIGHT), px(IslandSpec.INPUT_HEIGHT)).apply { leftMargin = px(IslandSpec.FOOT_INPUT_GAP) })
+        foot.addView(notice, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(IslandSpec.FOOT_GAP) })
         foot.addView(inputRow)
         linksRow.addView(stopLink, LinearLayout.LayoutParams(-2, px(IslandSpec.LINK_HEIGHT)))
         linksRow.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
@@ -225,6 +317,8 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             put("av", cardAvatar); put("dot", titleDot); put("title", title.current); put("meta", meta); put("icon-btn", collapseButton)
             put("activity", activityBlock); put("activity-ind", activityMark); put("activity-b", activityTitle.current); put("activity-span", activityNote)
             put("body", body.current); put("more", more); put("primary", primary); put("divider", divider)
+            put("quote", quote); put("options", options); put("allow", allowButton); put("deny", denyButton); put("approved", approved); put("final", apFinal)
+            put("original", original); put("status", status); put("pager", pager); put("notice", notice)
             put("input", input); put("send", sendButton); put("stop", stopLink); put("open", openLink); put("close", closeLink)
         }
         return out
@@ -235,6 +329,34 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         if (text.isNotEmpty()) actions.send(text)
     }
     fun clearInput() { input.setText("") }
+
+    private var shownOptions: List<String> = emptyList()
+    private var maxCardPx = Int.MAX_VALUE / 2
+    /** The tallest the card may be (the screen below it); its middle scrolls beyond that. */
+    fun setMaxCardHeight(px: Int) { maxCardPx = px }
+    fun resetMore() { expanded = false; content.scrollTo(0, 0) }
+
+    /** A press on the capsule or the card's head that moves past the slop drags the island instead of tapping it. */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun draggable(view: View) {
+        var x = 0f; var y = 0f; var dragging = false
+        val slop = IslandSpec.DRAG_SLOP * d
+        view.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { x = e.rawX; y = e.rawY; dragging = false }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - x; val dy = e.rawY - y
+                    if (!dragging && Math.abs(dx) + Math.abs(dy) > slop) { dragging = true; view.isPressed = false; actions.drag("start", 0f, 0f) }
+                    if (dragging) actions.drag("move", dx, dy)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> if (dragging) {
+                    dragging = false; view.isPressed = false; actions.drag("end", 0f, 0f); return@setOnTouchListener true
+                }
+            }
+            // A head that is not itself clickable still has to take the press to see it move.
+            dragging || (e.actionMasked == android.view.MotionEvent.ACTION_DOWN && !view.isClickable)
+        }
+    }
 
     fun setCardWidth(dpWidth: Float) {
         if (cardWidthDp == dpWidth) return
@@ -250,13 +372,18 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         if (prev?.kind != next.kind) expanded = false
         // ---- fill both forms' fields (in place); text that changed fades ----
         compactAvatar.face = k.face
-        val label = k.label ?: next.activity.ifBlank { "在忙" }
+        // An approval's answer shows on its capsule (renderIsland: approved / denied / expired).
+        var label = k.label ?: next.activity.ifBlank { "在忙" }; var tone = k.tone; var mark = k.mark
+        when (next.approval) {
+            "approved" -> { label = "已批准"; tone = IslandTokens.COLOR_DONE; mark = IslandIndicator.Mark.CHECK }
+            "denied", "expired" -> { label = if (next.approval == "denied") "已拒绝" else "审批已过期"; tone = IslandTokens.COLOR_OFFLINE; mark = IslandIndicator.Mark.OFF }
+        }
         compactLabel.set(label, !reform)
         compactTime.visibility = if (k.run || next.kind == "stale") View.VISIBLE else View.GONE
         compactTime.text = clock(next.elapsedSec, short = true)
-        compactMark.reduceMotion = reduceMotion; compactMark.set(k.mark, k.tone)
+        compactMark.reduceMotion = reduceMotion; compactMark.set(mark, tone)
         cardAvatar.face = k.face
-        titleDot.tone = k.tone; titleDot.pulsing = k.tone == IslandTokens.COLOR_NEEDS_YOU && !reduceMotion
+        titleDot.tone = k.tone; titleDot.pulsing = tone == IslandTokens.COLOR_NEEDS_YOU && !reduceMotion
         title.set(k.title, !reform)
         meta.text = "Ash · " + when {
             k.run -> "已用 ${clock(next.elapsedSec, short = false)}"
@@ -275,15 +402,42 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             val clamp = k.clamp && !expanded
             body.each { it.maxLines = if (clamp) IslandTokens.TYPE_BODY_COLLAPSED_LINES.toInt() else Int.MAX_VALUE; it.ellipsize = if (clamp) TextUtils.TruncateAt.END else null }
             body.set(next.body, !reform)
-            more.visibility = if (k.clamp) View.VISIBLE else View.GONE
-            more.text = if (expanded) "收起" else "展开全文"
+            quote.visibility = if (next.quote.isNotBlank()) View.VISIBLE else View.GONE
+            quote.text = next.quote
+            val approval = next.kind == "approval"
+            more.visibility = if (approval || k.clamp) View.VISIBLE else View.GONE
+            more.text = if (approval) (if (next.showOriginal) "收起原文" else "查看完整原文") else if (expanded) "收起" else "展开全文"
         }
+        if (next.options != shownOptions) {
+            shownOptions = next.options; options.removeAllViews()
+            next.options.forEachIndexed { i, o -> options.addView(option(o, i), ViewGroup.LayoutParams(-2, px(IslandSpec.OPTION_HEIGHT))) }
+        }
+        options.visibility = if (next.kind == "ask" && next.options.isNotEmpty()) View.VISIBLE else View.GONE
+        for (i in 0 until options.childCount) usable(options.getChildAt(i), next.interactive && next.actionable)
+        approvalRow.visibility = if (next.approval == "pending") View.VISIBLE else View.GONE
+        usable(allowButton, next.interactive && next.actionable); usable(denyButton, next.interactive && next.actionable)
+        approved.visibility = if (next.approval == "approved") View.VISIBLE else View.GONE
+        apFinal.visibility = if (next.approval == "denied" || next.approval == "expired") View.VISIBLE else View.GONE
+        apFinal.text = if (next.approval == "denied") "已拒绝 · 这一步不会执行" else "已过期 · 未执行，需要时让 Ash 重新申请"
         primary.visibility = if (next.kind == "in_app") View.VISIBLE else View.GONE
+        original.visibility = if (next.showOriginal && next.original.isNotEmpty()) View.VISIBLE else View.GONE
+        original.text = next.original
+        status.visibility = if (next.status.isNotEmpty()) View.VISIBLE else View.GONE
+        status.text = next.status
+        pager.visibility = if (next.pager.isNotEmpty()) View.VISIBLE else View.GONE
+        pagerText.text = next.pager
+        notice.visibility = if (next.notice.isNotEmpty()) View.VISIBLE else View.GONE
+        notice.text = next.notice
         stopLink.visibility = if (k.run && next.canStop) View.VISIBLE else View.GONE
-        input.hint = k.placeholder ?: next.placeholder
+        usable(stopLink, next.interactive)
+        input.isEnabled = !next.busy; usable(sendButton, !next.busy)
+        input.hint = next.placeholder
         // The window keeps room for this content's card at all times, so opening it never has to resize the window
         // (a resize stalls the frame it lands in).
         cardHeightPx = targetSize("card").second
+        // The card is laid out at its own height whatever the island's size this frame: a transition clips it, never
+        // reflows it.
+        (card.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.height != cardHeightPx }?.let { it.height = cardHeightPx; card.layoutParams = it }
         onReserve(maxOf(cardHeightPx, heightPx))
         // ---- form ----
         if (reform || force) {
@@ -299,7 +453,7 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
 
     private fun targetSize(form: String): Pair<Int, Int> = if (form == "card") {
         val w = px(cardWidthDp)
-        card.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        card.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxCardPx, View.MeasureSpec.AT_MOST))
         w to card.measuredHeight
     } else px(IslandTokens.SIZE_COMPACT_W) to px(IslandTokens.SIZE_COMPACT_H)
 

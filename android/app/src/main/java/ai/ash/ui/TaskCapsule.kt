@@ -65,7 +65,7 @@ object TaskCapsule {
     private var attemptText = ""
     private var attemptTarget: String? = null
 
-    /** The native island (ui/island) replaces the WebView while its development switch is on. */
+    /** The native island (ui/island) is the island; the WebView one remains behind a switch while phones are checked. */
     @Volatile private var nativeMode: Boolean? = null
     private fun native(ctx: Context) = nativeMode ?: ai.ash.ui.island.NativeIsland.enabled(ctx).also { nativeMode = it }
     private fun native() = nativeMode == true
@@ -152,7 +152,7 @@ object TaskCapsule {
     internal fun update(ctx: Context, frame: TaskFrame, elapsed: Long, stale: Boolean, interactive: Boolean, canStop: Boolean, notice: String?) {
         check(Looper.myLooper() == Looper.getMainLooper())
         if (native(ctx)) {
-            val projected = IslandPresentation.project(frame, elapsed, stale, interactive, canStop, notice, emptyMap(), System.currentTimeMillis())
+            val projected = IslandPresentation.project(frame, elapsed, stale, interactive, canStop, notice, ai.ash.ui.island.NativeIsland.submitted, System.currentTimeMillis())
             ai.ash.ui.island.NativeIsland.update(ctx, projected) { update(ctx, frame, elapsed, stale, interactive, canStop, notice) }
             return
         }

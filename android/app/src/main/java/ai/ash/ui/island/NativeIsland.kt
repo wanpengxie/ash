@@ -58,10 +58,24 @@ internal object NativeIsland : IslandView.Actions {
     private var form = "compact"
     private var episode = ""
     private var centreX = -1
+    /** How far the owner has dragged the island down from its place under the status bar. */
+    private var offsetY = 0
+    private var dragFromX = 0; private var dragFromY = 0
+    private var maxCard = 0
+    // host.js: the card shown, its local answer state, and the composer's state.
+    private var selected: String? = null
+    /** Answers sent from the island and not yet reflected by the agent (card id -> sending | answered | denied). */
+    internal val submitted = mutableMapOf<String, String>()
+    private var showOriginal = false
+    private var customTarget: String? = null
+    private var notice = ""
     private var sending = false
     private var attemptId = ""
+    private var attemptText = ""
 
-    fun enabled(ctx: Context) = java.io.File(ctx.filesDir, "ash/island-native").exists()
+    /** The WebView island stays available behind a switch until the native one has been checked on phones. */
+    fun enabled(ctx: Context) = !java.io.File(ctx.filesDir, "ash/island-web").exists()
+    private fun switchText() = runCatching { app?.let { java.io.File(it.filesDir, "ash/island-native").readText() } }.getOrNull().orEmpty()
     fun ownsWindow(bounds: Rect) = screenBounds == bounds
     fun isEditing() = editing
     private fun dp(v: Float) = Math.round(v * (app?.resources?.displayMetrics?.density ?: 1f))
@@ -83,7 +97,19 @@ internal object NativeIsland : IslandView.Actions {
         view.onFrame = { w, h -> follow(w, h) }
         view.onReserve = { h -> fitBand(h, grow = true) }
         view.onSettled = { h -> fitBand(h, grow = false) }
+        view.input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            // A draft started under an open question belongs to it, even if the question closes before it is sent.
+            override fun afterTextChanged(s: android.text.Editable?) { if (customTarget == null && !s.isNullOrEmpty()) customTarget = answering() }
+        })
+        // The card is never taller than the screen below it (the keyboard included); its middle scrolls instead.
+        box.viewTreeObserver.addOnGlobalLayoutListener { if (attached && fitCard()) render() }
         root = box; island = view
+        val prefs = app!!.getSharedPreferences("ash_capsule_input", Context.MODE_PRIVATE)
+        attemptId = prefs.getString("pending_id", "").orEmpty(); attemptText = prefs.getString("pending_text", "").orEmpty()
+        customTarget = prefs.getString("pending_question", null)
+        if (attemptText.isNotEmpty()) view.input.setText(attemptText)
         pad = object : View(app!!) {
             @SuppressLint("ClickableViewAccessibility")
             override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -107,7 +133,7 @@ internal object NativeIsland : IslandView.Actions {
         val lp = shell.layoutParams as FrameLayout.LayoutParams
         if (trusted) {
             // The band never changes; only the island moves and resizes in it, in the band's own frame.
-            val left = centreX - w / 2
+            val left = (centreX - w / 2).coerceIn(0, (screen - w).coerceAtLeast(0))
             if (lp.leftMargin != left || lp.topMargin != top) { lp.leftMargin = left; lp.topMargin = top; shell.layoutParams = lp }
             placePad(ctx, left, top, w, h)
             return
@@ -115,7 +141,8 @@ internal object NativeIsland : IslandView.Actions {
         if (lp.leftMargin != side || lp.topMargin != top) { lp.leftMargin = side; lp.topMargin = top; shell.layoutParams = lp }
         p.width = w + 2 * side
         p.height = h + top + dp(IslandTokens.SIZE_WINDOW_INSET_BOTTOM)
-        p.x = centreX - p.width / 2
+        p.x = (centreX - p.width / 2).coerceIn(-side, (screen - p.width + side).coerceAtLeast(-side))
+        p.y = offsetY
         if (attached) runCatching { host?.updateViewLayout(root, p) }
     }
     /**
@@ -163,7 +190,7 @@ internal object NativeIsland : IslandView.Actions {
         gravity = Gravity.TOP or Gravity.LEFT
         // The window's own 8dp top inset keeps the island 8dp below the status bar (tokens: topBelowStatusBar).
         x = if (trusted) 0 else (ctx.resources.displayMetrics.widthPixels - width) / 2
-        y = if (trusted) statusBar(ctx) else 0
+        y = if (trusted) statusBar(ctx) + offsetY else offsetY
         softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         windowAnimations = R.style.CapsuleWindowAnimation
         setTitle("AshTaskCapsule")
@@ -176,49 +203,95 @@ internal object NativeIsland : IslandView.Actions {
         return if (id > 0) ctx.resources.getDimensionPixelSize(id) else 0
     }
 
-    /** A projected frame from [ai.ash.ui.IslandPresentation]. */
+    /** A projected frame from [ai.ash.ui.IslandPresentation] (with [submitted]); host.js `receive`. */
     fun update(ctx: Context, model: JSONObject, restoreWith: () -> Unit) {
         ensure(ctx)
-        val prev = snapshot; snapshot = model; restore = restoreWith; visible = true
+        val prev = snapshot; restore = restoreWith; visible = true
         val newTurn = prev?.optString("turn") != model.optString("turn") || prev?.optString("session") != model.optString("session")
-        val kind = displayKind(model)
-        val ended = kind in setOf("reply", "result", "ask", "in_app", "incomplete", "stopped")
+        val cards = cards(model)
+        val incoming = cards.firstOrNull { pending(it) && it.optString("localState").isEmpty() }
+        // A turn's end is one episode however it is labelled: a verdict arriving later re-labels the card but must not
+        // pop it open again after the owner collapsed it.
+        val ended = model.optString("kind") in ENDED
         val reply = model.optString("reply")
-        val incoming = firstWaiting(model)?.optString("id").orEmpty()
-        if (newTurn && reply.isEmpty() && incoming.isEmpty()) form = "compact"
-        val next = listOf(model.optString("session"), model.optString("turn"), if (ended) "ended" else kind, incoming, reply).joinToString("|")
-        if (next != episode && (incoming.isNotEmpty() || reply.isNotEmpty() || ended)) form = "card"
+        val next = listOf(model.optString("session"), model.optString("turn"), if (ended) "ended" else model.optString("kind"), incoming?.optString("id").orEmpty(), reply).joinToString("|")
+        if (newTurn) { selected = null; showOriginal = false; island?.resetMore(); if (!sending) notice = ""; if (reply.isEmpty() && incoming == null) form = "compact" }
+        val current = cards.firstOrNull { it.optString("id") == selected }
+        if (incoming != null && (current == null || !pending(current) || current.optString("localState").isNotEmpty())) selected = incoming.optString("id")
+        else if (incoming == null && ((reply.isNotEmpty() && ended) || (model.optBoolean("canStop") && cards.none { pending(it) }))) selected = null
+        else if (current == null) selected = (incoming ?: cards.lastOrNull())?.optString("id")
+        if (next != episode && (incoming != null || reply.isNotEmpty() || ended)) form = "card"
         episode = next
+        snapshot = model
+        // Answers the agent has taken up are no longer local.
+        submitted.keys.retainAll(cards.filter { pending(it) }.map { it.optString("id") }.toSet())
         island?.reduceMotion = Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
-        island?.traceMotion = runCatching { java.io.File(ctx.filesDir, "ash/island-native").readText().contains("motion") }.getOrDefault(false)
+        island?.traceMotion = switchText().contains("motion")
         island?.setCardWidth(minOf(IslandTokens.SIZE_CARD_W, ctx.resources.displayMetrics.widthPixels / ctx.resources.displayMetrics.density - 24f))
+        fitCard()
         render()
         if (!allowed()) { if (!unlocked(ctx) || AppState.homeVisible) setEditing(false); detach(); return }
         // The accessibility service can connect or go away while the island is up: move to the matching window.
         if (attached && trusted != (ai.ash.host.a11y.A11yService.instance != null) && !editing) detach()
         attach()
     }
+    private val ENDED = setOf("reply", "result", "ask", "in_app", "incomplete", "stopped")
+    private fun cards(model: JSONObject): List<JSONObject> = model.optJSONArray("cards")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+    private fun pending(card: JSONObject) = card.optString("state") == "waiting"
+    private fun active(): JSONObject? = snapshot?.let { m -> cards(m).firstOrNull { it.optString("id") == selected } }
+    /** While a question that takes free-form answers is open, what the owner types answers it. */
+    private fun openQuestion(c: JSONObject?) = c != null && c.optString("kind") != "approval" && c.optBoolean("allow_custom") && pending(c) && c.optString("localState").isEmpty()
+    private fun answering(): String? = customTarget ?: active()?.takeIf { openQuestion(it) }?.optString("id")
 
-    private fun firstWaiting(model: JSONObject): JSONObject? {
-        val cards = model.optJSONArray("cards") ?: return null
-        for (i in 0 until cards.length()) cards.optJSONObject(i)?.takeIf { it.optString("state") == "waiting" && it.optString("localState").isEmpty() }?.let { return it }
-        return null
-    }
-    private fun displayKind(model: JSONObject): String {
-        if (model.optBoolean("stale")) return "stale"
-        val card = firstWaiting(model)
-        return if (card != null) (if (card.optString("kind") == "approval") "approval" else "ask") else model.optString("kind")
-    }
+    /** host.js `display` + `decorate`: the model the view draws. */
     private fun render() {
         val model = snapshot ?: return; val view = island ?: return
-        val card = firstWaiting(model)
-        val body = if (card != null) listOf(card.optString("title"), card.optString("detail")).filter { it.isNotBlank() }.joinToString("\n\n")
-            else IslandText.plain(model.optString("reply"))
-        view.render(IslandModel(kind = displayKind(model), form = form, elapsedSec = model.optLong("elapsed"),
-            activity = model.optString("activity"), body = body, canStop = model.optBoolean("canStop") && model.optBoolean("interactive")))
+        val c = active()
+        val stale = model.optBoolean("stale")
+        val interactive = model.optBoolean("interactive")
+        val pager = if (c != null && !stale && cards(model).size > 1) "${cards(model).indexOf(c) + 1} / ${cards(model).size}" else ""
+        val base = IslandModel(kind = model.optString("kind"), form = form, elapsedSec = model.optLong("elapsed"), activity = model.optString("activity"),
+            body = IslandText.plain(model.optString("reply")), canStop = model.optBoolean("canStop"), interactive = interactive,
+            pager = pager, notice = notice.ifEmpty { model.optString("notice") }, busy = sending,
+            placeholder = if (answering() != null) IslandKind.of("ask").placeholder.orEmpty() else "回复 Ash…")
+        val shown = when {
+            stale -> base.copy(kind = "stale")
+            c == null -> base
+            else -> {
+                val approval = c.optString("kind") == "approval"
+                val state = c.optString("localState").ifEmpty { c.optString("state") }
+                val ap = when (state) { "waiting", "sending" -> "pending"; "answered" -> "approved"; "denied" -> "denied"; "expired" -> "expired"; else -> "settled" }
+                val title = c.optString("title"); val detail = c.optString("detail")
+                val live = pending(c) && c.optString("localState").isEmpty()
+                val options = c.optJSONArray("options")?.let { a -> (0 until a.length()).map { a.optJSONObject(it)?.optString("label").orEmpty() } }.orEmpty()
+                // How a question, or an approval the agent has since acted on, ended.
+                val status = if ((!pending(c) && !approval) || (approval && ap == "settled")) when (c.optString("state")) {
+                    "answered" -> "已回答"; "withdrawn" -> "已撤回"; "skipped" -> "未执行"; "redeemed" -> "已提交执行，结果见后续回复"
+                    "expired" -> "已过期"; "denied" -> "已拒绝"; else -> "已处理"
+                } else ""
+                base.copy(kind = if (approval) "approval" else "ask",
+                    // An approval reads as the reference lays it out: what Ash wants to do, then exactly what it would send, quoted.
+                    body = if (approval) title else IslandText.plain(listOf(title, detail).filter { it.isNotBlank() }.joinToString("\n\n")),
+                    quote = if (approval && detail.isNotBlank() && detail != title) detail else "",
+                    approval = if (approval) ap else "", options = if (live) options else emptyList(), status = status,
+                    original = c.optString("original"), showOriginal = approval && showOriginal, actionable = live)
+            }
+        }
+        view.render(shown)
         // Development check of the layout against the reference (switch file says "dump").
-        if (app?.let { java.io.File(it.filesDir, "ash/island-native").readText().contains("dump") } == true)
-            view.shell.postDelayed({ android.util.Log.i("ash.island.dump", JSONObject().put("kind", displayKind(model)).put("form", form).put("bounds", view.debugBounds()).toString()) }, 2500)
+        if (switchText().contains("dump"))
+            view.shell.postDelayed({ android.util.Log.i("ash.island.dump", JSONObject().put("kind", shown.kind).put("form", form).put("bounds", view.debugBounds()).toString()) }, 2500)
+    }
+    /** The card's limit: the screen below the island, above the keyboard. True when it changed. */
+    private fun fitCard(): Boolean {
+        val ctx = app ?: return false; val box = root ?: return false
+        val frame = Rect()
+        val bottom = if (attached) { box.getWindowVisibleDisplayFrame(frame); frame.bottom } else ctx.resources.displayMetrics.heightPixels
+        val top = (if (trusted || !attached) statusBar(ctx) else 0) + offsetY + dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
+        val limit = (bottom - top - dp(IslandSpec.CARD_BOTTOM_ROOM)).coerceAtLeast(dp(IslandSpec.CARD_MIN_LIMIT))
+        if (limit == maxCard) return false
+        maxCard = limit; island?.setMaxCardHeight(limit)
+        return true
     }
 
     private fun attach() {
@@ -258,7 +331,10 @@ internal object NativeIsland : IslandView.Actions {
         val view = island
         if (attached && view != null) view.leave { if (!visible) detach() } else detach()
     } }
-    fun release() { main.post { visible = false; setEditing(false); detach(); root = null; island = null; params = null; snapshot = null; restore = null; episode = ""; form = "compact" } }
+    fun release() { main.post {
+        visible = false; setEditing(false); detach(); root = null; island = null; params = null; padParams = null; snapshot = null; restore = null
+        episode = ""; form = "compact"; selected = null; submitted.clear(); showOriginal = false; notice = ""; maxCard = 0
+    } }
 
     private fun setEditing(value: Boolean) {
         if (value && (!allowed() || passingTouches > 0)) return
@@ -303,19 +379,75 @@ internal object NativeIsland : IslandView.Actions {
         if (model.optBoolean("canStop") && model.optBoolean("interactive")) TaskStatus.stop(model.getString("turn"))
     }
     override fun focus(editing: Boolean) { if (!editing) setEditing(false) }
-    override fun send(text: String) {
-        if (sending || text.length > 4000) return
-        if (attemptId.isBlank()) attemptId = UUID.randomUUID().toString()
-        sending = true
-        TaskStatus.sendInput(text, attemptId) { ok, message ->
+    override fun choose(index: Int) {
+        val c = active() ?: return
+        c.optJSONArray("options")?.optJSONObject(index)?.optString("id")?.takeIf { it.isNotEmpty() }?.let { answer(c, it) }
+    }
+    override fun allow() { active()?.let { answer(it, "once") } }
+    override fun deny() { active()?.let { answer(it, "deny") } }
+    private fun answer(c: JSONObject, choice: String) {
+        val id = c.optString("id")
+        if (snapshot?.optBoolean("interactive") != true || !pending(c) || submitted.containsKey(id)) return
+        submitted[id] = "sending"; restore?.invoke()
+        TaskStatus.answerCard(id, choice) { ok, message ->
             main.post {
-                sending = false
-                if (ok) { attemptId = ""; island?.clearInput(); setEditing(false) }
-                app?.let { android.widget.Toast.makeText(it, message, android.widget.Toast.LENGTH_SHORT).show() }
-                restore?.invoke()
+                if (ok) submitted[id] = if (choice == "deny") "denied" else "answered" else submitted.remove(id)
+                restore?.invoke(); toast(message)
             }
         }
     }
+    override fun toggleOriginal() { showOriginal = !showOriginal; render() }
+    override fun page(delta: Int) {
+        val all = snapshot?.let { cards(it) } ?: return
+        if (all.size < 2) return
+        val i = all.indexOfFirst { it.optString("id") == selected }
+        selected = all[((i + delta) % all.size + all.size) % all.size].optString("id")
+        showOriginal = false; island?.resetMore(); render()
+    }
+    override fun drag(phase: String, dx: Float, dy: Float) {
+        val ctx = app ?: return
+        when (phase) {
+            "start" -> { dragFromX = centreX; dragFromY = offsetY }
+            "move" -> {
+                val screen = ctx.resources.displayMetrics.widthPixels
+                centreX = (dragFromX + dx.toInt()).coerceIn(islandW / 2, (screen - islandW / 2).coerceAtLeast(islandW / 2))
+                val room = ctx.resources.displayMetrics.heightPixels - statusBar(ctx) - islandH - dp(48f)
+                offsetY = (dragFromY + dy.toInt()).coerceIn(0, room.coerceAtLeast(0))
+                val p = params ?: return
+                if (trusted && p.y != statusBar(ctx) + offsetY) { p.y = statusBar(ctx) + offsetY; if (attached) runCatching { host?.updateViewLayout(root, p) } }
+                follow(islandW, islandH)
+            }
+            "end" -> { if (fitCard()) render(); root?.post { rememberBounds() } }
+        }
+    }
+    override fun send(text: String) {
+        if (sending || text.isBlank() || text.length > 4000) return
+        val ctx = app ?: return
+        val target = answering()
+        if (text != attemptText || attemptId.isBlank()) { attemptText = text; attemptId = UUID.randomUUID().toString() }
+        // A send that may have reached Ash is remembered, so a retry after a crash reuses its id.
+        val prefs = ctx.getSharedPreferences("ash_capsule_input", Context.MODE_PRIVATE)
+        if (!prefs.edit().putString("pending_id", attemptId).putString("pending_text", text).putString("pending_question", target).commit()) {
+            notice = "无法保存发送状态，请重试"; render(); return
+        }
+        customTarget = target; sending = true; notice = "正在发送…"; render()
+        val done: (Boolean, String) -> Unit = { ok, message ->
+            main.post {
+                sending = false; notice = message
+                if (ok) {
+                    prefs.edit().remove("pending_id").remove("pending_text").remove("pending_question").commit()
+                    attemptId = ""; attemptText = ""; customTarget = null
+                    if (target != null) submitted[target] = "answered"
+                    island?.clearInput(); setEditing(false)
+                }
+                // A question that closed under the draft refuses it once, with this notice; sending again is an ordinary message.
+                else if (customTarget != null && !openQuestion(snapshot?.let { m -> cards(m).firstOrNull { it.optString("id") == customTarget } })) customTarget = null
+                restore?.invoke() ?: render()
+            }
+        }
+        if (target == null) TaskStatus.sendInput(text, attemptId, done) else TaskStatus.answerCard(target, "custom", text, done)
+    }
+    private fun toast(text: String) { app?.let { android.widget.Toast.makeText(it, text, android.widget.Toast.LENGTH_SHORT).show() } }
 
     // ---- shared with the agent's own screen work ----
     fun <T> withTouchPassthrough(action: () -> T): T {

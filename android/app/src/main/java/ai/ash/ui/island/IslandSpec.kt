@@ -36,6 +36,27 @@ internal object IslandSpec {
     const val CLOSE_PAD_RIGHT = 4f
     // .btn-primary { height: 46px; radius: 23px }
     const val PRIMARY_RADIUS = 23f
+    // .quote { padding: 12px 14px; border-radius: 14px; box-shadow: inset 0 0 0 1px #2A2A2D; font-size: 14px; line-height: 1.55 }
+    const val QUOTE_PAD_V = 12f; const val QUOTE_PAD_H = 14f; const val QUOTE_RADIUS = 14f; const val QUOTE_STROKE = 0xFF2A2A2D.toInt()
+    const val QUOTE_SIZE = 14f; const val QUOTE_LINE_HEIGHT = 1.55f
+    // .options { gap: 8px }  .opt { height: 44px; padding: 0 16px; radius 22; border: 1.5px; background: rgba(245,166,35,.10) }
+    const val OPTIONS_GAP = 8f; const val OPTION_HEIGHT = 44f; const val OPTION_PAD = 16f; const val OPTION_BORDER = 1.5f; const val OPTION_BACKGROUND = 0x1AF5A623
+    // .ap-row { gap: 8px }  allow { flex: 1.4 }  deny { flex: 1 }  .btn-neutral { color: #ECECEE; 600 }
+    const val APPROVAL_GAP = 8f; const val ALLOW_FLEX = 1.4f; const val DENY_FLEX = 1f; const val NEUTRAL_INK = 0xFFECECEE.toInt()
+    // .ap-approved { background: rgba(43,182,115,.14); gap: 8px }  tick 16px
+    const val APPROVED_BACKGROUND = 0x242BB673; const val APPROVED_GAP = 8f; const val TICK = 16f
+    // .ap-final { height: 46px; background: surface; color: #B4B4BA; font-size: 14px }
+    const val FINAL_INK = 0xFFB4B4BA.toInt(); const val FINAL_SIZE = 14f
+    // host.css .original { font: 12px/1.55 monospace; padding: 12px; border-radius: 14px }
+    const val ORIGINAL_SIZE = 12f; const val ORIGINAL_LINE_HEIGHT = 1.55f; const val ORIGINAL_PAD = 12f; const val ORIGINAL_RADIUS = 14f
+    // host.css .island-nav { font-size: 12px }  .send-notice { font-size: 12px; color: needs-text }
+    const val NAV_SIZE = 12f; const val NOTICE_SIZE = 12f
+    // host.css .isl button:disabled { opacity: .5 }
+    const val DISABLED_ALPHA = 0.5f
+    // host: the card is at most as tall as the screen below it less 32px, and never limited below 220px
+    const val CARD_BOTTOM_ROOM = 32f; const val CARD_MIN_LIMIT = 220f
+    // host.js drag: a press that moves more than 8px drags the island
+    const val DRAG_SLOP = 8f
     // .isl-in { from: blur(3px) }
     const val CONTENT_IN_FROM_BLUR = 3f
     // Text changed in place fades in (host.css .isl-fade)

@@ -126,35 +126,70 @@ internal class IslandDot(ctx: Context) : View(ctx) {
     }
 }
 
-/** The reference's 24-unit stroke icons: collapse chevron, send arrow. */
-internal class IslandIcon(ctx: Context, private val kind: Kind) : View(ctx) {
-    enum class Kind { UP, SEND }
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; strokeWidth = 2.2f }
+/** The reference's 24-unit stroke icons: collapse chevron, send arrow, pager chevrons, the approved tick. */
+internal class IslandIcon(ctx: Context, private val kind: Kind, private val glyphDp: Float = 18f) : View(ctx) {
+    enum class Kind { UP, SEND, PREV, NEXT, TICK }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; strokeWidth = if (kind == Kind.TICK) 2.6f else 2.2f }
     private val path = Path()
     var ink = IslandSpec.ICON_BUTTON_INK
         set(value) { field = value; invalidate() }
     override fun onDraw(canvas: Canvas) {
-        // An 18dp glyph centred in the view, drawn in its 24-unit viewBox.
-        val size = IslandSpec.dp(context, 18f)
+        // The glyph centred in the view, drawn in its 24-unit viewBox.
+        val size = IslandSpec.dp(context, glyphDp)
         canvas.save(); canvas.translate((width - size) / 2, (height - size) / 2); canvas.scale(size / 24f, size / 24f)
         paint.color = ink; path.reset()
         when (kind) {
             Kind.UP -> { path.moveTo(6f, 15f); path.lineTo(12f, 9f); path.lineTo(18f, 15f) }
             Kind.SEND -> { path.moveTo(12f, 19f); path.lineTo(12f, 5f); path.moveTo(6f, 11f); path.lineTo(12f, 5f); path.lineTo(18f, 11f) }
+            Kind.PREV -> { path.moveTo(15f, 6f); path.lineTo(9f, 12f); path.lineTo(15f, 18f) }
+            Kind.NEXT -> { path.moveTo(9f, 6f); path.lineTo(15f, 12f); path.lineTo(9f, 18f) }
+            Kind.TICK -> { path.moveTo(5f, 12.5f); path.lineTo(9.5f, 17f); path.lineTo(19f, 7.5f) }
         }
         canvas.drawPath(path, paint); canvas.restore()
     }
 }
 
-/** A filled rounded rectangle, for buttons, blocks and the input (`border-radius` + background). */
-internal class RoundedBackground(private val color: Int, private val radiusPx: Float) : android.graphics.drawable.Drawable() {
+/** A filled rounded rectangle, for buttons, blocks and the input (`border-radius` + background, and a border inside). */
+internal class RoundedBackground(private val color: Int, private val radiusPx: Float, private val strokeColor: Int = 0, private val strokePx: Float = 0f) : android.graphics.drawable.Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = this@RoundedBackground.color }
+    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = strokePx; this.color = strokeColor }
     private val box = RectF()
-    override fun draw(canvas: Canvas) { box.set(bounds); canvas.drawRoundRect(box, radiusPx, radiusPx, paint) }
-    override fun setAlpha(alpha: Int) { paint.alpha = alpha }
-    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { paint.colorFilter = colorFilter }
+    override fun draw(canvas: Canvas) {
+        box.set(bounds); canvas.drawRoundRect(box, radiusPx, radiusPx, paint)
+        if (strokePx > 0f) { val half = strokePx / 2; box.inset(half, half); canvas.drawRoundRect(box, radiusPx - half, radiusPx - half, edge) }
+    }
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha; edge.alpha = alpha }
+    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { paint.colorFilter = colorFilter; edge.colorFilter = colorFilter }
     @Deprecated("Deprecated in Java") override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
 }
+
+/** `display: flex; flex-wrap: wrap; gap`: children in rows, wrapping at the width. */
+internal class IslandWrap(ctx: Context, private val gapPx: Int) : android.view.ViewGroup(ctx) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val max = MeasureSpec.getSize(widthMeasureSpec)
+        var x = 0; var y = 0; var row = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i); if (c.visibility == GONE) continue
+            c.measure(MeasureSpec.makeMeasureSpec(max, MeasureSpec.AT_MOST), MeasureSpec.makeMeasureSpec(c.layoutParams.height, MeasureSpec.EXACTLY))
+            if (x > 0 && x + c.measuredWidth > max) { x = 0; y += row + gapPx; row = 0 }
+            x += c.measuredWidth + gapPx; row = maxOf(row, c.measuredHeight)
+        }
+        setMeasuredDimension(max, if (childCount == 0) 0 else y + row)
+    }
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        val max = r - l
+        var x = 0; var y = 0; var row = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i); if (c.visibility == GONE) continue
+            if (x > 0 && x + c.measuredWidth > max) { x = 0; y += row + gapPx; row = 0 }
+            c.layout(x, y, x + c.measuredWidth, y + c.measuredHeight)
+            x += c.measuredWidth + gapPx; row = maxOf(row, c.measuredHeight)
+        }
+    }
+}
+
+/** A gap of [px] between a linear layout's shown children (CSS `gap`): gone children take neither room nor gap. */
+internal fun gap(px: Int) = android.graphics.drawable.ShapeDrawable().apply { intrinsicHeight = px; intrinsicWidth = px; paint.color = 0 }
 
 /**
  * Text that changes by cross-fading (the framework's TextSwitcher): the old words fade out while the new fade in, so
