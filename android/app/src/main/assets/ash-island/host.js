@@ -56,6 +56,65 @@
     const key=JSON.stringify(size);
     if(key!==lastSize) { lastSize=key; lastPosted={width,height}; post('size',size); }
   }
+
+  /** Additions to the reference card (scrolling body, original text, settled state, pager, notice, stop), on a detached copy. */
+  function decorate(root,m,c) {
+    const card=root.querySelector('.isl-card');
+    if(!card) return;
+    const head=card.querySelector('.card-head'), foot=card.querySelector('.foot');
+    const content=document.createElement('div'); content.className='island-content';
+    for(const node of [...card.children]) if(node!==head&&node!==foot) content.append(node);
+    card.insertBefore(content,foot);
+    if(c && expandedOriginal) {
+      const pre=document.createElement('pre'); pre.className='original'; pre.textContent=c.original;
+      content.append(pre);
+      content.querySelector('[data-act=original]').textContent='收起原文';
+    }
+    if((c && !pending(c) && c.kind!=='approval') || (c && m.approval==='settled')) {
+      const status=document.createElement('div'); status.className='ap-final';
+      status.textContent={answered:'已回答',withdrawn:'已撤回',skipped:'未执行',redeemed:'已提交执行，结果见后续回复',expired:'已过期',denied:'已拒绝'}[c.state]||'已处理';
+      content.append(status);
+    }
+    if(c && snapshot.cards.length>1 && !snapshot.stale) {
+      const nav=document.createElement('div'); nav.className='island-nav';
+      const chev=d=>`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+      nav.innerHTML=`<button data-act="prev" aria-label="上一项">${chev('M15 6l-6 6 6 6')}</button><span></span><button data-act="next" aria-label="下一项">${chev('M9 6l6 6-6 6')}</button>`;
+      nav.querySelector('span').textContent=`${snapshot.cards.findIndex(x=>x.id===selected)+1} / ${snapshot.cards.length}`;
+      content.prepend(nav);
+    }
+    const status=document.createElement('p'); status.className='send-notice'; status.setAttribute('role','status'); foot.prepend(status);
+    if(!(snapshot.canStop && KIND[m.kind]?.run)) foot.querySelector('[data-act=stop]')?.remove();
+    for(const b of card.querySelectorAll('[data-act=allow],[data-act=deny],[data-act=choose]'))
+      b.disabled=!snapshot.interactive || !!c?.localState || !c || !pending(c);
+    const stop=card.querySelector('[data-act=stop]'); if(stop) stop.disabled=!snapshot.interactive;
+    const send=card.querySelector('[data-act=send]'); if(send) send.disabled=busy;
+  }
+  // In-place update: children are matched by tag, class and action; a matched node keeps its identity.
+  const keyOf=n=>n.nodeType!==1?`#${n.nodeType}`:`${n.tagName}|${(n.getAttribute('class')||'').replace(/\bisl-(in|fade)\b/g,'').trim()}|${n.getAttribute('data-act')||''}`;
+  function fade(node) { if(!node) return; node.classList.remove('isl-fade'); void node.offsetWidth; node.classList.add('isl-fade'); }
+  function patchChildren(old,next) {
+    const olds=[...old.childNodes]; let i=0;
+    for(const n of [...next.childNodes]) {
+      const k=keyOf(n); let j=i; while(j<olds.length && keyOf(olds[j])!==k) j++;
+      if(j<olds.length) { for(;i<j;i++) olds[i].remove(); patchNode(olds[i],n); i++; }
+      else { old.insertBefore(n,olds[i]||null); if(n.nodeType===1) fade(n); }
+    }
+    for(;i<olds.length;i++) olds[i].remove();
+  }
+  function patchNode(o,n) {
+    if(o.nodeType===3) {
+      if(o.data!==n.data) { o.data=n.data; const p=o.parentElement; if(p && !p.matches('.isl-time,.card-meta')) fade(p); }
+      return;
+    }
+    if(o.nodeType!==1 || o.matches('input')) return;
+    if(o.namespaceURI==='http://www.w3.org/2000/svg') { if(o.outerHTML!==n.outerHTML) { o.replaceWith(n); fade(n.parentElement); } return; }
+    const keep=o.classList.contains('isl-fade');
+    for(const a of [...o.attributes]) if(!n.hasAttribute(a.name)) o.removeAttribute(a.name);
+    for(const a of [...n.attributes]) if(o.getAttribute(a.name)!==a.value) o.setAttribute(a.name,a.value);
+    if(keep) o.classList.add('isl-fade');
+    if(o.matches('button')) o.disabled=n.disabled;
+    patchChildren(o,n);
+  }
   function draw() {
     if(!snapshot) return;
     const m=display(), c=m.card, wasInput=document.activeElement?.matches('input');
@@ -67,23 +126,21 @@
     el.dataset.motion=snapshot.reduceMotion?'reduce':'normal';
     if(key!==lastKey) {
       lastKey=key;
-      if(el.dataset.form && el.dataset.form!==form) {
+      const reform=!!el.dataset.form && el.dataset.form!==form;
+      if(reform) {
         // Growing: give the native window ~3 frames to reach the target size before the shell starts to widen.
         el.style.transitionDelay=target()>el.getBoundingClientRect().width?'60ms':'';
         startMorph();
       }
       el.dataset.form=form;
       el.style.setProperty('--tone',TONE[(KIND[m.kind]||KIND.working).tone]);
-      // The vendor mount() redraws innerHTML every tick. Reuse the real input node instead,
-      // preserving IME composition, selection, draft and focus across model/clock updates.
-      const template=document.createElement('template'); template.innerHTML=renderIsland(m,{more});
-      const oldCard=el.querySelector('.isl-card'), nextCard=template.content.querySelector('.isl-card');
-      const oldFoot=oldCard?.querySelector('.foot');
-      if(oldCard&&nextCard&&oldFoot) {
-        // Do not detach the composer at all: even reinserting the same input cancels Android IME composition.
-        for(const node of [...oldCard.children]) if(node!==oldFoot) node.remove();
-        for(const node of [...nextCard.children]) if(!node.matches('.foot')) oldCard.insertBefore(node,oldFoot);
-      } else el.replaceChildren(template.content);
+      const next=document.createElement('div'); next.innerHTML=renderIsland(m,{more}); decorate(next,m,c);
+      // A change of form is the reference's morph and entrance. Within one form the island is updated in place:
+      // avatar, clock, marks and the composer stay put, and only text that changed fades in.
+      if(!reform && el.firstElementChild) { next.firstElementChild?.classList.remove('isl-in'); patchChildren(el,next); }
+      else el.replaceChildren(...next.childNodes);
+      // The vendor mount() redraws innerHTML every tick. Keep the real input node instead, preserving IME
+      // composition, selection, draft and focus across model/clock updates.
       const fresh=el.querySelector('input');
       if(fresh && input && fresh!==input) fresh.replaceWith(input);
       const field=el.querySelector('input');
@@ -91,42 +148,6 @@
         field.maxLength=4000; if(field.value!==draft) field.value=draft; field.disabled=busy;
         field.placeholder=answering()?(KIND.ask.ph):'回复 Ash…';
         if(wasInput && document.activeElement!==field) { field.focus({preventScroll:true}); if(selection) field.setSelectionRange(...selection); }
-      }
-      const card=el.querySelector('.isl-card');
-      if(card) {
-        const head=card.querySelector('.card-head'), foot=card.querySelector('.foot');
-        const content=document.createElement('div'); content.className='island-content';
-        for(const node of [...card.children]) if(node!==head&&node!==foot) content.append(node);
-        card.insertBefore(content,foot);
-        if(c && expandedOriginal) {
-          const pre=document.createElement('pre'); pre.className='original'; pre.textContent=c.original;
-          content.append(pre);
-          content.querySelector('[data-act=original]').textContent='收起原文';
-        }
-        if((c && !pending(c) && c.kind!=='approval') || (c && m.approval==='settled')) {
-          const status=document.createElement('div'); status.className='ap-final';
-          status.textContent={answered:'已回答',withdrawn:'已撤回',skipped:'未执行',redeemed:'已提交执行，结果见后续回复',expired:'已过期',denied:'已拒绝'}[c.state]||'已处理';
-          content.append(status);
-        }
-        if(c && snapshot.cards.length>1 && !snapshot.stale) {
-          const nav=document.createElement('div'); nav.className='island-nav';
-          const chev=d=>`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
-          nav.innerHTML=`<button data-act="prev" aria-label="上一项">${chev('M15 6l-6 6 6 6')}</button><span></span><button data-act="next" aria-label="下一项">${chev('M9 6l6 6-6 6')}</button>`;
-          nav.querySelector('span').textContent=`${snapshot.cards.findIndex(x=>x.id===selected)+1} / ${snapshot.cards.length}`;
-          content.prepend(nav);
-        }
-        if(!foot.querySelector('.send-notice')) {
-          const status=document.createElement('p'); status.className='send-notice'; status.setAttribute('role','status'); foot.prepend(status);
-        }
-        const existingStop=el.querySelector('[data-act=stop]');
-        if(snapshot.canStop && KIND[m.kind]?.run && !existingStop) {
-          const stop=document.createElement('button'); stop.className='stop'; stop.dataset.act='stop'; stop.innerHTML='<i></i>停止任务';
-          foot.querySelector('.foot-links').prepend(stop);
-        } else if(!snapshot.canStop || !KIND[m.kind]?.run) existingStop?.remove();
-        for(const b of el.querySelectorAll('[data-act=allow],[data-act=deny],[data-act=choose],[data-act=custom]'))
-          b.disabled=!snapshot.interactive || !!c?.localState || !c || !pending(c);
-        const stop=el.querySelector('[data-act=stop]'); if(stop) stop.disabled=!snapshot.interactive;
-        const send=el.querySelector('[data-act=send]'); if(send) send.disabled=busy;
       }
     }
     // Clock pulses never replace DOM, replay entrance animations, or dismiss the keyboard.

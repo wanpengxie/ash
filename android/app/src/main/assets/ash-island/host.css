@@ -24,3 +24,6 @@ html,body{background:transparent;overflow:hidden;margin:0;width:100%;height:100%
 .isl[data-motion=reduce],.isl[data-motion=reduce] *{animation:none!important;transition:none!important}
 .isl-restored{animation:islandRestore .18s ease-out}
 @keyframes islandRestore{from{opacity:0}to{opacity:1}}
+/* Text that changed in place fades in; everything else keeps its place. */
+.isl-fade{animation:islFade .24s ease-out both}
+@keyframes islFade{from{opacity:0}to{opacity:1}}
