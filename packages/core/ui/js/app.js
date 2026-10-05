@@ -149,17 +149,17 @@ export function boot({ uiTransport } = {}) {
       try { await net.enqueueSay(option.text, [], { in_reply_to: item.id, option_id: option.id }); }
       catch (error) { optionPending.delete(item.id); throw error; }
     },
-    onAnswerAsk: async (ask, choice) => {
+    onAnswerAsk: async (ask, choice, answerText) => {
       const fresh = approvalSections(timeline.view).pending.find((item) => item.id === ask.id);
       if (!fresh || fresh.seq !== ask.seq) throw new Error("待批请求已失效。");
       let intent = askIntents.get(ask.id);
-      if (intent && (intent.choice !== choice || intent.status === "pending" || intent.status === "confirmed" || intent.status === "rejected")) return;
-      if (!intent) { intent = { choice, clientId: crypto.randomUUID(), status: "pending" }; askIntents.set(ask.id, intent); }
+      if (intent?.choice && (intent.choice !== choice || intent.answerText !== answerText || intent.status === "pending" || intent.status === "confirmed" || intent.status === "rejected")) return;
+      if (!intent?.choice) { intent = { choice, answerText, customDraft: intent?.customDraft, clientId: crypto.randomUUID(), status: "pending" }; askIntents.set(ask.id, intent); }
       else intent.status = "pending";
       const binding = { token: net.token, screen: net.screen, scope: net.currentScope, generation: net.generation };
       const current = () => binding.token === net.token && binding.screen === net.screen && binding.scope === net.currentScope && binding.generation === net.generation;
       try {
-        await answerGateAsk(net, current, fresh, choice, intent.clientId, (id) => timeline.byId.get(id));
+        await answerGateAsk(net, current, fresh, choice, intent.clientId, (id) => timeline.byId.get(id), { answerText });
         intent.status = "confirmed";
       } catch (error) {
         intent.status = /无权|被拒绝|已失效|不可用/.test(error?.message || "") ? "rejected" : "uncertain";

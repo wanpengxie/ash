@@ -201,7 +201,8 @@ export async function startOwner(config: Config): Promise<Running> {
       if (caller.transportPrincipal === "service:senses" && caller.member === "service:senses" && caller.local && !caller.remote &&
         request.from === "service:senses" && request.to === "agent:main" && request.word === "wake") return true;
       if (caller.transportPrincipal === "service:gate" && caller.member === "service:gate" && caller.local && !caller.remote &&
-        request.from === "service:gate" && request.to === "person:owner" && request.word === "ask") return true;
+        request.from === "service:gate" && (request.to === "person:owner" && request.word === "ask" ||
+          request.to?.startsWith("agent:") && request.word === "say")) return true;
       return false;
     });
     const members = new WorldMembers(world);
@@ -261,10 +262,7 @@ export async function startOwner(config: Config): Promise<Running> {
       const resultRoot = join(config.workspaces!.home, ".ash", "results");
       agentTools = new AgentMcpServer({ router: world, members, ledger, log,
         resultArtifacts: { hostDir: resultRoot, toAgentPath: (path) => containerConfig.direct ? path : `/root/work/.ash/results/${basename(path)}` },
-        status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }),
-        confirm: ({ binding, turn, callId, title, detail, signal }) => world.requestAgentConfirmation({ member: binding.member,
-          sessionId: `session-${createHash("sha256").update(binding.label).digest("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5")}`,
-          turn, callId, title, detail, signal }) });
+        status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }) });
       await agentTools.start();
       const mainDeclaration = declarations.find((item) => item.id === "agent:main")!;
       const policyOf = (item: AgentDeclaration) => ({ ...(item.tools ? { tools: item.tools } : {}), ...(item.words ? { words: (member: string, word: string) => wordAllowed(item, member, word) } : {}) });
@@ -565,7 +563,7 @@ export async function startOwner(config: Config): Promise<Running> {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
       link?.stop(); await taskStatus?.close(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); world.dispose(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();

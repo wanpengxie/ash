@@ -200,9 +200,10 @@ test("agents work together: the main agent asks the keeper, which answers from i
     assert.equal((await ended).body.reason, "completed");
     const toOwner = running.ledger.list({ after: 0, limit: 1000 }).filter((m) => m.kind === "request" && m.from === "agent:main" && m.to === "person:owner" && m.word === "say").map((m) => String(m.body.text));
     assert.deepEqual(toOwner, ["你的生日是 3 月 4 日"]);
-    // The keeper ran in its own session: its brief, its tools (no human_* tools), its own workspace.
+    // The keeper has its own brief/workspace and can inspect its own approvals, but cannot speak to the owner.
     assert.ok(keeperTurns.length >= 2);
-    assert.ok(!keeperTurns[0]!.tools.some((tool) => tool.includes("human_")), "the keeper cannot speak to the owner");
+    assert.ok(!keeperTurns[0]!.tools.some((tool) => /human_(say|ask|confirm|notify|show)$/.test(tool)), "the keeper cannot speak to the owner");
+    assert.ok(keeperTurns[0]!.tools.includes("mcp__ash__human_pending"));
     assert.ok(keeperTurns[0]!.tools.includes("mcp__ash__agent_tell"));
     assert.ok(seen.find((item) => item.user.includes("我生日哪天"))!.tools.includes("mcp__ash__human_say"));
     assert.ok(existsSync(join(root, "agents", "keeper")), "the keeper has its own workspace");

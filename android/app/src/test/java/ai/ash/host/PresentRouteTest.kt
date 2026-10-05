@@ -5,6 +5,18 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PresentRouteTest {
+    @Test fun questionOptionsAndCustomAnswersKeepTheirOriginalRoute() {
+        val option = PresentRoutes.question("m_question", "service:gate", setOf("home", "work"), "work", null, true, 200, 100)
+        assertEquals("work", option.choice)
+        assertEquals("m_question", option.replyTo)
+        val custom = PresentRoutes.question("m_question", "service:gate", setOf("home"), "custom", "  公司  ", true, 200, 100)
+        assertEquals("公司", custom.text)
+        assertEquals("service:gate", custom.to)
+        assertThrows(IllegalArgumentException::class.java) { PresentRoutes.question("m_question", "service:gate", setOf("home"), "custom", "公司", false, 200, 100) }
+        assertThrows(IllegalArgumentException::class.java) { PresentRoutes.question("m_question", "service:gate", setOf("home"), "unoffered", null, true, 200, 100) }
+        assertThrows(IllegalArgumentException::class.java) { PresentRoutes.question("m_question", "service:gate", setOf("home"), "home", null, true, 100, 100) }
+    }
+
     @Test fun notificationApprovalNeedsDenyButAllowsAnOfferedSubset() {
         assertEquals(true, PresentRoutes.notificationOptionsValid(listOf("once", "deny")))
         assertEquals(true, PresentRoutes.notificationOptionsValid(listOf("once", "always", "deny")))

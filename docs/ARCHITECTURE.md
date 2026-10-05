@@ -22,6 +22,45 @@ Members exchange typed words using `request`, `response`, and `event` messages. 
 
 The DSH door presents five ash-owned tools: `ash_describe`, `ash_send`, `ash_say`, `ash_react`, and `ash_show`. Device capabilities are discovered through `ash_describe` and invoked through `ash_send`, not registered as an individual model tool per capability. An audited set of DSH-native file and web tools remains available. Sensitive operations pass through the existing gate, and managed identity/memory files use the `service:self` words.
 
+## Asynchronous owner interaction (container runtime)
+
+The container's `AgentMcpServer` carries approval metadata separately from capability arguments:
+`purpose` and `approval_ttl_minutes` (default 10, range 1–10080). Reads and rule/reviewer passes still execute
+normally. When the router creates an owner card, the tool immediately returns `waiting_owner`, `pending_id`,
+`expires_at` and the card title. It does not spend the 15-second fast path waiting for a human. Ending or
+cancelling that agent turn does not withdraw the card. `await_result` remains for actual long execution,
+not owner decisions. The older in-process DSH Door retains its separate synchronous compatibility bridge.
+
+`human_pending` and `human_outbox` share the message ledger's SQLite database. Gate creation records the
+frozen original request and its owner ask atomically. An answer changes no external state: a durable outbox
+delivers the original question, purpose, answer, times, original owner context and frozen action to the
+originating agent's inbox. The normal inbox steers an active session or starts another turn. Stable delivery
+client IDs prevent duplicate inbox messages, including a crash after intake but before delivery acknowledgement.
+Recovery also reconciles an owner response committed just before the pending-state update.
+
+`human_pending_redeem(pending_id)` is the only container-tool path that dispatches an approved frozen action.
+It accepts no replacement arguments. Current tool/word policy, caller authority, contract fingerprint, TTL
+and the redeeming turn are checked again; the ledger atomically claims the approval with the dispatch phase.
+The request runs under the new turn for screen constraints and cancellation. Repeated redemption is rejected;
+the pending record or execution receipt exposes the result without another execution. A crash after the claim reports an
+unknown outcome rather than replaying a potentially committed external effect. The agent must re-read an
+affected screen and reassess current intent before redemption; Ash does not freeze an external screen.
+
+`human_ask` and `human_confirm` create the same durable pending record without an attached action.
+`human_pending` / `human_pending_get` inspect it; `human_withdraw` only withdraws an unanswered request;
+`human_pending_skip` records why an approved action will not continue. Main may inspect all records, but
+only the originating identity may mutate or redeem; helpers' pending, approval-audit and rule queries are
+filtered server-side. Agent removal retires that identity's pending work and receipt namespace.
+
+The `human.pending` ledger event distinguishes waiting, answered, redeemed, denied, expired, withdrawn and
+skipped. Chat cards and the approvals page distinguish approval from execution and retain the full original.
+Android question notifications validate the original offered choices and route custom text back to the
+original ask, rather than turning it into an unrelated main-agent message. Approval notifications retain
+their fixed approval choices. Host socket disconnects are contained within a client worker.
+
+Both main and helper prompts include `prompts/rules/approvals.md`. Regression coverage lives in
+`world/human-pending.test.ts`, the Chromium `human-pending.spec.js`, and Android notification-route tests.
+
 ## Processes and transport
 
 ```text

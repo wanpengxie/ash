@@ -85,6 +85,7 @@ export class PostMember implements Member {
     if (kind === "approval" && (this.options.ledger.responseTo(source.id) ||
       typeof source.body.expires_at !== "number" || source.body.expires_at <= Date.now())) return null;
     const value = kind === "approval" ? { id: source.id, kind, title: source.body.title, text: source.body.detail,
+      ...(source.body.human_kind === "question" ? { human_kind: "question", allow_custom: source.body.allow_custom === true } : {}),
       options: source.body.options, expires_at: source.body.expires_at, reply_to: source.id, reply_target: source.from }
       : { id: source.id, kind, title: kind === "due" ? "Due" : kind === "reply" ? "Reply" : "Ash", text: source.body.text };
     return hostPresentationErrors(value).length ? null : value as HostPresentationV2;

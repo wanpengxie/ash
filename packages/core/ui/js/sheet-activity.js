@@ -54,7 +54,7 @@ function turnCard(parent, id, turn, { askAbout, now, expanded, onExpand, backgro
       // A step still marked pending after the turn ended is just a past step, not a live spinner.
       const state = step.state === "pending" && Number.isFinite(turn.ended) ? "" : step.state;
       if (state) row.dataset.state = state;
-      const stateText = step.summary ? "思路摘要" : step.state === "ok" ? "调用完成" : step.state === "failed" ? "执行失败" : step.state === "unconfirmed" ? "返回记录不完整，查看详情" : step.state === "accepted" ? "已受理，等待结果" : step.state === "pending" ? Number.isFinite(turn.ended) ? "结果未确认" : "进行中" : "";
+      const stateText = step.summary ? "思路摘要" : step.state === "ok" ? "调用完成" : step.state === "waiting_owner" ? "已发起请求，等待你回答（未执行）" : step.state === "failed" ? "执行失败" : step.state === "unconfirmed" ? "返回记录不完整，查看详情" : step.state === "accepted" ? "已受理，等待结果" : step.state === "pending" ? Number.isFinite(turn.ended) ? "结果未确认" : "进行中" : "";
       const took = step.tool && Number.isFinite(step.ts) ? duration(Math.max(0, (step.ended ?? turn.ended ?? now) - step.ts)) : "";
       text(row, "div", [step.tool, stateText, took, step.approval].filter(Boolean).join(" · "), "activity-step-meta");
       // Keep the newest/current work visible, not only the first five steps.

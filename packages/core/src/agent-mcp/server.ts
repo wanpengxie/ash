@@ -16,7 +16,6 @@ import { RouterError, type TrustedRouteContext, type WorldRouter } from "../worl
 export const TOOL_ERROR_CODES = ["payload_invalid", "forbidden", "denied", "unreachable", "timeout", "result_unknown", "internal_error", "capability_error"] as const;
 export type ToolErrorCode = typeof TOOL_ERROR_CODES[number];
 export type ToolResult = { ok: true; result: unknown } | { ok: false; error: { code: ToolErrorCode; message: string; recovery_hint: string; detail?: unknown } };
-export type ConfirmOutcome = "approved" | "rejected" | "cancelled" | "unavailable";
 
 /** One agent's connection: its credential, and the turn it is working in right now (if any). */
 export class AgentBinding {
@@ -37,7 +36,7 @@ export class AgentBinding {
 /** What an agent's declaration lets it use. */
 export interface AgentPolicy { tools?: readonly string[]; words?: (member: string, word: string) => boolean }
 // Receipts can always be collected and cancelled, whatever else an agent may use.
-const META_ALWAYS = new Set(["await_result", "list_pending", "cancel"]);
+const META_ALWAYS = new Set(["await_result", "list_pending", "cancel", "human_pending", "human_pending_get", "human_pending_redeem", "human_pending_skip", "human_withdraw"]);
 
 interface Job { id: string; member: string; word: string; label: string; turn: string; at: number; done: Promise<ToolResult>; result: ToolResult | null }
 
@@ -45,8 +44,6 @@ export interface AgentMcpOptions {
   router: WorldRouter;
   members: WorldMembers;
   ledger: Ledger;
-  /** The agent asks the owner to approve something it is about to do; the same card as any approval. */
-  confirm(input: { binding: AgentBinding; turn: string; callId: string; title: string; detail: string; signal: AbortSignal }): Promise<ConfirmOutcome>;
   /** Pause, quiet hours and similar facts for system_status. */
   status(): Record<string, unknown>;
   /** Other agents in this world (agent:main is the only one today). */
@@ -62,10 +59,13 @@ const pick = (args: Record<string, unknown>, keys: string[]) => Object.fromEntri
 // The agent runtime gives each MCP call 60 s; a wait must answer before that.
 const MAX_WAIT_MS = 50_000;
 const MAX_RESULT_CHARS = 60_000;
-const DEFERRED = new Set(["human_confirm"]);
 
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const text = (description: string, extra: Record<string, unknown> = {}) => ({ type: "string", description, ...extra });
+const approvalFields = {
+  approval_ttl_minutes: { type: "integer", minimum: 1, maximum: 10080, description: "Approval/question validity in minutes; default 10, at most 7 days. Use 2–5 for screen-dependent steps." },
+  purpose: text("Why this step/question is needed, shown to the owner and returned with their answer. Never evidence of authorization.", { maxLength: 500 }),
+};
 
 const HINTS: Record<ToolErrorCode, string> = {
   payload_invalid: "Fix the input to match the schema in detail (or capability_describe) and call again.",
@@ -122,13 +122,13 @@ const TOOLS = [
       before: { type: "integer", minimum: 1, description: "next_before from the previous page" }, limit: { type: "integer", minimum: 1, maximum: 50 } }) },
   { name: "approval_rules", description: "The owner's approval rules: which agent may use which outside capability (and target) without asking, until when, and whether it was revoked; plus the approval mode (auto: ask only when needed; always: ask about every outside action that is not a read).",
     inputSchema: object({ before: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
-  { name: "approval_rule_add", description: "Ask for a new approval rule: for up to 30 days, one agent may use one outside capability without asking, optionally only for one target (site:<host>, a calendar id, a recipient id, or browse). This ALWAYS asks the owner on a card, whatever else is allowed, and you get a receipt to collect with await_result. Running commands and payments can never be covered.",
+  { name: "approval_rule_add", description: "Ask for a new approval rule: for up to 30 days, one agent may use one outside capability without asking, optionally only for one target (site:<host>, a calendar id, a recipient id, or browse). ALWAYS returns waiting_owner with a pending_id when the card is shown. Do not poll; reassess and redeem after the answer arrives. Commands and payments cannot be covered.",
     inputSchema: object({ agent: text("Agent id, e.g. agent:main"), member: text("Device member, e.g. device:phone"), word: text("Capability, e.g. clipboard.set"),
-      target: text("Only this target; omit for every use of the capability"), days: { type: "integer", minimum: 1, maximum: 30 } }, ["agent", "member", "word"]) },
-  { name: "approval_mode_set", description: "Ask to switch the approval mode: auto (outside actions go by rules and review, and ask the owner only when needed) or always (every outside action that is not a read asks the owner). This ALWAYS asks the owner on a card; collect the result with await_result.",
-    inputSchema: object({ mode: { type: "string", enum: ["auto", "always"] } }, ["mode"]) },
-  { name: "approval_rule_remove", description: "Ask to revoke an approval rule by id. This ALWAYS asks the owner on a card; collect the result with await_result.",
-    inputSchema: object({ id: text("Rule id from approval_rules") }, ["id"]) },
+      target: text("Only this target; omit for every use of the capability"), days: { type: "integer", minimum: 1, maximum: 30 }, ...approvalFields }, ["agent", "member", "word"]) },
+  { name: "approval_mode_set", description: "Ask to switch approval mode: auto (rules and review) or always (every outside non-read action asks). Returns waiting_owner immediately when the card is shown. Do not poll; reassess and redeem after the contextual answer arrives.",
+    inputSchema: object({ mode: { type: "string", enum: ["auto", "always"] }, ...approvalFields }, ["mode"]) },
+  { name: "approval_rule_remove", description: "Ask to revoke a rule. Always asks the owner; returns waiting_owner with pending_id. Do not poll; reassess and redeem after the answer arrives.",
+    inputSchema: object({ id: text("Rule id from approval_rules"), ...approvalFields }, ["id"]) },
   { name: "history_query", description: "Search the conversation history with the owner. Give text to search, or read_seq to read one message in full. Returns newest first, with seq numbers; page older with before_seq.",
     inputSchema: object({ text: text("Words to look for (case-insensitive)"), speaker: { type: "string", enum: ["owner", "agent", "any"] },
       before_seq: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 }, read_seq: { type: "integer", minimum: 1 } }) },
@@ -139,11 +139,17 @@ const TOOLS = [
     inputSchema: object({ text: text("The notification text") }, ["text"]) },
   { name: "human_ask", description: "Ask the owner a question with options to tap. Returns at once: the owner's answer arrives later as their next message to you (possibly while you are still working). Do not wait for it in a loop.",
     inputSchema: object({ question: text("The question"), options: { type: "array", minItems: 1, maxItems: 8, items: object({ id: text("Stable id"), text: text("What the owner sees") }, ["id", "text"]) },
-      allow_custom: { type: "boolean", description: "Let the owner type their own answer" } }, ["question", "options"]) },
+      allow_custom: { type: "boolean", description: "Let the owner type their own answer" }, ...approvalFields }, ["question", "options"]) },
   { name: "human_show", description: "Show the owner a card: a link {type:link,url,title,summary?}, a workspace file {type:file,workspace:'home',path,name,mime_type,size}, a workspace image {type:image,workspace:'home',path,alt?}, or a permission card {type:permission,permission,why} naming an Android setting to switch on (calendar, notifications, battery, accessibility, all_files, usage, write_settings, overlay, shizuku). Paths are relative to your workspace.",
     inputSchema: object({ card: { type: "object", description: "The card, see the description" } }, ["card"]) },
-  { name: "human_confirm", description: "Ask the owner to approve something before you do it; they see an approval card with your title and detail. Use it when you are about to do something consequential that ash would not ask about by itself, or when you are unsure the owner wants it. Returns {decision: approved|rejected}. If the owner takes longer than 15 s you get {status:accepted, request_id}; then call await_result.",
-    inputSchema: object({ title: text("One line: what you want to do"), detail: text("Exactly what will happen: the text to send, the command, the target") }, ["title", "detail"]) },
+  { name: "human_confirm", description: "Ask for an explicit confirmation; returns waiting_owner immediately with pending_id and expires_at. The contextual answer arrives later in your inbox. No action is attached to this confirmation; do not poll or use await_result.",
+    inputSchema: object({ title: text("One line: what you want to do"), detail: text("Exactly what will happen: the text to send, the command, the target"), ...approvalFields }, ["title", "detail"]) },
+  { name: "human_pending", description: "List durable questions, confirmations and approvals. Main sees all; helpers see only their own. Inspect when relevant, never poll for an answer.",
+    inputSchema: object({ type: { type: "string", enum: ["question", "confirmation", "approval"] }, state: { type: "string", enum: ["waiting", "answered", "redeemed", "denied", "expired", "withdrawn", "skipped"] }, before: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
+  { name: "human_pending_get", description: "Read a human pending request, its original question/purpose, answer, frozen action and execution result.", inputSchema: object({ pending_id: text("Pending id") }, ["pending_id"]) },
+  { name: "human_pending_redeem", description: "Execute your approved frozen action exactly once. Reassess current user intent and re-read any affected screen first. Takes no new action parameters. Fails if denied, expired, withdrawn or already redeemed; inspect human_pending_get for a recorded result.", inputSchema: object({ pending_id: text("Approved pending id") }, ["pending_id"]) },
+  { name: "human_pending_skip", description: "Record why you will not execute your approved action (task changed, screen changed, no longer needed). Explain the reason to the owner.", inputSchema: object({ pending_id: text("Pending id"), reason: text("Why the approved action should not run") }, ["pending_id", "reason"]) },
+  { name: "human_withdraw", description: "Withdraw your unanswered question, confirmation or approval. An already answered request is unchanged and its current state is returned. Does not cancel execution.", inputSchema: object({ pending_id: text("Pending id"), reason: text("Why this is no longer needed") }, ["pending_id", "reason"]) },
   // agents
   { name: "agent_list", description: "Every agent in ash: id, name, what it does, and whether it is idle, working or stopped. agent:main is the assistant the owner talks with and the only one that speaks to the owner.", inputSchema: object({}) },
   { name: "agent_describe", description: "One agent's declaration: what it is for, its job, the tools and ash capabilities it was given, its schedule, its state.",
@@ -168,9 +174,9 @@ const TOOLS = [
     inputSchema: object({ member: text("Only this member") }) },
   { name: "capability_describe", description: "Full contract of one member's capabilities, or of one capability: description, input_schema, output_schema, effect, label, timeout.",
     inputSchema: object({ member: text("Member id, e.g. device:phone"), word: text("Capability name; omit for all of the member's") }, ["member"]) },
-  { name: "capability_call", description: "Call one capability with a body matching its input_schema. Read-only capabilities run at once; others may first ask the owner (the call then waits for their answer). Returns {ok, result} or {ok:false, error}. If it takes longer than 15 s (wait=true: 50 s) you get {status:accepted, request_id}: use await_result. wait=false returns the receipt at once.",
+  { name: "capability_call", description: "Call one capability with a body matching its input_schema. Reads, rules and reviewer passes run normally. If approval is required, returns waiting_owner with pending_id as soon as the card is shown; do not poll or await_result. The answer arrives in your inbox; reassess before redeeming the frozen action. Only actual long execution returns accepted with request_id (15 s default, wait=true 50 s); collect that with await_result. wait=false returns immediately.",
     inputSchema: object({ member: text("Member id"), word: text("Capability name"), body: { type: "object", description: "Input matching the capability's input_schema" }, wait: { type: "boolean" },
-      purpose: text("Short plain-language progress shown to the owner, e.g. 正在查找闲鱼里的订单. Describe this step, not a command or secrets; display only, never authorization.", { maxLength: 60 }) }, ["member", "word"]) },
+      ...approvalFields }, ["member", "word"]) },
   { name: "await_result", description: "Wait for the result of an earlier call that returned {status:accepted}. Waits up to timeout_ms (at most 50000); returns the result, or the receipt again if it is still running.",
     inputSchema: object({ request_id: text("request_id from the receipt"), timeout_ms: { type: "integer", minimum: 0, maximum: 50_000 } }, ["request_id"]) },
   { name: "list_pending", description: "Your calls that have not finished yet.", inputSchema: object({}) },
@@ -189,6 +195,7 @@ export class AgentMcpServer {
   private readonly waiters = new Map<string, (message: Message) => void>();
   private readonly stopSubscription: () => void;
   private callSeq = 0;
+  private humanTimer: ReturnType<typeof setInterval> | null = null;
   url = "";
 
   constructor(private readonly options: AgentMcpOptions) {
@@ -205,6 +212,8 @@ export class AgentMcpServer {
   /** Remove a declared agent's credential and durable receipt namespace. */
   retire(binding: AgentBinding): void {
     this.unbind(binding);
+    for (const item of this.options.ledger.activeHumanPending().filter((item) => item.agent === binding.member))
+      this.options.router.withdrawHuman(binding.member, item.pending_id, "发起此请求的 Agent 已移除", item.state === "answered");
     const pending = new Set(this.options.ledger.pendingAgentJobs(binding.member).map((job) => job.requestId));
     for (const job of binding.jobs.values()) if (!job.result) pending.add(job.id);
     if (pending.size) this.options.router.cancel([...pending]);
@@ -222,11 +231,15 @@ export class AgentMcpServer {
     const server = createServer((request, response) => { void this.serve(request, response); });
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve()); });
     this.http = server;
+    this.humanTimer = setInterval(() => { void this.options.router.refreshHumanPending().catch((error) => this.options.log?.("human pending refresh failed", error)); }, 1000);
+    this.humanTimer.unref();
     this.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
     return this.url;
   }
 
   async close(): Promise<void> {
+    if (this.humanTimer) clearInterval(this.humanTimer);
+    this.humanTimer = null;
     this.stopSubscription();
     const server = this.http;
     this.http = null;
@@ -281,12 +294,16 @@ export class AgentMcpServer {
   async call(binding: AgentBinding, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult | Record<string, unknown>> {
     if (!TOOL_NAMES.includes(name)) return failure("payload_invalid", `unknown tool ${name}`);
     if (!binding.allowsTool(name)) return failure("forbidden", `${name} is not one of your tools`);
+    if (args.approval_ttl_minutes !== undefined && (!Number.isInteger(args.approval_ttl_minutes) || Number(args.approval_ttl_minutes) < 1 || Number(args.approval_ttl_minutes) > 10080))
+      return failure("payload_invalid", "approval_ttl_minutes must be an integer from 1 to 10080");
+    if (args.purpose !== undefined && (typeof args.purpose !== "string" || args.purpose.length > 500)) return failure("payload_invalid", "purpose must be text up to 500 characters");
     if (name === "await_result") return this.awaitResult(binding, args);
     if (name === "list_pending") {
       const durable = this.options.ledger.pendingAgentJobs(binding.member)
+        .filter((job) => !this.options.ledger.humanPending(job.requestId) || this.options.ledger.humanPending(job.requestId)?.state === "redeemed")
         .map((job) => ({ request_id: job.requestId, member: job.member, word: job.word, label: job.label, since: job.at }));
       const ids = new Set(durable.map((job) => job.request_id));
-      const local = [...binding.jobs.values()].filter((job) => !job.result && !ids.has(job.id))
+      const local = [...binding.jobs.values()].filter((job) => !job.result && !ids.has(job.id) && (!this.options.ledger.humanPending(job.id) || this.options.ledger.humanPending(job.id)?.state === "redeemed"))
         .map((job) => ({ request_id: job.id, member: job.member, word: job.word, label: job.label, since: job.at }));
       return { ok: true, result: { pending: [...durable, ...local].sort((a, b) => a.since - b.since) } };
     }
@@ -299,8 +316,36 @@ export class AgentMcpServer {
     const active = binding.active;
     if (!active) return failure("forbidden", "no turn is running for you; ash tools work only while you are handling a message or wake");
     const turnSignal = AbortSignal.any([active.signal, signal]);
+    if (turnSignal.aborted) return failure("result_unknown", "this turn or tool call was cancelled before acceptance");
     try {
       switch (name) {
+        case "human_pending":
+          await this.options.router.refreshHumanPending();
+          return { ok: true, result: this.options.ledger.humanPendingList(binding.member === "agent:main" ? undefined : binding.member, args) };
+        case "human_pending_get": {
+          await this.options.router.refreshHumanPending();
+          const item = this.options.ledger.humanPending(String(args.pending_id));
+          return item && (binding.member === "agent:main" || this.options.ledger.humanOwnedBy(binding.member, item.pending_id)) ? { ok: true, result: item } : failure("forbidden", "pending request is not visible to you");
+        }
+        case "human_pending_skip":
+        case "human_withdraw":
+          if (typeof args.reason !== "string" || !args.reason.trim()) return failure("payload_invalid", "reason is required");
+          return { ok: true, result: this.options.router.withdrawHuman(binding.member, String(args.pending_id), args.reason.slice(0, 1000), name === "human_pending_skip") };
+        case "human_pending_redeem": {
+          if (Object.keys(args).some((key) => key !== "pending_id") || typeof args.pending_id !== "string") return failure("payload_invalid", "redemption takes only pending_id, never new action parameters");
+          const item = this.options.ledger.humanPending(String(args.pending_id));
+          if (!item?.action || item.agent !== binding.member || !this.options.ledger.agentJob(binding.member, item.pending_id)) return failure("forbidden", "no frozen action for your current identity");
+          if (item.state === "redeemed") return failure("denied", "approval already redeemed; inspect human_pending_get for the recorded result or unknown outcome");
+          if (item.action.member !== "service:gate" && !binding.allowsWord(item.action.member, item.action.word)) return failure("forbidden", "this capability is no longer allowed for you");
+          const actionTool = item.action.member === "service:gate" ? ({ "rules.set": "approval_rule_add", "rules.revoke": "approval_rule_remove", "mode.set": "approval_mode_set" } as Record<string, string>)[item.action.word] : "capability_call";
+          if (!actionTool || !binding.allowsTool(actionTool)) return failure("forbidden", "the original tool is no longer allowed for you");
+          // The usual job collector handles long execution, but never a human wait.
+          const execution = this.options.router.redeemHuman(this.context(binding, active.turn), item.pending_id,
+            () => !turnSignal.aborted && binding.active?.turn === active.turn)
+            .then((message) => fromResponse(message.body as ResponseBody, this.spec(item.action!.member, item.action!.word))).catch(fromError);
+          const job = this.restoreJob(binding, item.pending_id);
+          return job ? Promise.race([execution, this.within(job, this.options.fastPathMs ?? FAST_PATH_MS, true)]) : execution;
+        }
         case "system_status": return { ok: true, result: { now: new Date().toISOString(), epoch_ms: Date.now(), time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, ...this.options.status() } };
         case "vault_list": return await this.send(binding, active.turn, "service:vault", "list", {}, turnSignal);
         case "vault_describe": return await this.send(binding, active.turn, "service:vault", "describe", { ref: args.ref }, turnSignal);
@@ -316,20 +361,25 @@ export class AgentMcpServer {
         case "history_query": return this.history(args);
         case "approval_log": return await this.send(binding, active.turn, "service:gate", "audit", pick(args, ["request_id", "requester", "word", "decision", "before", "limit"]), turnSignal);
         case "approval_rules": return await this.send(binding, active.turn, "service:gate", "rules.list", pick(args, ["before", "limit"]), turnSignal);
-        // Changing rules waits for the owner's card: a receipt comes back after the fast path.
-        case "approval_rule_add": return await this.job(binding, active.turn, "service:gate", "rules.set", pick(args, ["agent", "member", "word", "target", "days"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
-        case "approval_rule_remove": return await this.job(binding, active.turn, "service:gate", "rules.revoke", { id: args.id }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
-        case "approval_mode_set": return await this.job(binding, active.turn, "service:gate", "mode.set", { mode: args.mode }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        // Changing rules produces a durable owner card; its answer never dispatches the change automatically.
+        case "approval_rule_add": return await this.job(binding, active.turn, "service:gate", "rules.set", pick(args, ["agent", "member", "word", "target", "days"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal, args);
+        case "approval_rule_remove": return await this.job(binding, active.turn, "service:gate", "rules.revoke", { id: args.id }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal, args);
+        case "approval_mode_set": return await this.job(binding, active.turn, "service:gate", "mode.set", { mode: args.mode }, this.options.fastPathMs ?? FAST_PATH_MS, turnSignal, args);
         case "human_say": return await this.send(binding, active.turn, "person:owner", "say", { text: args.text, kind: args.kind ?? "reply" }, turnSignal);
         case "human_notify": return await this.send(binding, active.turn, "person:owner", "say", { text: args.text, kind: "heads_up" }, turnSignal);
         case "human_ask": {
-          const options = Array.isArray(args.options) ? args.options : [];
-          const sent = await this.send(binding, active.turn, "person:owner", "show", { card: { type: "options", prompt: args.question, options,
-            ...(args.allow_custom === true ? { allow_custom: true } : {}) } }, turnSignal);
-          return sent.ok ? { ok: true, result: { asked: true, note: "The owner's answer will arrive as their next message to you." } } : sent;
+          if (typeof args.question !== "string" || !args.question.trim() || !Array.isArray(args.options) || !args.options.length) return failure("payload_invalid", "question and options are required");
+          const item = this.options.router.createHumanQuestion(this.context(binding, active.turn), { type: "question", title: args.question, detail: String(args.purpose ?? ""),
+            purpose: String(args.purpose ?? ""), ttlMinutes: Number(args.approval_ttl_minutes ?? 10), options: args.options.map((value) => ({ id: value.id, label: value.text })), allowCustom: args.allow_custom === true });
+          return this.humanReceipt(item.pending_id)!;
         }
         case "human_show": return await this.send(binding, active.turn, "person:owner", "show", { card: args.card }, turnSignal);
-        case "human_confirm": return await this.confirm(binding, active.turn, args, turnSignal);
+        case "human_confirm": {
+          if (typeof args.title !== "string" || !args.title.trim() || typeof args.detail !== "string") return failure("payload_invalid", "title and detail are required");
+          const item = this.options.router.createHumanQuestion(this.context(binding, active.turn), { type: "confirmation", title: args.title, detail: args.detail,
+            purpose: String(args.purpose ?? ""), ttlMinutes: Number(args.approval_ttl_minutes ?? 10), options: [{ id: "once", label: "确认" }, { id: "deny", label: "不确认" }] });
+          return this.humanReceipt(item.pending_id)!;
+        }
         // Discovery and communication (agent words) and management (system words) are the Agent system's; these tools
         // only carry the request, as this agent. What each agent may use is its declaration's business.
         case "agent_list": return await this.send(binding, active.turn, "service:agents", "list", {}, turnSignal);
@@ -352,7 +402,7 @@ export class AgentMcpServer {
           if (!binding.allowsWord(args.member, args.word)) return failure("forbidden", `${args.member}/${args.word} is not among the capabilities you may use`);
           if (args.body !== undefined && (typeof args.body !== "object" || args.body === null || Array.isArray(args.body))) return failure("payload_invalid", "body must be an object");
           return await this.job(binding, active.turn, args.member, args.word, (args.body ?? {}) as Record<string, unknown>,
-            args.wait === false ? 0 : args.wait === true ? (this.options.maxWaitMs ?? MAX_WAIT_MS) : (this.options.fastPathMs ?? FAST_PATH_MS), turnSignal);
+            args.wait === false ? 0 : args.wait === true ? (this.options.maxWaitMs ?? MAX_WAIT_MS) : (this.options.fastPathMs ?? FAST_PATH_MS), turnSignal, args);
         }
       }
       return failure("payload_invalid", `unknown tool ${name}`);
@@ -371,11 +421,11 @@ export class AgentMcpServer {
   }
 
   /** A call that may take long: accepted first, answered inline if it finishes within the wait, otherwise a receipt. */
-  private async job(binding: AgentBinding, turn: string, member: string, word: string, body: Record<string, unknown>, waitMs: number, signal: AbortSignal): Promise<ToolResult | Record<string, unknown>> {
+  private async job(binding: AgentBinding, turn: string, member: string, word: string, body: Record<string, unknown>, waitMs: number, signal: AbortSignal, approval: Record<string, unknown> = {}): Promise<ToolResult | Record<string, unknown>> {
     const spec = this.spec(member, word);
     let sent: { id: string };
     try {
-      sent = await this.options.router.send(this.context(binding, turn), { to: member, kind: "request", word, body,
+      sent = await this.options.router.send({ ...this.context(binding, turn), approval: { ttlMinutes: Number(approval.approval_ttl_minutes ?? 10), purpose: String(approval.purpose ?? "") } }, { to: member, kind: "request", word, body,
         client_id: `mcp:${turn}:${++this.callSeq}:${randomBytes(4).toString("hex")}` }, signal);
     } catch (error) {
       if (error instanceof RouterError) return fromResponse({ ok: false, error: { code: error.code, message: error.message } }, spec);
@@ -394,15 +444,27 @@ export class AgentMcpServer {
     return this.within(job, waitMs);
   }
 
-  private async within(job: Job, waitMs: number): Promise<ToolResult | Record<string, unknown>> {
+  private humanReceipt(id: string): Record<string, unknown> | null {
+    const item = this.options.ledger.humanPending(id);
+    return item && ["waiting", "answered"].includes(item.state) ? { status: "waiting_owner", pending_id: item.pending_id, expires_at: item.expires_at,
+      state: item.state, card: { title: item.title }, guidance: "The contextual answer arrives in your inbox. Do not poll or await_result. End this turn or do independent work. Approval alone never executes; reassess before human_pending_redeem." } : null;
+  }
+
+  private async within(job: Job, waitMs: number, redeeming = false): Promise<ToolResult | Record<string, unknown>> {
+    if (!redeeming) { const receipt = this.humanReceipt(job.id); if (receipt) return receipt; }
     if (job.result) return job.result;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe = () => {};
+    const human = new Promise<Record<string, unknown>>((resolve) => {
+      if (!redeeming) unsubscribe = this.options.router.subscribe(() => { const receipt = this.humanReceipt(job.id); if (receipt) resolve(receipt); });
+    });
     const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), waitMs); });
-    const result = await Promise.race([job.done, late]);
+    const result = await Promise.race([job.done, late, human]);
     clearTimeout(timer);
+    unsubscribe();
     if (result) return result;
     return { status: "accepted", request_id: job.id, member: job.member, word: job.word,
-      guidance: "Still running (it may be waiting for the owner). Call await_result with this request_id; do not call the capability again." };
+      guidance: "Execution is still running. Call await_result with this request_id; do not call the capability again. Human waits use waiting_owner and never need polling." };
   }
 
   private async awaitResult(binding: AgentBinding, args: Record<string, unknown>): Promise<ToolResult | Record<string, unknown>> {
@@ -470,21 +532,6 @@ export class AgentMcpServer {
     }
     return { body: JSON.stringify({ ok: true, result: { truncated: true, preview: full.slice(0, 40_000), artifact,
       note: "The complete JSON result is in artifact.path." } }), isError: false };
-  }
-
-  private async confirm(binding: AgentBinding, turn: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult | Record<string, unknown>> {
-    if (typeof args.title !== "string" || !args.title.trim() || typeof args.detail !== "string") return failure("payload_invalid", "title and detail are required");
-    const callId = `confirm${++this.callSeq}${randomBytes(4).toString("hex")}`;
-    const done = this.options.confirm({ binding, turn, callId, title: args.title.trim().slice(0, 120), detail: args.detail.slice(0, 2000), signal })
-      .then((outcome): ToolResult => outcome === "approved" ? { ok: true, result: { decision: "approved" } }
-        : outcome === "rejected" ? { ok: true, result: { decision: "rejected" } }
-        : outcome === "cancelled" ? failure("result_unknown", "the confirmation was cancelled before the owner answered")
-        : failure("unreachable", "the approval card could not be shown"))
-      .catch((error) => fromError(error));
-    const job: Job = { id: callId, member: "person:owner", word: "confirm", label: "Confirm", turn, at: Date.now(), done, result: null };
-    void done.then((result) => { job.result = result; });
-    binding.jobs.set(job.id, job);
-    return this.within(job, this.options.fastPathMs ?? FAST_PATH_MS);
   }
 
   private list(binding: AgentBinding, only?: string): ToolResult {

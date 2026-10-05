@@ -11,7 +11,10 @@ class HostClientDisconnectTest {
         hostClientRequest { throw SocketTimeoutException("read timed out") }
         var ran = false; hostClientRequest { ran = true }; assertTrue(ran)
     }
-    @Test fun unexpectedLogicFailuresAreNotSilentlySwallowed() {
-        assertThrows(IllegalStateException::class.java) { hostClientRequest { throw IllegalStateException("unexpected") } }
+    @Test fun unexpectedLogicFailuresAreReportedWithoutKillingTheWorker() {
+        val failure = IllegalStateException("unexpected")
+        var reported: Throwable? = null
+        hostClientRequest({ reported = it }) { throw failure }
+        assertSame(failure, reported)
     }
 }

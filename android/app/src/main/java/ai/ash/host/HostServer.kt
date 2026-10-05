@@ -14,6 +14,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * The host bridge: a loopback HTTP/1.1 service ash core talks to (see packages/core/src/host.ts).
@@ -42,7 +43,8 @@ class HostServer(private val ctx: Context, private val token: String) {
         pool.execute {
             while (!s.isClosed) {
                 val c = try { s.accept() } catch (e: Exception) { break }
-                pool.execute { hostClientRequest { serve(c) } }
+                try { pool.execute { hostClientRequest({ error -> Log.w(TAG, "host client failed", error) }) { serve(c) } } }
+                catch (_: RejectedExecutionException) { try { c.close() } catch (_: IOException) {} }
             }
         }
         Log.i(TAG, "host bridge on 127.0.0.1:$port")
@@ -171,6 +173,8 @@ class HostServer(private val ctx: Context, private val token: String) {
 }
 
 /** Client deadlines/disconnects are normal; an uncaught worker exception would kill the App. */
-internal fun hostClientRequest(action: () -> Unit) {
-    try { action() } catch (_: IOException) { /* The socket is closed by serve's use block. */ }
+internal fun hostClientRequest(onFailure: (Throwable) -> Unit = {}, action: () -> Unit) {
+    try { action() }
+    catch (_: IOException) { /* The socket is closed by serve's use block. */ }
+    catch (error: Throwable) { onFailure(error) }
 }

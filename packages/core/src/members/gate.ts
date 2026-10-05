@@ -61,9 +61,10 @@ export class GateMember implements Member {
   }
 
   private forAgent(message: Message): ResponseBody {
+    const requester = message.from === "agent:main" ? undefined : message.from;
     switch (message.word) {
-      case "audit": return { ok: true, result: this.ledger.gateAudit(message.body as Parameters<Ledger["gateAudit"]>[0]) };
-      case "history": return { ok: true, result: this.ledger.gateHistoryPage(message.body.before as number | undefined, message.body.limit as number | undefined) };
+      case "audit": return { ok: true, result: this.ledger.gateAudit({ ...message.body, ...(requester ? { requester } : {}) } as Parameters<Ledger["gateAudit"]>[0]) };
+      case "history": return { ok: true, result: this.ledger.gateHistoryPage(message.body.before as number | undefined, message.body.limit as number | undefined, requester) };
       case "rules.list": return { ok: true, result: this.rulesPage(message) };
       // The router only delivers these after the owner said yes on a card; the request id is the record of who made the change.
       case "rules.set": return this.setRule(message, message.id);
@@ -74,7 +75,8 @@ export class GateMember implements Member {
   }
 
   private rulesPage(message: Message) {
-    const page = this.ledger.gateRulesPage(message.body.before as number | undefined, message.body.limit as number | undefined);
+    const page = this.ledger.gateRulesPage(message.body.before as number | undefined, message.body.limit as number | undefined,
+      AGENT.test(message.from) && message.from !== "agent:main" ? message.from : undefined);
     return this.mode ? { ...page, mode: this.mode.get() } : page;
   }
 

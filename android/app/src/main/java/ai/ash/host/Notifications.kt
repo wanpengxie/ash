@@ -81,11 +81,15 @@ object Notifications {
         } else b.setStyle(Notification.BigTextStyle().bigText(text))
         if (kind == "approval") {
             val options = p.getJSONArray("options")
-            for (i in 0 until options.length()) {
+            val question = p.optString("human_kind") == "question"
+            val custom = question && p.optBoolean("allow_custom")
+            for (i in 0 until minOf(options.length(), if (custom) 2 else 3)) {
                 val option = options.getJSONObject(i)
                 b.addAction(Notification.Action.Builder(null, option.getString("label"), action(ctx, id, option.getString("id"))).build())
             }
-            b.setDeleteIntent(action(ctx, id, "deny"))
+            if (custom) b.addAction(Notification.Action.Builder(null, "输入回答", action(ctx, id, "custom", mutable = true))
+                .addRemoteInput(RemoteInput.Builder("reply").setLabel("回答这个问题").build()).build())
+            b.setDeleteIntent(action(ctx, id, if (question) "dismiss" else "deny"))
         } else b.setDeleteIntent(action(ctx, id, "dismiss"))
         if (Build.VERSION.SDK_INT < 26 && (kind == "approval" || kind == "due")) b.setPriority(Notification.PRIORITY_HIGH)
         ctx.getSystemService(NotificationManager::class.java).notify("present:$id", 0, b.build())

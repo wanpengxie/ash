@@ -23,5 +23,10 @@ test("fake host records a routed approval and rejects missing reply target", asy
     const ordinary = { id: "p2", kind: "reply", title: "Hello", text: "Reply text" };
     assert.equal((await send(ordinary)).status, 200);
     assert.equal((await send({ ...ordinary, reply_target: "service:gate" })).status, 400);
+    const question = { ...approval, id: "question", human_kind: "question", allow_custom: true, options: [{ id: "home", label: "家里" }, { id: "work", label: "公司" }] };
+    assert.equal((await send(question)).status, 200);
+    assert.equal((await send({ ...question, human_kind: "unknown" })).status, 400);
+    assert.equal((await send({ ...question, allow_custom: "yes" })).status, 400);
+    assert.equal((await send({ ...question, reply_target: "https://example.invalid" })).status, 400);
   } finally { await host.close(); }
 });

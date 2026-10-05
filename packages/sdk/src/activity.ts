@@ -28,6 +28,9 @@ export function activityDetail(value: unknown): string {
 }
 
 const labels: Record<string, string> = {
+  mcp__ash__human_pending: "核对待回复事项", mcp__ash__human_pending_get: "查看原问题与回答",
+  mcp__ash__human_pending_redeem: "执行已批准的操作", mcp__ash__human_pending_skip: "说明为何不再继续",
+  mcp__ash__human_withdraw: "撤回不再需要的问题", mcp__ash__human_confirm: "请你确认", mcp__ash__human_ask: "请你补充信息",
   "screen.read": "读取当前页面", "screen.see": "查看屏幕内容", "screen.screenshot": "获取屏幕截图",
   "screen.tap": "点击页面控件", "screen.type": "填写页面内容", "screen.scroll": "滚动页面", "screen.swipe": "滑动页面",
   "screen.global_action": "切换页面", "apps.open": "打开应用", "browser.open": "打开网页", "browser.read": "读取网页",
@@ -68,6 +71,7 @@ export function activityResult(body: unknown): { state: string; receipt?: string
   for (let i = 0; i < 5; i++) {
     if (value.ok === false || value.isError === true) return { state: "failed" };
     if (value.truncated === true) return { state: "unconfirmed" };
+    if (value.status === "waiting_owner") return { state: "waiting_owner", ...(typeof value.pending_id === "string" ? { receipt: value.pending_id } : {}) };
     if (value.status === "accepted") return { state: "accepted", ...(typeof value.request_id === "string" ? { receipt: value.request_id } : {}) };
     if (typeof (value.detail ?? value.preview) === "string") {
       const text = String(value.detail ?? value.preview);

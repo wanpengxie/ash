@@ -1,6 +1,7 @@
 // Render selected conversation facts; gate originals appear only in an explicit plain-text disclosure.
 import { renderCard, workspaceFileUrl } from "./cards.js";
 import { appendApprovalOriginal } from "./approval-original.js";
+import { humanPendingOutcome } from "./human-pending.js";
 export { workspaceFileUrl } from "./cards.js";
 const text = (parent, tag, value, className = "") => {
   const node = document.createElement(tag);
@@ -103,11 +104,13 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       text(card, "b", item.ask.title, "ask-title");
       if (item.ask.detail) text(card, "small", item.ask.detail, "ask-detail");
       appendApprovalOriginal(card, item.ask);
+      text(card, "small", `有效期至 ${new Date(item.ask.expires_at).toLocaleString()}`, "ask-expiry");
       const expired = item.ask.state === "expired" || item.ask.state === "pending" && item.ask.expires_at <= Date.now();
       // A decided card says how it ended instead of keeping buttons that look live but do nothing.
       if (expired || item.ask.state !== "pending") {
         const chosen = (item.ask.options || []).find((option) => option.id === item.ask.choice);
-        const outcome = expired ? "已过期" : item.ask.choice === "deny" ? "已拒绝" : item.ask.choice === "once" ? "已允许这一次" : chosen ? `已选择：${chosen.label}` : "已结束";
+        const outcome = expired ? "已过期，未执行" : humanPendingOutcome(item.ask.human) ||
+          (item.ask.choice === "deny" ? "已拒绝" : item.ask.choice === "once" ? "已允许这一次" : chosen ? `已选择：${chosen.label}` : item.ask.answer_text ? `已回答：${item.ask.answer_text}` : "已结束");
         text(card, "small", outcome, "ask-outcome");
         continue;
       }
@@ -124,6 +127,21 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
           try { await onAnswerAsk(item.ask, option.id); }
           catch { button.disabled = false; }
         });
+      }
+      if (item.ask.allow_custom && typeof onAnswerAsk === "function") {
+        const input = document.createElement("input");
+        input.placeholder = "输入其他回答";
+        input.maxLength = 4000;
+        input.value = answer?.customDraft ?? "";
+        input.disabled = Boolean(answer?.choice);
+        input.addEventListener("input", () => { if (askIntents && !askIntents.get(item.ask.id)?.choice)
+          askIntents.set(item.ask.id, { customDraft: input.value }); });
+        const send = text(actions, "button", "发送回答", "btn gray");
+        send.type = "button";
+        send.disabled = Boolean(answer?.status === "pending" || answer?.status === "confirmed");
+        send.addEventListener("click", async () => { if (!input.value.trim() || send.disabled) return; send.disabled = true;
+          try { await onAnswerAsk(item.ask, "custom", input.value.trim()); } finally { send.disabled = false; } });
+        actions.insertBefore(input, send);
       }
       if (answer?.status === "uncertain") text(card, "small", "结果尚未确认；只能原样重试");
     } else if (item.type === "card") {

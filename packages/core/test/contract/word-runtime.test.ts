@@ -247,6 +247,9 @@ test("a real scenario writes only contract-conforming messages and covers every 
       await pending.catch(() => undefined);
     }
     await waitFor((rows) => rows.some((row) => row.word === "gate.denied") && rows.some((row) => row.word === "gate.passed"), "gate outcomes");
+    const question = world_.createHumanQuestion({ ...w.agent, turn: "t_human_contract" }, { type: "confirmation", title: "继续吗？", detail: "确认后再判断是否继续",
+      purpose: "验证异步问答", ttlMinutes: 10, options: [{ id: "once", label: "继续" }, { id: "deny", label: "不继续" }] });
+    world_.withdrawHuman("agent:main", question.pending_id, "契约测试结束");
     // Held proactive delivery (post.changed) and a reflex judgement come last: pause would stop the world.
     await world_.send(w.owner, { to: "service:admin", kind: "request", word: "settings.set",
       body: { delivery: { quiet: "00:00-23:59" } }, wait: true }).catch(() => undefined);

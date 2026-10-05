@@ -19,6 +19,6 @@ class PresentActionIdentityTest {
         assertNull(PresentActionIdentity.fromUriParts("https", "example.invalid", listOf("id", "once")))
         assertNull(PresentActionIdentity.fromUriParts("ash", "present-expiry", listOf("id", "once")))
         assertNull(PresentActionIdentity.fromUriParts("ash", "present-action", listOf("id")))
-        assertNull(PresentActionIdentity.fromUriParts("ash", "present-action", listOf("id", "later")))
+        assertNull(PresentActionIdentity.fromUriParts("ash", "present-action", listOf("id", "bad/choice")))
     }
 }

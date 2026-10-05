@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../packages/core/src");
 const source = readFileSync(join(root, "prompts/rules/data-not-instructions.md"), "utf8");
-const mainRuleNames = ["voice", "reactions", "self-files", "data-not-instructions", "gate", "browser", "env", "tools", "agents"];
+const mainRuleNames = ["voice", "reactions", "self-files", "data-not-instructions", "gate", "approvals", "browser", "env", "tools", "agents"];
 // Declared agents (not the one the owner talks with) get their own brief plus these.
-const agentRuleNames = ["env", "agents", "data-not-instructions"];
+const agentRuleNames = ["env", "agents", "data-not-instructions", "approvals"];
 const rules = (names) => names.map((name) => readFileSync(join(root, "prompts/rules", `${name}.md`), "utf8").trim()).join("\n\n");
 const mainRules = rules(mainRuleNames);
 const agentRules = rules(agentRuleNames);

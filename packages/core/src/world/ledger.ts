@@ -19,6 +19,8 @@ export interface LedgerOptions { failpoint?: (stage: MigrationStage) => void; wo
 export interface MigrationStats { migrated: number; lastLegacySeq: number; backup: string | null }
 export type RequestPhase = "accepted" | "gate_waiting" | "dispatching" | "settled";
 export interface RequestContextSnapshot {
+  /** Only the authenticated agent tool gateway supplies these; never capability arguments. */
+  approval?: { ttlMinutes: number; purpose: string };
   member: string;
   local: boolean;
   remote: boolean;
@@ -44,6 +46,14 @@ export interface GateCaseStart {
   /** What "always" would cover: the request's target (gateRulePattern), or "*" for the capability. Absent: always is not offered. */
   objectPattern?: string;
   ruleId?: string;
+}
+export type HumanPendingState = "waiting" | "answered" | "redeemed" | "denied" | "expired" | "withdrawn" | "skipped";
+export interface HumanPendingRecord {
+  pending_id: string; ask_id: string; agent: string; type: "approval" | "question" | "confirmation";
+  state: HumanPendingState; purpose: string; title: string; detail: string; created_at: number; expires_at: number;
+  turn: string | null; answer?: unknown; answered_at?: number; redeemed_at?: number; reason?: string;
+  options: unknown; owner_said: string[];
+  action?: { member: string; word: string; body: Record<string, unknown> }; execution?: ResponseBody;
 }
 export interface GateCaseRecord {
   requestId: string;
@@ -306,6 +316,12 @@ export class Ledger {
         by_message_id TEXT PRIMARY KEY, pause_request_id TEXT NOT NULL UNIQUE);`);
       db.exec(`CREATE TABLE IF NOT EXISTS option_answers (
         card_id TEXT PRIMARY KEY, message_id TEXT NOT NULL UNIQUE);`);
+      db.exec(`CREATE TABLE IF NOT EXISTS human_pending (
+        id TEXT PRIMARY KEY, ask_id TEXT NOT NULL UNIQUE, agent TEXT NOT NULL, type TEXT NOT NULL,
+        state TEXT NOT NULL, purpose TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', redeem_turn TEXT, redeemed_at INTEGER);
+        CREATE TABLE IF NOT EXISTS human_outbox (event_id TEXT PRIMARY KEY, agent TEXT NOT NULL, payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0);`);
+      if (!(db.prepare("PRAGMA table_info(human_pending)").all() as Row[]).some((item) => item.name === "redeemed_at"))
+        db.exec("ALTER TABLE human_pending ADD COLUMN redeemed_at INTEGER");
       db.exec(`CREATE TABLE IF NOT EXISTS work_runs (
         run TEXT PRIMARY KEY, request_id TEXT UNIQUE, flow TEXT NOT NULL, trigger TEXT NOT NULL,
         state TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, detail TEXT NOT NULL);
@@ -502,6 +518,7 @@ export class Ledger {
         const supplied = tracking?.context ?? { member: input.from, local: true, remote: false, ownerProxy: false };
         if (!Number.isSafeInteger(deadlineAt)) throw new TypeError("invalid request deadline");
         const context: RequestContextSnapshot = { member: supplied.member, local: supplied.local, remote: supplied.remote, ownerProxy: supplied.ownerProxy,
+          ...(supplied.approval ? { approval: structuredClone(supplied.approval) } : {}),
           ...(supplied.nativeUi ? { nativeUi: true } : {}),
           ...(supplied.transportPrincipal ? { transportPrincipal: supplied.transportPrincipal } : {}),
           ...(supplied.pairedDeviceId ? { pairedDeviceId: supplied.pairedDeviceId } : {}), ...(supplied.screenId ? { screenId: supplied.screenId } : {}) };
@@ -643,6 +660,7 @@ export class Ledger {
       this.db.prepare("DELETE FROM agent_jobs WHERE owner=?").run(owner);
       this.db.prepare(`INSERT INTO agent_job_cutoffs(owner,through_seq) VALUES(?,?)
         ON CONFLICT(owner) DO UPDATE SET through_seq=excluded.through_seq`).run(owner, this.lastSeq());
+      this.db.prepare("UPDATE human_outbox SET delivered=1 WHERE agent=?").run(owner);
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
@@ -896,6 +914,13 @@ export class Ledger {
     return Number(updated.changes) === 1;
   }
 
+  /** Separate the owner-wait budget from the capability's actual execution timeout. */
+  executionDeadline(requestId: string, deadlineAt: number): boolean {
+    if (!Number.isSafeInteger(deadlineAt)) throw new TypeError("invalid execution deadline");
+    return Number(this.db.prepare("UPDATE request_state SET deadline_at=?,updated_at=? WHERE request_id=? AND phase='dispatching'")
+      .run(deadlineAt, Date.now(), requestId).changes) === 1;
+  }
+
   /** Atomically enter the gate and create its single owner ask and audit event. */
   beginGate(requestId: string, input: GateCaseStart): { ask: Message; event: Message } | null {
     if (!input.subject || !/^[a-f0-9]{64}$/.test(input.contractFingerprint) ||
@@ -904,7 +929,7 @@ export class Ledger {
         { ...input.askBody, expires_at: input.expiresAt })) throw new TypeError("invalid gate case");
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const tracked = this.db.prepare(`SELECT m.*,s.phase,s.deadline_at FROM messages m JOIN request_state s ON s.request_id=m.id
+      const tracked = this.db.prepare(`SELECT m.*,s.phase,s.deadline_at,s.context FROM messages m JOIN request_state s ON s.request_id=m.id
         WHERE m.id=?`).get(requestId) as Row | undefined;
       if (!tracked || tracked.kind !== "request" || tracked.phase !== "accepted" || !tracked.to ||
         input.expiresAt > Number(tracked.deadline_at) || input.expiresAt <= Date.now()) { this.db.exec("COMMIT"); return null; }
@@ -929,6 +954,9 @@ export class Ledger {
           input.objectPattern ?? null, "waiting");
       const changed = this.db.prepare("UPDATE request_state SET phase='gate_waiting',updated_at=? WHERE request_id=? AND phase='accepted'").run(at, requestId);
       if (Number(changed.changes) !== 1) throw new TypeError("gate phase changed");
+      const approval = (JSON.parse(String(tracked.context)) as RequestContextSnapshot).approval;
+      if (approval) this.db.prepare("INSERT INTO human_pending(id,ask_id,agent,type,state,purpose) VALUES(?,?,?,'approval','waiting',?)")
+        .run(requestId, askId, String(tracked.from), approval.purpose);
       const eventId = newId();
       const body = { request_id: requestId, ask_id: askId, risk: input.risk, to: String(tracked.to), word: String(tracked.word), expires_at: input.expiresAt };
       this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)')
@@ -1011,8 +1039,8 @@ export class Ledger {
   turnFacts(turn: string | undefined, requester: string, beforeSeq: number): { ownerSaid: string[]; steps: string[] } {
     if (!turn) return { ownerSaid: [], steps: [] };
     // The turn's opening messages, plus any the owner added while it ran (each recorded by a read event of that turn).
-    const events = this.db.prepare(`SELECT body FROM messages WHERE turn=? AND kind='event' AND word IN ('turn.start','read') AND "from"=?
-      ORDER BY seq`).all(turn, requester) as Row[];
+    const events = this.db.prepare(`SELECT body FROM messages WHERE turn=? AND kind='event' AND word IN ('turn.start','read') AND "from"=? AND seq<?
+      ORDER BY seq`).all(turn, requester, beforeSeq) as Row[];
     const ids = [...new Set(events.flatMap((event) => { const listed = obj(JSON.parse(String(event.body))).ids; return Array.isArray(listed) ? listed : []; }))];
     const ownerSaid: string[] = [];
     for (const id of ids.slice(-8)) {
@@ -1115,7 +1143,7 @@ export class Ledger {
   }
 
   /** Called only after current authority and endpoint contract are revalidated. */
-  dispatchAllowedGate(requestId: string, subject: string, contractFingerprint: string): boolean {
+  dispatchAllowedGate(requestId: string, subject: string, contractFingerprint: string, redemption?: { turn: string; deadlineAt: number }): boolean {
     if (!subject || !/^[a-f0-9]{64}$/.test(contractFingerprint)) return false;
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -1135,16 +1163,106 @@ export class Ledger {
       if (String(row.request_to).startsWith("device:") && !deviceCaller(String(row.request_from))) { this.db.exec("COMMIT"); return false; }
       const answer = JSON.parse(row.answer_body) as ResponseBody;
       if (answer.ok !== true || !["once", "always"].includes(String(obj(answer.result).choice))) { this.db.exec("COMMIT"); return false; }
+      const human = this.db.prepare("SELECT state FROM human_pending WHERE id=?").get(requestId) as Row | undefined;
+      if (human && (!redemption || human.state !== "answered" || Date.now() >= Number(row.expires_at))) { this.db.exec("COMMIT"); return false; }
       const changed = this.db.prepare("UPDATE request_state SET phase='dispatching',updated_at=? WHERE request_id=? AND phase='gate_waiting'")
         .run(Date.now(), requestId);
+      if (human && redemption && Number(changed.changes) === 1) {
+        this.db.prepare("UPDATE human_pending SET state='redeemed',redeem_turn=?,redeemed_at=? WHERE id=?").run(redemption.turn, Date.now(), requestId);
+        this.db.prepare("UPDATE request_state SET deadline_at=? WHERE request_id=?").run(redemption.deadlineAt, requestId);
+      }
       this.db.exec("COMMIT");
       return Number(changed.changes) === 1;
     } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
   }
 
-  gateRulesPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { rules: GateRuleItemV2[]; next_before?: number } {
+  /** A question/confirmation is an owner ask, not a suspended agent/tool request. */
+  createHumanAsk(agent: string, turn: string, type: "question" | "confirmation", purpose: string,
+    askBody: Record<string, unknown>): Message {
+    if (!AGENT_ID.test(agent) || !matchesSchema(wordContract("person:owner", "ask")!.input_schema!, askBody)) throw new TypeError("invalid human question");
+    const id = newId(), at = Date.now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare('INSERT INTO messages(id,ts,"from","to",kind,word,body,turn) VALUES(?,?,\'service:gate\',\'person:owner\',\'request\',\'ask\',?,?)')
+        .run(id, at, JSON.stringify(askBody), turn);
+      this.db.prepare("INSERT INTO request_state(request_id,phase,deadline_at,context,updated_at) VALUES(?,'accepted',?,?,?)")
+        .run(id, Number(askBody.expires_at), JSON.stringify({ member: "service:gate", local: true, remote: false, ownerProxy: false, transportPrincipal: "service:gate" }), at);
+      this.db.prepare("INSERT INTO human_pending(id,ask_id,agent,type,state,purpose) VALUES(?,?,?,?,'waiting',?)").run(id, id, agent, type, purpose);
+      this.db.exec("COMMIT");
+      return this.byId(id)!;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  humanPending(id: string): HumanPendingRecord | null {
+    const row = this.db.prepare("SELECT * FROM human_pending WHERE id=? OR ask_id=?").get(id, id) as Row | undefined;
+    if (!row) return null;
+    const ask = this.byId(String(row.ask_id))!;
+    const request = this.byId(String(row.id))!;
+    const response = this.responseTo(ask.id);
+    // A synthetic timeout/cancellation is a terminal, not something the owner said.
+    const answer = response && response.ts < Number(ask.body.expires_at) && response.body.ok === true && row.state !== "withdrawn" ? response : null;
+    const execution = row.type === "approval" ? this.responseTo(request.id) : null;
+    return { pending_id: String(row.id), ask_id: ask.id, agent: String(row.agent), type: row.type as HumanPendingRecord["type"],
+      state: row.state as HumanPendingState, purpose: String(row.purpose), title: String(ask.body.title), detail: String(ask.body.detail),
+      created_at: ask.ts, expires_at: Number(ask.body.expires_at), turn: request.turn ?? null,
+      options: ask.body.options, owner_said: request.turn ? this.turnFacts(request.turn, String(row.agent), request.seq).ownerSaid : [],
+      ...(answer ? { answer: answer.body, answered_at: answer.ts } : {}), ...(row.reason ? { reason: String(row.reason) } : {}),
+      ...(typeof row.redeemed_at === "number" ? { redeemed_at: row.redeemed_at } : {}),
+      ...(row.type === "approval" ? { action: { member: request.to!, word: request.word, body: request.body } } : {}),
+      ...(execution ? { execution: execution.body as ResponseBody } : {}) };
+  }
+
+  humanOwnedBy(agent: string, id: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM human_pending h JOIN messages m ON m.id=h.id
+      WHERE h.id=? AND h.agent=? AND m.seq>COALESCE((SELECT through_seq FROM agent_job_cutoffs WHERE owner=?),0)`).get(id, agent, agent));
+  }
+  humanRedeemTurn(id: string): string | null {
+    const row = this.db.prepare("SELECT redeem_turn FROM human_pending WHERE id=?").get(id) as Row | undefined;
+    return typeof row?.redeem_turn === "string" ? row.redeem_turn : null;
+  }
+
+  humanPendingList(agent?: string, filter: { type?: string; state?: string; before?: number; limit?: number } = {}): { items: HumanPendingRecord[]; next_before?: number } {
+    const limit = Math.max(1, Math.min(100, filter.limit ?? 50));
+    const rows = this.db.prepare(`SELECT rowid,id FROM human_pending WHERE rowid<? AND (? IS NULL OR agent=? AND
+      (SELECT seq FROM messages WHERE messages.id=human_pending.id)>COALESCE((SELECT through_seq FROM agent_job_cutoffs WHERE owner=human_pending.agent),0))
+      AND (? IS NULL OR type=?) AND (? IS NULL OR state=?) ORDER BY rowid DESC LIMIT ?`)
+      .all(filter.before ?? Number.MAX_SAFE_INTEGER, agent ?? null, agent ?? null, filter.type ?? null, filter.type ?? null, filter.state ?? null, filter.state ?? null, limit + 1) as Row[];
+    return { items: rows.slice(0, limit).map((row) => this.humanPending(String(row.id))!),
+      ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.rowid) } : {}) };
+  }
+
+  activeHumanPending(): HumanPendingRecord[] {
+    return (this.db.prepare("SELECT id FROM human_pending WHERE state='waiting' OR (state='answered' AND type='approval')").all() as Row[]).map((row) => this.humanPending(String(row.id))!);
+  }
+
+  /** State, UI event and answer delivery outbox commit together. Delivery itself is idempotent at the recipient inbox. */
+  humanTransition(id: string, state: HumanPendingState, reason = "", notify = false, force = false): Message | null {
+    const previous = this.humanPending(id);
+    if (!previous || (!force && previous.state === state)) return null;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (state === "withdrawn" && !notify && this.responseTo(previous.ask_id)) { this.db.exec("COMMIT"); return null; }
+      const changed = this.db.prepare("UPDATE human_pending SET state=?,reason=? WHERE id=? AND state=?").run(state, reason, previous.pending_id, previous.state);
+      if (Number(changed.changes) !== 1) { this.db.exec("COMMIT"); return null; }
+      const current = this.humanPending(id)!;
+      const eventId = newId();
+      this.db.prepare('INSERT INTO messages(id,ts,"from","to",kind,word,body) VALUES(?,?,\'service:gate\',NULL,\'event\',\'human.pending\',?)')
+        .run(eventId, Date.now(), JSON.stringify(current));
+      if (notify) this.db.prepare("INSERT INTO human_outbox(event_id,agent,payload) VALUES(?,?,?)").run(eventId, current.agent, JSON.stringify(current));
+      this.db.exec("COMMIT");
+      return this.byId(eventId)!;
+    } catch (error) { if (this.db.isTransaction) this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  humanOutbox(): { id: string; agent: string; payload: string }[] {
+    return (this.db.prepare("SELECT * FROM human_outbox WHERE delivered=0 ORDER BY rowid LIMIT 100").all() as Row[])
+      .map((row) => ({ id: String(row.event_id), agent: String(row.agent), payload: String(row.payload) }));
+  }
+  humanDelivered(id: string): void { this.db.prepare("UPDATE human_outbox SET delivered=1 WHERE event_id=?").run(id); }
+
+  gateRulesPage(before = Number.MAX_SAFE_INTEGER, limit = 100, agent?: string): { rules: GateRuleItemV2[]; next_before?: number } {
     if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("invalid gate rules page");
-    const rows = this.db.prepare("SELECT * FROM gate_rules WHERE seq<? ORDER BY seq DESC LIMIT ?").all(before, limit + 1) as Row[];
+    const rows = this.db.prepare("SELECT * FROM gate_rules WHERE seq<? AND (? IS NULL OR subject_alias=?) ORDER BY seq DESC LIMIT ?").all(before, agent ?? null, agent ?? null, limit + 1) as Row[];
     const page = rows.slice(0, limit);
     return { rules: page.map((row) => ({ id: String(row.id), subject: String(row.subject_alias),
       ...(row.device_id === null ? {} : { device_id: String(row.device_id) }),
@@ -1156,11 +1274,11 @@ export class Ledger {
       ...(rows.length > limit ? { next_before: Number(rows[limit - 1]!.seq) } : {}) };
   }
 
-  gateHistoryPage(before = Number.MAX_SAFE_INTEGER, limit = 100): { items: GateHistoryItemV2[]; next_before?: number } {
+  gateHistoryPage(before = Number.MAX_SAFE_INTEGER, limit = 100, agent?: string): { items: GateHistoryItemV2[]; next_before?: number } {
     if (!Number.isSafeInteger(before) || before < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new TypeError("invalid gate history page");
     const rows = this.db.prepare(`SELECT h.*,m."from" AS caller_member,a.expires_at AS legacy_expires_at,e.label AS evidence_label FROM gate_history h
       LEFT JOIN messages m ON m.id=h.request_id LEFT JOIN gate_access a ON a.source_hash=h.legacy_source_hash LEFT JOIN gate_evidence e ON e.request_id=h.request_id
-      WHERE h.seq<? ORDER BY h.seq DESC LIMIT ?`).all(before, limit + 1) as Row[];
+      WHERE h.seq<? AND (? IS NULL OR m."from"=?) ORDER BY h.seq DESC LIMIT ?`).all(before, agent ?? null, agent ?? null, limit + 1) as Row[];
     const page = rows.slice(0, limit);
     return { items: page.map((row): GateHistoryItemV2 => row.source === "legacy"
       ? { id: String(row.id), decision: row.decision === "legacy_access_imported" && row.legacy_expires_at !== null &&
@@ -1313,6 +1431,7 @@ export class Ledger {
         reason: history?.reason === null || history?.reason === undefined ? "" : String(history.reason),
         rule_id: history?.rule_id === null || history?.rule_id === undefined ? "" : String(history.rule_id),
         answered_at: answer ? answer.ts : null,
+        human_pending: this.humanPending(String(row.request_id)),
         executed: body ? (body.ok ? { ok: true } : { ok: false, error: body.error?.code ?? "failed", message: String(body.error?.message ?? "").slice(0, 200) }) : null });
       last = Number(row.row_id);
     }

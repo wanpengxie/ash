@@ -23,7 +23,7 @@ async function world(scripts: Record<string, Script>) {
   const router = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(router);
   router.register({ member: "person:owner", spec: wordContract("person:owner", "say")!, handle: () => ({ ok: true, result: { accepted: true } }) });
-  const tools = new AgentMcpServer({ router, members, ledger, status: () => ({}), confirm: async () => "rejected", maxWaitMs: 3_000, fastPathMs: 3_000 });
+  const tools = new AgentMcpServer({ router, members, ledger, status: () => ({}), maxWaitMs: 3_000, fastPathMs: 3_000 });
   await tools.start();
   const turns: Record<string, AgentTurnInput[]> = {};
   const bindings = new Map<string, AgentBinding>();
@@ -177,10 +177,10 @@ test("only what reaches outside ash is judged: managing agents passes, a device 
     assert.equal(created.ok, true);
     const declare = w.ledger.list({ after: 0, limit: 1000 }).find((m) => m.to === "service:agents" && m.word === "declare")!;
     assert.equal(w.ledger.gateCase(declare.id), null, "an internal system word never reaches the gate");
-    const action = await w.call("agent:main", "capability_call", { member: "device:phone", word: "clipboard.set", body: { text: "x" }, wait: false }) as { status: string; request_id: string };
-    assert.equal(action.status, "accepted");
-    await w.waitFor(() => w.ledger.gateCase(action.request_id) !== null);
-    w.router.cancel([action.request_id]);
+    const action = await w.call("agent:main", "capability_call", { member: "device:phone", word: "clipboard.set", body: { text: "x" } }) as { status: string; pending_id: string };
+    assert.equal(action.status, "waiting_owner");
+    assert.ok(w.ledger.gateCase(action.pending_id));
+    w.router.withdrawHuman("agent:main", action.pending_id, "测试结束");
     await sleep(50);
     turn.abort();
   } finally { await w.close(); }

@@ -35,14 +35,12 @@ async function world(options: { fastPathMs?: number; maxWaitMs?: number; artifac
       await new Promise<void>((resolve) => { release = resolve; });
       return { ok: true, result: { done: message.body.n } };
     } });
-  const confirms: { title: string; detail: string }[] = [];
   const server = new AgentMcpServer({ router, members, ledger, fastPathMs: options.fastPathMs, maxWaitMs: options.maxWaitMs,
     ...(options.artifacts ? { resultArtifacts: { hostDir: options.artifacts, toAgentPath: (path: string) => path } } : {}),
-    status: () => ({ paused: false }),
-    confirm: async (input) => { confirms.push({ title: input.title, detail: input.detail }); return input.title.includes("yes") ? "approved" : "rejected"; } });
+    status: () => ({ paused: false }) });
   const url = await server.start();
   const binding = server.bind("agent:main", "main", () => null);
-  return { dir, ledger, router, members, server, url, binding, confirms, release: () => release?.() };
+  return { dir, ledger, router, members, server, url, binding, release: () => release?.() };
 }
 
 test("the tool set is fixed, the connection is the identity, and a browser page cannot reach it", async () => {
@@ -103,10 +101,9 @@ test("human and meta tools act as the agent within its turn", async () => {
     assert.equal(missing.error.code, "payload_invalid");
 
     const confirmed = await w.server.call(w.binding, "human_confirm", { title: "say yes", detail: "post the draft" }, turn.signal);
-    assert.deepEqual(confirmed, { ok: true, result: { decision: "approved" } });
+    assert.equal((confirmed as Record<string, unknown>).status, "waiting_owner");
     const refused = await w.server.call(w.binding, "human_confirm", { title: "delete it", detail: "rm" }, turn.signal);
-    assert.deepEqual(refused, { ok: true, result: { decision: "rejected" } });
-    assert.deepEqual(w.confirms.map((c) => c.title), ["say yes", "delete it"]);
+    assert.equal((refused as Record<string, unknown>).status, "waiting_owner");
 
     const history = await w.server.call(w.binding, "history_query", { text: "hello" }, turn.signal) as ToolResult & { ok: true; result: { messages: { text: string }[] } };
     assert.deepEqual(history.result.messages.map((m) => m.text), ["hello owner"]);
@@ -139,7 +136,7 @@ test("receipts and their owner survive an MCP server restart", async () => {
   const receipt = await w.server.call(w.binding, "capability_call", { member: "device:phone", word: "slow.run", body: { n: 7 }, wait: false }, turn.signal) as { request_id: string };
   await w.server.close();
   const restarted = new AgentMcpServer({ router: w.router, members: w.members, ledger: w.ledger, fastPathMs: 20, maxWaitMs: 2_000,
-    status: () => ({}), confirm: async () => "unavailable" });
+    status: () => ({}) });
   const rebound = restarted.bind("agent:main", "main", () => null);
   try {
     const pending = await restarted.call(rebound, "list_pending", {}, turn.signal) as ToolResult & { ok: true; result: { pending: { request_id: string }[] } };

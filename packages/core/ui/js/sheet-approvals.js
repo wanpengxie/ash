@@ -2,6 +2,7 @@
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 import { named } from "./editor.js";
 import { appendApprovalOriginal } from "./approval-original.js";
+import { humanPendingOutcome } from "./human-pending.js";
 const safeText = (value, max = 240) => typeof value === "string" ? value.slice(0, max) : "";
 const validId = (value) => typeof value === "string" && value.length > 0 && value.length <= 256;
 const validTime = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
@@ -25,10 +26,11 @@ export function approvalSections(view, now = Date.now()) {
     }
     if (!Number.isSafeInteger(ask.seq) || ask.seq < 1 || ask.state !== "pending" || ask.options_valid !== true || !validTime(ask.expires_at) || ask.expires_at <= now) continue;
     const offered = ask.options;
-    if (!Array.isArray(offered) || offered.length === 0 || offered.length > choices.size ||
-      !offered.every((option) => option && choices.has(option.id) && typeof option.label === "string" && option.label.length > 0) ||
+    if (!Array.isArray(offered) || offered.length === 0 || offered.length > (ask.human_kind === "question" ? 8 : choices.size) ||
+      !offered.every((option) => option && (ask.human_kind === "question" ? typeof option.id === "string" && option.id.length > 0 : choices.has(option.id)) && typeof option.label === "string" && option.label.length > 0) ||
       new Set(offered.map((option) => option.id)).size !== offered.length) continue;
     pending.push({ id: ask.id, seq: ask.seq, from: "service:gate", state: "pending", options_valid: true,
+      human_kind: ask.human_kind, allow_custom: ask.allow_custom === true,
       title: safeText(ask.title) || "待确认的操作", detail: safeText(ask.detail, 1000),
       ...(typeof ask.original === "string" ? { original: ask.original } : {}),
       expires_at: ask.expires_at, options: offered.map((option) => ({ id: option.id, label: safeText(option.label, 80) })) });
@@ -99,7 +101,7 @@ export function renderEvidence(parent, entry, { now = Date.now(), name = "Ash" }
   row("谁做的决定", DECIDED_BY[entry.decided_by] ?? safeText(entry.decided_by, 40));
   if (entry.decided_by !== "review" && entry.decided_by !== "carry" && safeText(entry.reason, 400) && !review) row("理由", safeText(entry.reason, 400));
   const executed = entry.executed && typeof entry.executed === "object" ? entry.executed : null;
-  row("最后", executed ? executed.ok ? "做成了" : entry.decision === "deny" ? "没有做" : `没做成（${safeText(executed.message, 200) || safeText(executed.error, 60)}）` : "还没有结果");
+  row("最后", humanPendingOutcome(entry.human_pending) || (executed ? executed.ok ? "做成了" : entry.decision === "deny" ? "没有做" : `没做成（${safeText(executed.message, 200) || safeText(executed.error, 60)}）` : "还没有结果"));
   return box;
 }
 
@@ -143,6 +145,16 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
     else if (state?.status === "rejected") text(card, "p", "这次回答没有被接受；它可能已经过期，或这台设备不能回答。", "set-status warn sheet-warning");
   }
 
+  const recent = (view?.asks || []).filter((ask) => ask.human && ask.human.state !== "waiting").slice(-20).reverse();
+  if (recent.length) {
+    const recentBox = group(fragment, "回答后的进展");
+    for (const ask of recent) {
+      const card = text(recentBox, "article", "", "set-card sheet-approval resolved");
+      text(card, "h4", ask.title);
+      text(card, "p", humanPendingOutcome(ask.human), "approval-outcome");
+      appendApprovalOriginal(card, ask);
+    }
+  }
   const rulesBox = group(fragment, "以后都允许", `在「有影响时才问」档位，${named(name, false)}会按这些有效规则直接去做；「每次都问」会暂时忽略它们。`);
   const live = Array.isArray(rules) ? rules.filter((rule) => rule && validId(rule.id) && !rule.revoked_at &&
     validTime(rule.expires_at) && rule.expires_at > now) : [];
@@ -228,9 +240,9 @@ export async function gatePageRequest(net, current, word, body, clientId = crypt
 }
 
 /** An HTTP ACK alone is not displayed as an answered approval. The matching ledger response must be seen. */
-export async function answerGateAsk(net, current, ask, choice, clientId, lookup, { now = Date.now, delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxWaitMs = 3000 } = {}) {
+export async function answerGateAsk(net, current, ask, choice, clientId, lookup, { now = Date.now, delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), maxWaitMs = 3000, answerText } = {}) {
   if (!ask || approvalSections({ asks: [ask] }, now()).pending[0]?.id !== ask.id ||
-    !ask.options.some((option) => option.id === choice) || typeof clientId !== "string" || !clientId)
+    !(ask.options.some((option) => option.id === choice) || ask.human_kind === "question" && ask.allow_custom && choice === "custom" && typeof answerText === "string" && answerText.trim()) || typeof clientId !== "string" || !clientId)
     throw new Error("待批请求已失效或选项不可用。");
   const token = net.token;
   const screen = net.screen;
@@ -244,7 +256,7 @@ export async function answerGateAsk(net, current, ask, choice, clientId, lookup,
     response = await net.request("/api/send", { method: "POST", credentials: "same-origin",
       headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: token },
       body: JSON.stringify({ to: "service:gate", kind: "response", word: "ask", reply_to: ask.id,
-        body: { ok: true, result: { choice } }, client_id: clientId }) });
+        body: { ok: true, result: { choice, ...(answerText ? { text: answerText } : {}) } }, client_id: clientId }) });
   } catch {
     if (!same()) throw new Error("屏幕身份已变化，回答结果已丢弃。");
     throw new Error("审批回执未知；只能用同一选项原样重试。");

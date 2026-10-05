@@ -101,6 +101,7 @@ function record(m) {
     if (m.word === "show") { const card = safeCard(b.card); return card ? { ...base, type: "show", card } : null; }
     if (m.word === "ask" && typeof b.title === "string" && Array.isArray(b.options)) return {
       ...base, type: "ask", from: m.from, title: b.title, detail: string(b.detail), expires_at: number(b.expires_at),
+      human_kind: b.human_kind, allow_custom: b.human_kind === "question" && b.allow_custom === true,
       ...(m.from === "service:gate" && object(b.source) && typeof b.source.body_full === "string" ? { original: b.source.body_full } : {}),
       options_valid: b.options.every((x) => object(x) && typeof x.id === "string" && typeof x.label === "string"),
       options: b.options.filter((x) => object(x) && typeof x.id === "string" && typeof x.label === "string").map((x) => ({ id: x.id, label: x.label })),
@@ -109,7 +110,7 @@ function record(m) {
   if (m.kind === "response" && m.word === "ask" && m.from === "person:owner" && ownerPublisher(m.to) && typeof m.reply_to === "string" && object(b)) {
     const choice = b.ok === true && object(b.result) ? string(b.result.choice) : "";
     const error = b.ok === false && object(b.error) ? string(b.error.code) : "";
-    return { ...base, type: "ask.answer", reply_to: m.reply_to, to: m.to, choice, error };
+    return { ...base, type: "ask.answer", reply_to: m.reply_to, to: m.to, choice, error, answer_text: b.ok === true && object(b.result) ? string(b.result.text) : "" };
   }
   if (m.kind === "response" && m.word === "say" && m.from === "agent:main" && m.to === "person:owner" && typeof m.reply_to === "string") return {
     ...base, type: "say.result", reply_to: m.reply_to, accepted: b.ok === true && object(b.result) && b.result.accepted === true,
@@ -129,6 +130,7 @@ function record(m) {
       ["started", "done", "failed", "skipped"].includes(b.state)) return { ...base, type: "run.step", turn: b.run, step: b.step, state: b.state };
     if (m.word === "run.end" && turnId(b.run) && (m.turn === undefined || m.turn === b.run)) return { ...base, type: "run.end", turn: b.run, outcome: string(b.outcome) };
   }
+  if (m.kind === "event" && m.from === "service:gate" && m.word === "human.pending" && typeof b.ask_id === "string") return { ...base, type: "human.pending", pending: b };
   if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word, requestId: string(b.request_id) };
   // Only selected display metadata is retained. Details are owner-authenticated and fetched on demand.
   if (m.kind === "request" && turnId(m.turn) && (/^agent:[a-z][a-z0-9_-]*$/.test(m.from) || m.from === "service:work") && memberId(m.to) && m.to !== "person:owner")
@@ -144,6 +146,7 @@ function project(records, snapshots = new Map()) {
   view._postSnapshots = snapshots;
   const delivery = new Map();
   const asksById = new Map(records.filter((r) => r.type === "ask").map((r) => [r.id, r]));
+  const humanByAsk = new Map(records.filter((r) => r.type === "human.pending").map((r) => [r.pending.ask_id, r.pending]));
   const cardsById = new Map(records.filter((r) => r.type === "show" && r.card.type === "options").map((r) => [r.id, r]));
   const answers = new Map();
   const optionReplies = new Map();
@@ -157,7 +160,7 @@ function project(records, snapshots = new Map()) {
     if (r.type === "received" || r.type === "read") for (const id of r.ids) delivery.set(id, r.type === "read" ? "read" : delivery.get(id) === "read" ? "read" : "delivered");
     if (r.type === "ask.answer") {
       const ask = asksById.get(r.reply_to);
-      if (ask && r.seq > ask.seq && r.to === ask.from && !answers.has(ask.id) && (ask.options.some((option) => option.id === r.choice) || ["timeout", "cancelled"].includes(r.error))) answers.set(ask.id, r);
+      if (ask && r.seq > ask.seq && r.to === ask.from && !answers.has(ask.id) && (ask.options.some((option) => option.id === r.choice) || ask.allow_custom && r.choice === "custom" || ["timeout", "cancelled"].includes(r.error))) answers.set(ask.id, r);
     }
     if (r.type === "react") reactions.set(r.message_id, [...(reactions.get(r.message_id) || []), { id: r.id, emoji: r.emoji }]);
   }
@@ -185,7 +188,10 @@ function project(records, snapshots = new Map()) {
       const answer = answers.get(r.id);
       const state = !answer ? "pending" : answer.error === "timeout" || answer.choice === "deny" && answer.ts >= r.expires_at
         ? "expired" : answer.choice ? "answered" : "closed";
-      const ask = { id: r.id, seq: r.seq, ts: r.ts, from: r.from, title: r.title, detail: r.detail, ...(typeof r.original === "string" ? { original: r.original } : {}), options: r.options, options_valid: r.options_valid, expires_at: r.expires_at, state, choice: answer?.choice || null };
+      const human = humanByAsk.get(r.id);
+      const ask = { id: r.id, seq: r.seq, ts: r.ts, from: r.from, title: r.title, detail: r.detail, human_kind: r.human_kind, allow_custom: r.allow_custom,
+        human, answer_text: answer?.answer_text, ...(typeof r.original === "string" ? { original: r.original } : {}), options: r.options, options_valid: r.options_valid,
+        expires_at: r.expires_at, state: human && human.state !== "waiting" ? human.state : state, choice: answer?.choice || null };
       view.asks.push(ask);
       view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "ask", side: "agent", ask, reactions: reactions.get(r.id) || [] });
     } else if (r.type === "turn.start" || r.type === "run.start") {

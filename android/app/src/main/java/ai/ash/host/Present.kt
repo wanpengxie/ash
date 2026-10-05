@@ -41,13 +41,16 @@ object Present {
         val id = (input.opt("id") as? String)?.trim() ?: ""
         val kind = input.opt("kind") as? String ?: ""
         if (id.isEmpty() || id.length > 128 || kind !in kinds) return 400 to JSONObject().put("error", "invalid_presentation")
-        val allowed = setOf("id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target")
+        val allowed = setOf("id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom")
         if (input.keys().asSequence().any { it !in allowed }) return 400 to JSONObject().put("error", "unsupported_field")
         if (!input.has("title") || !input.has("text") || input.opt("title") !is String || input.opt("text") !is String)
             return 400 to JSONObject().put("error", "invalid_text")
         val record = JSONObject(input.toString())
         record.put("id", id).put("kind", kind)
         if (kind == "approval") {
+            val question = record.optString("human_kind") == "question"
+            if (record.has("human_kind") && !question || record.has("allow_custom") && (!question || record.opt("allow_custom") !is Boolean))
+                return 400 to JSONObject().put("error", "invalid_question_metadata")
             val opts = record.optJSONArray("options") ?: return 400 to JSONObject().put("error", "approval_options_required")
             if (opts.length() == 0) return 400 to JSONObject().put("error", "approval_options_required")
             val ids = mutableSetOf<String>()
@@ -55,13 +58,13 @@ object Present {
                 val option = opts.optJSONObject(i) ?: return 400 to JSONObject().put("error", "invalid_option")
                 val choice = option.opt("id") as? String ?: return 400 to JSONObject().put("error", "invalid_option")
                 val label = option.opt("label") as? String ?: return 400 to JSONObject().put("error", "invalid_option")
-                if (option.length() != 2 || choice !in choices || !ids.add(choice) || label.isBlank()) return 400 to JSONObject().put("error", "invalid_option")
+                if (option.length() != 2 || (if (question) !Regex("^[A-Za-z0-9_-]{1,64}$").matches(choice) else choice !in choices) || !ids.add(choice) || label.isBlank()) return 400 to JSONObject().put("error", "invalid_option")
             }
-            if (!PresentRoutes.notificationOptionsValid(ids.toList())) return 400 to JSONObject().put("error", "deny_option_required")
+            if (if (question) ids.size > 8 else !PresentRoutes.notificationOptionsValid(ids.toList())) return 400 to JSONObject().put("error", "invalid_options")
             if ((record.opt("reply_to") as? String).isNullOrBlank() || !record.has("expires_at")) return 400 to JSONObject().put("error", "reply_route_required")
             // The target comes from the delivery service, never from a notification intent.
             if (!PresentRoutes.member.matches(record.opt("reply_target") as? String ?: "")) return 400 to JSONObject().put("error", "ask_sender_required")
-        } else if (record.has("options") || record.has("reply_target")) return 400 to JSONObject().put("error", "unexpected_reply_route")
+        } else if (record.has("options") || record.has("reply_target") || record.has("human_kind") || record.has("allow_custom")) return 400 to JSONObject().put("error", "unexpected_reply_route")
         if (record.has("reply_to") && (record.opt("reply_to") as? String).isNullOrBlank()) return 400 to JSONObject().put("error", "invalid_reply_to")
         if (record.has("expires_at") && positiveSafeInteger(record.opt("expires_at")) == null) return 400 to JSONObject().put("error", "invalid_expiry")
         return serial.run {
@@ -167,9 +170,13 @@ object Present {
             if (expired(record) || prefs(ctx).getBoolean(CONSUMED + id, false)) return
             val route = try { when (record.optString("kind")) {
                 "approval" -> {
-                    if (choice == null || !offered(record, choice)) return
-                    PresentRoutes.approval(record.getString("reply_to"), record.getString("reply_target"),
-                        offeredSet(record), choice, record.getLong("expires_at"), System.currentTimeMillis())
+                    if (record.optString("human_kind") == "question") PresentRoutes.question(record.getString("reply_to"), record.getString("reply_target"),
+                        offeredSet(record), choice, replyText, record.optBoolean("allow_custom"), record.getLong("expires_at"), System.currentTimeMillis())
+                    else {
+                        if (choice == null || !offered(record, choice)) return
+                        PresentRoutes.approval(record.getString("reply_to"), record.getString("reply_target"),
+                            offeredSet(record), choice, record.getLong("expires_at"), System.currentTimeMillis())
+                    }
                 }
                 "reply", "offer", "heads_up" -> {
                     PresentRoutes.reply(replyText ?: return)
@@ -177,7 +184,7 @@ object Present {
                 else -> return
             } } catch (_: IllegalArgumentException) { return }
             val outbound = JSONObject().put("to", route.to).put("kind", route.kind).put("word", route.word)
-                .put("body", if (route.choice != null) JSONObject().put("ok", true).put("result", JSONObject().put("choice", route.choice))
+                .put("body", if (route.choice != null) JSONObject().put("ok", true).put("result", JSONObject().put("choice", route.choice).apply { if (route.text != null) put("text", route.text) })
                     else JSONObject().put("text", route.text))
             if (route.replyTo != null) outbound.put("reply_to", route.replyTo)
             val actionId = UUID.randomUUID().toString()
