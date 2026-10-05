@@ -32,6 +32,42 @@ async function fixture() {
   return { dir, workspace, ledger, world, members, edge };
 }
 
+test("file browsing and HTML resources use live workspace paths, require owner auth and never run with UI authority", async () => {
+  const { workspace, ledger, world, members, edge } = await fixture();
+  const helper = mkdtempSync(join(tmpdir(), "ash-helper-files-"));
+  writeFileSync(join(helper, "helper.md"), "# helper");
+  const withHelpers = new EdgeRouter(ledger, world, members, { api: {}, mcp: {} }, {
+    authScopeKey: Buffer.alloc(32, 1), workspaces: { home: workspace },
+    fileWorkspaces: () => ({ home: { root: workspace, directory: "/root/work" }, agent_writer: { root: helper, directory: "/root/agents/writer" } }),
+  });
+  try {
+    mkdirSync(join(workspace, "reports"));
+    const html = "<h1>hello</h1><script>fetch('/api/send')</script>";
+    writeFileSync(join(workspace, "reports", "a.html"), html);
+    writeFileSync(join(workspace, "reports", "a.css"), "h1{color:red}");
+    assert.equal((await edge.handle(request("GET", "/api/workspaces"), null)).status, 401);
+    const roots = parsed(await withHelpers.handle(request("GET", "/api/workspaces"), owner));
+    assert.deepEqual(roots, [{ id: "home", directory: "/root/work" }, { id: "agent_writer", directory: "/root/agents/writer" }]);
+    assert.equal((await withHelpers.handle(request("GET", "/api/workspaces/agent_writer/files?path=helper.md"), owner)).status, 200);
+    const page = await edge.handle(request("GET", "/api/workspaces/home/content/reports/a.html"), owner);
+    assert.equal(page.status, 200); assert.equal("body" in page && String(page.body), html);
+    assert.equal(page.headers?.["content-type"], "text/html; charset=utf-8");
+    assert.match(page.headers?.["content-security-policy"] ?? "", /^sandbox allow-same-origin;/);
+    assert.doesNotMatch(page.headers?.["content-security-policy"] ?? "", /allow-scripts/);
+    const css = await edge.handle(request("GET", "/api/workspaces/home/content/reports/a.css"), owner);
+    assert.equal(css.headers?.["content-type"], "text/css; charset=utf-8");
+    writeFileSync(join(workspace, "reports", "a.html"), "updated");
+    const changed = await edge.handle(request("GET", "/api/workspaces/home/files?path=reports/a.html&download=1"), owner);
+    assert.equal("body" in changed && String(changed.body), "updated");
+    assert.match(changed.headers?.["content-disposition"] ?? "", /^attachment;/);
+    assert.equal((await edge.handle(request("GET", "/api/workspaces/home/content/a%2F..%2F..%2Fsecret"), owner)).status, 400);
+    symlinkSync(helper, join(workspace, "linked"));
+    assert.equal((await edge.handle(request("GET", "/api/workspaces/home/content/linked/helper.md"), owner)).status, 403);
+    assert.equal((await edge.handle(request("GET", "/api/workspaces/home/content/reports/a.html"), { ...owner, ownerProxy: false })).status, 403);
+    assert.equal((await edge.handle(request("GET", "/api/workspaces/home/content/not-there.html"), owner)).status, 404);
+  } finally { ledger.close(); }
+});
+
 test("edge authenticates before send, allows bounded wait, and exposes only declared v2 routes", async () => {
   const { ledger, edge } = await fixture();
   try {

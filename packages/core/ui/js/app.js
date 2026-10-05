@@ -11,6 +11,7 @@ import { AgentSheet } from "./sheet-agent.js";
 import { answerGateAsk, approvalSections } from "./sheet-approvals.js";
 import { IdentityName } from "./identity-name.js";
 import { embeddedUiTransport, readWorkspaceFile } from "./ui-transport.js";
+import { Files } from "./files.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -134,9 +135,12 @@ export function boot({ uiTransport } = {}) {
   let lastTyping = 0;
   let timeline;
   let settings;
+  let files;
   const askIntents = new Map();
   const optionPending = new Set();
   const cardActions = {
+    onOpenFile: (ref) => files.open(ref),
+    onFileLink: (href) => files.openLink(href),
     optionPending,
     askIntents,
     onPermission: /\bAshApp\//.test(navigator.userAgent) ? (permission) => {
@@ -209,7 +213,7 @@ export function boot({ uiTransport } = {}) {
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
-    onReset: () => { askIntents.clear(); optionPending.clear(); timeline.reset(); suggestions.replaceChildren(); clearContext(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
+    onReset: () => { files?.root.close(); askIntents.clear(); optionPending.clear(); timeline.reset(); suggestions.replaceChildren(); clearContext(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
     onState: (status, error) => {
       settings?.network(status);
       agentSheet?.network(status);
@@ -226,6 +230,11 @@ export function boot({ uiTransport } = {}) {
       if (timeline) render(timeline.view, outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     },
   });
+  files = new Files({ request: (path, options) => net.request(path, options) }, {
+    embedded: uiTransport?.embedded === true,
+    save: uiTransport?.embedded ? (ref) => globalThis.__ashFileSave(ref) : null,
+  });
+  document.querySelector("#files").onclick = () => files.browse();
   // Pages are counted in ledger records, and a page of background events can hold no conversation at all. Older pages
   // otherwise load only by scrolling to the top, which a short page cannot do: keep reading back until the conversation
   // fills the screen or the history ends.

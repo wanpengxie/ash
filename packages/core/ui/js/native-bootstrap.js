@@ -9,6 +9,15 @@
   const decode = (value) => Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
   const post = (value) => native.postMessage(JSON.stringify(value));
 
+  globalThis.__ashFileSave = (ref) => {
+    if (!ready) return Promise.reject(new Error("native file saving unavailable"));
+    const id = String(++nextId);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { fileSave: true, finish() { pending.delete(id); }, resolve, reject });
+      post({ type: "file_save", id, workspace: ref.workspace, path: ref.path });
+    });
+  };
+
   globalThis.__ashBrowserLogins = () => {
     if (!ready) return Promise.reject(new Error("native settings unavailable"));
     const id = String(++nextId);
@@ -74,6 +83,10 @@
     }
     const item = pending.get(message.id);
     if (!item) return;
+    if (item.fileSave) {
+      if (message.type === "file_save_result") { item.finish(); item.resolve({ ok: message.ok === true, cancelled: message.cancelled === true }); }
+      return;
+    }
     if (item.browserLogins) {
       if (message.type === "browser_logins_result") { item.finish(); item.resolve({ ok: message.ok === true }); }
       return;

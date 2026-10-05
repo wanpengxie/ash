@@ -38,6 +38,6 @@ test("APK asset contains the generated shell and native-only bootstrap", () => {
   const native = readFileSync(new URL("../js/native-bootstrap.js", import.meta.url), "utf8");
   assert.equal(asset.replace(/<meta http-equiv="Content-Security-Policy"[^>]+>\n/, "")
     .replace(`<script>${native}</script>\n`, ""), generated);
-  assert.match(asset, /connect-src 'none'; form-action 'none'; frame-src 'none'/);
+  assert.match(asset, /connect-src 'none'; form-action 'none'; frame-src https:\/\/ash-files\.invalid; worker-src 'none'/);
   assert.ok(!asset.includes("/?token="));
 });

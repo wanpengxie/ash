@@ -40,9 +40,9 @@ async function copyCode(value) {
   }
 }
 
-function renderTokens(parent, tokens, depth = 0) {
+function renderTokens(parent, tokens, depth = 0, options = {}) {
   if (depth > 64) { for (const token of tokens) literal(parent, token.raw ?? token.text); return; }
-  const children = (node, token) => token.tokens ? renderTokens(node, token.tokens, depth + 1) : literal(node, decodeHTML(token.text ?? ""));
+  const children = (node, token) => token.tokens ? renderTokens(node, token.tokens, depth + 1, options) : literal(node, decodeHTML(token.text ?? ""));
   for (const token of tokens) {
     switch (token.type) {
       case "space": case "def": break;
@@ -68,8 +68,10 @@ function renderTokens(parent, tokens, depth = 0) {
       }
       case "link": case "image": {
         const href = markdownUrl(token.href);
-        const node = href ? element(parent, "a", token.type === "image" ? "md-image-link" : undefined) : parent;
+        const fileLink = !href && options.onFileLink && typeof token.href === "string" && token.href && !/^[a-z][a-z0-9+.-]*:|^\/\/|^#|[\\\x00-\x1f\x7f]/i.test(decodeHTML(token.href));
+        const node = href || fileLink ? element(parent, "a", token.type === "image" ? "md-image-link" : undefined) : parent;
         if (href) { node.href = href; node.target = "_blank"; node.rel = "noopener noreferrer"; node.referrerPolicy = "no-referrer"; }
+        if (fileLink) { node.href = "#"; node.className = "md-file-link"; node.addEventListener("click", (event) => { event.preventDefault(); options.onFileLink(decodeHTML(token.href)); }); }
         if (token.type === "image") literal(node, `图片：${decodeHTML(token.text || "查看图片")}`);
         else children(node, token);
         break;
@@ -111,13 +113,13 @@ function renderTokens(parent, tokens, depth = 0) {
   }
 }
 
-export function appendMarkdown(parent, source) {
+export function appendMarkdown(parent, source, options = {}) {
   const raw = String(source ?? "");
   const content = element(parent, "div", "markdown");
   try {
     // Bound parser work on unexpectedly large messages; preserve the whole source in the fallback.
     if (raw.length > 200_000) throw new Error("large message");
-    renderTokens(content, marked.lexer(raw, { gfm: true, breaks: true }));
+    renderTokens(content, marked.lexer(raw, { gfm: true, breaks: true }), 0, options);
   } catch { content.className = "markdown md-plain"; content.textContent = raw; }
   return content;
 }

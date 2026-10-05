@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAuthScopeKey } from "./auth-scope";
 import { protectProcessMemory } from "./harden";
@@ -390,6 +390,17 @@ export async function startOwner(config: Config): Promise<Running> {
     });
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault,
+      fileWorkspaces: () => {
+        if (!container || !config.workspaces?.home) return {};
+        const home = config.workspaces.home;
+        return Object.fromEntries([
+          ["home", { root: home, directory: config.container?.direct ? home : "/root/work" }],
+          ...(agentSystem?.all() ?? []).filter((item) => item.id !== "agent:main").map((item) => {
+            const name = agentName(item.id), root = join(dirname(home), "agents", name);
+            return [`agent_${name}`, { root, directory: config.container?.direct ? root : `/root/agents/${name}` }];
+          }),
+        ]);
+      },
       ...(config.host ? { nativeUiToken: createHash("sha256").update(`${config.host.token}:home`).digest("hex") } : {}) });
     screensNow = () => ownerScreensLine(edge.screens);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,

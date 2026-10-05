@@ -238,13 +238,20 @@ input[type=text],input[type=password],input[type=url],select.f{width:100%;border
 .check{display:flex;gap:.4rem;align-items:center;color:var(--fg);font-size:.85rem;margin:.2rem 0}
 code.k{background:var(--chip);padding:.15rem .4rem;border-radius:5px;word-break:break-all;font-size:.85rem}
 .muted{color:var(--mute);font-size:.82rem}
+.files-view{position:fixed;inset:0;width:100%;max-width:960px;height:100%;max-height:100%;margin:auto;border:0;padding:0;background:var(--bg);color:var(--fg);overscroll-behavior:contain}
+.files-view[open]{display:flex;flex-direction:column}.files-view::backdrop{background:#0008}
+.files-bar{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;padding:calc(.7rem + env(safe-area-inset-top)) .9rem .7rem;border-bottom:1px solid var(--line)}
+.files-bar strong{flex:1 1 10rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:1rem}.files-actions{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-left:auto}.files-actions select{max-width:190px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:.5rem}
+.files-note{padding:.5rem 1rem;color:var(--mute);font-size:.8rem;overflow-wrap:anywhere}
+.files-body{flex:1;min-height:0;overflow:auto;padding:1rem;padding-bottom:calc(1rem + env(safe-area-inset-bottom))}.files-row{display:flex;width:100%;text-align:left;gap:1rem;justify-content:space-between;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--fg);font:inherit;padding:.95rem .2rem;cursor:pointer}.files-row span{overflow-wrap:anywhere}.files-row small{color:var(--mute);white-space:nowrap}
+.files-html{width:100%;height:100%;min-height:60vh;border:0;background:white}.files-image{max-width:100%;height:auto;display:block;margin:auto}.files-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.9rem}.files-body .markdown{max-width:780px;margin:auto}.files-bar .btn{font-size:.85rem;padding:.45rem .65rem}#files{background:none;border:0;color:var(--fg);font:inherit;padding:.5rem;cursor:pointer}
 </style>
 </head>
 <body>
 <header>
   <button id="presence" type="button" aria-label="打开 Ash 人物页"><span id="face"><img class="face" src="avatars/default.webp" alt=""><span id="dot"></span></span><span id="identity"><span id="title">Ash</span><span id="state">状态待同步</span></span></button><select id="agents" hidden></select>
   <span id="connection" role="status">连接中…</span><span id="presenceNotice" role="status"></span>
-  <button id="menu" title="设备与设置">☰<span id="badge"></span></button>
+  <button id="files" type="button" title="浏览文件">文件</button><button id="menu" title="设备与设置">☰<span id="badge"></span></button>
 </header>
 <main id="log"></main>
 <div id="progress" hidden aria-live="polite"></div>

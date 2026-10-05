@@ -15,7 +15,7 @@ if (!html.includes("<!-- ui-app -->")) throw new Error("UI app marker missing");
 const generatedHtml = html.replace("<!-- ui-app -->", () => `<script>${app}</script>`);
 const assetRoot = join(ui, "../../../android/app/src/main/assets/ash-ui");
 const nativeBootstrap = readFileSync(join(ui, "js/native-bootstrap.js"), "utf8").replaceAll("</script", "<\\/script");
-const assetHtml = generatedHtml.replace("<head>", `<head>\n<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'">`)
+const assetHtml = generatedHtml.replace("<head>", `<head>\n<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; form-action 'none'; frame-src https://ash-files.invalid; worker-src 'none'; base-uri 'none'">`)
   .replace("</body>", `<script>${nativeBootstrap}</script>\n</body>`);
 mkdirSync(join(assetRoot, "avatars"), { recursive: true });
 writeFileSync(join(assetRoot, "index.html"), assetHtml);

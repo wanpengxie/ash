@@ -32,6 +32,7 @@ export interface EdgeOptions { authScopeKey: Buffer; /** Where the owner saves a
 
 // Native proof is injected by Android's fixed transport, not supplied by a web page.
 export interface EdgeOptions { nativeUiToken?: string }
+export interface EdgeOptions { fileWorkspaces?: () => Record<string, { root: string; directory: string }> }
 
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
@@ -254,6 +255,22 @@ export class EdgeRouter {
           total: full.length, note: "敏感字段已隐藏；内容是已保存的执行记录，可能包含工具返回的预览或文件路径。" }), headers: { "content-type": "application/json", "cache-control": "no-store" } };
       }
       }
+      if (path === "/api/workspaces" && req.method === "GET") {
+        if (!caller!.ownerProxy) fail(403, "forbidden", "workspace read requires owner authority");
+        return encode(200, Object.entries(this.fileRoots()).map(([id, value]) => ({ id, directory: value.directory })));
+      }
+      // A directory-shaped URL preserves normal relative HTML/CSS/image references. It is read-only,
+      // sandboxed and has no script/bridge authority; the ordinary files route remains the byte API.
+      const content = /^\/api\/workspaces\/([a-z0-9_-]+)\/content\/(.+)$/.exec(path);
+      if (content && req.method === "GET") {
+        let rel: string;
+        try { rel = decodeURIComponent(content[2]!); } catch { return encode(400, { error: "bad_path" }); }
+        const url = new URL(req.url); url.search = ""; url.searchParams.set("path", rel);
+        const result = this.file(content[1]!, { ...req, url }, caller!);
+        return { ...result, headers: { ...result.headers,
+          "content-type": FILE_MIME[extname(rel).toLowerCase()] ?? "application/octet-stream",
+          "content-security-policy": FILE_VIEW_CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } };
+      }
       const secret = /^\/api\/vault(?:\/([A-Za-z_][A-Za-z0-9_]{0,63}))?$/.exec(path);
       if (secret && this.options.vault) return await this.vault(secret[1], req, caller!);
       const file = /^\/api\/workspaces\/([a-z0-9_-]+)\/files$/.exec(path);
@@ -408,10 +425,15 @@ export class EdgeRouter {
     return fail(405, "method_not_allowed", "use PUT or DELETE");
   }
 
+  private fileRoots(): Record<string, { root: string; directory: string }> {
+    return { ...Object.fromEntries(Object.entries(this.options.workspaces ?? {}).map(([id, root]) => [id, { root, directory: root }])),
+      ...this.options.fileWorkspaces?.() };
+  }
+
   private file(workspace: string, req: EdgeRequest, caller: EdgeCaller): EdgeResponse {
     if (!caller.ownerProxy) fail(403, "forbidden", "workspace read requires owner authority");
     if (req.method === "PUT" && (!caller.local || caller.remote || caller.member !== "person:owner")) fail(403, "forbidden", "file write requires local owner");
-    const root = this.options.workspaces?.[workspace];
+    const root = req.method === "GET" ? this.fileRoots()[workspace]?.root : this.options.workspaces?.[workspace];
     if (!root) fail(404, "not_found", "workspace not found");
     const realRoot = realpathSync(root!) as string;
     const rel = req.url.searchParams.get("path") ?? "";
@@ -440,8 +462,11 @@ export class EdgeRouter {
       if (stat.isDirectory()) return encode(200, readdirSync(real, { withFileTypes: true }).filter((entry) => !entry.name.startsWith(".") && !entry.isSymbolicLink()).map((entry) => {
         const path = join(real, entry.name); const s = lstatSync(path); return { path: join(rel, entry.name), size: s.size, mtime: s.mtimeMs, dir: entry.isDirectory() };
       }));
+      if (!stat.isFile() || stat.nlink !== 1) fail(403, "forbidden", "not a regular single-link file");
       if (stat.size > MAX_BODY) fail(413, "too_large", "file too large");
-      return { status: 200, headers: { "content-type": MIME[extname(real).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-store" }, body: readFileSync(real) };
+      return { status: 200, headers: { "content-type": MIME[extname(real).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-store",
+        "x-content-type-options": "nosniff", "content-security-policy": FILE_VIEW_CSP,
+        ...(req.url.searchParams.get("download") === "1" ? { "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(parts.at(-1) ?? "file")}` } : {}) }, body: readFileSync(real) };
     }
     if (req.body && req.body.length > MAX_BODY) fail(413, "too_large", "file too large");
     const parent = resolve(full, "..");
@@ -498,6 +523,8 @@ export class EdgeRouter {
 }
 
 const MIME: Record<string, string> = { ".md": "text/markdown; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf", ".html": "text/plain; charset=utf-8" };
+const FILE_MIME: Record<string, string> = { ...MIME, ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff": "font/woff", ".woff2": "font/woff2" };
+const FILE_VIEW_CSP = "sandbox allow-same-origin; default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' https://appassets.androidplatform.net";
 
 export function startEdgeServer(router: EdgeRouter, host: string, port: number): Promise<Server> {
   const server = createServer(async (req, res) => {

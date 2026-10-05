@@ -40,6 +40,9 @@ import ai.ash.ui.transport.CoreCancellation
 import ai.ash.ui.transport.CoreUiRequest
 import ai.ash.ui.transport.FixedCoreClient
 import ai.ash.ui.transport.ownerBearerFromPrivateUiUrl
+import ai.ash.ui.transport.workspaceContentRoute
+import ai.ash.ui.transport.workspaceReadRoute
+import ai.ash.ui.transport.FILE_CSP
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -64,6 +67,8 @@ class HomeActivity : Activity() {
     private val requests = ConcurrentHashMap<String, CoreCancellation>()
     /** The web page's pending <input type=file> request; answered exactly once (null = cancelled). */
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private data class SaveFile(val id: String, val path: String, val epoch: Long, val reply: androidx.webkit.JavaScriptReplyProxy)
+    private var saveFile: SaveFile? = null
 
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
@@ -92,6 +97,8 @@ class HomeActivity : Activity() {
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
                 val u = req.url
+                // Files are sandboxed child documents, never replacement main pages or native deep links.
+                if (!req.isForMainFrame) return workspaceContentRoute(u.toString()) == null
                 if (u.scheme == "ash" && u.host == "console") {
                     startActivity(Intent(this@HomeActivity, ConsoleActivity::class.java))
                     return true
@@ -108,6 +115,18 @@ class HomeActivity : Activity() {
 
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
                 val u = req.url
+                val fileRoute = workspaceContentRoute(u.toString())
+                if (!req.isForMainFrame && req.method == "GET" && fileRoute != null) {
+                    val epoch = pageEpoch
+                    return runCatching {
+                        val result = coreUi?.execute(epoch, CoreUiRequest("GET", fileRoute)) ?: return@runCatching forbidden()
+                        val mime = result.contentType.substringBefore(';')
+                        WebResourceResponse(mime, if (mime.startsWith("text/")) "UTF-8" else null,
+                            result.status, if (result.status == 200) "OK" else "Unavailable",
+                            mapOf("Content-Security-Policy" to FILE_CSP, "X-Content-Type-Options" to "nosniff", "Cache-Control" to "no-store", "Referrer-Policy" to "no-referrer"),
+                            ByteArrayInputStream(result.body))
+                    }.getOrElse { forbidden() }
+                }
                 if (u.scheme == "https" && u.host == "appassets.androidplatform.net" && u.port == -1 &&
                     u.encodedPath?.startsWith("/assets/ash-ui/") == true && u.encodedPath?.contains("..") != true &&
                     u.query == null && u.fragment == null) {
@@ -149,6 +168,7 @@ class HomeActivity : Activity() {
                         .put("endpoint", "http://127.0.0.1:${BuildConfig.CORE_PORT}").toString())
                     "cancel" -> requests.remove(input.optString("id"))?.cancel()
                     "request" -> handleNativeRequest(input, reply)
+                    "file_save" -> handleFileSave(input, reply)
                     "gateway_config" -> handleGatewaySetting(input, reply)
                     "browser_logins" -> handleBrowserLogins(input, reply)
                 }
@@ -276,6 +296,40 @@ class HomeActivity : Activity() {
         }.start()
     }
 
+    private fun handleFileSave(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
+        val id = input.optString("id")
+        if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
+        fun rejected() { reply.postMessage(JSONObject().put("type", "file_save_result").put("id", id).put("ok", false).toString()) }
+        if (saveFile != null) { rejected(); return }
+        val path = input.optString("path")
+        val route = runCatching { workspaceReadRoute(input.optString("workspace"), path) }.getOrNull() ?: run { rejected(); return }
+        saveFile = SaveFile(id, route, pageEpoch, reply)
+        val name = path.substringAfterLast('/')
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+        try {
+            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(mime).putExtra(Intent.EXTRA_TITLE, name), REQ_SAVE_FILE)
+        } catch (_: Exception) { saveFile = null; rejected() }
+    }
+
+    private fun finishFileSave(resultCode: Int, uri: Uri?) {
+        val pending = saveFile ?: return
+        saveFile = null
+        fun respond(ok: Boolean, cancelled: Boolean = false) { runOnUiThread {
+            if (pageEpoch == pending.epoch) runCatching { pending.reply.postMessage(JSONObject().put("type", "file_save_result")
+                .put("id", pending.id).put("ok", ok).put("cancelled", cancelled).toString()) }
+        } }
+        if (resultCode != RESULT_OK || uri == null) { respond(false, true); return }
+        Thread {
+            val ok = runCatching {
+                val result = coreUi?.execute(pending.epoch, CoreUiRequest("GET", pending.path)) ?: error("core unavailable")
+                check(result.status == 200)
+                contentResolver.openOutputStream(uri, "w")?.use { it.write(result.body) } ?: error("destination unavailable")
+            }.isSuccess
+            respond(ok)
+        }.start()
+    }
+
     private fun handleGatewaySetting(input: JSONObject, reply: androidx.webkit.JavaScriptReplyProxy) {
         val id = input.optString("id")
         if (!Regex("[1-9][0-9]{0,11}").matches(id)) return
@@ -350,6 +404,7 @@ class HomeActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_SAVE_FILE) { finishFileSave(resultCode, data?.data); return }
         if (requestCode != REQ_FILES) return super.onActivityResult(requestCode, resultCode, data)
         val uris = LinkedHashSet<Uri>()
         if (resultCode == RESULT_OK && data != null) {
@@ -367,7 +422,9 @@ class HomeActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else moveTaskToBack(true) // Ash keeps running
+        web.evaluateJavascript("(() => { const f = document.querySelector('.files-view[open]'); if (!f) return false; f.close(); return true; })()") { closed ->
+            if (closed != "true") { if (web.canGoBack()) web.goBack() else moveTaskToBack(true) }
+        }
     }
 
     override fun onDestroy() {
@@ -388,5 +445,6 @@ class HomeActivity : Activity() {
         private const val UI_ASSET_ORIGIN = "https://appassets.androidplatform.net"
         private const val UI_ASSET_URL = "$UI_ASSET_ORIGIN/assets/ash-ui/index.html"
         private const val REQ_FILES = 7101
+        private const val REQ_SAVE_FILE = 7102
     }
 }

@@ -16,7 +16,7 @@ const say = (item) => item?.type === "say";
 const grouped = (item, neighbor) => say(item) && say(neighbor) && item.side === "agent" && neighbor.side === "agent" && !!item.group && item.group === neighbor.group && !item.legacy && !neighbor.legacy;
 const deliveryText = { sent: "发送中", delivered: "已送达", read: "已读" };
 
-function attachment(parent, item, openInline, openWorkspaceFile) {
+function attachment(parent, item, openInline, openWorkspaceFile, onOpenFile) {
   const name = typeof item?.name === "string" ? item.name : "附件";
   if (item?.source === "inline" && Number.isSafeInteger(item.index) && item.index >= 0) {
     const button = text(parent, "button", name, "attachment");
@@ -51,6 +51,10 @@ function attachment(parent, item, openInline, openWorkspaceFile) {
   }
   const url = workspaceFileUrl(item);
   if (!url) return;
+  if (onOpenFile) {
+    const button = text(parent, "button", name, "attachment");
+    button.type = "button"; button.onclick = () => onOpenFile(item); return;
+  }
   if (openWorkspaceFile) {
     const button = text(parent, "button", name, "attachment");
     button.type = "button";
@@ -76,7 +80,7 @@ function attachment(parent, item, openInline, openWorkspaceFile) {
 }
 
 /** Append a stable ledger conversation without inventing an approval or option action. */
-export function appendConversation(fragment, entries, { openInline, openWorkspaceFile, onSelect, onAnswerAsk, onPermission, optionPending, askIntents } = {}) {
+export function appendConversation(fragment, entries, { openInline, openWorkspaceFile, onOpenFile, onFileLink, onSelect, onAnswerAsk, onPermission, optionPending, askIntents } = {}) {
   if (!entries.length) text(fragment, "div", "还没有对话。", "hello");
   for (let index = 0; index < entries.length; index++) {
     const item = entries[index];
@@ -90,12 +94,12 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       const group = item.side === "agent" && item.group ? ` group-${previous ? next ? "middle" : "last" : next ? "first" : "single"}` : "";
       const rich = item.side === "agent";
       const bubble = text(fragment, "div", rich ? "" : item.text, `msg ${side}${group}`);
-      if (rich) appendMarkdown(bubble, item.text);
+      if (rich) appendMarkdown(bubble, item.text, { onFileLink });
       bubble.dataset.seq = String(item.seq);
       if (item.legacy) bubble.dataset.readonly = "true";
       if (Array.isArray(item.attachments) && item.attachments.length) {
         const attachments = text(bubble, "div", "", "atts");
-        for (const ref of item.attachments) attachment(attachments, ref, openInline, openWorkspaceFile);
+        for (const ref of item.attachments) attachment(attachments, ref, openInline, openWorkspaceFile, onOpenFile);
       }
       if (Array.isArray(item.reactions) && item.reactions.length) {
         const reactions = text(bubble, "span", "", "reactions");
@@ -148,7 +152,7 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       }
       if (answer?.status === "uncertain") text(card, "small", "结果尚未确认；只能原样重试");
     } else if (item.type === "card") {
-      renderCard(fragment, item, { onSelect, onPermission, optionPending, openWorkspaceFile });
+      renderCard(fragment, item, { onSelect, onPermission, optionPending, openWorkspaceFile, onOpenFile });
     }
   }
 }

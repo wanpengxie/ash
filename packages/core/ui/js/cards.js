@@ -12,7 +12,7 @@ export function workspaceFileUrl(ref) {
 }
 
 /** Every action is a normal owner message or link; the card creates no private channel. */
-export function renderCard(parent, item, { onSelect, onPermission, optionPending, openWorkspaceFile } = {}) {
+export function renderCard(parent, item, { onSelect, onPermission, optionPending, openWorkspaceFile, onOpenFile } = {}) {
   const card = item.card;
   const root = text(parent, "div", "", "card");
   if (card.type === "options") {
@@ -52,6 +52,10 @@ export function renderCard(parent, item, { onSelect, onPermission, optionPending
   if (card.type === "file" || card.type === "image") {
     const url = workspaceFileUrl(card);
     if (!url) return root;
+    if (onOpenFile) {
+      const button = text(root, "button", card.name || card.path.split("/").pop(), "btn gray");
+      button.type = "button"; button.onclick = () => onOpenFile(card); return root;
+    }
     if (openWorkspaceFile) {
       const button = text(root, "button", card.type === "image" ? "查看图片" : card.name || "打开文件", "btn gray");
       button.type = "button";
