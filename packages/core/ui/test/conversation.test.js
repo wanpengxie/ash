@@ -12,7 +12,7 @@ class Node {
 }
 
 function draw(entries, options) {
-  globalThis.document = { createElement: (tag) => new Node(tag) };
+  globalThis.document = { createElement: (tag) => new Node(tag), createTextNode: (value) => { const node = new Node("#text"); node.textContent = value; return node; } };
   try { const fragment = new Node("fragment"); appendConversation(fragment, entries, options); return fragment; }
   finally { delete globalThis.document; }
 }

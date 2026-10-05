@@ -36,6 +36,8 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "ash-gateway": "git+https://github.com/wanpengxie/ash-gateway.git#v0.4.0",
+    "entities": "8.1.0",
+    "marked": "18.0.14",
     "zod": "^4.6.5"
   }
 }

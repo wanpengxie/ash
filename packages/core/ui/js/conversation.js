@@ -2,6 +2,7 @@
 import { renderCard, workspaceFileUrl } from "./cards.js";
 import { appendApprovalOriginal } from "./approval-original.js";
 import { humanPendingOutcome } from "./human-pending.js";
+import { appendMarkdown } from "./markdown.js";
 export { workspaceFileUrl } from "./cards.js";
 const text = (parent, tag, value, className = "") => {
   const node = document.createElement(tag);
@@ -87,7 +88,9 @@ export function appendConversation(fragment, entries, { openInline, openWorkspac
       const previous = grouped(item, entries[index - 1]);
       const next = grouped(item, entries[index + 1]);
       const group = item.side === "agent" && item.group ? ` group-${previous ? next ? "middle" : "last" : next ? "first" : "single"}` : "";
-      const bubble = text(fragment, "div", item.text, `msg ${side}${group}`);
+      const rich = item.side === "agent";
+      const bubble = text(fragment, "div", rich ? "" : item.text, `msg ${side}${group}`);
+      if (rich) appendMarkdown(bubble, item.text);
       bubble.dataset.seq = String(item.seq);
       if (item.legacy) bubble.dataset.readonly = "true";
       if (Array.isArray(item.attachments) && item.attachments.length) {
