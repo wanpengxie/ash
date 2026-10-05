@@ -44,7 +44,7 @@ object TaskCapsule {
     private var root: FrameLayout? = null
     private var web: WebView? = null
     private var params: WindowManager.LayoutParams? = null
-    private var attached = false
+    @Volatile private var attached = false
     private var ready = false
     /** The page has laid the island out and said how large it is; until then the window stays away (no blank first frame). */
     private var sized = false
@@ -65,8 +65,14 @@ object TaskCapsule {
     private var attemptText = ""
     private var attemptTarget: String? = null
 
-    fun ownsWindow(bounds: Rect): Boolean = screenBounds == bounds
-    fun isEditing(): Boolean = editing
+    /** The native island (ui/island) is the island; the WebView one remains behind a switch while phones are checked. */
+    @Volatile private var nativeMode: Boolean? = null
+    private fun native(ctx: Context) = nativeMode ?: ai.ash.ui.island.NativeIsland.enabled(ctx).also { nativeMode = it }
+    private fun native() = nativeMode == true
+    fun ownsWindow(bounds: Rect): Boolean = if (native()) ai.ash.ui.island.NativeIsland.ownsWindow(bounds) else screenBounds == bounds
+    fun isEditing(): Boolean = if (native()) ai.ash.ui.island.NativeIsland.isEditing() else editing
+    /** The island is on screen for the owner now: what it shows needs no notification. */
+    fun showing(): Boolean = if (native()) ai.ash.ui.island.NativeIsland.showing() else attached
     private fun dp(n: Double) = (n * (app?.resources?.displayMetrics?.density ?: 1f)).toInt()
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
         ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
@@ -74,7 +80,7 @@ object TaskCapsule {
     private fun js(code: String) { if (ready) web?.evaluateJavascript(code, null) }
 
     /** Prewarm once. Capture and transient hiding only detach, never recreate this view. */
-    fun prewarm(ctx: Context) { main.post { ensureView(ctx.applicationContext) } }
+    fun prewarm(ctx: Context) { if (native(ctx)) ai.ash.ui.island.NativeIsland.prewarm(ctx) else main.post { ensureView(ctx.applicationContext) } }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun ensureView(ctx: Context) {
@@ -147,6 +153,11 @@ object TaskCapsule {
 
     internal fun update(ctx: Context, frame: TaskFrame, elapsed: Long, stale: Boolean, interactive: Boolean, canStop: Boolean, notice: String?) {
         check(Looper.myLooper() == Looper.getMainLooper())
+        if (native(ctx)) {
+            val projected = IslandPresentation.project(frame, elapsed, stale, interactive, canStop, notice, ai.ash.ui.island.NativeIsland.submitted, System.currentTimeMillis())
+            ai.ash.ui.island.NativeIsland.update(ctx, projected) { update(ctx, frame, elapsed, stale, interactive, canStop, notice) }
+            return
+        }
         ensureView(ctx.applicationContext)
         model = IslandPresentation.project(frame, elapsed, stale, interactive, canStop, notice, submitted, System.currentTimeMillis())
         restore = { update(ctx, frame, elapsed, stale, interactive, canStop, notice) }
@@ -216,8 +227,8 @@ object TaskCapsule {
             .onFailure { android.util.Log.w("ash.capsule", "could not detach island", it) }
         attached = false; screenBounds = null
     }
-    fun hide() { main.post { visible = false; setEditing(false); detach(); restore = null } }
-    fun release() { main.post {
+    fun hide() { if (native()) return ai.ash.ui.island.NativeIsland.hide(); main.post { visible = false; setEditing(false); detach(); restore = null } }
+    fun release() { if (native()) return ai.ash.ui.island.NativeIsland.release(); main.post {
         visible = false; setEditing(false); detach(); web?.destroy(); root = null; web = null; params = null
         ready = false; sized = false; lastModel = ""; model = null; restore = null; submitted.clear()
     } }
@@ -328,6 +339,7 @@ object TaskCapsule {
     }
     /** Model gestures never type into the owner's composer. */
     fun <T> withTouchPassthrough(action: () -> T): T {
+        if (native()) return ai.ash.ui.island.NativeIsland.withTouchPassthrough(action)
         val latch = CountDownLatch(1); var applied = false; var entered = false
         main.post {
             if (editing) { latch.countDown(); return@post }
@@ -344,6 +356,7 @@ object TaskCapsule {
     }
     /** Remove the actual window immediately, then wait two compositor frames. Keep WebView alive. */
     fun <T> withoutOverlay(action: () -> T): T {
+        if (native()) return ai.ash.ui.island.NativeIsland.withoutOverlay(action)
         val latch = CountDownLatch(1); var entered = false
         main.post {
             if (editing) { latch.countDown(); return@post }

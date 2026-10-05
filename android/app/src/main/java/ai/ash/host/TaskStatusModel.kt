@@ -54,10 +54,12 @@ internal data class TaskFrame(val session: String, val revision: Long, val turn:
 
 /** Ephemeral only. A host/core restart never resurrects an old task or stop button. */
 internal class TaskStatusModel {
+    companion object { const val STALE_MS = 100_000L }
     var frame: TaskFrame? = null; private set
     private var received = 0L
     private var finished = 0L
-    private var dismissed = false
+    /** The owner closed the island for this turn: it stays away until the next turn (the notification carries on). */
+    var dismissed = false; private set
     private val retired = mutableSetOf<String>()
     fun accept(next: TaskFrame, now: Long): Boolean {
         val old = frame
@@ -69,16 +71,16 @@ internal class TaskStatusModel {
         frame = next; received = now
         return true
     }
-    fun stale(now: Long): Boolean = frame?.state != "done" && now - received > 15_000
+    /** A turn under way that has sent no status for this long shows as disconnected. */
+    fun stale(now: Long): Boolean = frame?.state != "done" && now - received > STALE_MS
     fun dismiss(turn: String): Boolean {
         if (frame?.turn != turn) return false
         dismissed = true; return true
     }
-    fun visible(now: Long, homeVisible: Boolean = true, editing: Boolean = false): Boolean = frame?.let {
-        it.turn != null && it.state !in setOf("idle", "resting") &&
-            !dismissed
-    } ?: false
-    fun canStop(turn: String, now: Long): Boolean = frame?.let { it.turn == turn && it.canStop && !stale(now) && visible(now) } ?: false
+    /** A turn is under way or has just ended (the notification); the island shows it unless the owner closed it. */
+    fun active(): Boolean = frame?.let { it.turn != null && it.state !in setOf("idle", "resting") } ?: false
+    fun visible(now: Long, homeVisible: Boolean = true, editing: Boolean = false): Boolean = active() && !dismissed
+    fun canStop(turn: String, now: Long): Boolean = frame?.let { it.turn == turn && it.canStop && !stale(now) && active() } ?: false
     fun elapsed(now: Long): Long = frame?.let { ((if (it.state == "done") finished else now) - it.startedAt).coerceAtLeast(0) / 1000 } ?: 0
     fun clear() { frame = null; retired.clear(); received = 0; finished = 0; dismissed = false }
 }

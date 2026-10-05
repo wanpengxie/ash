@@ -48,7 +48,9 @@ export class LedgerUiPresenter implements UiPresenter {
   present(message: Message): void { if (message.to !== "person:owner" || this.ledger.byId(message.id)?.seq !== message.seq) throw new Error("owner stream message unavailable"); }
 }
 export interface PostOptions { ledger: Ledger; router: WorldRouter; screens: ScreenPresence; delivery: WorldConfigV2["delivery"];
-  host?: HostPresenter; ui?: UiPresenter; now?: () => number; timeZone?: string; scanMs?: number }
+  host?: HostPresenter; ui?: UiPresenter; now?: () => number; timeZone?: string; scanMs?: number;
+  /** Whether the phone's task island is on screen now: the owner reads what it shows there, as in the app. */
+  island?: () => Promise<boolean> }
 
 export class PostMember implements Member {
   readonly id = "service:post";
@@ -75,6 +77,8 @@ export class PostMember implements Member {
   words(): readonly WordSpec[] { return [visible, hidden, deliver]; }
   private now(): number { const now = (this.options.now ?? Date.now)(); if (!Number.isSafeInteger(now) || now < 0) throw new TypeError("invalid post time"); return now; }
   private foreground(): boolean { return this.options.screens.list().some((entry) => entry.online && this.options.screens.visible(entry.id)); }
+  /** Asked at the moment of delivery; an island that cannot answer is not shown (the owner is notified). */
+  private async islandShown(): Promise<boolean> { try { return await this.options.island?.() === true; } catch { return false; } }
   private source(id: string, kind: DeliveryRecord["kind"]): Message | null {
     const source = this.options.ledger.byId(id);
     if (!source || source.seq <= this.options.ledger.migration.lastLegacySeq || source.kind !== "request" || source.to !== "person:owner") return null;
@@ -114,7 +118,9 @@ export class PostMember implements Member {
       (Object.hasOwn(source.body, "dedupe_key") !== Object.hasOwn(message.body, "dedupe_key") ||
         (Object.hasOwn(source.body, "dedupe_key") && source.body.dedupe_key !== message.body.dedupe_key)))
       return error("bad_request", "delivery key must match the accepted owner message");
-    const now = this.now(), foreground = this.foreground();
+    // The owner is looking at Ash when one of its screens is visible or the task island is on screen; then nothing is
+    // pushed as a notification.
+    const foreground = this.foreground() || await this.islandShown(), now = this.now();
     const held = !foreground && (kind === "offer" || kind === "heads_up") && isQuiet(now, this.options.delivery.quiet, this.options.timeZone);
     const notification = !foreground && !held && (kind === "approval" || kind === "due" || kind === "reply");
     const channel = held ? "held" : notification ? "notification" : "inapp";

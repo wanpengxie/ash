@@ -47,18 +47,25 @@ object TaskStatus {
         val ctx = app ?: return
         val now = System.currentTimeMillis()
         val frame = model.frame
-        if (!model.visible(now, AppState.homeVisible, TaskCapsule.isEditing()) || frame == null) {
+        if (!model.active() || frame == null) {
             TaskCapsule.hide(); ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
         }
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
-        // Update at phase/turn changes, not every elapsed second. Notification works without overlay.
-        val key = "${frame.turn}:$title:$canStop:${frame.state}"
-        if (!ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) lastNotification = null
-        else if (key != lastNotification) {
-            runCatching { notify(ctx, frame, title, canStop) }.onSuccess { lastNotification = key }
+        if (model.dismissed) TaskCapsule.hide()
+        else TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
+        // A running turn is shown once: on the island, or, when the island is closed (or may not be drawn), as this
+        // notification. What the turn says or asks reaches the owner through Ash's delivery, which notifies only when
+        // the island is not on screen (Ash asks the phone at that moment).
+        val manager = ctx.getSystemService(NotificationManager::class.java)
+        val islandOpen = !model.dismissed && android.provider.Settings.canDrawOverlays(ctx)
+        if (islandOpen || frame.state in setOf("done", "waiting_you") || !manager.areNotificationsEnabled()) {
+            if (lastNotification != null) { manager.cancel(ID); lastNotification = null }
+            return
         }
+        // Update at phase/turn changes, not every elapsed second.
+        val key = "${frame.turn}:$title:$canStop:${frame.state}"
+        if (key != lastNotification) runCatching { notify(ctx, frame, title, canStop) }.onSuccess { lastNotification = key }
     }
     private fun notify(ctx: Context, f: TaskFrame, title: String, canStop: Boolean) {
         val manager = ctx.getSystemService(NotificationManager::class.java)
@@ -74,8 +81,10 @@ object TaskStatus {
         }
         manager.notify(ID, b.build())
     }
+    /** Closes the island for the rest of this turn; from then on Ash notifies instead. */
     fun dismiss(turn: String) { main.post {
-        if (model.dismiss(turn)) { TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); lastNotification = null }
+        if (!model.dismiss(turn)) return@post
+        TaskCapsule.hide(); render()
     } }
     /** Explicit end, not a UI-only dismissal: withdraw pending actions before stopping this exact turn. */
     fun end(turn: String) { main.post {

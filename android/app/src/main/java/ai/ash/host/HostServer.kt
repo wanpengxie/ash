@@ -104,6 +104,7 @@ class HostServer(private val ctx: Context, private val token: String) {
         }
         "POST /task/status" -> if (TaskStatus.accept(ctx, b)) 200 to JSONObject().put("ok", true) else 400 to JSONObject().put("error", "invalid_task_status")
         "POST /present" -> Present.show(ctx, b)
+        "POST /island" -> 200 to JSONObject().put("showing", ai.ash.ui.TaskCapsule.showing())
         "POST /decision/surface" -> 200 to decisions.surface(b)
         "POST /decision/screen" -> 200 to decisions.snapshot()
         "POST /decision/return" -> 200 to decisions.returnToAsh(b)

@@ -20,7 +20,7 @@ const KIND = {
   listening:{label:'在听',title:'在听',face:'listening',ind:'bars',tone:'running',run:true,note:'刚收到你的消息'},
   thinking:{label:'在想',title:'正在处理',face:'thinking',ind:'dots',tone:'running',run:true,note:'你可以继续用手机，需要你时这里会展开'},
   working:{label:null,title:'正在处理',face:'focused',ind:'ring',tone:'running',run:true,note:'你可以继续用手机，需要你时这里会展开'},
-  stale:{label:'连接中断',title:'连接中断',face:'default',ind:'off',tone:'offline',run:false,note:'15 秒没收到新状态，Ash 可能仍在运行'},
+  stale:{label:'连接中断',title:'连接中断',face:'default',ind:'off',tone:'offline',run:false,note:'100 秒没收到新状态，Ash 可能仍在运行'},
   ask:{label:'等你回答',title:'等你回答',face:'listening',ind:'pulse',tone:'needs',ph:'或者直接告诉 Ash…'},
   approval:{label:'需要批准',title:'需要你批准',face:'focused',ind:'pulse',tone:'needs'},
   in_app:{label:'去 Ash 操作',title:'需要你在 Ash 里操作',face:'listening',ind:'pulse',tone:'needs'},
