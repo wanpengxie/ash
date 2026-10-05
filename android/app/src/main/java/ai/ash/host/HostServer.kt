@@ -95,6 +95,7 @@ class HostServer(private val ctx: Context, private val token: String) {
                 capability in setOf("screen.see", "screen.screenshot") && (b.optJSONObject("args")?.optInt("display", 0) ?: 0) != 0 -> call()
                 capability in setOf("screen.see", "screen.screenshot") -> ai.ash.ui.TaskCapsule.withoutOverlay(call)
                 capability.startsWith("screen.") && capability !in setOf("screen.read", "screen.touch_status") -> ai.ash.ui.TaskCapsule.withTouchPassthrough(call)
+                capability in setOf("apps.open", "settings.open", "intent.view", "input.key") -> ai.ash.ui.TaskCapsule.withTouchPassthrough(call)
                 else -> call()
             }
             200 to r.toJson()

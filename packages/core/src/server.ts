@@ -12,6 +12,7 @@ import { Ledger } from "./world/ledger";
 import type { PostJournal } from "./world/post-journal";
 import { AVATARS, ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
 import { authScope } from "./auth-scope";
+import { activityDetail, activityAction } from "../../sdk/src/activity";
 
 export interface EdgeTokens { api: Record<string, string>; mcp: Record<string, string> }
 export interface EdgeCaller {
@@ -227,6 +228,31 @@ export class EdgeRouter {
         return encode(200, member === null ? this.members.describe(audience) : this.members.describe(audience, member));
       }
       case "GET /api/stream": return this.stream(req, caller!);
+      case "GET /api/activity/detail": {
+        if (caller!.member !== "person:owner" || !caller!.ownerProxy) fail(403, "forbidden", "owner only");
+        const id = req.url.searchParams.get("id") ?? "";
+        const offset = Number(req.url.searchParams.get("offset") ?? 0);
+        if (!Number.isSafeInteger(offset) || offset < 0) fail(400, "bad_request", "invalid offset");
+        const request = this.world.ledger.byId(id);
+        if (!request || request.kind !== "request" || !request.from.startsWith("agent:") || !request.turn || request.to === "person:owner") fail(404, "not_found", "activity not found");
+        const reply = this.world.ledger.responseTo(id);
+        const action = activityAction(request!.to ?? "", request!.word, request!.body);
+        let input: unknown = request!.body, result: unknown = reply?.body ?? { status: "pending", note: "尚无返回记录" };
+        if (request!.to === "service:dsh-tool") {
+          input = request!.body.arguments;
+          try { input = JSON.parse(String(input)); if (action.wrapper) input = (input as { body?: unknown }).body ?? {}; } catch {}
+          const stored = reply?.body.result as { preview?: unknown; detail?: unknown; truncated?: boolean } | undefined;
+          if (reply?.body.ok === true && stored) {
+            const raw = stored.detail ?? stored.preview;
+            try { result = JSON.parse(String(raw)); } catch { result = raw; }
+            if (stored.truncated) result = { preview: result, truncated: true, note: "保存的结果超过64,000字符，后续内容请查看工具返回的文件。" };
+          }
+        }
+        const full = activityDetail({ tool: action.tool, member: action.member, input, result });
+        const next = Math.min(full.length, offset + 16000);
+        return { ...encode(200, { text: full.slice(offset, next), next_offset: next < full.length ? next : null,
+          total: full.length, note: "敏感字段已隐藏；内容是已保存的执行记录，可能包含工具返回的预览或文件路径。" }), headers: { "content-type": "application/json", "cache-control": "no-store" } };
+      }
       }
       const secret = /^\/api\/vault(?:\/([A-Za-z_][A-Za-z0-9_]{0,63}))?$/.exec(path);
       if (secret && this.options.vault) return await this.vault(secret[1], req, caller!);

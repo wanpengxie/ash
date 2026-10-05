@@ -391,11 +391,18 @@ export class WorldRouter {
     const request = this.ledger.byId(requestId);
     if (!request || !AGENT_ID.test(request.from) || request.to !== "service:dsh-tool" || request.kind !== "request")
       throw new TypeError("unknown DSH tool call");
-    const body: ResponseBody = ok ? { ok: true, result: { preview: preview.slice(0, 1000) } }
-      : { ok: false, error: { code: "failed", message: "DSH tool failed" } };
+    const body: ResponseBody = ok ? { ok: true, result: { preview: preview.slice(0, 1000), detail: preview.slice(0, 64000), truncated: preview.length > 64000 } }
+      : { ok: false, error: { code: "failed", message: preview.slice(0, 64000) || "DSH tool failed" } };
     const settled = this.ledger.settle(requestId, "service:dsh-tool", body);
     if (settled.settled) this.publish(settled.message);
     return settled.message;
+  }
+  /** Bound runtime display event. Raw reasoning is never put in the owner ledger. */
+  recordActivitySummary(turn: string, text: string, actor = "agent:main", current = true): void {
+    if (!/^t_[A-Za-z0-9_-]+$/.test(turn) || !AGENT_ID.test(actor) || !text.trim() || text.length > 200) return;
+    const stored = this.ledger.append({ from: actor, to: null, kind: "event", word: "activity.summary", turn,
+      body: { text, current, source: "model_summary" } });
+    this.publish(stored.message);
   }
   private publish(message: Message): void {
     for (const listener of this.subscribers) {

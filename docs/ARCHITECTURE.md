@@ -38,4 +38,29 @@ The phone makes the outbound gateway connection. Paired browsers are additional 
 
 ## Build and checks
 
+### Activity presentation
+
+The web activity sheet and native task capsule share `sdk/activity.ts`: a concrete purpose, actual tool name,
+selected non-secret target, request identity and lifecycle. Transport status pulses are not work steps.
+An unambiguous identical capability wrapper and dispatch share one step; concurrent ambiguous calls stay separate.
+Accepted receipts are pending, not successful execution. Device failure cannot be overwritten by wrapper success.
+
+`GET /api/activity/detail?id=<request-id>&offset=<character-offset>` is an owner-only, read-only projection of an
+existing agent request and its reply. It returns redacted JSON text in 16,000-character pages with `next_offset`;
+it does not dispatch, approve or retry anything. Raw inputs/results never enter the native capsule. The detail
+view labels stored previews; runtime result capture is bounded to 64,000 characters and marks truncation.
+
+DSH's committed thought updates may produce an optional, short user-facing progress summary using the existing
+DeepSeek credential. This runs asynchronously with a four-second timeout and separate `progress` usage accounting.
+Raw reasoning is not stored in Ash's activity ledger. Summaries are labelled as such, never execution evidence;
+late summaries cannot override current tool progress, and turn completion/cancellation discards unfinished summaries.
+No model text means an honest waiting state, not a fabricated work phase.
+
+The native capsule always exposes a direct conversation input button, including collapsed, waiting and completed
+states. Input uses the authenticated phone-owner `say` path with a persisted client id for uncertain retries;
+it does not bring Ash to the foreground. The editor acquires keyboard focus only on an explicit tap. Screen
+gestures and captures defer while the owner is typing. A successful completed turn is green and remains visible
+outside Ash until dismissed, returned to Ash, or replaced by a new task. Its controls are Return to Ash, Close
+notification and Continue input. Returning to Ash consumes completion; leaving Ash again never resurrects it.
+
 `payload/manifest.json` locks the published DSH package and Android runtime inputs. `npm run build:payload` assembles the payload without editing DSH's package files. The Android Gradle build embeds that payload in the APK. The test suite includes world/service tests, installed-DSH integration tests when `ASH_TEST_DSH_ROOT` is set, and real Chromium UI scenarios (`npm run test:ui:e2e`). A successful build or test run is not a substitute for Android device, online gateway, JEV latency, or final experience validation.

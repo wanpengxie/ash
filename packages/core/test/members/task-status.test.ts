@@ -31,11 +31,14 @@ test("capsule follows facts, strips query details, bounds history and marks comp
     assert.equal(f.frames.at(-1)!.text, "在搜索");
     assert.equal(JSON.stringify(f.frames).includes("PRIVATE"), false);
     for (let i = 0; i < 9; i++) f.emit("status", { state: "working", text: `阶段${i}` });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.steps.length, 0, "status pulses are not steps");
+    for (let i = 0; i < 9; i++) f.emit("screen.read", {}, { kind: "request", id: `step_${i}`, to: "device:phone", turn: "t_a" });
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.steps.length, 5);
     f.emit("turn.end", { turn: "t_a", reason: "completed" });
     f.emit("status", { state: "done", text: "" });
     await f.bridge.settled();
     assert.equal(f.frames.at(-1)!.text, "已完成"); assert.equal(f.frames.at(-1)!.can_stop, false);
+    assert.equal(f.frames.at(-1)!.outcome, "completed", "native completion color uses the actual outcome");
     f.emit("status", { state: "idle", text: "在线" });
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.turn, "t_a"); assert.equal(f.frames.at(-1)!.text, "已完成");
   } finally { await f.bridge.close(); }
@@ -52,7 +55,7 @@ test("task remains visible through transient idle and shows step purpose, not ra
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "正在整理订单列表");
     f.emit("bash", {}, { kind: "response", reply_to: "bash_1" });
     f.emit("status", { state: "thinking", text: "在想" });
-    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "正在分析返回结果");
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "等待模型响应");
     f.emit("mcp__ash__capability_call", { arguments: JSON.stringify({ member: "device:phone", word: "screen.type", body: { text: "SECRET BODY" }, purpose: "正在填写搜索条件" }) },
       { id: "cap_1", kind: "request", to: "service:dsh-tool", turn: "t_a" });
     f.emit("screen.type", { text: "SECRET BODY" }, { id: "screen_1", kind: "request", to: "device:phone", turn: "t_a" });
@@ -79,6 +82,7 @@ test("gate approval beats a held tool's working status; helpers cannot overwrite
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "在动手");
     f.emit("turn.end", { turn: "t_a", reason: "cancelled" });
     await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "已停止");
+    assert.equal(f.frames.at(-1)!.outcome, "cancelled", "cancelled is not green success");
   } finally { await f.bridge.close(); }
 });
 test("delivery coalesces slow updates, tolerates failure, clears on shutdown", async () => {
@@ -91,6 +95,23 @@ test("delivery coalesces slow updates, tolerates failure, clears on shutdown", a
   assert.equal(frames.length, 2); assert.equal(frames.at(-1)!.text, "阶段99");
   await f.bridge.close(); assert.equal(frames.at(-1)!.can_stop, false); assert.equal(frames.at(-1)!.turn, null);
   f.emit("turn.start", { turn: "t_new" }); assert.equal(frames.length, 3);
+});
+
+test("caption and real tool share one step; late summaries and another agent's results cannot replace it", async () => {
+  const f = fixture();
+  try {
+    f.emit("turn.start", { turn: "t_a" });
+    f.emit("mcp__ash__capability_call", { arguments: JSON.stringify({ member: "device:phone", word: "screen.read", body: {}, purpose: "读取书架里的书名" }) },
+      { id: "outer", kind: "request", to: "service:dsh-tool", turn: "t_a" });
+    f.emit("screen.read", {}, { id: "inner", kind: "request", to: "device:phone", turn: "t_a" });
+    f.emit("activity.summary", { text: "旧的思路摘要", current: false }, { turn: "t_a" });
+    f.emit("bash", { ok: true }, { kind: "response", reply_to: "helper_call", from: "service:dsh-tool", to: "agent:helper" });
+    await f.bridge.settled();
+    const frame = f.frames.at(-1)!;
+    assert.equal(frame.text, "读取书架里的书名"); assert.equal(frame.tool, "screen.read"); assert.equal(frame.steps.length, 1);
+    f.emit("screen.read", { ok: true }, { kind: "response", reply_to: "inner", from: "device:phone" });
+    await f.bridge.settled(); assert.equal(f.frames.at(-1)!.text, "等待模型响应");
+  } finally { await f.bridge.close(); }
 });
 
 test("task stop is owner-only, turn-bound and actually cancels a running task", async () => {

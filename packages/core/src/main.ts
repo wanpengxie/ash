@@ -45,6 +45,7 @@ import { SensesMember } from "./members/senses";
 import { CostMember, type UsageRecord } from "./members/cost";
 import { VaultMember, VaultStore } from "./members/vault";
 import { deepseekReviewer } from "./review/reviewer";
+import { progressSummarizer } from "./review/progress";
 import { WorkMember } from "./members/work";
 import { ownerScreensLine } from "./members/owner-screens";
 import { McpCapabilities, type McpServerSpec } from "./mcpclient";
@@ -274,6 +275,10 @@ export async function startOwner(config: Config): Promise<Running> {
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const keyMissing = () => !vaultStore.has("DEEPSEEK_API_KEY");
     const containerRunner = container ? new ContainerTurnRunner({ host: container, binding: mainBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
+      summarizeProgress: progressSummarizer(() => vaultStore.get("DEEPSEEK_API_KEY"), (usage) => {
+        for (const listener of reviewUsage) listener({ at: Date.now() - usage.ms, ms: usage.ms, scope: "progress", provider: "deepseek-official",
+          model: usage.model, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: 0, ok: true });
+      }),
       mcp: () => ({ url: agentTools!.url, token: mainBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
       devices: () => `${deviceSummary(members)}\n${screensNow()}`, onActive: (active) => { running.chat += active ? 1 : -1; } }) : null;
     const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`)

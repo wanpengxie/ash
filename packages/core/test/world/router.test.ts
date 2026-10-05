@@ -422,6 +422,24 @@ test("screen and phone notification replies persist server-stamped origin, never
   } finally { ledger.close(); }
 });
 
+test("capsule conversation uses owner identity and retries the exact message once", async () => {
+  const { ledger, router } = await setup();
+  try {
+    let calls = 0;
+    router.register({ member: "agent:main", spec: wordContract("agent:main", "say")!, handle: () => {
+      calls++; return { ok: true, result: { accepted: true } };
+    } });
+    const input = { to: "agent:main", kind: "request" as const, word: "say", body: { text: "补充：只查最近一周" }, client_id: "capsule-retry", wait: true };
+    const first = await router.send(phone, input);
+    const retry = await router.send(phone, input);
+    assert.equal(first.id, retry.id); assert.equal(calls, 1);
+    assert.equal(ledger.byId(first.id)?.from, "person:owner");
+    assert.deepEqual(ledger.byId(first.id)?.body, input.body);
+    await assert.rejects(router.send(phone, { ...input, body: { text: "different" } }), code("bad_request"));
+    await assert.rejects(router.send({ ...phone, ownerProxy: false }, { ...input, client_id: "untrusted" }), code("forbidden"));
+  } finally { ledger.close(); }
+});
+
 test("phone sense broadcast accepts only four declared schemas from the trusted phone", async () => {
   const { ledger, router } = await setup();
   try {

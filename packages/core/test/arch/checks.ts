@@ -5,7 +5,8 @@ import ts from "typescript";
 
 export type Finding = { rule: "AR1" | "AR2" | "AR3" | "AR4" | "AR12"; file: string; detail: string };
 type Tree = Record<string, string>;
-const allowedRoutes = new Set(["POST /api/send", "GET /api/stream", "GET /api/describe", "GET /api/workspaces/:ws/files", "PUT /api/workspaces/:ws/files"]);
+// Activity detail is a read-only, owner-authenticated projection of existing ledger records; no action dispatch.
+const allowedRoutes = new Set(["POST /api/send", "GET /api/stream", "GET /api/describe", "GET /api/activity/detail", "GET /api/workspaces/:ws/files", "PUT /api/workspaces/:ws/files"]);
 
 function filesUnder(root: string): Tree {
   const out: Tree = {};

@@ -39,4 +39,30 @@ class TaskStatusModelTest {
         b.put("state", "working").put("steps", JSONArray(List(6) { "x" }))
         assertThrows(IllegalArgumentException::class.java) { TaskFrame.parse(b) }
     }
+    @Test fun activityToolAndStepClockAreSeparateFromTaskTitle() {
+        val b = JSONObject().put("session", "s").put("revision", 1).put("turn", "t_a").put("started_at", 1000)
+            .put("state", "working").put("text", "读取书架里的书名").put("steps", JSONArray(listOf("打开阅读应用")))
+            .put("can_stop", true).put("tool", "screen.read").put("step_started_at", 2500)
+        val parsed = TaskFrame.parse(b)
+        assertEquals("读取书架里的书名", parsed.text); assertEquals("screen.read", parsed.tool)
+        assertEquals(2500L, parsed.stepStartedAt); assertEquals(1000L, parsed.startedAt)
+        b.remove("tool"); b.remove("step_started_at")
+        assertEquals("", TaskFrame.parse(b).tool); assertEquals(1000L, TaskFrame.parse(b).stepStartedAt)
+    }
+    @Test fun completedHandoffStaysOutsideAshUntilDismissedAndNeverBecomesDisconnected() {
+        val m = TaskStatusModel(); m.accept(frame(), 2000)
+        m.accept(frame(2, state = "done", canStop = false).copy(outcome = "completed"), 4000)
+        assertTrue(m.visible(60000, homeVisible = false)); assertFalse(m.stale(60000))
+        assertFalse(m.dismiss("t_old")); assertTrue(m.visible(60000, homeVisible = false))
+        assertTrue(m.dismiss("t_a")); assertFalse(m.visible(61000, homeVisible = false))
+        m.accept(frame(3, state = "done", canStop = false), 62000)
+        assertFalse(m.visible(63000, homeVisible = false))
+        m.accept(frame(4, turn = "t_next"), 64000); assertTrue(m.visible(65000, homeVisible = false))
+    }
+    @Test fun returningHomeConsumesCompletedNoticeButNeverClosesAnActiveComposer() {
+        val m = TaskStatusModel(); m.accept(frame(2, state = "done", canStop = false), 4000)
+        assertTrue(m.visible(9000, homeVisible = true, editing = true))
+        assertFalse(m.visible(10000, homeVisible = true, editing = false))
+        assertFalse("leaving Ash must not resurrect the old completion", m.visible(11000, homeVisible = false))
+    }
 }

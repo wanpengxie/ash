@@ -54,7 +54,7 @@ function armed(control, label, confirmLabel, onWarn, run) {
   });
 }
 
-const SCOPE_NAMES = { chat: "对话", mind: "内心整理", background: "后台任务", title: "起标题", compaction: "压缩历史", review: "审批判断", other: "其他" };
+const SCOPE_NAMES = { chat: "对话", mind: "内心整理", background: "后台任务", title: "起标题", compaction: "压缩历史", review: "审批判断", progress: "进展摘要", other: "其他" };
 const KEYS = [
   { ref: "DEEPSEEK_API_KEY", title: "DeepSeek Key", use: "用于：对话模型", hint: "没有它，Ash 无法对话。" },
   { ref: "OPENROUTER_API_KEY", title: "OpenRouter Key", use: "用于：快速判断（JEV 模型）", hint: "没有它，快速判断只能靠关键词。" },

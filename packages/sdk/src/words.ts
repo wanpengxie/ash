@@ -151,7 +151,7 @@ add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vau
   { label: "Checking a saved credential", description: "Whether one credential is saved, and what it is for. A value is never returned." });
 add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
   { direction: "out", audience: "owner", description: "A credential was saved or removed. Names only; the value is never on the ledger." });
-add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "review", "other"), provider: str, model: str,
+add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "review", "progress", "other"), provider: str, model: str,
   input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
   cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },
 ["scope", "provider", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "cost_source", "ms", "ok"]), undefined,

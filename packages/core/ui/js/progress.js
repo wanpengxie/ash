@@ -16,7 +16,7 @@ export function renderProgress(root, view, { now = Date.now(), onOpen } = {}) {
   button.className = "progress-button";
   button.dataset.turn = id;
   const seconds = Math.max(0, Math.floor((Math.min(now, turn.ended ?? now) - turn.started) / 1000));
-  button.textContent = turn.ended ? `做了 ${turn.steps.length} 步 · ${seconds} 秒 · 查看活动`
+  button.textContent = turn.ended ? `做了 ${turn.steps.filter((step) => !step.summary).length} 步 · ${seconds} 秒 · 查看活动`
     : `${turn.steps.slice(-2).map((step) => step.label).join(" · ") || "正在处理"} · ${seconds} 秒`;
   button.addEventListener("click", () => onOpen?.(id));
   root.append(button);

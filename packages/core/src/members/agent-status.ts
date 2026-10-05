@@ -1,6 +1,7 @@
 import type { Message } from "../../../sdk/src/api";
 import { STATUS_FALLBACK_LABEL, nativeDetailLabel, pageDetailLabel, statusLabel } from "../../../sdk/src/labels";
 import { WorldRouter, type TrustedRouteContext } from "../world/router";
+import { activityAction, activityText } from "../../../sdk/src/activity";
 
 export type AgentStatusState = "idle" | "listening" | "thinking" | "working" | "done" | "waiting_you" | "resting";
 export interface AgentStatusSnapshot { state: AgentStatusState; text: string }
@@ -12,7 +13,7 @@ const REST_MS = 30 * 60_000;
 const DEFAULT_TEXT: Record<Exclude<AgentStatusState, "working">, string> = {
   idle: "在线", listening: "在听", thinking: "在想", done: "", waiting_you: "等你一句话", resting: "休息中",
 };
-type PendingInput = { id: string; from: string; to: string; word: string; turn?: string; detail?: string };
+type PendingInput = { id: string; from: string; to: string; word: string; turn?: string; detail?: string; purpose?: boolean };
 
 /** Derives display status from committed route/turn facts; no model status command exists. */
 export class AgentStatus {
@@ -31,6 +32,7 @@ export class AgentStatus {
   private last: AgentStatusSnapshot | null = null;
   private lastQueued: AgentStatusSnapshot | null = null;
   private failure: Error | null = null;
+  private summary = "";
 
   constructor(private readonly router: WorldRouter, private readonly now: () => number = Date.now,
     private readonly isPaused: () => boolean = () => false, private readonly agent = "agent:main") {
@@ -77,13 +79,14 @@ export class AgentStatus {
   private derive(now: number): AgentStatusSnapshot {
     if (this.isPaused() || (this.activeTurn === null && this.pending.size === 0 && now - this.lastActivity >= REST_MS))
       return { state: "resting", text: DEFAULT_TEXT.resting };
-    const tool = [...this.pending.values()].reverse().find((item) => item.from === this.agent && !(item.to === "person:owner" && item.word === "ask"));
+    const tools = [...this.pending.values()].reverse().filter((item) => item.from === this.agent && !(item.to === "person:owner" && item.word === "ask"));
+    const tool = tools.find((item) => item.purpose) ?? tools[0];
     if (tool) return { state: "working", text: tool.detail ?? statusLabel(tool.to === "service:dsh-tool" ? "native" : tool.to,
       tool.word, this.router.registeredLabel(tool.to, tool.word)) };
     if ([...this.pending.values()].some((item) => item.to === "person:owner" && item.word === "ask"))
       return { state: "waiting_you", text: DEFAULT_TEXT.waiting_you };
     if (now < this.listeningUntil || now < this.typingUntil) return { state: "listening", text: DEFAULT_TEXT.listening };
-    if (this.activeTurn !== null) return { state: "thinking", text: DEFAULT_TEXT.thinking };
+    if (this.activeTurn !== null) return { state: "thinking", text: this.summary || DEFAULT_TEXT.thinking };
     if (now < this.doneUntil) return { state: "done", text: DEFAULT_TEXT.done };
     return { state: "idle", text: DEFAULT_TEXT.idle };
   }
@@ -126,8 +129,11 @@ export class AgentStatus {
         this.doneUntil = 0;
         this.lastActivity = now;
       } else if (message.word === "turn.start" && typeof message.body.turn === "string") {
+        this.summary = "";
         this.activeTurn = message.body.turn;
         this.lastActivity = now;
+      } else if (message.word === "activity.summary" && message.turn === this.activeTurn && message.body.current === true) {
+        this.summary = activityText(message.body.text);
       } else if (message.word === "turn.end" && message.body.turn === this.activeTurn) {
         this.activeTurn = null;
         this.listeningUntil = 0;
@@ -138,8 +144,10 @@ export class AgentStatus {
       (message.from === this.agent || (message.to === "person:owner" && message.word === "ask"))) {
       const detail = message.to === "service:dsh-tool" ? nativeDetailLabel(message.word, message.body.arguments)
         : pageDetailLabel(statusLabel(message.to, message.word, this.router.registeredLabel(message.to, message.word)), message.body);
+      const action = activityAction(message.to, message.word, message.body);
+      this.summary = "";
       this.pending.set(message.id, { id: message.id, from: message.from, to: message.to, word: message.word,
-        ...(message.turn ? { turn: message.turn } : {}), ...(detail ? { detail } : {}) });
+        ...(message.turn ? { turn: message.turn } : {}), ...(action.purpose ? { detail: action.label, purpose: true } : detail ? { detail } : {}) });
       this.lastActivity = now;
     } else if (message.kind === "response" && message.reply_to && this.pending.delete(message.reply_to)) {
       this.lastActivity = now;

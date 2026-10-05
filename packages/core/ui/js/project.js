@@ -2,8 +2,8 @@
 // never tool arguments, raw results, credentials, or stream control frames.
 import { isMessageSummaryV2 } from "../../../sdk/src/api.ts";
 import { postDeliverySnapshotErrors } from "../../../sdk/src/words.ts";
-import { serviceLabel, statusLabel } from "../../../sdk/src/labels.ts";
 import { faceForStatus } from "./presence.js";
+import { activityAction, activityResult, activityText, ActivitySteps } from "../../../sdk/src/activity.ts";
 
 export function initialView() {
   const view = {
@@ -81,6 +81,7 @@ function record(m) {
     return null;
   }
   if (m.kind === "event" && m.from === "agent:main") {
+    if (m.word === "activity.summary" && turnId(m.turn) && typeof b.text === "string") return { ...base, type: "activity.summary", text: activityText(b.text, 160) };
     if (m.word === "status" && knownState(b.state)) return { ...base, type: "status", state: b.state, text: string(b.text) };
     if (m.word === "received") return { ...base, type: "received", ids: strings(b.ids) };
     if (m.word === "read") return { ...base, type: "read", ids: strings(b.ids) };
@@ -128,12 +129,12 @@ function record(m) {
       ["started", "done", "failed", "skipped"].includes(b.state)) return { ...base, type: "run.step", turn: b.run, step: b.step, state: b.state };
     if (m.word === "run.end" && turnId(b.run) && (m.turn === undefined || m.turn === b.run)) return { ...base, type: "run.end", turn: b.run, outcome: string(b.outcome) };
   }
-  if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word };
-  // Activity uses only routing metadata, never request arguments or tool results.
+  if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word, requestId: string(b.request_id) };
+  // Only selected display metadata is retained. Details are owner-authenticated and fetched on demand.
   if (m.kind === "request" && turnId(m.turn) && (/^agent:[a-z][a-z0-9_-]*$/.test(m.from) || m.from === "service:work") && memberId(m.to) && m.to !== "person:owner")
-    return { ...base, type: "activity.request", to: m.to, word: m.word };
+    return { ...base, type: "activity.request", to: m.to, word: m.word, action: activityAction(m.to, m.word, b) };
   if (m.kind === "response" && typeof m.reply_to === "string" && object(b) && typeof b.ok === "boolean")
-    return { ...base, type: "activity.response", reply_to: m.reply_to, ok: b.ok, error: b.ok === false && object(b.error) ? string(b.error.code) : "" };
+    return { ...base, type: "activity.response", reply_to: m.reply_to, result: activityResult(b), ok: b.ok, error: b.ok === false && object(b.error) ? string(b.error.code) : "" };
   return null;
 }
 
@@ -148,7 +149,7 @@ function project(records, snapshots = new Map()) {
   const optionReplies = new Map();
   const reactions = new Map();
   const ownerTitles = new Map(records.filter((r) => r.type === "owner.say").map((r) => [r.id, r.text]));
-  const activityRequests = new Map(records.filter((r) => r.type === "activity.request").map((r) => [r.id, r]));
+  const activities = new Map();
   const postStates = new Map(snapshots);
   for (const r of records) {
     if (r.type === "post.delivery" && (r.state === "dropped" || postStates.get(r.message_id)?.state !== "dropped" && (!postStates.has(r.message_id) || postStates.get(r.message_id).version_seq <= r.seq)))
@@ -172,7 +173,7 @@ function project(records, snapshots = new Map()) {
   for (const r of records) {
     if (r.type === "status") {
       view.presence = { state: r.state, text: r.text, avatar: faceForStatus(r.state) };
-      if (r.state === "working" && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.text || "在忙" });
+      // Status pulses are presence, not additional work steps.
     } else if (r.type === "legacy.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: r.side, from: r.from, to: r.to, text: r.text, attachments: r.attachments, legacy: r.legacy, readOnly: true, reactions: [] });
     else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
     else if (r.type === "agent.say") {
@@ -192,6 +193,7 @@ function project(records, snapshots = new Map()) {
       const excerpt = batch.length ? [...batch[0]].slice(0, 48).join("") : "";
       const title = r.type === "run.start" ? r.flow || "后台任务" : r.agent ? agentTitle(r.agent) : excerpt ? `${excerpt}${batch.length > 1 ? ` · ${batch.length} 条` : ""}` : "对话";
       view.turns[r.turn] = { title, background: r.type === "run.start" || Boolean(r.agent), started: r.ts, steps: [], ...(r.agent ? { agent: r.agent } : {}) };
+      activities.set(r.turn, new ActivitySteps());
     } else if (r.type === "turn.end" || r.type === "run.end") {
       if (view.turns[r.turn]) { view.turns[r.turn].ended = r.ts; view.turns[r.turn].outcome = r.reason || r.outcome; }
     } else if (r.type === "clock.list") view.timers = r.timers;
@@ -201,18 +203,18 @@ function project(records, snapshots = new Map()) {
       if (pending) pending.state = r.state;
       else steps.push({ seq: r.seq, ts: r.ts, label: r.step, step: r.step, state: r.state === "started" ? "pending" : r.state });
     }
-    else if (r.type === "activity.request" && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts,
-      label: r.to === "service:dsh-tool" ? statusLabel("native", r.word) : serviceLabel(r.to, r.word) ?? `${r.to} · ${r.word}`,
-      native: r.to === "service:dsh-tool", requestId: r.id, state: "pending" });
+    else if (r.type === "activity.summary" && view.turns[r.turn]) view.turns[r.turn].steps.push({ ts: r.ts, label: r.text, summary: true, state: "note" });
+    else if (r.type === "activity.request" && view.turns[r.turn]) activities.get(r.turn)?.request(r.id, r.ts, r.action);
     else if (r.type === "activity.response") {
-      const request = activityRequests.get(r.reply_to);
-      const step = request && view.turns[request.turn]?.steps.find((item) => item.requestId === request.id);
-      if (step) step.state = r.ok ? "ok" : r.error || "failed";
+      for (const activity of activities.values()) activity.response(r.reply_to, r.ts,
+        r.result.state === "accepted" ? { status: "accepted", request_id: r.result.receipt } : r.result.state === "unconfirmed" ? { truncated: true } : { ok: r.result.state !== "failed" });
     }
     else if (r.type === "post.changed") view.held = r.held;
     else if (r.type === "self.changed") view.self.changed.push({ path: r.path, by: r.by, ts: r.ts, summary: r.summary, version: r.version });
-    else if (r.type.startsWith("gate.") && r.turn && view.turns[r.turn]) view.turns[r.turn].steps.push({ seq: r.seq, ts: r.ts, label: r.type === "gate.asked" ? "等待确认" : r.type === "gate.passed" ? "已确认" : "未获确认" });
+    else if (r.type.startsWith("gate.")) for (const activity of activities.values()) activity.gate(r.requestId,
+      r.type === "gate.asked" ? "等待确认" : r.type === "gate.passed" ? "已获准" : "未获准");
   }
+  for (const [id, activity] of activities) view.turns[id].steps = [...view.turns[id].steps, ...activity.visible()].sort((a, b) => a.ts - b.ts);
   return view;
 }
 

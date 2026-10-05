@@ -38,7 +38,7 @@ export function outcomeText(turn) {
 
 const VISIBLE_STEPS = 5;
 
-function turnCard(parent, id, turn, { askAbout, now, expanded, onExpand, background }) {
+function turnCard(parent, id, turn, { askAbout, now, expanded, onExpand, background, loadDetails, detailState }) {
   const card = text(parent, "article", "", `activity-turn${background ? " background" : ""}`);
   card.dataset.turn = id;
   const head = text(card, "div", "", "activity-head");
@@ -49,14 +49,45 @@ function turnCard(parent, id, turn, { askAbout, now, expanded, onExpand, backgro
     const list = text(card, "ol", "", "activity-steps");
     const open = expanded?.has(id) === true;
     steps.forEach((step, index) => {
-      const row = text(list, "li", step.label || "处理了一步", "activity-step");
+      const row = text(list, "li", "", "activity-step");
+      text(row, "div", step.label || "处理了一步", "activity-step-title");
       // A step still marked pending after the turn ended is just a past step, not a live spinner.
       const state = step.state === "pending" && Number.isFinite(turn.ended) ? "" : step.state;
       if (state) row.dataset.state = state;
-      row.hidden = !open && steps.length > VISIBLE_STEPS + 1 && index >= VISIBLE_STEPS;
+      const stateText = step.summary ? "思路摘要" : step.state === "ok" ? "调用完成" : step.state === "failed" ? "执行失败" : step.state === "unconfirmed" ? "返回记录不完整，查看详情" : step.state === "accepted" ? "已受理，等待结果" : step.state === "pending" ? Number.isFinite(turn.ended) ? "结果未确认" : "进行中" : "";
+      const took = step.tool && Number.isFinite(step.ts) ? duration(Math.max(0, (step.ended ?? turn.ended ?? now) - step.ts)) : "";
+      text(row, "div", [step.tool, stateText, took, step.approval].filter(Boolean).join(" · "), "activity-step-meta");
+      // Keep the newest/current work visible, not only the first five steps.
+      row.hidden = !open && steps.length > VISIBLE_STEPS + 1 && index < steps.length - VISIBLE_STEPS;
+      if (step.requestId && typeof loadDetails === "function") {
+        const previous = detailState.get(step.requestId);
+        const version = `${step.state}:${step.ended}`;
+        const saved = previous?.version === version ? previous : { version, open: previous?.open ?? false, text: "", next: 0 };
+        detailState.set(step.requestId, saved);
+        const details = text(row, "details", "", "activity-detail");
+        details.open = saved.open;
+        text(details, "summary", "查看调用与结果");
+        const pre = text(details, "pre", saved.text);
+        const more = text(details, "button", "继续查看", "activity-more");
+        more.type = "button"; more.hidden = saved.next === null;
+        const load = async () => {
+          if (saved.loading || saved.next === null) return;
+          saved.loading = true; more.disabled = true;
+          try {
+            const result = await loadDetails(step.requestId, saved.next);
+            saved.text += result.text; saved.next = result.next_offset;
+            pre.textContent = saved.text; more.hidden = saved.next === null;
+          } catch (error) { pre.textContent = `${saved.text}\n${error.message || "读取失败，请重试"}`; }
+          finally { saved.loading = false; more.disabled = false; }
+        };
+        details.addEventListener("toggle", () => { saved.open = details.open; if (saved.open && !saved.text) void load(); });
+        more.addEventListener("click", load);
+        if (saved.open && !saved.text) void load();
+        text(details, "small", "敏感字段已隐藏；这里展示执行记录，不是审批按钮。", "activity-step-meta");
+      }
     });
     if (steps.length > VISIBLE_STEPS + 1 && typeof onExpand === "function") {
-      const more = text(card, "button", open ? "收起" : `还有 ${steps.length - VISIBLE_STEPS} 步`, "activity-more");
+      const more = text(card, "button", open ? "收起" : `查看前面 ${steps.length - VISIBLE_STEPS} 步`, "activity-more");
       more.type = "button";
       more.addEventListener("click", () => onExpand(id));
     }
@@ -78,13 +109,13 @@ function turnCard(parent, id, turn, { askAbout, now, expanded, onExpand, backgro
  * backgroundOpen. askAbout sends a plain prefill to the main composer.
  */
 export function renderActivitySheet(root, view, { askAbout, now = Date.now(), backgroundOpen = false, onToggleBackground,
-  expanded, onExpand } = {}) {
+  expanded, onExpand, loadDetails, detailState = new Map() } = {}) {
   root.replaceChildren();
   const turns = Object.entries(view?.turns ?? {})
     .filter(([id, item]) => /^[tr]_[A-Za-z0-9_-]+$/.test(id) && item && Number.isFinite(item.started))
     .sort((a, b) => b[1].started - a[1].started);
   if (!turns.length) return text(root, "p", "还没有活动记录。她做过的事会按天出现在这里。", "sheet-empty set-card");
-  const options = { askAbout, now, expanded, onExpand };
+  const options = { askAbout, now, expanded, onExpand, loadDetails, detailState };
   const foreground = turns.filter(([, turn]) => turn.background !== true);
   const background = turns.filter(([, turn]) => turn.background === true);
   let day = null;

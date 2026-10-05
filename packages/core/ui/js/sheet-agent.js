@@ -30,9 +30,11 @@ export function safeActivityView(view) {
       // Background runs end as done / no_change / failed; say them in the same words as a conversation.
       outcome: ["completed", "cancelled", "error"].includes(turn.outcome) ? turn.outcome
         : turn.background === true ? { done: "completed", no_change: "completed", failed: "error" }[turn.outcome] : undefined,
-      steps: Array.isArray(turn.steps) ? turn.steps.filter((step) => (!step.requestId || step.native === true) &&
-        typeof step.label === "string" && step.label.length <= 160 && (turn.background ? Boolean(backgroundStep(step.label)) : webDetail.test(step.label) || !rawRoute.test(step.label)))
-        .map((step) => ({ label: turn.background ? backgroundStep(step.label) : step.label, ts: step.ts, state: step.state })) : [],
+      steps: Array.isArray(turn.steps) ? turn.steps.filter((step) => typeof step.label === "string" && step.label.length <= 180 &&
+        (step.tool || step.summary || (turn.background ? Boolean(backgroundStep(step.label)) : webDetail.test(step.label) || !rawRoute.test(step.label))))
+        .map((step) => ({ label: turn.background && !step.tool && !step.summary ? backgroundStep(step.label) : step.label,
+          ts: step.ts, ended: step.ended, state: step.state, tool: step.tool, target: step.target, requestId: step.requestId,
+          approval: step.approval, summary: step.summary })) : [],
     };
   }
   return { turns };
@@ -119,6 +121,7 @@ export class AgentSheet {
     this.tabs = root.querySelector("#agentTabs");
     this.panel = root.querySelector("#agentPanel");
     this.session = null;
+    this.activityDetails?.clear();
     this.identity = null;
     this.memory = null;
     this.panels = new Map();
@@ -126,6 +129,7 @@ export class AgentSheet {
     this.loadEpoch = 0;
     this.backgroundOpen = false;
     this.expandedTurns = new Set();
+    this.activityDetails = new Map();
     this.armedRule = null;
     this.root.querySelector("#agentClose").addEventListener("click", () => this.close());
   }
@@ -158,6 +162,7 @@ export class AgentSheet {
   }
 
   reset() {
+    this.activityDetails.clear();
     this.loadEpoch++;
     this.cancelIntents.clear();
     this.answerIntents.clear();
@@ -304,6 +309,13 @@ export class AgentSheet {
     const section = this.panels.get("activity");
     if (!section || !this.current()) return;
     renderActivitySheet(section, safeActivityView(this.getView()), { askAbout: this.onAskAbout,
+      detailState: this.activityDetails,
+      loadDetails: async (id, offset = 0) => {
+        const binding = this.binding();
+        const response = await this.net.request(`/api/activity/detail?id=${encodeURIComponent(id)}&offset=${offset}`, { credentials: "same-origin" });
+        if (!this.current(binding) || !response.ok) throw new Error("详情暂时无法读取");
+        return response.json();
+      },
       backgroundOpen: this.backgroundOpen,
       onToggleBackground: (open) => { this.backgroundOpen = open; this.renderActivity(); },
       expanded: this.expandedTurns,

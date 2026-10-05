@@ -116,6 +116,13 @@ footer button.stop{background:var(--err)}
 .activity-step[data-state=pending]::before{background:none;border:1.5px solid var(--warn);opacity:1;width:7px;height:7px}
 .activity-step[data-state=failed]::before,.activity-step[data-state=error]::before{background:var(--err);opacity:1}
 .activity-step[hidden]{display:none}
+.activity-step{padding-top:.45rem;padding-bottom:.55rem}
+.activity-step-title{color:var(--fg);font-weight:500;line-height:1.55}
+.activity-step-meta{font-size:.73rem;color:var(--mute);margin-top:.18rem}
+.activity-detail{margin-top:.35rem;font-size:.76rem}
+.activity-detail summary{cursor:pointer;color:var(--me)}
+.activity-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:45vh;overflow:auto;background:var(--chip);border-radius:8px;padding:.6rem;font-size:.73rem}
+.activity-step[data-state=ok]::before{background:var(--ok);opacity:1}
 .activity-foot{display:flex;align-items:center;justify-content:space-between;gap:.6rem;margin-top:.55rem;padding-top:.5rem;border-top:1px solid var(--line)}
 .activity-outcome{font-size:.8rem;color:var(--mute)}
 .activity-outcome[data-outcome=completed]{color:var(--ok)}.activity-outcome[data-outcome=running]{color:var(--warn)}.activity-outcome[data-outcome=error]{color:var(--err)}

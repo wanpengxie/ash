@@ -11,6 +11,7 @@ import { renderMainContext } from "../../dsh-binding/src/context";
 import { NO_MODEL_KEY, clockLine, materializeFile, modelFailureText, retells, splitAssistantText } from "../../dsh-binding/src/runtime";
 import type { AcpUpdate } from "./acp";
 import type { ContainerHost, ContentBlock, McpEndpoint } from "./host";
+import { ProgressSummaryWorker, type ProgressSummarizer } from "../../core/src/review/progress";
 
 const IMAGE = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -37,6 +38,7 @@ function validImage(mime: string, data: Buffer): boolean {
 
 /** What the runner needs from the rest of ash. */
 export interface ContainerRunnerOptions {
+  summarizeProgress?: ProgressSummarizer;
   host: ContainerHost;
   mcp: () => McpEndpoint;
   binding: AgentBinding;
@@ -114,6 +116,7 @@ export function containerContent(input: Pick<AgentTurnInput, "messages" | "rende
 
 /** Follows one prompt's updates: speech to the owner, tool calls into the ledger's activity. */
 class TurnWatch {
+  private readonly progress?: ProgressSummaryWorker;
   private readonly seen = new Set<string>();
   private readonly calls = new Map<string, string>();
   private readonly sayCalls = new Map<string, string>();
@@ -122,11 +125,18 @@ class TurnWatch {
   emitError: unknown;
   spoke = false;
   constructor(private readonly turn: string, private readonly emit: (output: AgentTurnOutput) => Promise<void>, private readonly signal: AbortSignal,
-    private readonly router?: WorldRouter, private readonly actor = "agent:main") {}
+    private readonly router?: WorldRouter, private readonly actor = "agent:main", summarize?: ProgressSummarizer) {
+    if (summarize && router && actor === "agent:main") this.progress = new ProgressSummaryWorker(summarize,
+      (text, current) => { if (!signal.aborted) router.recordActivitySummary(turn, text, actor, current); });
+  }
+  close(): void { this.progress?.close(); }
 
   update(update: AcpUpdate): void {
     try {
-      if (update.sessionUpdate === "agent_message_chunk") {
+      if (update.sessionUpdate === "agent_thought_chunk") {
+        const block = update.content as { type?: string; text?: string } | undefined;
+        if (block?.type === "text" && block.text) this.progress?.thought(block.text);
+      } else if (update.sessionUpdate === "agent_message_chunk") {
         const block = update.content as { type?: string; text?: string } | undefined;
         if (block?.type !== "text" || !block.text?.trim()) return;
         const key = createHash("sha256").update(`${update.messageId ?? "m"}:${block.text}`).digest("hex").slice(0, 24);
@@ -140,6 +150,7 @@ class TurnWatch {
             .catch((error) => { this.emitError ??= error; });
         }
       } else if (update.sessionUpdate === "tool_call" && typeof update.toolCallId === "string") {
+        this.progress?.stageChanged();
         const name = typeof update.title === "string" ? update.title : "tool";
         const args = typeof update.rawInput === "string" ? update.rawInput : JSON.stringify(update.rawInput ?? {});
         if (SAY_TOOL.test(name)) {
@@ -149,7 +160,7 @@ class TurnWatch {
         if (this.router) {
           const callId = /^[A-Za-z0-9_-]{1,128}$/.test(update.toolCallId) ? update.toolCallId : createHash("sha256").update(update.toolCallId).digest("hex").slice(0, 40);
           const safeName = name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128) || "tool";
-          this.calls.set(update.toolCallId, this.router.recordDshToolCall(this.turn, callId, safeName, args.slice(0, 20_000), this.actor).id);
+          this.calls.set(update.toolCallId, this.router.recordDshToolCall(this.turn, callId, safeName, args, this.actor).id);
         }
       } else if (update.sessionUpdate === "tool_call_update" && typeof update.toolCallId === "string" && (update.status === "completed" || update.status === "failed")) {
         const ok = update.status === "completed";
@@ -170,7 +181,7 @@ class TurnWatch {
   private preview(update: AcpUpdate): string {
     const content = Array.isArray(update.content) ? update.content : [];
     return content.map((item) => (item as { content?: { type?: string; text?: string } }).content).filter((block) => block?.type === "text")
-      .map((block) => block!.text ?? "").join("").slice(0, 1000);
+      .map((block) => block!.text ?? "").join("");
   }
 
   settle(): Promise<void> { return this.pending; }
@@ -225,7 +236,7 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       if (fromOwner) await emit({ id: `${input.turn}:runtime-down`, text: "我的运行环境没能启动，这次没法回你。稍后再发一次试试；还不行的话重启一下 Ash。" }).catch(() => {});
       return { reason: "error", error: `agent runtime unavailable: ${error instanceof Error ? error.message : String(error)}` };
     }
-    const watch = new TurnWatch(input.turn, emit, signal, this.options.router, binding.member);
+    const watch = new TurnWatch(input.turn, emit, signal, this.options.router, binding.member, this.options.summarizeProgress);
     const off = host.onUpdate((sid, update) => { if (sid === sessionId) watch.update(update); });
     const abort = () => host.cancel(sessionId);
     signal.addEventListener("abort", abort, { once: true });
@@ -264,6 +275,7 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
       return { reason: "error", error: error instanceof Error ? error.message : "agent turn failed" };
     } finally {
+      watch.close();
       signal.removeEventListener("abort", abort);
       off();
       binding.end(input.turn);

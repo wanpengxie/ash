@@ -47,15 +47,16 @@ object TaskStatus {
         val ctx = app ?: return
         val now = System.currentTimeMillis()
         val frame = model.frame
-        if (!model.visible(now) || frame == null) {
+        if (!model.visible(now, AppState.homeVisible, TaskCapsule.isEditing()) || frame == null) {
             TaskCapsule.hide(); ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
         }
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
-        val text = "Ash · $title · ${(model.elapsed(now) / 5) * 5} 秒"
+        val text = "Ash · $title"
+        val detail = listOf(frame.tool, if (frame.tool.isNotBlank()) "这一步 ${((now - frame.stepStartedAt).coerceAtLeast(0) / 1000)} 秒" else "本次任务 ${model.elapsed(now)} 秒").filter { it.isNotBlank() }.joinToString(" · ")
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, true)
+        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, true, detail, frame.state == "done", frame.outcome == "completed")
         // Update at phase/turn changes, not every elapsed second. Notification works without overlay.
-        val key = "${frame.turn}:$title:$canStop"
+        val key = "${frame.turn}:$title:$canStop:${frame.state}"
         if (!ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) lastNotification = null
         else if (key != lastNotification) {
             runCatching { notify(ctx, frame, title, canStop) }.onSuccess { lastNotification = key }
@@ -75,6 +76,24 @@ object TaskStatus {
         }
         manager.notify(ID, b.build())
     }
+    fun dismiss(turn: String) { main.post {
+        if (model.dismiss(turn)) { TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); lastNotification = null }
+    } }
+    /** Same authenticated phone-owner path as notification replies; stable client id makes retries safe. */
+    fun sendInput(text: String, clientId: String, done: (Boolean, String) -> Unit) { main.post {
+        val ctx = app
+        if (ctx == null || text.isBlank() || text.length > 4000 || ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            done(false, "暂时不能发送，请解锁后重试"); return@post
+        }
+        Thread({
+            val accepted = runCatching {
+                val response = CoreClient(ctx).sendPresentAction(JSONObject().put("to", "agent:main").put("kind", "request")
+                    .put("word", "say").put("body", JSONObject().put("text", text)).put("wait", false).put("client_id", clientId))
+                response.optString("id").isNotBlank()
+            }.getOrDefault(false)
+            main.post { done(accepted, if (accepted) "已发送给 Ash" else "发送未确认，点发送可重试") }
+        }, "ash-capsule-input").start()
+    } }
     fun stop(turn: String, done: () -> Unit = {}) { main.post {
         val ctx = app
         if (ctx == null || !model.canStop(turn, System.currentTimeMillis()) || stopping == turn) { done(); return@post }
