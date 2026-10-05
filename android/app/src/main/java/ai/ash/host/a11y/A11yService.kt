@@ -50,6 +50,7 @@ import java.util.concurrent.locks.ReentrantLock
  *    overridden, release_all resets everything, and a failed gesture / disconnected service resets all fingers.
  */
 class A11yService : AccessibilityService() {
+    private val capsuleWindows = ai.ash.host.CapsuleWindowFence()
 
     companion object {
         private const val TAG = "ash.a11y"
@@ -100,6 +101,12 @@ class A11yService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+        val facts = runCatching { windows.map { w ->
+            val bounds = Rect(); w.getBoundsInScreen(bounds)
+            ai.ash.host.ScreenWindowFact(w.id, w.title?.toString().orEmpty(), w.isFocused, w.isActive, bounds.toShortString())
+        } }.getOrDefault(emptyList())
+        if (capsuleWindows.presentationOnly(event.windowId, facts, event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
         lastEventAt = SystemClock.uptimeMillis()
         if (event.eventType in setOf(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED,
                 AccessibilityEvent.TYPE_VIEW_CLICKED, AccessibilityEvent.TYPE_VIEW_SCROLLED, AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,

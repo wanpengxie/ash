@@ -6,6 +6,7 @@ import { isWordEffect } from "../../sdk/src/words";
 import type { Signer } from "./gateway/link";
 import type { DeviceCapability } from "./world/router";
 import type { WorldMembers } from "./world/member";
+import type { TaskStatusFrame } from "./task-status";
 
 export interface HostConnection { url: string; token: string }
 
@@ -98,7 +99,8 @@ export class HostDeviceLink {
     const paths: Record<string, string> = { "surface.get": "/decision/surface", "screen.get": "/decision/screen",
       "screen.return": "/decision/return", "virtual.close": "/decision/virtual-close" };
     if (!paths[word]) throw new Error("unknown decision host word");
-    return this.request("POST", paths[word], body, word === "virtual.close" ? 9500 : word === "surface.get" ? 800 : 900, signal);
+    // Leave transport margin outside Android's bounded settling/main-thread acknowledgment.
+    return this.request("POST", paths[word], body, word === "virtual.close" ? 9500 : word === "surface.get" ? 1500 : 2500, signal);
   }
   /** Confirm the Android host has replaced or cancelled its one core wake alarm. */
   async scheduleAlarm(at: number | null): Promise<void> {
@@ -111,6 +113,9 @@ export class HostDeviceLink {
     if (this.closed || hostPresentationErrors(presentation).length) throw new TypeError("invalid host presentation");
     const result = await this.request("POST", "/present", presentation) as { ok?: unknown };
     if (!result || result.ok !== true) throw new Error("host presentation acknowledgement unavailable");
+  }
+  async taskStatus(frame: TaskStatusFrame): Promise<void> {
+    if (!this.closed) await this.request("POST", "/task/status", frame, 1500);
   }
   async hidePresentation(id: string): Promise<void> {
     if (this.closed || !id) throw new TypeError("invalid presentation id");

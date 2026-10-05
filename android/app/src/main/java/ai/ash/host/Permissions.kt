@@ -102,7 +102,7 @@ object Permissions {
                 { a -> a.startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, pkgUri(a))) },
             ))
             add(Permission(
-                "overlay", "悬浮窗", "Ash 在虚拟屏上替你操作时，用小窗实时显示画面",
+                "overlay", "悬浮窗", "跨应用显示 Ash 的任务进度，也可用小窗查看虚拟屏画面",
                 { Settings.canDrawOverlays(it) },
                 { a -> a.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkgUri(a))) },
             ))

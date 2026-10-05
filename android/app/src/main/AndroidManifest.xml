@@ -22,7 +22,7 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
-    <!-- The live preview window of the virtual screen (the owner grants it in system settings). -->
+    <!-- Task status capsule and virtual-screen preview; explicitly granted by the owner. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
@@ -97,6 +97,7 @@
         <receiver android:name=".host.WakeReceiver" android:exported="false" />
         <receiver android:name=".host.PresentActionReceiver" android:exported="false" />
         <receiver android:name=".host.NotificationPauseReceiver" android:exported="false" />
+        <receiver android:name=".host.TaskStopReceiver" android:exported="false" />
         <receiver android:name=".host.PresentExpiryReceiver" android:exported="false" />
         <receiver android:name=".host.senses.CalendarAlarmReceiver" android:exported="false" />
         <!-- adb/regression control (start, stop, restart); only holders of DUMP (shell, system) may send. -->

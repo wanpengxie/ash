@@ -30,10 +30,14 @@ class ScreenDecisionHost(private val ctx: Context) {
     private fun epoch(): Long = state.epoch + AppState.screenEpoch.get() + AppState.visibilityEpoch.get()
     private fun foreground(): String = if (AppState.homeVisible) ctx.packageName else A11yService.instance?.foregroundPackage().orEmpty()
 
-    fun snapshot(): JSONObject = synchronized(state) {
+    fun snapshot(): JSONObject {
+        // App transitions can still be settling after apps.open's acknowledgment.
+        A11yService.instance?.awaitIdle(250, 1000)
+        return synchronized(state) {
         JSONObject().put("foreground_package", foreground()).put("state_epoch", epoch())
             .put("virtual_generation", state.virtualGeneration).put("virtual_owner_turn", state.virtualOwner)
             .put("virtual_open", state.virtualOpen && VScreenClient.running())
+        }
     }
 
     /** Serialize virtual calls and cleanup so a newer display can never be closed by an old decision. */
@@ -61,7 +65,10 @@ class ScreenDecisionHost(private val ctx: Context) {
             synchronized(state) {
                 val id = b.optString("decision_id") + ":return"
                 if (!state.mayReturn(id, b.optString("turn")) || AppState.homeVisible ||
-                    epoch() != b.optLong("expected_state_epoch", -1) || foreground() != b.optString("expected_package") || foreground().isBlank()) false
+                    epoch() != b.optLong("expected_state_epoch", -1) || foreground() != b.optString("expected_package") || foreground().isBlank()) {
+                    android.util.Log.d("ash.screen", "return rejected by current screen/turn fence")
+                    false
+                }
                 else {
                     ctx.startActivity(Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
                     state.applied(id)
@@ -70,7 +77,10 @@ class ScreenDecisionHost(private val ctx: Context) {
             }
         }
         main.post(task)
-        val acted = try { task.get(600, TimeUnit.MILLISECONDS) } catch (_: Throwable) { task.cancel(false); false }
+        val acted = try { task.get(1500, TimeUnit.MILLISECONDS) } catch (e: Throwable) {
+            android.util.Log.d("ash.screen", "return not acknowledged: ${e.javaClass.simpleName}")
+            task.cancel(false); false
+        }
         return JSONObject().put("acted", acted)
     }
 

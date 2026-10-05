@@ -7,6 +7,7 @@ import { ConversationControlRoute, type ConversationControlOptions } from "./ref
 import { ScreenReconcileRoute, type ScreenHost } from "./reflex/screen-reconcile";
 import type { DecisionModel } from "../world/decision/jev";
 import { ScreenExecutionRoute, screenExecutionContext } from "./reflex/screen-execution";
+import { decisionContext } from "../world/decision/runtime";
 
 /** Stable world identity for Ash's extensible peripheral decision runtime. */
 export class ReflexMember implements Member {
@@ -33,9 +34,17 @@ export class ReflexMember implements Member {
     this.stop = router.subscribe((message) => this.runtime.observe(message));
   }
   words(): readonly WordSpec[] {
-    return ["before_turn", "surface.get", "screen.get", "screen.return", "virtual.close"].map((word) => wordContract(this.id, word)!);
+    return ["task.stop", "before_turn", "surface.get", "screen.get", "screen.return", "virtual.close"].map((word) => wordContract(this.id, word)!);
   }
   async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
+    if (message.word === "task.stop") {
+      if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "owner only" } };
+      if (this.busyTurn() !== message.body.turn) return { ok: true, result: { cancelled: false } };
+      const sent = await this.router.send({ ...decisionContext, turn: String(message.body.turn) }, {
+        to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "Owner stopped the task from its status display", by: message.id },
+        client_id: `task-stop:${message.id}`, wait: true });
+      return { ok: true, result: { cancelled: sent.reply?.body.ok === true && (sent.reply.body.result as { cancelled?: unknown })?.cancelled === true } };
+    }
     if (message.word === "before_turn") {
       if (message.turn !== message.body.turn || this.busyTurn() !== message.body.turn) return { ok: true, result: { captured: false } };
       try { return { ok: true, result: await this.runtime.beforeTurn(String(message.body.turn), context.signal) }; }

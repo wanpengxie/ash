@@ -8,6 +8,7 @@ import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -41,7 +42,7 @@ class HostServer(private val ctx: Context, private val token: String) {
         pool.execute {
             while (!s.isClosed) {
                 val c = try { s.accept() } catch (e: Exception) { break }
-                pool.execute { serve(c) }
+                pool.execute { hostClientRequest { serve(c) } }
             }
         }
         Log.i(TAG, "host bridge on 127.0.0.1:$port")
@@ -88,9 +89,12 @@ class HostServer(private val ctx: Context, private val token: String) {
     private fun route(method: String, path: String, b: JSONObject): Pair<Int, JSONObject> = when ("$method $path") {
         "GET /manifest" -> 200 to Capabilities.manifest(ctx)
         "POST /call" -> {
-            val r: CapResult = decisions.call(b.optString("capability"), b.optJSONObject("args") ?: JSONObject(), b.optString("turn"))
+            val capability = b.optString("capability")
+            val call = { decisions.call(capability, b.optJSONObject("args") ?: JSONObject(), b.optString("turn")) }
+            val r: CapResult = if (capability.startsWith("screen.") || capability.startsWith("input.")) ai.ash.ui.TaskCapsule.withoutOverlay(call) else call()
             200 to r.toJson()
         }
+        "POST /task/status" -> if (TaskStatus.accept(ctx, b)) 200 to JSONObject().put("ok", true) else 400 to JSONObject().put("error", "invalid_task_status")
         "POST /present" -> Present.show(ctx, b)
         "POST /decision/surface" -> 200 to decisions.surface(b)
         "POST /decision/screen" -> 200 to decisions.snapshot()
@@ -158,4 +162,9 @@ class HostServer(private val ctx: Context, private val token: String) {
         const val PORT = 4710
         private const val RESTART_DELAY_MS = 500L
     }
+}
+
+/** Client deadlines/disconnects are normal; an uncaught worker exception would kill the App. */
+internal fun hostClientRequest(action: () -> Unit) {
+    try { action() } catch (_: IOException) { /* The socket is closed by serve's use block. */ }
 }

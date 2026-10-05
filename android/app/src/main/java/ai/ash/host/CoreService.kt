@@ -32,6 +32,7 @@ class CoreService : Service() {
         startForeground(Notifications.ID_SERVICE, Notifications.service(this, "启动中…"))
         Notifications.clearLegacy(this)
         Present.restore(this)
+        TaskStatus.start(this)
         running = true
         val h = HostServer(this, Secrets(this).hostToken)
         h.start(BuildConfig.HOST_PORT)
@@ -80,6 +81,7 @@ class CoreService : Service() {
         calendarSense?.stop()
         deviceSense?.stop()
         host?.stop()
+        TaskStatus.close()
         super.onDestroy()
     }
 

@@ -704,3 +704,78 @@ against both the build bundle and APK-embedded payload. The older
 `ash-decision.apk` is preserved as the prior delivery, not the latest build.
 The mac-mini remained offline during this extension, so this new APK was not
 installed there and no additional live simulator/physical-phone result is claimed.
+
+## 20. Native cross-app task status capsule
+
+The capsule is a presentation path, not a new Agent or semantic decision route.
+`TaskStatusBridge` projects committed main-Agent status, turn and approval facts
+through the authenticated private host `/task/status` endpoint. Delivery is
+coalesced, bounded and best-effort; Android UI failures cannot delay DSH work.
+No model produces a progress percentage. Only bounded stage labels (last five),
+elapsed time and actual terminal state are shown; owner messages, tool arguments
+and the private detail following a status label are not transported.
+
+Android uses a small draggable, non-focusable application-overlay window outside
+the Ash home page. Tapping expands history and exposes return-to-Ash, stop-this-
+task and hide-this-task controls. It hides inside Ash, on lock/sleep, after a
+short terminal-state display, and during real-screen reads/touches so the Agent
+cannot read or accidentally press its own overlay. It does not require Shizuku.
+Some secure apps suppress overlays even when permission is granted. A separate
+low-priority, private-lockscreen task notification provides fallback and the
+same return/stop controls; notifications must also be permitted by the owner.
+
+Frames have core-session and revision fences. Old sessions cannot revive a
+finished task; a 15-second heartbeat loss disables stop and labels the state
+unknown, and 30 seconds without an update hides it. Core restarts do not replay
+task progress. Completion keeps a fixed display deadline, not one extended by
+repeated frames. Capsule window events (including removal) are excluded from
+the screen freshness fence, but other windows, real focus changes and user
+touch/content events still invalidate a pending decision. Passive inactive
+status-bar content updates are excluded; opening the notification shade is not.
+Completion snapshots wait briefly for app transitions to settle, and the
+main-thread return has a bounded 1.5-second acknowledgment budget with its
+freshness check still inside the posted action. Pre-run surface checks remain
+fast. Their RPC budgets are aligned across the SDK, Core and Android: the local
+surface check has a 1.5-second transport limit, and screen snapshot/return have
+2.5 seconds, inside the existing 10-second pre-run hook. A delayed-host regression
+exceeds the previous 800/900-millisecond deadlines without losing the response;
+cancellation still aborts immediately. Screen capture waits
+two compositor frames after removing the overlay. Approval waits are scoped to
+the main turn; helper approval cards cannot overwrite its status.
+Explicit stop uses the existing cancellation path rather than
+JEV: a non-exported receiver/overlay button carries the exact turn to owner-only
+`service:reflex/task.stop`. The authenticated local phone proxy is allowed to
+deliver it, but remote callers and Agents are not. A stale control cannot stop a
+new task, and a failed acknowledgment does not claim success.
+
+Host bridge workers contain I/O errors from disconnected/deadline-expired
+clients, including `Broken pipe` while writing a result. Such a lost response
+must not crash the Android App or restart an unrelated task. This does not
+replay actions or turn a failed operation into success.
+
+Final automated regression: 679 tests, 678 passed, one online test skipped,
+zero failed, with installed Linux DSH included. Android: 90 tests passed.
+Typechecking and architecture gate passed. Live acceptance uses the isolated
+`ai.ash.agent.probe` on Mac mini, real Android and DSH with scripted JEV; see
+`build/evidence/TASK-CAPSULE-20261005/`. This is not an online-JEV quality or
+physical Shizuku test. The original installed package, app data and existing
+temporary test credential are not deleted or replaced.
+
+The latest APK passed real native-input acceptance for foreground-task return,
+foreground app handoff/stay, owner switching to the launcher while JEV is pending,
+and remote-message no-reconcile. Capsule expansion, its return button, actual
+turn cancellation, completion hiding, and notification stop without overlay
+permission also passed. The scripted JEV makes the expected branches explicit;
+it does not substitute for testing online model choices. Secure Settings windows
+hide overlays on Android 36, so visible capsule acceptance uses the Clock app
+and separately verifies notification fallback.
+Real `screen.read` excluded the capsule's controls, and the final Agent screenshot
+was visually checked to contain only Clock, not the overlay. The capsule restored
+after both operations. The first mask fixture started before cold DSH boot had
+finished and timed out; the runtime-ready rerun passed. The fixture now allows
+five minutes for first-task startup without retrying any task mutation.
+
+Signed production APK: `build/delivery/ash-task-capsule.apk`, SHA-256
+`1098b6706000039c92eaa10795103bf5c12aa1b6b1c00aefd407cf48bd287386`.
+Embedded Core SHA-256:
+`3fb110b651b8ece2568bb923c741138f35e02a28a01e4a40a2c488318155f8b2`.

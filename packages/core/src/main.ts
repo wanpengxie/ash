@@ -24,6 +24,7 @@ import type { Message } from "../../sdk/src/api";
 import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
+import { TaskStatusBridge } from "./task-status";
 import { heartbeatFlow } from "./flows/heartbeat";
 import { memoryFlow } from "./flows/memory";
 import { openerFlow } from "./flows/opener";
@@ -178,6 +179,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let senses: SensesMember | null = null;
   let cost: CostMember | null = null;
   let stopTour: (() => void) | null = null;
+  let taskStatus: TaskStatusBridge | null = null;
   let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
@@ -542,6 +544,7 @@ export async function startOwner(config: Config): Promise<Running> {
     await reflex.runtime.recover();
     await world.recover();
     await post.start();
+    if (hostLink) taskStatus = new TaskStatusBridge(world, (frame) => hostLink.taskStatus(frame));
     await agent.start();
     await agentSystem.start();
     await clock.start();
@@ -555,13 +558,13 @@ export async function startOwner(config: Config): Promise<Running> {
     link?.enable();
     return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...(agentSystem?.agents() ?? [])], async close() {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
-      link?.stop(); hostLink?.close();
+      link?.stop(); await taskStatus?.close(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
       await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
-    link?.stop(); hostLink?.close();
+    link?.stop(); await taskStatus?.close(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
     await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;

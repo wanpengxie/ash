@@ -27,6 +27,7 @@ playwright-report/
 # build outputs (payload, android)
 build/
 android/.gradle/
+android/.kotlin/
 android/app/build/
 android/build/
 android/local.properties

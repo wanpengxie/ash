@@ -427,7 +427,8 @@ export class WorldRouter {
       return { from: "person:owner", origin: { screen, label: ctx.screenLabel! } };
     }
     if (ctx.transport === "phone") {
-      if (request.kind === "request" && request.to === "service:admin" && request.word === "pause") {
+      if (request.kind === "request" && ((request.to === "service:admin" && request.word === "pause") ||
+        (request.to === "service:reflex" && request.word === "task.stop"))) {
         if (!ctx.ownerProxy || !ctx.local || ctx.remote) fail("forbidden", "local phone pause requires owner proxy");
         return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
       }
@@ -435,7 +436,7 @@ export class WorldRouter {
         if (!ctx.ownerProxy) fail("forbidden", "notification proxy not authorized");
         return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
       }
-      if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses, notification replies, or pause");
+      if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses, notification replies, pause, or task stop");
     }
     return { from: ctx.member };
   }
@@ -454,7 +455,9 @@ export class WorldRouter {
   async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
 
   private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
-    if (request.to === "service:reflex") {
+    if (request.to === "service:reflex" && request.word === "task.stop") {
+      if (ctx.remote || !ctx.local || from !== "person:owner" || !ctx.ownerProxy) fail("forbidden", "task stop requires current local owner authority");
+    } else if (request.to === "service:reflex") {
       const internal = from === "service:reflex" && ctx.transport === "service" && ctx.transportPrincipal === "service:reflex";
       if (ctx.remote || !ctx.local || !internal) fail("forbidden", "peripheral hooks require trusted local runtime authority");
     }
