@@ -1,0 +1,23 @@
+/* Native-host constraints; component typography, color, geometry and motion remain the reference's. */
+html,body{background:transparent;overflow:hidden;width:max-content;height:max-content}
+#root{padding:0 12px 24px;width:max-content}
+.isl[data-form=card]{width:var(--card-width,362px);max-height:var(--max-height,700px)}
+.isl-card{max-height:var(--max-height,700px)}
+.card-head,.foot{flex-shrink:0}
+.island-content{display:flex;flex-direction:column;gap:14px;overflow:auto;min-height:0;overscroll-behavior:contain}
+.body,.quote,.original{overflow-wrap:anywhere}
+.original{white-space:pre-wrap;font:12px/1.55 monospace;margin:0;background:var(--surface);padding:12px;border-radius:14px;overflow:auto}
+.isl .more{min-height:44px;height:auto}
+.isl-label{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.isl-spacer{min-width:4px}
+.isl button:disabled{cursor:default;opacity:.5}
+.isl .ap-approved:disabled{opacity:1}
+.island-nav{display:flex;align-items:center;justify-content:space-between;color:var(--text2);font-size:12px}
+.island-nav button{min-height:44px;min-width:44px}
+.send-notice{font-size:12px;color:var(--needs-text);white-space:pre-wrap;margin:0;overflow-wrap:anywhere}
+.send-notice:empty{display:none}
+.reply-target{font-size:12px;color:var(--needs-text);display:flex;align-items:center;justify-content:space-between}
+.reply-target button{min-width:44px;min-height:44px}
+.isl[data-motion=reduce],.isl[data-motion=reduce] *{animation:none!important;transition:none!important}
+.isl-restored{animation:islandRestore .18s ease-out}
+@keyframes islandRestore{from{opacity:0}to{opacity:1}}

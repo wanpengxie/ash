@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import "./gen-island.mjs";
 
 const ui = join(dirname(fileURLToPath(import.meta.url)), "../packages/core/ui");
 const read = (f) => JSON.stringify(readFileSync(join(ui, f), "utf8"));

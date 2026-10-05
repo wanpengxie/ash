@@ -1,0 +1,67 @@
+{
+  "unit": "dp",
+  "size": {
+    "compact": { "w": 236, "h": 40, "radius": 20 },
+    "compactHugCamera": { "w": 236, "h": 34, "radius": 17 },
+    "card": { "w": 362, "h": "wrap", "radius": 30, "padding": [16, 16, 10, 16], "gap": 14 },
+    "edge": { "w": 52, "h": 52, "radius": 26 },
+    "topBelowStatusBar": 8,
+    "topHugCamera": 5,
+    "minTouch": 44
+  },
+  "color": {
+    "island": "#101011",
+    "islandStroke": "rgba(255,255,255,0.06)",
+    "surface": "#1A1A1C",
+    "input": "#1E1E21",
+    "iconButton": "#1F1F22",
+    "neutralButton": "#26262A",
+    "divider": "#222225",
+    "text": "#F2F2F4",
+    "body": "#E6E6E9",
+    "textSecondary": "#A1A1A7",
+    "placeholder": "#7D7D83",
+    "running": "#5AD8DB",
+    "needsYou": "#F5A623",
+    "needsYouText": "#FFD08A",
+    "done": "#2BB673",
+    "doneText": "#6FD9A4",
+    "stop": "#FF6B6B",
+    "stopText": "#FF8A8A",
+    "offline": "#8D8D93",
+    "primary": "#3B74FF"
+  },
+  "type": {
+    "family": "system (PingFang SC / Noto Sans SC), tabular numbers",
+    "compactLabel": { "size": 13.5, "weight": 600 },
+    "compactTime": { "size": 12.5, "weight": 400 },
+    "cardTitle": { "size": 16, "weight": 650 },
+    "cardMeta": { "size": 12, "weight": 400 },
+    "body": { "size": 14.5, "lineHeight": 1.6, "collapsedLines": 4 },
+    "button": { "size": 14, "weight": 600 },
+    "primaryButton": { "size": 15, "weight": 650, "height": 46 },
+    "footerLink": { "size": 13.5 }
+  },
+  "motion": {
+    "morphMs": 500,
+    "morphEasing": "cubic-bezier(0.32, 0.72, 0, 1)",
+    "contentInMs": 340,
+    "contentInDelayMs": 100,
+    "contentInFrom": { "opacity": 0, "translateY": -4, "scale": 0.98 },
+    "pulseMs": 1400,
+    "spinMs": 1000,
+    "respectReducedMotion": true
+  },
+  "avatar": {
+    "compact": 28,
+    "compactHugCamera": 24,
+    "card": { "size": 40, "radius": 14 },
+    "edge": 42,
+    "faceByKind": {
+      "listening": "listening", "thinking": "thinking", "working": "focused",
+      "ask": "listening", "approval": "focused", "in_app": "listening",
+      "result": "success", "incomplete": "thinking", "stopped": "default", "stale": "default"
+    },
+    "source": "packages/core/ui/avatars/*.webp"
+  }
+}

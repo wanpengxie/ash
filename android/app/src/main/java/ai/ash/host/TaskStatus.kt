@@ -27,8 +27,8 @@ object TaskStatus {
     private var lastNotification: String? = null
     private const val CHANNEL = "ash.task"
     private const val ID = 7
-    fun start(ctx: Context) { main.post { app = ctx.applicationContext; main.removeCallbacks(tick); tick.run() } }
-    fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
+    fun start(ctx: Context) { main.post { app = ctx.applicationContext; TaskCapsule.prewarm(ctx); main.removeCallbacks(tick); tick.run() } }
+    fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.release(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
     fun accept(ctx: Context, body: JSONObject): Boolean {
         val frame = try { TaskFrame.parse(body) } catch (_: Exception) { return false }
         main.post {
@@ -51,11 +51,8 @@ object TaskStatus {
             TaskCapsule.hide(); ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
         }
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
-        val text = "Ash · $title"
-        val detail = listOf(frame.tool, if (frame.tool.isNotBlank()) "这一步 ${((now - frame.stepStartedAt).coerceAtLeast(0) / 1000)} 秒" else "本次任务 ${model.elapsed(now)} 秒").filter { it.isNotBlank() }.joinToString(" · ")
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        TaskCapsule.update(ctx, text, frame.steps, canStop, frame.turn, true, detail, frame.state == "done", false,
-            frame.reply, frame.cards, !model.stale(now) && stopping == null)
+        TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
         // Update at phase/turn changes, not every elapsed second. Notification works without overlay.
         val key = "${frame.turn}:$title:$canStop:${frame.state}"
         if (!ctx.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) lastNotification = null
