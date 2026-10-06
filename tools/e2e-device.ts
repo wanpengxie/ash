@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startOwner } from "../packages/core/src/main";
 import { startDevice } from "../packages/device/src/main";
+import { CodexSession } from "../packages/device/src/agents/codex";
+import { fileURLToPath } from "node:url";
 
 const base = process.env.GATEWAY_URL ?? "http://127.0.0.1:18988";
 if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(base).hostname)) throw new Error("Local gateway only");
@@ -22,7 +24,10 @@ const until = async <T>(check: () => Promise<T | undefined>): Promise<T> => {
 try {
   const link = owner.link!;
   const ticket = await link.ticket();
-  const pairing = startDevice({ gateway: base, name: "Test workstation", stateDir: join(dir, "device"), workdir: join(dir, "work") }, ticket.ticket);
+  const pairing = startDevice({ gateway: base, name: "Test workstation", stateDir: join(dir, "device"), workdir: join(dir, "work") }, ticket.ticket, {
+    detect: async () => [{kind:"codex",installed:true,logged_in:true,models:[]}],
+    agentFactory: (_kind, options) => CodexSession.open(options, {command:process.execPath,args:[fileURLToPath(new URL("../packages/device/test/fixtures/agent-cli.mjs", import.meta.url)),"codex"]}),
+  });
   const pending = await until(async () => [...link.pending.values()].find(p => p.name === "Test workstation"));
   await link.approve(pending.request_id, ["expose_capability"]); device = await pairing;
   const id = `device:${pending.client_id}`;
@@ -46,6 +51,24 @@ try {
   const result = await call("poll", { process: job.process, yield_ms: 2000 });
   assert.equal(job.output + result.output, "startend"); assert.equal(result.running, false);
   console.log("ok: command yields process, polling recovers new output");
+  const events: any[] = [], calls: any[] = [];
+  const peer = link.openAgentChannel(id, {event: event => events.push(event),outbound: async call => {calls.push(call);return {agents:[]};}});
+  await until(async()=>peer.connected ? true : undefined);
+  const session = await peer.op("open",{kind:"codex"});
+  await peer.op("send",{turn:"e2e-turn",text:"hello"},session);
+  await until(async()=>calls.length ? true : undefined);
+  assert.equal(calls[0].turn,"e2e-turn");assert.equal(calls[0].session,session.session);
+  await peer.op("steer",{turn:"e2e-turn",text:"finish"},session);
+  await until(async()=>events.find(e=>e.event?.type==="turn_ended"));
+  assert.ok(events.at(-1).event.reply.length>4096);
+  const delivered = await peer.op("result",{turn:"e2e-turn"},session);
+  assert.equal(delivered.event.outcome,"ok");
+  await peer.op("send",{turn:"e2e-stop",text:"wait"},session);
+  await peer.op("interrupt",{turn:"e2e-stop"},session);
+  await until(async()=>events.find(e=>e.event?.turn==="e2e-stop"&&e.event?.type==="turn_ended"));
+  assert.equal(events.at(-1).event.outcome,"interrupted");
+  await peer.op("close",{},session);
+  console.log("ok: real duplex gateway runs fake CLI turn, outbound tool, full result, interrupt and close");
   await link.revoke(id);
   await link.refreshDevices();
   assert.ok(!owner.members.describe("owner").members.some(m => m.id === id));

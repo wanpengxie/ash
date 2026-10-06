@@ -1,4 +1,5 @@
 import { Link, type Signer } from "../../../device/src/link";
+import { RemoteAgents } from "../../../device/src/agents/remote";
 export { ClientLink, fileSigner, type LocalCapabilities, type Signer } from "../../../device/src/link";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +45,7 @@ export class OwnerLink extends Link {
   private readonly incoming = new Map<string, Inbound>();
   private readonly outbound = new Map<string, Outbound>();
   private readonly remoteDevices = new Map<string, { member: DeviceMember; manifest: string }>();
+  private readonly agentChannels = new Map<string, { peer: RemoteAgents; connection?: Connection; stream?: import("ash-gateway/client/client").DeviceStream }>();
   /** Every paired, unrevoked device as the gateway lists it (browsers included), for listing and revoking. */
   private paired: { id: string; name: string; permissions: string[]; online: boolean }[] = [];
   private readonly streams = new Map<string, { end: () => void; from: string }>();
@@ -94,6 +96,31 @@ export class OwnerLink extends Link {
     for (const pending of this.outbound.values()) pending.end("device_offline");
     this.outbound.clear();
     for (const entry of this.remoteDevices.values()) entry.member.setOnline(false);
+  }
+  /** Internal entry point: AgentSystem must check local_agents permission before calling this. */
+  openAgentChannel(member: string, handlers: ConstructorParameters<typeof RemoteAgents>[0]): RemoteAgents {
+    const id = member.replace(/^device:/, "");
+    const device = this.paired.find(d => d.id === id);
+    if (!device?.online || !device.permissions.includes("expose_capability")) throw new Error("device offline or not authorized");
+    const existing = this.agentChannels.get(id); if (existing) return existing.peer;
+    const entry = { peer: new RemoteAgents({ ...handlers, manifestChanged: () => { handlers.manifestChanged?.(); void this.refreshDevices().catch(() => {}); } }) };
+    this.agentChannels.set(id, entry); this.connectAgentChannel(id); return entry.peer;
+  }
+  closeAgentChannel(member: string): void {
+    const id = member.replace(/^device:/, "");
+    this.agentChannels.get(id)?.peer.close(); this.agentChannels.delete(id);
+  }
+  private connectAgentChannel(id: string): void {
+    const entry = this.agentChannels.get(id), conn = this.conn;
+    if (!entry || !conn || entry.stream) return;
+    const stream = conn.openStream(id);
+    entry.connection = conn; entry.stream = stream;
+    stream.onClose(() => { if (entry.stream === stream) entry.stream = undefined; });
+    entry.peer.attach(stream);
+  }
+  override stop(): void {
+    for (const entry of this.agentChannels.values()) entry.peer.close();
+    this.agentChannels.clear(); super.stop();
   }
   private async addPending(raw: Record<string, string>): Promise<void> {
     const item: PendingPairing = { request_id: raw.request_id, client_id: raw.client_id, name: raw.name, pubkey: raw.pubkey, fingerprint: await shortFingerprint(raw.pubkey), at: Date.now() };
@@ -174,6 +201,11 @@ export class OwnerLink extends Link {
     if (!Array.isArray(list)) throw new Error("gateway device list unavailable");
     this.paired = list.filter((item) => typeof item.id === "string" && /^[A-Za-z0-9_-]+$/.test(item.id) && !item.revoked)
       .map((item) => ({ id: item.id, name: String(item.name ?? item.id), permissions: Array.isArray(item.permissions) ? item.permissions.map(String) : [], online: Boolean(item.online) }));
+    for (const id of this.agentChannels.keys()) {
+      const item = this.paired.find(device => device.id === id);
+      if (!item?.permissions.includes("expose_capability")) this.closeAgentChannel(id);
+      else if (item.online) this.connectAgentChannel(id);
+    }
     const seen = new Set<string>();
     for (const item of list) {
       if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
