@@ -1,4 +1,4 @@
-package ai.ash.host.a11y
+package ai.ash.screen.a11y
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
@@ -32,8 +32,8 @@ import java.util.concurrent.locks.ReentrantLock
  * The accessibility service: lets ash see the screen (node tree, screenshots) and operate it
  * (node actions, typing, scrolling, global actions, arbitrary multi-finger gestures).
  *
- * There is no server here: capabilities ([ai.ash.host.cap.ScreenCapabilities]) call [instance]
- * in-process from bridge worker threads. Every public method is thread-safe and may block (it waits
+ * There is no server here: capabilities ([ai.ash.screen.ScreenCapabilities]) call [instance]
+ * in-process from bridge worker threads (Ash calls them through [ai.ash.screen.BridgeService]). Every public method is thread-safe and may block (it waits
  * for gesture / screenshot callbacks, which are delivered on a private handler thread — never on the
  * main thread, so a worker waiting for a callback can never deadlock against a lifecycle callback).
  * Public methods must NOT be called on the main thread.
@@ -50,7 +50,7 @@ import java.util.concurrent.locks.ReentrantLock
  *    overridden, release_all resets everything, and a failed gesture / disconnected service resets all fingers.
  */
 class A11yService : AccessibilityService() {
-    private val capsuleWindows = ai.ash.host.CapsuleWindowFence()
+    private val capsuleWindows = CapsuleWindowFence()
 
     companion object {
         private const val TAG = "ash.a11y"
@@ -78,12 +78,21 @@ class A11yService : AccessibilityService() {
         val canScreenshot: Boolean get() = Build.VERSION.SDK_INT >= 30
 
         fun err(msg: String): JSONObject = JSONObject().put("ok", false).put("error", msg)
+
+        /**
+         * Counts the service's connections. The system can reconnect the same service object (a testing tool taking the
+         * screen does): each connection has its own window token, and windows added under an older one are gone.
+         */
+        @Volatile var connection = 0
+            private set
+
+        /** Counts screen changes the owner or an app made (not the island's own windows). */
+        val screenEpoch = java.util.concurrent.atomic.AtomicLong(0)
     }
 
     // ------------------------------------------------------------------ lifecycle
 
     @Volatile private var lastEventAt = 0L
-    val screenEpoch = ai.ash.host.AppState.screenEpoch
     private var cbThread: HandlerThread? = null
     @Volatile private var cbHandler: Handler? = null
     private var timer: ScheduledThreadPoolExecutor? = null
@@ -95,7 +104,10 @@ class A11yService : AccessibilityService() {
         cbThread = t
         cbHandler = Handler(t.looper)
         timer = ScheduledThreadPoolExecutor(1) { r -> Thread(r, "ash-a11y-timer").apply { isDaemon = true } }
+        connection++
         instance = this
+        ai.ash.screen.AshLink.app = applicationContext
+        ai.ash.screen.AshLink.serviceChanged()
         Log.i(TAG, "accessibility service connected")
     }
 
@@ -103,7 +115,7 @@ class A11yService : AccessibilityService() {
         if (event == null) return
         val facts = runCatching { windows.map { w ->
             val bounds = Rect(); w.getBoundsInScreen(bounds)
-            ai.ash.host.ScreenWindowFact(w.id, windowTitle(w), w.isFocused, w.isActive, bounds.toShortString())
+            ScreenWindowFact(w.id, windowTitle(w), w.isFocused, w.isActive, bounds.toShortString())
         } }.getOrDefault(emptyList())
         if (capsuleWindows.presentationOnly(event.windowId, facts, event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED,
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
@@ -124,13 +136,13 @@ class A11yService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        if (instance === this) instance = null
+        if (instance === this) { instance = null; ai.ash.screen.AshLink.serviceChanged() }
         releaseAllFingersFromLifecycle()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        if (instance === this) instance = null
+        if (instance === this) { instance = null; ai.ash.screen.AshLink.serviceChanged() }
         try { timer?.shutdownNow() } catch (_: Throwable) {}
         timer = null
         try { cbThread?.quitSafely() } catch (_: Throwable) {}
@@ -183,7 +195,8 @@ class A11yService : AccessibilityService() {
         // Android often leaves overlay accessibility titles null. Never query our own node root
         // from this main-thread callback: the accessibility IPC would wait on this same UI thread.
         return if (w.title?.toString() == "AshTaskCapsule" ||
-            w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM && ai.ash.ui.TaskCapsule.ownsWindow(bounds)) "AshTaskCapsule"
+            (w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM || w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) &&
+            ai.ash.screen.island.NativeIsland.ownsWindow(bounds)) "AshTaskCapsule"
             else w.title?.toString().orEmpty()
     }
 

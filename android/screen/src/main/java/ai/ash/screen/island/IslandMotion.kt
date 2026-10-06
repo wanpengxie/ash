@@ -1,4 +1,4 @@
-package ai.ash.ui.island
+package ai.ash.screen.island
 
 /**
  * How the island moves between states. The reference fixes the look of each state and its own marks; the transitions

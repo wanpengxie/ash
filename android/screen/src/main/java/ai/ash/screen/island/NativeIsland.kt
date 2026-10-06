@@ -1,8 +1,7 @@
-package ai.ash.ui.island
+package ai.ash.screen.island
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
@@ -16,25 +15,36 @@ import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
-import ai.ash.R
-import ai.ash.host.AppState
-import ai.ash.host.TaskStatus
-import ai.ash.ui.HomeActivity
+import ai.ash.screen.R
+import ai.ash.screen.a11y.A11yService
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * The task island drawn natively. Android moves an overlay window before the app's next frame reaches the screen, so
- * an island whose window moves while it morphs shows off its place for a frame or more. With Ash's accessibility
- * service connected the island is drawn in a trusted accessibility overlay that covers the screen and never moves or
+ * The task island drawn natively, for Ash: Ash sends what it shows ([update], [hide]) and gets the owner's actions back
+ * through [ash]. Android moves an overlay window before the app's next frame reaches the screen, so an island whose
+ * window moves while it morphs shows off its place for a frame or more. With the accessibility service connected the island is drawn in a trusted accessibility overlay that covers the screen and never moves or
  * resizes (trusted overlays pass touches through): the island morphs inside it, and the keyboard reaches it as the
- * window's insets, as in any full-screen window. A transparent touch window over the island hands its touches over.
+ * window's insets, as in any full-screen window. A transparent touch window over the island (an accessibility overlay
+ * too, so no overlay permission is needed) hands its touches over.
  * Without the service, one app overlay window wraps the island plus the reference's shadow inset and follows it frame
  * by frame; the system pans it above the keyboard.
  */
 internal object NativeIsland : IslandView.Actions {
+    /** What the island asks of Ash. */
+    interface Ash {
+        fun dismiss(turn: String)
+        fun stop(turn: String)
+        fun open()
+        fun answer(id: String, choice: String, text: String?, done: (Boolean, String) -> Unit)
+        fun send(text: String, clientId: String, done: (Boolean, String) -> Unit)
+        fun shown(value: Boolean)
+    }
+    @Volatile var ash: Ash? = null
+    /** Ash's own screens are in front: the island stays away. */
+    @Volatile var ashInFront = false
     private val main = Handler(Looper.getMainLooper())
     private var app: Context? = null
     private var root: FrameLayout? = null
@@ -44,6 +54,8 @@ internal object NativeIsland : IslandView.Actions {
     /** Drawn in the accessibility service's trusted overlay (see the class note); decided at attach. */
     private var trusted = false
     private var host: WindowManager? = null
+    /** The service connection whose overlay holds the island now ([A11yService.connection]); a newer one has a new token. */
+    private var owner = 0
     private var pad: View? = null
     private var padParams: WindowManager.LayoutParams? = null
     private var islandW = 0; private var islandH = 0
@@ -84,11 +96,15 @@ internal object NativeIsland : IslandView.Actions {
     fun isEditing() = editing
     /** On screen for the owner now (asked from Ash's delivery, off the main thread). */
     @Volatile private var shown = false
+        set(value) { if (field != value) { field = value; ash?.shown(value) } }
     fun showing() = shown
     private fun dp(v: Float) = Math.round(v * (app?.resources?.displayMetrics?.density ?: 1f))
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
         ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
-    private fun allowed() = visible && suppressed == 0 && app?.let { unlocked(it) && !AppState.homeVisible && Settings.canDrawOverlays(it) } == true
+    private fun allowed() = visible && suppressed == 0 && !ashInFront &&
+        app?.let { unlocked(it) && (A11yService.instance != null || Settings.canDrawOverlays(it)) } == true
+    /** The island can be drawn at all: the accessibility service, or the overlay permission. */
+    fun ready(ctx: Context) = A11yService.instance != null || Settings.canDrawOverlays(ctx)
 
     private fun ensure(ctx: Context) {
         if (island != null) return
@@ -181,14 +197,14 @@ internal object NativeIsland : IslandView.Actions {
     /** The touch window over the island (trusted mode); it draws nothing, so its own moves are never seen. */
     private fun placePad(ctx: Context, left: Int, top: Int, w: Int, h: Int) {
         val band = params ?: return
-        val t = padParams ?: WindowManager.LayoutParams(w, h, overlayType(),
+        val t = padParams ?: WindowManager.LayoutParams(w, h, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             // Screen coordinates, like the band: the touch window sits exactly over the island.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; windowAnimations = R.style.CapsuleWindowAnimation; setTitle("AshTaskCapsule") }.also { padParams = it }
         t.width = w; t.height = h; t.x = band.x + left; t.y = band.y + top
         padBounds.set(t.x, t.y, t.x + w, t.y + h)
-        if (attached && pad?.isAttachedToWindow == true) runCatching { ctx.getSystemService(WindowManager::class.java).updateViewLayout(pad, t) }
+        if (attached && pad?.isAttachedToWindow == true) runCatching { host?.updateViewLayout(pad, t) }
     }
     private fun overlayType() = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
@@ -228,9 +244,10 @@ internal object NativeIsland : IslandView.Actions {
         return if (id > 0) ctx.resources.getDimensionPixelSize(id) else 0
     }
 
-    /** A projected frame from [ai.ash.ui.IslandPresentation] (with [submitted]); host.js `receive`. */
+    /** A frame as Ash projects it, with [submitted] laid over its cards here; host.js `receive`. */
     fun update(ctx: Context, model: JSONObject, restoreWith: () -> Unit) {
         ensure(ctx)
+        for (card in cards(model)) if (pending(card)) card.put("localState", submitted[card.optString("id")] ?: "")
         val prev = snapshot; restore = restoreWith; visible = true
         val newTurn = prev?.optString("turn") != model.optString("turn") || prev?.optString("session") != model.optString("session")
         val cards = cards(model)
@@ -255,9 +272,9 @@ internal object NativeIsland : IslandView.Actions {
         island?.setCardWidth(minOf(IslandTokens.SIZE_CARD_W, ctx.resources.displayMetrics.widthPixels / ctx.resources.displayMetrics.density - 24f))
         fitCard()
         render()
-        if (!allowed()) { if (!unlocked(ctx) || AppState.homeVisible) setEditing(false); detach(); return }
-        // The accessibility service can connect or go away while the island is up: move to the matching window.
-        if (attached && trusted != (ai.ash.host.a11y.A11yService.instance != null) && !editing) detach()
+        if (!allowed()) { if (!unlocked(ctx) || ashInFront) setEditing(false); detach(); return }
+        // The accessibility service can connect, go away or be reconnected while the island is up: move to its window.
+        if (attached && (trusted != (A11yService.instance != null) || trusted && owner != A11yService.connection) && !editing) detach()
         attach()
     }
     private val ENDED = setOf("reply", "result", "ask", "in_app", "incomplete", "stopped")
@@ -334,15 +351,16 @@ internal object NativeIsland : IslandView.Actions {
     private fun attach() {
         if (attached || !allowed()) return
         val ctx = app ?: return; val box = root ?: return
-        val service = ai.ash.host.a11y.A11yService.instance
-        if (trusted != (service != null)) { trusted = service != null; params = null; padParams = null }
-        host = service?.getSystemService(WindowManager::class.java) ?: ctx.getSystemService(WindowManager::class.java)
+        val service = A11yService.instance
+        // Window parameters carry the token they were first added with: a new connection needs new ones.
+        if (trusted != (service != null) || service != null && owner != A11yService.connection) { trusted = service != null; params = null; padParams = null }
+        host = service?.getSystemService(WindowManager::class.java) ?: ctx.getSystemService(WindowManager::class.java); owner = A11yService.connection
         runCatching {
             box.visibility = View.VISIBLE; box.alpha = 1f
             host!!.addView(box, windowParams(ctx))
             attached = true; shown = true
             follow(islandW.takeIf { it > 0 } ?: dp(IslandTokens.SIZE_COMPACT_W), islandH.takeIf { it > 0 } ?: dp(IslandTokens.SIZE_COMPACT_H))
-            if (trusted) padParams?.let { ctx.getSystemService(WindowManager::class.java).addView(pad, it) }
+            if (trusted) padParams?.let { host!!.addView(pad, it) }
             applyTouchMode()
             box.post { rememberBounds() }
             if (capturedAway) { capturedAway = false; box.alpha = 0f; box.animate().alpha(1f).setDuration(180).start() }
@@ -359,7 +377,7 @@ internal object NativeIsland : IslandView.Actions {
         val ctx = app ?: return; val box = root ?: return
         box.visibility = View.INVISIBLE
         ctx.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(box.windowToken, 0)
-        pad?.takeIf { it.isAttachedToWindow }?.let { runCatching { ctx.getSystemService(WindowManager::class.java).removeViewImmediate(it) } }
+        pad?.takeIf { it.isAttachedToWindow }?.let { runCatching { host?.removeViewImmediate(it) } }
         runCatching { host?.removeViewImmediate(box) }
         attached = false; shown = false; screenBounds = null
     }
@@ -407,7 +425,7 @@ internal object NativeIsland : IslandView.Actions {
         // In the trusted band, touch comes through the pad; the agent's own gestures pass under it.
         val t = padParams ?: return
         val padFlags = if (passingTouches > 0) t.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else t.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        if (t.flags != padFlags) { t.flags = padFlags; if (attached && pad?.isAttachedToWindow == true) runCatching { app?.getSystemService(WindowManager::class.java)?.updateViewLayout(pad, t) } }
+        if (t.flags != padFlags) { t.flags = padFlags; if (attached && pad?.isAttachedToWindow == true) runCatching { host?.updateViewLayout(pad, t) } }
     }
 
     // ---- owner actions ----
@@ -417,15 +435,15 @@ internal object NativeIsland : IslandView.Actions {
     override fun close() {
         val model = snapshot ?: return
         setEditing(false)
-        TaskStatus.dismiss(model.getString("turn"))
+        ash?.dismiss(model.getString("turn"))
     }
     override fun open() {
         setEditing(false)
-        app?.startActivity(Intent(app, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        ash?.open()
     }
     override fun stop() {
         val model = snapshot ?: return
-        if (model.optBoolean("canStop") && model.optBoolean("interactive")) TaskStatus.stop(model.getString("turn"))
+        if (model.optBoolean("canStop") && model.optBoolean("interactive")) ash?.stop(model.getString("turn"))
     }
     override fun focus(editing: Boolean) { if (!editing) setEditing(false) }
     override fun choose(index: Int) {
@@ -438,7 +456,8 @@ internal object NativeIsland : IslandView.Actions {
         val id = c.optString("id")
         if (snapshot?.optBoolean("interactive") != true || !pending(c) || submitted.containsKey(id)) return
         submitted[id] = "sending"; restore?.invoke()
-        TaskStatus.answerCard(id, choice) { ok, message ->
+        val link = ash ?: run { submitted.remove(id); restore?.invoke(); toast("Ash 未连接"); return }
+        link.answer(id, choice, null) { ok, message ->
             main.post {
                 if (ok) submitted[id] = if (choice == "deny") "denied" else "answered" else submitted.remove(id)
                 restore?.invoke(); toast(message)
@@ -492,7 +511,8 @@ internal object NativeIsland : IslandView.Actions {
                 restore?.invoke() ?: render()
             }
         }
-        if (target == null) TaskStatus.sendInput(text, attemptId, done) else TaskStatus.answerCard(target, "custom", text, done)
+        val link = ash ?: return done(false, "Ash 未连接，点发送可重试")
+        if (target == null) link.send(text, attemptId, done) else link.answer(target, "custom", text, done)
     }
     private fun toast(text: String) { app?.let { android.widget.Toast.makeText(it, text, android.widget.Toast.LENGTH_SHORT).show() } }
 

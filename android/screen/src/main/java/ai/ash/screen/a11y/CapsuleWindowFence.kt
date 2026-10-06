@@ -1,4 +1,4 @@
-package ai.ash.host
+package ai.ash.screen.a11y
 
 internal data class ScreenWindowFact(val id: Int, val title: String, val focused: Boolean, val active: Boolean, val bounds: String)
 

@@ -24,6 +24,8 @@
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <!-- Task status capsule and virtual-screen preview; explicitly granted by the owner. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Installs the screen helper Ash carries (accessibility and the island live in that small app). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application
@@ -109,17 +111,8 @@
             </intent-filter>
         </receiver>
 
-        <!-- Screen reading and operation for the agent (the user enables it in system settings). -->
-        <service
-            android:name=".host.a11y.A11yService"
-            android:exported="false"
-            android:label="Ash 屏幕助手"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
-        </service>
+        <!-- Installing the screen helper Ash carries (ai.ash.screen): the installer reports here. -->
+        <receiver android:name=".host.screen.ScreenInstallReceiver" android:exported="false" />
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

@@ -93,11 +93,11 @@ class HostServer(private val ctx: Context, private val token: String) {
         "POST /call" -> {
             val capability = b.optString("capability")
             val call = { decisions.call(capability, b.optJSONObject("args") ?: JSONObject(), b.optString("turn")) }
+            // The screen helper keeps the island out of its own captures and from under the agent's touches; Ash's own
+            // input to other apps asks it to step aside the same way.
             val r: CapResult = when {
-                capability in setOf("screen.see", "screen.screenshot") && (b.optJSONObject("args")?.optInt("display", 0) ?: 0) != 0 -> call()
-                capability in setOf("screen.see", "screen.screenshot") -> ai.ash.ui.TaskCapsule.withoutOverlay(call)
-                capability.startsWith("screen.") && capability !in setOf("screen.read", "screen.touch_status") -> ai.ash.ui.TaskCapsule.withTouchPassthrough(call)
-                capability in setOf("apps.open", "settings.open", "intent.view", "input.key") -> ai.ash.ui.TaskCapsule.withTouchPassthrough(call)
+                capability in setOf("apps.open", "settings.open", "intent.view", "input.key") ->
+                    try { ai.ash.host.screen.ScreenBridge.withTouchPassthrough(call) } catch (e: IllegalStateException) { CapResult.fail(e.message ?: "owner_input_busy") }
                 else -> call()
             }
             200 to r.toJson()

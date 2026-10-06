@@ -36,7 +36,7 @@ test('CI fails closed when a capability policy is absent or has an unknown risk'
 test('CI discovers a newly registered module and rejects its unmapped or dynamic capability', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ash-manifest-registry-'));
   try {
-    for (const name of ['Capabilities', 'SystemCapabilities', 'ScreenCapabilities', 'ShellCapabilities', 'VScreenCapabilities', 'CalendarCapabilities'])
+    for (const name of ['Capabilities', 'SystemCapabilities', 'ShellCapabilities', 'VScreenCapabilities', 'CalendarCapabilities', 'BrowserCapabilities'])
       copyFileSync(new URL(`${name}.kt`, realDir), join(dir, `${name}.kt`));
     const registry = readFileSync(join(dir, 'Capabilities.kt'), 'utf8');
     writeFileSync(join(dir, 'Capabilities.kt'), registry.replace('CalendarCapabilities.list', 'CalendarCapabilities.list + FooCapabilities.list'));

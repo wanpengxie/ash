@@ -1,5 +1,5 @@
 // Generated from docs/island/island-tokens.json by tools/gen-island.mjs. Do not edit; change the tokens.
-package ai.ash.ui.island
+package ai.ash.screen.island
 
 /** The designer's island tokens, in dp, ms and ARGB. */
 internal object IslandTokens {

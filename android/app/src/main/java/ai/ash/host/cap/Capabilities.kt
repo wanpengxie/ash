@@ -11,15 +11,19 @@ object Capabilities {
 
     /** Every module contributes its list here (system, screen/accessibility, shell/Shizuku, virtual screen). */
     val all: List<Capability> by lazy {
-        SystemCapabilities.list + ScreenCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list
+        SystemCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list
     }
+    /** Ash's own, and the screen helper's while it is connected (see [ai.ash.host.screen.ScreenBridge]). */
+    private fun current(): List<Capability> = all + ai.ash.host.screen.ScreenBridge.tools()
 
     fun manifest(ctx: Context): JSONObject {
         val caps = JSONArray()
-        for (c in all) {
+        for (c in current()) {
             val ok = try { c.available(ctx) } catch (e: Throwable) { false }
             if (!ok) continue
-            val policy = CapabilityPolicies.require(c.name)
+            // Ash sets what a tool may do to the owner, whoever runs it: a helper's tool Ash has no policy for is not offered.
+            val policy = runCatching { CapabilityPolicies.require(c.name) }.getOrNull()
+            if (policy == null) { Log.w(TAG, "no policy for ${c.name}"); continue }
             caps.put(JSONObject().put("name", c.name).put("description", c.description).put("input_schema", c.schema)
                 .put("risk", policy.risk).put("effect", policy.effect).put("label", policy.label).apply { if (c.confirm) put("confirm", true) })
         }
@@ -27,7 +31,7 @@ object Capabilities {
     }
 
     fun call(ctx: Context, name: String, args: JSONObject): CapResult {
-        val c = all.firstOrNull { it.name == name } ?: return CapResult.fail("the phone has no capability $name")
+        val c = current().firstOrNull { it.name == name } ?: return CapResult.fail("the phone has no capability $name")
         if (!c.available(ctx)) return CapResult.fail("$name is not available right now (a permission or service is off on the phone)")
         return try {
             c.run(ctx, args)

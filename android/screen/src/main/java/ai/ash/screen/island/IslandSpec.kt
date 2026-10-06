@@ -1,4 +1,4 @@
-package ai.ash.ui.island
+package ai.ash.screen.island
 
 import android.content.Context
 import android.graphics.Typeface

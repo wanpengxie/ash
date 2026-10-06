@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The island when the accessibility service is off; with it on, the island needs nothing more. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <queries>
+        <package android:name="ai.ash.agent" />
+    </queries>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:allowBackup="false">
+
+        <!-- Screen reading and operation for Ash (the owner turns it on in system settings). -->
+        <service
+            android:name=".a11y.A11yService"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
+        </service>
+
+        <!-- Ash connects here. Every call checks the caller is signed like this app. -->
+        <service
+            android:name=".BridgeService"
+            android:exported="true" />
+    </application>
+</manifest>

@@ -1,4 +1,4 @@
-package ai.ash.host
+package ai.ash.screen.a11y
 
 import org.junit.Assert.*
 import org.junit.Test

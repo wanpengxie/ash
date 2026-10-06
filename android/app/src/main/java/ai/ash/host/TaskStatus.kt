@@ -27,8 +27,10 @@ object TaskStatus {
     private var lastNotification: String? = null
     private const val CHANNEL = "ash.task"
     private const val ID = 7
-    fun start(ctx: Context) { main.post { app = ctx.applicationContext; TaskCapsule.prewarm(ctx); main.removeCallbacks(tick); tick.run() } }
-    fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.release(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
+    fun start(ctx: Context) { main.post { app = ctx.applicationContext; ai.ash.host.screen.ScreenBridge.start(ctx); main.removeCallbacks(tick); tick.run() } }
+    fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
+    /** Show the current state again now (the screen helper connected, Ash's own screen came or went). */
+    fun refresh() { main.post { render() } }
     fun accept(ctx: Context, body: JSONObject): Boolean {
         val frame = try { TaskFrame.parse(body) } catch (_: Exception) { return false }
         main.post {
@@ -58,7 +60,7 @@ object TaskStatus {
         // notification. What the turn says or asks reaches the owner through Ash's delivery, which notifies only when
         // the island is not on screen (Ash asks the phone at that moment).
         val manager = ctx.getSystemService(NotificationManager::class.java)
-        val islandOpen = !model.dismissed && android.provider.Settings.canDrawOverlays(ctx)
+        val islandOpen = !model.dismissed && TaskCapsule.ready()
         if (islandOpen || frame.state in setOf("done", "waiting_you") || !manager.areNotificationsEnabled()) {
             if (lastNotification != null) { manager.cancel(ID); lastNotification = null }
             return

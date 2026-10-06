@@ -1,10 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Capsule motion lives in CSS. No system exit surface may linger in an agent screenshot. -->
-    <style name="CapsuleWindowAnimation" parent="@android:style/Animation">
-        <item name="android:windowEnterAnimation">@null</item>
-        <item name="android:windowExitAnimation">@null</item>
-    </style>
     <!-- Two themes on purpose: a WebView reports prefers-color-scheme from the theme's isLightTheme
          only (it ignores the system night mode), so HomeActivity picks one by the system setting. -->
     <style name="Ash.Dark" parent="@android:style/Theme.Material.NoActionBar">

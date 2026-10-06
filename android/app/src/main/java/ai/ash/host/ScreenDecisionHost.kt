@@ -1,6 +1,6 @@
 package ai.ash.host
 
-import ai.ash.host.a11y.A11yService
+import ai.ash.host.screen.ScreenBridge
 import ai.ash.host.cap.CapResult
 import ai.ash.host.cap.Capabilities
 import ai.ash.host.shizuku.VScreenClient
@@ -27,14 +27,15 @@ class ScreenDecisionHost(private val ctx: Context) {
             .put("visibility_epoch", AppState.visibilityEpoch.get())
             .put("virtual_available", Build.VERSION.SDK_INT >= 29 && ShizukuState.ready())
     }
-    private fun epoch(): Long = state.epoch + AppState.screenEpoch.get() + AppState.visibilityEpoch.get()
-    private fun foreground(): String = if (AppState.homeVisible) ctx.packageName else A11yService.instance?.foregroundPackage().orEmpty()
+    /** Screen changes, as the screen helper counts them, with Ash's own turns and visibility. */
+    private fun epoch(screen: JSONObject): Long = state.epoch + screen.optLong("epoch") + AppState.visibilityEpoch.get()
+    private fun foreground(screen: JSONObject): String = if (AppState.homeVisible) ctx.packageName else screen.optString("foreground_package")
 
     fun snapshot(): JSONObject {
         // App transitions can still be settling after apps.open's acknowledgment.
-        A11yService.instance?.awaitIdle(250, 1000)
+        val screen = ScreenBridge.screenState(settle = true)
         return synchronized(state) {
-        JSONObject().put("foreground_package", foreground()).put("state_epoch", epoch())
+        JSONObject().put("foreground_package", foreground(screen)).put("state_epoch", epoch(screen))
             .put("virtual_generation", state.virtualGeneration).put("virtual_owner_turn", state.virtualOwner)
             .put("virtual_open", state.virtualOpen && VScreenClient.running())
         }
@@ -61,11 +62,12 @@ class ScreenDecisionHost(private val ctx: Context) {
     }
 
     fun returnToAsh(b: JSONObject): JSONObject {
+        val screen = ScreenBridge.screenState(settle = false)
         val task = FutureTask<Boolean> {
             synchronized(state) {
                 val id = b.optString("decision_id") + ":return"
                 if (!state.mayReturn(id, b.optString("turn")) || AppState.homeVisible ||
-                    epoch() != b.optLong("expected_state_epoch", -1) || foreground() != b.optString("expected_package") || foreground().isBlank()) {
+                    epoch(screen) != b.optLong("expected_state_epoch", -1) || foreground(screen) != b.optString("expected_package") || foreground(screen).isBlank()) {
                     android.util.Log.d("ash.screen", "return rejected by current screen/turn fence")
                     false
                 }

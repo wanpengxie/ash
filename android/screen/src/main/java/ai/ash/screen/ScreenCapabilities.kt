@@ -1,19 +1,21 @@
-package ai.ash.host.cap
+package ai.ash.screen
 
-import ai.ash.host.a11y.A11yService
+import ai.ash.host.cap.Cap
+import ai.ash.host.cap.CapResult
+import ai.ash.host.cap.Capability
+import ai.ash.host.cap.prop
+import ai.ash.host.cap.schema
+import ai.ash.screen.a11y.A11yService
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.os.Build
-import android.os.Environment
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.FileOutputStream
 import java.util.Locale
 
 /**
@@ -147,23 +149,6 @@ object ScreenCapabilities {
         }.let { if (it >= 8) 8 else if (it > 0) 4 else 0 }
     }
 
-    /**
-     * Default screenshot location: shared <sdcard>/Ash/screenshots/ (readable by anyone the file is
-     * handed to), falling back to app-private files/screenshots/ when external storage isn't writable.
-     */
-    @Suppress("DEPRECATION")
-    private fun screenshotDir(ctx: Context): File {
-        try {
-            val ext = Environment.getExternalStorageDirectory()
-            if (ext != null) {
-                val d = File(File(ext, "Ash"), "screenshots")
-                if ((d.exists() || d.mkdirs()) && d.canWrite()) return d
-            }
-        } catch (_: Throwable) {
-        }
-        return File(ctx.filesDir, "screenshots").apply { mkdirs() }
-    }
-
     // ---------------------------------------------------------------- capabilities
 
     private val read = Cap(
@@ -221,28 +206,18 @@ object ScreenCapabilities {
         CapResult.image(Base64.encodeToString(bytes, Base64.NO_WRAP), "image/jpeg", cap.toString())
     }
 
-    private val screenshot = Cap(
-        name = "screen.screenshot",
-        description = "Save a full-resolution PNG screenshot of the phone's screen to a file and return its path (the image itself is " +
-            "not shown to you — use screen.see to look at the screen). Default location: /sdcard/Ash/screenshots/screen-<time>.png " +
-            "(app-private storage if shared storage isn't writable). Needs Android 11+.",
-        schema = schema(
-            "path" to prop("string", "optional absolute file path to write (parent directories are created)"),
-            "display" to int("display id to capture (default 0 = the main screen)"),
-        ),
+    /** Not offered to the agent: Ash's own screen.screenshot writes the file, with Ash's storage access. */
+    private val capture = Cap(
+        name = "screen.capture",
+        description = "A full-resolution PNG of a display, for Ash.",
+        schema = schema("display" to int("display id to capture (default 0 = the main screen)")),
         availableIf = canShoot,
-    ) { ctx, a ->
-        val s = svc()
-        val bmp = s.screenshot(a.optInt("display", 0))
-        val p = a.optString("path").trim()
-        val out = if (p.isNotEmpty()) File(p) else File(screenshotDir(ctx), "screen-${System.currentTimeMillis()}.png")
-        out.parentFile?.mkdirs()
-        FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        val w = bmp.width
-        val h = bmp.height
+    ) { _, a ->
+        val bmp = svc().screenshot(a.optInt("display", 0))
+        val png = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        val data = JSONObject().put("png", Base64.encodeToString(png, Base64.NO_WRAP)).put("width", bmp.width).put("height", bmp.height)
         bmp.recycle()
-        val data = JSONObject().put("path", out.absolutePath).put("width", w).put("height", h).put("bytes", out.length())
-        CapResult.text("Screenshot saved: ${out.absolutePath} (${w}x$h px, ${out.length()} bytes)", data)
+        CapResult.text("Captured ${data.optInt("width")}x${data.optInt("height")} px.", data)
     }
 
     private val tap = Cap(
@@ -453,5 +428,8 @@ object ScreenCapabilities {
         if (svc().global(id)) CapResult.text("Done: $name.") else CapResult.fail("the system refused $name")
     }
 
-    val list: List<Capability> = listOf(read, see, screenshot, tap, type, scroll, swipe, hold, touch, gesture, touchStatus, globalAction)
+    /** What the agent is offered (Ash adds screen.screenshot on top of [capture]). */
+    val list: List<Capability> = listOf(read, see, tap, type, scroll, swipe, hold, touch, gesture, touchStatus, globalAction)
+    /** Called by Ash itself, never listed. */
+    val hidden: List<Capability> = listOf(capture)
 }

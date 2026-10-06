@@ -28,6 +28,14 @@ for (const file of modules) {
   const knownHelper = file === 'VScreenCapabilities.kt' ? 2 : 0; // vcap declaration and its Cap(name, ...) wrapper
   if (allCalls !== literal.length + knownHelper) errors.push(`${file}: dynamic or unrecognized capability name (${allCalls} calls, ${literal.length} literal, ${knownHelper} known helper)`);
 }
+// The screen helper's tools join the phone's manifest while it is connected (ScreenBridge), and Ash adds
+// screen.screenshot on top of them: Ash's policy has to cover these as well.
+const helper = readFileSync(join(root, 'android/screen/src/main/java/ai/ash/screen/ScreenCapabilities.kt'), 'utf8');
+const helperNames = [...helper.matchAll(/\bCap\s*\(\s*(?:name\s*=\s*)?"([a-z]+\.[a-z_]+)"/g)].map((match) => match[1]);
+if ([...helper.matchAll(/\bCap\s*\(/g)].length !== helperNames.length) errors.push('ScreenCapabilities.kt (helper): dynamic or unrecognized capability name');
+names.push(...helperNames);
+const ashTools = readFileSync(join(root, 'android/app/src/main/java/ai/ash/host/screen/ScreenshotTool.kt'), 'utf8');
+names.push(...[...ashTools.matchAll(/override val name = "([a-z]+\.[a-z_]+)"/g)].map((match) => match[1]));
 for (const name of names) if (names.indexOf(name) !== names.lastIndexOf(name)) errors.push(`duplicate capability: ${name}`);
 for (const item of declared) {
   if (!item.label.trim()) errors.push(`empty label: ${item.name}`);

@@ -55,6 +55,10 @@ class CapResult private constructor(val ok: Boolean, val content: JSONArray, val
             .put(JSONObject().put("type", "image").put("data", base64).put("mimeType", mime)), data, null)
 
         fun fail(msg: String) = CapResult(false, JSONArray().put(JSONObject().put("type", "text").put("text", msg)), null, msg)
+
+        /** A result that crossed the bridge as [toJson]. */
+        fun fromJson(o: JSONObject): CapResult = CapResult(o.optBoolean("ok"), o.optJSONArray("content") ?: JSONArray(),
+            if (o.has("data")) o.get("data") else null, if (o.has("error")) o.optString("error") else null)
     }
 }
 

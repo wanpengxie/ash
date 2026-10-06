@@ -12,7 +12,8 @@ import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
-import ai.ash.host.a11y.A11yService
+import ai.ash.host.screen.ScreenBridge
+import ai.ash.host.screen.ScreenInstaller
 import ai.ash.host.shizuku.ShizukuState
 
 /**
@@ -71,10 +72,17 @@ object Permissions {
                 { a -> a.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri(a))) },
             ))
             add(Permission(
-                "accessibility", "无障碍（屏幕助手）", "让 Ash 看懂屏幕内容，并替你点击、输入、滚动",
-                { A11yService.instance != null },
-                { a -> a.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                { "在列表里找到「Ash 屏幕助手」并打开" },
+                "accessibility", "屏幕助手（无障碍）", "让 Ash 看懂屏幕内容，替你点击、输入、滚动，并在其他应用上方显示灵动岛",
+                { ScreenBridge.accessibility() && !ScreenBridge.needsInstall(it) },
+                // A separate small app holds the accessibility service, so updating or restarting Ash never turns it off.
+                { a -> if (ScreenBridge.needsInstall(a)) ScreenInstaller.install(a) else ScreenInstaller.openAccessibility(a) },
+                { c ->
+                    when {
+                        ScreenBridge.installedVersion(c) == 0L -> "先安装「Ash 屏幕助手」（Ash 自带，点一下即可安装）"
+                        ScreenBridge.needsInstall(c) -> "屏幕助手需要更新，点一下即可更新"
+                        else -> "在无障碍列表里找到「Ash 屏幕助手」并打开"
+                    }
+                },
             ))
             if (Build.VERSION.SDK_INT >= 30) add(Permission(
                 "all_files", "所有文件访问", "让 Ash 读写手机存储里的照片、下载和文档",

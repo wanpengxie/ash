@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Ash</string>
-    <string name="accessibility_service_description">让 Ash 读取当前屏幕内容（控件文字与位置）并替你点击、输入、滚动。只在你（或你允许的设备）交给 Ash 的任务里使用，不采集数据。</string>
 </resources>

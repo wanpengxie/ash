@@ -22,6 +22,15 @@ val copyPayload by tasks.registering(Copy::class) {
     }
 }
 
+// The screen helper (android/screen) ships inside Ash, which installs or updates it for the owner.
+val screenAssets = layout.buildDirectory.dir("generated/screen-assets")
+val copyScreen by tasks.registering(Copy::class) {
+    dependsOn(":screen:assembleDebug")
+    from(project(":screen").layout.buildDirectory.file("outputs/apk/debug/screen-debug.apk"))
+    into(screenAssets.map { it.dir("screen") })
+    rename { "ash-screen.apk" }
+}
+
 // The agent container (arm64 Ubuntu + node + DSH + proot) from `npm run build:container`
 // (repo root build/container): shipped as assets/container/{ash-container.tgz,VERSION}
 // (not .tar.gz: the asset merger would gunzip anything named *.gz).
@@ -66,6 +75,7 @@ android {
         buildConfigField("int", "SENSE_PORT", "4700")
         buildConfigField("boolean", "ISOLATED_PROBE", "false")
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
+        buildConfigField("long", "SCREEN_VERSION_CODE", "${providers.gradleProperty("ashScreenVersionCode").get()}L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     ndkVersion = "27.2.12479018"
@@ -115,6 +125,7 @@ android {
         }
         create("sensesProbe") {
             initWith(getByName("debug"))
+            matchingFallbacks += listOf("debug")
             applicationIdSuffix = ".sensesprobe"
             buildConfigField("int", "CORE_PORT", "4700")
             buildConfigField("int", "HOST_PORT", "4710")
@@ -131,6 +142,7 @@ android {
 
     sourceSets["main"].assets.srcDir(payloadAssets)
     sourceSets["main"].assets.srcDir(containerAssets)
+    sourceSets["main"].assets.srcDir(screenAssets)
     buildFeatures { buildConfig = true }
 
     androidResources {
@@ -151,13 +163,12 @@ android {
 
 tasks.named("preBuild") { dependsOn(copyPayload) }
 // Only packaging needs the container (unit tests do not merge assets, so they run without it).
-tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer) }
+tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer, copyScreen) }
 
 dependencies {
+    implementation(project(":bridge"))
     implementation(files("libs/shizuku-api.aar", "libs/shizuku-provider.aar", "libs/shizuku-aidl.aar"))
     implementation("androidx.webkit:webkit:1.17.1")
-    // Spring physics for the island's transitions (SpringAnimation).
-    implementation("androidx.dynamicanimation:dynamicanimation:1.0.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

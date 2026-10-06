@@ -3,10 +3,13 @@ import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 const root=fileURLToPath(new URL('../',import.meta.url));
-const assets=join(root,'android/app/src/main/assets/ash-island');
-mkdirSync(join(assets,'avatars'),{recursive:true});
-for(const face of ['default','focused','listening','resting','success','thinking'])
-  copyFileSync(join(root,`docs/island/avatars/${face}.webp`),join(assets,`avatars/${face}.webp`));
+// The screen helper draws the island with them; Ash shows its face in the conversation notification.
+for(const app of ['android/screen','android/app']){
+  const assets=join(root,app,'src/main/assets/ash-island');
+  mkdirSync(join(assets,'avatars'),{recursive:true});
+  for(const face of ['default','focused','listening','resting','success','thinking'])
+    copyFileSync(join(root,`docs/island/avatars/${face}.webp`),join(assets,`avatars/${face}.webp`));
+}
 
 // The native island reads the designer's tokens as Kotlin constants: one source for sizes, colours, type and motion.
 const tokens=JSON.parse(readFileSync(join(root,'docs/island/island-tokens.json'),'utf8'));
@@ -44,12 +47,12 @@ const walk=(value,path)=>{
 };
 for(const [k,v] of Object.entries(tokens)) walk(v,[k]);
 const kotlin=`// Generated from docs/island/island-tokens.json by tools/gen-island.mjs. Do not edit; change the tokens.
-package ai.ash.ui.island
+package ai.ash.screen.island
 
 /** The designer's island tokens, in dp, ms and ARGB. */
 internal object IslandTokens {
 ${lines.join('\n')}
 }
 `;
-mkdirSync(join(root,'android/app/src/main/java/ai/ash/ui/island'),{recursive:true});
-writeFileSync(join(root,'android/app/src/main/java/ai/ash/ui/island/IslandTokens.kt'),kotlin);
+mkdirSync(join(root,'android/screen/src/main/java/ai/ash/screen/island'),{recursive:true});
+writeFileSync(join(root,'android/screen/src/main/java/ai/ash/screen/island/IslandTokens.kt'),kotlin);

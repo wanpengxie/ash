@@ -34,6 +34,7 @@ object CapabilityPolicies {
         "screen.read" to CapabilityPolicy("none", "read", "读屏幕内容"),
         "screen.see" to CapabilityPolicy("none", "read", "看屏幕"),
         "screen.screenshot" to CapabilityPolicy("none", "read", "截屏"),
+        "screen.capture" to CapabilityPolicy("none", "read", "截屏"),
         "screen.tap" to CapabilityPolicy("outward", "act", "点屏幕"),
         "screen.type" to CapabilityPolicy("outward", "act", "在屏幕上输入"),
         "screen.scroll" to CapabilityPolicy("outward", "act", "滚动屏幕"),

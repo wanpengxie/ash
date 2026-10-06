@@ -1,4 +1,4 @@
-package ai.ash.ui.island
+package ai.ash.screen.island
 
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
