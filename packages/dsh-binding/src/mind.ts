@@ -40,6 +40,7 @@ export class DshMindRunner implements MindTurnRunner {
         `For reason first_meeting, if IDENTITY.md is absent, use ash_say kind reply three times: greet the owner; briefly explain what you can help with and that consequential actions need their approval; ask what to call them. Do not claim unavailable capabilities. Then stop. ` +
         `For reason first_week_tour, send the one hint in context with ash_say kind heads_up, then stop. ` +
         `For reason app_open, the opener found something timely; send one short relevant line with ash_say kind heads_up, then stop. ` +
+        `For reasons geofence_enter, geofence_exit, cycling_start and cycling_end, follow the ash-senses skill: speak with ash_say kind heads_up only if something about this place or ride matters to the owner now; otherwise finish silently. ` +
         `For other reasons, if the owner should hear something, use ash_say with kind offer, heads_up, or due. Otherwise finish silently.`;
       session.agent.followup({ id: promptId, role: "user", content: [{ type: "text", text }], source: { kind: "user" } });
       const reason = await ended;
