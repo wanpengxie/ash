@@ -52,7 +52,7 @@ object SensesBridge {
                 } catch (e: Exception) { Log.w(TAG, "senses helper did not answer", e) }
             }, "ash-senses-connect").start()
         }
-        override fun onServiceDisconnected(name: ComponentName) { lost() }
+        override fun onServiceDisconnected(name: ComponentName) { lost(); main.removeCallbacks(stillWaiting); main.postDelayed(stillWaiting, retryMs) }
         override fun onBindingDied(name: ComponentName) { lost(); main.post { unbind(); connect() } }
     }
 
@@ -112,7 +112,21 @@ object SensesBridge {
         val intent = Intent().setClassName(Bridge.SENSES_PACKAGE, Bridge.SENSES_SERVICE)
         bound = runCatching { ctx.bindService(intent, connection, Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT) }.getOrDefault(false)
         if (!bound) Log.w(TAG, "could not bind the senses helper")
+        main.removeCallbacks(stillWaiting)
+        main.postDelayed(stillWaiting, retryMs)
     }
+
+    // bindService answers true even when a maker's ROM then refuses to start the helper (ColorOS「关联启动」off): the
+    // binding stays pending forever and no connection ever comes. Unconnected after a while: bind again, backing off.
+    private var retryMs = FIRST_RETRY_MS
+    private val stillWaiting = Runnable {
+        if (bridge != null || app == null) { retryMs = FIRST_RETRY_MS; return@Runnable }
+        Log.w(TAG, "senses helper not connected after ${retryMs / 1000} s; binding again")
+        retryMs = minOf(retryMs * 2, MAX_RETRY_MS)
+        unbind(); connect()
+    }
+    private const val FIRST_RETRY_MS = 10_000L
+    private const val MAX_RETRY_MS = 300_000L
     private fun unbind() {
         if (bound) runCatching { app?.unbindService(connection) }
         bound = false; lost()
