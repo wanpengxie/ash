@@ -2,6 +2,8 @@ package ai.ash.senses
 
 import ai.ash.senses.health.GadgetbridgeSource
 import ai.ash.senses.health.HealthConnectSource
+import ai.ash.senses.health.XiaomiScale
+import ai.ash.senses.health.XiaomiScaleSource
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
@@ -12,8 +14,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -98,9 +102,19 @@ class SetupActivity : Activity() {
                     }
                 }
             }) { runCatching { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER) } },
-            Row("蓝牙（附近的设备）", "检测手表连接；之后读体脂秤", "授权", {
+            Row("蓝牙（附近的设备）", "检测手表连接；收听体重秤的称重", "授权", {
                 if (Senses.bluetooth(this)) true to "已授权" else false to "未授权"
             }) { if (Build.VERSION.SDK_INT >= 31) requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), REQ_PERMS) },
+            Row(SCALE, "小米体重秤 S200：每次称重后自动记下体重，交给 Ash；不用打开米家，不需要开启记录", "设置", {
+                val mac = XiaomiScaleSource.mac(this)
+                if (mac == null) false to "未设置：填写体重秤的蓝牙地址和密钥" else {
+                    val last = XiaomiScaleSource.last(this)
+                    val problem = XiaomiScaleSource.problem(this).orEmpty()
+                    (problem.isEmpty()) to "已连接：$mac，" + (if (last == null) "还没有称重记录" else
+                        "上次称重 ${android.text.format.DateFormat.format("MM-dd HH:mm", last.ts)} ${"%.2f".format(last.value)} kg") +
+                        (if (problem.isEmpty()) "" else "\n$problem")
+                }
+            }) { if (XiaomiScaleSource.configured(this)) removeScale() else addScale() },
             Row("位置与运动记录", "开启后常驻通知；移动时按间隔记录位置，静止时不取位置；数据只存在本机，交给 Ash", "开始记录", {
                 val c = Senses.config(this)
                 if (c.recording) true to "记录中（每 ${c.intervalMin} 分钟，保留 ${c.retentionDays} 天）" + (Recorder.lastProblem?.let { "\n$it" } ?: "") else false to "已关闭"
@@ -130,7 +144,7 @@ class SetupActivity : Activity() {
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(24)) }
         list.addView(TextView(this).apply { text = "Ash 感知"; textSize = 24f; typeface = Typeface.DEFAULT_BOLD })
         list.addView(TextView(this).apply {
-            text = "为 Ash 记录位置、运动、步数，读取健康数据。默认什么都不记录；只有你开启「位置与运动记录」后才采集。" +
+            text = "为 Ash 记录位置、运动、步数，读取健康数据。默认什么都不记录；只有你开启「位置与运动记录」或设置体重秤后才采集。" +
                 "数据只存在这台手机上，交给你的 Ash；健康数据只读，不写入任何地方。每项授权都由你在系统页面自己完成，可随时撤销，撤销后立即读不到。"
             textSize = 14f; setTextColor(Color.DKGRAY); setPadding(0, dp(8), 0, dp(12))
         })
@@ -167,6 +181,7 @@ class SetupActivity : Activity() {
                     r.statusView.visibility = if (s.second.isEmpty()) View.GONE else View.VISIBLE
                     r.statusView.setTextColor(if (s.first) Color.rgb(0x2E, 0x7D, 0x32) else Color.rgb(0xC6, 0x28, 0x28))
                     if (r.title == "位置与运动记录") r.buttonView.text = if (Senses.config(this).recording) "停止记录" else "开始记录"
+                    if (r.title == SCALE) r.buttonView.text = if (XiaomiScaleSource.configured(this)) "移除" else "设置"
                 }
             }
         }.start()
@@ -179,8 +194,58 @@ class SetupActivity : Activity() {
             Toast.makeText(this, "系统不再弹窗询问：在应用信息的「权限」里打开", Toast.LENGTH_LONG).show()
             appDetails()
         }
+        if (XiaomiScaleSource.configured(this)) Thread { XiaomiScaleSource.arm(this); runOnUiThread { refresh() } }.start()
         AshLink.changed()
         refresh()
+    }
+
+    /** The scale's address and key, typed (or pasted) by the owner; checked before anything is saved. */
+    private fun addScale() {
+        val density = resources.displayMetrics.density
+        // No suggestions: the keyboard must not learn the key.
+        val plain = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        val mac = EditText(this).apply { hint = "如 A4:C1:38:12:34:56"; isSingleLine = true; inputType = plain }
+        val key = EditText(this).apply { hint = "32 位，0-9 和 a-f"; isSingleLine = true; inputType = plain }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; val p = (20 * density).toInt(); setPadding(p, (8 * density).toInt(), p, 0)
+            addView(TextView(this@SetupActivity).apply { text = "蓝牙地址（MAC）" }); addView(mac)
+            addView(TextView(this@SetupActivity).apply { text = "密钥（32 位）" }); addView(key)
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("小米体重秤")
+            .setMessage("只支持小米体重秤 S200（只称体重）。密钥在本机加密保存，不会显示，也不会交给任何地方。")
+            .setView(box).setPositiveButton("保存", null).setNegativeButton("取消", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val m = XiaomiScale.normalizeMac(mac.text.toString())
+                val k = XiaomiScale.parseKey(key.text.toString())
+                when {
+                    m == null -> mac.error = "格式不对：12 位十六进制，如 A4:C1:38:12:34:56"
+                    k == null -> key.error = "格式不对：要 32 位十六进制（0-9、a-f）"
+                    else -> {
+                        key.text.clear()
+                        dialog.dismiss()
+                        Thread {
+                            val problem = runCatching { XiaomiScaleSource.save(this, m, k) }.getOrElse { "没能保存：${it.javaClass.simpleName}" }
+                            runOnUiThread {
+                                if (Build.VERSION.SDK_INT >= 31 && !Senses.bluetooth(this))
+                                    requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), REQ_PERMS)
+                                else problem?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+                                AshLink.changed()
+                                refresh()
+                            }
+                        }.start()
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun removeScale() {
+        AlertDialog.Builder(this).setTitle("移除体重秤？").setMessage("停止收听，删除本机保存的地址和密钥；已有的称重记录保留。")
+            .setPositiveButton("移除") { _, _ ->
+                Thread { XiaomiScaleSource.remove(this); runOnUiThread { AshLink.changed(); refresh() } }.start()
+            }.setNegativeButton("取消", null).show()
     }
 
     @Deprecated("") override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -195,6 +260,7 @@ class SetupActivity : Activity() {
     private fun appDetails() = startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
 
     companion object {
+        private const val SCALE = "小米体重秤"
         private const val REQ_PERMS = 1
         private const val REQ_HEALTH = 2
         private const val REQ_FOLDER = 3

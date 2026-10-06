@@ -1,5 +1,6 @@
 package ai.ash.senses
 
+import ai.ash.senses.health.XiaomiScaleSource
 import android.Manifest
 import android.app.NotificationManager
 import android.content.Context
@@ -16,7 +17,12 @@ object Senses {
     @Volatile private var storeInstance: SenseStore? = null
     private const val PREFS = "senses"
 
-    fun init(ctx: Context) { if (app == null) app = ctx.applicationContext }
+    fun init(ctx: Context) {
+        if (app != null) return
+        app = ctx.applicationContext
+        // A new process: the scale's background scan is started again, in case the system dropped it.
+        XiaomiScaleSource.rearm(ctx.applicationContext)
+    }
     fun ctx(): Context = app ?: error("senses not initialised")
 
     val store: SenseStore get() = storeInstance ?: synchronized(this) { storeInstance ?: SenseStore(ctx()).also { storeInstance = it } }

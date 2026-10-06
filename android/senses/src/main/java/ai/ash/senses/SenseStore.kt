@@ -121,6 +121,12 @@ class SenseStore(ctx: Context) : SQLiteOpenHelper(ctx, "senses.db", null, 1) {
         return added
     }
 
+    /** [source]'s readings of [metric] in [range], oldest first (or newest first), at most [max]. */
+    fun health(range: LongRange, metric: String, source: String, max: Int, newestFirst: Boolean = false): List<HealthRow> =
+        readableDatabase.rawQuery("SELECT ts, metric, value, source, ts_end, kind FROM health WHERE metric = ? AND source = ? AND ts >= ? AND ts <= ? " +
+            "ORDER BY ts ${if (newestFirst) "DESC" else ""} LIMIT $max", arrayOf(metric, source, range.first.toString(), range.last.toString()))
+            .use { c -> c.all { HealthRow(it.getLong(0), it.getString(1), it.getDouble(2), it.getString(3), if (it.isNull(4)) null else it.getLong(4), it.getString(5).ifEmpty { null }) } }
+
     // ---- deleting ----
 
     /** Deletes [kind]'s rows in [range] (and those still waiting in undelivered batches). Returns rows deleted. */

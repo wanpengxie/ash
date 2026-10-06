@@ -98,11 +98,11 @@ object SenseCapabilities {
             else o.put("steps_today", today.steps).put("since", today.since).put("complete", today.complete)
             CapResult.json(o)
         },
-        Cap("health.sources", "Health data sources and their state: Health Connect (installed, which permissions granted) and Gadgetbridge (installed, export folder granted, newest export, recognised metrics).") { ctx, args ->
+        Cap("health.sources", "Health data sources and their state: Health Connect (installed, which permissions granted), Gadgetbridge (installed, export folder granted, newest export, recognised metrics) and xiaomi_scale (a Xiaomi scale the owner set up: configured or not, its last weigh-in).") { ctx, args ->
             SenseArgs.only(args, emptySet())
             CapResult.json(JSONObject().put("sources", HealthHub.sources(ctx)))
         },
-        Cap("health.read", "Health readings in a time range (default: the last 7 days): rows {ts, metric, value, unit, source}. Metrics: ${HealthMetric.names.joinToString()}. Read only. Errors: permission_denied, source_unavailable, unsupported_schema.",
+        Cap("health.read", "Health readings in a time range (default: the last 7 days): rows {ts, metric, value, unit, source}. Metrics: ${HealthMetric.names.joinToString()}. Sources: ${HealthHub.SOURCES.joinToString()} (xiaomi_scale: weight only, each weigh-in heard from the owner's Xiaomi scale). Read only. Errors: permission_denied, source_unavailable, unsupported_schema.",
             schema(
                 "metrics" to arrayProp("Metrics to read (default: all)", JSONObject().put("type", "string").put("enum", JSONArray(HealthMetric.names))),
                 *range("7 days"),

@@ -12,7 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
-    <!-- A watch's connection; a body-composition scale later. -->
+    <!-- A watch's connection; the owner's scale, heard in a background scan (before Android 12: the two older ones). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -79,6 +81,9 @@
             android:name=".RecordingService"
             android:exported="false"
             android:foregroundServiceType="location|health" />
+
+        <!-- The system's scan for the owner's scale delivers here (a PendingIntent of this app's own). -->
+        <receiver android:name=".health.ScaleReceiver" android:exported="false" />
 
         <receiver android:name=".AlarmReceiver" android:exported="false">
             <intent-filter>

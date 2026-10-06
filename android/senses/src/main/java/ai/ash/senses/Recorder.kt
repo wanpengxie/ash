@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import ai.ash.senses.health.HealthImport
+import ai.ash.senses.health.XiaomiScaleSource
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -162,7 +163,11 @@ class AlarmReceiver : BroadcastReceiver() {
         Senses.init(ctx)
         when (intent.action) {
             TICK, PROBE -> Recorder.alarm(ctx, intent.action!!)
-            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> if (Senses.config(ctx).recording) Recorder.start(ctx)
+            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                if (Senses.config(ctx).recording) Recorder.start(ctx)
+                // The scale is heard whether or not recording is on.
+                if (XiaomiScaleSource.configured(ctx)) XiaomiScaleSource.arm(ctx)
+            }
         }
     }
 

@@ -12,13 +12,14 @@ import java.util.concurrent.Executors
 
 /** Every health source together: what health.sources lists and health.read reads. */
 object HealthHub {
-    val SOURCES = listOf("health_connect", "gadgetbridge")
+    val SOURCES = listOf("health_connect", "gadgetbridge", "xiaomi_scale")
 
     class Reading(val rows: List<HealthRow>, val errors: JSONObject)
 
     fun sources(ctx: Context): JSONArray = JSONArray()
         .put(runCatching { HealthConnectSource.status(ctx) }.getOrElse { JSONObject().put("id", "health_connect").put("state", "error").put("error", it.message) })
         .put(runCatching { GadgetbridgeSource.status(ctx) }.getOrElse { JSONObject().put("id", "gadgetbridge").put("error", it.message) })
+        .put(runCatching { XiaomiScaleSource.status(ctx) }.getOrElse { JSONObject().put("id", "xiaomi_scale").put("error", it.message) })
 
     /** Reads each source; a source that fails is reported, not hidden. Throws when none answered. */
     fun read(ctx: Context, metrics: List<String>, range: LongRange, sources: List<String>, max: Int): Reading {
@@ -31,6 +32,7 @@ object HealthHub {
                 rows += when (s) {
                     "health_connect" -> HealthConnectSource.read(ctx, metrics, range, max)
                     "gadgetbridge" -> GadgetbridgeSource.read(ctx, metrics, range, max)
+                    "xiaomi_scale" -> XiaomiScaleSource.read(ctx, metrics, range, max)
                     else -> continue
                 }
                 answered++
@@ -62,7 +64,9 @@ object HealthImport {
             for (s in HealthHub.SOURCES) {
                 val configured = when (s) {
                     "health_connect" -> HealthConnectSource.granted(ctx).isNotEmpty()
-                    else -> GadgetbridgeSource.folder(ctx) != null
+                    "gadgetbridge" -> GadgetbridgeSource.folder(ctx) != null
+                    // The scale's weigh-ins are stored as they are heard.
+                    else -> false
                 }
                 if (!configured) continue
                 try {
