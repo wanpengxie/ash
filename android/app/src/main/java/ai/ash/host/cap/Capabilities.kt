@@ -13,8 +13,11 @@ object Capabilities {
     val all: List<Capability> by lazy {
         SystemCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list
     }
-    /** Ash's own, and the screen helper's while it is connected (see [ai.ash.host.screen.ScreenBridge]). */
-    private fun current(): List<Capability> = all + ai.ash.host.screen.ScreenBridge.tools()
+    /**
+     * Ash's own, and its helpers' while they are connected: the screen helper's ([ai.ash.host.screen.ScreenBridge]) and
+     * the senses helper's ([ai.ash.host.senses.SensesBridge]).
+     */
+    private fun current(): List<Capability> = all + ai.ash.host.screen.ScreenBridge.tools() + ai.ash.host.senses.SensesBridge.tools()
 
     fun manifest(ctx: Context): JSONObject {
         val caps = JSONArray()

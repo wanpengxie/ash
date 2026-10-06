@@ -31,6 +31,15 @@ val copyScreen by tasks.registering(Copy::class) {
     rename { "ash-screen.apk" }
 }
 
+// The senses helper (android/senses): location, motion and health, in an app that targets a current Android.
+val sensesAssets = layout.buildDirectory.dir("generated/senses-assets")
+val copySenses by tasks.registering(Copy::class) {
+    dependsOn(":senses:assembleDebug")
+    from(project(":senses").layout.buildDirectory.file("outputs/apk/debug/senses-debug.apk"))
+    into(sensesAssets.map { it.dir("senses") })
+    rename { "ash-senses.apk" }
+}
+
 // The agent container (arm64 Ubuntu + node + DSH + proot) from `npm run build:container`
 // (repo root build/container): shipped as assets/container/{ash-container.tgz,VERSION}
 // (not .tar.gz: the asset merger would gunzip anything named *.gz).
@@ -76,6 +85,7 @@ android {
         buildConfigField("boolean", "ISOLATED_PROBE", "false")
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         buildConfigField("long", "SCREEN_VERSION_CODE", "${providers.gradleProperty("ashScreenVersionCode").get()}L")
+        buildConfigField("long", "SENSES_VERSION_CODE", "${providers.gradleProperty("ashSensesVersionCode").get()}L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     ndkVersion = "27.2.12479018"
@@ -143,6 +153,7 @@ android {
     sourceSets["main"].assets.srcDir(payloadAssets)
     sourceSets["main"].assets.srcDir(containerAssets)
     sourceSets["main"].assets.srcDir(screenAssets)
+    sourceSets["main"].assets.srcDir(sensesAssets)
     buildFeatures { buildConfig = true }
 
     androidResources {
@@ -163,7 +174,7 @@ android {
 
 tasks.named("preBuild") { dependsOn(copyPayload) }
 // Only packaging needs the container (unit tests do not merge assets, so they run without it).
-tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer, copyScreen) }
+tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer, copyScreen, copySenses) }
 
 dependencies {
     implementation(project(":bridge"))

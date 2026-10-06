@@ -27,7 +27,7 @@ object TaskStatus {
     private var lastNotification: String? = null
     private const val CHANNEL = "ash.task"
     private const val ID = 7
-    fun start(ctx: Context) { main.post { app = ctx.applicationContext; ai.ash.host.screen.ScreenBridge.start(ctx); main.removeCallbacks(tick); tick.run() } }
+    fun start(ctx: Context) { main.post { app = ctx.applicationContext; ai.ash.host.screen.ScreenBridge.start(ctx); ai.ash.host.senses.SensesBridge.start(ctx); main.removeCallbacks(tick); tick.run() } }
     fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
     /** Show the current state again now (the screen helper connected, Ash's own screen came or went). */
     fun refresh() { main.post { render() } }
