@@ -12,8 +12,11 @@ import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
+import ai.ash.bridge.Bridge
 import ai.ash.host.screen.ScreenBridge
+import android.widget.Toast
 import ai.ash.host.screen.ScreenInstaller
+import ai.ash.host.screen.ScreenRecovery
 import ai.ash.host.shizuku.ShizukuState
 
 /**
@@ -29,8 +32,21 @@ class Permission(
     private val go: (Activity) -> Unit,
     /** Extra state when not granted (e.g. "Shizuku 未安装"), or null. */
     private val detail: (Context) -> String? = { null },
+    /**
+     * The phone keeps this switch where Ash cannot read it (a maker's own notification or background settings): the
+     * owner says it is done. [check] still has to hold for it to count.
+     */
+    val confirmable: (Context) -> Boolean = { false },
+    /** Lets the owner feel it work (a test reminder), or null. */
+    val test: ((Activity) -> Unit)? = null,
 ) {
-    fun granted(ctx: Context): Boolean = try { check(ctx) } catch (e: Throwable) { false }
+    fun granted(ctx: Context): Boolean = ready(ctx) && (!confirmable(ctx) || Permissions.confirmed(ctx, key))
+    /** What Ash can read of it holds; a [confirmable] one then waits for the owner's word. */
+    fun ready(ctx: Context): Boolean = try { check(ctx) } catch (e: Throwable) { false }
+    /** The owner may now say it is done. */
+    fun awaitsWord(ctx: Context): Boolean = !granted(ctx) && ready(ctx) && confirmable(ctx)
+    /** The owner says the switch the phone hides from Ash is on. */
+    fun confirm(ctx: Context) = Permissions.confirm(ctx, key)
 
     fun status(ctx: Context): String? = if (granted(ctx)) null else try { detail(ctx) } catch (e: Throwable) { null }
 
@@ -48,6 +64,10 @@ class Permission(
 object Permissions {
     private const val SHIZUKU_SITE = "https://shizuku.rikka.app/"
     private const val SHIZUKU_REQUEST = 42
+    private const val PREFS = "ash.permissions"
+
+    fun confirmed(ctx: Context, key: String) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("confirmed:$key", false)
+    fun confirm(ctx: Context, key: String) { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("confirmed:$key", true).apply() }
 
     val all: List<Permission> by lazy {
         buildList {
@@ -67,6 +87,20 @@ object Permissions {
                 },
             ))
             add(Permission(
+                "alerts", "提醒的铃声和振动", "任务做完、需要你审批、到点提醒时，手机响铃、振动、弹横幅叫你",
+                { ctx -> Notifications.ringing(ctx) },
+                { a ->
+                    Toast.makeText(a, "在这一页${PhoneMaker.current.alerts}", Toast.LENGTH_LONG).show()
+                    a.startActivity(
+                        if (Build.VERSION.SDK_INT >= 26) Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName)
+                        else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri(a)),
+                    )
+                },
+                { "在 Ash 的通知设置里${PhoneMaker.current.alerts}" },
+                confirmable = { PhoneMaker.current.ownSwitches },
+                test = { a -> Notifications.testAlert(a) },
+            ))
+            add(Permission(
                 "battery", "不受电池优化限制", "让 Ash 在后台常驻，定时提醒准时响起",
                 { it.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(it.packageName) },
                 { a -> a.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri(a))) },
@@ -80,9 +114,30 @@ object Permissions {
                     when {
                         ScreenBridge.installedVersion(c) == 0L -> "先安装「Ash 屏幕助手」（Ash 自带，点一下即可安装）"
                         ScreenBridge.needsInstall(c) -> "屏幕助手需要更新，点一下即可更新"
+                        // The system stopped the helper: its switch stays on, but the service is not running.
+                        ScreenBridge.switchedOn(c) -> "开关开着，但屏幕助手没在工作（系统清理过它）：在无障碍里把它关掉再打开"
                         else -> "在无障碍列表里找到「Ash 屏幕助手」并打开"
                     }
                 },
+            ))
+            add(Permission(
+                "screen_keepalive", "屏幕助手不被清理", "系统清理后台时会顺带停掉屏幕助手，无障碍就失效了；放行后它能一直在",
+                { c -> ScreenBridge.installedVersion(c) > 0 && c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SCREEN_PACKAGE) },
+                { a -> ScreenInstaller.keepAlive(a) },
+                { c ->
+                    when {
+                        ScreenBridge.installedVersion(c) == 0L -> "先安装屏幕助手（上一项）"
+                        !c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SCREEN_PACKAGE) -> "先允许它在后台运行（点「去开启」，系统会问你）"
+                        else -> "在屏幕助手的应用信息里${PhoneMaker.current.keepAlive}"
+                    }
+                },
+                confirmable = { PhoneMaker.current.ownSwitches },
+            ))
+            add(Permission(
+                "screen_recovery", "无障碍自动恢复", "系统清理掉屏幕助手后，Ash 几秒内把它的无障碍重新拉起来，不用你去手动开关",
+                { ScreenRecovery.granted(it) },
+                { a -> ScreenInstaller.grantRecovery(a) },
+                { c -> if (ShizukuState.ready()) "点「去开启」，经 Shizuku 授权一次" else "需要授权一次：用 Shizuku，或在电脑上运行 ${ScreenRecovery.grantCommand(c)}" },
             ))
             if (Build.VERSION.SDK_INT >= 30) add(Permission(
                 "all_files", "所有文件访问", "让 Ash 读写手机存储里的照片、下载和文档",

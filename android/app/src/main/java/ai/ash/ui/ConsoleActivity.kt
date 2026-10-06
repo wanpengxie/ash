@@ -33,6 +33,8 @@ class ConsoleActivity : Activity() {
     private lateinit var perms: LinearLayout
     private lateinit var notificationState: TextView
     private lateinit var notificationToggle: Button
+    private lateinit var recoveryState: TextView
+    private lateinit var recoveryToggle: Button
     private lateinit var logView: TextView
     private val ui = Handler(Looper.getMainLooper())
 
@@ -70,6 +72,18 @@ class ConsoleActivity : Activity() {
         perms = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(perms)
         row("权限引导" to { startActivity(Intent(this, OnboardingActivity::class.java)) }, "显示虚拟屏预览" to { showPreview() })
+
+        h("无障碍自动恢复")
+        recoveryState = TextView(this).apply { textSize = 13f }
+        root.addView(recoveryState)
+        recoveryToggle = Button(this).apply {
+            isAllCaps = false
+            setOnClickListener {
+                val ctx = this@ConsoleActivity
+                ai.ash.host.screen.ScreenRecovery.setEnabled(ctx, !ai.ash.host.screen.ScreenRecovery.enabled(ctx)); renderRecovery()
+            }
+        }
+        root.addView(recoveryToggle)
 
         h("通知读取（可选，默认关闭）")
         notificationState = TextView(this).apply { textSize = 13f }
@@ -129,7 +143,7 @@ class ConsoleActivity : Activity() {
                 ContainerInstaller.shippedVersion(this@ConsoleActivity)?.let { if (it != ContainerInstaller.installedVersion(p)) append("（待安装 $it）") }
                 append("\nApp：${packageManager.getPackageInfo(packageName, 0).versionName}  Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）")
             }
-            ui.post { info.text = text; renderPerms(); renderNotificationSense() }
+            ui.post { info.text = text; renderPerms(); renderNotificationSense(); renderRecovery() }
         }.start()
         ui.postDelayed({ refresh() }, 3000)
     }
@@ -143,8 +157,26 @@ class ConsoleActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 addView(TextView(context).apply { text = "${if (ok) "✅" else "⚪️"} ${item.title}\n${item.why}$extra"; textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
                 if (!ok) addView(Button(context).apply { text = "去开启"; isAllCaps = false; setOnClickListener { item.open(this@ConsoleActivity) } })
+                // A switch the phone keeps from Ash: try it, then say it is done.
+                if (!ok && item.test != null && item.ready(this@ConsoleActivity))
+                    addView(Button(context).apply { text = "测试"; isAllCaps = false; setOnClickListener { item.test.invoke(this@ConsoleActivity) } })
+                if (item.awaitsWord(this@ConsoleActivity))
+                    addView(Button(context).apply { text = "已设好"; isAllCaps = false; setOnClickListener { item.confirm(this@ConsoleActivity); renderPerms() } })
             })
         }
+    }
+
+    /** What recovery may do, whether it is on, and when it last acted. */
+    private fun renderRecovery() {
+        val r = ai.ash.host.screen.ScreenRecovery
+        val times = r.history(this).takeLast(3).reversed().joinToString("、") { java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(it)) }
+        recoveryState.text = buildString {
+            append(if (!r.granted(this@ConsoleActivity)) "未授权（见上方「无障碍自动恢复」）。" else if (r.enabled(this@ConsoleActivity)) "已开启。" else "已关闭。")
+            append("只做一件事：屏幕助手的无障碍开关开着、但它被系统停掉时，把它重新拉起来；你关掉的开关不会去开。")
+            append(if (times.isEmpty()) "还没有恢复过。" else "最近恢复：$times。")
+        }
+        recoveryToggle.text = if (r.enabled(this)) "关闭自动恢复" else "开启自动恢复"
+        recoveryToggle.visibility = if (r.granted(this)) View.VISIBLE else View.GONE
     }
 
     private fun renderNotificationSense() {

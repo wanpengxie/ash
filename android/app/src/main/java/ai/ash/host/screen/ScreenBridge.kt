@@ -84,6 +84,7 @@ object ScreenBridge {
             }
         }, filter)
         main.post { connect() }
+        ScreenRecovery.start(ctx)
     }
 
     /** Binds to the helper when it is installed and signed like Ash. */
@@ -99,6 +100,8 @@ object ScreenBridge {
         if (bound) runCatching { app?.unbindService(connection) }
         bound = false; lost()
     }
+    /** Binds again after the helper was stopped (bindService gave up when the system refused to start it). */
+    fun rebind() { main.post { unbind(); connect() } }
     private fun lost() {
         bridge = null; status = JSONObject(); tools = emptyList()
         main.post { TaskStatus.refresh() }
@@ -124,6 +127,9 @@ object ScreenBridge {
     fun needsInstall(ctx: Context): Boolean = installedVersion(ctx) < BuildConfig.SCREEN_VERSION_CODE || !trusted(ctx)
 
     fun connected() = bridge != null
+    /** The helper's accessibility switch is on in system settings (whether or not its service is running). */
+    fun switchedOn(ctx: Context): Boolean = android.provider.Settings.Secure.getString(ctx.contentResolver,
+        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any { it.startsWith("${Bridge.SCREEN_PACKAGE}/") }
     /** The helper's accessibility service is on: Ash can see and operate the screen. */
     fun accessibility() = connected() && status.optBoolean("accessibility")
     /** The island can be drawn (the helper's accessibility service, or its overlay permission). */

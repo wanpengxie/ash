@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+    <!-- Granted once over USB or Shizuku; used only to bring the screen helper's accessibility service back (ScreenRecovery). -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -112,7 +114,8 @@
         </receiver>
 
         <!-- Installing the screen helper Ash carries (ai.ash.screen): the installer reports here. -->
-        <receiver android:name=".host.screen.ScreenInstallReceiver" android:exported="false" />
+        <activity android:name=".host.screen.ScreenInstallActivity" android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" android:excludeFromRecents="true" android:launchMode="singleTop" />
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

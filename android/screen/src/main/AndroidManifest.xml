@@ -3,6 +3,8 @@
 
     <!-- The island when the accessibility service is off; with it on, the island needs nothing more. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Asked for by the owner through Ash: systems that clear background apps take the accessibility service along. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <queries>
         <package android:name="ai.ash.agent" />
@@ -24,6 +26,13 @@
             </intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
         </service>
+
+        <!-- Ash opens it so the helper can ask to run in the background; it only asks, for itself. -->
+        <activity
+            android:name=".KeepAliveActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!-- Ash connects here. Every call checks the caller is signed like this app. -->
         <service

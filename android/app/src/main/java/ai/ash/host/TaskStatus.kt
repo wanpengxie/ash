@@ -73,8 +73,8 @@ object TaskStatus {
         val manager = ctx.getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Ash 任务进度", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
         val open = PendingIntent.getActivity(ctx, ID, Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        @Suppress("DEPRECATION") val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(ctx, CHANNEL) else Notification.Builder(ctx)
-        b.setSmallIcon(R.drawable.ic_launcher).setContentTitle("Ash · $title").setContentText("点此回到 Ash 查看任务")
+        val b = Notifications.builder(ctx, CHANNEL)
+        b.setContentTitle("Ash · $title").setContentText("点此回到 Ash 查看任务")
             .setContentIntent(open).setOnlyAlertOnce(true).setOngoing(f.canStop).setVisibility(Notification.VISIBILITY_PRIVATE)
         if (canStop) {
             val i = Intent(ctx, TaskStopReceiver::class.java).setData(Uri.Builder().scheme("ash").authority("task-stop").appendPath(f.turn).build())

@@ -40,6 +40,10 @@ class OnboardingActivity : Activity() {
     private lateinit var state: TextView
     private lateinit var primary: Button
     private lateinit var secondary: Button
+    /** For a switch the phone hides from Ash: feel it work, then say it is done. */
+    private lateinit var test: Button
+    private lateinit var confirm: Button
+    private lateinit var checks: LinearLayout
     private lateinit var dots: LinearLayout
 
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -62,6 +66,12 @@ class OnboardingActivity : Activity() {
             stateListAnimator = null
         }
         secondary = Button(this, null, android.R.attr.borderlessButtonStyle).apply { isAllCaps = false; textSize = 15f; setTextColor(muted) }
+        test = Button(this, null, android.R.attr.borderlessButtonStyle).apply { isAllCaps = false; textSize = 15f; setTextColor(accent); text = "测试一下" }
+        confirm = Button(this, null, android.R.attr.borderlessButtonStyle).apply { isAllCaps = false; textSize = 15f; setTextColor(accent); text = "已设好" }
+        checks = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            addView(test, LinearLayout.LayoutParams(0, -2, 1f)); addView(confirm, LinearLayout.LayoutParams(0, -2, 1f))
+        }
         dots = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(12)) }
 
         val content = LinearLayout(this).apply {
@@ -76,6 +86,7 @@ class OnboardingActivity : Activity() {
             setPadding(dp(32), 0, dp(32), dp(24))
             addView(dots)
             addView(primary, LinearLayout.LayoutParams(-1, dp(48)))
+            addView(checks, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
             addView(secondary, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         }
         val root = LinearLayout(this).apply {
@@ -130,6 +141,7 @@ class OnboardingActivity : Activity() {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (i == page) accent else (muted and 0x00FFFFFF) or 0x66000000) }
         }, LinearLayout.LayoutParams(dp(if (i == page) 8 else 6), dp(if (i == page) 8 else 6)).apply { setMargins(dp(4), 0, dp(4), 0); gravity = Gravity.CENTER_VERTICAL })
 
+        checks.visibility = View.GONE
         when (page) {
             0 -> {
                 icon.text = "👋"
@@ -171,6 +183,15 @@ class OnboardingActivity : Activity() {
                     primary.setOnClickListener { item.open(this) }
                     secondary.text = "跳过"
                     secondary.setOnClickListener { go(page + 1) }
+                    // The phone keeps this switch from Ash: the owner tries it and says when it is done.
+                    val word = item.awaitsWord(this)
+                    if (word || (item.test != null && item.ready(this))) {
+                        checks.visibility = View.VISIBLE
+                        test.visibility = if (item.test != null) View.VISIBLE else View.GONE
+                        test.setOnClickListener { item.test?.invoke(this) }
+                        confirm.visibility = if (word) View.VISIBLE else View.GONE
+                        confirm.setOnClickListener { item.confirm(this); render() }
+                    }
                 }
                 return
             }
@@ -196,7 +217,7 @@ class OnboardingActivity : Activity() {
         private const val SEEN = "onboarding_seen"
 
         private val ICONS = mapOf(
-            "notifications" to "🔔", "battery" to "🔋", "accessibility" to "👆", "all_files" to "📁",
+            "notifications" to "🔔", "alerts" to "📳", "screen_keepalive" to "🛡️", "battery" to "🔋", "accessibility" to "👆", "all_files" to "📁",
             "usage" to "📊", "write_settings" to "⚙️", "overlay" to "🪟", "shizuku" to "🛠️",
         )
 
