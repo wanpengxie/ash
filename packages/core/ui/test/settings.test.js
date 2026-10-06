@@ -348,13 +348,15 @@ test("settings show usage by period and part of Ash, and an unreadable balance i
     for (let i = 0; i < 50 && !panel.find("settingsUsageBalance")?.textContent; i++) await new Promise((resolve) => setImmediate(resolve));
     const text = (item) => item.children.length ? item.children.map(text).join("|") : item.textContent ?? "";
     const table = panel.find("settingsUsageTable").children.flatMap((box) => box.children.at(-1).children.map(text));
-    assert.match(table[0], /^今天\|3 次调用 · 输入 12\.0k.*另有 1 次没有价格\|\$0\.0042$/);
-    assert.match(table[1], /^近 7 天\|9 次调用.*\|\$1\.50$/);
-    assert.ok(table.some((row) => /^对话\|.*\$1\.20$/.test(row)) && table.some((row) => /^后台任务\|.*\$0\.30$/.test(row)));
-    assert.equal(panel.find("settingsUsageCard").children[1].textContent, "$0.0042");
+    assert.match(table[0], /^今天\|3 次调用 · 输入 12\.0k.*另有 1 次没有价格\|¥0\.03$/);
+    assert.match(table[1], /^近 7 天\|9 次调用.*\|¥10\.11$/);
+    assert.match(table[2], /¥0\.00$/);
+    assert.ok(table.some((row) => /^对话\|.*¥8\.09$/.test(row)) && table.some((row) => /^后台任务\|.*¥2\.02$/.test(row)));
+    assert.equal(panel.find("settingsUsageCard").children[1].textContent, "¥0.03");
     assert.deepEqual(seen.slice(0, 2), ["usage.get", "balance.get"]);
     assert.match(panel.find("settingsUsageBalance").textContent, /读不到（不是零）/);
     assert.match(panel.find("settingsUsageStatus").textContent, /估算/);
+    assert.match(panel.find("settingsUsageStatus").textContent, /1 美元 ≈ 6\.74 元固定换算/);
   } finally { delete globalThis.document; delete globalThis.location; }
 });
 
@@ -462,7 +464,7 @@ test("opening settings reads what each row should say: quiet hours, pause, keys,
     assert.equal(panel.find("settingsVaultRow").sub.textContent, "DeepSeek Key 未设置 · OpenRouter Key 已保存");
     assert.equal(panel.find("settingsVaultRow").sub.className, "set-sub warn");
     assert.equal(panel.find("settingsGatewayRow").sub.textContent, "1 台设备 · 1 个等你批准");
-    assert.equal(panel.find("settingsUsageCard").children[1].textContent, "$0.12");
+    assert.equal(panel.find("settingsUsageCard").children[1].textContent, "¥0.81");
     settings.setName("小灰");
     assert.equal(panel.find("settingsPause").textContent, "暂停 小灰");
   } finally { delete globalThis.document; delete globalThis.location; }

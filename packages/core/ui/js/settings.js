@@ -1,5 +1,6 @@
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 import { ProactivePreferences } from "./settings-preferences.js";
+import { usdToCnyText as money, balanceText, CNY_ESTIMATE_NOTE } from "./money.js";
 
 function node(tag, label, className = "") {
   const element = document.createElement(tag);
@@ -59,7 +60,6 @@ const KEYS = [
   { ref: "DEEPSEEK_API_KEY", title: "DeepSeek Key", use: "用于：对话模型", hint: "没有它，Ash 无法对话。" },
   { ref: "OPENROUTER_API_KEY", title: "OpenRouter Key", use: "用于：快速判断（JEV 模型）", hint: "没有它，快速判断只能靠关键词。" },
 ];
-const money = (value) => `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`;
 const tokens = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 
 /** Usage as two lists: how much per period, then where the last week went. */
@@ -209,7 +209,7 @@ export class SettingsControls {
     usageCard.className = "set-card set-usage";
     const usageToday = node("span", "—", "set-big");
     const usageMore = node("span", "点开看花在哪里", "set-sub");
-    usageCard.append(node("span", "今天花了", "set-sub"), usageToday, usageMore);
+    usageCard.append(node("span", "今天花了（人民币估算）", "set-sub"), usageToday, usageMore);
 
     const vaultRow = navRow("settingsVaultRow", "key", "密钥", "DeepSeek、OpenRouter", () => vaultPage.open());
     const gatewayRow = navRow("settingsGatewayRow", "devices", "已连接设备", "其他电脑和浏览器", () => gatewayPage.open());
@@ -293,13 +293,13 @@ export class SettingsControls {
         if (!live()) return;
         usageTable.replaceChildren(...renderUsage(reply.result));
         showUsage(reply.result);
-        usageStatus.textContent = reply.result.estimated ? "金额按模型的公开价格估算，不是账单。" : "";
+        usageStatus.textContent = `${reply.result.estimated ? "费用按模型的公开价格估算。" : ""}${CNY_ESTIMATE_NOTE}`;
       } catch { if (live()) usageStatus.textContent = "用量读取失败，请重试。"; return; }
       try {
         const reply = await requestSetting("balance.get", {}, "service:cost");
         if (!live()) return;
         balanceLine.textContent = reply?.ok === true
-          ? `账户余额：${reply.result.balances.map((b) => `${b.total} ${b.currency}`).join("，") || "无数据"}${reply.result.available ? "" : "（账户当前不可用）"}`
+          ? `账户余额：${reply.result.balances.map(balanceText).join("，") || "无数据"}${reply.result.available ? "" : "（账户当前不可用）"}`
           : "账户余额暂时读不到（不是零）。";
       } catch { if (live()) balanceLine.textContent = "账户余额暂时读不到（不是零）。"; }
     };
