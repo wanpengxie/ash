@@ -30,6 +30,9 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
+    <!-- Lets Ash's own helper apps (same signature) bring Ash back after the system cleared it. -->
+    <permission android:name="ai.ash.permission.WAKE" android:protectionLevel="signature" />
+
     <application
         android:name=".AshApp"
         android:label="@string/app_name"
@@ -99,6 +102,8 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".host.WakeReceiver" android:exported="false" />
+        <!-- Ash 感知 wakes Ash here when it holds facts and Ash is gone; only apps signed like Ash may send. -->
+        <receiver android:name=".host.senses.SensesWakeReceiver" android:exported="true" android:permission="ai.ash.permission.WAKE" />
         <receiver android:name=".host.PresentActionReceiver" android:exported="false" />
         <receiver android:name=".host.NotificationPauseReceiver" android:exported="false" />
         <receiver android:name=".host.TaskStopReceiver" android:exported="false" />

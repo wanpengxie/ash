@@ -78,8 +78,23 @@ object AshLink {
     /** New rows (or Ash asking): batch them and offer what is due. */
     fun flush(resendAll: Boolean = false) { runCatching { executor.execute { send(resendAll) } } }
 
+    private const val WAKE_GAP_MS = 60_000L
+    @Volatile private var lastWake = 0L
+
+    /** Ash is not attached (the system cleared it) and facts are waiting: ask Ash to come back, at most once a minute. */
+    private fun wakeAsh() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastWake != 0L && now - lastWake < WAKE_GAP_MS) return
+        if (runCatching { Senses.store.pendingBatches() }.getOrDefault(0L) == 0L) return
+        lastWake = now
+        runCatching {
+            Senses.ctx().sendBroadcast(Intent().setClassName(ASH_PACKAGE, "ai.ash.host.senses.SensesWakeReceiver"))
+        }.onFailure { Log.w("ash.senses", "could not wake Ash: ${it.javaClass.simpleName}") }
+    }
+    private const val ASH_PACKAGE = "ai.ash.agent"
+
     private fun send(resendAll: Boolean) {
-        val h = host ?: return
+        val h = host ?: return wakeAsh()
         try {
             val store = Senses.store
             val now = System.currentTimeMillis()
