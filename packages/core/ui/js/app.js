@@ -1,4 +1,4 @@
-import { fold, foldPostSnapshot, initialView } from "./project.js";
+import { drawsConversation, fold, foldPostSnapshot, initialView } from "./project.js";
 import { ScreenNet } from "./net.js";
 import { appendConversation, appendOutbox } from "./conversation.js";
 import { renderProgress } from "./progress.js";
@@ -12,7 +12,7 @@ import { answerGateAsk, approvalSections } from "./sheet-approvals.js";
 import { IdentityName } from "./identity-name.js";
 import { embeddedUiTransport, readWorkspaceFile } from "./ui-transport.js";
 import { Files } from "./files.js";
-import { conversationKey, framePainter } from "./frame-painter.js";
+import { framePainter } from "./frame-painter.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -28,7 +28,7 @@ export class Timeline {
     this.view = initialView();
     this.loading = false;
     this.exhausted = false;
-    this.onChange(this.view);
+    this.onChange(this.view, true);
   }
   add(message) {
     if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string") return;
@@ -36,26 +36,28 @@ export class Timeline {
     this.records.set(message.seq, message);
     this.byId.set(message.id, message);
     this.view = fold(this.view, message);
-    this.onChange(this.view);
+    this.onChange(this.view, drawsConversation(message));
   }
   addMany(messages, snapshots = []) {
     let changed = false;
+    let conversation = false;
     for (const message of messages.sort((a, b) => a.seq - b.seq)) {
       if (!Number.isSafeInteger(message?.seq) || message.seq < 1 || typeof message.id !== "string" || this.records.has(message.seq)) continue;
       this.records.set(message.seq, message);
       this.byId.set(message.id, message);
       this.view = fold(this.view, message);
       changed = true;
+      if (!conversation && drawsConversation(message)) conversation = true;
     }
     for (const snapshot of snapshots) {
       const next = foldPostSnapshot(this.view, snapshot);
-      if (next !== this.view) { this.view = next; changed = true; }
+      if (next !== this.view) { this.view = next; changed = true; conversation = true; }
     }
-    if (changed) this.onChange(this.view);
+    if (changed) this.onChange(this.view, conversation);
   }
   snapshot(snapshot) {
     const next = foldPostSnapshot(this.view, snapshot);
-    if (next !== this.view) { this.view = next; this.onChange(this.view); }
+    if (next !== this.view) { this.view = next; this.onChange(this.view, true); }
   }
   async older() {
     if (this.loading || this.exhausted || !this.records.size) return 0;
@@ -251,10 +253,8 @@ export function boot({ uiTransport } = {}) {
     } catch { /* the scroll handler can still load older pages */ }
     finally { filling = false; }
   };
-  let drawnKey = null;
-  const paintView = framePainter((view) => {
-    const key = conversationKey(view, net.outbox);
-    if (key !== drawnKey) { drawnKey = key; render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions); }
+  const paintView = framePainter((view, conversation) => {
+    if (conversation) render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
     else presenceBar?.render(view.presence);
     progress();
     agentSheet?.update();

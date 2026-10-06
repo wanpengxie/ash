@@ -224,6 +224,18 @@ function project(records, snapshots = new Map()) {
   return view;
 }
 
+/**
+ * Does this ledger row put something in the conversation area, or change something already there?
+ * Status lines, tool calls and results, cost records, run/turn bookkeeping and presence only feed the presence bar, the
+ * progress strip and the activity sheet; they never need the conversation redrawn. This is the page's own selection and
+ * it comes before drawing: render() runs only for rows that pass it.
+ */
+const CONVERSATION_ROWS = new Set(["legacy.say", "owner.say", "agent.say", "show", "ask", "ask.answer", "react", "received", "read", "human.pending", "post.delivery"]);
+export function drawsConversation(message) {
+  const row = record(message);
+  return row !== null && CONVERSATION_ROWS.has(row.type);
+}
+
 /** Folds one ledger Message. Unnumbered SSE control frames and unknown words are ignored. */
 export function fold(state, message) {
   const current = state && Array.isArray(state._records) ? state : initialView();

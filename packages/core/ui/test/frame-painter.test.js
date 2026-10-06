@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { conversationKey, framePainter } from "../js/frame-painter.js";
+import { framePainter } from "../js/frame-painter.js";
 
 const fakeFrames = () => {
   const waiting = [];
@@ -37,11 +37,12 @@ test("a change after a frame asks for the next frame", () => {
   assert.deepEqual(painted, ["a", "c"]);
 });
 
-test("rows that do not show up in the conversation leave its key unchanged", () => {
-  const base = { conversation: [{ id: "m1", type: "say", text: "hi", reactions: [] }], presence: { state: "working", text: "a" }, turns: {}, held: 0 };
-  const sameConversation = { ...base, presence: { state: "working", text: "b" }, turns: { t1: { steps: [1] } }, held: 2 };
-  assert.equal(conversationKey(sameConversation, []), conversationKey(base, []));
-  const newBubble = { ...base, conversation: [...base.conversation, { id: "m2", type: "say", text: "yo", reactions: [] }] };
-  assert.notEqual(conversationKey(newBubble, []), conversationKey(base, []));
-  assert.notEqual(conversationKey(base, [{ id: "x" }]), conversationKey(base, []), "a queued outgoing message is part of what is drawn");
+test("the paint is told whether any change since the last paint touched the conversation", () => {
+  const frames = fakeFrames();
+  const calls = [];
+  const change = framePainter((view, conversation) => calls.push([view, conversation]), frames.schedule);
+  change(1, false); change(2, false); frames.run();
+  change(3, false); change(4, true); change(5, false); frames.run();
+  change(6, false); frames.run();
+  assert.deepEqual(calls, [[2, false], [5, true], [6, false]]);
 });
