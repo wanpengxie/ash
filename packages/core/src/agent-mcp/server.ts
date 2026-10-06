@@ -97,7 +97,7 @@ function fromResponse(body: ResponseBody, spec?: WordSpec): ToolResult {
     case "offline": return failure("unreachable", message);
     case "timeout": return failure("timeout", message);
     case "cancelled": return failure("result_unknown", message);
-    default: return failure("capability_error", message, { code });
+    default: return failure("capability_error", message, { code, ...(body.error.detail === undefined ? {} : { detail: body.error.detail }) });
   }
 }
 

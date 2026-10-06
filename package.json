@@ -17,7 +17,8 @@
     "check:manifest": "node tools/check-manifest.mjs && node --test tools/check-manifest.test.mjs",
     "build:core": "npm run -s gen:ui && npm run -s gen:worker-rules && esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload",
-    "build:container": "node tools/build-container-rootfs.mjs"
+    "build:container": "node tools/build-container-rootfs.mjs",
+    "build:device": "esbuild packages/device/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/device/dist/ash-device.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\""
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -35,7 +36,7 @@
     "@opentelemetry/api": "^1.9.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "ash-gateway": "git+https://github.com/wanpengxie/ash-gateway.git#v0.4.0",
+    "ash-gateway": "file:../ash-gateway-device",
     "entities": "8.1.0",
     "marked": "18.0.14",
     "zod": "^4.6.5"

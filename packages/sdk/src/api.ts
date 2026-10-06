@@ -304,7 +304,7 @@ export class AshApiError extends Error {
 export const API_VERSION_V2 = "ash-api/2" as const;
 export type Kind = "request" | "response" | "event";
 export type MessageErrorCode = "bad_request" | "not_found" | "forbidden" | "denied" | "cancelled" | "timeout" | "offline" | "failed";
-export type ResponseBody = { ok: true; result?: unknown } | { ok: false; error: { code: MessageErrorCode; message: string } };
+export type ResponseBody = { ok: true; result?: unknown } | { ok: false; error: { code: MessageErrorCode; message: string; detail?: unknown } };
 export interface Message {
   seq: number;
   id: string;
