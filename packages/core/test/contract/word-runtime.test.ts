@@ -146,7 +146,7 @@ test("each inbound word rejects a schema-violating body from its authorized send
     for (const word of ["list", "describe", "declare", "update", "start", "stop", "restart", "remove"]) senders[`service:agents/${word}`] = w.owner;
     for (const word of ["ask", "tell", "answer"]) senders[`service:agents/${word}`] = w.agent;
     for (const word of ["extract", "verify_claims", "reconcile", "verify_plan", "proactive", "opener"]) senders[`worker:${word}/${word}`] = w.service("service:work");
-    for (const word of ["sense.calendar", "sense.battery", "sense.screen", "sense.notification"]) senders[`service:senses/${word}`] = w.phone;
+    for (const word of ["sense.calendar", "sense.battery", "sense.screen", "sense.notification", "sense.location", "sense.activity", "sense.health", "sense.geofence"]) senders[`service:senses/${word}`] = w.phone;
     const internalOnly = new Set(["agent:main/cancel_turn", "agent:main/wake", "service:post/deliver",
       "service:reflex/before_turn", "service:reflex/surface.get", "service:reflex/screen.get", "service:reflex/screen.return", "service:reflex/virtual.close",
       "worker:extract/extract", "worker:verify_claims/verify_claims", "worker:reconcile/reconcile", "worker:verify_plan/verify_plan",

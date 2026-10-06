@@ -440,7 +440,7 @@ test("capsule conversation uses owner identity and retries the exact message onc
   } finally { ledger.close(); }
 });
 
-test("phone sense broadcast accepts only four declared schemas from the trusted phone", async () => {
+test("phone sense broadcast accepts only declared schemas from the trusted phone", async () => {
   const { ledger, router } = await setup();
   try {
     const seen: string[] = [];
@@ -451,6 +451,65 @@ test("phone sense broadcast accepts only four declared schemas from the trusted 
     await assert.rejects(router.send(phone, { to: null, kind: "event", word: "sense.unlisted", body: {} }), code("not_found"));
     await assert.rejects(router.send(agent, { to: null, kind: "event", word: "sense.battery", body: { level: 72 } }), code("not_found"));
     assert.deepEqual(seen, ["device:phone/sense.battery"]);
+  } finally { ledger.close(); }
+});
+
+test("batched location, activity, health and geofence senses: bounded schemas, phone only, one ledger row per batch retry", async () => {
+  const { ledger, router } = await setup();
+  try {
+    const seen: string[] = [];
+    router.subscribe((message) => seen.push(message.word));
+    const ts = 1_790_000_000_000;
+    const point = { ts, lat: 31.23, lon: 121.47, accuracy_m: 12, provider: "fused" };
+    const good: [string, Record<string, unknown>][] = [
+      ["sense.location", { batch_id: "loc-1", items: [point, { ...point, ts: ts + 60_000, is_mocked: false }] }],
+      ["sense.activity", { batch_id: "act-1", items: [{ ts_start: ts, state: "cycling" }, { ts_start: ts - 600_000, ts_end: ts, state: "walking" }] }],
+      ["sense.health", { batch_id: "hl-1", items: [{ ts, metric: "steps", value: 120, unit: "count", source: "com.google.android.apps.healthdata" },
+        { ts, metric: "weight", value: 61.5, unit: "kg", source: "scale" }, { ts, metric: "heart_rate", value: 72, unit: "", source: "watch" }] }],
+      ["sense.geofence", { name: "home", transition: "exit", ts }],
+    ];
+    for (const [word, body] of good) await router.send(phone, { to: null, kind: "event", word, body, client_id: `${word}:1` });
+    assert.deepEqual(seen, good.map(([word]) => word));
+    // The phone retries a batch with the same client id: one ledger row, nothing published again.
+    const again = await router.send(phone, { to: null, kind: "event", word: "sense.location", body: good[0][1], client_id: "sense.location:1" });
+    assert.equal(again.id, ledger.list({ limit: 100 }).find((message) => message.word === "sense.location")!.id);
+    assert.equal(seen.length, 4);
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...point, ts: ts + i }));
+    await router.send(phone, { to: null, kind: "event", word: "sense.location", body: { batch_id: "loc-max", items: many(500) } });
+    const bad: [string, Record<string, unknown>][] = [
+      ["sense.location", { batch_id: "loc-2", items: many(501) }],
+      ["sense.location", { batch_id: "loc-2", items: [] }],
+      ["sense.location", { items: [point] }],
+      ["sense.location", { batch_id: "", items: [point] }],
+      ["sense.location", { batch_id: "x".repeat(129), items: [point] }],
+      ["sense.location", { batch_id: "has space", items: [point] }],
+      ["sense.location", { batch_id: "loc-2", items: [{ ...point, lat: 91 }] }],
+      ["sense.location", { batch_id: "loc-2", items: [{ ...point, lon: -181 }] }],
+      ["sense.location", { batch_id: "loc-2", items: [{ ...point, ts: 1.5 }] }],
+      ["sense.location", { batch_id: "loc-2", items: [{ ...point, provider: "p".repeat(33) }] }],
+      ["sense.location", { batch_id: "loc-2", items: [{ ...point, extra: 1 }] }],
+      ["sense.location", { batch_id: "loc-2", items: [point], extra: true }],
+      ["sense.activity", { batch_id: "act-2", items: [{ ts_start: ts, state: "flying" }] }],
+      ["sense.activity", { batch_id: "act-2", items: [{ ts_start: ts, ts_end: ts - 1, state: "still" }] }],
+      ["sense.activity", { batch_id: "act-2", items: [{ state: "still" }] }],
+      ["sense.health", { batch_id: "hl-2", items: [{ ts, metric: "steps", value: "120", unit: "count", source: "hc" }] }],
+      ["sense.health", { batch_id: "hl-2", items: [{ ts, metric: "m".repeat(65), value: 1, unit: "count", source: "hc" }] }],
+      ["sense.health", { batch_id: "hl-2", items: [{ ts, metric: "steps", value: 1, unit: "count" }] }],
+      ["sense.geofence", { name: "home", transition: "dwell", ts }],
+      ["sense.geofence", { name: "", transition: "enter", ts }],
+      ["sense.geofence", { name: "n".repeat(65), transition: "enter", ts }],
+      ["sense.geofence", { name: "home", transition: "enter" }],
+    ];
+    const before = ledger.lastSeq();
+    for (const [word, body] of bad) await assert.rejects(router.send(phone, { to: null, kind: "event", word, body }), code("bad_request"), `${word} ${JSON.stringify(body).slice(0, 80)}`);
+    assert.equal(ledger.lastSeq(), before, "a rejected sense never reaches the ledger");
+    for (const [word, body] of good) {
+      await assert.rejects(router.send(agent, { to: null, kind: "event", word, body }), code("not_found"));
+      await assert.rejects(router.send(owner, { to: null, kind: "event", word, body }), code("not_found"));
+      await assert.rejects(router.send(screen, { to: null, kind: "event", word, body }), code("forbidden"));
+      await assert.rejects(router.send({ ...phone, transport: "api" }, { to: null, kind: "event", word, body }), (error: unknown) => error instanceof RouterError);
+    }
+    assert.equal(ledger.lastSeq(), before, "a sense from anything but the phone never reaches the ledger");
   } finally { ledger.close(); }
 });
 
