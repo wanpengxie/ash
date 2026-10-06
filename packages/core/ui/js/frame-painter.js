@@ -15,3 +15,12 @@ export function framePainter(paint, schedule = (frame) => requestAnimationFrame(
     schedule(() => { queued = false; paint(latest); });
   };
 }
+
+/**
+ * What render() draws, as a string: the conversation and the outbox. Rows that change neither (a status line, a cost
+ * record, a tool result, a presence ping) never need the conversation rebuilt, so a repaint whose key is unchanged only
+ * refreshes the cheap parts of the page.
+ */
+export function conversationKey(view, outbox = []) {
+  return JSON.stringify([view.conversation, outbox]);
+}

@@ -12,7 +12,7 @@ import { answerGateAsk, approvalSections } from "./sheet-approvals.js";
 import { IdentityName } from "./identity-name.js";
 import { embeddedUiTransport, readWorkspaceFile } from "./ui-transport.js";
 import { Files } from "./files.js";
-import { framePainter } from "./frame-painter.js";
+import { conversationKey, framePainter } from "./frame-painter.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -251,8 +251,11 @@ export function boot({ uiTransport } = {}) {
     } catch { /* the scroll handler can still load older pages */ }
     finally { filling = false; }
   };
+  let drawnKey = null;
   const paintView = framePainter((view) => {
-    render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions);
+    const key = conversationKey(view, net.outbox);
+    if (key !== drawnKey) { drawnKey = key; render(view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions); }
+    else presenceBar?.render(view.presence);
     progress();
     agentSheet?.update();
     setTimeout(fillScreen, 0);

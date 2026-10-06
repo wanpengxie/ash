@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { framePainter } from "../js/frame-painter.js";
+import { conversationKey, framePainter } from "../js/frame-painter.js";
 
 const fakeFrames = () => {
   const waiting = [];
@@ -35,4 +35,13 @@ test("a change after a frame asks for the next frame", () => {
   change("a"); frames.run();
   change("b"); change("c"); frames.run();
   assert.deepEqual(painted, ["a", "c"]);
+});
+
+test("rows that do not show up in the conversation leave its key unchanged", () => {
+  const base = { conversation: [{ id: "m1", type: "say", text: "hi", reactions: [] }], presence: { state: "working", text: "a" }, turns: {}, held: 0 };
+  const sameConversation = { ...base, presence: { state: "working", text: "b" }, turns: { t1: { steps: [1] } }, held: 2 };
+  assert.equal(conversationKey(sameConversation, []), conversationKey(base, []));
+  const newBubble = { ...base, conversation: [...base.conversation, { id: "m2", type: "say", text: "yo", reactions: [] }] };
+  assert.notEqual(conversationKey(newBubble, []), conversationKey(base, []));
+  assert.notEqual(conversationKey(base, [{ id: "x" }]), conversationKey(base, []), "a queued outgoing message is part of what is drawn");
 });
