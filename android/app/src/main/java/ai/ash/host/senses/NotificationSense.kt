@@ -16,13 +16,20 @@ import java.util.UUID
 
 /** Optional live-only sensor. It never queries already-active notifications or stores their content. */
 class NotificationSense : NotificationListenerService() {
+    private companion object {
+        const val REVIVE_GAP_MS = 60_000L
+        @Volatile var lastRevive = 0L
+    }
     private val serial = SenseSerial()
     @Volatile private var connected = false
 
-    override fun onListenerConnected() { connected = true }
+    // The system keeps this listener bound and binds it again after the process dies, so each connection (and, at
+    // most once a minute, each notification) is a chance to bring the core back. Reading stays behind the opt-in.
+    override fun onListenerConnected() { connected = true; revive() }
     override fun onListenerDisconnected() { connected = false }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        revive()
         if (sbn == null || sbn.packageName == packageName || !connected || !NotificationSenseSettings.allowed(this)) return
         serial.submit {
             // Revocation or an opt-out can race a queued callback. Recheck before inspecting extras.
@@ -48,6 +55,14 @@ class NotificationSense : NotificationListenerService() {
                 Log.w("sense.notification", "delivery unavailable: ${e.javaClass.simpleName}")
             }
         }
+    }
+
+    private fun revive() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastRevive != 0L && now - lastRevive < REVIVE_GAP_MS) return
+        lastRevive = now
+        runCatching { ai.ash.host.CoreService.start(this) }
+            .onFailure { Log.w("sense.notification", "revive failed: ${it.javaClass.simpleName}") }
     }
 
     override fun onDestroy() {

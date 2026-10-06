@@ -51,6 +51,15 @@ object ScreenInstaller {
      * Keeps the system from clearing the helper: first its own request to run in the background (only an app can ask
      * for itself), then its app info page, where the phone maker keeps the rest of its switches.
      */
+    /** The first helper with a card the owner can lock in recent apps. */
+    const val LOCK_CARD_VERSION = 6L
+
+    /** Opens the helper's lockable card, then the owner locks it in recent apps. */
+    fun lockCard(a: Activity) {
+        if (ScreenBridge.installedVersion(a) < LOCK_CARD_VERSION) return install(a)
+        a.startActivity(Intent().setClassName(Bridge.SCREEN_PACKAGE, "ai.ash.screen.LockCardActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
     fun keepAlive(a: Activity) {
         if (ScreenBridge.needsInstall(a)) return install(a)
         val power = a.getSystemService(android.os.PowerManager::class.java)

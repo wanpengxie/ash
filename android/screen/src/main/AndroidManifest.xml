@@ -34,6 +34,13 @@
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Ash opens it so the helper has a card in recent apps that the owner can lock. -->
+        <activity
+            android:name=".LockCardActivity"
+            android:exported="true"
+            android:label="Ash 屏幕助手"
+            android:taskAffinity="ai.ash.screen.lock" />
+
         <!-- Ash connects here. Every call checks the caller is signed like this app. -->
         <service
             android:name=".BridgeService"

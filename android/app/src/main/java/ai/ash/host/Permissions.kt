@@ -106,6 +106,38 @@ object Permissions {
                 { a -> a.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri(a))) },
             ))
             add(Permission(
+                "autostart", "Ash 自启动与后台运行", "被系统清理或手机重启后，Ash 自己回来；不开的话，被清理后要等你再打开它",
+                { it.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(it.packageName) },
+                { a ->
+                    Toast.makeText(a, "在这一页${PhoneMaker.current.keepAlive}", Toast.LENGTH_LONG).show()
+                    a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri(a)))
+                },
+                { c ->
+                    if (!c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(c.packageName)) "先完成上一项「不受电池优化限制」"
+                    else "在 Ash 的应用信息里${PhoneMaker.current.keepAlive}"
+                },
+                confirmable = { PhoneMaker.current.ownSwitches },
+            ))
+            add(Permission(
+                "lock", "在最近任务里锁定 Ash", "锁定后，系统清理后台时会尽量留下 Ash",
+                { true },
+                { a ->
+                    Toast.makeText(a, PhoneMaker.current.lock.replace("它", "Ash "), Toast.LENGTH_LONG).show()
+                    a.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                },
+                { PhoneMaker.current.lock.replace("它", "Ash ") },
+                confirmable = { PhoneMaker.current.ownSwitches },
+            ))
+            add(Permission(
+                "notification_access", "通知使用权", "系统会一直连着 Ash；Ash 被清理后，手机来通知时系统会把它叫回来。读通知内容另需你在 Ash 里单独打开",
+                { ai.ash.host.senses.NotificationSenseSettings.granted(it) },
+                { a ->
+                    try { a.startActivity(ai.ash.host.senses.NotificationSenseSettings.accessIntent(a)) }
+                    catch (e: Throwable) { a.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                },
+                { "在列表里找到 Ash 并打开" },
+            ))
+            add(Permission(
                 "accessibility", "屏幕助手（无障碍）", "让 Ash 看懂屏幕内容，替你点击、输入、滚动，并在其他应用上方显示灵动岛",
                 { ScreenBridge.accessibility() && !ScreenBridge.needsInstall(it) },
                 // A separate small app holds the accessibility service, so updating or restarting Ash never turns it off.
@@ -130,6 +162,16 @@ object Permissions {
                         !c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SCREEN_PACKAGE) -> "先允许它在后台运行（点「去开启」，系统会问你）"
                         else -> "在屏幕助手的应用信息里${PhoneMaker.current.keepAlive}"
                     }
+                },
+                confirmable = { PhoneMaker.current.ownSwitches },
+            ))
+            add(Permission(
+                "screen_lock", "在最近任务里锁定屏幕助手", "屏幕助手平时不在最近任务里；点「去开启」会打开它的一张卡片，锁上后系统清理时会尽量留下它",
+                { c -> ScreenBridge.installedVersion(c) >= ScreenInstaller.LOCK_CARD_VERSION },
+                { a -> ScreenInstaller.lockCard(a) },
+                { c ->
+                    if (ScreenBridge.installedVersion(c) < ScreenInstaller.LOCK_CARD_VERSION) "先安装或更新屏幕助手"
+                    else PhoneMaker.current.lock.replace("它", "「Ash 屏幕助手」")
                 },
                 confirmable = { PhoneMaker.current.ownSwitches },
             ))

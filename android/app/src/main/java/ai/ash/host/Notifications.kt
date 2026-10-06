@@ -15,7 +15,7 @@ import org.json.JSONObject
 
 /** Everything ash shows in the notification shade: service status, agent notices, owner confirmations. */
 object Notifications {
-    const val CH_STATUS = "ash.status"
+    const val CH_STATUS = "ash.status.v2"
     /**
      * Ash's replies, approvals and reminders all reach the owner like a messaging app's: banner, sound and vibration.
      * What should not ring (a reply while its task still runs) is posted silently on the same channel. Android fixes a
@@ -26,7 +26,7 @@ object Notifications {
     const val CH_CONFIRM = "ash.confirm.v2"
     const val CH_BROWSING = "ash.browsing"
     const val ID_SERVICE = 1
-    private val RETIRED_CHANNELS = listOf("ash.messages", "ash.urgent", "ash.confirm")
+    private val RETIRED_CHANNELS = listOf("ash.messages", "ash.urgent", "ash.confirm", "ash.status")
     private const val CHAT_SHORTCUT = "ash.chat"
     private val VIBRATION = longArrayOf(0, 250, 150, 250)
 
@@ -36,12 +36,16 @@ object Notifications {
         fun ringing(id: String, name: String) = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
             enableVibration(true); vibrationPattern = VIBRATION
         }
-        nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Ash 运行状态", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
+        // Default importance, but silent: makers clear a minimum-importance service first when memory runs short.
+        nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Ash 运行状态", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            setShowBadge(false); setSound(null, null); enableVibration(false)
+        })
         nm.createNotificationChannel(ringing(CH_MESSAGES, "Ash 的消息"))
         nm.createNotificationChannel(ringing(CH_URGENT, "Ash 的提醒"))
         nm.createNotificationChannel(ringing(CH_CONFIRM, "需要你确认"))
         nm.createNotificationChannel(NotificationChannel(CH_BROWSING, "Ash 正在浏览", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
-        for (old in RETIRED_CHANNELS) nm.deleteNotificationChannel(old)
+        // A channel still carrying the running service's notification cannot be deleted; the next start retires it.
+        for (old in RETIRED_CHANNELS) runCatching { nm.deleteNotificationChannel(old) }
     }
 
     /** What Android tells Ash: notifications are on and its message channel rings and vibrates (a maker's own switches aside). */
