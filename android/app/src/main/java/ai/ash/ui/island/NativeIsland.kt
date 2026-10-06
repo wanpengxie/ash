@@ -74,8 +74,6 @@ internal object NativeIsland : IslandView.Actions {
     private var attemptId = ""
     private var attemptText = ""
 
-    /** The WebView island stays available behind a switch until the native one has been checked on phones. */
-    fun enabled(ctx: Context) = !java.io.File(ctx.filesDir, "ash/island-web").exists()
     private fun switchText() = runCatching { app?.let { java.io.File(it.filesDir, "ash/island-native").readText() } }.getOrNull().orEmpty()
     /**
      * The island's app-overlay window on screen: the touch window over the island (trusted), or the island's own. (The
