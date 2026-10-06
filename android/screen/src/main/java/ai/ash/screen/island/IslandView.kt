@@ -491,13 +491,15 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
 
     private var spring: SpringAnimation? = null
     private var cardHeightPx = 0
+    /** The content changed size while a spring was running: its target is measured again once the spring ends. */
+    private var relayout = false
     private var fades: ValueAnimator? = null
 
     /** Same form, new content: a changed height springs to its new size; a changed width (screen) is set at once. */
     private fun layoutNow() {
         if (form.isEmpty()) return
         val (w, h) = targetSize(form)
-        if (spring?.isRunning == true) return
+        if (spring?.isRunning == true) { relayout = true; return }
         if (heightPx == 0 || reduceMotion || w != widthPx) { widthPx = w; heightPx = h; apply(w, h, radiusPx(form)); return }
         if (h == heightPx) return
         val from = heightPx
@@ -513,7 +515,13 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
                 if (traceMotion) android.util.Log.i("ash.island.motion", "t=${android.os.SystemClock.uptimeMillis()} v=$value")
                 step(value)
             }
-            addEndListener { _, canceled, _, _ -> if (!canceled) { animating = false; step(1f); onEnd() } }
+            addEndListener { _, canceled, _, _ ->
+                if (!canceled) {
+                    animating = false; step(1f); onEnd()
+                    // A reply that arrived mid-morph may be taller or shorter than what this spring was aimed at.
+                    if (relayout) { relayout = false; layoutNow() }
+                }
+            }
             animating = true
             start()
         }
