@@ -355,6 +355,9 @@ object SystemCapabilities {
     }
 
     private val NAMESPACES = listOf("system", "secure", "global")
+    /** Settings that decide which apps may watch and operate the screen. */
+    internal val ACCESSIBILITY_KEYS = setOf("enabled_accessibility_services", "accessibility_enabled", "touch_exploration_enabled",
+        "touch_exploration_granted_accessibility_services", "accessibility_shortcut_target_service", "accessibility_button_targets")
     private val KEY_RE = Regex("^[A-Za-z0-9_.:\\-]+$")
 
     private fun readSetting(ctx: Context, ns: String, key: String): String? {
@@ -424,6 +427,9 @@ object SystemCapabilities {
         val value = args.optString("value").trim()
         if (ns !in NAMESPACES) return@Cap CapResult.fail("namespace must be system, secure or global")
         if (!KEY_RE.matches(key)) return@Cap CapResult.fail("invalid key")
+        // Which apps may watch and operate the screen is the owner's choice alone: the agent never turns an
+        // accessibility service on or off (Ash's own helper is brought back by ScreenRecovery, not by the agent).
+        if (key.lowercase(Locale.ROOT) in ACCESSIBILITY_KEYS) return@Cap CapResult.fail("$ns/$key decides which apps may operate the screen; only the owner changes it, in Settings → Accessibility")
         VOLUME_STREAMS[key]?.let { return@Cap setVolume(ctx, key, it, value) }
         val before = try { readSetting(ctx, ns, key) } catch (e: Throwable) { null }
         var how = ""

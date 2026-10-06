@@ -66,15 +66,13 @@ object ScreenRecovery {
     private fun recover(ctx: Context) {
         val resolver = ctx.contentResolver
         val key = Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        val services = Settings.Secure.getString(resolver, key).orEmpty().split(':').filter { it.isNotBlank() }
-        val ours = services.filter { it.startsWith("${Bridge.SCREEN_PACKAGE}/") }
+        val services = Settings.Secure.getString(resolver, key).orEmpty()
         // The owner turned the switch off since the check: leave it off.
-        if (ours.isEmpty()) return
+        if (Services.helpers(services).isEmpty()) return
         try {
-            Settings.Secure.putString(resolver, key, (services - ours.toSet()).joinToString(":"))
+            Settings.Secure.putString(resolver, key, Services.withoutHelper(services))
             Thread.sleep(800)
-            val current = Settings.Secure.getString(resolver, key).orEmpty().split(':').filter { it.isNotBlank() }
-            Settings.Secure.putString(resolver, key, (current + ours).distinct().joinToString(":"))
+            Settings.Secure.putString(resolver, key, Services.withHelperBack(Settings.Secure.getString(resolver, key).orEmpty(), services))
             Settings.Secure.putInt(resolver, Settings.Secure.ACCESSIBILITY_ENABLED, 1)
         } catch (e: SecurityException) { Log.w(TAG, "accessibility recovery not permitted", e); return }
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -83,6 +81,18 @@ object ScreenRecovery {
         Log.i(TAG, "brought the screen helper's accessibility service back")
         downSince = 0
         main.postDelayed({ ScreenBridge.rebind() }, 1500)
+    }
+
+    /**
+     * The enabled-services list (`pkg/service:pkg/service`) as recovery may change it: only the screen helper's own
+     * entries are taken out and put back; every other app's entry stays exactly as it was.
+     */
+    internal object Services {
+        private fun entries(list: String) = list.split(':').filter { it.isNotBlank() }
+        fun helpers(list: String) = entries(list).filter { it.startsWith("${Bridge.SCREEN_PACKAGE}/") }
+        fun withoutHelper(list: String) = (entries(list) - helpers(list).toSet()).joinToString(":")
+        /** [now] with the helper's entries from [before] back at its end; nothing is added unless it was there before. */
+        fun withHelperBack(now: String, before: String) = (entries(now) + helpers(before)).distinct().joinToString(":")
     }
 
     /** For the diagnostics page. */
