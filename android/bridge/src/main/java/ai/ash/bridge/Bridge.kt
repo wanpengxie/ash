@@ -5,12 +5,20 @@ import android.content.pm.PackageManager
 import android.os.ParcelFileDescriptor
 import java.io.InputStreamReader
 
-/** The two ends of the bridge between Ash and its screen helper. */
+/** The two ends of the bridges between Ash and its helper apps (the screen helper, the senses helper). */
 object Bridge {
     /** Raised when either side changes what a call means; both refuse a peer that speaks another. */
     const val PROTOCOL = 1
     const val SCREEN_PACKAGE = "ai.ash.screen"
     const val SCREEN_SERVICE = "ai.ash.screen.BridgeService"
+    const val SENSES_PACKAGE = "ai.ash.senses"
+    const val SENSES_SERVICE = "ai.ash.senses.BridgeService"
+    const val SENSES_SETUP = "ai.ash.senses.SetupActivity"
+    /** Every tool the senses helper offers: Ash keeps a policy for each (a tool without one is never offered). */
+    val SENSES_TOOLS = listOf(
+        "location.get", "location.track", "location.history", "activity.current", "activity.history", "sensors.steps",
+        "health.sources", "health.read", "health.summary", "health.sync", "sense.status", "sense.configure", "sense.delete",
+    )
 
     /** The peer is signed with this app's own key: the only app either side talks to. */
     fun sameSigner(ctx: Context, uid: Int): Boolean =

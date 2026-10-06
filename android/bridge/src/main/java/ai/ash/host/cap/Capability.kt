@@ -56,6 +56,13 @@ class CapResult private constructor(val ok: Boolean, val content: JSONArray, val
 
         fun fail(msg: String) = CapResult(false, JSONArray().put(JSONObject().put("type", "text").put("text", msg)), null, msg)
 
+        /** A failure with a stable code the caller can act on (e.g. "permission_denied"): the error reads "code: message". */
+        fun error(code: String, message: String): CapResult {
+            val text = "$code: $message"
+            return CapResult(false, JSONArray().put(JSONObject().put("type", "text").put("text", text)),
+                JSONObject().put("code", code).put("message", message), text)
+        }
+
         /** A result that crossed the bridge as [toJson]. */
         fun fromJson(o: JSONObject): CapResult = CapResult(o.optBoolean("ok"), o.optJSONArray("content") ?: JSONArray(),
             if (o.has("data")) o.get("data") else null, if (o.has("error")) o.optString("error") else null)
