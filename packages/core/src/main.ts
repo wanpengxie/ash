@@ -29,6 +29,7 @@ import { heartbeatFlow } from "./flows/heartbeat";
 import { memoryFlow } from "./flows/memory";
 import { openerFlow } from "./flows/opener";
 import { proactiveFlow } from "./flows/proactive";
+import { sensesDailyFlow } from "./flows/senses-daily";
 import { tourFlow } from "./flows/tour";
 import { createAgentMember } from "./members/agent";
 import { AgentMind } from "./members/agent-mind";
@@ -41,6 +42,7 @@ import { ReflexMember } from "./members/reflex";
 import { JevReflexClient } from "./members/reflex-jev";
 import { JevClient, type DecisionModel } from "./world/decision/jev";
 import { createSelfMember, type SelfMember } from "./members/self";
+import { SenseArchive } from "./members/senses-archive";
 import { SensesMember } from "./members/senses";
 import { CostMember, type UsageRecord } from "./members/cost";
 import { VaultMember, VaultStore } from "./members/vault";
@@ -360,13 +362,15 @@ export async function startOwner(config: Config): Promise<Running> {
       isPaused: () => clock!.journal.isPaused(),
       ...(hostLink ? { alarm: (at: number | null) => hostLink.scheduleAlarm(at) } : {}) });
     members.register(clock);
+    // Batched phone facts are kept as files in the owner's home, where the agent reads them like any file.
+    const senseArchive = live && config.workspaces?.home ? new SenseArchive({ home: config.workspaces.home }) : null;
     work = new WorkMember({ ledger, router: world, isPaused: () => clock!.journal.isPaused(),
       flows: live && config.workspaces?.home ? [memoryFlow(ledger, (run) => {
         try { work!.trigger("proactive", "event", `memory:${run}`); } catch { /* a suggestion cannot undo committed memory */ }
-      }), proactiveFlow(ledger), heartbeatFlow(), openerFlow(ledger), tourFlow(ledger)] : [] });
+      }), proactiveFlow(ledger), heartbeatFlow(), openerFlow(ledger), tourFlow(ledger), ...(senseArchive ? [sensesDailyFlow(senseArchive)] : [])] : [] });
     members.register(work);
     if (live) senses = new SensesMember({ router: world, heartbeat: async () => (await self!.promptSnapshot()).heartbeat,
-      isPaused: () => clock!.journal.isPaused(),
+      isPaused: () => clock!.journal.isPaused(), ...(senseArchive ? { archive: senseArchive } : {}), log,
       opener: (slot) => { try { work!.trigger("opener", "event", slot); } catch { /* no run while paused or active */ } },
       proactive: (slot) => { try { work!.trigger("proactive", "event", slot); } catch { /* no run while paused or active */ } } });
     if (senses) members.register(senses);
