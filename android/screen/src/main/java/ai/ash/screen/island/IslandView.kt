@@ -209,6 +209,10 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         background = RoundedBackground(IslandTokens.COLOR_PRIMARY, IslandSpec.dp(ctx, IslandSpec.PRIMARY_RADIUS)); text = "去 Ash 里操作"
         setOnClickListener { actions.open() }
     }
+    /** Allow / deny, how an approval ended, or "go to Ash": fixed below the scrolling middle, empty most of the time. */
+    private val actionBar = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL; showDividers = LinearLayout.SHOW_DIVIDER_MIDDLE; dividerDrawable = gap(px(IslandTokens.SIZE_CARD_GAP))
+    }
     // foot
     // CSS keeps fractional px and Android lays out whole ones; rounding this padding down keeps the rows below within
     // half a px of the reference instead of drifting by a dp.
@@ -278,15 +282,17 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         contentColumn.addView(options, LinearLayout.LayoutParams(-1, -2))
         approvalRow.addView(allowButton, LinearLayout.LayoutParams(0, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT), IslandSpec.ALLOW_FLEX))
         approvalRow.addView(denyButton, LinearLayout.LayoutParams(0, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT), IslandSpec.DENY_FLEX))
-        contentColumn.addView(approvalRow, LinearLayout.LayoutParams(-1, -2))
-        contentColumn.addView(approved, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
-        contentColumn.addView(apFinal, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
-        contentColumn.addView(primary, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
         contentColumn.addView(original, LinearLayout.LayoutParams(-1, -2))
         contentColumn.addView(status, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
         content.addView(contentColumn, FrameLayout.LayoutParams(-1, -2))
         // Its natural height, shrunk (weight) only when the card would pass its limit.
         card.addView(content, LinearLayout.LayoutParams(-1, -2, 1f).apply { topMargin = gap })
+        // The decision buttons stay under the scrolling middle, so a long request never pushes them out of reach.
+        actionBar.addView(approvalRow, LinearLayout.LayoutParams(-1, -2))
+        actionBar.addView(approved, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        actionBar.addView(apFinal, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        actionBar.addView(primary, LinearLayout.LayoutParams(-1, px(IslandTokens.TYPE_PRIMARY_BUTTON_HEIGHT)))
+        card.addView(actionBar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = gap })
         // foot: divider is the border-top of .foot
         val inputRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         inputRow.addView(input, LinearLayout.LayoutParams(0, px(IslandSpec.INPUT_HEIGHT), 1f))
@@ -420,6 +426,8 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         apFinal.visibility = if (next.approval == "denied" || next.approval == "expired") View.VISIBLE else View.GONE
         apFinal.text = if (next.approval == "denied") "已拒绝 · 这一步不会执行" else "已过期 · 未执行，需要时让 Ash 重新申请"
         primary.visibility = if (next.kind == "in_app") View.VISIBLE else View.GONE
+        actionBar.visibility = if (approvalRow.visibility == View.VISIBLE || approved.visibility == View.VISIBLE ||
+            apFinal.visibility == View.VISIBLE || primary.visibility == View.VISIBLE) View.VISIBLE else View.GONE
         original.visibility = if (next.showOriginal && next.original.isNotEmpty()) View.VISIBLE else View.GONE
         original.text = next.original
         status.visibility = if (next.status.isNotEmpty()) View.VISIBLE else View.GONE
