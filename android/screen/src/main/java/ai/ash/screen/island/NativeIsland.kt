@@ -63,6 +63,8 @@ internal object NativeIsland : IslandView.Actions {
     private var capturedAway = false
     private var visible = false
     private var suppressed = 0
+    /** The notification shade is pulled down over the island; it is gone until the shade closes. */
+    private var yielding = false
     private var passingTouches = 0
     @Volatile private var editing = false
     @Volatile private var screenBounds: Rect? = null
@@ -101,7 +103,7 @@ internal object NativeIsland : IslandView.Actions {
     private fun dp(v: Float) = Math.round(v * (app?.resources?.displayMetrics?.density ?: 1f))
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
         ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
-    private fun allowed() = visible && suppressed == 0 && !ashInFront &&
+    private fun allowed() = visible && suppressed == 0 && !ashInFront && !yielding &&
         app?.let { unlocked(it) && (A11yService.instance != null || Settings.canDrawOverlays(it)) } == true
     /** The island can be drawn at all: the accessibility service, or the overlay permission. */
     fun ready(ctx: Context) = A11yService.instance != null || Settings.canDrawOverlays(ctx)
@@ -381,6 +383,12 @@ internal object NativeIsland : IslandView.Actions {
         runCatching { host?.removeViewImmediate(box) }
         attached = false; shown = false; screenBounds = null
     }
+    /** The notification shade opened or closed ([A11yService] watches the system's windows). */
+    fun yieldToShade(open: Boolean) { main.post {
+        if (yielding == open) return@post
+        yielding = open
+        if (open) { setEditing(false); if (attached) capturedAway = true; detach() } else restore?.invoke()
+    } }
     fun hide() { main.post {
         visible = false; shown = false; setEditing(false); restore = null
         val view = island

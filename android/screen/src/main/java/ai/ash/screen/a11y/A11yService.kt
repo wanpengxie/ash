@@ -113,10 +113,12 @@ class A11yService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        val facts = runCatching { windows.map { w ->
+        val open = runCatching { windows }.getOrDefault(emptyList())
+        val facts = runCatching { open.map { w ->
             val bounds = Rect(); w.getBoundsInScreen(bounds)
             ScreenWindowFact(w.id, windowTitle(w), w.isFocused, w.isActive, bounds.toShortString())
         } }.getOrDefault(emptyList())
+        trackShade(open)
         if (capsuleWindows.presentationOnly(event.windowId, facts, event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED,
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
         lastEventAt = SystemClock.uptimeMillis()
@@ -130,12 +132,31 @@ class A11yService : AccessibilityService() {
         }
     }
 
+    /**
+     * The notification shade (or any full-screen system panel) is pulled down. The island is an accessibility overlay,
+     * which Android draws above the shade but which the shade's own touch handling can swallow; it steps aside while
+     * the shade is open and comes back when it closes. SystemUI's status-bar window is a thin strip until it is pulled
+     * down, when it fills the screen.
+     */
+    private fun trackShade(windows: List<android.view.accessibility.AccessibilityWindowInfo>) {
+        val screen = resources.displayMetrics.heightPixels
+        val pulled = windows.any { w ->
+            w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM &&
+                Rect().also { w.getBoundsInScreen(it) }.let { it.height() >= screen / 2 && !ai.ash.screen.island.NativeIsland.ownsWindow(it) }
+        }
+        if (pulled == shadeOpen) return
+        shadeOpen = pulled
+        ai.ash.screen.island.NativeIsland.yieldToShade(pulled)
+    }
+    private var shadeOpen = false
+
     override fun onInterrupt() {
         Log.w(TAG, "accessibility service interrupted")
         releaseAllFingersFromLifecycle()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        shadeOpen = false; ai.ash.screen.island.NativeIsland.yieldToShade(false)
         if (instance === this) { instance = null; ai.ash.screen.AshLink.serviceChanged() }
         releaseAllFingersFromLifecycle()
         return super.onUnbind(intent)
