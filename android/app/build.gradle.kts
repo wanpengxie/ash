@@ -56,6 +56,11 @@ val checkContainer by tasks.registering {
         if (all != listOf("ash-container-$v.tar.gz")) {
             throw GradleException("build/container/VERSION is $v but the archives are $all: run `npm run build:container` again")
         }
+        // The container carries ash's skills and control plugin: a container older than their source must not ship.
+        val check = ProcessBuilder("node", rootProject.file("../tools/container-sources.mjs").path, "--check", containerDir.path)
+            .redirectErrorStream(true).start()
+        val said = check.inputStream.bufferedReader().readText().trim()
+        if (check.waitFor() != 0) throw GradleException(said)
     }
 }
 

@@ -35,6 +35,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONTAINER_PACKAGES, containerSourcesDigest } from "./container-sources.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -242,7 +243,7 @@ async function build() {
   verifyDsh(nm, prune);
 
   // 5. ash's DSH plugins: the ACP control bridge and ash's own skills (+ persona templates).
-  for (const pkg of ["dsh-ash-control", "ash-skills"]) {
+  for (const pkg of CONTAINER_PACKAGES) {
     fs.cpSync(path.join(ROOT, "packages", pkg), path.join(ubuntu, "opt/ash", pkg), { recursive: true });
   }
 
@@ -271,6 +272,8 @@ async function build() {
   for (const f of fs.readdirSync(out)) if (/^ash-container-.*\.tar\.gz$/.test(f)) fs.rmSync(path.join(out, f));
   fs.renameSync(tmpOut, path.join(out, name));
   fs.writeFileSync(path.join(out, "VERSION"), version + "\n");
+  // What the carried ash packages were when this container was built (checked before the APK is built).
+  fs.writeFileSync(path.join(out, "SOURCES"), containerSourcesDigest(ROOT) + "\n");
   const compressed = fs.statSync(path.join(out, name)).size;
   const dshBytes = duBytes(dsh);
   if (!flag("--keep-work")) fs.rmSync(work, { recursive: true, force: true });
