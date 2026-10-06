@@ -196,6 +196,26 @@ object Permissions {
                     }
                 },
             ))
+            add(Permission(
+                "senses_keepalive", "Ash 感知不被清理", "记录位置时，系统清理后台会顺带停掉 Ash 感知，轨迹就断了；放行后它能一直记",
+                { c -> SensesBridge.installedVersion(c) > 0 && c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SENSES_PACKAGE) },
+                { a ->
+                    if (SensesBridge.installedVersion(a) == 0L) HelperInstaller.install(a, Helper.SENSES)
+                    else if (!a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SENSES_PACKAGE)) SensesBridge.openSetup(a)
+                    else {
+                        Toast.makeText(a, "在这一页${PhoneMaker.current.keepAlive}", Toast.LENGTH_LONG).show()
+                        a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${Bridge.SENSES_PACKAGE}")))
+                    }
+                },
+                { c ->
+                    when {
+                        SensesBridge.installedVersion(c) == 0L -> "先安装 Ash 感知（上一项）"
+                        !c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SENSES_PACKAGE) -> "先在 Ash 感知里允许它在后台运行"
+                        else -> "在 Ash 感知的应用信息里${PhoneMaker.current.keepAlive}"
+                    }
+                },
+                confirmable = { PhoneMaker.current.ownSwitches },
+            ))
             if (Build.VERSION.SDK_INT >= 30) add(Permission(
                 "all_files", "所有文件访问", "让 Ash 读写手机存储里的照片、下载和文档",
                 { Environment.isExternalStorageManager() },
