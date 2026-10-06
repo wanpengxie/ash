@@ -17,6 +17,7 @@ import ai.ash.host.screen.ScreenBridge
 import android.widget.Toast
 import ai.ash.host.screen.ScreenInstaller
 import ai.ash.host.screen.ScreenRecovery
+import ai.ash.host.senses.SensesBridge
 import ai.ash.host.shizuku.ShizukuState
 
 /**
@@ -138,6 +139,20 @@ object Permissions {
                 { ScreenRecovery.granted(it) },
                 { a -> ScreenInstaller.grantRecovery(a) },
                 { c -> if (ShizukuState.ready()) "点「去开启」，经 Shizuku 授权一次" else "需要授权一次：用 Shizuku，或在电脑上运行 ${ScreenRecovery.grantCommand(c)}" },
+            ))
+            add(Permission(
+                "senses", "Ash 感知", "位置、运动、步数和健康数据：只在你开启记录后采集，数据只存在手机上",
+                { c -> !SensesBridge.needsInstall(c) && SensesBridge.connected() && SensesBridge.status().optJSONObject("permissions")?.optBoolean("location") == true },
+                // A separate small app targets a current Android, which these permissions need; Ash itself cannot.
+                { a -> if (SensesBridge.needsInstall(a)) HelperInstaller.install(a, Helper.SENSES) else SensesBridge.openSetup(a) },
+                { c ->
+                    when {
+                        SensesBridge.installedVersion(c) == 0L -> "先安装「Ash 感知」（Ash 自带，点一下即可安装）"
+                        SensesBridge.needsInstall(c) -> "Ash 感知需要更新，点一下即可更新"
+                        !SensesBridge.connected() -> "已安装，还没连上：点一下打开它的设置页"
+                        else -> "打开 Ash 感知，逐项授权位置、运动与健身、通知等"
+                    }
+                },
             ))
             if (Build.VERSION.SDK_INT >= 30) add(Permission(
                 "all_files", "所有文件访问", "让 Ash 读写手机存储里的照片、下载和文档",

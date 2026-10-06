@@ -148,6 +148,7 @@ class CoreService : Service() {
                     if (state != "running") Notifications.updateService(this, "在线")
                     if (state != "running") {
                         deviceSense?.retryPending()
+                        ai.ash.host.senses.SensesBridge.pull()
                         calendarSense?.refresh()
                     }
                     state = "running"
