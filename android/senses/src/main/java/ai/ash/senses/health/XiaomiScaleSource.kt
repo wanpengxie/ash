@@ -135,9 +135,13 @@ object XiaomiScaleSource {
                     else -> {
                         val pi = scanIntent(ctx)
                         runCatching { s.stopScan(pi) }
+                        // Only frames that carry an object (frame control bit 0x40): the scale also advertises a bare
+                        // presence frame about every second, which must not wake this app each time.
                         val filter = ScanFilter.Builder().setDeviceAddress(mac)
-                            .setServiceData(ParcelUuid.fromString(XiaomiScale.SERVICE_UUID), ByteArray(0)).build()
-                        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+                            .setServiceData(ParcelUuid.fromString(XiaomiScale.SERVICE_UUID), byteArrayOf(0x40), byteArrayOf(0x40)).build()
+                        // Balanced, not low power: the weigh-in frame is repeated for a few seconds only; the filter
+                        // runs in the Bluetooth controller, so listening more often costs little.
+                        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES).build()
                         val code = s.startScan(listOf(filter), settings, pi)
                         if (code == 0) null else "蓝牙扫描没能开始（错误 $code）"
