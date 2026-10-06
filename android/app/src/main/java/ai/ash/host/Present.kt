@@ -41,7 +41,7 @@ object Present {
         val id = (input.opt("id") as? String)?.trim() ?: ""
         val kind = input.opt("kind") as? String ?: ""
         if (id.isEmpty() || id.length > 128 || kind !in kinds) return 400 to JSONObject().put("error", "invalid_presentation")
-        val allowed = setOf("id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom")
+        val allowed = setOf("id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom", "alert")
         if (input.keys().asSequence().any { it !in allowed }) return 400 to JSONObject().put("error", "unsupported_field")
         if (!input.has("title") || !input.has("text") || input.opt("title") !is String || input.opt("text") !is String)
             return 400 to JSONObject().put("error", "invalid_text")
@@ -66,6 +66,7 @@ object Present {
             if (!PresentRoutes.member.matches(record.opt("reply_target") as? String ?: "")) return 400 to JSONObject().put("error", "ask_sender_required")
         } else if (record.has("options") || record.has("reply_target") || record.has("human_kind") || record.has("allow_custom")) return 400 to JSONObject().put("error", "unexpected_reply_route")
         if (record.has("reply_to") && (record.opt("reply_to") as? String).isNullOrBlank()) return 400 to JSONObject().put("error", "invalid_reply_to")
+        if (record.has("alert") && (kind != "reply" || record.opt("alert") !in setOf("quiet", "strong"))) return 400 to JSONObject().put("error", "invalid_alert")
         if (record.has("expires_at") && positiveSafeInteger(record.opt("expires_at")) == null) return 400 to JSONObject().put("error", "invalid_expiry")
         return serial.run {
             val prior = item(ctx, id)
@@ -85,7 +86,8 @@ object Present {
                 if (!retireLocked(ctx, id)) return 500 to JSONObject().put("error", "store_failed")
                 return 200 to JSONObject().put("ok", true).put("expired", true)
             }
-            if (PresentChat.isChat(kind)) refreshChatLocked(ctx)
+            // A reply while its task still runs only updates the conversation; anything else rings.
+            if (PresentChat.isChat(kind)) refreshChatLocked(ctx, ring = !duplicate && record.optString("alert") != "quiet")
             else if (PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false)))
                 Notifications.present(ctx, record)
             if (record.has("expires_at")) scheduleExpiry(ctx, id, record.optLong("expires_at"))
@@ -100,11 +102,14 @@ object Present {
         if (!stored) return false
         Notifications.hidePresent(ctx, id)
         cancelExpiry(ctx, id)
-        if (chat) refreshChatLocked(ctx)
+        if (chat) refreshChatLocked(ctx, ring = false)
         return true
     }
 
     fun hide(ctx: Context, id: String): Boolean = serial.run { retireLocked(ctx, id) }
+
+    /** The task behind a quietly shown reply has finished and the owner did not see it: ring for the conversation now. */
+    fun alert(ctx: Context, id: String) = serial.run { if (id in chatIds(ctx)) refreshChatLocked(ctx, ring = true) }
 
     /** Swiping the conversation away, or opening the app, clears every chat message at once. */
     fun dismiss(ctx: Context, id: String) {
@@ -120,11 +125,11 @@ object Present {
         val edit = prefs(ctx).edit()
         for (id in chatIds(ctx)) edit.remove(ITEM + id).remove(AT + id).putBoolean(RETIRED + id, true)
         edit.commit()
-        Notifications.presentChat(ctx, emptyList())
+        Notifications.presentChat(ctx, emptyList(), ring = false)
     }
 
     /** Caller holds serial. Renders the newest chat messages as one notification and retires older ones. */
-    private fun refreshChatLocked(ctx: Context, alert: Boolean = true) {
+    private fun refreshChatLocked(ctx: Context, ring: Boolean) {
         val live = chatIds(ctx).mapNotNull { id ->
             val record = try { item(ctx, id) } catch (_: Exception) { null } ?: return@mapNotNull null
             if (expired(record) || !PresentLifecycle.restore(prefs(ctx).getBoolean(RETIRED + id, false), prefs(ctx).getBoolean(CONSUMED + id, false))) null
@@ -137,7 +142,7 @@ object Present {
             edit.commit()
         }
         val byId = live.associateBy { it.first }
-        Notifications.presentChat(ctx, keep.map { byId.getValue(it).second to byId.getValue(it).third }, alert)
+        Notifications.presentChat(ctx, keep.map { byId.getValue(it).second to byId.getValue(it).third }, ring)
     }
 
     fun restore(ctx: Context) {
@@ -157,7 +162,7 @@ object Present {
                 }
             }
         }
-        serial.run { refreshChatLocked(ctx, alert = false) } // a service restart re-shows, it does not ring again
+        serial.run { refreshChatLocked(ctx, ring = false) } // a service restart re-shows, it does not ring again
         flushAsync(ctx)
     }
 

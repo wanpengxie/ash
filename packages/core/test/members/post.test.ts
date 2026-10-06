@@ -24,13 +24,14 @@ async function fixture(at = local(1, 12), autoStart = true) {
   const router = new WorldRouter(ledger, async () => true);
   const members = new WorldMembers(router);
   members.register(new OwnerMember("Owner", ledger));
-  let time = at, foreground = false, ack = true;
-  const presentations: HostPresentationV2[] = [], hides: string[] = [];
+  let time = at, foreground = false, ack = true, island = false;
+  const presentations: HostPresentationV2[] = [], hides: string[] = [], alerts: string[] = [];
   const post = new PostMember({ ledger, router, screens: { markVisible: () => { foreground = true; }, markHidden: () => { foreground = false; },
     list: () => [{ id: "screen:test", name: "Synthetic", online: foreground }], visible: () => foreground },
     delivery: { quiet: "21:30-09:00", dedupe_minutes: 60 }, timeZone: "Asia/Singapore", now: () => time,
     host: { async present(item) { presentations.push(item); if (!ack) throw new Error("ACK lost"); },
-      async hidePresentation(id) { hides.push(id); } } });
+      async hidePresentation(id) { hides.push(id); }, async alertPresentation(id) { alerts.push(id); } },
+    island: async () => island });
   members.register(post);
   post.prepareRecovery();
   await router.recover();
@@ -44,7 +45,8 @@ async function fixture(at = local(1, 12), autoStart = true) {
     }
     throw new Error("delivery did not settle");
   };
-  return { dir, ledger, router, members, post, presentations, hides, wait,
+  return { dir, ledger, router, members, post, presentations, hides, alerts, wait,
+    setIsland(value: boolean) { island = value; },
     setTime(value: number) { time = value; }, setForeground(value: boolean) { foreground = value; }, setAck(value: boolean) { ack = value; },
     async close() { await post.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -409,5 +411,42 @@ test("approval forwards exact options and reply target; missing deny fails close
     f.router.cancel([valid.id, invalid.id]);
     for (let i = 0; i < 40 && f.hides.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
     assert.deepEqual(f.hides, [valid.id]);
+  } finally { await f.close(); }
+});
+
+const inTurn = (turn: string): TrustedRouteContext => ({ ...agent, turn });
+const settle = async (f: Awaited<ReturnType<typeof fixture>>) => { for (let i = 0; i < 5; i++) { await f.post.tick(); await new Promise((resolve) => setTimeout(resolve, 10)); } };
+const reply = (f: Awaited<ReturnType<typeof fixture>>, turn: string, text: string) =>
+  f.router.send(inTurn(turn), { to: "person:owner", kind: "request", word: "say", body: { text, kind: "reply" }, wait: true });
+const endTurn = (f: Awaited<ReturnType<typeof fixture>>, turn: string) =>
+  f.router.send(inTurn(turn), { to: null, kind: "event", word: "turn.end", body: { turn, reason: "completed" }, client_id: `end:${turn}` });
+
+test("replies notify quietly while their task runs, and the task's end rings strongly for its last reply", async () => {
+  const f = await fixture();
+  try {
+    const first = await reply(f, "turn-a", "step one"), last = await reply(f, "turn-a", "the result");
+    await f.wait(first.id); await f.wait(last.id);
+    assert.deepEqual(f.presentations.map((item) => item.kind === "reply" ? item.alert : null), ["quiet", "quiet"]);
+    assert.deepEqual(f.alerts, []);
+    await endTurn(f, "turn-a"); await settle(f);
+    assert.deepEqual(f.alerts, [last.id], "only the result rings, once");
+    const after = await reply(f, "turn-a", "a late word");
+    await f.wait(after.id);
+    assert.equal((f.presentations.at(-1) as { alert?: string }).alert, "strong", "a reply after its task ended is its result");
+  } finally { await f.close(); }
+});
+
+test("a task's end does not ring when the owner saw its last reply or is looking now", async () => {
+  const f = await fixture();
+  try {
+    await f.wait((await reply(f, "turn-b", "step one")).id);
+    f.setIsland(true);
+    assert.equal((await f.wait((await reply(f, "turn-b", "the result")).id)).channel, "inapp", "the island showed the result");
+    f.setIsland(false);
+    await endTurn(f, "turn-b"); await settle(f);
+    await f.wait((await reply(f, "turn-c", "the result")).id);
+    f.setForeground(true);
+    await endTurn(f, "turn-c"); await settle(f);
+    assert.deepEqual(f.alerts, []);
   } finally { await f.close(); }
 });

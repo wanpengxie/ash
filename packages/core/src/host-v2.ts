@@ -123,6 +123,12 @@ export class HostDeviceLink {
     const result = await this.request("POST", "/island", {}, 1000) as { showing?: unknown };
     return result?.showing === true;
   }
+  /** Alert the owner again, strongly, with a reply already shown quietly: its task has finished. */
+  async alertPresentation(id: string): Promise<void> {
+    if (this.closed || !id) throw new TypeError("invalid presentation id");
+    const result = await this.request("POST", "/present/alert", { id }) as { ok?: unknown };
+    if (!result || result.ok !== true) throw new Error("host alert acknowledgement unavailable");
+  }
   async hidePresentation(id: string): Promise<void> {
     if (this.closed || !id) throw new TypeError("invalid presentation id");
     const result = await this.request("POST", "/present/hide", { id }) as { ok?: unknown };

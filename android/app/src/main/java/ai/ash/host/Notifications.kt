@@ -16,20 +16,32 @@ import org.json.JSONObject
 /** Everything ash shows in the notification shade: service status, agent notices, owner confirmations. */
 object Notifications {
     const val CH_STATUS = "ash.status"
-    const val CH_MESSAGES = "ash.messages"
-    const val CH_URGENT = "ash.urgent"
-    const val CH_CONFIRM = "ash.confirm"
+    /**
+     * Ash's replies, approvals and reminders all reach the owner like a messaging app's: banner, sound and vibration.
+     * What should not ring (a reply while its task still runs) is posted silently on the same channel. Android fixes a
+     * channel's importance and vibration once created, so these replace the earlier quieter channels.
+     */
+    const val CH_MESSAGES = "ash.messages.v2"
+    const val CH_URGENT = "ash.urgent.v2"
+    const val CH_CONFIRM = "ash.confirm.v2"
     const val CH_BROWSING = "ash.browsing"
     const val ID_SERVICE = 1
+    private val RETIRED_CHANNELS = listOf("ash.messages", "ash.urgent", "ash.confirm")
+    private const val CHAT_SHORTCUT = "ash.chat"
+    private val VIBRATION = longArrayOf(0, 250, 150, 250)
 
     fun createChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = ctx.getSystemService(NotificationManager::class.java)
+        fun ringing(id: String, name: String) = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
+            enableVibration(true); vibrationPattern = VIBRATION
+        }
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Ash 运行状态", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
-        nm.createNotificationChannel(NotificationChannel(CH_MESSAGES, "Ash 的消息", NotificationManager.IMPORTANCE_DEFAULT))
-        nm.createNotificationChannel(NotificationChannel(CH_URGENT, "Ash 的紧急提醒", NotificationManager.IMPORTANCE_HIGH))
-        nm.createNotificationChannel(NotificationChannel(CH_CONFIRM, "需要你确认", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(ringing(CH_MESSAGES, "Ash 的消息"))
+        nm.createNotificationChannel(ringing(CH_URGENT, "Ash 的提醒"))
+        nm.createNotificationChannel(ringing(CH_CONFIRM, "需要你确认"))
         nm.createNotificationChannel(NotificationChannel(CH_BROWSING, "Ash 正在浏览", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
+        for (old in RETIRED_CHANNELS) nm.deleteNotificationChannel(old)
     }
 
     @Suppress("DEPRECATION")
@@ -91,29 +103,59 @@ object Notifications {
                 .addRemoteInput(RemoteInput.Builder("reply").setLabel("回答这个问题").build()).build())
             b.setDeleteIntent(action(ctx, id, if (question) "dismiss" else "deny"))
         } else b.setDeleteIntent(action(ctx, id, "dismiss"))
-        if (Build.VERSION.SDK_INT < 26 && (kind == "approval" || kind == "due")) b.setPriority(Notification.PRIORITY_HIGH)
+        if (Build.VERSION.SDK_INT < 26 && (kind == "approval" || kind == "due")) b.setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL)
         ctx.getSystemService(NotificationManager::class.java).notify("present:$id", 0, b.build())
     }
 
-    /** The conversation with Ash as one notification; an empty list removes it. */
-    fun presentChat(ctx: Context, items: List<Pair<JSONObject, Long>>, alert: Boolean = true) {
+    /** Ash as the other side of a conversation, with its face. */
+    private var ash: android.app.Person? = null
+    @androidx.annotation.RequiresApi(28)
+    private fun ashPerson(ctx: Context): android.app.Person = ash ?: android.app.Person.Builder().setName("Ash").setKey("ash").setImportant(true)
+        .apply {
+            runCatching { ctx.assets.open("ash-island/avatars/default.webp").use { android.graphics.BitmapFactory.decodeStream(it) } }.getOrNull()
+                ?.let { setIcon(android.graphics.drawable.Icon.createWithBitmap(it)) }
+        }.build().also { ash = it }
+
+    /** A long-lived shortcut makes the notification a conversation: it sits with the owner's chats and can be made priority. */
+    private fun chatShortcut(ctx: Context): String? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        return runCatching {
+            val shortcut = android.content.pm.ShortcutInfo.Builder(ctx, CHAT_SHORTCUT).setShortLabel("Ash").setLongLived(true)
+                .setPerson(ashPerson(ctx)).setIcon(ashPerson(ctx).icon ?: android.graphics.drawable.Icon.createWithResource(ctx, R.drawable.ic_launcher))
+                .setIntent(Intent(ctx, HomeActivity::class.java).setAction(Intent.ACTION_VIEW)).build()
+            ctx.getSystemService(android.content.pm.ShortcutManager::class.java).pushDynamicShortcut(shortcut)
+            CHAT_SHORTCUT
+        }.getOrNull()
+    }
+
+    /**
+     * The conversation with Ash as one notification; an empty list removes it. [ring] false only updates what the shade
+     * shows (a reply while its task still runs, a restart re-showing it): no sound, vibration or banner.
+     */
+    fun presentChat(ctx: Context, items: List<Pair<JSONObject, Long>>, ring: Boolean) {
         val manager = ctx.getSystemService(NotificationManager::class.java)
         if (items.isEmpty()) { manager.cancel(PresentChat.TAG, 0); return }
         val latest = items.last().first
         val id = latest.getString("id")
-        val style = Notification.MessagingStyle("我")
-        for ((record, at) in items) style.addMessage(record.optString("text"), at, "Ash")
+        val style = if (Build.VERSION.SDK_INT >= 28) Notification.MessagingStyle(android.app.Person.Builder().setName("我").build())
+            .also { s -> for ((record, at) in items) s.addMessage(Notification.MessagingStyle.Message(record.optString("text"), at, ashPerson(ctx))) }
+            else @Suppress("DEPRECATION") Notification.MessagingStyle("我").also { s -> for ((record, at) in items) s.addMessage(record.optString("text"), at, "Ash") }
         val input = RemoteInput.Builder("reply").setLabel("回复").build()
         val b = builder(ctx, CH_MESSAGES)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle("Ash")
             .setContentText(latest.optString("text"))
             .setStyle(style)
+            .setCategory(Notification.CATEGORY_MESSAGE)
             .setContentIntent(openApp(ctx, PresentChat.TAG.hashCode()))
             .setAutoCancel(true)
-            .setOnlyAlertOnce(!alert)
+            .setOnlyAlertOnce(!ring)
             .addAction(Notification.Action.Builder(null, "回复", action(ctx, id, "reply", mutable = true)).addRemoteInput(input).build())
             .setDeleteIntent(action(ctx, id, "dismiss"))
+        if (Build.VERSION.SDK_INT >= 29) chatShortcut(ctx)?.let { b.setShortcutId(it) }
+        // Silent: a lone group member that leaves alerting to its (absent) summary does not alert (as NotificationCompat's setSilent).
+        if (!ring) { if (Build.VERSION.SDK_INT >= 26) b.setGroup("ash.chat.quiet").setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY) }
+        else if (Build.VERSION.SDK_INT < 26) b.setPriority(Notification.PRIORITY_HIGH).setDefaults(Notification.DEFAULT_ALL)
         manager.notify(PresentChat.TAG, 0, b.build())
     }
 

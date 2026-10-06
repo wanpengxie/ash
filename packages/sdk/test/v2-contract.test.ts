@@ -303,7 +303,7 @@ test("v2 is additive to the existing client protocol", () => {
   assert.equal(SCREEN_REGISTRATION_EVENT, "screen.registered");
   assert.equal(SCREEN_TOKEN_HEADER, "Ash-Screen");
   assert.equal(SCREEN_REGISTRATION_TTL_MS, 86_400_000);
-  assert.deepEqual(Object.keys(HOST_ROUTES_V2).sort(), ["alarm", "call", "decisionReturn", "decisionScreen", "decisionSurface", "decisionVirtualClose", "hide", "key", "manifest", "present", "restart", "sign"]);
+  assert.deepEqual(Object.keys(HOST_ROUTES_V2).sort(), ["alarm", "alert", "call", "decisionReturn", "decisionScreen", "decisionSurface", "decisionVirtualClose", "hide", "key", "manifest", "present", "restart", "sign"]);
   assert.equal(RUNTIME_CONTRACT_V2.publicMember, "agent:main");
   assert.notEqual(RUNTIME_CONTRACT_V2.sessions.main, RUNTIME_CONTRACT_V2.publicMember);
   assert.deepEqual(RUNTIME_CONTRACT_V2.tools, ["ash_describe", "ash_send", "ash_say", "ash_react", "ash_show"]);

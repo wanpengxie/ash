@@ -1,6 +1,6 @@
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import type { WorldConfigV2 } from "../../../sdk/src/config";
-import { hostPresentationErrors, type HostPresentationV2 } from "../../../sdk/src/host";
+import { hostPresentationErrors, type HostAlertV2, type HostPresentationV2 } from "../../../sdk/src/host";
 import { wordContract } from "../../../sdk/src/words";
 import type { Member } from "../world/member";
 import type { Ledger } from "../world/ledger";
@@ -40,7 +40,9 @@ export function quietEnd(at: number, quiet: string, zone?: string): number {
 }
 
 export interface ScreenPresence { markVisible(screen: string): void; markHidden(screen: string): void; list(): { id: string; name: string; online: boolean }[]; visible(screen: string): boolean }
-export interface HostPresenter { present(value: HostPresentationV2): Promise<void>; hidePresentation(id: string): Promise<void> }
+export interface HostPresenter { present(value: HostPresentationV2): Promise<void>; hidePresentation(id: string): Promise<void>;
+  /** Ring again, strongly, for a reply already shown quietly. */
+  alertPresentation?(id: string): Promise<void> }
 export interface UiPresenter { present(message: Message): Promise<void> | void }
 /** Existing owner ledger stream is the in-app presenter, not a second output log. */
 export class LedgerUiPresenter implements UiPresenter {
@@ -64,6 +66,10 @@ export class PostMember implements Member {
   private unsubscribe: (() => void) | null = null;
   private interval: ReturnType<typeof setInterval> | null = null;
   private scanTask: Promise<void> | null = null;
+  /** Deliveries under way, by owner message: a finished turn waits for its last reply's. */
+  private readonly delivering = new Map<string, Promise<ResponseBody>>();
+  /** Per running turn, the latest reply notified quietly; if it stays the turn's last, the turn's end rings for it. */
+  private readonly quietReplies = new Map<string, string>();
   private started = false;
   private prepared = false;
   private closed = false;
@@ -85,13 +91,17 @@ export class PostMember implements Member {
     if (kind === "approval") return source.word === "ask" ? source : null;
     return source.word === "say" && source.body.kind === kind ? source : null;
   }
-  private presentation(source: Message, kind: DeliveryRecord["kind"]): HostPresentationV2 | null {
+  /** A reply's turn is still running when the agent has not ended it yet. */
+  private turnRunning(source: Message): boolean {
+    return !!source.turn && !this.options.ledger.turnMessages(source.turn).some((item) => item.kind === "event" && item.word === "turn.end");
+  }
+  private presentation(source: Message, kind: DeliveryRecord["kind"], alert?: HostAlertV2): HostPresentationV2 | null {
     if (kind === "approval" && (this.options.ledger.responseTo(source.id) ||
       typeof source.body.expires_at !== "number" || source.body.expires_at <= Date.now())) return null;
     const value = kind === "approval" ? { id: source.id, kind, title: source.body.title, text: source.body.detail,
       ...(source.body.human_kind === "question" ? { human_kind: "question", allow_custom: source.body.allow_custom === true } : {}),
       options: source.body.options, expires_at: source.body.expires_at, reply_to: source.id, reply_target: source.from }
-      : { id: source.id, kind, title: kind === "due" ? "Due" : kind === "reply" ? "Reply" : "Ash", text: source.body.text };
+      : { id: source.id, kind, title: kind === "due" ? "Due" : kind === "reply" ? "Reply" : "Ash", text: source.body.text, ...(alert ? { alert } : {}) };
     return hostPresentationErrors(value).length ? null : value as HostPresentationV2;
   }
   private publish(snapshot: Message | null): void { if (snapshot) this.options.router.publishPostEvent(snapshot); }
@@ -107,7 +117,9 @@ export class PostMember implements Member {
       return;
     }
     if (message.kind !== "request" || message.to !== this.id || message.word !== "deliver") return error("bad_request", "unsupported post word");
-    const task = this.deliver(message); this.track(task); return task;
+    const id = String(message.body.message_id), task = this.deliver(message);
+    this.delivering.set(id, task); void task.finally(() => { if (this.delivering.get(id) === task) this.delivering.delete(id); });
+    this.track(task); return task;
   }
   private async deliver(message: Message): Promise<ResponseBody> {
     if (this.closed) return error("failed", "delivery service closed");
@@ -138,7 +150,10 @@ export class PostMember implements Member {
     }
     if (record.channel === "dropped" || record.channel === "held") return { ok: true, result: { channel: record.channel } };
     if (record.channel === "inapp") { await this.ui.present(source); return { ok: true, result: { channel: "inapp" } }; }
-    const presentation = this.presentation(source, kind);
+    // While its task runs, a reply only updates the notification; the task's result rings (see turnEnded).
+    const quiet = kind === "reply" && this.turnRunning(source);
+    if (quiet) this.quietReplies.set(source.turn!, source.id);
+    const presentation = this.presentation(source, kind, kind === "reply" ? quiet ? "quiet" : "strong" : undefined);
     if (!presentation) { this.journal.failKnown(source.id, "presentation_contract_rejected"); return error("bad_request", "unsafe host presentation"); }
     if (!this.options.host) { this.journal.failKnown(source.id, "host_unavailable"); return error("offline", "host presenter unavailable"); }
     try { await this.options.host.present(presentation); }
@@ -146,6 +161,23 @@ export class PostMember implements Member {
     this.journal.finish(source.id, true);
     if (kind === "approval" && this.options.ledger.responseTo(source.id)) await this.options.host.hidePresentation(source.id).catch(() => {});
     return { ok: true, result: { channel: "notification" } };
+  }
+  /**
+   * A task has finished: when its last reply reached the owner only as a quiet notification and the owner is still not
+   * looking (the island closed, the screen locked), ring for it now, strongly.
+   */
+  private async turnEnded(turn: string): Promise<void> {
+    await this.scan();
+    const last = this.options.ledger.turnMessages(turn).filter((item) => item.kind === "request" && item.to === "person:owner" &&
+      item.word === "say" && item.body.kind === "reply").at(-1);
+    if (last) await this.delivering.get(last.id)?.catch(() => {});
+    const quiet = this.quietReplies.get(turn);
+    this.quietReplies.delete(turn);
+    if (!last || quiet !== last.id || this.closed) return;
+    const record = this.journal.record(last.id);
+    if (record?.channel !== "notification" || record.state !== "done") return;
+    if (this.foreground() || await this.islandShown()) return;
+    await this.options.host?.alertPresentation?.(last.id).catch(() => {});
   }
   private async auto(message: Message): Promise<void> {
     if (this.closed || message.kind !== "request" || message.to !== "person:owner" || message.seq <= this.options.ledger.migration.lastLegacySeq) return;
@@ -201,6 +233,7 @@ export class PostMember implements Member {
           this.track(this.options.host.hidePresentation(message.reply_to).catch(() => {}));
       }
       if (message.kind === "request" && message.to === "person:owner") this.track(this.scan());
+      if (message.kind === "event" && message.word === "turn.end" && typeof message.body.turn === "string") this.track(this.turnEnded(message.body.turn));
     });
     await this.tick();
     this.interval = setInterval(() => this.track(this.tick()), this.options.scanMs ?? 1000);

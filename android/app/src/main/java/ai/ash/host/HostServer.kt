@@ -115,6 +115,11 @@ class HostServer(private val ctx: Context, private val token: String) {
             else if (Present.hide(ctx, id)) 200 to JSONObject().put("ok", true)
             else 500 to JSONObject().put("error", "store_failed")
         }
+        "POST /present/alert" -> {
+            val id = b.optString("id")
+            if (id.isBlank()) 400 to JSONObject().put("error", "id_required")
+            else { Present.alert(ctx, id); 200 to JSONObject().put("ok", true) }
+        }
         "POST /alarm" -> {
             Wake.schedule(ctx, if (b.isNull("at")) null else b.optLong("at"))
             200 to JSONObject().put("ok", true)

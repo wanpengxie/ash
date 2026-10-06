@@ -19,8 +19,11 @@ interface HostPresentationBaseV2 {
   expires_at?: number;
   reply_to?: string;
 }
+/** How a reply notification reaches the owner: "quiet" while its task is still running, "strong" for a finished task's result. */
+export type HostAlertV2 = "quiet" | "strong";
 export type HostPresentationV2 =
-  | (HostPresentationBaseV2 & { kind: "reply" | "due" | "offer" | "heads_up"; options?: never; reply_target?: never })
+  | (HostPresentationBaseV2 & { kind: "reply"; alert?: HostAlertV2; options?: never; reply_target?: never })
+  | (HostPresentationBaseV2 & { kind: "due" | "offer" | "heads_up"; options?: never; reply_target?: never })
   | (HostPresentationBaseV2 & { kind: "approval"; options: AskOption[]; expires_at: number; reply_to: string; reply_target: string })
   | (HostPresentationBaseV2 & { kind: "approval"; human_kind: "question"; allow_custom?: boolean; options: { id: string; label: string }[]; expires_at: number; reply_to: string; reply_target: string });
 export interface HostHideV2 { id: string }
@@ -32,7 +35,7 @@ export type HostNotificationReplyV2 = SendRequestV2 & { to: "agent:main"; kind: 
 export function hostPresentationErrors(value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return ["presentation must be an object"];
   const item = value as Record<string, unknown>;
-  const allowed = new Set(["id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom"]);
+  const allowed = new Set(["id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom", "alert"]);
   const errors: string[] = [];
   for (const key of Object.keys(item)) if (!allowed.has(key)) errors.push(`unsupported field: ${key}`);
   if (typeof item.id !== "string" || !item.id.trim() || item.id.length > 128) errors.push("invalid id");
@@ -40,6 +43,7 @@ export function hostPresentationErrors(value: unknown): string[] {
   if (!["reply", "approval", "due", "offer", "heads_up"].includes(String(item.kind))) errors.push("invalid kind");
   if (item.expires_at !== undefined && (!Number.isSafeInteger(item.expires_at) || Number(item.expires_at) <= 0)) errors.push("invalid expiry");
   if (item.reply_to !== undefined && (typeof item.reply_to !== "string" || !item.reply_to.trim())) errors.push("invalid reply_to");
+  if (item.alert !== undefined && (item.kind !== "reply" || !["quiet", "strong"].includes(String(item.alert)))) errors.push("alert is quiet or strong, for replies only");
   if (item.kind === "approval") {
     const question = item.human_kind === "question";
     if (item.human_kind !== undefined && !question || item.allow_custom !== undefined && (!question || typeof item.allow_custom !== "boolean")) errors.push("invalid question metadata");
@@ -70,6 +74,7 @@ export const HOST_ROUTES_V2 = {
   call: "POST /call",
   present: "POST /present",
   hide: "POST /present/hide",
+  alert: "POST /present/alert",
   alarm: "POST /alarm",
   key: "GET /key",
   sign: "POST /sign",
