@@ -109,13 +109,10 @@ object Permissions {
             add(Permission(
                 "autostart", "Ash 自启动与后台运行", "被系统清理或手机重启后，Ash 自己回来；不开的话，被清理后要等你再打开它",
                 { it.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(it.packageName) },
-                { a ->
-                    Toast.makeText(a, "在这一页${PhoneMaker.current.keepAlive}", Toast.LENGTH_LONG).show()
-                    a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri(a)))
-                },
+                { a -> PhoneMaker.current.openKeepAlive(a, a.packageName, "Ash") },
                 { c ->
                     if (!c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(c.packageName)) "先完成上一项「不受电池优化限制」"
-                    else "在 Ash 的应用信息里${PhoneMaker.current.keepAlive}"
+                    else PhoneMaker.current.keepAliveFor("Ash")
                 },
                 confirmable = { PhoneMaker.current.ownSwitches },
             ))
@@ -161,7 +158,7 @@ object Permissions {
                     when {
                         ScreenBridge.installedVersion(c) == 0L -> "先安装屏幕助手（上一项）"
                         !c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SCREEN_PACKAGE) -> "先允许它在后台运行（点「去开启」，系统会问你）"
-                        else -> "在屏幕助手的应用信息里${PhoneMaker.current.keepAlive}"
+                        else -> PhoneMaker.current.keepAliveFor("Ash 屏幕助手")
                     }
                 },
                 confirmable = { PhoneMaker.current.ownSwitches },
@@ -202,16 +199,13 @@ object Permissions {
                 { a ->
                     if (SensesBridge.installedVersion(a) == 0L) HelperInstaller.install(a, Helper.SENSES)
                     else if (!a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SENSES_PACKAGE)) SensesBridge.openSetup(a)
-                    else {
-                        Toast.makeText(a, "在这一页${PhoneMaker.current.keepAlive}", Toast.LENGTH_LONG).show()
-                        a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${Bridge.SENSES_PACKAGE}")))
-                    }
+                    else PhoneMaker.current.openKeepAlive(a, Bridge.SENSES_PACKAGE, "Ash 感知")
                 },
                 { c ->
                     when {
                         SensesBridge.installedVersion(c) == 0L -> "先安装 Ash 感知（上一项）"
                         !c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SENSES_PACKAGE) -> "先在 Ash 感知里允许它在后台运行"
-                        else -> "在 Ash 感知的应用信息里${PhoneMaker.current.keepAlive}"
+                        else -> PhoneMaker.current.keepAliveFor("Ash 感知")
                     }
                 },
                 confirmable = { PhoneMaker.current.ownSwitches },

@@ -32,8 +32,7 @@ object ScreenInstaller {
             a.startActivity(Intent().setClassName(Bridge.SCREEN_PACKAGE, "ai.ash.screen.KeepAliveActivity"))
             return
         }
-        Toast.makeText(a, "在这一页${ai.ash.host.PhoneMaker.current.keepAlive}", Toast.LENGTH_LONG).show()
-        a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${Bridge.SCREEN_PACKAGE}")))
+        ai.ash.host.PhoneMaker.current.openKeepAlive(a, Bridge.SCREEN_PACKAGE, "Ash 屏幕助手")
     }
 
     /**
