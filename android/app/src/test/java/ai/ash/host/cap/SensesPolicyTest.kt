@@ -6,7 +6,10 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
-/** The senses helper's tools are only offered with a policy of Ash's: every one has one, and only reads skip approval. */
+/**
+ * The senses helper's tools are only offered with a policy of Ash's: every one has one. Recording is the owner's
+ * routine (turning it on, changing places, syncing the watch) and needs no approval; only deleting records does.
+ */
 class SensesPolicyTest {
     private val writes = setOf("location.track", "sense.configure", "sense.delete", "health.sync")
 
@@ -22,8 +25,9 @@ class SensesPolicyTest {
         }
     }
 
-    @Test fun changingRecordingDeletingAndSyncingNeedApproval() {
-        for (name in writes) assertNotEquals(name, "none", CapabilityPolicies.require(name).risk)
+    @Test fun recordingNeedsNoApprovalButDeletingDoes() {
+        for (name in listOf("location.track", "sense.configure", "health.sync")) assertEquals(name, "none", CapabilityPolicies.require(name).risk)
+        assertNotEquals("none", CapabilityPolicies.require("sense.delete").risk)
         assertEquals("write", CapabilityPolicies.require("sense.configure").effect)
         assertEquals("write", CapabilityPolicies.require("sense.delete").effect)
         assertEquals("write", CapabilityPolicies.require("location.track").effect)

@@ -174,8 +174,8 @@ class AlarmReceiver : BroadcastReceiver() {
 
 /**
  * What decides when to take a point. The step counter and the significant-motion trigger (both low-power hardware)
- * say when the owner moves; a point is taken when movement starts or stops, every interval while moving, and never
- * while still. Everything runs on one worker thread, in order.
+ * say when the owner moves; a point is taken every interval, and also when movement starts or stops. Everything runs
+ * on one worker thread, in order.
  */
 internal class Sampler(private val ctx: Context) {
     private val worker = Executors.newSingleThreadScheduledExecutor { Thread(it, "senses-sampler") }
@@ -250,9 +250,9 @@ internal class Sampler(private val ctx: Context) {
         }
         latestSteps?.let { if (now - lastStepSaved > 60_000) { store.addSteps(it.copy(ts = now)); lastStepSaved = now } }
         evaluate()
-        val last = store.lastFix()
-        val still = debounce.state == ActivityState.STILL
-        if (force || !still || last == null || (lastMotion ?: 0) > last.ts) fixNow(if (force) "start" else "interval")
+        // A point every interval, still or not: the owner's day must read as a continuous track (one every 30 minutes
+        // by default). Movement starting or stopping adds points in between.
+        fixNow(if (force) "start" else "interval")
         AshLink.flush()
     }
 

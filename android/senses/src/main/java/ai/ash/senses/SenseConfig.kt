@@ -14,7 +14,7 @@ data class Geofence(val name: String, val lat: Double, val lon: Double, val radi
  */
 data class SenseConfig(
     val recording: Boolean = false,
-    /** Minutes between location points while moving; also the floor tick. */
+    /** Minutes between location points, still or moving. */
     val intervalMin: Int = 30,
     val accuracy: String = "balanced",
     val retentionDays: Int = 30,

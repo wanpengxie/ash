@@ -72,16 +72,16 @@ object CapabilityPolicies {
         // recorded, deleting records, or driving another app (Gadgetbridge) does.
         "location.get" to CapabilityPolicy("none", "read", "看手机位置"),
         "location.history" to CapabilityPolicy("none", "read", "看位置记录"),
-        "location.track" to CapabilityPolicy("structure", "write", "开关位置记录"),
+        "location.track" to CapabilityPolicy("none", "write", "开关位置记录"),
         "activity.current" to CapabilityPolicy("none", "read", "看运动状态"),
         "activity.history" to CapabilityPolicy("none", "read", "看运动记录"),
         "sensors.steps" to CapabilityPolicy("none", "read", "看今日步数"),
         "health.sources" to CapabilityPolicy("none", "read", "看健康数据来源"),
         "health.read" to CapabilityPolicy("none", "read", "读健康数据"),
         "health.summary" to CapabilityPolicy("none", "read", "看健康汇总"),
-        "health.sync" to CapabilityPolicy("outward", "act", "让手表同步健康数据"),
+        "health.sync" to CapabilityPolicy("none", "act", "让手表同步健康数据"),
         "sense.status" to CapabilityPolicy("none", "read", "看感知记录状态"),
-        "sense.configure" to CapabilityPolicy("structure", "write", "改感知记录设置"),
+        "sense.configure" to CapabilityPolicy("none", "write", "改感知记录设置"),
         "sense.delete" to CapabilityPolicy("structure", "write", "删除感知记录"),
     )
 

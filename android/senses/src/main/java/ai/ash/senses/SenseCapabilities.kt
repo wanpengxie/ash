@@ -45,10 +45,10 @@ object SenseCapabilities {
             val fix = LocationReader.fix(ctx, accuracy, timeout * 1000L)
             CapResult.json(fix.toJson().put("timestamp", fix.ts).put("age_s", (now() - fix.ts) / 1000))
         },
-        Cap("location.track", "Turn location and motion recording on or off. While on, the companion app keeps a notification with a stop button, takes a point when movement starts or stops and every interval_min minutes while moving (none while still), and pushes new points to Ash. Errors: permission_denied.",
+        Cap("location.track", "Turn location and motion recording on or off. While on, the companion app keeps a notification with a stop button, takes a point when movement starts or stops and every interval_min minutes (still or moving), and pushes new points to Ash. Errors: permission_denied.",
             schema(
                 "on" to prop("boolean", "true to record, false to stop", required = true),
-                "interval_min" to prop("integer", "Minutes between points while moving (${SenseConfig.MIN_INTERVAL} to ${SenseConfig.MAX_INTERVAL}, default 30)"),
+                "interval_min" to prop("integer", "Minutes between points (${SenseConfig.MIN_INTERVAL} to ${SenseConfig.MAX_INTERVAL}, default 30)"),
             )) { ctx, args ->
             SenseArgs.only(args, setOf("on", "interval_min"))
             val c = JSONObject().put("recording", SenseArgs.bool(args, "on"))
@@ -141,7 +141,7 @@ object SenseCapabilities {
         Cap("sense.configure", "Change what is recorded: recording on/off, interval_min, accuracy (high|balanced|low), retention_days, geofences (named circles; crossing one is reported to Ash). Only the given keys change. Errors: permission_denied, bad_args.",
             schema(
                 "recording" to prop("boolean", "Record location and motion"),
-                "interval_min" to prop("integer", "Minutes between points while moving (${SenseConfig.MIN_INTERVAL} to ${SenseConfig.MAX_INTERVAL})"),
+                "interval_min" to prop("integer", "Minutes between points (${SenseConfig.MIN_INTERVAL} to ${SenseConfig.MAX_INTERVAL})"),
                 "accuracy" to prop("string", "Location accuracy", enum = SenseConfig.ACCURACIES),
                 "retention_days" to prop("integer", "Days to keep recorded rows (1 to ${SenseConfig.MAX_RETENTION})"),
                 "geofences" to arrayProp("All geofences (replaces the list; [] removes them)", geofenceItem),
