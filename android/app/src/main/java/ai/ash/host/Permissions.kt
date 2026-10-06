@@ -183,7 +183,7 @@ object Permissions {
                 { c -> if (ShizukuState.ready()) "点「去开启」，经 Shizuku 授权一次" else "需要授权一次：用 Shizuku，或在电脑上运行 ${ScreenRecovery.grantCommand(c)}" },
             ))
             add(Permission(
-                "senses", "Ash 感知", "位置、运动、步数和健康数据：只在你开启记录后采集，数据只存在手机上",
+                "senses", "Ash 感知", "位置、运动、步数和健康数据：Ash 觉得有用时自己开启记录并告诉你，你说停就停；数据只存在手机上",
                 { c -> !SensesBridge.needsInstall(c) && SensesBridge.connected() && SensesBridge.status().optJSONObject("permissions")?.optBoolean("location") == true },
                 // A separate small app targets a current Android, which these permissions need; Ash itself cannot.
                 { a -> if (SensesBridge.needsInstall(a)) HelperInstaller.install(a, Helper.SENSES) else SensesBridge.openSetup(a) },
