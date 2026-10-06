@@ -259,6 +259,23 @@ add("service:senses", "sense.calendar", "event", obj({ kind: choice("upcoming", 
 add("service:senses", "sense.battery", "event", obj({ level: { type: "number", minimum: 0, maximum: 100 } }, ["level"]), undefined, { audience: "owner" });
 add("service:senses", "sense.screen", "event", obj({ state: choice("on", "app_open"), away_ms: { type: "number", minimum: 0 } }, ["state", "away_ms"]), undefined, { audience: "owner" });
 add("service:senses", "sense.notification", "event", obj({ app: str, title: str, text: str }, ["app", "title", "text"]), undefined, { audience: "owner" });
+// Batched facts from the phone's sensing companion. A batch_id makes a redelivered batch idempotent; time is epoch milliseconds.
+export const SENSE_BATCH_MAX = 500;
+export const ACTIVITY_STATES = ["still", "walking", "running", "cycling", "in_vehicle"] as const;
+const senseText = (max: number, min = 1): JsonSchema => ({ type: "string", minLength: min, maxLength: max });
+const senseBatch = (item: JsonSchema): JsonSchema => obj({
+  batch_id: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+  items: { type: "array", items: item, minItems: 1, maxItems: SENSE_BATCH_MAX },
+}, ["batch_id", "items"]);
+add("service:senses", "sense.location", "event", senseBatch(obj({ ts: nonnegativeSafe, lat: { type: "number", minimum: -90, maximum: 90 },
+  lon: { type: "number", minimum: -180, maximum: 180 }, accuracy_m: { type: "number", minimum: 0, maximum: 1_000_000 }, provider: senseText(32), is_mocked: bool },
+  ["ts", "lat", "lon", "accuracy_m", "provider"])), undefined, { audience: "owner" });
+add("service:senses", "sense.activity", "event", senseBatch(obj({ ts_start: nonnegativeSafe, ts_end: nonnegativeSafe, state: choice(...ACTIVITY_STATES) },
+  ["ts_start", "state"])), undefined, { audience: "owner" });
+add("service:senses", "sense.health", "event", senseBatch(obj({ ts: nonnegativeSafe, metric: senseText(64), value: num, unit: senseText(32, 0), source: senseText(128) },
+  ["ts", "metric", "value", "unit", "source"])), undefined, { audience: "owner" });
+add("service:senses", "sense.geofence", "event", obj({ name: senseText(64), transition: choice("enter", "exit"), ts: nonnegativeSafe }, ["name", "transition", "ts"]),
+  undefined, { audience: "owner" });
 add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool,
   fallback: choice("timeout", "unavailable", "invalid", "error"), fallback_ms: { type: "integer", minimum: 0 } }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined,
   { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });
@@ -377,4 +394,11 @@ export function optionReplyErrors(body: { text?: unknown; in_reply_to?: unknown;
   if (hasReply !== hasOption) return ["in_reply_to and option_id must appear together"];
   if (hasReply && (typeof body.in_reply_to !== "string" || !body.in_reply_to || typeof body.option_id !== "string" || !body.option_id || typeof body.text !== "string")) return ["invalid option reply"];
   return [];
+}
+
+/** Cross-field checks a phone sense body needs beyond its schema: an activity segment cannot end before it starts. */
+export function senseBodyErrors(word: string, body: Record<string, unknown>): string[] {
+  if (word !== "sense.activity" || !Array.isArray(body.items)) return [];
+  return (body.items as { ts_start?: unknown; ts_end?: unknown }[]).flatMap((item, index) =>
+    typeof item.ts_end === "number" && typeof item.ts_start === "number" && item.ts_end < item.ts_start ? [`items[${index}]: ends before it starts`] : []);
 }

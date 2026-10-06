@@ -6,7 +6,7 @@ import addFormats from "ajv-formats";
 import type { ValidateFunction } from "ajv";
 import type { AuthenticatedCallerContext, JsonSchema, Message, MessageErrorCode, ResponseBody, SendRequestV2, WordEffect, WordSpec } from "../../../sdk/src/api";
 import { matchesSchema, schemaErrors } from "../../../sdk/src/schema";
-import { AGENT_ID, deviceWordSpec, isWordEffect, optionReplyErrors, wordContract, wordEffect } from "../../../sdk/src/words";
+import { AGENT_ID, deviceWordSpec, isWordEffect, optionReplyErrors, senseBodyErrors, wordContract, wordEffect } from "../../../sdk/src/words";
 import type { ReviewFacts, Reviewer, ReviewVerdict } from "../review/reviewer";
 import { gateBodyDigest, gateRulePattern, gateTarget, Ledger, type HumanPendingRecord, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
@@ -661,7 +661,8 @@ export class WorldRouter {
       fail("bad_request", "invalid option answer fields");
     if (request.kind === "event" && !endpoint && !sourceEvent && !phoneSense) fail("not_found", "event word not found");
     if (sourceEvent && !matchesSchema(outbound.input_schema!, request.body)) fail("bad_request", "event body does not match schema");
-    if (phoneSense && !matchesSchema(senseContract.input_schema!, request.body)) fail("bad_request", "sense body does not match schema");
+    if (phoneSense && (!matchesSchema(senseContract.input_schema!, request.body) || senseBodyErrors(request.word, request.body).length))
+      fail("bad_request", "sense body does not match schema");
     if (request.to === null && !sourceEvent && !phoneSense) fail("forbidden", "broadcast not authorized");
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
