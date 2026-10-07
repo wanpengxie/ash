@@ -349,8 +349,15 @@ class SwitchFlow(
                 ui.settle()
                 val after = allowedRoot() ?: continue
                 exact(after, label).firstOrNull()?.let { return it }
-                val now = scroller(after)?.let { texts(it) }
-                if (now == shown) break
+                var now = scroller(after)?.let { texts(it) }
+                if (now == shown) {
+                    // A smooth scroll can still be moving when the screen reads idle: look once more before calling it the end.
+                    ui.sleep(SCROLL_SETTLE_MS)
+                    val again = allowedRoot() ?: continue
+                    exact(again, label).firstOrNull()?.let { return it }
+                    now = scroller(again)?.let { texts(it) }
+                    if (now == shown) break
+                }
                 shown = now
             }
         }
@@ -368,6 +375,7 @@ class SwitchFlow(
         /** How long a row already in the list is looked for on screen before scrolling. */
         private const val ROW_MS = 1_000L
         private const val MAX_BACKS = 4
+        private const val SCROLL_SETTLE_MS = 600L
         private val AUTOSTART = listOf(Kind.BOOT, Kind.BACKGROUND)
         /** What a subtitle says when the switch is off. */
         private val OFF_WORDS = listOf("已禁止", "已关闭")
