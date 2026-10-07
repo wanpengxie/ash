@@ -48,8 +48,16 @@ input{border:1px solid var(--line);background:var(--bg);border-radius:10px;paddi
     post({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
     new ResizeObserver(() => post({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight } })).observe(document.body);
   })();
+  const round = (value, digits) => Math.round(value * 10 ** digits) / 10 ** digits;
   window.health = {
     ready,
+    /** A value as the owner reads it: weight to 0.05 kg with at least one decimal, sleep in hours, counts as whole numbers. */
+    num(metric, value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+      if (metric === "weight") { const v = round(value, 2); return v.toFixed(Number.isInteger(round(v * 10, 6)) ? 1 : 2); }
+      if (metric === "sleep") return String(round(value / 60, 1));
+      return String(Math.round(value));
+    },
     on: (listener) => listeners.push(listener),
     /** Call one of this app's own tools; returns structuredContent, throws on a tool error. */
     async call(name, args = {}) {

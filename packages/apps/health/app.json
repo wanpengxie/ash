@@ -2,7 +2,7 @@
   "contract": "ash-app/1",
   "id": "health",
   "name": "健康",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "icon": "icon.svg",
   "summary": "体重、步数、睡眠、心率的每日概览和趋势",
   "publisher": "ash",
