@@ -461,6 +461,27 @@ test("the composer compresses a static image and keeps a document intact", async
   await expect(page.locator("#log .msg.me").filter({ hasText: text })).toContainText("memo.txt");
 });
 
+test("the attach menu takes a photo, then adds a file to it", async ({ page }) => {
+  await page.goto(`${running.url}/?token=${ownerToken}`);
+  await expect(page.locator("#connection")).toContainText("已连接");
+  await expect(page.locator("#attachMenu")).toBeHidden();
+  await page.locator("#attach").click();
+  await expect(page.locator("#attachMenu button")).toHaveText(["拍照", "录像", "从相册选", "选文件"]);
+  const [camera] = await Promise.all([page.waitForEvent("filechooser"), page.locator("#attachMenu [data-pick=photo]").click()]);
+  expect(await page.locator("#file").getAttribute("capture")).toBe("environment");
+  expect(await page.locator("#file").getAttribute("accept")).toBe("image/*");
+  expect(camera.isMultiple()).toBe(false);
+  await camera.setFiles({ name: "shot.jpg", mimeType: "image/jpeg", buffer: Buffer.from([255, 216, 255, 224, 0, 16]) });
+  await expect(page.locator("#attachMenu")).toBeHidden();
+  await page.locator("#attach").click();
+  const [files] = await Promise.all([page.waitForEvent("filechooser"), page.locator("#attachMenu [data-pick=file]").click()]);
+  expect(await page.locator("#file").getAttribute("capture")).toBeNull();
+  await files.setFiles({ name: "memo.txt", mimeType: "text/plain", buffer: Buffer.from("memo") });
+  await expect(page.locator("#selected")).toContainText("2 个附件，shot.jpg、memo.txt");
+  await page.locator("#selected button").click();
+  await expect(page.locator("#selected")).toHaveText("");
+});
+
 test("recent history paints promptly and upward scroll loads the earlier page", async ({ page }) => {
   const batch = `E2E history ${Date.now()}`;
   for (let index = 0; index < 225; index++) running.ledger.append({ from: "person:owner", to: "agent:main",

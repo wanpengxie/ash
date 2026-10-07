@@ -3,13 +3,16 @@ package ai.ash.ui
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
@@ -36,6 +39,7 @@ import ai.ash.host.CoreService
 import ai.ash.host.Paths
 import ai.ash.host.Permissions
 import ai.ash.host.Secrets
+import ai.ash.host.media.CaptureProvider
 import ai.ash.ui.transport.CoreCancellation
 import ai.ash.ui.transport.CoreUiRequest
 import ai.ash.ui.transport.FixedCoreClient
@@ -69,6 +73,8 @@ class HomeActivity : Activity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private data class SaveFile(val id: String, val path: String, val epoch: Long, val reply: androidx.webkit.JavaScriptReplyProxy)
     private var saveFile: SaveFile? = null
+    /** Where the system camera is writing the photo or video the chat asked for. */
+    private var captureFile: java.io.File? = null
 
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
@@ -400,15 +406,28 @@ class HomeActivity : Activity() {
 
     private fun forbidden() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
 
-    /** Opens the system picker for the web UI's attachment button (images or any file, several at once). */
+    /**
+     * Answers the web UI's attachment menu: the camera for 拍照 / 录像 (images or videos only, with capture), the
+     * photo picker for 从相册选 (images and videos), the system file picker otherwise (several files at once).
+     */
     private fun chooseFiles(cb: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean {
         answerFiles(null) // a request still open (should not happen) is cancelled, not dropped
         fileCallback = cb
-        val pick = try { params.createIntent() } catch (e: Throwable) { null }
-            ?: Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
         // createIntent() only uses the first accept type; "image/*,.pdf" must offer both.
         val mimes = params.acceptTypes.orEmpty().flatMap { it.split(',') }.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
             .map { if (it.startsWith('.')) MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.substring(1)) ?: "*/*" else it }.distinct()
+        val images = mimes.isNotEmpty() && mimes.all { it.startsWith("image/") }
+        val videos = mimes.isNotEmpty() && mimes.all { it.startsWith("video/") }
+        if (params.isCaptureEnabled && (images || videos) && capture(videos)) return true
+        if (mimes.isNotEmpty() && mimes.all { it.startsWith("image/") || it.startsWith("video/") } && Build.VERSION.SDK_INT >= 33) {
+            val gallery = Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                if (images) type = "image/*" else if (videos) type = "video/*"
+                if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, minOf(32, MediaStore.getPickImagesMaxLimit()))
+            }
+            try { startActivityForResult(gallery, REQ_FILES); return true } catch (e: ActivityNotFoundException) { /* the system picker below */ }
+        }
+        val pick = try { params.createIntent() } catch (e: Throwable) { null }
+            ?: Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
         if (mimes.size > 1 && "*/*" !in mimes) {
             pick.type = "*/*"
             pick.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toTypedArray())
@@ -422,6 +441,44 @@ class HomeActivity : Activity() {
         return true
     }
 
+    /** The system camera writes one photo or video into Ash's capture folder; the chat then sends it as a chosen file. */
+    private fun capture(video: Boolean): Boolean {
+        val file = CaptureProvider.newFile(this, if (video) "video" else "photo", if (video) "mp4" else "jpg")
+        val uri = CaptureProvider.uriFor(this, file)
+        val intent = Intent(if (video) MediaStore.ACTION_VIDEO_CAPTURE else MediaStore.ACTION_IMAGE_CAPTURE)
+            .putExtra(MediaStore.EXTRA_OUTPUT, uri).addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.clipData = ClipData.newRawUri(if (video) "video" else "photo", uri)
+        // The chat sends files up to 20 MiB.
+        if (video) intent.putExtra(MediaStore.EXTRA_SIZE_LIMIT, 19L * 1024 * 1024)
+        return try {
+            startActivityForResult(intent, REQ_CAPTURE)
+            captureFile = file
+            true
+        } catch (e: ActivityNotFoundException) {
+            file.delete(); false
+        } catch (e: SecurityException) {
+            file.delete(); false
+        }
+    }
+
+    private fun finishCapture(resultCode: Int, data: Intent?) {
+        val file = captureFile
+        captureFile = null
+        if (resultCode == RESULT_OK && file != null && file.length() == 0L) {
+            // A camera app that ignored the output file may still hand back a small photo.
+            @Suppress("DEPRECATION") val thumb = data?.extras?.get("data") as? android.graphics.Bitmap
+            if (thumb != null) runCatching { file.outputStream().use { thumb.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it) } }
+        }
+        val elsewhere = data?.data?.takeIf { it.authority != "$packageName.capture" }
+        val uri = when {
+            resultCode != RESULT_OK -> null
+            file != null && file.length() > 0 -> CaptureProvider.uriFor(this, file)
+            else -> elsewhere // a camera app that saved the video its own way
+        }
+        if (uri == null || uri == elsewhere) file?.delete()
+        answerFiles(uri?.let { arrayOf(it) })
+    }
+
     private fun answerFiles(uris: Array<Uri>?) {
         val cb = fileCallback ?: return
         fileCallback = null
@@ -431,6 +488,7 @@ class HomeActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == REQ_SAVE_FILE) { finishFileSave(resultCode, data?.data); return }
+        if (requestCode == REQ_CAPTURE) { finishCapture(resultCode, data); return }
         if (requestCode != REQ_FILES) return super.onActivityResult(requestCode, resultCode, data)
         val uris = LinkedHashSet<Uri>()
         if (resultCode == RESULT_OK && data != null) {
@@ -474,5 +532,6 @@ class HomeActivity : Activity() {
         private const val UI_ASSET_URL = "$UI_ASSET_ORIGIN/assets/ash-ui/index.html"
         private const val REQ_FILES = 7101
         private const val REQ_SAVE_FILE = 7102
+        private const val REQ_CAPTURE = 7104
     }
 }
