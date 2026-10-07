@@ -1,4 +1,5 @@
-import { complete as piComplete, getModel, type Api, type AssistantMessage, type Context, type Model } from "@mariozechner/pi-ai";
+import { complete as piComplete, type Api, type AssistantMessage, type Context, type Model } from "@mariozechner/pi-ai";
+import { DEEPSEEK_DEFAULT_MODEL, resolveModel } from "../workers/deepseek-model";
 
 /** Only gathered facts: the owner's own words this turn, who asks, what the action is, and what it would send or write. */
 export interface ReviewFacts {
@@ -78,14 +79,14 @@ export function parseVerdict(text: string): ReviewVerdict {
  * that is not a strict verdict — throws, and the gate then asks the owner.
  */
 export function deepseekReviewer(getKey: () => string | null, options: DeepseekReviewerOptions = {}): Reviewer {
-  const modelId = options.model ?? "deepseek-v4-flash";
+  const modelId = options.model ?? DEEPSEEK_DEFAULT_MODEL;
   const timeoutMs = options.timeoutMs ?? 5000;
   const call = options.complete ?? (piComplete as unknown as Complete);
   return async (facts, signal) => {
     const apiKey = getKey();
     if (!apiKey) throw new Error("reviewer key unavailable");
     if (signal.aborted) throw new Error("review cancelled");
-    const model = getModel("deepseek", modelId as "deepseek-v4-flash") as Model<Api> | undefined;
+    const model = resolveModel("deepseek", modelId);
     if (!model) throw new Error("reviewer model unknown");
     const timeout = AbortSignal.timeout(timeoutMs);
     const both = AbortSignal.any([signal, timeout]);

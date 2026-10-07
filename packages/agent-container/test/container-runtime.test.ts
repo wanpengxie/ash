@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { crc32, deflateSync } from "node:zlib";
 import { startOwner } from "../../core/src/main";
 import { ContainerHost } from "../src/host";
 import { VaultStore } from "../../core/src/members/vault";
@@ -213,6 +214,104 @@ test("agents work together: the main agent asks the keeper, which answers from i
     assert.ok(keeperRead, "the keeper reached service:self as itself");
     const sessions = JSON.parse(readFileSync(join(root, "state", "container-sessions.json"), "utf8")) as Record<string, string>;
     assert.ok(sessions.main && sessions["agent:keeper"] && sessions.main !== sessions["agent:keeper"]);
+  } finally {
+    await running.close();
+    server.close();
+  }
+});
+
+/** A real, decodable PNG of one colour, so the runtime's image pipeline accepts it. */
+function solidPng(width: number, height: number, rgb: [number, number, number]): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])));
+    return Buffer.concat([length, Buffer.from(type, "ascii"), data, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.concat(Array.from({ length: width }, () => Buffer.from(rgb)))]);
+  return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))),
+    chunk("IEND", Buffer.alloc(0))]);
+}
+
+test("the model sees images: the owner's photo in the prompt and a screen capability's image in the tool result", { skip, timeout: 240_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "ash-vision-"));
+  type Block = { type?: string; text?: string; source?: { type?: string }; content?: Block[] | string };
+  const requests: { model: string; messages: { role: string; content: Block[] | string }[] }[] = [];
+  const files: { key: unknown; bytes: number }[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", async () => {
+      const json = (status: number, value: object) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+      if (req.url?.includes("/v1/files")) {
+        if (req.method !== "POST") return json(404, { error: { message: "not found" } });
+        // The provider's Files API: a multipart upload answered with the stored file's facts.
+        const file = (await new Response(Buffer.concat(chunks), { headers: { "content-type": String(req.headers["content-type"]) } }).formData()).get("file") as File;
+        files.push({ key: req.headers["x-api-key"], bytes: file.size });
+        return json(200, { id: `file-${files.length}`, type: "file", filename: file.name, mime_type: file.type, size_bytes: file.size, created_at: new Date().toISOString() });
+      }
+      if (!req.url?.endsWith("/messages")) return json(404, {});
+      const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as (typeof requests)[number];
+      const text = JSON.stringify(request.messages);
+      const mind = text.includes("This is your private mind space");
+      if (!mind) requests.push(request);
+      const last = request.messages.at(-1);
+      const toolResult = Array.isArray(last?.content) && last.content.some((part) => part.type === "tool_result");
+      const tool = !mind && text.includes("what is in this photo") && !toolResult;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const event = (kind: string, data: object) => res.write(`event: ${kind}\ndata: ${JSON.stringify({ type: kind, ...data })}\n\n`);
+      event("message_start", { message: { id: `msg_${requests.length}`, type: "message", role: "assistant", model: request.model, content: [], stop_reason: null,
+        usage: { input_tokens: 100, output_tokens: 0 } } });
+      if (tool) {
+        event("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_see", name: "mcp__ash__capability_call", input: {} } });
+        event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ member: "device:test", word: "screen.see", body: {} }) } });
+      } else {
+        event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+        event("content_block_delta", { index: 0, delta: { type: "text_delta", text: mind ? "ok" : "a red square, and a blue screen" } });
+      }
+      event("content_block_stop", { index: 0 });
+      event("message_delta", { delta: { stop_reason: tool ? "tool_use" : "end_turn" }, usage: { output_tokens: 7 } });
+      event("message_stop", {});
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const upstream = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const config = { stateDir: join(root, "state"), listen: "127.0.0.1:0", agents: [{ id: "agent:main" as const, runtime: "container" as const }],
+    container: { root: "", modelUpstream: upstream, direct: { dshBin: join(install!, "lib", "bin.js"), dshHome: join(root, "dsh-home"), workspace: join(root, "work"), pluginPath: plugin } } };
+  new VaultStore(join(root, "state", "vault.json")).set("DEEPSEEK_API_KEY", VAULT_KEY);
+  // An install that stored the retired default id comes back on the current one.
+  mkdirSync(config.stateDir, { recursive: true });
+  writeFileSync(join(config.stateDir, "container-model.json"), JSON.stringify({ provider: "deepseek-official", model: "deepseek-v4-flash" }));
+  const running = await startOwner(config);
+  const screen = solidPng(32, 48, [0, 0, 255]);
+  running.members.registerDevice({ id: "device:test", kind: "device", name: "Test phone", online: true,
+    capabilities: () => [{ name: "screen.see", label: "See the screen", description: "Look at the screen. Read-only.", risk: "none",
+      input_schema: { type: "object", properties: {}, additionalProperties: false } }],
+    handle: async () => ({ ok: true, result: { content: [{ type: "text", text: "Screen 32x48 px" }, { type: "image", data: screen.toString("base64"), mimeType: "image/png" }] } }) });
+  const owner = { transport: "api" as const, member: "person:owner", transportPrincipal: "token:test", local: true, remote: false, ownerProxy: true };
+  try {
+    assert.deepEqual(JSON.parse(readFileSync(join(config.stateDir, "container-model.json"), "utf8")), { provider: "deepseek-official", model: "deepseek-flash" });
+    await running.container!.boot();
+    assert.equal(running.container!.imageInput, true, "the runtime declares image input for deepseek-flash");
+    const ended = new Promise<Message>((resolve) => { const off = running.world.subscribe((m) => { if (m.from === "agent:main" && m.word === "turn.end") { off(); resolve(m); } }); });
+    await running.world.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "what is in this photo?",
+      attachments: [{ name: "red.png", mime_type: "image/png", data: solidPng(40, 30, [255, 0, 0]).toString("base64") }] } });
+    assert.equal((await ended).body.reason, "completed");
+    assert.ok(requests.every((request) => request.model === "deepseek-flash"));
+    const images = (blocks: Block[] | string | undefined): Block[] => Array.isArray(blocks) ? blocks.flatMap((block) => block.type === "image" ? [block] : images(block.content)) : [];
+    const first = requests.find((request) => JSON.stringify(request.messages).includes("what is in this photo"))!;
+    const userImages = first.messages.filter((message) => message.role === "user").flatMap((message) => images(message.content));
+    assert.equal(userImages.length, 1, "the owner's photo is an image in the prompt, not only a path");
+    const after = requests.find((request) => JSON.stringify(request.messages).includes("toolu_see"))!;
+    const toolResult = after.messages.flatMap((message) => Array.isArray(message.content) ? message.content : []).find((part) => part.type === "tool_result")!;
+    assert.equal(images(toolResult.content).length, 1, "the screen image is an image in the tool result");
+    const toolText = (toolResult.content as Block[]).filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    assert.match(toolText, /Screen 32x48 px/);
+    assert.ok(toolText.length < 2000 && !toolText.includes(screen.toString("base64").slice(0, 40)), "and not as base64 text");
+    assert.ok(files.length >= 2 && files.every((file) => file.key === VAULT_KEY && file.bytes > 0), "images are uploaded through the egress with the vault key");
+    assert.ok([userImages[0]!, ...images(toolResult.content)].every((image) => image.source?.type === "file"), "requests reference the uploaded files");
   } finally {
     await running.close();
     server.close();

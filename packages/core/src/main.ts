@@ -13,7 +13,7 @@ import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { dshWorkerModel } from "../../dsh-binding/src/workers";
 import { ModelEgress } from "../../agent-container/src/egress";
 import { ContainerHost } from "../../agent-container/src/host";
-import { CONTAINER_PATH, DEFAULT_MODEL, inContainer, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
+import { CONTAINER_PATH, DEFAULT_MODEL, inContainer, migrateModelChoice, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
 import { AppRuntime, type AppLauncher } from "./apps/runtime";
 import { installBuiltinApps } from "./apps/builtin";
 import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
@@ -285,11 +285,18 @@ export async function startOwner(config: Config): Promise<Running> {
     // Which part of ash a model call belongs to, for the usage page: whoever is running when it is made.
     const running = { chat: 0, mind: 0, background: 0 };
     const modelFile = join(config.stateDir, "container-model.json");
-    const containerModel = (): { provider: string; model: string } => {
+    const storedModel = (): { provider: string; model: string } | null => {
       try { if (existsSync(modelFile)) { const stored = JSON.parse(readFileSync(modelFile, "utf8")) as { provider?: unknown; model?: unknown };
         if (typeof stored.provider === "string" && typeof stored.model === "string") return { provider: stored.provider, model: stored.model }; } } catch { /* fall back */ }
-      return config.container?.model ?? DEFAULT_MODEL;
+      return null;
     };
+    const containerModel = (): { provider: string; model: string } => migrateModelChoice(storedModel() ?? config.container?.model ?? DEFAULT_MODEL);
+    // The retired default id is unknown to the runtime; a stored choice of exactly it is rewritten once to its successor.
+    const storedChoice = storedModel();
+    if (storedChoice && migrateModelChoice(storedChoice) !== storedChoice) {
+      try { writeFileSync(modelFile, JSON.stringify(migrateModelChoice(storedChoice)), { mode: 0o600 }); log("model choice", storedChoice.model, "->", DEFAULT_MODEL.model); }
+      catch (error) { log("model choice migration failed", error); }
+    }
     const agentPolicy = (item: AgentDeclaration, mind = false): AgentPolicy => ({ ...(item.tools ? { tools: item.tools } : {}),
       tool: (name, turn) => agentSystem?.toolAllowed(item.id, turn, name) ?? true,
       words: (member, word) => agentSystem?.wordAllowed(item.id, item.id === "agent:main" ? (mind ? mindBinding : mainBinding)?.active?.turn : otherBindings.get(item.id)?.active?.turn, member, word) ?? wordAllowed(item, member, word) });

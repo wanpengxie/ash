@@ -62,7 +62,16 @@ export function patchText(pluginPath: string, model: { provider: string; model: 
   ].join("\n");
 }
 
-export const DEFAULT_MODEL = { provider: "deepseek-official", model: "deepseek-v4-flash" } as const;
+/** DeepSeek's current Flash model (V4.1-Flash), which reads images; the runtime's model table knows it by this id. */
+export const DEFAULT_MODEL = { provider: "deepseek-official", model: "deepseek-flash" } as const;
+
+/** Ash's earlier default: retired by the provider and unknown to the runtime, which then treats the agent as text-only. */
+const RETIRED_DEFAULT = { provider: "deepseek-official", model: "deepseek-v4-flash" } as const;
+
+/** A stored choice of exactly the retired default moves to its successor; any other choice is kept as it is. */
+export function migrateModelChoice(choice: { provider: string; model: string }): { provider: string; model: string } {
+  return choice.provider === RETIRED_DEFAULT.provider && choice.model === RETIRED_DEFAULT.model ? { ...DEFAULT_MODEL } : choice;
+}
 
 /** Prepare the files the runtime reads at start (patch, resolv.conf) and return how to spawn it. */
 export function prepareLaunch(config: ContainerConfig, egressBase: string, stateDir: string): LaunchSpec {
