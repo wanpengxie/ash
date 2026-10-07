@@ -11,6 +11,8 @@ export interface ContainerHostOptions {
   launch: () => LaunchSpec;
   stateDir: string;
   log?: (...args: unknown[]) => void;
+  /** The model ash has chosen; a resumed session is switched to it, since the runtime resumes with the model in its log. */
+  model?: () => { provider: string; model: string };
 }
 
 /**
@@ -107,6 +109,11 @@ export class ContainerHost {
       if (previous) {
         try {
           await client.request("session/resume", { sessionId: previous, cwd: workspace, mcpServers: servers });
+          const chosen = this.options.model?.();
+          if (chosen) {
+            try { await client.request("session/set_config_option", { sessionId: previous, configId: "model", value: JSON.stringify([chosen.provider, chosen.model]) }); }
+            catch (error) { this.options.log?.(`session ${key} kept its own model: ${(error as Error).message}`); }
+          }
           this.sessions.set(key, { id: previous, mcp });
           this.timings[`resume:${key}`] = Date.now() - started;
           return previous;

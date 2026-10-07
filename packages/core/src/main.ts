@@ -312,7 +312,7 @@ export async function startOwner(config: Config): Promise<Running> {
       const containerConfig = config.container!;
       egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream });
       const egressBase = await egress.start();
-      container = new ContainerHost({ stateDir: config.stateDir, log,
+      container = new ContainerHost({ stateDir: config.stateDir, log, model: containerModel,
         launch: () => prepareLaunch({ ...containerConfig, model: containerModel() }, egressBase, config.stateDir) });
       const mainDeclaration = declarations.find((item) => item.id === "agent:main")!;
       mainBinding = agentTools.bind("agent:main", "main", () => null, agentPolicy(mainDeclaration));
