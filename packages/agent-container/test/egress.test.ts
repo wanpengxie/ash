@@ -101,8 +101,67 @@ test("concurrent model calls are attributed by DSH session id, not by whichever 
   } finally { await egress.close(); upstream.close(); }
 });
 
+test("image uploads and file housekeeping pass through the egress byte for byte, with the vault key", async () => {
+  const seen: { method: string; path: string; headers: IncomingHttpHeaders; body: Buffer }[] = [];
+  const upstream = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      seen.push({ method: req.method ?? "", path: req.url ?? "", headers: req.headers, body: Buffer.concat(chunks) });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(req.url?.includes("/messages") ? { type: "message", model: "deepseek-flash", usage: { input_tokens: 3, output_tokens: 1 } }
+        : { id: "file-1", type: "file", filename: "a.png", mime_type: "image/png", size_bytes: 4, created_at: "2026-10-08T00:00:00Z" }));
+    });
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const egress = new ModelEgress({ key: () => "sk-real-from-vault", upstream: `http://127.0.0.1:${(upstream.address() as { port: number }).port}` });
+  const base = await egress.start();
+  const usage: EgressUsage[] = [];
+  egress.onUsage((record) => usage.push(record));
+  const auth = { "x-api-key": PLACEHOLDER_KEY, authorization: `Bearer ${PLACEHOLDER_KEY}`, "anthropic-version": "2023-06-01", "anthropic-beta": "files-api-2025-04-14" };
+  try {
+    // The runtime's upload: multipart with an image, as its Files client sends it.
+    const png = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from([0, 255, 1, 254, 13, 10])]);
+    const form = new FormData();
+    form.set("expires_after[anchor]", "created_at");
+    form.set("expires_after[seconds]", "604800");
+    form.set("file", new Blob([png], { type: "image/png" }), "a.png");
+    const sent = new Request(`${base}/v1/files`, { method: "POST", body: form, headers: auth });
+    const raw = Buffer.from(await sent.clone().arrayBuffer());
+    const uploaded = await fetch(sent);
+    assert.equal(uploaded.status, 200);
+    assert.equal((await uploaded.json() as { id: string }).id, "file-1");
+    const upload = seen[0]!;
+    assert.equal(upload.method, "POST");
+    assert.equal(upload.path, "/anthropic/v1/files");
+    assert.equal(upload.headers["content-type"], sent.headers.get("content-type"), "the multipart boundary is kept");
+    assert.ok(upload.body.equals(raw), "the multipart body arrives unchanged");
+    assert.ok(upload.body.includes(png));
+    assert.equal(upload.headers["x-api-key"], "sk-real-from-vault");
+    assert.equal(upload.headers.authorization, undefined, "the placeholder never reaches the provider");
+    assert.equal(upload.headers["anthropic-beta"], "files-api-2025-04-14");
+
+    // Listing, checking and removing files keep their method and query.
+    for (const [method, path] of [["GET", "/v1/files?limit=100&after_id=file-0"], ["GET", "/v1/files/file-1"], ["DELETE", "/v1/files/file-1"]] as const)
+      assert.equal((await fetch(`${base}${path}`, { method, headers: auth })).status, 200);
+    assert.deepEqual(seen.slice(1).map((item) => [item.method, item.path, item.headers["x-api-key"]]), [
+      ["GET", "/anthropic/v1/files?limit=100&after_id=file-0", "sk-real-from-vault"], ["GET", "/anthropic/v1/files/file-1", "sk-real-from-vault"],
+      ["DELETE", "/anthropic/v1/files/file-1", "sk-real-from-vault"]]);
+
+    // A request with its images inline is large; it is forwarded whole.
+    const inline = JSON.stringify({ model: "deepseek-flash", messages: [{ role: "user", content: [{ type: "image",
+      source: { type: "base64", media_type: "image/png", data: "A".repeat(40 * 1024 * 1024) } }] }] });
+    const big = await fetch(`${base}/v1/messages`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: inline });
+    assert.equal(big.status, 200);
+    await big.text();
+    assert.equal(seen.at(-1)!.body.length, Buffer.byteLength(inline));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(usage.map((item) => [item.model, item.input]), [["deepseek-flash", 3]], "only the model call is booked");
+  } finally { await egress.close(); upstream.close(); }
+});
+
 test("the launch patch swaps the official ACP row for ash's plugin and quotes paths", () => {
-  const text = patchText("/opt/ash/dsh-ash-control/index.mjs", { provider: "deepseek-official", model: "deepseek-v4-flash" }, "/opt/ash/ash-skills/index.mjs");
+  const text = patchText("/opt/ash/dsh-ash-control/index.mjs", { provider: "deepseek-official", model: "deepseek-flash" }, "/opt/ash/ash-skills/index.mjs");
   assert.match(text, /- id: acp\n  disabled: true/);
   assert.match(text, /name: '\/opt\/ash\/dsh-ash-control\/index.mjs'/);
   assert.match(text, /inject: \[acpAppStartup\]/);

@@ -16,7 +16,9 @@ export interface EgressOptions {
   log?: (...args: unknown[]) => void;
 }
 
-const MAX_BODY = 32 * 1024 * 1024;
+// A model request may carry its images inline (the runtime's fallback when file upload fails: up to 20 MiB of images,
+// a third more as base64) on top of a long conversation; file uploads are multipart and smaller than that.
+const MAX_BODY = 64 * 1024 * 1024;
 const HOP = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "x-api-key", "authorization", "accept-encoding", "proxy-authorization"]);
 const RESPONSE_DROP = new Set(["content-length", "content-encoding", "transfer-encoding", "connection", "keep-alive"]);
 const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -140,7 +142,8 @@ export class ModelEgress {
     }
     const body = Buffer.concat(chunks);
     let requestedModel = "";
-    try { const parsed = JSON.parse(body.toString("utf8")) as { model?: unknown }; if (typeof parsed.model === "string") requestedModel = parsed.model; } catch { /* not JSON */ }
+    if (/json/i.test(String(request.headers["content-type"] ?? "")))
+      try { const parsed = JSON.parse(body.toString("utf8")) as { model?: unknown }; if (typeof parsed.model === "string") requestedModel = parsed.model; } catch { /* not JSON */ }
     const headers = new Headers();
     for (const [name, value] of Object.entries(request.headers)) {
       if (HOP.has(name.toLowerCase()) || value === undefined) continue;
