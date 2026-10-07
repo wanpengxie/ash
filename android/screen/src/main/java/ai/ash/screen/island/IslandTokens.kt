@@ -16,6 +16,17 @@ internal object IslandTokens {
     const val SIZE_EDGE_W = 52f
     const val SIZE_EDGE_H = 52f
     const val SIZE_EDGE_RADIUS = 26f
+    const val SIZE_PILL_PAD_Y = 4f
+    const val SIZE_PILL_GAP_PAD = 2f
+    const val SIZE_PILL_RESIDENT_SEGMENT = 28f
+    const val SIZE_PILL_RUNNING_SEGMENT_MAX = 88f
+    const val SIZE_PILL_NO_CUTOUT_H = 28f
+    const val SIZE_PILL_MIN_H = 24f
+    const val SIZE_PILL_EDGE_MARGIN = 4f
+    const val SIZE_PILL_PAD_OUTER = 6f
+    const val SIZE_PILL_PAD_INNER = 6f
+    const val SIZE_PILL_GAP = 6f
+    const val SIZE_PILL_DOT = 7f
     const val SIZE_TOP_BELOW_STATUS_BAR = 8f
     const val SIZE_TOP_HUG_CAMERA = 5f
     const val SIZE_MIN_TOUCH = 44f
@@ -25,6 +36,7 @@ internal object IslandTokens {
     val SHADOW_LAYERS = arrayOf(floatArrayOf(0f, 8f, 16f), floatArrayOf(0f, 1f, 3f))
     val SHADOW_COLORS = intArrayOf(0x4D000000.toInt(), 0x38000000.toInt())
     const val COLOR_ISLAND = 0xFF101011.toInt()
+    const val COLOR_PILL = 0xFF000000.toInt()
     const val COLOR_ISLAND_STROKE = 0x0FFFFFFF.toInt()
     const val COLOR_SURFACE = 0xFF1A1A1C.toInt()
     const val COLOR_INPUT = 0xFF1E1E21.toInt()
@@ -76,5 +88,6 @@ internal object IslandTokens {
     const val AVATAR_CARD_SIZE = 40f
     const val AVATAR_CARD_RADIUS = 14f
     const val AVATAR_EDGE = 42f
+    const val AVATAR_PILL = 16f
     val AVATAR_FACE_BY_KIND = mapOf("listening" to "listening", "thinking" to "thinking", "working" to "focused", "ask" to "listening", "approval" to "focused", "in_app" to "listening", "result" to "success", "incomplete" to "thinking", "stopped" to "default", "stale" to "default")
 }

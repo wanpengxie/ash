@@ -98,6 +98,8 @@ internal object AshLink : NativeIsland.Ash {
         return JSONObject().put("version", BuildConfig.VERSION_CODE).put("accessibility", A11yService.instance != null)
             .put("screenshot", A11yService.instance != null && A11yService.canScreenshot)
             .put("island_ready", ctx != null && NativeIsland.ready(ctx)).put("island_shown", NativeIsland.showing())
+            // This helper draws the resident entry (island v2); an older one is never sent it.
+            .put("island_resident", true)
     }
     /** Tell Ash: the service came or went, the island appeared or left. */
     fun changed() { host?.let { h -> runCatching { h.changed(status().toString()) } } }

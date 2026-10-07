@@ -149,6 +149,8 @@ object ScreenBridge {
     /** The island can be drawn (the helper's accessibility service, or its overlay permission). */
     fun islandReady() = connected() && status.optBoolean("island_ready")
     fun islandShown() = connected() && status.optBoolean("island_shown")
+    /** The helper draws the resident entry (island v2). */
+    fun islandResident() = connected() && status.optBoolean("island_resident")
     fun tools(): List<Capability> = tools
 
     fun call(name: String, args: JSONObject): CapResult {

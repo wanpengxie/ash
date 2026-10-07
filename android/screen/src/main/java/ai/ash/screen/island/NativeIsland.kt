@@ -24,13 +24,18 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The task island drawn natively, for Ash: Ash sends what it shows ([update], [hide]) and gets the owner's actions back
- * through [ash]. Android moves an overlay window before the app's next frame reaches the screen, so an island whose
- * window moves while it morphs shows off its place for a frame or more. With the accessibility service connected the island is drawn in a trusted accessibility overlay that covers the screen and never moves or
- * resizes (trusted overlays pass touches through): the island morphs inside it, and the keyboard reaches it as the
- * window's insets, as in any full-screen window. A transparent touch window over the island (an accessibility overlay
- * too, so no overlay permission is needed) hands its touches over.
+ * through [ash]. Between tasks Ash sends the resident entry (kind "resident", no task content): the pill around the
+ * camera that opens into a composer (docs/island/ISLAND-RESIDENT-DESIGN.md).
+ * Android moves an overlay window before the app's next frame reaches the screen, so an island whose window moves while
+ * it morphs shows off its place for a frame or more. With the accessibility service connected the island is drawn in a
+ * trusted accessibility overlay over the status bar, anchored at the screen's top-left corner, that never moves: as
+ * tall as the pill while the island rests as one, and the whole screen for the card and every transition (only its
+ * bottom edge moves, where nothing is drawn yet). Trusted overlays pass touches through: the island morphs inside it,
+ * and the keyboard reaches it as the window's insets, as in any full-screen window. A transparent touch window exactly
+ * over the island (an accessibility overlay too, so no overlay permission is needed) hands its touches over; the rest
+ * of the status bar still pulls down the shade.
  * Without the service, one app overlay window wraps the island plus the reference's shadow inset and follows it frame
- * by frame; the system pans it above the keyboard.
+ * by frame, below the status bar; the system pans it above the keyboard.
  */
 internal object NativeIsland : IslandView.Actions {
     /** What the island asks of Ash. */
@@ -72,10 +77,13 @@ internal object NativeIsland : IslandView.Actions {
     private var restore: (() -> Unit)? = null
     private var form = "compact"
     private var episode = ""
-    private var centreX = -1
-    /** How far the owner has dragged the island down from its place under the status bar. */
-    private var offsetY = 0
-    private var dragFromX = 0; private var dragFromY = 0
+    /** Where the pill sits (around the camera when it can), read again whenever the screen may have turned. */
+    private var geometry: IslandPill.Geometry? = null
+    /** The owner swiped the resident entry away: it stays away until Ash shows something new, or the next unlock. */
+    private var residentHidden = false
+    /** A full-screen app hid the status bar: no resident entry over it. */
+    private var fullscreen = false
+    private var unlockReceiver: android.content.BroadcastReceiver? = null
     private var maxCard = 0
     // host.js: the card shown, its local answer state, and the composer's state.
     private var selected: String? = null
@@ -100,10 +108,13 @@ internal object NativeIsland : IslandView.Actions {
     @Volatile private var shown = false
         set(value) { if (field != value) { field = value; ash?.shown(value) } }
     fun showing() = shown
+    /** On screen: a task's island, not the resident entry (which tells the owner nothing new). */
+    private fun syncShown() { shown = attached && !resident() }
+    private fun resident() = snapshot?.optString("kind") == "resident"
     private fun dp(v: Float) = Math.round(v * (app?.resources?.displayMetrics?.density ?: 1f))
     private fun unlocked(ctx: Context) = !ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked &&
         ctx.getSystemService(android.os.PowerManager::class.java).isInteractive
-    private fun allowed() = visible && suppressed == 0 && !ashInFront && !yielding &&
+    private fun allowed() = visible && suppressed == 0 && !ashInFront && !yielding && !(resident() && (residentHidden || fullscreen)) &&
         app?.let { unlocked(it) && (A11yService.instance != null || Settings.canDrawOverlays(it)) } == true
     /** The island can be drawn at all: the accessibility service, or the overlay permission. */
     fun ready(ctx: Context) = A11yService.instance != null || Settings.canDrawOverlays(ctx)
@@ -129,7 +140,7 @@ internal object NativeIsland : IslandView.Actions {
                 return super.dispatchKeyEventPreIme(event)
             }
         }.apply { clipChildren = false; clipToPadding = false; contentDescription = "AshTaskCapsule" }
-        box.addView(view.shell, FrameLayout.LayoutParams(dp(IslandTokens.SIZE_COMPACT_W), dp(IslandTokens.SIZE_COMPACT_H)).apply {
+        box.addView(view.shell, FrameLayout.LayoutParams(dp(IslandTokens.SIZE_CARD_W), dp(IslandTokens.SIZE_PILL_NO_CUTOUT_H)).apply {
             leftMargin = dp(IslandTokens.SIZE_WINDOW_INSET_SIDE); topMargin = dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
         })
         @SuppressLint("ClickableViewAccessibility")
@@ -143,8 +154,9 @@ internal object NativeIsland : IslandView.Actions {
         })
         // The card is never taller than the screen below it (the keyboard included); its middle scrolls instead.
         // The window's insets (status bar, keyboard) place the island and limit the card.
+        // The screen may have turned (the camera with it): the pill is placed again.
         box.setOnApplyWindowInsetsListener { v, insets ->
-            if (attached) { if (fitCard()) render(); if (islandW > 0) follow(islandW, islandH) }
+            if (attached) { measurePill(app!!); if (fitCard()) render(); if (islandW > 0) follow(islandW, islandH) }
             v.onApplyWindowInsets(insets)
         }
         root = box; island = view
@@ -152,6 +164,19 @@ internal object NativeIsland : IslandView.Actions {
         attemptId = prefs.getString("pending_id", "").orEmpty(); attemptText = prefs.getString("pending_text", "").orEmpty()
         customTarget = prefs.getString("pending_question", null)
         if (attemptText.isNotEmpty()) view.input.setText(attemptText)
+        if (unlockReceiver == null) {
+            // Back from the lock screen: the island is shown again (Ash sends an unchanged resident entry only once), and
+            // a resident entry the owner put away comes back.
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context, intent: android.content.Intent) {
+                    if (intent.action == android.content.Intent.ACTION_USER_PRESENT) residentHidden = false
+                    restore?.invoke()
+                }
+            }
+            val filter = android.content.IntentFilter().apply { addAction(android.content.Intent.ACTION_USER_PRESENT); addAction(android.content.Intent.ACTION_SCREEN_ON) }
+            if (Build.VERSION.SDK_INT >= 33) app!!.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED) else app!!.registerReceiver(receiver, filter)
+            unlockReceiver = receiver
+        }
         pad = object : View(app!!) {
             @SuppressLint("ClickableViewAccessibility")
             override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -166,66 +191,74 @@ internal object NativeIsland : IslandView.Actions {
 
     /**
      * Places the island for its size this frame. The shell keeps its layout; it is only shifted (translation), so a
-     * frame redraws without a layout pass. In the trusted band nothing else moves during a transition: the touch window
-     * follows once the island has settled. Without the band, the island's own window follows every frame.
+     * frame redraws without a layout pass. In the trusted band nothing moves during a transition: the band is anchored
+     * at the screen's corner, and the touch window follows once the island has settled. Without the band, the island's
+     * own window follows every frame.
      */
     private fun follow(w: Int, h: Int) {
         val ctx = app ?: return; val p = windowParams(ctx)
-        val screen = ctx.resources.displayMetrics.widthPixels
-        if (centreX < 0) centreX = screen / 2
+        val screen = screenWidth(ctx)
+        val g = geometry ?: measurePill(ctx)
         islandW = w; islandH = h
         val side = dp(IslandTokens.SIZE_WINDOW_INSET_SIDE); val top = dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
         val view = island ?: return; val shell = view.shell
         val lp = shell.layoutParams as FrameLayout.LayoutParams
         val margin = if (trusted) 0 else side
-        // The trusted window covers the screen: the island sits below the status bar, dragged down by offsetY.
-        val marginTop = if (trusted) statusBar(ctx) + top else top
+        // The trusted band starts at the screen's top: the island hugs the camera (or sits in the status bar).
+        val marginTop = if (trusted) g.top else top
         if (lp.leftMargin != margin || lp.topMargin != marginTop) { lp.leftMargin = margin; lp.topMargin = marginTop; shell.layoutParams = lp }
         val inShell = (lp.width - w) / 2
+        // Centred on the camera (or the screen), never off it.
+        val left = (g.centreX - w / 2).coerceIn(0, (screen - w).coerceAtLeast(0))
         if (trusted) {
-            // The window never changes; only the island moves and resizes in it.
-            val left = (centreX - w / 2).coerceIn(0, (screen - w).coerceAtLeast(0))
-            shell.translationX = (left - inShell).toFloat(); shell.translationY = offsetY.toFloat()
-            if (!view.animating) placePad(ctx, left, marginTop + offsetY, w, h)
+            // The band's origin never changes; only its height does: the pill's own while it rests as one, so nothing
+            // covers the screen below the status bar, and the whole screen for the card and every transition.
+            val height = if (form == "card" || view.animating) WindowManager.LayoutParams.MATCH_PARENT else g.top + g.height
+            if (p.height != height) { p.height = height; if (attached) runCatching { host?.updateViewLayout(root, p) } }
+            shell.translationX = (left - inShell).toFloat(); shell.translationY = 0f
+            if (!view.animating) placePad(left, g.top, w, h)
             return
         }
         shell.translationX = -inShell.toFloat()
         p.width = w + 2 * side
         p.height = h + top + dp(IslandTokens.SIZE_WINDOW_INSET_BOTTOM)
-        p.x = (centreX - p.width / 2).coerceIn(-side, (screen - p.width + side).coerceAtLeast(-side))
-        p.y = offsetY
+        p.x = (g.centreX - p.width / 2).coerceIn(-side, (screen - p.width + side).coerceAtLeast(-side))
+        p.y = 0
         if (attached) runCatching { host?.updateViewLayout(root, p) }
     }
-    /** The touch window over the island (trusted mode); it draws nothing, so its own moves are never seen. */
-    private fun placePad(ctx: Context, left: Int, top: Int, w: Int, h: Int) {
-        val band = params ?: return
+    /** The touch window over the island (trusted mode), at [left], [top] on screen; it draws nothing, so its own moves are never seen. */
+    private fun placePad(left: Int, top: Int, w: Int, h: Int) {
         val t = padParams ?: WindowManager.LayoutParams(w, h, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            // Screen coordinates, like the band: the touch window sits exactly over the island.
+            // Screen coordinates, like the band: the touch window sits exactly over the island, over the status bar too.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; windowAnimations = R.style.CapsuleWindowAnimation; setTitle("AshTaskCapsule") }.also { padParams = it }
-        t.width = w; t.height = h; t.x = band.x + left; t.y = band.y + top
+            PixelFormat.TRANSLUCENT).apply {
+                gravity = Gravity.TOP or Gravity.LEFT; windowAnimations = R.style.CapsuleWindowAnimation; setTitle("AshTaskCapsule")
+                if (Build.VERSION.SDK_INT >= 30) fitInsetsTypes = 0
+                if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }.also { padParams = it }
+        t.width = w; t.height = h; t.x = left; t.y = top
         padBounds.set(t.x, t.y, t.x + w, t.y + h)
         if (attached && pad?.isAttachedToWindow == true) runCatching { host?.updateViewLayout(pad, t) }
     }
     private fun overlayType() = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
     private fun windowParams(ctx: Context): WindowManager.LayoutParams = params ?: (if (trusted) WindowManager.LayoutParams(
-        // The whole screen, whatever the island shows. It never changes.
+        // The screen's width from its top-left corner; [follow] sets its height.
         WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, PixelFormat.TRANSLUCENT)
     else WindowManager.LayoutParams(
-        dp(IslandTokens.SIZE_COMPACT_W + 2 * IslandTokens.SIZE_WINDOW_INSET_SIDE),
-        dp(IslandTokens.SIZE_COMPACT_H + IslandTokens.SIZE_WINDOW_INSET_TOP + IslandTokens.SIZE_WINDOW_INSET_BOTTOM),
+        dp(2 * IslandTokens.SIZE_PILL_RUNNING_SEGMENT_MAX + 2 * IslandTokens.SIZE_WINDOW_INSET_SIDE),
+        dp(IslandTokens.SIZE_PILL_NO_CUTOUT_H + IslandTokens.SIZE_WINDOW_INSET_TOP + IslandTokens.SIZE_WINDOW_INSET_BOTTOM),
         overlayType(),
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT)).apply {
         gravity = Gravity.TOP or Gravity.LEFT
         // The window's own 8dp top inset keeps the island 8dp below the status bar (tokens: topBelowStatusBar).
         x = if (trusted) 0 else (ctx.resources.displayMetrics.widthPixels - width) / 2
-        y = if (trusted) 0 else offsetY
+        y = 0
         // The full-screen window takes the keyboard as insets and fits the card above it (fitCard); the island-sized
         // one cannot, so the system pans it to keep the input above the keyboard.
         softInputMode = if (trusted) WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING else WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
@@ -240,6 +273,28 @@ internal object NativeIsland : IslandView.Actions {
     }.also { params = it }
 
     fun prewarm(ctx: Context) { main.post { ensure(ctx) } }
+    private fun screenWidth(ctx: Context): Int =
+        runCatching { if (Build.VERSION.SDK_INT >= 30) (A11yService.instance ?: ctx).getSystemService(WindowManager::class.java).currentWindowMetrics.bounds.width() else null }
+            .getOrNull() ?: ctx.resources.displayMetrics.widthPixels
+    /**
+     * The camera's cutout at the top of the screen now (left, top, right, bottom; it turns with the screen), or null.
+     * Read at run time from the display, never assumed for a device.
+     */
+    private fun cutout(ctx: Context): IntArray? {
+        if (Build.VERSION.SDK_INT < 28) return null
+        val wm = (A11yService.instance ?: ctx).getSystemService(WindowManager::class.java)
+        val c = runCatching { if (Build.VERSION.SDK_INT >= 30) wm.currentWindowMetrics.windowInsets.displayCutout else null }.getOrNull()
+            ?: runCatching { if (Build.VERSION.SDK_INT >= 29) @Suppress("DEPRECATION") wm.defaultDisplay.cutout else null }.getOrNull()
+            ?: root?.rootWindowInsets?.displayCutout ?: return null
+        val r = if (Build.VERSION.SDK_INT >= 29) c.boundingRectTop else c.boundingRects.firstOrNull { it.top < statusBar(ctx) } ?: return null
+        return if (r.isEmpty) null else intArrayOf(r.left, r.top, r.right, r.bottom)
+    }
+    /** Places the pill again: around the camera when drawn over the status bar (the accessibility service), else at the top centre. */
+    private fun measurePill(ctx: Context): IslandPill.Geometry {
+        val g = IslandPill.geometry(screenWidth(ctx), statusBar(ctx), cutout(ctx), ctx.resources.displayMetrics.density, A11yService.instance != null)
+        geometry = g; island?.setPill(g)
+        return g
+    }
     /** The status bar's height (an accessibility overlay is not told it in its insets). */
     private fun statusBar(ctx: Context): Int {
         val id = ctx.resources.getIdentifier("status_bar_height", "dimen", "android")
@@ -249,6 +304,8 @@ internal object NativeIsland : IslandView.Actions {
     /** A frame as Ash projects it, with [submitted] laid over its cards here; host.js `receive`. */
     fun update(ctx: Context, model: JSONObject, restoreWith: () -> Unit) {
         ensure(ctx)
+        // Something new from Ash brings back a resident entry the owner put away.
+        if (model.optString("kind") != "resident") residentHidden = false
         for (card in cards(model)) if (pending(card)) card.put("localState", submitted[card.optString("id")] ?: "")
         val prev = snapshot; restore = restoreWith; visible = true
         val newTurn = prev?.optString("turn") != model.optString("turn") || prev?.optString("session") != model.optString("session")
@@ -259,7 +316,8 @@ internal object NativeIsland : IslandView.Actions {
         val ended = model.optString("kind") in ENDED
         val reply = model.optString("reply")
         val next = listOf(model.optString("session"), model.optString("turn"), if (ended) "ended" else model.optString("kind"), incoming?.optString("id").orEmpty(), reply).joinToString("|")
-        if (newTurn) { selected = null; showOriginal = false; island?.resetMore(); if (!sending) notice = ""; if (reply.isEmpty() && incoming == null) form = "compact" }
+        // (A card the owner is typing in stays open.)
+        if (newTurn) { selected = null; showOriginal = false; island?.resetMore(); if (!sending) notice = ""; if (reply.isEmpty() && incoming == null && !editing) form = "compact" }
         val current = cards.firstOrNull { it.optString("id") == selected }
         if (incoming != null && (current == null || !pending(current) || current.optString("localState").isNotEmpty())) selected = incoming.optString("id")
         else if (incoming == null && ((reply.isNotEmpty() && ended) || (model.optBoolean("canStop") && cards.none { pending(it) }))) selected = null
@@ -272,12 +330,14 @@ internal object NativeIsland : IslandView.Actions {
         island?.reduceMotion = Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
         island?.traceMotion = switchText().contains("motion")
         island?.setCardWidth(minOf(IslandTokens.SIZE_CARD_W, ctx.resources.displayMetrics.widthPixels / ctx.resources.displayMetrics.density - 24f))
+        measurePill(ctx)
         fitCard()
         render()
         if (!allowed()) { if (!unlocked(ctx) || ashInFront) setEditing(false); detach(); return }
         // The accessibility service can connect, go away or be reconnected while the island is up: move to its window.
         if (attached && (trusted != (A11yService.instance != null) || trusted && owner != A11yService.connection) && !editing) detach()
         attach()
+        syncShown()
     }
     private val ENDED = setOf("reply", "result", "ask", "in_app", "incomplete", "stopped")
     private fun cards(model: JSONObject): List<JSONObject> = model.optJSONArray("cards")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
@@ -297,7 +357,8 @@ internal object NativeIsland : IslandView.Actions {
         val base = IslandModel(kind = model.optString("kind"), form = form, elapsedSec = model.optLong("elapsed"), activity = model.optString("activity"),
             body = IslandText.plain(model.optString("reply")), canStop = model.optBoolean("canStop"), interactive = interactive,
             pager = pager, notice = notice.ifEmpty { model.optString("notice") }, busy = sending,
-            placeholder = if (answering() != null) IslandKind.of("ask").placeholder.orEmpty() else "回复 Ash…")
+            placeholder = if (answering() != null) IslandKind.of("ask").placeholder.orEmpty()
+                else if (resident()) IslandKind.of("resident").placeholder.orEmpty() else "回复 Ash…")
         val shown = when {
             stale -> base.copy(kind = "stale")
             c == null -> base
@@ -342,7 +403,7 @@ internal object NativeIsland : IslandView.Actions {
                 maxOf(bars, keyboard)
             } else @Suppress("DEPRECATION") insets.systemWindowInsetBottom
         } ?: 0
-        val top = statusBar(ctx) + offsetY + dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
+        val top = if (A11yService.instance != null) geometry?.top ?: 0 else statusBar(ctx) + dp(IslandTokens.SIZE_WINDOW_INSET_TOP)
         val limit = minOf((screen - covered - top - dp(IslandSpec.CARD_BOTTOM_ROOM)).coerceAtLeast(dp(IslandSpec.CARD_MIN_LIMIT)),
             (screen * IslandSpec.CARD_MAX_SCREEN_SHARE).toInt())
         if (limit == maxCard) return false
@@ -360,8 +421,9 @@ internal object NativeIsland : IslandView.Actions {
         runCatching {
             box.visibility = View.VISIBLE; box.alpha = 1f
             host!!.addView(box, windowParams(ctx))
-            attached = true; shown = true
-            follow(islandW.takeIf { it > 0 } ?: dp(IslandTokens.SIZE_COMPACT_W), islandH.takeIf { it > 0 } ?: dp(IslandTokens.SIZE_COMPACT_H))
+            attached = true; syncShown()
+            val g = measurePill(ctx)
+            follow(islandW.takeIf { it > 0 } ?: IslandPill.width(IslandPill.resident(g, ctx.resources.displayMetrics.density), g), islandH.takeIf { it > 0 } ?: g.height)
             if (trusted) padParams?.let { host!!.addView(pad, it) }
             applyTouchMode()
             box.post { rememberBounds() }
@@ -383,6 +445,15 @@ internal object NativeIsland : IslandView.Actions {
         runCatching { host?.removeViewImmediate(box) }
         attached = false; shown = false; screenBounds = null
     }
+    /**
+     * A full-screen app (a video, a game) hid the status bar, or it is back ([A11yService] watches the system's
+     * windows): the resident entry stays off a full-screen app; a task's island still shows.
+     */
+    fun statusBarHidden(hidden: Boolean) { main.post {
+        if (fullscreen == hidden) return@post
+        fullscreen = hidden
+        if (resident()) { if (hidden) detach() else restore?.invoke() }
+    } }
     /** The notification shade opened or closed ([A11yService] watches the system's windows). */
     fun yieldToShade(open: Boolean) { main.post {
         if (yielding == open) return@post
@@ -437,17 +508,32 @@ internal object NativeIsland : IslandView.Actions {
     }
 
     // ---- owner actions ----
-    override fun tap() { if (form != "card") { form = "card"; render() } }
+    override fun tap() {
+        if (form != "card") { form = "card"; render() }
+        // The resident entry opens straight into talking to Ash.
+        if (resident()) setEditing(true)
+    }
     override fun collapse() { setEditing(false); if (form != "compact") { form = "compact"; render() } }
     /** Closes the island for this turn, whatever it shows; something new waiting on the owner brings it back. */
     override fun close() {
         val model = snapshot ?: return
+        // The resident card closes back into the pill; there is nothing to mark as seen.
+        if (resident()) { collapse(); return }
         setEditing(false)
         ash?.dismiss(model.getString("turn"))
     }
     override fun open() {
         setEditing(false)
         ash?.open()
+    }
+    override fun longPress() = open()
+    /** The pill swiped up: a task's closes as with 「关闭」; the resident entry goes away until something new or the next unlock. */
+    override fun swipeUp() {
+        if (form == "card") { collapse(); return }
+        if (!resident()) { close(); return }
+        residentHidden = true; setEditing(false)
+        val view = island
+        if (attached && view != null) view.leave { if (!allowed()) detach() } else detach()
     }
     override fun stop() {
         val model = snapshot ?: return
@@ -479,20 +565,6 @@ internal object NativeIsland : IslandView.Actions {
         val i = all.indexOfFirst { it.optString("id") == selected }
         selected = all[((i + delta) % all.size + all.size) % all.size].optString("id")
         showOriginal = false; island?.resetMore(); render()
-    }
-    override fun drag(phase: String, dx: Float, dy: Float) {
-        val ctx = app ?: return
-        when (phase) {
-            "start" -> { dragFromX = centreX; dragFromY = offsetY }
-            "move" -> {
-                val screen = ctx.resources.displayMetrics.widthPixels
-                centreX = (dragFromX + dx.toInt()).coerceIn(islandW / 2, (screen - islandW / 2).coerceAtLeast(islandW / 2))
-                val room = ctx.resources.displayMetrics.heightPixels - statusBar(ctx) - islandH - dp(48f)
-                offsetY = (dragFromY + dy.toInt()).coerceIn(0, room.coerceAtLeast(0))
-                follow(islandW, islandH)
-            }
-            "end" -> { if (fitCard()) render(); root?.post { rememberBounds() } }
-        }
     }
     override fun send(text: String) {
         if (sending || text.isBlank() || text.length > 4000) return

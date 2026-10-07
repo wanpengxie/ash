@@ -100,6 +100,7 @@ class A11yService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        statusBarSeen = false
         val t = HandlerThread("ash-a11y-cb").apply { start() }
         cbThread = t
         cbHandler = Handler(t.looper)
@@ -119,6 +120,7 @@ class A11yService : AccessibilityService() {
             ScreenWindowFact(w.id, windowTitle(w), w.isFocused, w.isActive, bounds.toShortString())
         } }.getOrDefault(emptyList())
         trackShade(open)
+        trackStatusBar(open)
         if (capsuleWindows.presentationOnly(event.windowId, facts, event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED,
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
         lastEventAt = SystemClock.uptimeMillis()
@@ -150,6 +152,27 @@ class A11yService : AccessibilityService() {
     }
     private var shadeOpen = false
 
+    /**
+     * A full-screen app (a video, a game) hid the status bar: the resident island stays off it. SystemUI's status bar is
+     * a thin system window along the top of the screen. Some phones may never list it; so it is missed only after it
+     * was seen on this connection, and a phone that never lists it keeps the island (when unsure, it shows).
+     */
+    private fun trackStatusBar(windows: List<android.view.accessibility.AccessibilityWindowInfo>) {
+        val screen = resources.displayMetrics
+        val present = windows.any { w ->
+            w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM &&
+                Rect().also { w.getBoundsInScreen(it) }.let { it.top <= 0 && it.height() in 1 until screen.heightPixels / 4 &&
+                    it.width() >= screen.widthPixels / 2 && !ai.ash.screen.island.NativeIsland.ownsWindow(it) }
+        }
+        if (present) statusBarSeen = true
+        val hidden = statusBarSeen && !present && !shadeOpen
+        if (hidden == statusBarHidden) return
+        statusBarHidden = hidden
+        ai.ash.screen.island.NativeIsland.statusBarHidden(hidden)
+    }
+    private var statusBarSeen = false
+    private var statusBarHidden = false
+
     override fun onInterrupt() {
         Log.w(TAG, "accessibility service interrupted")
         releaseAllFingersFromLifecycle()
@@ -157,6 +180,7 @@ class A11yService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         shadeOpen = false; ai.ash.screen.island.NativeIsland.yieldToShade(false)
+        statusBarHidden = false; ai.ash.screen.island.NativeIsland.statusBarHidden(false)
         if (instance === this) { instance = null; ai.ash.screen.AshLink.serviceChanged() }
         releaseAllFingersFromLifecycle()
         return super.onUnbind(intent)

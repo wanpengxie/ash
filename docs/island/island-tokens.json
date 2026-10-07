@@ -5,6 +5,11 @@
     "compactHugCamera": { "w": 236, "h": 34, "radius": 17 },
     "card": { "w": 362, "h": "wrap", "radius": 30, "padding": [16, 16, 10, 16], "gap": 14 },
     "edge": { "w": 52, "h": 52, "radius": 26 },
+    "pill": {
+      "padY": 4, "gapPad": 2, "residentSegment": 28, "runningSegmentMax": 88, "noCutoutH": 28, "minH": 24,
+      "edgeMargin": 4, "padOuter": 6, "padInner": 6, "gap": 6, "dot": 7,
+      "note": "v2 (ISLAND-RESIDENT-DESIGN.md): the pill hugging the camera. Height = cutout + padY above and below; two equal segments around a gap of the cutout's width + gapPad each side."
+    },
     "topBelowStatusBar": 8,
     "topHugCamera": 5,
     "minTouch": 44,
@@ -16,6 +21,7 @@
   },
   "color": {
     "island": "#101011",
+    "pill": "#000000",
     "islandStroke": "rgba(255,255,255,0.06)",
     "surface": "#1A1A1C",
     "input": "#1E1E21",
@@ -62,6 +68,7 @@
     "compactHugCamera": 24,
     "card": { "size": 40, "radius": 14 },
     "edge": 42,
+    "pill": 16,
     "faceByKind": {
       "listening": "listening", "thinking": "thinking", "working": "focused",
       "ask": "listening", "approval": "focused", "in_app": "listening",

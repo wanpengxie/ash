@@ -58,16 +58,18 @@ object TaskStatus {
         val ctx = app ?: return
         val now = System.currentTimeMillis()
         val frame = model.frame
+        // Between tasks, and once the owner has seen what a task left, the island is the resident entry (if kept).
+        val island = model.island(now, TaskCapsule.residentOn(ctx))
+        if (island != TaskStatusModel.Island.TASK) { if (island == TaskStatusModel.Island.RESIDENT) TaskCapsule.resident() else TaskCapsule.hide() }
         if (!model.active() || frame == null) {
-            TaskCapsule.hide(); ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
+            ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
         }
         // Ash open: the owner has whatever is current in front of them, so it never pops up again outside Ash.
         if (AppState.inFront && model.notice()) saveNoticed()
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        val onIsland = model.visible(now)
-        if (!onIsland) TaskCapsule.hide()
-        else TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
+        val onIsland = island == TaskStatusModel.Island.TASK
+        if (onIsland) TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
         // A running turn is shown once: on the island, or, when the island is closed (or may not be drawn), as this
         // notification. What the turn says or asks reaches the owner through Ash's delivery, which notifies only when
         // the island is not on screen (Ash asks the phone at that moment).
@@ -95,10 +97,10 @@ object TaskStatus {
         }
         manager.notify(ID, b.build())
     }
-    /** Closes the island for the rest of this turn; from then on Ash notifies instead. */
+    /** Closes the island for the rest of this turn (back to the resident entry, if kept); from then on Ash notifies instead. */
     fun dismiss(turn: String) { main.post {
         if (!model.dismiss(turn)) return@post
-        saveNoticed(); TaskCapsule.hide(); render()
+        saveNoticed(); render()
     } }
     /** Explicit end, not a UI-only dismissal: withdraw pending actions before stopping this exact turn. */
     fun end(turn: String) { main.post {

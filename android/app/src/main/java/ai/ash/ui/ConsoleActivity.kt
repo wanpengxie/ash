@@ -35,6 +35,8 @@ class ConsoleActivity : Activity() {
     private lateinit var notificationToggle: Button
     private lateinit var recoveryState: TextView
     private lateinit var recoveryToggle: Button
+    private lateinit var residentState: TextView
+    private lateinit var residentToggle: Button
     private lateinit var logView: TextView
     private val ui = Handler(Looper.getMainLooper())
 
@@ -84,6 +86,15 @@ class ConsoleActivity : Activity() {
             }
         }
         root.addView(recoveryToggle)
+
+        h("灵动岛常驻入口")
+        residentState = TextView(this).apply { textSize = 13f }
+        root.addView(residentState)
+        residentToggle = Button(this).apply {
+            isAllCaps = false
+            setOnClickListener { TaskCapsule.setResidentKept(this@ConsoleActivity, !TaskCapsule.residentKept(this@ConsoleActivity)); renderResident() }
+        }
+        root.addView(residentToggle)
 
         h("通知读取（可选，默认关闭）")
         notificationState = TextView(this).apply { textSize = 13f }
@@ -143,7 +154,7 @@ class ConsoleActivity : Activity() {
                 ContainerInstaller.shippedVersion(this@ConsoleActivity)?.let { if (it != ContainerInstaller.installedVersion(p)) append("（待安装 $it）") }
                 append("\nApp：${packageManager.getPackageInfo(packageName, 0).versionName}  Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）")
             }
-            ui.post { info.text = text; renderPerms(); renderNotificationSense(); renderRecovery() }
+            ui.post { info.text = text; renderPerms(); renderNotificationSense(); renderRecovery(); renderResident() }
         }.start()
         ui.postDelayed({ refresh() }, 3000)
     }
@@ -177,6 +188,17 @@ class ConsoleActivity : Activity() {
         }
         recoveryToggle.text = if (r.enabled(this)) "关闭自动恢复" else "开启自动恢复"
         recoveryToggle.visibility = if (r.granted(this)) View.VISIBLE else View.GONE
+    }
+
+    /** The island's resident entry: on, off, or waiting for a screen helper that can draw it. */
+    private fun renderResident() {
+        val kept = TaskCapsule.residentKept(this)
+        residentState.text = when {
+            !kept -> "已关闭：灵动岛只在任务进行中、或有你没看过的新东西时出现。"
+            !ai.ash.host.screen.ScreenBridge.islandResident() -> "已开启，等屏幕助手连上（需要新版屏幕助手）后出现。"
+            else -> "已开启：平时贴着摄像头显示 Ash 的头像。轻点直接跟 Ash 说，长按打开 Ash，上划收起到下次解锁。"
+        }
+        residentToggle.text = if (kept) "关闭常驻入口" else "开启常驻入口"
     }
 
     private fun renderNotificationSense() {

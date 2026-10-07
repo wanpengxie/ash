@@ -11,8 +11,6 @@ import android.widget.TextView
  * comes from. Everything the designer put in tokens comes from [IslandTokens]. CSS px are dp.
  */
 internal object IslandSpec {
-    // .isl-compact { gap: 8px; padding: 0 12px 0 6px }  .isl-spacer { min-width: 20px }
-    const val COMPACT_GAP = 8f; const val COMPACT_PAD_LEFT = 6f; const val COMPACT_PAD_RIGHT = 12f; const val COMPACT_SPACER_MIN = 20f
     // .isl-label { letter-spacing: .02em }  .isl-ind { 18px }
     const val LABEL_LETTER_SPACING = 0.02f; const val INDICATOR = 18f
     // .isl-av { background: #2A2A2D; object-position: 50% 20% }  .card-head .isl-av { object-position: 50% 15% }
@@ -56,8 +54,8 @@ internal object IslandSpec {
     // host: the card is at most as tall as the screen below it less 32px, and never limited below 220px; and the island
     // is a glance, not a reader: never taller than half the screen
     const val CARD_BOTTOM_ROOM = 32f; const val CARD_MIN_LIMIT = 220f; const val CARD_MAX_SCREEN_SHARE = 0.5f
-    // host.js drag: a press that moves more than 8px drags the island
-    const val DRAG_SLOP = 8f
+    // A press that moves up more than 8px (host.js's drag slop) is a swipe up
+    const val SWIPE_SLOP = 8f
     // .isl-in { from: blur(3px) }
     const val CONTENT_IN_FROM_BLUR = 3f
     // Text changed in place fades in (host.css .isl-fade)

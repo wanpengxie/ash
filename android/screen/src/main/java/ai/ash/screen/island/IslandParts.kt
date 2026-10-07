@@ -16,9 +16,10 @@ import android.widget.FrameLayout
 
 /**
  * The island's body: the reference's shadow (`.isl` box-shadow), dark fill and 1px inner stroke, with its children
- * clipped to the same rounded shape (overflow: hidden). The view itself keeps one size (the card's width, and the
- * tallest the island needs); the island's own box inside it is set per frame ([setBox]) and only redraws, so a
- * transition never lays anything out. The box is centred horizontally and starts at the top.
+ * clipped to the same rounded shape (overflow: hidden). The pill hugging the camera is flat black instead, one with the
+ * cutout; between the pill and the card the one turns into the other. The view itself keeps one size (the card's
+ * width, and the tallest the island needs); the island's own box inside it is set per frame ([setBox]) and only
+ * redraws, so a transition never lays anything out. The box is centred horizontally and starts at the top.
  */
 internal class IslandShell(ctx: Context) : FrameLayout(ctx) {
     /** The island's box in this view, in px. */
@@ -39,14 +40,17 @@ internal class IslandShell(ctx: Context) : FrameLayout(ctx) {
         }
     }
     private val density = ctx.resources.displayMetrics.density
+    /** The pill's corner radius (half its height): at it the island is the pill; at the card's radius, the card. */
+    var pillRadius = IslandSpec.dp(ctx, IslandTokens.SIZE_PILL_NO_CUTOUT_H / 2)
+        set(value) { if (field != value) { field = value; invalidate() } }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = IslandTokens.COLOR_ISLAND }
+    private val blend = android.animation.ArgbEvaluator()
     // inset 0 0 0 1px rgba(255,255,255,.06): a 1px line just inside the edge.
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = density; color = IslandTokens.COLOR_ISLAND_STROKE }
     private val shadowPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val rect = RectF()
-    // The shadow is blurred once per corner radius, off screen, and drawn as nine slices (as CardView does): a
-    // Gaussian blur on every frame of a transition costs more than the rest of the frame.
-    private val compactShadow by lazy { IslandShadow(IslandSpec.dp(ctx, IslandTokens.SIZE_COMPACT_RADIUS), density) }
+    // The shadow is blurred once, off screen, and drawn as nine slices (as CardView does): a Gaussian blur on every
+    // frame of a transition costs more than the rest of the frame.
     private val cardShadow by lazy { IslandShadow(IslandSpec.dp(ctx, IslandTokens.SIZE_CARD_RADIUS), density) }
     init {
         setWillNotDraw(false); clipChildren = false; clipToPadding = false
@@ -54,12 +58,14 @@ internal class IslandShell(ctx: Context) : FrameLayout(ctx) {
     }
     override fun onDraw(canvas: Canvas) {
         if (box.isEmpty) return
-        // Between the two forms' radii the two shadows cross-fade.
-        val a = compactShadow; val b = cardShadow
-        val t = ((radius - a.radius) / (b.radius - a.radius)).coerceIn(0f, 1f)
-        if (t < 1f) a.draw(canvas, box, radius, ((1 - t) * 255).toInt(), shadowPaint)
+        // Between the pill's radius and the card's, the shadow, the fill and the edge come in.
+        val b = cardShadow
+        val t = ((radius - pillRadius) / (b.radius - pillRadius).coerceAtLeast(1f)).coerceIn(0f, 1f)
         if (t > 0f) b.draw(canvas, box, radius, (t * 255).toInt(), shadowPaint)
+        fill.color = blend.evaluate(t, IslandTokens.COLOR_PILL, IslandTokens.COLOR_ISLAND) as Int
         rect.set(box); canvas.drawRoundRect(rect, radius, radius, fill)
+        if (t <= 0f) return
+        stroke.color = IslandTokens.COLOR_ISLAND_STROKE; stroke.alpha = Math.round(android.graphics.Color.alpha(IslandTokens.COLOR_ISLAND_STROKE) * t)
         val half = stroke.strokeWidth / 2; rect.inset(half, half)
         canvas.drawRoundRect(rect, (radius - half).coerceAtLeast(0f), (radius - half).coerceAtLeast(0f), stroke)
     }

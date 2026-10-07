@@ -67,21 +67,27 @@ internal class IslandKind(val label: String?, val title: String, val face: Strin
             "stopped" to IslandKind("已停止", "已停止", face.getValue("stopped"), IslandIndicator.Mark.STOP, S),
             // Not in the reference: a normal end before (or without) a judgment. A quiet grey dot.
             "reply" to IslandKind("本轮回复", "本轮回复", "default", IslandIndicator.Mark.DOT, O, clamp = true),
+            // v2: nothing under way; the pill is the way to talk to Ash, and its card is just the composer.
+            "resident" to IslandKind(null, "跟 Ash 说", "default", IslandIndicator.Mark.DOT, D, placeholder = "想让 Ash 做什么？"),
         )
         fun of(kind: String) = ALL[kind] ?: ALL.getValue("working")
     }
 }
 
 /**
- * The island's content and its transitions (see [IslandMotion]). Static layout is the reference's; [onFrame] is called
- * with the shell's size on every frame of a transition and on every content change.
+ * The island's content and its transitions (see [IslandMotion]). The card's layout is the reference's; the compact form
+ * is v2's pill around the camera ([IslandPill]): the resident face, or a task's face and verb on the left and its time
+ * and dot on the right. [onFrame] is called with the shell's size on every frame of a transition and on every content
+ * change.
  */
 internal class IslandView(ctx: Context, private val actions: Actions) {
     interface Actions {
         fun tap(); fun collapse(); fun close(); fun open(); fun stop(); fun send(text: String); fun focus(editing: Boolean)
         fun choose(index: Int); fun allow(); fun deny(); fun toggleOriginal(); fun page(delta: Int)
-        /** The island is dragged by [dx], [dy] px since the press ("start", "move", "end"). */
-        fun drag(phase: String, dx: Float, dy: Float)
+        /** The pill was held: open Ash. */
+        fun longPress()
+        /** The pill was swiped up (put away). */
+        fun swipeUp()
     }
     val shell = IslandShell(ctx)
     var onFrame: (widthPx: Int, heightPx: Int) -> Unit = { _, _ -> }
@@ -100,11 +106,21 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     // Material's emphasised decelerate, for both sides of the fade through.
     private val fadeIn = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
 
-    // ---- capsule ----
-    private val compact = LinearLayout(ctx).apply {
-        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        setPadding(px(IslandSpec.COMPACT_PAD_LEFT), 0, px(IslandSpec.COMPACT_PAD_RIGHT), 0)
+    // ---- pill: a left and a right segment around the camera, each [segment] wide, [pill]'s gap between them ----
+    private var pill = IslandPill.Geometry(0, 0, px(IslandTokens.SIZE_PILL_NO_CUTOUT_H), 0, px(IslandTokens.SIZE_PILL_RUNNING_SEGMENT_MAX), false)
+    private var segment = IslandPill.resident(pill, d)
+    private val compact = FrameLayout(ctx).apply {
         setOnClickListener { actions.tap() }
+        setOnLongClickListener { actions.longPress(); true }
+        contentDescription = "Ash：轻点和 Ash 说话，长按打开 Ash"
+    }
+    private val leftSegment = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        setPadding(px(IslandTokens.SIZE_PILL_PAD_OUTER), 0, px(IslandTokens.SIZE_PILL_PAD_INNER), 0)
+    }
+    private val rightSegment = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        setPadding(px(IslandTokens.SIZE_PILL_PAD_INNER), 0, px(IslandTokens.SIZE_PILL_PAD_OUTER), 0)
     }
     private val compactAvatar = IslandAvatar(ctx, IslandSpec.AVATAR_FOCUS_COMPACT)
     private val compactLabel = FadeText(ctx) {
@@ -114,16 +130,36 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     private val compactTime = TextView(ctx).apply {
         IslandSpec.text(this, IslandTokens.TYPE_COMPACT_TIME_SIZE, IslandTokens.COLOR_TEXT_SECONDARY, cjk = false); fontFeatureSettings = "tnum"; isSingleLine = true
     }
-    private val compactMark = IslandIndicator(ctx)
+    private val compactDot = IslandDot(ctx)
     init {
-        val gap = px(IslandSpec.COMPACT_GAP)
-        compact.addView(compactAvatar, LinearLayout.LayoutParams(px(IslandTokens.AVATAR_COMPACT), px(IslandTokens.AVATAR_COMPACT)))
-        compact.addView(compactLabel, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = gap })
-        // .isl-spacer { flex: 1; min-width: 20px }
-        compact.addView(View(ctx).apply { minimumWidth = px(IslandSpec.COMPACT_SPACER_MIN) }, LinearLayout.LayoutParams(0, 1, 1f).apply { leftMargin = gap })
-        compact.addView(compactTime, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = gap })
-        compact.addView(compactMark, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = gap })
+        val gap = px(IslandTokens.SIZE_PILL_GAP)
+        leftSegment.addView(compactAvatar, LinearLayout.LayoutParams(px(IslandTokens.AVATAR_PILL), px(IslandTokens.AVATAR_PILL)))
+        leftSegment.addView(compactLabel, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = gap })
+        rightSegment.addView(compactTime, LinearLayout.LayoutParams(-2, -2))
+        rightSegment.addView(compactDot, LinearLayout.LayoutParams(px(IslandTokens.SIZE_PILL_DOT), px(IslandTokens.SIZE_PILL_DOT)).apply { leftMargin = gap })
+        compact.addView(leftSegment, FrameLayout.LayoutParams(segment, -1))
+        compact.addView(rightSegment, FrameLayout.LayoutParams(segment, -1).apply { leftMargin = segment + pill.gap })
+        swipeUp(compact) { actions.swipeUp() }
     }
+    /** Lays the pill out with segments [segment] wide (only when that changed). */
+    private fun layoutPill() {
+        val w = IslandPill.width(segment, pill)
+        (compact.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.width != w || it.height != pill.height }?.let { it.width = w; it.height = pill.height; compact.layoutParams = it }
+        (leftSegment.layoutParams as FrameLayout.LayoutParams).takeIf { it.width != segment }?.let { it.width = segment; leftSegment.layoutParams = it }
+        (rightSegment.layoutParams as FrameLayout.LayoutParams).takeIf { it.width != segment || it.leftMargin != segment + pill.gap }
+            ?.let { it.width = segment; it.leftMargin = segment + pill.gap; rightSegment.layoutParams = it }
+    }
+    /** Where the camera is, and so where the pill and its gap are; the card opens below the camera when it hugs one. */
+    fun setPill(next: IslandPill.Geometry) {
+        if (next == pill) return
+        pill = next
+        shell.pillRadius = pill.height / 2f
+        val p = IslandTokens.SIZE_CARD_PADDING
+        card.setPadding(px(p[3]), px(p[0]) + cardTopInset(), px(p[1]), px(p[2]))
+        model?.let { render(it, force = true) }
+    }
+    /** Hugging the camera, the card's head starts below the cutout (the pill's height, less the card's own padding). */
+    private fun cardTopInset() = if (pill.hugging) (pill.height + px(IslandTokens.SIZE_PILL_PAD_Y) - px(IslandTokens.SIZE_CARD_PADDING[0])).coerceAtLeast(0) else 0
 
     // ---- card ----
     private val card = LinearLayout(ctx).apply {
@@ -262,7 +298,8 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         head.addView(titles, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = px(IslandSpec.HEAD_GAP) })
         head.addView(collapseButton, LinearLayout.LayoutParams(px(IslandSpec.ICON_BUTTON), px(IslandSpec.ICON_BUTTON)).apply { leftMargin = px(IslandSpec.HEAD_GAP) })
         card.addView(head)
-        draggable(head); draggable(compact)
+        // Swiping the card's head up puts it back into the pill.
+        swipeUp(head) { actions.collapse() }
         activityBlock.addView(activityMark, LinearLayout.LayoutParams(-2, -2))
         val activityTexts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         activityTexts.addView(activityTitle); activityTexts.addView(activityNote)
@@ -318,7 +355,7 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             out.put(name, org.json.JSONArray(listOf((at[0] - origin[0]) / d, (at[1] - origin[1]) / d, v.width / d, v.height / d).map { Math.round(it * 10) / 10.0 }))
         }
         out.put("shell", org.json.JSONArray(listOf(0.0, 0.0, Math.round(shell.box.width() / d * 10) / 10.0, Math.round(shell.box.height() / d * 10) / 10.0)))
-        if (form == "compact") { put("av", compactAvatar); put("label", compactLabel.current); put("time", compactTime); put("ind", compactMark) }
+        if (form == "compact") { put("av", compactAvatar); put("label", compactLabel.current); put("time", compactTime); put("dot", compactDot) }
         else {
             put("av", cardAvatar); put("dot", titleDot); put("title", title.current); put("meta", meta); put("icon-btn", collapseButton)
             put("activity", activityBlock); put("activity-ind", activityMark); put("activity-b", activityTitle.current); put("activity-span", activityNote)
@@ -342,25 +379,26 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     fun setMaxCardHeight(px: Int) { maxCardPx = px }
     fun resetMore() { content.scrollTo(0, 0) }
 
-    /** A press on the capsule or the card's head that moves past the slop drags the island instead of tapping it. */
+    /**
+     * A press on [view] that travels up past the slop is a swipe up ([onSwipe]), not a tap or a long press; anything
+     * else is left to the view's own click handling.
+     */
     @android.annotation.SuppressLint("ClickableViewAccessibility")
-    private fun draggable(view: View) {
-        var x = 0f; var y = 0f; var dragging = false
-        val slop = IslandSpec.DRAG_SLOP * d
+    private fun swipeUp(view: View, onSwipe: () -> Unit) {
+        var x = 0f; var y = 0f; var swiping = false
+        val slop = IslandSpec.SWIPE_SLOP * d
         view.setOnTouchListener { _, e ->
             when (e.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> { x = e.rawX; y = e.rawY; dragging = false }
+                android.view.MotionEvent.ACTION_DOWN -> { x = e.rawX; y = e.rawY; swiping = false }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val dx = e.rawX - x; val dy = e.rawY - y
-                    if (!dragging && Math.abs(dx) + Math.abs(dy) > slop) { dragging = true; view.isPressed = false; actions.drag("start", 0f, 0f) }
-                    if (dragging) actions.drag("move", dx, dy)
+                    val up = y - e.rawY
+                    if (!swiping && up > slop && up > Math.abs(e.rawX - x)) { swiping = true; view.isPressed = false; view.cancelLongPress() }
                 }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> if (dragging) {
-                    dragging = false; view.isPressed = false; actions.drag("end", 0f, 0f); return@setOnTouchListener true
-                }
+                android.view.MotionEvent.ACTION_UP -> if (swiping) { swiping = false; onSwipe(); return@setOnTouchListener true }
+                android.view.MotionEvent.ACTION_CANCEL -> swiping = false
             }
             // A head that is not itself clickable still has to take the press to see it move.
-            dragging || (e.actionMasked == android.view.MotionEvent.ACTION_DOWN && !view.isClickable)
+            swiping || (e.actionMasked == android.view.MotionEvent.ACTION_DOWN && !view.isClickable)
         }
     }
 
@@ -376,26 +414,41 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         val k = IslandKind.of(next.kind)
         val reform = next.form != form
         // ---- fill both forms' fields (in place); text that changed fades ----
+        val resident = next.kind == "resident"
         compactAvatar.face = k.face
         // An approval's answer shows on its capsule (renderIsland: approved / denied / expired).
-        var label = k.label ?: next.activity.ifBlank { "在忙" }; var tone = k.tone; var mark = k.mark
+        var label = k.label ?: next.activity.ifBlank { "在忙" }; var tone = k.tone
         when (next.approval) {
-            "approved" -> { label = "已批准"; tone = IslandTokens.COLOR_DONE; mark = IslandIndicator.Mark.CHECK }
-            "denied", "expired" -> { label = if (next.approval == "denied") "已拒绝" else "审批已过期"; tone = IslandTokens.COLOR_OFFLINE; mark = IslandIndicator.Mark.OFF }
+            "approved" -> { label = "已批准"; tone = IslandTokens.COLOR_DONE }
+            "denied", "expired" -> { label = if (next.approval == "denied") "已拒绝" else "审批已过期"; tone = IslandTokens.COLOR_OFFLINE }
         }
         compactLabel.set(label, !reform)
+        compactLabel.visibility = if (resident) View.GONE else View.VISIBLE
         compactTime.visibility = if (k.run || next.kind == "stale") View.VISIBLE else View.GONE
         compactTime.text = clock(next.elapsedSec, short = true)
-        compactMark.reduceMotion = reduceMotion; compactMark.set(mark, tone)
+        compactDot.tone = tone; compactDot.pulsing = tone == IslandTokens.COLOR_NEEDS_YOU && !reduceMotion
+        // Resident: the face alone, against the camera; otherwise it leads the verb from the pill's outer end.
+        leftSegment.gravity = Gravity.CENTER_VERTICAL or (if (resident) Gravity.END else Gravity.START)
+        rightSegment.visibility = if (resident) View.INVISIBLE else View.VISIBLE
+        segment = if (resident) IslandPill.resident(pill, d) else IslandPill.segment(maxOf(
+            px(IslandTokens.SIZE_PILL_PAD_OUTER + IslandTokens.AVATAR_PILL + IslandTokens.SIZE_PILL_GAP + IslandTokens.SIZE_PILL_PAD_INNER) +
+                Math.ceil(compactLabel.current.paint.measureText(label).toDouble()).toInt(),
+            px(IslandTokens.SIZE_PILL_PAD_INNER + IslandTokens.SIZE_PILL_DOT + IslandTokens.SIZE_PILL_PAD_OUTER) +
+                if (compactTime.visibility == View.VISIBLE) px(IslandTokens.SIZE_PILL_GAP) + Math.ceil(compactTime.paint.measureText(compactTime.text.toString()).toDouble()).toInt() else 0
+        ), pill, d)
+        layoutPill()
         cardAvatar.face = k.face
         titleDot.tone = k.tone; titleDot.pulsing = tone == IslandTokens.COLOR_NEEDS_YOU && !reduceMotion
         title.set(k.title, !reform)
         meta.text = "Ash · " + when {
+            resident -> "有事直接说"
             k.run -> "已用 ${clock(next.elapsedSec, short = false)}"
             next.kind in setOf("result", "reply", "stopped", "incomplete") -> "用时 ${clock(next.elapsedSec, short = false)}"
             else -> "刚刚"
         }
         val running = k.run || next.kind == "stale"
+        // The resident card is the composer alone.
+        content.visibility = if (resident) View.GONE else View.VISIBLE
         activityBlock.visibility = if (running) View.VISIBLE else View.GONE
         textColumn.visibility = if (running) View.GONE else View.VISIBLE
         if (running) {
@@ -461,10 +514,10 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         val w = px(cardWidthDp)
         card.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxCardPx, View.MeasureSpec.AT_MOST))
         w to card.measuredHeight
-    } else px(IslandTokens.SIZE_COMPACT_W) to px(IslandTokens.SIZE_COMPACT_H)
+    } else IslandPill.width(segment, pill) to pill.height
 
     private fun content(form: String): View = if (form == "card") card else compact
-    private fun radiusPx(form: String) = IslandSpec.dp(shell.context, if (form == "card") IslandTokens.SIZE_CARD_RADIUS else IslandTokens.SIZE_COMPACT_RADIUS)
+    private fun radiusPx(form: String) = if (form == "card") IslandSpec.dp(shell.context, IslandTokens.SIZE_CARD_RADIUS) else pill.height / 2f
 
     // ---- shared avatar: one face that travels between the capsule's and the card's places ----
     private val overlay = FrameLayout(ctx).apply { isClickable = false }
@@ -473,7 +526,7 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     init {
         // Both forms are built and laid out from the start; the one not shown is invisible. A transition only changes
         // what is visible, never builds or first lays out a view.
-        shell.clip.addView(compact, FrameLayout.LayoutParams(px(IslandTokens.SIZE_COMPACT_W), px(IslandTokens.SIZE_COMPACT_H)))
+        shell.clip.addView(compact, FrameLayout.LayoutParams(IslandPill.width(segment, pill), pill.height))
         shell.clip.addView(card, FrameLayout.LayoutParams(px(cardWidthDp), ViewGroup.LayoutParams.WRAP_CONTENT))
         compact.visibility = View.INVISIBLE; card.visibility = View.INVISIBLE
         shell.clip.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -486,8 +539,13 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
     private fun avatarBox(form: String): FloatArray = if (form == "card") {
         val p = IslandTokens.SIZE_CARD_PADDING
         // .card-head centres a 40dp avatar on its 44dp row (the collapse button sets the row's height).
-        floatArrayOf(p[3] * d, p[0] * d + (IslandSpec.ICON_BUTTON - IslandTokens.AVATAR_CARD_SIZE) / 2 * d, IslandTokens.AVATAR_CARD_SIZE * d)
-    } else floatArrayOf(IslandSpec.COMPACT_PAD_LEFT * d, (IslandTokens.SIZE_COMPACT_H - IslandTokens.AVATAR_COMPACT) / 2 * d, IslandTokens.AVATAR_COMPACT * d)
+        floatArrayOf(p[3] * d, p[0] * d + cardTopInset() + (IslandSpec.ICON_BUTTON - IslandTokens.AVATAR_CARD_SIZE) / 2 * d, IslandTokens.AVATAR_CARD_SIZE * d)
+    } else {
+        // The pill's face: against the camera when resident, else at the pill's outer end.
+        val size = IslandTokens.AVATAR_PILL * d
+        val x = if (model?.kind == "resident") segment - IslandTokens.SIZE_PILL_PAD_INNER * d - size else IslandTokens.SIZE_PILL_PAD_OUTER * d
+        floatArrayOf(x, (pill.height - size) / 2, size)
+    }
     /** The flying face is the card's 40dp avatar, scaled: its corners stay 14dp on screen, a circle at the capsule's size. */
     private fun placeFly(view: IslandAvatar, box: FloatArray) {
         val s = box[2] / (IslandTokens.AVATAR_CARD_SIZE * d)
@@ -508,10 +566,14 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
         if (form.isEmpty()) return
         val (w, h) = targetSize(form)
         if (spring?.isRunning == true) { relayout = true; return }
-        if (heightPx == 0 || reduceMotion || w != widthPx) { widthPx = w; heightPx = h; apply(w, h, radiusPx(form)); return }
-        if (h == heightPx) return
-        val from = heightPx
-        springTo(IslandMotion.RESIZE_STIFFNESS, IslandMotion.RESIZE_DAMPING) { t -> heightPx = Math.round(from + (h - from) * t); apply(widthPx, heightPx, shell.radius) }
+        // The card's width changes only with the screen: at once. The pill grows and shrinks around the camera.
+        if (heightPx == 0 || reduceMotion || w != widthPx && form == "card") { widthPx = w; heightPx = h; apply(w, h, radiusPx(form)); return }
+        if (h == heightPx && w == widthPx) return
+        val fromW = widthPx; val fromH = heightPx; val toR = radiusPx(form); val fromR = shell.radius
+        springTo(IslandMotion.RESIZE_STIFFNESS, IslandMotion.RESIZE_DAMPING) { t ->
+            widthPx = Math.round(fromW + (w - fromW) * t); heightPx = Math.round(fromH + (h - fromH) * t)
+            apply(widthPx, heightPx, if (form == "card") fromR else fromR + (toR - fromR) * t)
+        }
     }
 
     private fun springTo(stiffness: Float, damping: Float, onEnd: () -> Unit = {}, step: (Float) -> Unit) {
@@ -574,11 +636,11 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
             // Closing, the height leads (done by ~60% of the way) so the box never stands empty below the capsule row.
             val ht = if (opening) t else (t / IslandMotion.CLOSE_HEIGHT_LEAD).coerceAtMost(1f)
             widthPx = Math.round(fromW + (toW - fromW) * t); heightPx = Math.round(fromH + (toH - fromH) * ht)
-            apply(widthPx, heightPx, (fromR + (toR - fromR) * t).coerceAtLeast(0f))
             // Container transform, fit to width: both contents scale with the container from its top-left corner, so
             // they travel with it instead of sitting still in a growing box.
             val inScale = widthPx.toFloat() / toW; val outScale = widthPx.toFloat() / fromW
             incoming.scaleX = inScale; incoming.scaleY = inScale; outgoing.scaleX = outScale; outgoing.scaleY = outScale
+            apply(widthPx, heightPx, (fromR + (toR - fromR) * t).coerceAtLeast(0f))
             val c = t.coerceIn(0f, 1f)
             val box = floatArrayOf(a[0] + (b[0] - a[0]) * c, a[1] + (b[1] - a[1]) * c, a[2] + (b[2] - a[2]) * c)
             placeFly(flyFrom, box); placeFly(flyTo, box)
@@ -634,11 +696,13 @@ internal class IslandView(ctx: Context, private val actions: Actions) {
      */
     private fun apply(w: Int, h: Int, radius: Float) {
         val lp = shell.layoutParams
-        val shellW = px(cardWidthDp); val shellH = maxOf(cardHeightPx, px(IslandTokens.SIZE_COMPACT_H), h)
+        val shellW = px(cardWidthDp); val shellH = maxOf(cardHeightPx, pill.height, h)
         if (lp != null && (lp.width != shellW || lp.height < shellH || (!animating && lp.height != shellH))) { lp.width = shellW; lp.height = shellH; shell.layoutParams = lp }
         shell.setBox(w, h, radius, shellW)
         val left = shell.box.left.toFloat()
-        compact.translationX = left; card.translationX = left
+        // The pill's content stays centred in its box (on the camera) while the box grows or shrinks around it; in a
+        // morph it is scaled to the box's width, so this is the box's left edge.
+        compact.translationX = left + (w - IslandPill.width(segment, pill) * compact.scaleX) / 2; card.translationX = left
         onFrame(w, h)
     }
 }

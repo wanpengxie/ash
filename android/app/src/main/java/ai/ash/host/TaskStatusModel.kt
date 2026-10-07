@@ -117,6 +117,16 @@ internal class TaskStatusModel {
         if (!active() || dismissed) return false
         return running(f) || items(f).any { it !in noticed }
     }
+    /**
+     * What the island shows now (island v2): the task when there is one to show, otherwise the resident entry when the
+     * owner keeps it ([resident]: the setting is on and the screen helper draws it), otherwise nothing.
+     */
+    fun island(now: Long, resident: Boolean): Island = when {
+        visible(now) -> Island.TASK
+        resident -> Island.RESIDENT
+        else -> Island.NOTHING
+    }
+    enum class Island { TASK, RESIDENT, NOTHING }
     fun canStop(turn: String, now: Long): Boolean = frame?.let { it.turn == turn && it.canStop && !stale(now) && active() } ?: false
     fun elapsed(now: Long): Long = frame?.let { ((if (it.state == "done") finished else now) - it.startedAt).coerceAtLeast(0) / 1000 } ?: 0
     fun clear() { frame = null; retired.clear(); received = 0; finished = 0 }

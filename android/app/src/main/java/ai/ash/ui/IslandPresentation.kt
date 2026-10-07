@@ -38,4 +38,9 @@ internal object IslandPresentation {
             .put("stale", stale).put("interactive", interactive && !stale).put("canStop", canStop)
             .put("mayClose", mayClose).put("notice", notice ?: "")
     }
+
+    /** The resident entry (island v2): nothing under way and nothing new; it carries no task content at all. */
+    fun resident(): JSONObject = JSONObject().put("session", "").put("turn", "").put("kind", "resident").put("reply", "")
+        .put("activity", "").put("elapsed", 0).put("cards", JSONArray()).put("stale", false).put("interactive", true)
+        .put("canStop", false).put("mayClose", true).put("notice", "")
 }

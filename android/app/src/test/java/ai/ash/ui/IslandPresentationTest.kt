@@ -37,4 +37,10 @@ class IslandPresentationTest {
         assertEquals("working", value.getString("kind")); assertEquals("在看网页", value.getString("activity"))
         assertFalse(value.has("steps")); assertFalse(value.getBoolean("mayClose"))
     }
+    @Test fun residentEntryCarriesNoTaskContent() {
+        val value = IslandPresentation.resident()
+        assertEquals("resident", value.getString("kind"))
+        assertEquals("", value.getString("turn")); assertEquals("", value.getString("reply")); assertEquals("", value.getString("activity"))
+        assertEquals(0, value.getJSONArray("cards").length()); assertFalse(value.getBoolean("canStop"))
+    }
 }

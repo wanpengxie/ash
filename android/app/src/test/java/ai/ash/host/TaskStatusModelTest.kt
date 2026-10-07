@@ -104,4 +104,31 @@ class TaskStatusModelTest {
         val m = TaskStatusModel(); m.accept(frame(), 2000); m.notice(); assertTrue(m.visible(2100))
         m.accept(frame(2, state = "done", canStop = false), 3000); assertTrue(m.visible(3100))
     }
+    @Test fun theIslandIsTheTaskThenTheResidentEntryOrNothingWhenItIsOff() {
+        val m = TaskStatusModel()
+        // Idle: the resident entry when kept, nothing when the owner turned it off.
+        assertEquals(TaskStatusModel.Island.RESIDENT, m.island(1000, resident = true))
+        assertEquals(TaskStatusModel.Island.NOTHING, m.island(1000, resident = false))
+        m.accept(frame(turn = null, state = "idle", canStop = false), 1500)
+        assertEquals(TaskStatusModel.Island.RESIDENT, m.island(1600, resident = true))
+        // A task under way shows, whatever the setting.
+        m.accept(frame(2), 2000)
+        assertEquals(TaskStatusModel.Island.TASK, m.island(2100, resident = true))
+        assertEquals(TaskStatusModel.Island.TASK, m.island(2100, resident = false))
+        // Its result shows until the owner has seen it; then the resident entry is back (v1: nothing).
+        m.accept(frame(3, state = "done", canStop = false).copy(reply = "好了"), 3000)
+        assertEquals(TaskStatusModel.Island.TASK, m.island(3100, resident = true))
+        m.notice()
+        assertEquals(TaskStatusModel.Island.RESIDENT, m.island(3200, resident = true))
+        assertEquals(TaskStatusModel.Island.NOTHING, m.island(3200, resident = false))
+    }
+    @Test fun closingARunningTaskFallsBackToTheResidentEntry() {
+        val m = TaskStatusModel(); m.accept(frame(), 2000)
+        assertTrue(m.dismiss("t_a"))
+        assertEquals(TaskStatusModel.Island.RESIDENT, m.island(2100, resident = true))
+        assertEquals(TaskStatusModel.Island.NOTHING, m.island(2100, resident = false))
+        // The rest of the turn stays closed.
+        m.accept(frame(2), 2500)
+        assertEquals(TaskStatusModel.Island.RESIDENT, m.island(2600, resident = true))
+    }
 }
