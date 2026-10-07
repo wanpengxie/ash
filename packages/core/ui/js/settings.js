@@ -46,6 +46,9 @@ function group(header, ...rows) {
 /** Two taps for anything that takes something away: the first says what will happen, the second does it. */
 function armed(control, label, confirmLabel, onWarn, run) {
   let ready = false;
+  // Leaving the page takes the first tap back: coming back never finds a destructive button one tap from done.
+  control.setAttribute("data-armed", "");
+  control.disarm = () => { if (ready) { ready = false; control.textContent = label; } };
   control.addEventListener("click", () => {
     if (control.disabled) return;
     if (!ready) { ready = true; control.textContent = confirmLabel; onWarn?.(); return; }
@@ -114,8 +117,9 @@ export class SettingsControls {
     this.render();
   }
 
-  /** The drawer was opened: show what is true now. */
+  /** The drawer was opened: always start at the settings root, showing what is true now. */
   opened() {
+    this.showHome?.();
     void this.refreshHome?.();
   }
 
@@ -133,6 +137,7 @@ export class SettingsControls {
     this.preferences?.dispose();
     this.preferences = null;
     this.refreshHome = null;
+    this.showHome = null;
     const name = this.name;
     const android = globalThis.location?.origin === "https://appassets.androidplatform.net";
     const titleBar = document.createElement("div");
@@ -162,6 +167,7 @@ export class SettingsControls {
       home.hidden = target !== home;
       for (const item of pages) item.hidden = item !== target;
       titleBar.hidden = target !== home;
+      for (const control of section.querySelectorAll?.("[data-armed]") ?? []) control.disarm?.();
     };
     const page = (id, title, intro, onOpen) => {
       const element = document.createElement("section");
@@ -800,6 +806,7 @@ export class SettingsControls {
       }
     };
 
+    this.showHome = () => show(home);
     this.panel.append(section);
     this.section = section;
     this.sectionContext = context;

@@ -470,3 +470,30 @@ test("opening settings reads what each row should say: quiet hours, pause, keys,
     assert.equal(panel.find("settingsPause").textContent, "暂停 小灰");
   } finally { delete globalThis.document; delete globalThis.location; }
 });
+
+test("re-opening the drawer starts at the settings root and takes back a half-done destructive tap", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  globalThis.location = { origin: "https://appassets.androidplatform.net" };
+  globalThis.__ashBrowserLogins = async () => ({ ok: true });
+  const all = (root) => [root, ...root.children.flatMap(all)];
+  Element.prototype.querySelectorAll = function (selector) { return selector === "[data-armed]" ? all(this).filter((item) => "data-armed" in item) : []; };
+  try {
+    const panel = new Element("div");
+    const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true, async request() { return { ok: false }; } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsBrowserRow").click();
+    assert.equal(panel.find("settingsBrowser").hidden, false);
+    assert.equal(panel.find("settingsHome").hidden, true);
+    const clear = panel.find("settingsBrowserClear");
+    clear.click();
+    assert.match(clear.textContent, /再点一次/);
+    settings.opened();
+    assert.equal(panel.find("settingsHome").hidden, false);
+    assert.equal(panel.find("settingsBrowser").hidden, true);
+    assert.equal(clear.textContent, "清除浏览器里的所有登录");
+  } finally {
+    delete Element.prototype.querySelectorAll;
+    delete globalThis.document; delete globalThis.location; delete globalThis.__ashBrowserLogins;
+  }
+});
