@@ -40,6 +40,15 @@ val copySenses by tasks.registering(Copy::class) {
     rename { "ash-senses.apk" }
 }
 
+// The apps shell (android/apps): each of the owner's apps in its own sandboxed page and task.
+val appsAssets = layout.buildDirectory.dir("generated/apps-assets")
+val copyApps by tasks.registering(Copy::class) {
+    dependsOn(":apps:assembleDebug")
+    from(project(":apps").layout.buildDirectory.file("outputs/apk/debug/apps-debug.apk"))
+    into(appsAssets.map { it.dir("apps") })
+    rename { "ash-apps.apk" }
+}
+
 // The agent container (arm64 Ubuntu + node + DSH + proot) from `npm run build:container`
 // (repo root build/container): shipped as assets/container/{ash-container.tgz,VERSION}
 // (not .tar.gz: the asset merger would gunzip anything named *.gz).
@@ -91,6 +100,7 @@ android {
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         buildConfigField("long", "SCREEN_VERSION_CODE", "${providers.gradleProperty("ashScreenVersionCode").get()}L")
         buildConfigField("long", "SENSES_VERSION_CODE", "${providers.gradleProperty("ashSensesVersionCode").get()}L")
+        buildConfigField("long", "APPS_VERSION_CODE", "${providers.gradleProperty("ashAppsVersionCode").get()}L")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     ndkVersion = "27.2.12479018"
@@ -159,6 +169,7 @@ android {
     sourceSets["main"].assets.srcDir(containerAssets)
     sourceSets["main"].assets.srcDir(screenAssets)
     sourceSets["main"].assets.srcDir(sensesAssets)
+    sourceSets["main"].assets.srcDir(appsAssets)
     buildFeatures { buildConfig = true }
 
     androidResources {
@@ -179,7 +190,7 @@ android {
 
 tasks.named("preBuild") { dependsOn(copyPayload) }
 // Only packaging needs the container (unit tests do not merge assets, so they run without it).
-tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer, copyScreen, copySenses) }
+tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer, copyScreen, copySenses, copyApps) }
 
 dependencies {
     implementation(project(":bridge"))
