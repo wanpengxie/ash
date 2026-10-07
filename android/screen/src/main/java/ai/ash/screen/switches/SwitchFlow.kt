@@ -75,9 +75,23 @@ class SwitchFlow(
         begin("打开设置")
         if (!ui.openSettings()) throw Abort("打不开系统设置")
         begin("设置 →「应用」")
-        press(locate("应用", stepMs) ?: throw Abort("设置里找不到「应用」"), "应用")
-        begin("「应用」→「自启动」")
-        press(locate("自启动", stepMs) ?: throw Abort("找不到「自启动」"), "自启动")
+        // ColorOS brings Settings back on the page it was last left at, whatever the launch flags say: start from
+        // whichever known page is showing, stepping back (at most a few times) from anything else.
+        var page = poll(stepMs) { pageOf(it) }
+        var backs = 0
+        while (page == null && backs++ < MAX_BACKS) {
+            if (locate("应用", ROW_MS) != null) { page = Page.HOME; break }
+            ui.back(); ui.settle()
+            page = poll(ROW_MS) { pageOf(it) }
+        }
+        if (page == null) throw Abort("设置里找不到「应用」")
+        if (page == Page.HOME) {
+            press(locate("应用", stepMs) ?: throw Abort("设置里找不到「应用」"), "应用")
+        }
+        if (page != Page.AUTOSTART_LIST) {
+            begin("「应用」→「自启动」")
+            press(locate("自启动", stepMs) ?: throw Abort("找不到「自启动」"), "自启动")
+        }
         for ((i, t) in targets.withIndex()) {
             begin("「自启动」列表 →「${t.label}」")
             // The list takes a moment to come up the first time; after that, a row not on screen is scrolled to.
@@ -101,6 +115,17 @@ class SwitchFlow(
             begin("回到「自启动」列表")
             ui.back(); ui.settle()
         }
+    }
+
+    private enum class Page { HOME, APPS, AUTOSTART_LIST }
+
+    /** The 自启动 list carries 「拦截记录」; the 应用 page lists 「自启动」 beside 「关联启动」; elsewhere only 「应用」 is looked for. */
+    private fun pageOf(root: UiNode): Page? = when {
+        !allowedPackage(root.packageName) -> null
+        exact(root, "拦截记录").isNotEmpty() -> Page.AUTOSTART_LIST
+        exact(root, "关联启动").isNotEmpty() && exact(root, "自启动").isNotEmpty() -> Page.APPS
+        exact(root, "应用").isNotEmpty() -> Page.HOME
+        else -> null
     }
 
     private fun behavior() {
@@ -339,6 +364,7 @@ class SwitchFlow(
         private const val POLL_MS = 250L
         /** How long a row already in the list is looked for on screen before scrolling. */
         private const val ROW_MS = 1_000L
+        private const val MAX_BACKS = 4
         private val AUTOSTART = listOf(Kind.BOOT, Kind.BACKGROUND)
         /** What a subtitle says when the switch is off. */
         private val OFF_WORDS = listOf("已禁止", "已关闭")

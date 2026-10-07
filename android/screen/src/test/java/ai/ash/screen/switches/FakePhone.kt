@@ -67,6 +67,8 @@ class FakePhone(
     val stuck: Set<String> = emptySet(),
     val noBootRow: Set<String> = emptySet(),
     var foreignAfter: Int = -1,
+    /** Settings comes back where it was last left (ColorOS ignores CLEAR_TASK): 1 = the 应用 page, 2 = the 自启动 list. */
+    val leftAt: Int = 0,
 ) : SwitchUi {
     var time = 0L
     val pages = ArrayDeque<FakeNode>()
@@ -136,7 +138,11 @@ class FakePhone(
         return pages.lastOrNull()
     }
     override fun settle() { time += 50 }
-    override fun openSettings(): Boolean { openedSettings++; pages.clear(); pages += main(); return true }
+    override fun openSettings(): Boolean {
+        openedSettings++
+        if (openedSettings == 1 && leftAt > 0) { pages.clear(); pages += main(); pages += appsPage(); if (leftAt > 1) pages += list(); return true }
+        pages.clear(); pages += main(); return true
+    }
     override fun openAppDetails(pkg: String): Boolean { pages += details(pkg); return true }
     override fun back(): Boolean { if (pages.isNotEmpty()) pages.removeLast(); return true }
     override fun returnToAsh() { returned = true }

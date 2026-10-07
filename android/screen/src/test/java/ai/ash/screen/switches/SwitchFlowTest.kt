@@ -140,9 +140,11 @@ class SwitchFlowTest {
         asksFirst: Set<String> = emptySet(),
         staleSubtitle: Set<String> = emptySet(),
         endlessList: Boolean = false,
+        leftAt: Int = 0,
     ) = FakePhone(
         apps = apps, oneSwitch = covers, autostart = apps.associateWith { it in on }.toMutableMap(), firstSection = 2,
         switchTakesTaps = switchTakesTaps, stuck = stuck, asksFirst = asksFirst, staleSubtitle = staleSubtitle, listWindow = 5, endlessList = endlessList,
+        leftAt = leftAt,
     )
 
     @Test fun colorOs15ListRowIsReadByItsExactLabelAndTurnedOn() {
@@ -248,5 +250,16 @@ class SwitchFlowTest {
     @Test fun theFlowIsNotInTheAgentsManifest() {
         assertTrue(ai.ash.screen.ScreenCapabilities.list.none { it.name == KeepAliveSwitches.CAPABILITY })
         assertTrue(ai.ash.screen.ScreenCapabilities.hidden.any { it.name == KeepAliveSwitches.CAPABILITY })
+    }
+
+    @Test fun settingsLeftOnAnInnerPageIsTakenFromThere() {
+        // Tonight's retest: Settings had been left on the 自启动 list and came back there instead of on its home page.
+        for (leftAt in listOf(1, 2)) {
+            val p = colorOs15(leftAt = leftAt)
+            val r = run(p)
+            assertEquals("leftAt=$leftAt ${r.stoppedAt}", Outcome.DONE, r.outcome)
+            assertTrue("leftAt=$leftAt", p.autostart["Ash"] == true)
+            assertEquals("leftAt=$leftAt", State.TURNED_ON, r.state("ai.ash.agent", Kind.BACKGROUND))
+        }
     }
 }
