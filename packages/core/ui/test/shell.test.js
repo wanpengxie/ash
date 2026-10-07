@@ -297,6 +297,20 @@ test("finite history applies delivery snapshot and say in one render, including 
   assert.deepEqual(renders.at(-1), ["text 1", "Only after release", "text 3"]);
 });
 
+test("the first history page marks the timeline ready even when it holds nothing", async () => {
+  const views = [];
+  let timeline = null;
+  timeline = new Timeline(null, () => views.push(timeline?.ready));
+  const empty = `event: auth.scope\ndata: ${JSON.stringify({ auth_scope: SCOPE })}\n\nevent: stream.page_end\ndata: ${JSON.stringify({ has_more: false, first_seq: null, last_seq: null })}\n\n`;
+  const net = netWith({ fetchImpl: async () => new Response(empty), onHistory: (rows, snapshots) => timeline.addMany(rows, snapshots), onHistoryReady: () => timeline.historyReady() });
+  assert.equal(timeline.ready, false);
+  await net.catchUp(net.generation, new AbortController().signal);
+  assert.equal(timeline.ready, true);
+  assert.equal(views.at(-1), true, "the ready state is painted");
+  timeline.reset();
+  assert.equal(timeline.ready, false, "a reset waits for the new history again");
+});
+
 test("credential scope switch discards an old high-cursor page and refetches the new low-seq history", async () => {
   const scopeB = `v1_${"c".repeat(43)}`;
   const old = { ...message(100), body: { text: "old account" } };

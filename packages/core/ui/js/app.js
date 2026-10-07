@@ -29,6 +29,13 @@ export class Timeline {
     this.view = initialView();
     this.loading = false;
     this.exhausted = false;
+    this.ready = false;
+    this.onChange(this.view, true);
+  }
+  /** The first history page has been applied; an empty conversation is now genuinely empty. */
+  historyReady() {
+    if (this.ready) return;
+    this.ready = true;
     this.onChange(this.view, true);
   }
   add(message) {
@@ -106,7 +113,7 @@ export function render(view, outbox = [], openInline, presenceBar, openWorkspace
   const oldTop = log.scrollTop;
   const fragment = document.createDocumentFragment();
   const expanded = new Set([...(log.querySelectorAll?.("details.work-thread[open]") ?? [])].map(node => node.dataset.thread));
-  appendConversation(fragment, view.conversation, { openInline, openWorkspaceFile, ...cardActions });
+  appendConversation(fragment, view.conversation, { openInline, openWorkspaceFile, ...cardActions, loading: cardActions?.loading?.() === true });
   appendOutbox(fragment, outbox);
   log.replaceChildren(fragment);
   for (const node of log.querySelectorAll?.("details.work-thread") ?? []) if (expanded.has(node.dataset.thread)) node.open = true;
@@ -147,6 +154,7 @@ export function boot({ uiTransport } = {}) {
   const optionPending = new Set();
   const cardActions = {
     agentName: id => recipient?.name(id) ?? id.replace(/^agent:/, ""),
+    loading: () => !timeline?.ready,
     onStopThread: async id => net.agentRequest("thread.stop", { thread: id }),
     onOpenFile: (ref) => files.open(ref),
     onFileLink: (href) => files.openLink(href),
@@ -221,6 +229,7 @@ export function boot({ uiTransport } = {}) {
         } }).catch(() => { connection.textContent = "页面请求回执未送达"; });
     },
     onHistory: (messages, snapshots) => { timeline.addMany(messages, snapshots); performance.mark("shell.history-rendered"); },
+    onHistoryReady: () => { timeline.historyReady(); },
     onSnapshot: (snapshot) => { timeline.snapshot(snapshot); },
     onReset: () => { files?.root.close(); askIntents.clear(); optionPending.clear(); timeline.reset(); suggestions.replaceChildren(); clearContext(); settings?.reset(); agentSheet?.reset(); identityName?.reset(); },
     onState: (status, error) => {

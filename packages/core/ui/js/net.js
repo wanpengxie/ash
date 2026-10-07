@@ -60,13 +60,14 @@ export async function readSse(response, onFrame, signal, maxFrameBytes = 2_000_0
 }
 
 export class ScreenNet {
-  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), uiTransport, storage = sessionStorage, pendingStore = null, endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onSnapshot = () => {}, onReset = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
+  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), uiTransport, storage = sessionStorage, pendingStore = null, endpoint = globalThis.location?.origin || "http://local.test", label = "Web", onMessage = () => {}, onHistory = () => {}, onHistoryReady = () => {}, onSnapshot = () => {}, onReset = () => {}, onState = () => {}, onRegistered = () => {}, onQueue = () => {} } = {}) {
     this.uiTransport = uiTransport ?? browserUiTransport(fetchImpl);
     if (this.uiTransport.embedded && endpoint !== (globalThis.location?.origin || "http://local.test") && endpoint !== this.uiTransport.endpoint) throw new Error("conflicting logical core endpoint");
     this.storage = storage;
     this.label = label;
     this.onMessage = onMessage;
     this.onHistory = onHistory;
+    this.onHistoryReady = onHistoryReady;
     this.onSnapshot = onSnapshot;
     this.onReset = onReset;
     this.onState = onState;
@@ -136,6 +137,8 @@ export class ScreenNet {
       if (!endFrame) throw new Error("incomplete history page");
       if (generation === this.generation && !signal.aborted && (history.length || snapshots.length)) this.onHistory(history, snapshots);
       more = !initial && endFrame.has_more;
+      // The first page has arrived even when it is empty: only now may the screen say there is no conversation.
+      if (initial && generation === this.generation && !signal.aborted) this.onHistoryReady();
       if (initial) this.bootstrapped = true;
       if (this.cursor === null) this.cursor = 0;
     }

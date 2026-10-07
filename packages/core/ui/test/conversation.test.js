@@ -147,3 +147,8 @@ test("permission card delegates one owner tap to the native settings action", ()
   button.listeners.click();
   assert.deepEqual(opened, ["calendar"]);
 });
+
+test("an empty conversation says it is loading until the first history page has arrived", () => {
+  assert.equal(draw([], { loading: true }).children[0].textContent, "正在载入对话…");
+  assert.equal(draw([]).children[0].textContent, "还没有对话。");
+});
