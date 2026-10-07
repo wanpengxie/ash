@@ -48,7 +48,6 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
-import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -368,13 +367,7 @@ class HomeActivity : Activity() {
                 val rawSecret = input.opt("secret") as? String
                 val url = rawUrl?.trim()
                 val secret = rawSecret?.trim()
-                val normalized = if (url.isNullOrEmpty()) "" else runCatching {
-                    val parsed = URI(url)
-                    require(parsed.scheme == "https" && !parsed.host.isNullOrBlank() && parsed.userInfo == null &&
-                        parsed.query == null && parsed.fragment == null && (parsed.path.isNullOrEmpty() || parsed.path == "/") &&
-                        (parsed.port == -1 || parsed.port in 1..65535))
-                    URI("https", null, parsed.host, parsed.port, null, null, null).toString()
-                }.getOrNull()
+                val normalized = if (url.isNullOrEmpty()) "" else normalizeGatewayUrl(url)
                 val saved = if (url == null || secret == null || secret.length > 1024 || normalized == null) false else runCatching {
                     paths.state.mkdirs()
                     if (normalized.isEmpty()) {
