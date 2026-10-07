@@ -5,7 +5,7 @@ import android.content.pm.PackageManager
 import android.os.ParcelFileDescriptor
 import java.io.InputStreamReader
 
-/** The two ends of the bridges between Ash and its helper apps (the screen helper, the senses helper). */
+/** The two ends of the bridges between Ash and its helper apps (the screen helper, the senses helper, the apps shell). */
 object Bridge {
     /** Raised when either side changes what a call means; both refuse a peer that speaks another. */
     const val PROTOCOL = 1
@@ -14,6 +14,11 @@ object Bridge {
     const val SENSES_PACKAGE = "ai.ash.senses"
     const val SENSES_SERVICE = "ai.ash.senses.BridgeService"
     const val SENSES_SETUP = "ai.ash.senses.SetupActivity"
+    /** The apps shell: draws the owner's apps; reaches Ash's core only through [APPS_HOST_SERVICE]. */
+    const val APPS_PACKAGE = "ai.ash.apps"
+    const val APPS_LAUNCHER = "ai.ash.apps.MainActivity"
+    const val ASH_PACKAGE = "ai.ash.agent"
+    const val APPS_HOST_SERVICE = "ai.ash.host.apps.AppsHostService"
     /** Every tool the senses helper offers: Ash keeps a policy for each (a tool without one is never offered). */
     val SENSES_TOOLS = listOf(
         "location.get", "location.track", "location.history", "activity.current", "activity.history", "sensors.steps",

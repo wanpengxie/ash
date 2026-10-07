@@ -18,6 +18,7 @@ import android.widget.Toast
 import ai.ash.host.screen.ScreenInstaller
 import ai.ash.host.screen.ScreenRecovery
 import ai.ash.host.senses.SensesBridge
+import ai.ash.host.apps.AppsShell
 import ai.ash.host.shizuku.ShizukuState
 
 /**
@@ -209,6 +210,12 @@ object Permissions {
                     }
                 },
                 confirmable = { PhoneMaker.current.ownSwitches },
+            ))
+            add(Permission(
+                "apps", "Ash 应用", "你的每个应用（比如「健康」）在这里有自己的页面，还能放到桌面上",
+                { c -> !AppsShell.needsInstall(c) },
+                { a -> if (AppsShell.needsInstall(a)) HelperInstaller.install(a, Helper.APPS) else AppsShell.open(a) },
+                { c -> if (AppsShell.installedVersion(c) == 0L) "先安装「Ash 应用」（Ash 自带，点一下即可安装）" else "Ash 应用需要更新，点一下即可更新" },
             ))
             if (Build.VERSION.SDK_INT >= 30) add(Permission(
                 "all_files", "所有文件访问", "让 Ash 读写手机存储里的照片、下载和文档",

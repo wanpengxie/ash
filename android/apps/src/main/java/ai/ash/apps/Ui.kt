@@ -1,0 +1,64 @@
+package ai.ash.apps
+
+import android.app.Activity
+import android.app.ActivityManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.Icon
+import android.net.Uri
+import android.os.Build
+import android.view.View
+import android.view.WindowInsets
+import android.widget.Toast
+
+/** Small shared pieces of the shell's screens. */
+object Ui {
+    fun dp(ctx: Context, v: Int) = (v * ctx.resources.displayMetrics.density).toInt()
+    fun night(ctx: Context) = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    fun text(ctx: Context) = if (night(ctx)) Color.rgb(0xF2, 0xF2, 0xF2) else Color.rgb(0x1C, 0x1C, 0x1E)
+    fun muted(ctx: Context) = if (night(ctx)) Color.rgb(0xA0, 0xA0, 0xA6) else Color.rgb(0x6E, 0x6E, 0x73)
+    fun bar(ctx: Context) = if (night(ctx)) Color.rgb(0x1C, 0x1C, 0x1E) else Color.rgb(0xF4, 0xF4, 0xF6)
+    fun page(ctx: Context) = if (night(ctx)) Color.rgb(0x00, 0x00, 0x00) else Color.WHITE
+    const val ACCENT = 0xFFFF7A3D.toInt()
+
+    /** Drawn edge to edge (targetSdk 35): keep clear of the system bars, the cutout and the keyboard. */
+    fun insets(root: View) {
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+                v.setPadding(i.left, i.top, i.right, i.bottom)
+            } else @Suppress("DEPRECATION") v.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+            insets
+        }
+    }
+
+    fun square(b: Bitmap, size: Int = 192): Bitmap = if (b.width == size && b.height == size) b else Bitmap.createScaledBitmap(b, size, size, true)
+
+    /** Recents shows the app's own name and icon on its card. */
+    @Suppress("DEPRECATION")
+    fun taskCard(a: Activity, name: String, icon: Bitmap?) {
+        runCatching { a.setTaskDescription(ActivityManager.TaskDescription(name, icon?.let { square(it) }, bar(a))) }
+    }
+
+    /** The intent that opens one app in its own task (the same intent each time, so its task is reused). */
+    fun appIntent(ctx: Context, id: String): Intent =
+        Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, AppActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+
+    /** 「添加到桌面」: the launcher asks the owner, then shows the app's own icon and name. */
+    fun pin(ctx: Context, id: String, name: String, icon: Bitmap?) {
+        val sm = ctx.getSystemService(ShortcutManager::class.java)
+        if (sm == null || !sm.isRequestPinShortcutSupported) { Toast.makeText(ctx, "这个桌面不支持添加图标", Toast.LENGTH_LONG).show(); return }
+        val info = ShortcutInfo.Builder(ctx, "app:$id")
+            .setShortLabel(name.take(24)).setLongLabel(name)
+            .setIcon(icon?.let { Icon.createWithBitmap(square(it)) } ?: Icon.createWithResource(ctx, R.drawable.ic_launcher))
+            .setIntent(Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, OpenActivity::class.java))
+            .build()
+        runCatching { if (!sm.requestPinShortcut(info, null)) Toast.makeText(ctx, "桌面没有接受", Toast.LENGTH_LONG).show() }
+            .onFailure { Toast.makeText(ctx, "添加失败：${it.message}", Toast.LENGTH_LONG).show() }
+    }
+}

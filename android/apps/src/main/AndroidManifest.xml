@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Apps may declare network domains (MCP Apps CSP); everything else is blocked in the page. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <queries>
+        <package android:name="ai.ash.agent" />
+    </queries>
+
+    <application
+        android:name=".AppsApplication"
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:theme="@style/Shell"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false">
+
+        <!-- The owner's apps, from Ash. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ash-app://open?app=<id> (links, home-screen icons): checks the id, then opens that app's own task. -->
+        <activity
+            android:name=".OpenActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ash-app" android:host="open" />
+            </intent-filter>
+        </activity>
+
+        <!-- One app, in a task of its own (keyed by its ash-app://open?app=<id> data), in the WebView process. -->
+        <activity
+            android:name=".AppActivity"
+            android:exported="false"
+            android:process=":app"
+            android:documentLaunchMode="intoExisting"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
+    </application>
+</manifest>

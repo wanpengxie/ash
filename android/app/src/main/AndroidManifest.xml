@@ -118,6 +118,9 @@
             </intent-filter>
         </receiver>
 
+        <!-- The apps shell (ai.ash.apps) reaches the owner's apps here; every call checks it is signed like Ash. -->
+        <service android:name=".host.apps.AppsHostService" android:exported="true" />
+
         <!-- Installing the helpers Ash carries (ai.ash.screen, ai.ash.senses): the installer reports here. -->
         <activity android:name=".host.HelperInstallActivity" android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" android:excludeFromRecents="true" android:launchMode="singleTop" />
