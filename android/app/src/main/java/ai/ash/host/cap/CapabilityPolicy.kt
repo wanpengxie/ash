@@ -68,6 +68,12 @@ object CapabilityPolicies {
         "browser.close" to CapabilityPolicy("none", "read", "关闭浏览器"),
         "browser.spaces" to CapabilityPolicy("none", "read", "看打开了哪些网页"),
         "browser.run" to CapabilityPolicy("outward", "act", "在浏览器里连续操作"),
+        // The owner's photos, videos and files: Android's storage permission is the boundary, granted once by the owner.
+        "media.list" to CapabilityPolicy("none", "read", "看你的照片和视频"),
+        "media.albums" to CapabilityPolicy("none", "read", "看你的相册"),
+        "media.read" to CapabilityPolicy("none", "read", "看你的照片"),
+        "media.save" to CapabilityPolicy("none", "write", "存图片到相册"),
+        "camera.capture" to CapabilityPolicy("outward", "act", "请你拍照"),
         // The senses helper (Ash 感知): reading what it recorded or what a source holds needs no approval; changing what is
         // recorded, deleting records, or driving another app (Gadgetbridge) does.
         "location.get" to CapabilityPolicy("none", "read", "看手机位置"),

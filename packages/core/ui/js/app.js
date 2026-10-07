@@ -5,6 +5,7 @@ import { renderProgress } from "./progress.js";
 import { presentUiOpen } from "./suggestions.js";
 import { composerContext } from "./composer.js";
 import { openInlineBlob, prepareUploads } from "./attachments.js";
+import { addPicked, attachMenu } from "./attach-menu.js";
 import { SettingsControls } from "./settings.js";
 import { PresenceBar } from "./presence.js";
 import { AgentSheet } from "./sheet-agent.js";
@@ -144,6 +145,18 @@ export function boot({ uiTransport } = {}) {
   const attachButton = document.querySelector("#attach");
   const selected = document.querySelector("#selected");
   const sendButton = document.querySelector("#send");
+  /** Files chosen so far (photos, videos, files), sent with the next message. */
+  let picked = [];
+  const showPicked = () => {
+    selected.replaceChildren();
+    if (!picked.length) return;
+    selected.append(`${picked.length} 个附件，${picked.map((file) => file.name).join("、").slice(0, 120)}`);
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = "移除";
+    clear.addEventListener("click", () => { picked = []; showPicked(); });
+    selected.append(clear);
+  };
   let presenceProblem = "";
   let lastTyping = 0;
   let timeline;
@@ -314,7 +327,7 @@ export function boot({ uiTransport } = {}) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const value = input.value.trim();
-    const files = [...fileInput.files];
+    const files = addPicked(picked, fileInput.files);
     if (!value && !files.length) return;
     sendButton.disabled = true;
     try {
@@ -323,7 +336,8 @@ export function boot({ uiTransport } = {}) {
       input.value = "";
       clearContext();
       fileInput.value = "";
-      selected.textContent = "";
+      picked = [];
+      showPicked();
       log.scrollTop = log.scrollHeight;
     } catch (error) { connection.textContent = `未发送：${error.message || "无法保存待发送消息"}`; }
     finally { sendButton.disabled = false; }
@@ -350,10 +364,11 @@ export function boot({ uiTransport } = {}) {
     try { if (await timeline.older()) log.scrollTop = top + log.scrollHeight - height; }
     catch { connection.textContent = "更早记录暂时无法加载"; }
   });
-  attachButton.addEventListener("click", () => fileInput.click());
+  attachMenu(document.querySelector("#attachMenu"), attachButton, fileInput);
   fileInput.addEventListener("change", () => {
-    const files = [...fileInput.files];
-    selected.textContent = files.length ? `${files.length} 个附件，${files.map((file) => file.name).join("、").slice(0, 120)}` : "";
+    picked = addPicked(picked, fileInput.files);
+    fileInput.value = "";
+    showPicked();
   });
   document.querySelector("#menu").addEventListener("click", () => {
     if (!agentSheet.close()) return;

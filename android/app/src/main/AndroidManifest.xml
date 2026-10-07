@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- Where a photo was taken (Android hides it from apps otherwise); granted together with storage. -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <!-- Granted once over USB or Shizuku; used only to bring the screen helper's accessibility service back (ScreenRecovery). -->
@@ -156,6 +158,18 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- camera.capture: the system camera, opened for the owner to press the shutter; see-through, outside Ash's task. -->
+        <activity android:name=".host.media.CameraActivity" android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" android:excludeFromRecents="true"
+            android:taskAffinity="ai.ash.camera" android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <!-- Where the system camera writes a photo or video Ash asked for (one granted file at a time). -->
+        <provider
+            android:name=".host.media.CaptureProvider"
+            android:authorities="${applicationId}.capture"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <provider
             android:name=".host.LogShareProvider"
