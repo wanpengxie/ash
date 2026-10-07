@@ -123,8 +123,8 @@ export const gateRulePattern = (target: string, word: string, body: Record<strin
   gateTarget(target, word, body) ?? "*";
 /** A stable digest of one exact request body. */
 export const gateBodyDigest = (body: Record<string, unknown>): string => digest(body);
-/** Agents reach device capabilities without a separate access grant; every other non-owner sender is refused. */
-const deviceCaller = (from: string): boolean => from === "person:owner" || /^agent:[A-Za-z0-9_-]+$/.test(from);
+/** Agents reach device capabilities without a separate access grant; an app only within its grants, which the router checks. */
+const deviceCaller = (from: string): boolean => from === "person:owner" || /^agent:[A-Za-z0-9_-]+$/.test(from) || /^app:[a-z][a-z0-9-]{0,47}$/.test(from);
 
 function integrity(db: DatabaseSync): void {
   const result = db.prepare("PRAGMA integrity_check").get() as Row | undefined;

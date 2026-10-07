@@ -29,7 +29,7 @@ export interface LaunchSpec {
 
 /** The model key the container is given. It is not a secret: ash swaps it for the vault key at the egress. */
 export const PLACEHOLDER_KEY = "sk-ash-placeholder-the-real-key-stays-outside";
-const CONTAINER_PATH = "/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+export const CONTAINER_PATH = "/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 function writeIfChanged(file: string, text: string): void {
   mkdirSync(dirname(file), { recursive: true });

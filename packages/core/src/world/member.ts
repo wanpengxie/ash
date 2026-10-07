@@ -19,13 +19,21 @@ export interface DeviceMemberLike extends MemberInfo {
   cancel?(requestId: string): void;
 }
 
+/** An app's tools, mapped by the app runtime to capabilities with ash's own risk and label. */
+export interface AppMemberLike extends MemberInfo {
+  kind: "app";
+  online: boolean;
+  capabilities(): readonly DeviceCapability[];
+  handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody | void> | ResponseBody | void;
+}
+
 interface RegisteredMember {
   info: Omit<MemberInfo, "online">;
   online: () => boolean | undefined;
   words: readonly WordSpec[];
 }
 
-const memberIdPattern = /^(person|screen|agent|device|service|worker):[A-Za-z0-9_-]+$/;
+const memberIdPattern = /^(person|screen|agent|device|service|worker|app):[A-Za-z0-9_-]+$/;
 const clone = <T>(value: T): T => structuredClone(value);
 
 function validInfo(member: MemberInfo): Omit<MemberInfo, "online"> {
@@ -105,6 +113,28 @@ export class WorldMembers {
     const existing = this.members.get(memberId);
     if (!existing) return;
     if (existing.info.kind !== "device") throw new TypeError("cannot remove a non-device member");
+    this.router.unregisterDevice(memberId);
+    this.members.delete(memberId);
+    this.router.cancelMember(memberId);
+  }
+
+  /** An app (contract ash-app/1) is registered like a device: its tools are compiled as external capabilities. Re-registering replaces. */
+  registerApp(member: AppMemberLike): void {
+    const info = validInfo(member);
+    if (info.kind !== "app") throw new TypeError("app member required");
+    const capabilities = member.capabilities();
+    if (!Array.isArray(capabilities)) throw new TypeError("invalid app capabilities");
+    const handle = member.handle.bind(member);
+    const validated = this.members.has(info.id) ? this.router.replaceDeviceBatch(info.id, capabilities, handle) : this.router.registerDeviceBatch(info.id, capabilities, handle);
+    const replaced = this.members.has(info.id);
+    this.members.set(info.id, { info, online: () => member.online, words: validated });
+    if (replaced) this.router.cancelMember(info.id);
+  }
+
+  removeApp(memberId: string): void {
+    const existing = this.members.get(memberId);
+    if (!existing) return;
+    if (existing.info.kind !== "app") throw new TypeError("cannot remove a non-app member");
     this.router.unregisterDevice(memberId);
     this.members.delete(memberId);
     this.router.cancelMember(memberId);

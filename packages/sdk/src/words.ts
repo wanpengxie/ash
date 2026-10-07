@@ -155,6 +155,24 @@ add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vau
   { label: "Checking a saved credential", description: "Whether one credential is saved, and what it is for. A value is never returned." });
 add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
   { direction: "out", audience: "owner", description: "A credential was saved or removed. Names only; the value is never on the ledger." });
+// Independent apps (contract ash-app/1): discovery, install with the owner's approval of what an app needs, and grants.
+const appId: JsonSchema = { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" };
+const appInfo = obj({ id: appId, name: str, version: str, summary: str, publisher: str, enabled: bool, granted: bool, running: bool,
+  needs: array(obj({}, [], true)), surfaces: array(obj({}, [], true)), events: strings, tools: strings, error: str }, ["id", "name", "version", "enabled", "granted", "running"], true);
+add("service:apps", "apps.list", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
+  { label: "Looking at the apps", description: "Every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running." });
+add("service:apps", "apps.describe", "request", obj({ id: appId }, ["id"]), appInfo,
+  { label: "Looking at an app", description: "One app: what it needs from ash (needs), its screens (surfaces), events and tools." });
+add("service:apps", "apps.install", "request", obj({ id: appId }, ["id"]), appInfo,
+  { risk: "structure", effect: "execute", label: "Installing an app", description: "Install an app: the owner approves, on one card, everything it needs (needs). Then its grants are stored and it starts as member app:<id>. An agent's request always asks the owner." });
+add("service:apps", "apps.enable", "request", obj({ id: appId }, ["id"]), appInfo,
+  { risk: "structure", effect: "execute", label: "Turning an app back on", description: "Start an installed app that was turned off, within the grants the owner already gave. An agent's request asks the owner." });
+add("service:apps", "apps.disable", "request", obj({ id: appId }, ["id"]), appInfo,
+  { risk: "structure", effect: "write", label: "Turning an app off", description: "Stop an app; its grants are kept so it can be turned on again." });
+add("service:apps", "apps.revoke", "request", obj({ id: appId, need: nonempty }, ["id"]), appInfo,
+  { risk: "structure", effect: "write", label: "Taking back an app's access", description: "Take back one need (need: a member id such as device:phone, or notify / widgets / card), or every grant when need is left out, which stops the app." });
+add("service:apps", "apps.refresh", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
+  { label: "Looking for new apps", description: "Read /root/apps again: new apps appear, removed ones stop." });
 add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "review", "progress", "other"), provider: str, model: str,
   input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
   cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },

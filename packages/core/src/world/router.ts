@@ -10,7 +10,7 @@ import { AGENT_ID, deviceWordSpec, isWordEffect, optionReplyErrors, senseBodyErr
 import type { ReviewFacts, Reviewer, ReviewVerdict } from "../review/reviewer";
 import { gateBodyDigest, gateRulePattern, gateTarget, Ledger, type HumanPendingRecord, type RequestContextSnapshot, type RequestPhase, type TrackedRequest } from "./ledger";
 
-type Transport = "web_ui" | "api" | "phone" | "agent" | "device" | "service";
+type Transport = "web_ui" | "api" | "phone" | "agent" | "device" | "service" | "app";
 /** Constructed only after edge authentication and (for web_ui) screen-token verification. */
 export interface TrustedRouteContext extends AuthenticatedCallerContext {
   transport: Transport;
@@ -101,6 +101,12 @@ const AGENT = /^agent:[A-Za-z0-9_-]+$/;
 const ALWAYS_ASK_OWNER = new Set(["service:gate/rules.set", "service:gate/rules.revoke", "service:gate/mode.set"]);
 /** Owner and agents may call device capabilities; the gate judges each action instead of a per-capability access list. */
 const deviceCaller = (from: string): boolean => from === "person:owner" || AGENT.test(from);
+/** An independent app (contract ash-app/1). It calls only what the owner granted it; owner and agents call it. */
+const APP = /^app:[a-z][a-z0-9-]{0,47}$/;
+/** What lives outside ash and is judged by the gate when an agent or an app asks: devices and apps. */
+const external = (to: string | null | undefined): boolean => Boolean(to?.startsWith("device:") || to?.startsWith("app:"));
+/** ash's own words that widen what an app may do: an agent's request always asks the owner. */
+const GATED_SERVICE_WORDS = new Set(["service:apps/apps.install", "service:apps/apps.enable"]);
 const CARRY_MS = 5 * 60_000;
 const PAYMENT = /\b(pay|payment|purchase|checkout|transfer)\b|支付|付款|购买|下单|转账|充值|买单/i;
 /** Payments always reach the owner: no reviewer pass, no carry-over and no "always". */
@@ -150,6 +156,8 @@ export class WorldRouter {
   private durableGate = false;
   private readonly internalApprovals = new Map<string, (outcome: InternalApprovalOutcome | "approved") => void>();
   private reviewer: Reviewer | null = null;
+  private appGrant: ((app: string, to: string, word: string) => boolean) | null = null;
+  private gateCard: ((request: Message) => { title: string; detail: string } | null) | null = null;
   private reviewTimeoutMs = 5_000;
   private approvalMode: () => ApprovalMode = () => "auto";
   /** In memory only: what was allowed in the last five minutes, by subject x word x object. */
@@ -410,7 +418,7 @@ export class WorldRouter {
   }
 
   unregisterDevice(member: string): void {
-    if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
+    if (!/^device:[A-Za-z0-9_-]+$/.test(member) && !APP.test(member)) throw new TypeError("device member required");
     for (const key of this.endpoints.keys()) if (key.startsWith(`${member}/`)) this.endpoints.delete(key);
   }
 
@@ -425,7 +433,8 @@ export class WorldRouter {
   }
 
   private prepareDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery">): Map<string, Registered> {
-    if (!/^device:[A-Za-z0-9_-]+$/.test(member)) throw new TypeError("device member required");
+    // An app's tools are external capabilities exactly like a device's: compiled the same way, judged the same way.
+    if (!/^device:[A-Za-z0-9_-]+$/.test(member) && !APP.test(member)) throw new TypeError("device member required");
     const prepared = new Map<string, Registered>();
     for (const capability of capabilities) {
       const safeCapability = detached(capability);
@@ -447,6 +456,22 @@ export class WorldRouter {
       ? this.deviceExecutionGuard?.(detached(request)) ?? null : null;
   }
   setGate(gate: GateHook): void { this.gate = gate; }
+  /** The owner's grants for apps, read on every app request: an app reaches only granted member words. */
+  setAppGrants(check: (app: string, to: string, word: string) => boolean): void { this.appGrant = check; }
+  /** Owner card text for requests a plain card cannot explain (an app install lists what the app needs). */
+  setGateCard(card: (request: Message) => { title: string; detail: string } | null): void { this.gateCard = card; }
+  /** Who may call a device capability: the owner, agents, and an app within its grants. */
+  private mayCallDevice(from: string, to: string, word: string): boolean {
+    if (deviceCaller(from)) return true;
+    try { return APP.test(from) && Boolean(this.appGrant?.(from, to, word)); } catch { return false; }
+  }
+  /** Record an event an app emitted (its declared events and entry cards); the ledger keeps who said it. */
+  recordAppEvent(app: string, word: string, body: Record<string, unknown>, to: "person:owner" | null): Message {
+    if (!APP.test(app) || !/^[a-z][a-z0-9._-]{0,63}$/.test(word) || !plainObject(body)) throw new TypeError("invalid app event");
+    const stored = this.ledger.append({ from: app, to, kind: "event", word, body });
+    this.publish(stored.message);
+    return stored.message;
+  }
   /** The reviewer judges an agent's non-read action when no owner rule covers it; null means every such action asks. */
   setReviewer(reviewer: Reviewer | null, options: { timeoutMs?: number } = {}): void {
     this.reviewer = reviewer;
@@ -531,8 +556,9 @@ export class WorldRouter {
     } else if (ctx.transport === "agent" && !ctx.member.startsWith("agent:")) fail("forbidden", "agent transport mismatch");
     else if (ctx.transport === "device" && !ctx.member.startsWith("device:")) fail("forbidden", "device transport mismatch");
     else if (ctx.transport === "service" && !ctx.member.startsWith("service:")) fail("forbidden", "service transport mismatch");
+    else if (ctx.transport === "app" && (!APP.test(ctx.member) || ctx.transportPrincipal !== ctx.member || !ctx.local || ctx.remote)) fail("forbidden", "app transport mismatch");
     else if (ctx.transport === "api" && ctx.member !== "person:owner") fail("forbidden", "owner API identity required");
-    else if (!["web_ui", "api", "phone", "agent", "device", "service"].includes(ctx.transport)) fail("forbidden", "unknown authenticated transport");
+    else if (!["web_ui", "api", "phone", "agent", "device", "service", "app"].includes(ctx.transport)) fail("forbidden", "unknown authenticated transport");
   }
 
   private stampedSender(ctx: TrustedRouteContext, request: SendRequestV2): { from: string; origin?: Message["origin"] } {
@@ -571,6 +597,11 @@ export class WorldRouter {
   async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
 
   private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
+    if (APP.test(from) && (ctx.transport !== "app" || request.kind !== "request" || !request.to || request.to === from ||
+      !(() => { try { return Boolean(this.appGrant?.(from, request.to!, request.word)); } catch { return false; } })()))
+      fail("forbidden", "an app may only call what the owner granted it");
+    if (typeof request.to === "string" && APP.test(request.to) && request.kind === "request" && !(from === "person:owner" || AGENT.test(from)))
+      fail("forbidden", "app capabilities take requests only from the owner and agents");
     if (request.to === "service:reflex" && ["task.stop", "task.end"].includes(request.word)) {
       if (ctx.remote || !ctx.local || from !== "person:owner" || !ctx.ownerProxy) fail("forbidden", "task stop requires current local owner authority");
     } else if (request.to === "service:reflex") {
@@ -667,12 +698,12 @@ export class WorldRouter {
     if (sourceEvent && request.to !== null && request.to !== "person:owner") fail("forbidden", "outbound event target is not allowed");
     if (sourceEvent && from === "service:post" && request.word === "post.changed" && request.to !== "person:owner") fail("forbidden", "post snapshot is owner-targeted");
     // Agents need no separate device access grant; any other non-owner sender is still refused before acceptance.
-    if (this.durableGate && request.kind === "request" && request.to?.startsWith("device:") && !deviceCaller(from))
+    if (this.durableGate && request.kind === "request" && request.to?.startsWith("device:") && !this.mayCallDevice(from, request.to, request.word))
       fail("forbidden", "device capabilities take requests only from the owner and agents");
     // Owner-wait TTL is independent of the capability execution timeout, restored at dispatch.
     if (ctx.approval && (ctx.transport !== "agent" || !Number.isInteger(ctx.approval.ttlMinutes) || ctx.approval.ttlMinutes < 1 || ctx.approval.ttlMinutes > 10080))
       fail("bad_request", "invalid approval context");
-    const timeoutMs = ctx.approval && endpoint && wordEffect(endpoint.spec) !== "read" && (request.to?.startsWith("device:") || ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`))
+    const timeoutMs = ctx.approval && endpoint && wordEffect(endpoint.spec) !== "read" && (external(request.to) || ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`))
       ? ctx.approval.ttlMinutes * 60000 : endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint && wordEffect(endpoint.spec) !== "read" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
@@ -916,6 +947,9 @@ export class WorldRouter {
 
   /** The plain card written from the request itself; also what the owner sees when the reviewer is unavailable. */
   private defaultCard(request: Message, endpoint: Registered): { title: string; detail: string } {
+    let custom: { title: string; detail: string } | null = null;
+    try { custom = this.gateCard?.(detached(request)) ?? null; } catch { custom = null; }
+    if (custom && custom.title.trim()) return { title: plainText(custom.title, 40), detail: custom.detail.slice(0, 1500) };
     const calendarAsk = request.word === "calendar.create" && Number.isSafeInteger(request.body.calendar_id) &&
       (request.body.calendar_id as number) > 0;
     const eventTitle = typeof request.body.title === "string" ? request.body.title.slice(0, 100) : "未命名事件";
@@ -1050,13 +1084,13 @@ export class WorldRouter {
       // Only what reaches outside ash is judged: a capability of the phone or another device. ash's own system, human
       // and agent words (agents, timers, the owner's files, talking to the owner) are internal and never asked about.
       const forced = AGENT.test(request.from) && ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`);
-      const gateBypass = request.from === "person:owner" || (!request.to?.startsWith("device:") && !forced);
+      const gateBypass = request.from === "person:owner" || (!external(request.to) && !forced && !GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
       const effect = wordEffect(endpoint.spec);
       if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;
         if (!currentAuthority || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body) ||
-          (request.to?.startsWith("device:") && !deviceCaller(request.from))) {
+          (request.to?.startsWith("device:") && !this.mayCallDevice(request.from, request.to, request.word))) {
           this.finish(pending, errors("forbidden", "risk request authority changed before gate"), request.to!, false); return;
         }
         if (!pending.context.transportPrincipal || !this.endpoint("person:owner", "ask")) {
@@ -1111,7 +1145,7 @@ export class WorldRouter {
         }
       }
       if (pending.settled) return;
-      if (this.durableGate && request.to?.startsWith("device:") && !deviceCaller(request.from)) {
+      if (this.durableGate && request.to?.startsWith("device:") && !this.mayCallDevice(request.from, request.to, request.word)) {
         this.finish(pending, errors("forbidden", "device caller not allowed"), request.to, false); return;
       }
       const currentConstraint = this.screenConstraint(request);
@@ -1259,7 +1293,7 @@ export class WorldRouter {
         this.publish(this.ledger.settle(message.id, message.to!, errors("bad_request", "request no longer matches endpoint contract after restart")).message);
         continue;
       }
-      if (this.durableGate && message.to?.startsWith("device:") && !deviceCaller(message.from)) {
+      if (this.durableGate && message.to?.startsWith("device:") && !this.mayCallDevice(message.from, message.to, message.word)) {
         this.publish(this.ledger.settle(message.id, message.to, errors("forbidden", "device caller not allowed after restart")).message);
         continue;
       }

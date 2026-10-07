@@ -1,0 +1,38 @@
+<h1>今日</h1>
+<div id="cards" class="grid"><div class="card label">正在读取…</div></div>
+<div class="card" style="margin-top:12px">
+  <div class="label">手动记一笔体重（kg）</div>
+  <div class="row" style="margin:8px 0 0"><input id="weight" type="number" inputmode="decimal" step="0.1" min="20" max="300" style="flex:1"><button id="save" type="button">记下</button></div>
+  <div id="saved" class="sub"></div>
+</div>
+<div id="note" class="note"></div>
+<script>
+(() => {
+  const { el, call, fail } = window.health;
+  const cards = document.getElementById("cards");
+  const card = (label, value, unit, sub, progress) => el("div", { class: "card" }, el("div", { class: "label" }, label),
+    el("div", { class: "value" }, value === null ? "—" : String(value), ...(value === null ? [] : [el("span", { class: "unit" }, unit)])),
+    ...(sub ? [el("div", { class: "sub" }, sub)] : []),
+    ...(progress === null || progress === undefined ? [] : [(() => { const bar = el("div", { class: "bar", role: "progressbar", "aria-valuenow": String(Math.round(progress * 100)), "aria-valuemin": "0", "aria-valuemax": "100" }, el("i")); bar.firstChild.style.width = `${Math.min(100, Math.round(progress * 100))}%`; return bar; })()]));
+  async function load() {
+    try {
+      const today = await call("health.today");
+      const w = today.weight, s = today.steps, z = today.sleep, h = today.resting_heart_rate;
+      cards.replaceChildren(
+        card("体重", w ? w.value : null, "kg", w ? `${w.date === today.date ? "今天" : w.date}${w.goal ? ` · 目标 ${w.goal} kg` : ""}` : "还没有记录", null),
+        card("步数", s ? s.value : null, "步", s && s.goal ? `目标 ${s.goal} 步` : "", s && s.goal ? s.value / s.goal : null),
+        card("睡眠", z ? z.hours : null, "小时", z && z.goal ? `目标 ${Math.round(z.goal / 6) / 10} 小时` : "昨晚", z && z.goal ? z.minutes / z.goal : null),
+        card("静息心率", h ? h.value : null, "次/分", "今天最低心率", null));
+      document.getElementById("note").textContent = today.errors && today.errors.length ? `部分数据没读到：${today.errors.join("；")}` : "";
+    } catch (error) { fail(cards, error); }
+  }
+  document.getElementById("save").addEventListener("click", async () => {
+    const value = Number(document.getElementById("weight").value);
+    const out = document.getElementById("saved");
+    if (!(value > 0)) { out.textContent = "请输入体重"; return; }
+    try { await call("health.log", { metric: "weight", value }); out.textContent = `已记下 ${value} kg`; document.getElementById("weight").value = ""; load(); }
+    catch (error) { out.textContent = `没记上：${error.message}`; }
+  });
+  load();
+})();
+</script>
