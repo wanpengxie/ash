@@ -19,7 +19,7 @@ internal object IslandTokens {
     const val SIZE_PILL_PAD_Y = 4f
     const val SIZE_PILL_GAP_PAD = 2f
     const val SIZE_PILL_RESIDENT_SEGMENT = 28f
-    const val SIZE_PILL_RUNNING_SEGMENT_MAX = 88f
+    const val SIZE_PILL_RUNNING_SEGMENT_MAX = 80f
     const val SIZE_PILL_NO_CUTOUT_H = 28f
     const val SIZE_PILL_MIN_H = 24f
     const val SIZE_PILL_EDGE_MARGIN = 4f
@@ -56,9 +56,9 @@ internal object IslandTokens {
     const val COLOR_STOP_TEXT = 0xFFFF8A8A.toInt()
     const val COLOR_OFFLINE = 0xFF8D8D93.toInt()
     const val COLOR_PRIMARY = 0xFF3B74FF.toInt()
-    const val TYPE_COMPACT_LABEL_SIZE = 13.5f
-    const val TYPE_COMPACT_LABEL_WEIGHT = 600f
-    const val TYPE_COMPACT_TIME_SIZE = 12.5f
+    const val TYPE_COMPACT_LABEL_SIZE = 12f
+    const val TYPE_COMPACT_LABEL_WEIGHT = 500f
+    const val TYPE_COMPACT_TIME_SIZE = 11.5f
     const val TYPE_COMPACT_TIME_WEIGHT = 400f
     const val TYPE_CARD_TITLE_SIZE = 16f
     const val TYPE_CARD_TITLE_WEIGHT = 650f

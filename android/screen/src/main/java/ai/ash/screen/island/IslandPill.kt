@@ -38,8 +38,13 @@ internal object IslandPill {
             val gapLeft = (cutout[0] + cutout[2]) / 2 - gap / 2
             val room = minOf(gapLeft, screenWidth - gapLeft - gap) - margin
             if (room >= px(SIZE_PILL_RESIDENT_SEGMENT)) {
-                val top = (cutout[1] - px(SIZE_PILL_PAD_Y)).coerceAtLeast(0)
-                val height = maxOf(cutout[3] + px(SIZE_PILL_PAD_Y) - top, px(SIZE_PILL_MIN_H))
+                // Makers often report the hole as a strip as tall as the status bar (the owner's ColorOS phone: 76 x 107
+                // px for a round camera): then the hole is about as tall as it is wide, centred in the status bar.
+                val tall = cutout[3] - cutout[1] > (cutout[2] - cutout[0]) * 5 / 4
+                val holeH = if (tall) cutout[2] - cutout[0] else cutout[3] - cutout[1]
+                val holeTop = if (tall) maxOf(0, (minOf(cutout[3], statusBar.takeIf { it > 0 } ?: cutout[3]) - holeH) / 2) else cutout[1]
+                val top = (holeTop - px(SIZE_PILL_PAD_Y)).coerceAtLeast(0)
+                val height = maxOf(holeTop + holeH + px(SIZE_PILL_PAD_Y) - top, px(SIZE_PILL_MIN_H))
                 return Geometry(gapLeft + gap / 2, top, height, gap, room, true)
             }
         }

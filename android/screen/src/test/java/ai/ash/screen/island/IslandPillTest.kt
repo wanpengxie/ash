@@ -29,11 +29,11 @@ class IslandPillTest {
     @Test fun residentAndRunningSegmentWidths() {
         val g = IslandPill.geometry(1080, 136, hole, density, overStatusBar = true)
         assertEquals(px(28f), IslandPill.resident(g, density))
-        // A running segment grows with what it shows, from the resident width up to 88dp.
+        // A running segment grows with what it shows, from the resident width up to 80dp.
         assertEquals(px(28f), IslandPill.segment(10, g, density))
         assertEquals(150, IslandPill.segment(150, g, density))
-        assertEquals(px(88f), IslandPill.segment(1000, g, density))
-        assertEquals(2 * px(88f) + g.gap, IslandPill.widest(g, density))
+        assertEquals(px(80f), IslandPill.segment(1000, g, density))
+        assertEquals(2 * px(80f) + g.gap, IslandPill.widest(g, density))
     }
 
     @Test fun aWideNotchLimitsSegmentsToTheScreen() {
@@ -65,5 +65,10 @@ class IslandPillTest {
         val g = IslandPill.geometry(1080, 136, intArrayOf(530, 20, 550, 40), density, overStatusBar = true)
         assertTrue(g.hugging)
         assertTrue(g.height >= px(24f))
+    }
+    @Test fun aStatusBarTallCutoutHugsTheRoundHoleInside() {
+        // The owner's ColorOS phone reports its round camera as a 76 x 107 px strip, the whole status bar tall.
+        val g = IslandPill.geometry(1080, 107, intArrayOf(502, 0, 578, 107), 3f, overStatusBar = true)
+        assertEquals(3, g.top); assertEquals(100, g.height); assertEquals(540, g.centreX)
     }
 }
