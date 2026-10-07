@@ -171,12 +171,13 @@ object TaskStatus {
     /** Same authenticated phone-owner path as notification replies; stable client id makes retries safe. */
     fun sendInput(text: String, clientId: String, done: (Boolean, String) -> Unit) { main.post {
         val ctx = app
+        val target = model.frame?.agent ?: "agent:main"
         if (ctx == null || text.isBlank() || text.length > 4000 || ctx.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
             done(false, "暂时不能发送，请解锁后重试"); return@post
         }
         Thread({
             val accepted = runCatching {
-                val response = CoreClient(ctx).sendPresentAction(JSONObject().put("to", "agent:main").put("kind", "request")
+                val response = CoreClient(ctx).sendPresentAction(JSONObject().put("to", target).put("kind", "request")
                     .put("word", "say").put("body", JSONObject().put("text", text)).put("wait", false).put("client_id", clientId))
                 response.optString("id").isNotBlank()
             }.getOrDefault(false)

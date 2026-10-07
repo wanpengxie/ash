@@ -13,6 +13,7 @@ import { IdentityName } from "./identity-name.js";
 import { embeddedUiTransport, readWorkspaceFile } from "./ui-transport.js";
 import { Files } from "./files.js";
 import { framePainter } from "./frame-painter.js";
+import { agentPicker } from "./agent-picker.js";
 
 export class Timeline {
   constructor(net, onChange = () => {}) {
@@ -104,9 +105,11 @@ export function render(view, outbox = [], openInline, presenceBar, openWorkspace
   const oldHeight = log.scrollHeight;
   const oldTop = log.scrollTop;
   const fragment = document.createDocumentFragment();
+  const expanded = new Set([...(log.querySelectorAll?.("details.work-thread[open]") ?? [])].map(node => node.dataset.thread));
   appendConversation(fragment, view.conversation, { openInline, openWorkspaceFile, ...cardActions });
   appendOutbox(fragment, outbox);
   log.replaceChildren(fragment);
+  for (const node of log.querySelectorAll?.("details.work-thread") ?? []) if (expanded.has(node.dataset.thread)) node.open = true;
   if (nearEnd) log.scrollTop = log.scrollHeight;
   else log.scrollTop = oldTop + Math.max(0, log.scrollHeight - oldHeight);
   presenceBar?.render(view.presence);
@@ -138,10 +141,13 @@ export function boot({ uiTransport } = {}) {
   let lastTyping = 0;
   let timeline;
   let settings;
+  let recipient;
   let files;
   const askIntents = new Map();
   const optionPending = new Set();
   const cardActions = {
+    agentName: id => recipient?.name(id) ?? id.replace(/^agent:/, ""),
+    onStopThread: async id => net.agentRequest("thread.stop", { thread: id }),
     onOpenFile: (ref) => files.open(ref),
     onFileLink: (href) => files.openLink(href),
     optionPending,
@@ -224,7 +230,7 @@ export function boot({ uiTransport } = {}) {
       presenceBar.network(status, status === "online" ? presenceProblem : "");
       if (error) connection.title = String(error.message || error);
     },
-    onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); if (!document.hidden) void visible(); },
+    onRegistered: (frame) => { settings?.registration(frame); agentSheet?.registration(frame); void identityName?.refresh(); void recipient?.refresh(); if (!document.hidden) void visible(); },
     onQueue: (count, outbox) => {
       pending.textContent = count ? `${count} 条消息等待送达` : "";
       pendingNote.hidden = !count; // the storage notice matters only while something waits to be sent
@@ -304,7 +310,7 @@ export function boot({ uiTransport } = {}) {
     sendButton.disabled = true;
     try {
       const attachments = await prepareUploads(files, value);
-      await net.enqueueSay(value, attachments);
+      await net.enqueueSay(value, attachments, null, recipient.target());
       input.value = "";
       clearContext();
       fileInput.value = "";
@@ -314,6 +320,7 @@ export function boot({ uiTransport } = {}) {
     finally { sendButton.disabled = false; }
   });
   input.addEventListener("input", () => { void typing(); });
+  recipient = agentPicker(form, input, net, () => { if (timeline) render(timeline.view, net.outbox, openInline, presenceBar, openWorkspaceFile, cardActions); });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) { void visible(); void typing(); }
     // Leaving the app must not keep deliveries in-app for the rest of the presence window.

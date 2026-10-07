@@ -16,6 +16,87 @@ const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owne
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 type Script = (input: AgentTurnInput, binding: AgentBinding) => Promise<string | null> | string | null;
 
+test("stopping a work thread cancels its exact running turn and releases the delegator", async () => {
+  let childStarted = false;
+  const w = await world({
+    "agent:main": async (_input, binding) => {
+      await w.tools.call(binding, "agent_ask", { agent: "agent:keeper", text: "wait" }, binding.active!.signal);
+      return "子任务已返回";
+    },
+    "agent:keeper": async (_input, binding) => {
+      childStarted = true;
+      await new Promise<void>(resolve => binding.active!.signal.addEventListener("abort", () => resolve(), { once: true }));
+      return null;
+    },
+  });
+  try {
+    await w.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "交给整理者" } });
+    await w.waitFor(() => childStarted);
+    const thread = w.ledger.agentThreads()[0];
+    const reply = await w.router.send(owner, { to: "service:agents", kind: "request", word: "thread.stop", body: { thread: thread.id }, wait: true });
+    assert.equal(reply.reply?.body.ok, true);
+    await w.waitFor(() => w.ledger.turnMessages(thread.turn!).some(m => m.word === "turn.end"));
+    assert.equal(w.ledger.agentThread(thread.id)?.state, "cancelled");
+    w.system.member("agent:keeper")!.cancelWork("t_not_this_task", "stale");
+    assert.equal(w.ledger.agentThread(thread.id)?.state, "cancelled");
+    await w.waitFor(() => w.says().some(m => m.from === "agent:main" && m.to === "person:owner"));
+  } finally { await w.close(); }
+});
+
+test("three-level delegation and creation limits are enforced without broadening authority", async () => {
+  const w = await world({});
+  try {
+    const parent = new AbortController(); w.bindings.get("agent:main")!.begin("t_depth3", parent.signal);
+    for (let n = 1; n <= 3; n++) w.ledger.saveAgentThread({ id: `w_depth${n}`, request: `m_depth${n}`, from: `agent:level${n}`, to: "agent:main", turn: `t_depth${n}`,
+      ...(n > 1 ? { parent_turn: `t_depth${n - 1}` } : {}), state: "running", at: Date.now() });
+    // Route-level check also applies to callers bypassing the convenience MCP wrapper.
+    const blocked = await w.router.send({ ...owner, member: "agent:main", transport: "agent", transportPrincipal: "agent:main", ownerProxy: false, turn: "t_depth3" },
+      { to: "service:agents", kind: "request", word: "ask", body: { agent: "agent:keeper", text: "fourth level" }, wait: true });
+    assert.equal(blocked.reply?.body.ok, false); assert.match(JSON.stringify(blocked.reply?.body), /three levels/);
+    w.ledger.saveAgentThread({ id: "w_lend", request: "m_lend", from: "agent:keeper", to: "agent:main", turn: "t_lend", state: "running", at: Date.now() });
+    const create = await w.router.send({ ...owner, member: "agent:main", transport: "agent", transportPrincipal: "agent:main", ownerProxy: false, turn: "t_lend" },
+      { to: "service:agents", kind: "request", word: "declare", body: { id: "agent:escape", name: "escape", summary: "test", brief: "test", tools: ["agent_remove"], words: [] }, wait: true });
+    assert.equal(create.reply?.body.ok, false); assert.equal(w.system.declaration("agent:escape"), undefined);
+  } finally { await w.close(); }
+});
+
+test("owner can directly address a helper; only that helper replies and unsolicited speech stays forbidden", async () => {
+  const w = await world({ "agent:keeper": () => "直接给你的回复", "agent:main": () => "should not wake" });
+  try {
+    await w.router.send(owner, { to: "agent:keeper", kind: "request", word: "say", body: { text: "@整理者 看看记录" } });
+    await w.waitFor(() => w.says().some(m => m.from === "agent:keeper" && m.to === "person:owner"));
+    assert.equal(w.turns["agent:main"], undefined);
+    await assert.rejects(w.router.send({ member: "agent:keeper", transport: "agent", transportPrincipal: "agent:keeper", local: true, remote: false, ownerProxy: false, turn: "t_unprompted" },
+      { to: "person:owner", kind: "request", word: "say", body: { text: "unprompted" } }), /directly addressed/);
+  } finally { await w.close(); }
+});
+
+test("delegation carries durable thread identity, owner evidence and current permission intersection", async () => {
+  let facts: unknown, permitted: unknown;
+  const w = await world({
+    "agent:main": async (_input, binding) => { await w.tools.call(binding, "agent_ask", { agent: "agent:keeper", text: "请整理" }, new AbortController().signal); return "已完成"; },
+    "agent:keeper": input => {
+      facts = w.ledger.turnFacts(input.turn, "agent:keeper", Number.MAX_SAFE_INTEGER).ownerSaid;
+      permitted = w.system.toolAllowed("agent:keeper", input.turn, "system_status");
+      return "完成";
+    },
+  });
+  try {
+    await w.router.send(owner, { to: "service:agents", kind: "request", word: "update", body: { agent: "agent:keeper", tools: ["agent_ask", "system_status"] }, wait: true });
+    await w.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "这是主人的原话" } });
+    await w.waitFor(() => w.says().some(m => m.from === "agent:main" && m.to === "person:owner"));
+    assert.deepEqual(facts, ["这是主人的原话"]); assert.equal(permitted, true);
+    const thread = w.ledger.agentThreads()[0];
+    assert.equal(thread.state, "completed"); assert.equal(thread.from, "agent:main");
+    assert.equal(w.ledger.byId(thread.delivery!)?.thread, thread.id);
+    assert.ok(w.ledger.turnMessages(thread.turn!).every(m => m.thread === thread.id));
+    // A restricted delegator cannot lend a capability that it does not hold itself.
+    w.ledger.saveAgentThread({ ...thread, id: "w_limited", turn: "t_limited", from: "agent:keeper", to: "agent:main", parent_turn: undefined });
+    assert.equal(w.system.toolAllowed("agent:main", "t_limited", "agent_remove"), false);
+    assert.equal(w.system.wordAllowed("agent:main", "t_limited", "device:phone", "screen.tap"), false);
+  } finally { await w.close(); }
+});
+
 /** A world with the main agent, the Agent system and a fake runtime whose agents follow a script and act through MCP. */
 async function world(scripts: Record<string, Script>) {
   const dir = mkdtempSync(join(tmpdir(), "agents-multi-"));
@@ -27,7 +108,10 @@ async function world(scripts: Record<string, Script>) {
   await tools.start();
   const turns: Record<string, AgentTurnInput[]> = {};
   const bindings = new Map<string, AgentBinding>();
-  const policy = (item: AgentDeclaration) => ({ ...(item.tools ? { tools: item.tools } : {}), ...(item.words ? { words: (m: string, w: string) => wordAllowed(item, m, w) } : {}) });
+  let system: AgentSystem;
+  const policy = (item: AgentDeclaration) => ({ ...(item.tools ? { tools: item.tools } : {}),
+    tool: (name: string, turn?: string) => system?.toolAllowed(item.id, turn, name) ?? true,
+    words: (m: string, w: string) => system?.wordAllowed(item.id, bindings.get(item.id)?.active?.turn, m, w) ?? wordAllowed(item, m, w) });
   const runnerFor = (id: string): AgentTurnRunner => ({ async runTurn(input, emit, signal) {
     (turns[id] ??= []).push(input);
     const binding = bindings.get(id)!;
@@ -52,7 +136,7 @@ async function world(scripts: Record<string, Script>) {
   const main = createAgentMember({ ledger, router, stateDir: join(dir, "main"), runner: runnerFor("agent:main") });
   bindings.set("agent:main", tools.bind("agent:main", "main", () => null, policy(MAIN_AGENT)));
   members.register(main);
-  const system = new AgentSystem({ router, members, stateDir: dir, defaults: resolveAgents(undefined, true), main, runtime, toolNames: TOOL_NAMES, isPaused: () => false });
+  system = new AgentSystem({ router, members, stateDir: dir, defaults: resolveAgents(undefined, true), main, runtime, toolNames: TOOL_NAMES, isPaused: () => false });
   members.register(system);
   system.prepare();
   main.prepareRecovery();
@@ -106,9 +190,8 @@ test("agent_tell: what comes back reaches the teller once, in a turn that says n
   const w = await world({ "agent:keeper": () => "我记下了", "agent:main": () => "这句话不会发给任何人" });
   try {
     const mainCtx: TrustedRouteContext = { transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false };
-    // Agents never write to each other directly, and the owner talks only with the main agent.
+    // Agents never write to each other directly; the owner can explicitly address one.
     await assert.rejects(w.router.send(mainCtx, { to: "agent:keeper", kind: "request", word: "say", body: { text: "hi" } }), (error) => error instanceof RouterError && error.code === "forbidden");
-    await assert.rejects(w.router.send(owner, { to: "agent:keeper", kind: "request", word: "say", body: { text: "hi" } }), (error) => error instanceof RouterError && error.code === "forbidden");
     w.bindings.get("agent:main")!.begin("t_tell1", new AbortController().signal);
     const told = await w.call("agent:main", "agent_tell", { agent: "agent:keeper", text: "主人改名叫小王了" }) as { ok: true; result: { sent: boolean } };
     w.bindings.get("agent:main")!.end("t_tell1");

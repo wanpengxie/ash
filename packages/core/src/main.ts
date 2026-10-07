@@ -20,6 +20,7 @@ import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/
 import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
 import { AgentMcpServer, TOOL_NAMES, type AgentBinding, type AgentPolicy } from "./agent-mcp/server";
 import { AgentSystem, type AgentRuntime } from "./agent-system/system";
+import { DeviceAgentRuntimes } from "./agent-system/device-runtime";
 import { agentName, resolveAgents, wordAllowed, type AgentDeclaration, type ConfiguredAgent } from "./agents";
 import { AGENT_RULES } from "./workers/rules.generated";
 import type { Message } from "../../sdk/src/api";
@@ -39,6 +40,8 @@ import { AgentMind } from "./members/agent-mind";
 import { AdminMember } from "./members/admin";
 import { ClockMember } from "./members/clock";
 import { GateMember } from "./members/gate";
+import { DevicesMember } from "./members/devices";
+import type { ResponseBody } from "../../sdk/src/api";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
@@ -202,6 +205,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let egress: ModelEgress | null = null;
   let agentTools: AgentMcpServer | null = null;
   let agentSystem: AgentSystem | null = null;
+  let devices: DevicesMember | null = null;
   let provisioning: ChildProcess | null = null;
   let self: SelfMember | null = null;
   let work: WorkMember | null = null;
@@ -286,26 +290,26 @@ export async function startOwner(config: Config): Promise<Running> {
         if (typeof stored.provider === "string" && typeof stored.model === "string") return { provider: stored.provider, model: stored.model }; } } catch { /* fall back */ }
       return config.container?.model ?? DEFAULT_MODEL;
     };
-    let agentPolicy: ((item: AgentDeclaration) => AgentPolicy) | null = null;
+    const agentPolicy = (item: AgentDeclaration, mind = false): AgentPolicy => ({ ...(item.tools ? { tools: item.tools } : {}),
+      tool: (name, turn) => agentSystem?.toolAllowed(item.id, turn, name) ?? true,
+      words: (member, word) => agentSystem?.wordAllowed(item.id, item.id === "agent:main" ? (mind ? mindBinding : mainBinding)?.active?.turn : otherBindings.get(item.id)?.active?.turn, member, word) ?? wordAllowed(item, member, word) });
     let mainBinding: AgentBinding | null = null;
     let mindBinding: AgentBinding | null = null;
     const otherBindings = new Map<string, AgentBinding>();
+    const resultRoot = join(config.workspaces?.home ?? config.stateDir, ".ash", "results");
+    agentTools = new AgentMcpServer({ router: world, members, ledger, log,
+      resultArtifacts: { hostDir: resultRoot, toAgentPath: path => containerMode && !config.container?.direct ? `/root/work/.ash/results/${basename(path)}` : path },
+      status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }) });
+    await agentTools.start();
     if (containerMode) {
       const containerConfig = config.container!;
       egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream });
       const egressBase = await egress.start();
       container = new ContainerHost({ stateDir: config.stateDir, log,
         launch: () => prepareLaunch({ ...containerConfig, model: containerModel() }, egressBase, config.stateDir) });
-      const resultRoot = join(config.workspaces!.home, ".ash", "results");
-      agentTools = new AgentMcpServer({ router: world, members, ledger, log,
-        resultArtifacts: { hostDir: resultRoot, toAgentPath: (path) => containerConfig.direct ? path : `/root/work/.ash/results/${basename(path)}` },
-        status: () => ({ paused: clock?.journal.isPaused() ?? false, quiet_hours: admin?.journal.quietHours() ?? delivery.quiet ?? null }) });
-      await agentTools.start();
       const mainDeclaration = declarations.find((item) => item.id === "agent:main")!;
-      const policyOf = (item: AgentDeclaration) => ({ ...(item.tools ? { tools: item.tools } : {}), ...(item.words ? { words: (member: string, word: string) => wordAllowed(item, member, word) } : {}) });
-      mainBinding = agentTools.bind("agent:main", "main", () => null, policyOf(mainDeclaration));
-      mindBinding = agentTools.bind("agent:main", "mind", () => null, policyOf(mainDeclaration));
-      agentPolicy = policyOf;
+      mainBinding = agentTools.bind("agent:main", "main", () => null, agentPolicy(mainDeclaration));
+      mindBinding = agentTools.bind("agent:main", "mind", () => null, agentPolicy(mainDeclaration, true));
     }
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const keyMissing = () => !vaultStore.has("DEEPSEEK_API_KEY");
@@ -336,28 +340,37 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(agent);
     // ash's Agent system holds the declarations and brings each declared agent to life in the container: its own member,
     // inbox and turns, session, tool credential, workspace and schedule.
-    const agentRuntime: AgentRuntime | null = container ? {
+    const deviceRuntimes = new DeviceAgentRuntimes({ link: () => link, allowed: id => devices?.localAgentsAllowed(id) ?? false,
+      router: world, tools: agentTools, stateDir: config.stateDir });
+    const remoteIds = new Set<string>();
+    const agentRuntime: AgentRuntime = {
+      available: item => typeof item.runtime === "object" ? deviceRuntimes.available(item) : item.id === "agent:main" || container ? null : "Container runtime is not available",
+      runtimes: () => [...(container ? [{ kind: "container", installed: true }] : []), ...deviceRuntimes.list()],
       create: (declaration) => {
         const item = declaration();
         const binding = agentTools!.bind(item.id, agentName(item.id), () => null, agentPolicy!(item));
         otherBindings.set(item.id, binding);
-        const runner = new ContainerTurnRunner({ host: container!, binding, router: world, keyMissing, stateDir: config.stateDir, log,
+        if (typeof item.runtime === "object") remoteIds.add(item.id);
+        const runner = typeof item.runtime === "object" ? deviceRuntimes.create(declaration, binding) : container ? new ContainerTurnRunner({ host: container!, binding, router: world, keyMissing, stateDir: config.stateDir, log,
           sessionKey: item.id, agentName: agentName(item.id),
           context: () => { const current = declaration(); return `[${current.name}（${current.id}）的职责]\n${current.brief ?? current.summary}\n\n[Ash 的规则]\n${AGENT_RULES}`; },
           mcp: () => ({ url: agentTools!.url, token: binding.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
-          onActive: (active) => { running.background += active ? 1 : -1; } });
+          onActive: (active) => { running.background += active ? 1 : -1; } }) : {
+            async runTurn(): Promise<never> { throw new Error("Container runtime is unavailable"); }
+          };
         return createAgentMember({ id: item.id, ledger, router: world, stateDir: join(config.stateDir, "agents", agentName(item.id)), runner, name: item.name,
           isPaused: () => clock!.journal.isPaused() });
       },
-      reopen: async (id) => { await container!.closeSession(id); },
+      reopen: async (id) => { if (remoteIds.has(id)) await deviceRuntimes.close(id); else await container?.closeSession(id); },
       dispose: async (id) => {
+        if (remoteIds.has(id)) { await deviceRuntimes.close(id, true); remoteIds.delete(id); }
         const binding = otherBindings.get(id);
         if (binding) agentTools!.retire(binding);
         otherBindings.delete(id);
-        await container!.closeSession(id, true);
+        await container?.closeSession(id, true);
       },
       apply: (item) => { const binding = otherBindings.get(item.id); if (binding) binding.policy = agentPolicy!(item); },
-    } : null;
+    };
     agentSystem = new AgentSystem({ router: world, members, stateDir: config.stateDir, defaults: declarations, main: agent, runtime: agentRuntime,
       toolNames: TOOL_NAMES, isPaused: () => clock!.journal.isPaused(), log });
     members.register(agentSystem);
@@ -445,25 +458,33 @@ export async function startOwner(config: Config): Promise<Running> {
       },
       ...(config.host ? { nativeUiToken: createHash("sha256").update(`${config.host.token}:home`).digest("hex") } : {}) });
     screensNow = () => ownerScreensLine(edge.screens);
+    devices = new DevicesMember(join(config.stateDir, "devices.json"), () => link, world);
+    members.register(devices);
     edge.attachApps(apps);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       gatewayState: () => link ? { configured: true, ...link.state() } : { configured: false },
-      gatewayOp: async (body: Record<string, unknown>) => {
+      gatewayOp: async (body, context) => {
         if (!link) throw new Error("gateway unavailable");
+        let word: string, args: Record<string, unknown>;
         switch (body.op) {
-          case "approve":
-            await link.approve(body.request_id as string, body.permissions as Parameters<OwnerLink["approve"]>[1]);
-            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
-            return { approved: true };
-          case "reject": await link.reject(body.request_id as string); return { rejected: true };
-          case "ticket": return { ...(await link.ticket()) };
-          case "revoke": await link.revoke(body.device as string);
-            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error)); // the next state read no longer lists it
-            return { revoked: true };
+          case "approve": {
+            const permissions = body.permissions as string[];
+            word = "pair_approve"; args = { request_id: body.request_id,
+              kind: permissions.includes("expose_capability") ? "laptop" : "browser",
+              access: "approval", local_agents: false, web_ui: permissions.includes("web_ui") }; break;
+          }
+          case "reject": word = "pair_reject"; args = { request_id: body.request_id }; break;
+          case "ticket": word = "pair_start"; args = { kind: "browser" }; break;
+          case "revoke": word = "revoke"; args = { device: body.device }; break;
           case "sync": await link.refreshDevices(); return { configured: true, ...link.state() };
           default: throw new Error("unsupported gateway operation");
         }
+        if (!context.caller?.transportPrincipal) throw new Error("missing owner authority");
+        const result = await world.send({ ...context.caller, transportPrincipal: context.caller.transportPrincipal, transport: "api" }, { to: "service:devices", kind: "request", word, body: args, wait: true });
+        const reply = result.reply?.body as ResponseBody | undefined;
+        if (!reply?.ok) throw new Error("device management operation failed");
+        return (reply.result ?? {}) as Record<string, unknown>;
       },
       ...(dsh ? { modelGet: () => dsh!.agentOptions() ?? {}, modelSet: async (provider: string, model: string) => {
         const selector = dsh!.ctx?.get("agentDefaultModel");
@@ -535,6 +556,7 @@ export async function startOwner(config: Config): Promise<Running> {
     if (gatewayUrl) {
       const signer = hostLink ? await hostLink.signer() : await fileSigner(config.stateDir);
       link = new OwnerLink(gatewayUrl, signer, edge, log);
+      link.setDeviceManagement((id, fallback) => devices!.deviceName(id, fallback), id => devices!.localAgentsAllowed(id));
       await link.claimIfNeeded(join(config.stateDir, "bootstrap-secret"), config.name ?? "Ash owner");
       void link.run();
       await link.waitConnected(); // remote recovery requires current grants, not an old snapshot

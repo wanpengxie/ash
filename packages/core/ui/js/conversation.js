@@ -80,16 +80,34 @@ function attachment(parent, item, openInline, openWorkspaceFile, onOpenFile) {
 }
 
 /** Append a stable ledger conversation without inventing an approval or option action. */
-export function appendConversation(fragment, entries, { openInline, openWorkspaceFile, onOpenFile, onFileLink, onSelect, onAnswerAsk, onPermission, optionPending, askIntents } = {}) {
+export function appendConversation(fragment, entries, { openInline, openWorkspaceFile, onOpenFile, onFileLink, onSelect, onAnswerAsk, onPermission, optionPending, askIntents, agentName = id => id.replace(/^agent:/, ""), onStopThread } = {}) {
   if (!entries.length) text(fragment, "div", "还没有对话。", "hello");
   for (let index = 0; index < entries.length; index++) {
     const item = entries[index];
+    if (item.type === "work") {
+      const card = text(fragment, "details", "", "work-thread"); card.dataset.thread = item.thread;
+      text(card, "summary", `交给 ${agentName(item.to)} · ${{ pending: "排队中", running: "进行中", completed: "已完成", cancelled: "已停止", error: "未完成" }[item.state] || item.state}`);
+      text(card, "p", item.text);
+      const steps = text(card, "ul", "", "steps"); for (const step of item.steps) text(steps, "li", step.label);
+      if (item.answer) { const reply = text(card, "div", ""); appendMarkdown(reply, item.answer, { onFileLink }); }
+      if (item.asks?.length) appendConversation(card, item.asks, { onAnswerAsk, askIntents, onFileLink });
+      if (["pending", "running"].includes(item.state) && onStopThread) {
+        const stop = text(card, "button", "停止这件事"); stop.type = "button";
+        stop.onclick = async () => { stop.disabled = true; try { await onStopThread(item.thread); stop.textContent = "已请求停止"; } catch { stop.textContent = "停止失败，重试"; stop.disabled = false; } };
+      }
+      continue;
+    }
     if (item.type === "say") {
       const side = item.side === "owner" ? "me" : "ai";
       if (item.legacy) text(fragment, "small", `历史记录 · ${item.legacy.workspace} · ${item.legacy.member} · 只读`, `from ${side === "me" ? "r" : "l"}`);
       else if (item.side === "owner" && item.origin?.label) text(fragment, "small", `来自 ${item.origin.label}`, "from r");
       else if (item.side === "inbound") text(fragment, "small", `来自 ${item.from || "未知来源"}`, "from l");
       const previous = grouped(item, entries[index - 1]);
+      if (item.side === "agent" && item.from?.startsWith("agent:") && item.from !== "agent:main" && !previous && !item.legacy) {
+        const byline = text(fragment, "div", "", "agent-byline");
+        text(byline, "span", agentName(item.from).slice(0, 1), "agent-avatar"); text(byline, "span", agentName(item.from));
+      }
+      if (item.side === "owner" && item.to && item.to !== "agent:main") text(fragment, "small", `@ ${agentName(item.to)}`, "from r");
       const next = grouped(item, entries[index + 1]);
       const group = item.side === "agent" && item.group ? ` group-${previous ? next ? "middle" : "last" : next ? "first" : "single"}` : "";
       const rich = item.side === "agent";

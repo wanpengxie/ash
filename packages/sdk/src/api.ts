@@ -304,7 +304,7 @@ export class AshApiError extends Error {
 export const API_VERSION_V2 = "ash-api/2" as const;
 export type Kind = "request" | "response" | "event";
 export type MessageErrorCode = "bad_request" | "not_found" | "forbidden" | "denied" | "cancelled" | "timeout" | "offline" | "failed";
-export type ResponseBody = { ok: true; result?: unknown } | { ok: false; error: { code: MessageErrorCode; message: string } };
+export type ResponseBody = { ok: true; result?: unknown } | { ok: false; error: { code: MessageErrorCode; message: string; detail?: unknown } };
 export interface Message {
   seq: number;
   id: string;
@@ -317,6 +317,8 @@ export interface Message {
   reply_to?: string;
   origin?: { screen: string; label: string };
   turn?: string;
+  /** Server-stamped delegated work identity. */
+  thread?: string;
 }
 
 /** Read-only projection of a ledger row. It is never a Message or a send body. */
@@ -356,9 +358,10 @@ export function isStreamErrorV2(value: unknown): value is StreamErrorV2 {
 }
 
 export function isMessageSummaryV2(value: unknown): value is MessageSummaryV2 {
-  if (!streamObject(value) || !exactKeys(value, ["seq", "id", "ts", "from", "to", "kind", "word", "reply_to", "origin", "turn", "summary", "body_summary", "inline_attachments"]) || value.summary !== true || Object.hasOwn(value, "body") || !streamSeq(value.seq) || typeof value.id !== "string" || !value.id || !Number.isSafeInteger(value.ts) || typeof value.from !== "string" || !value.from || !(value.to === null || typeof value.to === "string") || !["request", "response", "event"].includes(String(value.kind)) || typeof value.word !== "string" || !value.word || !streamObject(value.body_summary)) return false;
+  if (!streamObject(value) || !exactKeys(value, ["seq", "id", "ts", "from", "to", "kind", "word", "reply_to", "origin", "turn", "thread", "summary", "body_summary", "inline_attachments"]) || value.summary !== true || Object.hasOwn(value, "body") || !streamSeq(value.seq) || typeof value.id !== "string" || !value.id || !Number.isSafeInteger(value.ts) || typeof value.from !== "string" || !value.from || !(value.to === null || typeof value.to === "string") || !["request", "response", "event"].includes(String(value.kind)) || typeof value.word !== "string" || !value.word || !streamObject(value.body_summary)) return false;
   if (value.reply_to !== undefined && (typeof value.reply_to !== "string" || !value.reply_to)) return false;
   if (value.turn !== undefined && (typeof value.turn !== "string" || !value.turn)) return false;
+  if (value.thread !== undefined && (typeof value.thread !== "string" || !value.thread)) return false;
   if (value.origin !== undefined && (!streamObject(value.origin) || !exactKeys(value.origin, ["screen", "label"]) || typeof value.origin.screen !== "string" || typeof value.origin.label !== "string")) return false;
   if (value.inline_attachments !== undefined) {
     if (!Array.isArray(value.inline_attachments) || !value.inline_attachments.every((item) => streamObject(item) && exactKeys(item, ["index", "name", "mime_type", "size"]) && Number.isSafeInteger(item.index) && typeof item.index === "number" && item.index >= 0 && typeof item.name === "string" && item.name.length > 0 && typeof item.mime_type === "string" && item.mime_type.length > 0 && Number.isSafeInteger(item.size) && typeof item.size === "number" && item.size >= 0)) return false;
@@ -428,18 +431,18 @@ export interface GateAccessItemV2 {
   revoked_at?: number;
 }
 export type GateHistoryDecisionV2 =
-  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"
+  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full"
   | "legacy_unresolved" | "legacy_approved" | "legacy_denied" | "legacy_expired" | "legacy_cancelled"
   | "legacy_access_imported" | "legacy_access_expired" | "legacy_access_invalid";
 export type GateHistoryItemV2 =
   | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "none" | "outward" | "structure";
-      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"; at: number; rule_id?: string;
+      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full"; at: number; rule_id?: string;
       /** Why the reviewer let it pass (decision review) — plain words for the owner. */
       reason?: string;
       /** The capability's own name for the action, from the evidence kept with it. */
       label?: string; source: "current" }
   | { id: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
-      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry">;
+      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full">;
       at: number; legacy_scope?: string; source: "legacy" };
 /** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
 export interface LegacyConversationMetadata {

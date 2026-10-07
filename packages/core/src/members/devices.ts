@@ -1,0 +1,117 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { DEVICE_WORDS } from "../../../sdk/src/device-words";
+import type { Message, ResponseBody } from "../../../sdk/src/api";
+import type { Member } from "../world/member";
+import type { RouteHandlerContext, WorldRouter } from "../world/router";
+
+/** Transport is injected at composition; this member owns policy, not connections. */
+export interface DeviceManagementLink {
+  connected: boolean; lastError: string;
+  pending: Map<string, { request_id: string; client_id: string; name: string; fingerprint: string }>;
+  state(): Record<string, unknown>;
+  ticket(): Promise<{ ticket: string; gateway: string; expires_in: number }>;
+  approve(id: string, permissions: ("chat" | "web_ui" | "expose_capability")[]): Promise<void>;
+  reject(id: string): Promise<void>; revoke(id: string): Promise<void>;
+  refreshDevices(): Promise<void>; setWebUi(id: string, allow: boolean): Promise<void>;
+  closeAgentChannel(id: string): void;
+  updateDevice?(id: string, version: string, sha256: string): Promise<unknown>;
+}
+
+interface Policy { name: string; kind: "laptop" | "server" | "browser"; access: "approval" | "full"; local_agents: boolean; web_ui: boolean; paired_at: number }
+export class DevicesMember implements Member {
+  readonly id = "service:devices"; readonly kind = "service" as const; readonly name = "设备管理"; readonly online = true;
+  readonly idempotentRecovery = ["list", "describe", "pair_pending", "diagnose", "gateway_status", "gateway_setup_guide"];
+  private policies: Record<string, Policy> = {};
+  constructor(private file: string, private link: () => DeviceManagementLink | null, private router: WorldRouter) {
+    if (existsSync(file)) this.policies = JSON.parse(readFileSync(file, "utf8")).devices ?? {};
+    router.setDevicePolicy(member => this.policy(member));
+    router.setDeviceManagementApproval(request => this.needsApproval(request.word, request.body));
+    router.setDeviceManagementCard(request => this.approvalCard(request));
+  }
+  words() { return DEVICE_WORDS; }
+  deviceName(id: string, fallback: string): string { return this.policies[id]?.name ?? fallback; }
+  private save(): void { mkdirSync(dirname(this.file), { recursive: true }); writeFileSync(this.file + ".tmp", JSON.stringify({ version: 1, devices: this.policies }), { mode: 0o600 }); renameSync(this.file + ".tmp", this.file); }
+  private state(): Record<string, any> { return this.link()?.state() ?? { configured: false, connected: false, devices: [], pending: [] }; }
+  private item(id: string): Record<string, any> | undefined { return this.state().devices?.find((d: any) => d.id === id); }
+  private current(id: string): Policy | undefined {
+    const device = this.item(id); if (!device) return undefined;
+    return this.policies[id] ?? { name: device.name, kind: device.permissions?.includes("expose_capability") ? "laptop" : "browser", access: "approval", local_agents: false, web_ui: device.permissions?.includes("web_ui") ?? false, paired_at: 0 };
+  }
+  policy(id: string): "approval" | "full" | null { if (id === "device:phone") return null; const p = this.current(id); return p && p.kind !== "browser" ? p.access : null; }
+  localAgentsAllowed(id: string): boolean { const p = this.current(id); return !!p && p.kind !== "browser" && p.local_agents && this.item(id)?.online === true; }
+  needsApproval(word: string, body: Record<string, unknown>): boolean {
+    if (["pair_approve", "update"].includes(word)) return true;
+    if (word !== "access_set") return false;
+    const previous = this.current(String(body.device));
+    return (body.access === "full" && previous?.access !== "full") || (body.local_agents === true && !previous?.local_agents) || (body.web_ui === true && !previous?.web_ui);
+  }
+  approvalCard(request: Message): { title: string; detail: string } {
+    const body = request.body;
+    const pending = this.link()?.pending.get(String(body.request_id));
+    const previous = this.current(String(body.device));
+    const name = pending?.name ?? previous?.name ?? String(body.device ?? "设备");
+    const access = body.access ?? previous?.access ?? "approval";
+    const local = body.local_agents ?? previous?.local_agents ?? false;
+    const web = body.web_ui ?? previous?.web_ui ?? body.kind === "browser";
+    return { title: request.word === "update" ? `更新 ${name}` : `允许 ${name} 的设备权限？`, detail: request.word === "update"
+      ? `安装版本 ${body.version}，校验值 ${body.sha256}。`
+      : `${name}${pending ? ` · 指纹 ${pending.fingerprint}` : ""}\n类型：${body.kind ?? previous?.kind ?? "电脑"}。${body.kind === "browser" ? "仅聊天和网页界面，不借出电脑能力。" : "借出文件读写、命令及已安装的浏览器能力。"}\n操作档位：${access === "full" ? "完全放开（包括命令，不再逐次审批）" : "按规则和影响审批"}。\n本地 Agent：${local ? "允许，使用电脑本地完整权限" : "不允许"}；网页界面访问：${web ? "允许" : "不允许"}。` };
+  }
+  async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
+    const fail = (code: "forbidden" | "not_found" | "offline" | "failed", text: string): ResponseBody => ({ ok: false, error: { code, message: text } });
+    if (!context.caller?.local || context.caller.remote || !["person:owner", "agent:main"].includes(message.from) || context.caller.member !== message.from || context.signal.aborted) return fail("forbidden", "Device management requires the local owner or main agent");
+    if (message.from !== "person:owner" && this.needsApproval(message.word, message.body) && this.router.ledger.gateCase(message.id)?.decision !== "allowed") return fail("forbidden", "Owner approval is required for this permission change");
+    const b = message.body, link = this.link();
+    if (message.word === "gateway_setup_guide") return { ok: true, result: { steps: ["部署项目中的网关并设置一次性认领密钥", "在 Ash 设置 → 已连接设备 → 网关，填写地址和认领密钥", "连接后使用 device_pair_start 配对电脑或浏览器"], automatic_deploy: false } };
+    if (message.word === "list" || message.word === "gateway_status") return { ok: true, result: { ...this.state(), configured: !!link, devices: (this.state().devices ?? []).map((d: any) => ({ ...d, ...this.current(d.id) })) } };
+    if (!link) return fail("offline", "Gateway is not configured");
+    try {
+      if (message.word === "pair_pending") return { ok: true, result: { pending: [...link.pending.values()] } };
+      if (message.word === "pair_start") {
+        const ticket = await link.ticket();
+        const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
+        return { ok: true, result: { ...ticket, kind: b.kind ?? "laptop", install_available: false,
+          setup_command: b.kind === "browser" ? null : `ash-device setup --gateway ${quote(ticket.gateway)} --pair ${quote(ticket.ticket)}`,
+          instructions: b.kind === "browser" ? "在新浏览器打开 gateway 地址，输入 ticket，再回 Ash 批准。" : "安装器已经构建但尚未发布。已取得测试包时，运行 setup_command；发布前不要提供不存在的下载链接。" } };
+      }
+      if (message.word === "pair_reject") { await link.reject(String(b.request_id)); return { ok: true, result: { rejected: true } }; }
+      if (message.word === "pair_approve") {
+        const request = link.pending.get(String(b.request_id)); if (!request) return fail("not_found", "Pairing request expired or missing");
+        const browser = b.kind === "browser";
+        if (browser && (b.local_agents === true || b.access === "full")) return fail("forbidden", "Browser pairing cannot grant local agents or full device access");
+        const id = `device:${request.client_id}`, web = browser || b.web_ui === true;
+        // Persist a restrictive default before changing the gateway grant; full access is saved only after success.
+        this.policies[id] = { name: request.name, kind: b.kind as Policy["kind"], access: "approval", local_agents: false, web_ui: web, paired_at: Date.now() }; this.save();
+        await link.approve(request.request_id, browser ? ["chat", "web_ui"] : ["expose_capability", ...(web ? ["chat", "web_ui"] as const : [])]);
+        this.policies[id] = { ...this.policies[id], access: b.access === "full" ? "full" : "approval", local_agents: !browser && b.local_agents === true }; this.save();
+        await link.refreshDevices(); return { ok: true, result: { approved: true, device: id } };
+      }
+      const id = String(b.device), previous = this.current(id); if (!previous) return fail("not_found", "Unknown or revoked device");
+      if (message.word === "describe" || message.word === "diagnose") return { ok: true, result: { ...this.item(id), ...previous, gateway_connected: link.connected, gateway_error: link.lastError || undefined,
+        recent_calls: this.router.ledger.list({ limit: 1000 }).filter(m => m.to === id && m.kind === "request").slice(-10).reverse().map(m => {
+          const reply = this.router.ledger.responseTo(m.id)?.body as ResponseBody | undefined;
+          return { id: m.id, at: m.ts, from: m.from, word: m.word, status: reply ? reply.ok ? "ok" : reply.error.code : "pending" };
+        }) } };
+      if (message.word === "revoke") { await link.revoke(id); link.closeAgentChannel(id); delete this.policies[id]; this.save(); await link.refreshDevices(); return { ok: true, result: { revoked: true } }; }
+      if (message.word === "rename") {
+        const name = String(b.name).trim(); if (!name) return fail("failed", "Device name cannot be blank");
+        this.policies[id] = { ...previous, name }; this.save(); await link.refreshDevices();
+        return { ok: true, result: { device: id, name } };
+      }
+      if (message.word === "access_set") {
+        if (previous.kind === "browser" && (b.local_agents === true || b.access === "full")) return fail("forbidden", "Browser cannot host local agents or grant full device access");
+        const next = { ...previous, ...(b.access !== undefined ? { access: b.access as Policy["access"] } : {}), ...(b.local_agents !== undefined ? { local_agents: b.local_agents === true } : {}), ...(b.web_ui !== undefined ? { web_ui: b.web_ui === true } : {}) };
+        if (next.web_ui !== previous.web_ui) await link.setWebUi(id, next.web_ui);
+        this.policies[id] = next; this.save();
+        if (!next.local_agents) link.closeAgentChannel(id);
+        return { ok: true, result: { device: id, ...next } };
+      }
+      if (message.word === "update") {
+        if (!link.updateDevice) return fail("failed", "Device updater is unavailable");
+        return { ok: true, result: await link.updateDevice(id, String(b.version), String(b.sha256)) };
+      }
+      return fail("not_found", "Unknown device operation");
+    } catch { return fail("failed", "Device operation failed; refresh status before retrying"); }
+  }
+}

@@ -1,14 +1,15 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { Link, type Signer } from "../../../device/src/link";
+import { RemoteAgents } from "../../../device/src/agents/remote";
+export { ClientLink, fileSigner, type LocalCapabilities, type Signer } from "../../../device/src/link";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { Connection, DeviceKey, GatewayClient } from "ash-gateway/client/client";
+import { Connection } from "ash-gateway/client/client";
 import { b64u, fromB64u, LIMITS, type Permission, PERMISSIONS, randomToken, shortFingerprint } from "ash-gateway/src/protocol";
-import type { CallResult, CapabilitySpec, DeviceKind } from "../../../sdk/src/api";
+import type { CallResult } from "../../../sdk/src/api";
 import { isWordEffect } from "../../../sdk/src/words";
 import { DeviceMember } from "../members/device";
 import type { EdgeCaller, EdgeResponse, EdgeRouter } from "../server";
 import type { DeviceCapability } from "../world/router";
-
-export interface Signer { readonly id: string; readonly publicKey: string; sign(data: Uint8Array): Promise<string> }
 
 /** A paired device's own name, safe to show inside owner-facing labels. */
 function deviceLabel(name: unknown): string {
@@ -33,79 +34,9 @@ export function borrowedCapabilities(raw: unknown[], deviceName: unknown): Devic
   });
 }
 
-export async function fileSigner(stateDir: string): Promise<Signer> {
-  const file = join(stateDir, "device.jwk");
-  if (existsSync(file)) return DeviceKey.fromJwk(JSON.parse(readFileSync(file, "utf8")));
-  const key = await DeviceKey.generate();
-  writeFileSync(file, JSON.stringify(await key.exportJwk()), { mode: 0o600 });
-  return key;
-}
-
 interface Inbound { method: string; path: string; headers: [string, string][]; body: Uint8Array[]; from?: string }
-interface Outbound { status: number; chunks: Uint8Array[]; end: (error?: string) => void }
+interface Outbound { device: string; status: number; chunks: Uint8Array[]; end: (error?: string) => void }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-abstract class Link {
-  protected conn: Connection | null = null;
-  protected readonly gateway: GatewayClient;
-  private stopped = false;
-  connected = false;
-  lastError = "";
-  constructor(url: string, readonly signer: Signer, protected readonly log: (...args: unknown[]) => void) {
-    this.gateway = new GatewayClient(url, signer as unknown as DeviceKey);
-  }
-  protected send(frame: Record<string, unknown>): void {
-    if (this.conn?.ws.readyState === WebSocket.OPEN) this.conn.ws.send(JSON.stringify(frame));
-  }
-  protected abstract onFrame(frame: Record<string, unknown>): void;
-  protected async onConnected(_conn: Connection): Promise<void> {}
-  protected onDisconnected(): void {}
-  async run(): Promise<void> {
-    let delay = 1000;
-    while (!this.stopped) {
-      try {
-        const conn = await this.gateway.connect(await this.gateway.authenticate());
-        this.conn = conn; this.connected = true; this.lastError = ""; delay = 1000;
-        conn.onUnmatched = (frame) => this.onFrame(frame);
-        let lastHeard = Date.now();
-        let expired!: () => void;
-        const silent = new Promise<void>((resolve) => { expired = resolve; });
-        conn.ws.addEventListener("message", () => { lastHeard = Date.now(); });
-        const beat = setInterval(() => {
-          if (conn.ws.readyState !== WebSocket.OPEN) return;
-          if (Date.now() - lastHeard > 90_000) { conn.ws.close(4000, "silent"); expired(); }
-          else conn.ws.send("ping");
-        }, 30_000);
-        await this.onConnected(conn);
-        await Promise.race([conn.closed, silent]);
-        clearInterval(beat);
-      } catch (error) { this.conn?.close(); this.lastError = error instanceof Error ? error.message : String(error); this.log("gateway connection failed", this.lastError); }
-      this.connected = false; this.conn = null; this.onDisconnected();
-      if (this.stopped) break;
-      await sleep(delay * (0.5 + Math.random() / 2)); delay = Math.min(delay * 2, 30_000);
-    }
-  }
-  stop(): void { this.stopped = true; this.conn?.close(); }
-  protected reply(sid: string, result: EdgeResponse, onStream?: (end: () => void) => () => void): void {
-    const headers = Object.entries(result.headers ?? {}).filter(([name]) => !/^(set-cookie|content-length|content-encoding|transfer-encoding|connection)$/i.test(name));
-    this.send({ t: "tun", op: "http.head", sid, status: result.status, headers });
-    const data = (value: Uint8Array) => {
-      for (let i = 0; i < value.length; i += LIMITS.tunnelChunkBytes) this.send({ t: "tun", op: "http.body", sid, data: b64u(new Uint8Array(value.subarray(i, i + LIMITS.tunnelChunkBytes))) });
-    };
-    if ("stream" in result) {
-      let ended = false; const cleanups: (() => void)[] = [];
-      const end = () => { if (ended) return; ended = true; for (const cleanup of cleanups) cleanup(); this.send({ t: "tun", op: "http.end", sid }); };
-      const timeout = setTimeout(end, 4 * 60_000);
-      cleanups.push(() => clearTimeout(timeout));
-      const unregister = onStream?.(end);
-      if (unregister) cleanups.push(unregister);
-      result.stream((chunk) => { if (!ended) data(Buffer.from(chunk)); }, (cleanup) => cleanups.push(cleanup), end);
-      return;
-    }
-    if (result.body !== undefined) data(typeof result.body === "string" ? Buffer.from(result.body) : result.body);
-    this.send({ t: "tun", op: "http.end", sid });
-  }
-}
 
 export interface PendingPairing { request_id: string; client_id: string; name: string; pubkey: string; fingerprint: string; at: number }
 
@@ -113,7 +44,13 @@ export interface PendingPairing { request_id: string; client_id: string; name: s
 export class OwnerLink extends Link {
   private readonly incoming = new Map<string, Inbound>();
   private readonly outbound = new Map<string, Outbound>();
-  private readonly remoteDevices = new Map<string, { member: DeviceMember; manifest: string }>();
+  private readonly remoteDevices = new Map<string, { member: DeviceMember; manifest: string; details: { protocol?: string; version?: string; agents?: unknown[]; workdir?: string } }>();
+  private deviceName: (id: string, fallback: string) => string = (_id, fallback) => fallback;
+  private agentsAllowed: (id: string) => boolean = () => false;
+  setDeviceManagement(name: (id: string, fallback: string) => string, agentsAllowed: (id: string) => boolean): void {
+    this.deviceName = name; this.agentsAllowed = agentsAllowed;
+  }
+  private readonly agentChannels = new Map<string, { peer: RemoteAgents; connection?: Connection; stream?: import("ash-gateway/client/client").DeviceStream }>();
   /** Every paired, unrevoked device as the gateway lists it (browsers included), for listing and revoking. */
   private paired: { id: string; name: string; permissions: string[]; online: boolean }[] = [];
   private readonly streams = new Map<string, { end: () => void; from: string }>();
@@ -165,6 +102,31 @@ export class OwnerLink extends Link {
     this.outbound.clear();
     for (const entry of this.remoteDevices.values()) entry.member.setOnline(false);
   }
+  /** Internal entry point: AgentSystem must check local_agents permission before calling this. */
+  openAgentChannel(member: string, handlers: ConstructorParameters<typeof RemoteAgents>[0]): RemoteAgents {
+    const id = member.replace(/^device:/, "");
+    const device = this.paired.find(d => d.id === id);
+    if (!device?.online || !device.permissions.includes("expose_capability") || !this.agentsAllowed(`device:${id}`)) throw new Error("device offline or local agents not authorized");
+    const existing = this.agentChannels.get(id); if (existing) return existing.peer;
+    const entry = { peer: new RemoteAgents({ ...handlers, manifestChanged: () => { handlers.manifestChanged?.(); void this.refreshDevices().catch(() => {}); } }) };
+    this.agentChannels.set(id, entry); this.connectAgentChannel(id); return entry.peer;
+  }
+  closeAgentChannel(member: string): void {
+    const id = member.replace(/^device:/, "");
+    this.agentChannels.get(id)?.peer.close(); this.agentChannels.delete(id);
+  }
+  private connectAgentChannel(id: string): void {
+    const entry = this.agentChannels.get(id), conn = this.conn;
+    if (!entry || !conn || entry.stream) return;
+    const stream = conn.openStream(id);
+    entry.connection = conn; entry.stream = stream;
+    stream.onClose(() => { if (entry.stream === stream) entry.stream = undefined; });
+    entry.peer.attach(stream);
+  }
+  override stop(): void {
+    for (const entry of this.agentChannels.values()) entry.peer.close();
+    this.agentChannels.clear(); super.stop();
+  }
   private async addPending(raw: Record<string, string>): Promise<void> {
     const item: PendingPairing = { request_id: raw.request_id, client_id: raw.client_id, name: raw.name, pubkey: raw.pubkey, fingerprint: await shortFingerprint(raw.pubkey), at: Date.now() };
     this.pending.set(item.request_id, item);
@@ -188,8 +150,14 @@ export class OwnerLink extends Link {
 
   private onOutbound(frame: Record<string, unknown>): void {
     const item = this.outbound.get(String(frame.sid))!;
+    if (frame.from !== item.device) return;
     if (frame.op === "http.head") item.status = Number(frame.status);
-    else if (frame.op === "http.body") item.chunks.push(fromB64u(String(frame.data)));
+    else if (frame.op === "http.body") {
+      item.chunks.push(fromB64u(String(frame.data)));
+      if (item.chunks.reduce((n, b) => n + b.byteLength, 0) > 8 * 1024 * 1024) {
+        this.send({ t: "tun", op: "http.abort", sid: frame.sid, to: item.device }); item.end("remote response exceeds 8 MiB");
+      }
+    }
     else if (frame.op === "http.end") item.end();
     else if (frame.op === "http.error") item.end(String(frame.message ?? "tunnel error"));
   }
@@ -199,15 +167,18 @@ export class OwnerLink extends Link {
     if (!this.conn || !this.connected || signal?.aborted) return Promise.reject(new Error("device offline or call cancelled"));
     const sid = randomToken(12);
     return new Promise((resolve, reject) => {
-      const item: Outbound = { status: 0, chunks: [], end: (error) => {
+      let settled = false;
+      const item: Outbound = { device: to, status: 0, chunks: [], end: (error) => {
+        if (settled) return; settled = true;
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
         this.outbound.delete(sid);
         if (error) reject(new Error(error));
         else resolve({ status: item.status, body: Buffer.concat(item.chunks) });
       } };
-      const timer = setTimeout(() => item.end("device timeout"), timeoutMs);
-      const abort = () => item.end("cancelled");
+      const cancel = (reason: string) => { this.send({ t: "tun", op: "http.abort", sid, to }); item.end(reason); };
+      const timer = setTimeout(() => cancel("device timeout"), timeoutMs);
+      const abort = () => cancel("cancelled");
       signal?.addEventListener("abort", abort, { once: true });
       this.outbound.set(sid, item);
       const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
@@ -234,12 +205,18 @@ export class OwnerLink extends Link {
     const list = result.devices as { id: string; name: string; permissions: string[]; revoked: boolean; online: boolean }[];
     if (!Array.isArray(list)) throw new Error("gateway device list unavailable");
     this.paired = list.filter((item) => typeof item.id === "string" && /^[A-Za-z0-9_-]+$/.test(item.id) && !item.revoked)
-      .map((item) => ({ id: item.id, name: String(item.name ?? item.id), permissions: Array.isArray(item.permissions) ? item.permissions.map(String) : [], online: Boolean(item.online) }));
+      .map((item) => ({ id: item.id, name: this.deviceName(`device:${item.id}`, String(item.name ?? item.id)), permissions: Array.isArray(item.permissions) ? item.permissions.map(String) : [], online: Boolean(item.online) }));
+    for (const id of this.agentChannels.keys()) {
+      const item = this.paired.find(device => device.id === id);
+      if (!item?.permissions.includes("expose_capability")) this.closeAgentChannel(id);
+      else if (item.online) this.connectAgentChannel(id);
+    }
     const seen = new Set<string>();
     for (const item of list) {
       if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
       if (typeof item.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(item.id)) continue;
       const memberId = `device:${item.id}`;
+      item.name = this.deviceName(memberId, String(item.name ?? item.id));
       if (item.revoked || !item.permissions?.includes("expose_capability")) {
         this.edge.members.removeDevice(memberId);
         this.remoteDevices.delete(item.id);
@@ -252,10 +229,12 @@ export class OwnerLink extends Link {
         const response = await this.requestDevice(item.id, "GET", "/ash/manifest", undefined, 20_000);
         if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
         if (response.status !== 200) throw new Error("remote manifest unavailable");
-        const raw = JSON.parse(response.body.toString("utf8")) as { name?: unknown; capabilities?: unknown };
+        const raw = JSON.parse(response.body.toString("utf8")) as { name?: unknown; capabilities?: unknown; protocol?: string; version?: string; agents?: unknown[]; workdir?: string };
         if (!raw || !Array.isArray(raw.capabilities) || typeof raw.name !== "string" || !raw.name.trim()) throw new TypeError("invalid remote manifest");
+        if (raw.protocol && raw.protocol !== "ash-dev/1") throw new Error("Device protocol needs updating");
         const capabilities = borrowedCapabilities(raw.capabilities, item.name);
-        const manifest = JSON.stringify({ name: item.name, capabilities });
+        const details = { protocol: raw.protocol, version: raw.version, agents: raw.agents, workdir: raw.workdir };
+        const manifest = JSON.stringify({ name: item.name, capabilities, details });
         if (previous?.manifest === manifest) { previous.member.setOnline(true); continue; }
         const member = new DeviceMember(memberId, item.name, capabilities, async (message, context) => {
           try {
@@ -264,11 +243,14 @@ export class OwnerLink extends Link {
             const answer = JSON.parse(called.body.toString("utf8")) as CallResult;
             if (!answer || typeof answer.ok !== "boolean") throw new Error("invalid remote result");
             return answer.ok ? { ok: true, result: { content: answer.content, ...(answer.data === undefined ? {} : { data: answer.data }) } }
-              : { ok: false, error: { code: "failed", message: answer.error ?? "remote call failed" } };
-          } catch { return { ok: false, error: { code: "offline", message: "remote device unavailable" } }; }
+              : { ok: false, error: { code: "failed", message: answer.error ?? "remote call failed", detail: { content: answer.content, data: answer.data } } };
+          } catch (e) {
+            const message = e instanceof Error ? e.message : "remote device unavailable";
+            return { ok: false, error: { code: /offline/.test(message) ? "offline" : /timeout/.test(message) ? "timeout" : /cancelled/.test(message) ? "cancelled" : "failed", message } };
+          }
         });
         this.edge.members.replaceDevice(member);
-        this.remoteDevices.set(item.id, { member, manifest });
+        this.remoteDevices.set(item.id, { member, manifest, details });
       } catch { if (epoch === this.epoch && this.conn === conn && this.connected) previous?.member.setOnline(false); }
     }
     if (epoch !== this.epoch || this.conn !== conn || !this.connected) return;
@@ -318,53 +300,28 @@ export class OwnerLink extends Link {
     const list = await this.requireConnection().request({ op: "device.list" });
     await this.gateway.revoke(this.requireConnection(), member.replace(/^device:/, ""), Number(list.grant_version) + 1);
   }
+  async setWebUi(member: string, allow: boolean): Promise<void> {
+    const id = member.replace(/^device:/, ""), conn = this.requireConnection();
+    const list = await conn.request({ op: "device.list" });
+    const item = (list.devices as { id: string; revoked: boolean; permissions: Permission[] }[]).find(d => d.id === id && !d.revoked);
+    if (!item) throw new Error("unknown device");
+    const permissions: Permission[] = item.permissions.filter(p => p !== "web_ui" && p !== "chat");
+    if (allow) permissions.push("web_ui", "chat");
+    await this.gateway.permissions(conn, id, permissions, Number(list.grant_version) + 1);
+    await this.revalidateStreams(); await this.refreshDevices();
+  }
   state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined,
     pending: [...this.pending.values()],
     devices: this.paired.map((item) => ({ id: `device:${item.id}`, name: item.name, online: this.remoteDevices.get(item.id)?.member.online ?? item.online,
-      permissions: item.permissions, lends: this.remoteDevices.has(item.id), capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0 })) }; }
-}
-
-export interface LocalCapabilities {
-  manifest(): Promise<{ name: string; kind: DeviceKind; capabilities: CapabilitySpec[] }>;
-  call(capability: string, args: Record<string, unknown>, caller: string): Promise<CallResult>;
-}
-
-/** Client role retains the existing gateway manifest/call protocol. */
-export class ClientLink extends Link {
-  private readonly incoming = new Map<string, Inbound>();
-  constructor(url: string, signer: Signer, private readonly local: LocalCapabilities, log: (...args: unknown[]) => void) { super(url, signer, log); }
-  async pair(stateDir: string, code: string | undefined, name: string): Promise<void> {
-    const file = join(stateDir, "paired.json");
-    if (existsSync(file)) return;
-    if (!code) throw new Error("not paired: use --pair once");
-    const request = await this.gateway.requestPairing(code, name);
-    this.log("pairing requested", await shortFingerprint(this.signer.publicKey), request.owner_fingerprint);
-    const grant = await this.gateway.waitForApproval(request.request_id, request.owner_key, 10 * 60_000);
-    writeFileSync(file, JSON.stringify({ owner_key: request.owner_key, ...grant }), { mode: 0o600 });
-  }
-  protected onFrame(frame: Record<string, unknown>): void {
-    if (frame.t !== "tun" || typeof frame.sid !== "string") return;
-    const sid = frame.sid;
-    if (frame.op === "http.req") this.incoming.set(sid, { method: String(frame.method), path: String(frame.path), headers: (frame.headers as [string, string][]) ?? [], body: [] });
-    else if (frame.op === "http.reqbody") this.incoming.get(sid)?.body.push(fromB64u(String(frame.data)));
-    else if (frame.op === "http.reqend") {
-      const inbound = this.incoming.get(sid); this.incoming.delete(sid);
-      if (inbound) void this.serve(sid, inbound).catch((error) => this.send({ t: "tun", op: "http.error", sid, message: error instanceof Error ? error.message : "client failed" }));
-    }
-  }
-  private async serve(sid: string, inbound: Inbound): Promise<void> {
-    const path = inbound.path.split("?")[0];
-    const json = (status: number, body: unknown): EdgeResponse => ({ status, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (inbound.method === "GET" && path === "/ash/manifest") {
-      const manifest = await this.local.manifest();
-      return this.reply(sid, json(200, { ...manifest, capabilities: manifest.capabilities.map((capability) => ({
-        ...capability, risk: capability.risk === "none" ? "none" : "structure", label: `Use ${capability.name}`,
-      })) }));
-    }
-    if (inbound.method === "POST" && path === "/ash/call") {
-      const input = JSON.parse(Buffer.concat(inbound.body).toString("utf8") || "{}") as { capability?: string; args?: Record<string, unknown>; caller?: string };
-      return this.reply(sid, json(200, await this.local.call(String(input.capability ?? ""), input.args ?? {}, String(input.caller ?? "unknown"))));
-    }
-    this.reply(sid, json(404, { error: "not_found" }));
+      permissions: item.permissions, lends: this.remoteDevices.has(item.id), capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0,
+      capability_specs: this.remoteDevices.get(item.id)?.member.capabilities().map(c => ({ word: c.name, effect: c.effect, label: c.label })) ?? [],
+      ...this.remoteDevices.get(item.id)?.details })) }; }
+  async updateDevice(member: string, version: string, sha256: string): Promise<unknown> {
+    const id = member.replace(/^device:/, "");
+    if (!this.paired.some(item => item.id === id && item.online && item.permissions.includes("expose_capability"))) throw new Error("Device offline or revoked");
+    const response = await this.requestDevice(id, "POST", "/ash/update", { version, sha256 }, 180_000);
+    const result = JSON.parse(response.body.toString("utf8"));
+    if (response.status !== 200 || !result.ok) throw new Error(String(result.error ?? "Device update failed"));
+    return result.result;
   }
 }

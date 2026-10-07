@@ -398,6 +398,27 @@ export class SettingsControls {
     gatewayList.id = "settingsGatewayList";
     gatewayList.className = "set-group";
     const pairCode = button("添加设备", "btn", "settingsGatewayPair");
+    const choose = (entries, value, id) => {
+      const select = document.createElement("select"); select.id = id;
+      for (const [key, label] of entries) { const option = node("option", label); option.value = key; select.append(option); }
+      select.value = value; return select;
+    };
+    const kinds = [["laptop", "电脑"], ["server", "服务器"], ["browser", "浏览器（仅聊天和界面）"]];
+    const pairKind = choose(kinds, "laptop", "settingsGatewayPairKind");
+    const deviceRequest = (word, body = {}) => requestSetting(word, body, "service:devices");
+    const permissions = (device, prefix) => {
+      const box = node("div", "", "set-card");
+      const access = choose([["approval", "按规则和影响审批"], ["full", "完全放开（命令也不再询问）"]], device.access || "approval", `${prefix}Access`);
+      const check = (title, checked, id) => {
+        const label = node("label", title); const input = document.createElement("input");
+        input.type = "checkbox"; input.checked = checked; input.id = id; label.append(input); box.append(label); return input;
+      };
+      box.append(access);
+      const local = check("允许本地 Agent（使用电脑本地完整权限）", device.local_agents === true, `${prefix}Agents`);
+      const web = check("允许访问 Ash 聊天和网页界面", device.web_ui === true, `${prefix}Web`);
+      return { box, read: () => ({ access: access.value, local_agents: local.checked, web_ui: web.checked }),
+        browser: (yes) => { access.disabled = yes; local.disabled = yes; web.disabled = yes; if (yes) { access.value = "approval"; local.checked = false; web.checked = true; } } };
+    };
     const pairResult = node("p", "", "set-status");
     pairResult.id = "settingsGatewayPairResult";
     pairResult.setAttribute("role", "status");
@@ -405,11 +426,11 @@ export class SettingsControls {
       pairCode.disabled = true;
       pairResult.textContent = "正在生成配对码…";
       try {
-        const reply = await requestSetting("gateway.op", { op: "ticket" });
+        const reply = await deviceRequest("pair_start", { kind: pairKind.value });
         const ticket = reply?.ok === true ? reply.result?.ticket : null;
         if (typeof ticket !== "string" || !ticket) throw new Error("no ticket");
         const where = typeof reply.result.gateway === "string" ? reply.result.gateway : "网关地址";
-        pairResult.textContent = `配对码：${ticket}（5 分钟内有效，只能用一次）。在新设备的浏览器打开 ${where}，粘贴配对码，再回到这里批准。`;
+        pairResult.textContent = `配对码：${ticket}（5 分钟内有效，只能用一次）。网关：${where}。${reply.result.instructions || "在新设备输入配对码，再回到这里批准。"}`;
       } catch { if (live()) pairResult.textContent = "生成失败：网关可能离线，请稍后重试。"; }
       finally { pairCode.disabled = false; }
     })(); });
@@ -423,7 +444,7 @@ export class SettingsControls {
       return row;
     };
     const refreshGateway = async () => {
-      const reply = await requestSetting("gateway.state", {});
+      const reply = await deviceRequest("gateway_status");
       if (reply?.ok !== true) throw new Error("gateway unavailable");
       const state = reply.result;
       if (!live()) return state;
@@ -431,39 +452,59 @@ export class SettingsControls {
       gatewayList.hidden = true;
       if (state?.configured !== true) { gatewayStatus.textContent = "还没有设置网关，其他设备暂时连不上。"; return state; }
       gatewayStatus.textContent = state.connected ? "网关已连接。" : "网关暂时离线。";
-      const act = async (body) => {
-        const result = await requestSetting("gateway.op", body);
+      const act = async (word, body) => {
+        const result = await deviceRequest(word, body);
         if (result?.ok !== true) throw new Error("gateway operation failed");
         await refreshGateway();
       };
       const failed = (text) => () => { if (live()) gatewayStatus.textContent = text; };
       for (const pending of Array.isArray(state.pending) ? state.pending : []) {
         if (typeof pending.request_id !== "string" || typeof pending.name !== "string") continue;
-        const row = item(pending.name, `等你批准 · 批准后可以聊天、打开这个界面、借出设备能力${pending.fingerprint ? ` · 指纹 ${pending.fingerprint}` : ""}`);
+        const row = item(pending.name, `等你批准 · 先选择设备类型和权限${pending.fingerprint ? ` · 指纹 ${pending.fingerprint}` : ""}`);
+        const prefix = `settingsPending-${pending.request_id}`;
+        const kind = choose(kinds, pairKind.value, `${prefix}Kind`);
+        const grant = permissions({}, prefix);
+        grant.browser(kind.value === "browser");
+        kind.addEventListener("change", () => grant.browser(kind.value === "browser"));
         const approve = button("批准");
-        approve.addEventListener("click", () => { void act({ op: "approve", request_id: pending.request_id,
-          permissions: ["chat", "web_ui", "expose_capability"] }).catch(failed("批准未确认，请重试。")); });
+        approve.id = `${prefix}Approve`;
+        approve.addEventListener("click", () => { void act("pair_approve", { request_id: pending.request_id,
+          kind: kind.value, ...grant.read() }).catch(failed("批准未确认，请刷新状态后检查。")); });
         const reject = button("拒绝", "btn gray");
-        reject.addEventListener("click", () => { void act({ op: "reject", request_id: pending.request_id }).catch(failed("拒绝未确认，请重试。")); });
-        row.append(approve, reject);
+        reject.addEventListener("click", () => { void act("pair_reject", { request_id: pending.request_id }).catch(failed("拒绝未确认，请重试。")); });
+        row.append(kind, grant.box, approve, reject);
         gatewayList.append(row);
       }
       for (const device of Array.isArray(state.devices) ? state.devices : []) {
         if (typeof device.id !== "string" || typeof device.name !== "string") continue;
-        const lends = device.lends === true;
-        const kind = lends ? `电脑 · ${Number(device.capabilities) || 0} 个能力` : "浏览器";
-        const row = item(device.name, `${kind} · ${device.online ? "在线" : "离线"}`);
+        const kind = device.kind === "browser" ? "浏览器" : `${device.kind === "server" ? "服务器" : "电脑"} · ${Number(device.capabilities) || 0} 个能力`;
+        const row = item(device.name, `${kind} · ${device.online ? "在线" : "离线"}${device.version ? ` · v${device.version}` : ""} · ${device.access === "full" ? "完全放开" : "按规则审批"}`);
         const revoke = button("移除", "btn gray");
+        revoke.id = `settingsDevice-${device.id}Revoke`;
         armed(revoke, "移除", "确定移除？", () => { gatewayStatus.textContent = `移除后 ${device.name} 需要重新配对才能连上。`; },
-          () => act({ op: "revoke", device: device.id }).catch(failed("移除未确认，请重试。")));
+          () => act("revoke", { device: device.id }).catch(failed("移除未确认，请重试。")));
         row.append(revoke);
+        const details = node("details"); details.append(node("summary", "名称、权限与诊断"));
+        if (device.workdir) details.append(node("p", `工作目录：${device.workdir}`, "set-sub"));
+        if (Array.isArray(device.agents) && device.agents.length) details.append(node("p", `本地运行时：${device.agents.map(a => `${a.kind}${a.installed ? "" : "（未安装）"}`).join("、")}`, "set-sub"));
+        const nameInput = document.createElement("input"); nameInput.value = device.name; nameInput.setAttribute("aria-label", "设备名称");
+        const rename = button("保存名称", "btn gray");
+        rename.addEventListener("click", () => { void act("rename", { device: device.id, name: nameInput.value }).catch(failed("名称未保存。")); });
+        const grant = permissions(device, `settingsDevice-${device.id}`); grant.browser(device.kind === "browser");
+        const save = button("保存权限");
+        save.addEventListener("click", () => { void act("access_set", { device: device.id, ...grant.read() }).catch(failed("权限未确认，请刷新状态后检查。")); });
+        const diagnose = button("诊断", "btn gray"); const info = node("pre", "", "set-status");
+        diagnose.addEventListener("click", () => { void deviceRequest("diagnose", { device: device.id }).then(reply => {
+          info.textContent = reply?.ok ? JSON.stringify(reply.result, null, 2) : "诊断失败，请刷新状态。";
+        }).catch(() => { info.textContent = "诊断失败。"; }); });
+        details.append(nameInput, rename, grant.box, save, diagnose, info); row.append(details);
         gatewayList.append(row);
       }
       gatewayList.hidden = gatewayList.children.length === 0;
       if (gatewayList.hidden) gatewayStatus.textContent += "还没有连接其他设备。";
       return state;
     };
-    gatewayPage.append(gatewayStatus, gatewayList, pairCode, pairResult);
+    gatewayPage.append(gatewayStatus, gatewayList, pairKind, pairCode, pairResult);
     let loadGatewayConfig = null;
     if (android && typeof globalThis.__ashGatewayConfig === "function") {
       const url = document.createElement("input");
@@ -582,7 +623,7 @@ export class SettingsControls {
     // ---- Approval: one choice, how often she asks before acting.
     const APPROVAL_MODES = [
       { mode: "auto", title: "有影响时才问", sub: `替你对外发消息、删改你的数据、花钱或执行命令前先问你；看、找、打开这类可撤回的事 ${name} 直接做。` },
-      { mode: "always", title: "每次都问", sub: `除了看和读，${name} 每做一件事都先问你。` },
+      { mode: "always", title: "每次都问", sub: `除了看和读，外部操作都先问你；单独设为「完全放开」的电脑除外。` },
     ];
     const approvalPage = page("settingsApproval", "审批",
       `「有影响时才问」会使用你选过的「以后都允许」规则；「每次都问」会暂停这些规则，切回后继续生效。在 ${name} 的人物页里能看到每次是怎么决定的。`, () => loadApproval());
@@ -729,7 +770,7 @@ export class SettingsControls {
       const settled = (work) => work.catch(() => null);
       const [settings, usage, vault, gateway] = await Promise.all([
         settled(requestSetting("settings.get", {})), settled(requestSetting("usage.get", { days: 7 }, "service:cost")),
-        settled(readVault()), settled(requestSetting("gateway.state", {}))]);
+        settled(readVault()), settled(deviceRequest("gateway_status"))]);
       if (!live()) return;
       const quiet = settings?.ok === true ? settings.result?.delivery?.quiet : null;
       if (typeof quiet === "string" && /^\d\d:\d\d-\d\d:\d\d$/.test(quiet)) {

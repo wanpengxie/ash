@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // The same UI source produces the core-served page and the Android packaged page.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync as writeFile, renameSync } from "node:fs";
+// Readers (tests/builds) may run while another build refreshes the generated module.
+function writeFileSync(path, content) { const temp = `${path}.${process.pid}.tmp`; writeFile(temp, content); renameSync(temp, path); }
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";

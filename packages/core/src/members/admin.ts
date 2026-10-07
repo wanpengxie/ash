@@ -22,7 +22,7 @@ export interface AdminOptions { ledger: Ledger; router: WorldRouter; dbFile: str
   pluginsList?: () => Promise<Record<string, unknown>>;
   pluginsOp?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   gatewayState?: () => Record<string, unknown>;
-  gatewayOp?: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  gatewayOp?: (body: Record<string, unknown>, context: RouteHandlerContext) => Promise<Record<string, unknown>>;
   modelGet?: () => Record<string, unknown>;
   modelSet?: (provider: string, model: string) => Promise<Record<string, unknown>>;
   currentAgentTurn?: () => string | null;
@@ -107,7 +107,7 @@ export class AdminMember implements Member {
         return { ok: false, error: { code: "forbidden", message: "local administration unavailable" } };
       if (!this.options.gatewayOp) return { ok: false, error: { code: "offline", message: "gateway unavailable" } };
       if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "admin request settled" } };
-      try { return { ok: true, result: await this.options.gatewayOp(message.body) }; }
+      try { return { ok: true, result: await this.options.gatewayOp(message.body, context) }; }
       catch { return { ok: false, error: { code: "failed", message: "gateway operation failed" } }; }
     }
     if (message.word === "settings.get" || message.word === "settings.set") {

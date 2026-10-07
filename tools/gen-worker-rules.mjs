@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Keep the worker compiler's bundled rule text byte-for-byte aligned with its source module.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync as writeFile, renameSync } from "node:fs";
+const writeFileSync = (path, text) => { const temp = `${path}.${process.pid}.tmp`; writeFile(temp, text); renameSync(temp, path); };
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 

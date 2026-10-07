@@ -5,7 +5,8 @@ import { AGENT_ID, wordContract } from "../../../sdk/src/words";
 import type { AgentMember } from "../members/agent";
 import type { Member, WorldMembers } from "../world/member";
 import type { RouteHandlerContext, TrustedRouteContext, WorldRouter } from "../world/router";
-import { BUILT_IN_IDS, agentName, type AgentDeclaration } from "../agents";
+import { BUILT_IN_IDS, agentName, wordAllowed, type AgentDeclaration } from "../agents";
+import type { AgentThread } from "../world/ledger";
 
 /** What the Agent system needs from the runtime to bring a declared agent to life (the container runtime provides it). */
 export interface AgentRuntime {
@@ -17,6 +18,8 @@ export interface AgentRuntime {
   dispose(id: string): Promise<void>;
   /** Apply a changed declaration to the agent's tool credential. */
   apply(declaration: AgentDeclaration): void;
+  available?(declaration: AgentDeclaration): string | null;
+  runtimes?(): Record<string, unknown>[];
 }
 
 export interface AgentSystemOptions {
@@ -35,9 +38,9 @@ export interface AgentSystemOptions {
 }
 
 interface Exchange { id: string; kind: "ask" | "tell"; from: string; to: string; turn: string | null; texts: string[]; done: boolean; at: number;
-  resolve?: (body: ResponseBody) => void }
+  resolve?: (body: ResponseBody) => void; result?: ResponseBody }
 
-const WORDS = ["list", "describe", "ask", "tell", "answer", "declare", "update", "start", "stop", "restart", "remove"];
+const WORDS = ["list", "runtimes", "threads", "thread.stop", "describe", "ask", "tell", "answer", "declare", "update", "start", "stop", "restart", "remove"];
 const MANAGE = new Set(["declare", "update", "start", "stop", "restart", "remove"]);
 const service: TrustedRouteContext = { member: "service:agents", transport: "service", transportPrincipal: "service:agents", local: true, remote: false, ownerProxy: false };
 const schedule: TrustedRouteContext = { member: "service:work", transport: "service", transportPrincipal: "service:work", local: true, remote: false, ownerProxy: false };
@@ -73,6 +76,10 @@ export class AgentSystem implements Member {
     this.save();
     this.lastWake = this.read<Record<string, number>>(this.wakeFile) ?? {};
     this.stopFollowing = options.router.subscribe((message) => this.follow(message));
+    options.router.setAgentAvailability(id => {
+      const item = this.declaration(id);
+      return !!item && item.enabled !== false && !options.runtime?.available?.(item);
+    });
   }
 
   words(): readonly WordSpec[] { return WORDS.map((word) => wordContract("service:agents", word)!); }
@@ -80,6 +87,13 @@ export class AgentSystem implements Member {
   /** Every declaration, the main agent first. */
   all(): AgentDeclaration[] { return [...this.declarations.values()].sort((a, b) => (a.id === "agent:main" ? -1 : b.id === "agent:main" ? 1 : a.id.localeCompare(b.id))); }
   declaration(id: string): AgentDeclaration | undefined { return this.declarations.get(id); }
+  /** Live intersection: delegate and every delegator retain their own current limits. */
+  private policies(id: string, turn?: string): AgentDeclaration[] {
+    const ids = new Set([id, ...this.options.router.ledger.threadAncestors(turn).map(thread => thread.from)]);
+    return [...ids].map(id => this.declaration(id) ?? { id, name: id, summary: "removed", tools: [], words: [] });
+  }
+  toolAllowed(id: string, turn: string | undefined, tool: string): boolean { return this.policies(id, turn).every(policy => !policy.tools || policy.tools.includes(tool)); }
+  wordAllowed(id: string, turn: string | undefined, member: string, word: string): boolean { return this.policies(id, turn).every(policy => wordAllowed(policy, member, word)); }
   member(id: string): AgentMember | undefined { return id === "agent:main" ? this.options.main : this.live.get(id); }
   /** The declared agents that are running here, besides the main one. */
   agents(): AgentMember[] { return [...this.live.values()]; }
@@ -131,9 +145,9 @@ export class AgentSystem implements Member {
     const member = this.member(item.id);
     const counts = member?.counts();
     const state = item.enabled === false || !member ? "stopped" : member.lastError ? "error" : counts?.active ? "working" : "idle";
-    return { id: item.id, name: item.name, summary: item.summary, state, main: item.id === "agent:main", manage: item.manage === true,
+    return { id: item.id, name: item.name, summary: item.summary, state, available: item.enabled !== false && !this.options.runtime?.available?.(item), main: item.id === "agent:main", manage: item.manage === true,
       brief: item.brief ?? "", tools: item.tools ? [...item.tools] : null, words: item.words ? [...item.words] : null, every: item.every ?? null,
-      built_in: BUILT_IN_IDS.has(item.id) };
+      built_in: BUILT_IN_IDS.has(item.id), runtime: item.runtime ?? "container", ...(item.created_by ? { created_by: item.created_by } : {}) };
   }
 
   /** Wake each agent that has a schedule, when it is idle and ash is not paused. The last wake survives restarts. */
@@ -154,6 +168,14 @@ export class AgentSystem implements Member {
 
   /** Track which turn takes a delivered question or news, and finish the exchange when that turn ends. */
   private follow(message: Message): void {
+    // Register before the destination runs, even when its answer is synchronous.
+    if (message.kind === "request" && message.from === "service:agents" && message.word === "say" && message.thread) {
+      const work = this.options.router.ledger.agentThread(message.thread);
+      const request = work && this.options.router.ledger.byId(work.request);
+      if (work && request && ["ask", "tell"].includes(request.word)) this.exchanges.set(message.id, {
+        id: message.id, kind: request.word as "ask" | "tell", from: work.from, to: work.to, turn: null, texts: [], done: false, at: message.ts,
+      });
+    }
     if (message.kind !== "event" || !AGENT_ID.test(message.from)) return;
     const ids = Array.isArray(message.body.ids) ? message.body.ids as unknown[] : [];
     if ((message.word === "turn.start" || message.word === "read") && ids.length) {
@@ -161,13 +183,18 @@ export class AgentSystem implements Member {
       return;
     }
     if (message.word !== "turn.end") return;
+    const ledger = this.options.router.ledger;
+    const work = ledger.threadForTurn(String(message.body.turn));
+    if (work) ledger.saveAgentThread({ ...work, state: work.state === "cancelled" ? "cancelled" : message.body.reason as AgentThread["state"] });
+    if (message.body.reason !== "completed") this.cancelChildren(String(message.body.turn));
     for (const exchange of this.exchanges.values()) {
       if (exchange.done || exchange.to !== message.from || exchange.turn !== message.body.turn) continue;
       exchange.done = true;
       const answer = exchange.texts.join("\n\n");
       if (exchange.kind === "ask") {
-        exchange.resolve?.(message.body.reason === "completed" ? { ok: true, result: { agent: exchange.to, answer } }
-          : fail("failed", `${exchange.to} stopped before answering (${String(message.body.reason)})`));
+        exchange.result = message.body.reason === "completed" ? { ok: true, result: { agent: exchange.to, answer } }
+          : fail("failed", `${exchange.to} stopped before answering (${String(message.body.reason)})`);
+        exchange.resolve?.(exchange.result);
       } else if (answer.trim()) {
         // What came back from news goes to the sender once; the turn that reads it says nothing, so nobody bounces it.
         void this.options.router.send(service, { to: exchange.from, kind: "request", word: "say",
@@ -178,10 +205,23 @@ export class AgentSystem implements Member {
     if (this.exchanges.size > 500) for (const [id, exchange] of this.exchanges) if (exchange.done && Date.now() - exchange.at > 3_600_000) this.exchanges.delete(id);
   }
 
-  private async deliver(kind: "ask" | "tell", from: string, to: string, text: string): Promise<{ id: string; exchange: Exchange }> {
+  private cancelChildren(turn: string): void {
+    for (const child of this.options.router.ledger.agentThreads(turn)) {
+      if (["completed", "cancelled", "error"].includes(child.state)) continue;
+      this.options.router.ledger.saveAgentThread({ ...child, state: "cancelled" });
+      if (child.turn) { this.member(child.to)?.cancelWork(child.turn, "Delegating task was stopped"); this.cancelChildren(child.turn); }
+    }
+  }
+
+  private async deliver(kind: "ask" | "tell", from: string, to: string, text: string, request: Message): Promise<{ id: string; exchange: Exchange }> {
     const lead = kind === "ask" ? `（${from} 问你，请在正文里直接回答）` : `（${from} 告诉你）`;
-    const sent = await this.options.router.send(service, { to, kind: "request", word: "say", body: { text: `${lead}\n${text}`, from_agent: from } });
-    const exchange: Exchange = { id: sent.id, kind, from, to, turn: null, texts: [], done: false, at: Date.now() };
+    const ledger = this.options.router.ledger;
+    const thread: AgentThread = { id: `w_${request.seq.toString(36)}`, request: request.id, from, to, at: request.ts, state: "pending",
+      ...(request.turn ? { parent_turn: request.turn, parent: ledger.threadForTurn(request.turn)?.id } : {}) };
+    ledger.saveAgentThread(thread);
+    const sent = await this.options.router.send({ ...service, thread: thread.id }, { to, kind: "request", word: "say", body: { text: `${lead}\n${text}`, from_agent: from }, client_id: `delivery:${request.id}` });
+    ledger.saveAgentThread({ ...(ledger.agentThread(thread.id) ?? thread), delivery: sent.id });
+    const exchange: Exchange = this.exchanges.get(sent.id) ?? { id: sent.id, kind, from, to, turn: null, texts: [], done: false, at: Date.now() };
     this.exchanges.set(sent.id, exchange);
     return { id: sent.id, exchange };
   }
@@ -196,7 +236,17 @@ export class AgentSystem implements Member {
     const body = message.body;
     const target = typeof body.agent === "string" ? body.agent : "";
     switch (message.word) {
+      case "threads": return owner ? { ok: true, result: { threads: this.options.router.ledger.agentThreads() } } : fail("forbidden", "owner only");
+      case "thread.stop": {
+        if (!owner) return fail("forbidden", "owner only");
+        const thread = this.options.router.ledger.agentThread(String(body.thread));
+        if (!thread || ["completed", "error", "cancelled"].includes(thread.state)) return { ok: true, result: { cancelled: false } };
+        this.options.router.ledger.saveAgentThread({ ...thread, state: "cancelled" });
+        if (thread.turn) { this.member(thread.to)?.cancelWork(thread.turn, "Owner stopped this work thread"); this.cancelChildren(thread.turn); }
+        return { ok: true, result: { cancelled: true } };
+      }
       case "list": return { ok: true, result: { agents: this.all().map((item) => this.info(item)) } };
+      case "runtimes": return { ok: true, result: { runtimes: this.options.runtime?.runtimes?.() ?? [] } };
       case "describe": {
         const item = this.declarations.get(target);
         return item ? { ok: true, result: this.info(item) } : fail("not_found", `no agent ${target}`);
@@ -208,9 +258,23 @@ export class AgentSystem implements Member {
         const item = this.declarations.get(target);
         if (!item || !this.member(target)) return fail("not_found", `no agent ${target}`);
         if (item.enabled === false) return fail("offline", `${target} is stopped`);
-        const { id, exchange } = await this.deliver(message.word, from, target, String(body.text));
+        const unavailable = this.options.runtime?.available?.(item); if (unavailable) return fail("forbidden", unavailable);
+        const chain = this.options.router.ledger.threadAncestors(message.turn);
+        if (chain.length >= 3 || chain.some(thread => thread.from === target)) return fail("forbidden", "Delegation is limited to three levels and must not form a cycle");
+        const { id, exchange } = await this.deliver(message.word, from, target, String(body.text), message);
         if (message.word === "tell") return { ok: true, result: { sent: true, message_id: id } };
-        return await new Promise<ResponseBody>((resolve) => { exchange.resolve = resolve; });
+        return await new Promise<ResponseBody>((resolve) => {
+          exchange.resolve = resolve;
+          if (exchange.result) resolve(exchange.result);
+          _context.signal.addEventListener("abort", () => {
+            const thread = this.options.router.ledger.agentThread(`w_${message.seq.toString(36)}`);
+            if (thread && !["completed", "cancelled", "error"].includes(thread.state)) {
+              this.options.router.ledger.saveAgentThread({ ...thread, state: "cancelled" });
+              if (thread.turn) { this.member(thread.to)?.cancelWork(thread.turn, "Delegation cancelled"); this.cancelChildren(thread.turn); }
+            }
+            resolve(fail("failed", "Delegation cancelled; effects may be unknown"));
+          }, { once: true });
+        });
       }
       case "answer": {
         const exchange = typeof body.in_reply_to === "string" ? this.exchanges.get(body.in_reply_to) : undefined;
@@ -218,8 +282,8 @@ export class AgentSystem implements Member {
         if (!exchange.done && typeof body.text === "string") exchange.texts.push(body.text);
         return { ok: true, result: { accepted: true } };
       }
-      case "declare": return this.declare(body);
-      case "update": return this.update(target, body);
+      case "declare": return this.declare(body, caller, message.turn);
+      case "update": return this.update(target, body, caller, message.turn);
       case "start":
       case "stop":
       case "restart": return this.control(message.word, target);
@@ -236,7 +300,18 @@ export class AgentSystem implements Member {
     return null;
   }
 
-  private declare(body: Record<string, unknown>): ResponseBody {
+  private authority(item: AgentDeclaration, caller?: AgentDeclaration): string | null {
+    if (!caller) return null;
+    if (caller.tools && (!item.tools || item.tools.some(tool => !caller.tools!.includes(tool)))) return "new agent tools exceed the creator's authority";
+    if (caller.words && (!item.words || item.words.some(pattern => !caller.words!.some(parent => {
+      if (parent === pattern || parent === "*/*") return true;
+      // Conservative containment: simple trailing wildcards cover a narrower prefix; other patterns must match exactly.
+      return parent.endsWith("*") && !parent.slice(0, -1).includes("*") && pattern.startsWith(parent.slice(0, -1));
+    })))) return "new agent capabilities exceed the creator's authority";
+    return null;
+  }
+
+  private declare(body: Record<string, unknown>, caller?: AgentDeclaration, turn?: string): ResponseBody {
     if (!this.options.runtime) return fail("offline", "declared agents need the container runtime");
     const id = String(body.id ?? "");
     if (!AGENT_ID.test(id) || this.declarations.has(id) || this.options.members.describe("owner").members.some((member) => member.id === id))
@@ -245,28 +320,40 @@ export class AgentSystem implements Member {
     if (problem) return fail("bad_request", problem);
     // A new agent finds and talks with the others; anything more is given explicitly. Managing agents is the owner's to grant.
     const item: AgentDeclaration = { id, name: String(body.name), summary: String(body.summary), brief: String(body.brief),
-      tools: (body.tools as string[] | undefined) ?? ["agent_list", "agent_describe", "agent_ask", "agent_tell", "history_query", "system_status"],
+      runtime: body.runtime as AgentDeclaration["runtime"], created_by: caller?.id ?? "person:owner",
+      tools: (body.tools as string[] | undefined) ?? ["agent_list", "agent_describe", "agent_ask", "agent_tell", "history_query", "system_status"].filter(t => !caller?.tools || caller.tools.includes(t)),
       words: (body.words as string[] | undefined) ?? [], ...(typeof body.every === "number" ? { every: body.every } : {}) };
+    const denied = (caller ? this.policies(caller.id, turn).map(policy => this.authority(item, policy)).find(Boolean) : null) ?? this.options.runtime.available?.(item); if (denied) return fail("forbidden", denied);
     this.declarations.set(id, item);
     this.save();
     if (item.every) { this.lastWake[id] = Date.now(); this.write(this.wakeFile, this.lastWake); }
-    this.bring(id, true);
+    try { this.bring(id, true); }
+    catch (error) { this.declarations.delete(id); delete this.lastWake[id]; this.save(); throw error; }
     this.options.log?.("agent declared", id);
     return { ok: true, result: this.info(item) };
   }
 
-  private update(target: string, body: Record<string, unknown>): ResponseBody {
+  private async update(target: string, body: Record<string, unknown>, caller?: AgentDeclaration, turn?: string): Promise<ResponseBody> {
     const item = this.declarations.get(target);
     if (!item) return fail("not_found", `no agent ${target}`);
     const problem = this.validate(body);
     if (problem) return fail("bad_request", problem);
-    if (target === "agent:main" && (body.tools !== undefined || body.words !== undefined)) return fail("forbidden", "the main agent's abilities are set by the owner");
+    if (target === "agent:main" && (body.tools !== undefined || body.words !== undefined || body.runtime !== undefined)) return fail("forbidden", "the main agent's abilities are set by the owner");
     const next: AgentDeclaration = { ...item, ...(typeof body.name === "string" ? { name: body.name } : {}), ...(typeof body.summary === "string" ? { summary: body.summary } : {}),
       ...(typeof body.brief === "string" ? { brief: body.brief } : {}), ...(Array.isArray(body.tools) ? { tools: body.tools as string[] } : {}),
-      ...(Array.isArray(body.words) ? { words: body.words as string[] } : {}), ...(typeof body.every === "number" ? { every: body.every } : {}) };
+      ...(Array.isArray(body.words) ? { words: body.words as string[] } : {}), ...(typeof body.every === "number" ? { every: body.every } : {}),
+      ...(body.runtime !== undefined ? { runtime: body.runtime as AgentDeclaration["runtime"] } : {}) };
+    const denied = (caller ? this.policies(caller.id, turn).map(policy => this.authority(next, policy)).find(Boolean) : null) ?? this.options.runtime?.available?.(next); if (denied) return fail("forbidden", denied);
+    const changedRuntime = JSON.stringify(item.runtime) !== JSON.stringify(next.runtime);
+    if (changedRuntime) {
+      const previous = this.live.get(target); previous?.setEnabled(false, "Runtime changed");
+      await previous?.close(); await this.options.runtime?.dispose(target);
+      this.options.members.unregisterAgent(target); this.live.delete(target);
+    }
     this.declarations.set(target, next);
     this.save();
     if (target !== "agent:main") this.options.runtime?.apply(next);
+    if (changedRuntime) this.bring(target, true);
     return { ok: true, result: this.info(next) };
   }
 
@@ -274,6 +361,7 @@ export class AgentSystem implements Member {
     const item = this.declarations.get(target);
     if (!item) return fail("not_found", `no agent ${target}`);
     if (target === "agent:main") return fail("forbidden", "the main agent is paused and resumed by the owner, not stopped");
+    const unavailable = word !== "stop" && this.options.runtime?.available?.(item); if (unavailable) return fail("forbidden", unavailable);
     const member = this.live.get(target);
     if (!member) return fail("offline", `${target} is not running here`);
     if (word === "restart") {

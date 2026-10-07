@@ -16,6 +16,7 @@ export interface TaskStatusFrame {
   /** How a normally ended turn left things for the owner, once judged (task.outcome route); empty until then. */
   verdict?: string;
   reply?: string; cards?: TaskCard[];
+  agent?: string;
 }
 const states = new Set(["idle", "listening", "thinking", "working", "done", "waiting_you", "resting"]);
 /** Native display projection: activity labels, owner-facing replies and exact approval cards. Never executes. */
@@ -23,6 +24,7 @@ export class TaskStatusBridge {
   private session = randomUUID();
   private revision = 0;
   private turn: string | null = null;
+  private agent = "agent:main";
   private started = 0;
   private state = "idle";
   private text = "在线";
@@ -41,10 +43,13 @@ export class TaskStatusBridge {
   private stop: () => void;
   private timer: ReturnType<typeof setInterval>;
   constructor(private readonly router: Pick<WorldRouter, "subscribe"> & Partial<Pick<WorldRouter, "ledger">>, private readonly deliver: (frame: TaskStatusFrame) => Promise<void>) {
-    for (const item of router.ledger?.activeHumanPending() ?? []) {
-      if (item.agent !== "agent:main") continue;
+    const pending = router.ledger?.activeHumanPending() ?? [];
+    const latestAgent = pending.at(-1)?.agent;
+    for (const item of pending) {
+      if (item.agent !== latestAgent) continue;
+      if (!item.agent.startsWith("agent:")) continue;
       const ask = router.ledger?.byId(item.ask_id);
-      if (ask) { this.turn = item.turn; this.started = ask.ts; this.ended = true; this.state = "done"; this.addAsk(ask); }
+      if (ask) { this.agent = item.agent; this.turn = item.turn; this.started = ask.ts; this.ended = true; this.state = "done"; this.addAsk(ask); }
     }
     this.stop = router.subscribe((m) => this.observe(m));
     this.timer = setInterval(() => { if (this.turn && (!this.ended || this.asks.size)) this.enqueue(); }, 5_000);
@@ -62,7 +67,16 @@ export class TaskStatusBridge {
   }
   private observe(m: Message): void {
     if (this.closed) return;
-    if (m.from === "agent:main" && m.kind === "event") {
+    if (m.kind === "event" && m.word === "turn.start" && m.from.startsWith("agent:") && m.from !== this.agent) {
+      const direct = Array.isArray(m.body.ids) && m.body.ids.some(id => this.router.ledger?.byId(String(id))?.from === "person:owner");
+      if (direct || m.from === "agent:main" && (this.ended || !this.turn)) { this.agent = m.from; this.asks.clear(); }
+    }
+    const delegated = this.turn && !this.ended && m.turn && m.from !== this.agent && this.router.ledger?.threadAncestors(m.turn).some(work => work.parent_turn === this.turn);
+    if (delegated && m.word === "activity.summary" && m.kind === "event") {
+      this.summary = `交给 ${m.from.slice(6)} · ${activityText(m.body.text)}`;
+      this.text = this.summary; this.state = "working"; this.enqueue(); return;
+    }
+    if (m.from === this.agent && m.kind === "event") {
       if (m.word === "turn.start" && typeof m.body.turn === "string") {
         this.turn = m.body.turn; this.started = m.ts; this.ended = false; this.steps = []; this.activity = new ActivitySteps(); this.summary = "";
         for (const [id, card] of this.asks) if (card.state !== "waiting" && !(card.kind === "approval" && card.state === "answered")) this.asks.delete(id);
@@ -91,7 +105,7 @@ export class TaskStatusBridge {
       this.verdict = String((m.body.outcome as { kind?: unknown } | undefined)?.kind ?? "");
     } else if (this.turn && m.kind === "request" && m.to === "person:owner" && m.word === "ask") {
       // Gate holds the outer tool request while asking. That is waiting, not ongoing work.
-      if (m.turn !== this.turn) return;
+      if (m.turn !== this.turn && !delegated) return;
       this.addAsk(m);
     } else if (m.from === "service:gate" && m.kind === "event" && m.word === "human.pending") {
       // Durable pending records can outlive the turn that created them.
@@ -99,11 +113,11 @@ export class TaskStatusBridge {
       const card = this.asks.get(m.reply_to)!;
       const result = m.body.result as { choice?: string } | undefined;
       card.state = m.body.ok ? result?.choice === "deny" ? "denied" : "answered" : "withdrawn";
-    } else if (this.turn && !this.ended && m.from === "agent:main" && m.to === "person:owner" && m.kind === "request" && m.word === "say" && m.turn === this.turn) {
+    } else if (this.turn && !this.ended && m.from === this.agent && m.to === "person:owner" && m.kind === "request" && m.word === "say" && m.turn === this.turn) {
       if (this.replyInterrupted) this.replies = [];
       this.replyInterrupted = false;
       if (typeof m.body.text === "string") this.replies.push(m.body.text);
-    } else if (this.turn && !this.ended && m.kind === "request" && m.from === "agent:main" && m.turn === this.turn) {
+    } else if (this.turn && !this.ended && m.kind === "request" && m.from === this.agent && m.turn === this.turn) {
       if (!m.to || m.to === "person:owner") return;
       // Several speech tool calls can form one final reply; they are not intervening task work.
       if (m.to === "service:dsh-tool" && /(?:^|__)(?:human_say|ash_say)$/.test(m.word)) return;
@@ -128,7 +142,7 @@ export class TaskStatusBridge {
     const cards = [...this.asks.values()].map((card) => structuredClone(card));
     const waiting = cards.some((c) => c.state === "waiting");
     const action = this.ended ? undefined : this.activity.current();
-    return { session: this.session, revision: ++this.revision, turn: this.turn, started_at: this.started,
+    return { session: this.session, revision: ++this.revision, turn: this.turn, started_at: this.started, agent: this.agent,
       state: waiting ? "waiting_you" : this.state, text: waiting ? "等待你回应" : this.text,
       reply: this.replies.join("\n\n"), cards,
       steps: [...this.steps], can_stop: !!this.turn && !this.ended, tool: action?.tool ?? "", step_started_at: action?.ts ?? this.started, outcome: this.outcome,
