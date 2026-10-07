@@ -49,3 +49,37 @@ test("device settings separates browser grants, edits computer grants and confir
     await expect(page.locator("#settingsGatewayStatus")).toContainText("还没有连接其他设备");
   } finally { await running.close(); }
 });
+
+test("the pairing code and install command appear only from the owner route, and the page notices a request by itself", async ({ page }, testInfo) => {
+  const running = await startOwner({ stateDir: mkdtempSync(join(tmpdir(), "ash-device-code-")), listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
+  const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")[0];
+  const command = "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh | sh -s -- 'https://gw.example' 'pair-code-123'";
+  let view = { revision: "r1", code: null }, pending = [];
+  await page.route("**/api/devices/pairing", route => route.fulfill({ json: view }));
+  await page.route("**/api/send", async route => {
+    const wire = route.request().postDataJSON();
+    if (wire.to !== "service:devices") return route.continue();
+    if (wire.word === "pair_start") view = { revision: "r2", code: { state: "active", kind: "laptop", gateway: "https://gw.example", expires_in_ms: 300_000, ticket: "pair-code-123", install_command: command } };
+    const result = wire.word === "gateway_status" ? { configured: true, connected: true, pending, devices: [] }
+      : { issued: true, kind: "laptop", expires_in: 300, gateway: "https://gw.example" };
+    await route.fulfill({ json: { id: "ui-result", reply: { kind: "response", reply_to: "ui-result", from: "service:devices", to: "person:owner", word: wire.word, body: { ok: true, result } } } });
+  });
+  try {
+    await page.setViewportSize({ width: 412, height: 915 });
+    await page.goto(`${running.url}/?token=${token}`);
+    await expect(page.locator("#connection")).toContainText("已连接");
+    await page.locator("#menu").click(); await page.locator("#settingsGatewayRow").click();
+    await page.locator("#settingsGatewayPair").click();
+    await expect(page.locator("#settingsGatewayPairCodeText")).toContainText("pair-code-123");
+    await expect(page.locator("#settingsGatewayPairCommand")).toHaveText(command);
+    await expect(page.locator("#settingsGatewayPairCopy")).toBeVisible();
+    await expect(page.locator("#settingsGateway")).not.toContainText("setup_command");
+    await page.screenshot({ path: testInfo.outputPath("device-pairing-code.png"), fullPage: true });
+    pending = [{ request_id: "req-1", name: "MacBookPro", fingerprint: "AB12-CD34" }];
+    view = { revision: "r3", code: { state: "used", kind: "laptop", gateway: "https://gw.example", expires_in_ms: 200_000 } };
+    await expect(page.locator("#settingsGatewayList")).toContainText("AB12-CD34");
+    await expect(page.locator("#settingsGatewayPairCodeText")).toContainText("已使用");
+    await expect(page.locator("#settingsGatewayPairCodeText")).not.toContainText("pair-code-123");
+    await expect(page.locator("#settingsGatewayPairCommand")).toBeHidden();
+  } finally { await running.close(); }
+});
