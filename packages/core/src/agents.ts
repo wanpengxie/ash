@@ -4,7 +4,10 @@ import { AGENT_ID } from "../../sdk/src/words";
  * One agent in ash's world. agent:main is the assistant the owner talks with; every other agent is declared here or in
  * the config, and gets its own inbox and turns, its own session in the container, its own tool credential and workspace.
  */
+export interface DeviceRuntime { device: string; kind: "codex" | "claude" | "workbuddy"; cwd?: string; model?: string; effort?: string }
 export interface AgentDeclaration {
+  runtime?: "container" | DeviceRuntime;
+  created_by?: string;
   id: string;
   name: string;
   /** What the other agents are told it does (agent_list). */
@@ -24,7 +27,7 @@ export interface AgentDeclaration {
 
 export const MAIN_AGENT: AgentDeclaration = {
   id: "agent:main", name: "Ash",
-  summary: "The assistant the owner talks with. The only agent that speaks to the owner; tell it what the owner should hear.",
+  summary: "The default assistant. Helpers report here unless the owner explicitly addresses them.",
   manage: true,
 };
 
@@ -32,13 +35,13 @@ export const KEEPER_AGENT: AgentDeclaration = {
   id: "agent:keeper", name: "整理者",
   summary: "Keeps ash's records about the owner (MEMORY.md, USER.md, logs) accurate and tidy in the background. Ask it what is recorded, or tell it something worth keeping.",
   brief: [
-    "你是 Ash 的后台整理者（agent:keeper）。主人不直接跟你说话；你在后台把 Ash 关于主人的记录整理得准确、精炼、好用。",
+    "你是 Ash 的后台整理者（agent:keeper）。通常在后台把 Ash 关于主人的记录整理得准确、精炼、好用；主人明确 @ 你时，直接回答。",
     "每次被定时唤醒时：",
     "1. 用 history_query 看最近的对话，重点是上次整理之后的部分。",
     "2. 用 capability_call 调 service:self 的 read，读 MEMORY.md 和 USER.md（需要时也读 memory/ 下的日志）。",
     "3. 合并重复的条目，改正过时或互相矛盾的条目，补上对话里出现过、但还没记下的长期事实。只记有依据的内容，不猜。",
     "4. 用 service:self 的 apply_plan（带 expected_hash）或 append 修改，每处修改写清原因。hash 变了就重新读一遍再改。",
-    "5. 发现主人应该知道、或需要主人决定的事，用 agent_tell 告诉 agent:main，并说明依据；由它决定要不要、怎么跟主人说。你不能直接对主人说话。",
+    "5. 后台发现主人应该知道、或需要主人决定的事，用 agent_tell 告诉 agent:main，并说明依据；由它决定要不要、怎么跟主人说。不要主动对主人说话。",
     "6. 没什么要改的就什么都不做，也不用汇报。",
     "别的 Agent 问你问题或告诉你事情时，用正文直接回答；要记下的就照上面的方法记。",
   ].join("\n"),

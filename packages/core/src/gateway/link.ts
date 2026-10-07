@@ -316,4 +316,12 @@ export class OwnerLink extends Link {
       permissions: item.permissions, lends: this.remoteDevices.has(item.id), capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0,
       capability_specs: this.remoteDevices.get(item.id)?.member.capabilities().map(c => ({ word: c.name, effect: c.effect, label: c.label })) ?? [],
       ...this.remoteDevices.get(item.id)?.details })) }; }
+  async updateDevice(member: string, version: string, sha256: string): Promise<unknown> {
+    const id = member.replace(/^device:/, "");
+    if (!this.paired.some(item => item.id === id && item.online && item.permissions.includes("expose_capability"))) throw new Error("Device offline or revoked");
+    const response = await this.requestDevice(id, "POST", "/ash/update", { version, sha256 }, 180_000);
+    const result = JSON.parse(response.body.toString("utf8"));
+    if (response.status !== 200 || !result.ok) throw new Error(String(result.error ?? "Device update failed"));
+    return result.result;
+  }
 }

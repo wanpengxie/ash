@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { JsonProcess, type Command, type Frame } from "./process";
 import { checkTools, type AgentSession, type OpenOptions } from "./types";
 import { AshTools } from "./mcp";
+import { redactText } from "../redact";
 
 const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
@@ -35,6 +36,19 @@ export class CodexSession implements AgentSession {
     try {
       await session.process.request("initialize", { clientInfo: { name: "ash", version: "0.1.0" }, capabilities: { experimentalApi: true } });
       session.process.write({ jsonrpc: "2.0", method: "initialized", params: {} });
+      if (options.onModels) {
+        const models: { id: string; efforts?: string[] }[] = [];
+        let cursor: string | undefined;
+        const seen = new Set<string>();
+        do {
+          const page = await session.process.request("model/list", { limit: 100, ...(cursor ? { cursor } : {}) });
+          for (const model of page.data ?? []) if (typeof (model.model ?? model.id) === "string") models.push({ id: model.model ?? model.id, efforts: (model.supportedReasoningEfforts ?? []).map((e: Frame) => e.reasoningEffort).filter((e: unknown) => typeof e === "string") });
+          cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+          if (cursor && seen.has(cursor)) throw new Error("Runtime model catalog repeated its cursor");
+          if (cursor) seen.add(cursor);
+        } while (cursor && seen.size < 20);
+        options.onModels(models);
+      }
       const digest = createHash("sha256").update(JSON.stringify(options.tools)).digest("hex").slice(0, 16);
       const prefix = `ash-codex-v1:${digest}:`;
       if (options.seed && !options.seed.startsWith(prefix)) throw new Error("session tool contract changed; open a fresh session");
@@ -119,7 +133,7 @@ export class CodexSession implements AgentSession {
     if (frame.method === "turn/completed") {
       const final = (p.turn.items ?? []).filter((item: Frame) => item.type === "agentMessage" && item.phase !== "commentary").at(-1);
       this.active = undefined;
-      this.options.onEvent({ type: "turn_ended", turn: active.id, outcome: p.turn.status === "completed" ? "ok" : p.turn.status === "interrupted" ? "interrupted" : "failed", reply: final?.text ?? active.reply, usage: active.usage });
+      this.options.onEvent({ type: "turn_ended", turn: active.id, outcome: p.turn.status === "completed" ? "ok" : p.turn.status === "interrupted" ? "interrupted" : "failed", reply: final?.text ?? active.reply, ...(typeof p.turn.error?.message === "string" ? { error: redactText(p.turn.error.message).slice(0, 4096) } : {}), usage: active.usage });
     }
   }
 

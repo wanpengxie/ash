@@ -11,7 +11,8 @@ import { AGENT_ID, wordContract, workRunTurn, workRunsResultErrors } from "../..
 import { readSummaryPage, type StreamPageQuery } from "./stream-page";
 
 type Row = Record<string, unknown>;
-type NewMessage = Pick<Message, "from" | "to" | "kind" | "word" | "body"> & Pick<Partial<Message>, "reply_to" | "origin" | "turn">;
+type NewMessage = Pick<Message, "from" | "to" | "kind" | "word" | "body"> & Pick<Partial<Message>, "reply_to" | "origin" | "turn" | "thread">;
+export interface AgentThread { id: string; request: string; from: string; to: string; parent_turn?: string; parent?: string; turn?: string; delivery?: string; state: "pending" | "running" | "completed" | "cancelled" | "error"; at: number }
 type ClientRetry = { transportPrincipal: string; clientId: string };
 export type MigrationStage = "before-transaction" | "after-schema" | "after-first-row" | "halfway" | "before-commit" | "after-commit";
 export type WorkStage = "start-after-row" | "start-before-commit" | "start-after-commit" | "end-after-row" | "end-before-commit" | "end-after-commit";
@@ -199,6 +200,7 @@ function decode(row: Row): Message {
     ...(row.reply_to === null ? {} : { reply_to: String(row.reply_to) }),
     ...(row.origin === null ? {} : { origin: JSON.parse(String(row.origin)) }),
     ...(row.turn === null ? {} : { turn: String(row.turn) }),
+    ...(row.thread == null ? {} : { thread: String(row.thread) }),
   };
 }
 
@@ -301,6 +303,10 @@ export class Ledger {
     const db = new DatabaseSync(file);
     try {
       const stats = Ledger.migrate(db, backupFile, options);
+      if (!(db.prepare("PRAGMA table_info(messages)").all() as Row[]).some(column => column.name === "thread")) db.exec("ALTER TABLE messages ADD COLUMN thread TEXT");
+      db.exec(`CREATE TABLE IF NOT EXISTS agent_threads (id TEXT PRIMARY KEY, turn TEXT, parent_turn TEXT, detail TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS agent_thread_turn ON agent_threads(turn);
+        CREATE INDEX IF NOT EXISTS agent_thread_parent ON agent_threads(parent_turn);`);
       db.exec("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
       db.exec(`CREATE TABLE IF NOT EXISTS request_state (
         request_id TEXT PRIMARY KEY, phase TEXT NOT NULL, deadline_at INTEGER NOT NULL,
@@ -511,7 +517,11 @@ export class Ledger {
       }
       const id = newId();
       const ts = Date.now();
-      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, input.from, input.to, input.kind, input.word, JSON.stringify(input.body), input.reply_to ?? null, input.origin ? JSON.stringify(input.origin) : null, input.turn ?? null);
+      const opening = input.kind === "event" && ["turn.start", "read"].includes(input.word) && Array.isArray(input.body.ids)
+        ? this.byId(String(input.body.ids[0]))?.thread : undefined;
+      const thread = input.thread ?? (input.turn ? this.threadForTurn(input.turn)?.id : undefined) ?? opening;
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn,thread) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, ts, input.from, input.to, input.kind, input.word, JSON.stringify(input.body), input.reply_to ?? null, input.origin ? JSON.stringify(input.origin) : null, input.turn ?? null, thread ?? null);
+      if (opening && input.turn) { const work = this.agentThread(opening); if (work) this.saveAgentThread({ ...work, turn: input.turn, state: work.state === "cancelled" ? "cancelled" : "running" }); }
       if (optionCardId) this.db.prepare("INSERT INTO option_answers(card_id,message_id) VALUES(?,?)").run(optionCardId, id);
       if (input.kind === "request") {
         const deadlineAt = tracking?.deadlineAt ?? ts + 60_000;
@@ -602,7 +612,7 @@ export class Ledger {
       if (existing) { this.db.exec("COMMIT"); return { message: decode(existing), settled: false }; }
       if (typeof body.ok !== "boolean" || (body.ok === false && !body.error)) throw new TypeError("invalid response body");
       const id = newId(); const ts = Date.now();
-      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, origin ? JSON.stringify(origin) : null, request.turn ?? null);
+      this.db.prepare('INSERT INTO messages (id,ts,"from","to",kind,word,body,reply_to,origin,turn,thread) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, ts, from, request.from, "response", request.word, JSON.stringify(body), request.id, origin ? JSON.stringify(origin) : null, request.turn ?? null, request.thread ?? null);
       if (retry) this.db.prepare("INSERT INTO client_retries (scope_hash,client_id,payload_hash,message_id) VALUES (?,?,?,?)")
         .run(digest(retry.transportPrincipal), retry.clientId, retryPayload(input), id);
       this.db.prepare("UPDATE request_state SET phase='settled',updated_at=? WHERE request_id=?").run(ts, requestId);
@@ -1036,7 +1046,23 @@ export class Ledger {
    * What the reviewer may know about the turn a request belongs to: the owner's own words that opened it, and the
    * requester's earlier actions in it (word and a short preview of what it asked, never results).
    */
-  turnFacts(turn: string | undefined, requester: string, beforeSeq: number): { ownerSaid: string[]; steps: string[] } {
+  saveAgentThread(thread: AgentThread): void {
+    this.db.prepare("INSERT INTO agent_threads(id,turn,parent_turn,detail) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET turn=excluded.turn,parent_turn=excluded.parent_turn,detail=excluded.detail")
+      .run(thread.id, thread.turn ?? null, thread.parent_turn ?? null, JSON.stringify(thread));
+  }
+  agentThread(id: string): AgentThread | null { const row = this.db.prepare("SELECT detail FROM agent_threads WHERE id=?").get(id) as Row | undefined; return row ? JSON.parse(String(row.detail)) : null; }
+  agentThreads(parentTurn?: string): AgentThread[] {
+    const rows = parentTurn ? this.db.prepare("SELECT detail FROM agent_threads WHERE parent_turn=? ORDER BY rowid").all(parentTurn)
+      : this.db.prepare("SELECT detail FROM agent_threads ORDER BY rowid DESC LIMIT 100").all();
+    return (rows as Row[]).map(row => JSON.parse(String(row.detail)));
+  }
+  threadForTurn(turn: string): AgentThread | null { const row = this.db.prepare("SELECT detail FROM agent_threads WHERE turn=?").get(turn) as Row | undefined; return row ? JSON.parse(String(row.detail)) : null; }
+  threadAncestors(turn?: string): AgentThread[] {
+    const chain: AgentThread[] = [], seen = new Set<string>();
+    while (turn && chain.length < 4 && !seen.has(turn)) { seen.add(turn); const thread = this.threadForTurn(turn); if (!thread) break; chain.push(thread); turn = thread.parent_turn; }
+    return chain;
+  }
+  turnFacts(turn: string | undefined, requester: string, beforeSeq: number, depth = 0): { ownerSaid: string[]; steps: string[] } {
     if (!turn) return { ownerSaid: [], steps: [] };
     // The turn's opening messages, plus any the owner added while it ran (each recorded by a read event of that turn).
     const events = this.db.prepare(`SELECT body FROM messages WHERE turn=? AND kind='event' AND word IN ('turn.start','read') AND "from"=? AND seq<?
@@ -1048,6 +1074,9 @@ export class Ledger {
       if (said && said.from === "person:owner" && said.kind === "request" && said.word === "say" && typeof said.body.text === "string" && said.body.text.trim())
         ownerSaid.push(said.body.text);
     }
+    const delegation = this.threadForTurn(turn);
+    if (delegation?.to === requester && delegation.parent_turn && depth < 3)
+      ownerSaid.push(...this.turnFacts(delegation.parent_turn, delegation.from, beforeSeq, depth + 1).ownerSaid);
     const rows = this.db.prepare(`SELECT "to",word,body FROM messages WHERE turn=? AND "from"=? AND kind='request' AND seq<?
       ORDER BY seq DESC LIMIT 8`).all(turn, requester, beforeSeq) as Row[];
     const steps = rows.reverse().map((row) => `${String(row.to)}/${String(row.word)} ${String(row.body).slice(0, 200)}`);

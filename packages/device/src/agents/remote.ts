@@ -79,7 +79,8 @@ export class RemoteAgents {
     if (request.op === "open" && typeof result?.session === "string" && typeof result.generation === "string") this.assignments.set(result.session, { generation: result.generation });
     if (request.op === "close") this.assignments.delete(request.session);
     if (["clear", "select"].includes(request.op) && typeof result?.generation === "string") this.assignments.set(request.session, { generation: result.generation });
-    if (request.op === "status" && result?.generation === request.generation && this.assignments.has(request.session)) this.assignments.get(request.session)!.turn = result.turn ?? undefined;
+    if (request.op === "status" && result?.generation === request.generation && result.session === request.session)
+      this.assignments.set(request.session, { generation: request.generation, turn: result.turn ?? undefined });
   }
   private matches(frame: Frame, turn: unknown): boolean {
     const assignment = this.assignments.get(frame.session);

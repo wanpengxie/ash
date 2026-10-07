@@ -26,7 +26,7 @@ const memberId = (x) => typeof x === "string" && /^(agent|worker|device|service|
 /** How another agent is named in the activity. */
 const AGENT_TITLES = { "agent:keeper": "整理者在后台整理" };
 const agentTitle = (id) => AGENT_TITLES[id] || `${id.slice(6)} 在后台工作`;
-const ownerPublisher = (from) => ["agent:main", "service:gate", "service:work"].includes(from);
+const ownerPublisher = (from) => /^agent:[a-z][a-z0-9_-]*$/.test(from) || ["service:gate", "service:work"].includes(from);
 
 function safeCard(card) {
   if (!object(card)) return null;
@@ -73,9 +73,15 @@ function legacyMetadata(value, m) {
 function record(m) {
   if (!object(m) || !Number.isSafeInteger(m.seq) || m.seq < 1 || typeof m.id !== "string" || !m.id || typeof m.word !== "string" || (m.summary === true ? !isMessageSummaryV2(m) : !object(m.body))) return null;
   const b = m.summary === true ? m.body_summary : m.body;
-  const base = { seq: m.seq, id: m.id, ts: number(m.ts), turn: turnId(m.turn) ? m.turn : "" };
+  const base = { seq: m.seq, id: m.id, ts: number(m.ts), turn: turnId(m.turn) ? m.turn : "", thread: string(m.thread) };
+  if (m.from === "service:agents" && m.word === "say" && m.kind === "request" && m.thread && typeof b.from_agent === "string")
+    return { ...base, type: "delegation", from: b.from_agent, to: m.to, text: string(b.text) };
+  if (m.to === "service:agents" && m.word === "answer" && m.kind === "request" && m.thread)
+    return { ...base, type: "delegation.answer", text: string(b.text) };
   // Another agent's turns appear in the activity, marked with who did them; its status and receipts do not.
   if (m.kind === "event" && /^agent:[a-z][a-z0-9_-]*$/.test(m.from) && m.from !== "agent:main") {
+    if (m.word === "activity.summary" && turnId(m.turn)) return { ...base, type: "activity.summary", text: activityText(b.text, 160) };
+    if (m.word === "received" || m.word === "read") return { ...base, type: m.word, ids: strings(b.ids) };
     if (m.word === "turn.start" && turnId(b.turn)) return { ...base, type: "turn.start", turn: b.turn, ids: strings(b.ids), agent: m.from };
     if (m.word === "turn.end" && turnId(b.turn)) return { ...base, type: "turn.end", turn: b.turn, reason: string(b.reason), agent: m.from };
     return null;
@@ -93,7 +99,7 @@ function record(m) {
       const legacy = legacyMetadata(b.legacy, m);
       return legacy ? { ...base, type: "legacy.say", from: m.from, to: m.to, side: m.from === "person:owner" ? "owner" : m.to === "person:owner" ? "agent" : "inbound", text: b.text, attachments: safeAttachments(b.attachments), legacy } : null;
     }
-    if (m.to === "agent:main" && m.from === "person:owner") return { ...base, type: "owner.say", text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
+    if (/^agent:[a-z][a-z0-9_-]*$/.test(m.to) && m.from === "person:owner") return { ...base, type: "owner.say", to: m.to, text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), origin: object(m.origin) ? { screen: string(m.origin.screen), label: string(m.origin.label) } : null, in_reply_to: string(b.in_reply_to), option_id: string(b.option_id) };
     if (m.to === "person:owner" && ownerPublisher(m.from)) return { ...base, type: "agent.say", from: m.from, text: b.text, attachments: safeAttachments(b.attachments, m.id, m.inline_attachments), kind: string(b.kind) };
   }
   if (m.kind === "request" && m.to === "person:owner" && ownerPublisher(m.from)) {
@@ -178,7 +184,7 @@ function project(records, snapshots = new Map()) {
       view.presence = { state: r.state, text: r.text, avatar: faceForStatus(r.state) };
       // Status pulses are presence, not additional work steps.
     } else if (r.type === "legacy.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: r.side, from: r.from, to: r.to, text: r.text, attachments: r.attachments, legacy: r.legacy, readOnly: true, reactions: [] });
-    else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
+    else if (r.type === "owner.say") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "owner", to: r.to, text: r.text, attachments: r.attachments, delivery: delivery.get(r.id) || "sent", origin: r.origin, reactions: reactions.get(r.id) || [] });
     else if (r.type === "agent.say") {
       if (["offer", "heads_up"].includes(r.kind) && postStates.get(r.id)?.state !== "released") continue;
       view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
@@ -193,12 +199,12 @@ function project(records, snapshots = new Map()) {
         human, answer_text: answer?.answer_text, ...(typeof r.original === "string" ? { original: r.original } : {}), options: r.options, options_valid: r.options_valid,
         expires_at: r.expires_at, state: human && human.state !== "waiting" ? human.state : state, choice: answer?.choice || null };
       view.asks.push(ask);
-      view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "ask", side: "agent", ask, reactions: reactions.get(r.id) || [] });
+      view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, thread: r.thread, type: "ask", side: "agent", ask, reactions: reactions.get(r.id) || [] });
     } else if (r.type === "turn.start" || r.type === "run.start") {
       const batch = r.type === "turn.start" ? r.ids.map((id) => ownerTitles.get(id)).filter(Boolean) : [];
       const excerpt = batch.length ? [...batch[0]].slice(0, 48).join("") : "";
       const title = r.type === "run.start" ? r.flow || "后台任务" : r.agent ? agentTitle(r.agent) : excerpt ? `${excerpt}${batch.length > 1 ? ` · ${batch.length} 条` : ""}` : "对话";
-      view.turns[r.turn] = { title, background: r.type === "run.start" || Boolean(r.agent), started: r.ts, steps: [], ...(r.agent ? { agent: r.agent } : {}) };
+      view.turns[r.turn] = { title, background: r.type === "run.start" || Boolean(r.agent) && !batch.length, started: r.ts, steps: [], ...(r.agent ? { agent: r.agent } : {}) };
       activities.set(r.turn, new ActivitySteps());
     } else if (r.type === "turn.end" || r.type === "run.end") {
       if (view.turns[r.turn]) { view.turns[r.turn].ended = r.ts; view.turns[r.turn].outcome = r.reason || r.outcome; }
@@ -221,6 +227,16 @@ function project(records, snapshots = new Map()) {
       r.type === "gate.asked" ? "等待确认" : r.type === "gate.passed" ? "已获准" : "未获准");
   }
   for (const [id, activity] of activities) view.turns[id].steps = [...view.turns[id].steps, ...activity.visible()].sort((a, b) => a.ts - b.ts);
+  for (const work of records.filter(r => r.type === "delegation")) {
+    const started = records.find(r => r.thread === work.thread && r.type === "turn.start");
+    const turn = started && view.turns[started.turn];
+    const answer = records.filter(r => r.thread === work.thread && r.type === "delegation.answer").map(r => r.text).join("\n\n");
+    const asks = view.conversation.filter(item => item.type === "ask" && item.thread === work.thread);
+    view.conversation = view.conversation.filter(item => !asks.includes(item));
+    view.conversation.push({ ...work, type: "work", steps: turn?.steps ?? [], answer, asks,
+      state: turn?.ended ? turn.outcome : started ? "running" : "pending" });
+  }
+  view.conversation.sort((a, b) => a.seq - b.seq);
   return view;
 }
 
@@ -232,6 +248,7 @@ function project(records, snapshots = new Map()) {
  */
 const CONVERSATION_ROWS = new Set(["legacy.say", "owner.say", "agent.say", "show", "ask", "ask.answer", "react", "received", "read", "human.pending", "post.delivery"]);
 export function drawsConversation(message) {
+  if (message?.thread) return true;
   const row = record(message);
   return row !== null && CONVERSATION_ROWS.has(row.type);
 }

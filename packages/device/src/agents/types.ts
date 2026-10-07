@@ -3,13 +3,15 @@ export type AgentEvent =
   | { type: "turn_started"; turn: string }
   | { type: "note"; turn: string; kind: "thinking" | "plan" | "text"; text: string }
   | { type: "tool"; turn: string; phase: "start" | "end"; name: string; summary?: string }
-  | { type: "turn_ended"; turn: string; outcome: "ok" | "failed" | "interrupted" | "unknown"; reply: string; usage?: unknown }
+  | { type: "turn_ended"; turn: string; outcome: "ok" | "failed" | "interrupted" | "unknown"; reply: string; error?: string; usage?: unknown }
   | { type: "seed_updated"; seed: string }
   | { type: "ended"; reason: string };
 
 export interface OpenOptions {
   cwd: string; seed?: string; model?: string; effort?: string; system?: string; tools: Tool[];
   onEvent(event: AgentEvent): void;
+  /** Read-only discovery; absence means this runtime did not expose a catalog. */
+  onModels?(models: { id: string; efforts?: string[] }[]): void;
   /** The turn is captured at receipt, never inferred when the async reply arrives. */
   onOutbound(call: { turn: string; requestId: string; tool: string; args: Record<string, unknown> }): Promise<unknown>;
 }

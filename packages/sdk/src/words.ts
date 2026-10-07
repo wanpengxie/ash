@@ -51,7 +51,7 @@ const selfPath = { type: "string", pattern: "^(SOUL|IDENTITY|USER|MEMORY|HEARTBE
 const selfPathRequest = { type: "string", minLength: 1, maxLength: 256 } as const satisfies JsonSchema;
 const edit = obj({ op: choice("replace", "delete", "insert_after"), start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 }, guard: str, text: str, reason: choice("promote", "correct", "complete", "expire", "dedupe", "condense", "demote"), evidence: strings }, ["op", "start", "end", "guard", "reason", "evidence"]);
 const claim = obj({ text: nonempty, type: choice("fact", "preference", "relationship", "event", "boundary", "correction"), salience: choice("low", "medium", "high"), evidence: strings, quote: str, supersedes: str, valid_until: str }, ["text", "type", "salience", "evidence"]);
-const message = obj({ seq: integer, id, ts: num, from: id, to: { anyOf: [str, { type: "null" }] }, kind: choice("request", "response", "event"), word: id, body: obj({}, [], true), reply_to: str, origin, turn: str }, ["seq", "id", "ts", "from", "to", "kind", "word", "body"]);
+const message = obj({ seq: integer, id, ts: num, from: id, to: { anyOf: [str, { type: "null" }] }, kind: choice("request", "response", "event"), word: id, body: obj({}, [], true), reply_to: str, origin, turn: str, thread: str }, ["seq", "id", "ts", "from", "to", "kind", "word", "body"]);
 const noChange = obj({ no_change: obj({ checked: strings, details: str }, ["checked", "details"]) }, ["no_change"]);
 const workerResult = (normal: JsonSchema): JsonSchema => ({ oneOf: [normal, noChange] });
 
@@ -128,11 +128,15 @@ add("screen:*", "ui.open", "request", obj({ target: choice("activity", "upcoming
 // The Agent system: ash holds every agent's declaration, runs their lifecycle and carries what they say to each other.
 // Discovery and communication (agent words) are for every agent; management (system words) for those granted it.
 const agentRef: JsonSchema = { type: "string", pattern: "^agent:[a-z][a-z0-9_-]{0,31}$" };
-const agentFields: Record<string, JsonSchema> = { name: nonempty, summary: nonempty, brief: nonempty, tools: strings, words: strings, every: { type: "integer", minimum: 600 } };
-const agentInfo = obj({ id: agentRef, name: str, summary: str, state: choice("idle", "working", "stopped", "error"), main: bool, manage: bool,
-  brief: str, tools: { anyOf: [strings, { type: "null" }] }, words: { anyOf: [strings, { type: "null" }] }, every: { anyOf: [integer, { type: "null" }] }, built_in: bool },
+export const AGENT_RUNTIME_SCHEMA: JsonSchema = { anyOf: [{ const: "container" }, obj({ device: { type: "string", pattern: "^device:[A-Za-z0-9_-]+$" }, kind: choice("codex", "claude", "workbuddy"), cwd: nonempty, model: nonempty, effort: nonempty }, ["device", "kind"])] };
+const agentFields: Record<string, JsonSchema> = { name: nonempty, summary: nonempty, brief: nonempty, runtime: AGENT_RUNTIME_SCHEMA, tools: strings, words: strings, every: { type: "integer", minimum: 600 } };
+const agentInfo = obj({ id: agentRef, name: str, summary: str, state: choice("idle", "working", "stopped", "error"), available: bool, main: bool, manage: bool,
+  brief: str, runtime: AGENT_RUNTIME_SCHEMA, created_by: str, tools: { anyOf: [strings, { type: "null" }] }, words: { anyOf: [strings, { type: "null" }] }, every: { anyOf: [integer, { type: "null" }] }, built_in: bool },
   ["id", "name", "summary", "state"]);
 add("service:agents", "list", "request", empty, obj({ agents: array(agentInfo) }, ["agents"]), { label: "Looking at the agents", description: "Every agent: id, name, what it does, and whether it is idle, working or stopped." });
+add("service:agents", "runtimes", "request", empty, obj({ runtimes: array(obj({}, [], true)) }, ["runtimes"]), { label: "查看可用运行时", description: "Online devices allowed to host agents and their installed runtimes and models. Query before creating a remote agent." });
+add("service:agents", "threads", "request", empty, obj({ threads: array(obj({}, [], true)) }, ["threads"]), { label: "查看工作串", audience: "owner" });
+add("service:agents", "thread.stop", "request", obj({ thread: id }, ["thread"]), obj({ cancelled: bool }, ["cancelled"]), { label: "停止工作串", audience: "owner" });
 add("service:agents", "describe", "request", obj({ agent: agentRef }, ["agent"]), agentInfo, { label: "Looking at an agent", description: "One agent's declaration and state." });
 add("service:agents", "ask", "request", obj({ agent: agentRef, text: nonempty }, ["agent", "text"]), obj({ agent: agentRef, answer: str }, ["agent", "answer"]),
   { label: "Asking another agent", timeout_ms: 600_000, description: "Put a question to another agent; the answer it gives in the turn that takes the question is the result." });

@@ -114,6 +114,10 @@ export class AgentMember implements Member {
   }
   get lastError(): Error | null { return this.error ?? this.status.lastError; }
   get waitingForQuiescence(): boolean { return this.quiescenceBlocked; }
+  /** Agent system cancellation is scoped to one delegated turn, never whichever work happens to be current. */
+  cancelWork(turn: string, reason: string): void {
+    if (this.inbox.activeTurn()?.id === turn) this.cancelActive(`delegation:${turn}`, reason, undefined);
+  }
   /** The Agent system's switch: a stopped agent's turn is cancelled and it takes no new ones until started again. */
   setEnabled(enabled: boolean, reason = "Stopped by ash"): void {
     this.enabled = enabled;
@@ -241,7 +245,8 @@ export class AgentMember implements Member {
     // A question or news from another agent comes through the Agent system, which takes the answer; an answer it passes
     // back is the end of that exchange, so the turn that reads it says nothing (no ping-pong).
     if (message.from === "service:agents") return typeof message.body.reply_from === "string" ? "silent" : "service:agents";
-    if (message.from === "person:owner" || !AGENT_ID.test(message.from)) return this.main ? "owner" : "silent";
+    if (message.from === "person:owner") return "owner";
+    if (!AGENT_ID.test(message.from)) return this.main ? "owner" : "silent";
     return "silent";
   }
 
@@ -361,6 +366,10 @@ export class AgentMember implements Member {
         currentTurn = turn.id;
         const managedSnapshot = this.managedSnapshot ? await this.managedSnapshot() : undefined;
         await this.turnEvents(turn);
+        if (this.ledger.threadForTurn(turn.id)?.state === "cancelled") {
+          const ended = this.inbox.finish(turn.id, "cancelled", "Delegation stopped before execution");
+          await this.turnEvents(ended); currentTurn = null; continue;
+        }
         let peripheralContext: string | void = undefined;
         if (this.beforeTurn && !this.closed && this.inbox.turn(turn.id).status === "active") {
           try { peripheralContext = await this.beforeTurn(turn.id); } catch { /* unavailable peripheral capture does not prevent a turn */ }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { JsonProcess, type Command, type Frame } from "./process";
 import type { AgentSession, OpenOptions } from "./types";
 import { AshTools } from "./mcp";
+import { redactText } from "../redact";
 
 export class ClaudeSession implements AgentSession {
   private process: JsonProcess;
@@ -32,7 +33,8 @@ export class ClaudeSession implements AgentSession {
   static async open(options: OpenOptions, command?: Command): Promise<ClaudeSession> {
     const session = new ClaudeSession(options, command);
     try {
-      await session.control("initialize", { sdkMcpServers: ["ash"] });
+      const initialized = await session.control("initialize", { sdkMcpServers: ["ash"] });
+      options.onModels?.((initialized?.models ?? []).filter((m: Frame) => typeof (m.value ?? m.id) === "string").map((m: Frame) => ({ id: m.value ?? m.id, ...(Array.isArray(m.supportedEffortLevels) ? { efforts: m.supportedEffortLevels } : {}) })));
       options.onEvent({ type: "seed_updated", seed: session.session });
       return session;
     } catch (e) { await session.process.close(); throw e; }
@@ -123,7 +125,7 @@ export class ClaudeSession implements AgentSession {
     }
     if (this.active !== active) return;
     this.active = undefined;
-    this.options.onEvent({ type: "turn_ended", turn: active.id, outcome: active.interrupted ? "interrupted" : frame.is_error ? "failed" : "ok", reply: frame.result ?? active.reply, usage: frame.usage });
+    this.options.onEvent({ type: "turn_ended", turn: active.id, outcome: active.interrupted ? "interrupted" : frame.is_error ? "failed" : "ok", reply: frame.result ?? active.reply, ...(frame.is_error ? { error: redactText((frame.errors ?? []).join("\n") || frame.result || frame.subtype || "Runtime failed").slice(0, 4096) } : {}), usage: frame.usage });
   }
   private async request(frame: Frame): Promise<void> {
     const req = frame.request ?? {};

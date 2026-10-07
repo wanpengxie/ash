@@ -15,6 +15,7 @@ export interface DeviceManagementLink {
   reject(id: string): Promise<void>; revoke(id: string): Promise<void>;
   refreshDevices(): Promise<void>; setWebUi(id: string, allow: boolean): Promise<void>;
   closeAgentChannel(id: string): void;
+  updateDevice?(id: string, version: string, sha256: string): Promise<unknown>;
 }
 
 interface Policy { name: string; kind: "laptop" | "server" | "browser"; access: "approval" | "full"; local_agents: boolean; web_ui: boolean; paired_at: number }
@@ -69,8 +70,10 @@ export class DevicesMember implements Member {
       if (message.word === "pair_pending") return { ok: true, result: { pending: [...link.pending.values()] } };
       if (message.word === "pair_start") {
         const ticket = await link.ticket();
+        const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
         return { ok: true, result: { ...ticket, kind: b.kind ?? "laptop", install_available: false,
-          instructions: b.kind === "browser" ? "在新浏览器打开 gateway 地址，输入 ticket，再回 Ash 批准。" : "设备安装器尚未发布。开发版可用 ash-device --config /绝对路径/device.json --pair <ticket>；不要把它当成已发布的一键安装命令。" } };
+          setup_command: b.kind === "browser" ? null : `ash-device setup --gateway ${quote(ticket.gateway)} --pair ${quote(ticket.ticket)}`,
+          instructions: b.kind === "browser" ? "在新浏览器打开 gateway 地址，输入 ticket，再回 Ash 批准。" : "安装器已经构建但尚未发布。已取得测试包时，运行 setup_command；发布前不要提供不存在的下载链接。" } };
       }
       if (message.word === "pair_reject") { await link.reject(String(b.request_id)); return { ok: true, result: { rejected: true } }; }
       if (message.word === "pair_approve") {
@@ -104,7 +107,10 @@ export class DevicesMember implements Member {
         if (!next.local_agents) link.closeAgentChannel(id);
         return { ok: true, result: { device: id, ...next } };
       }
-      if (message.word === "update") return fail("failed", "Device updater is not published yet; no update was executed");
+      if (message.word === "update") {
+        if (!link.updateDevice) return fail("failed", "Device updater is unavailable");
+        return { ok: true, result: await link.updateDevice(id, String(b.version), String(b.sha256)) };
+      }
       return fail("not_found", "Unknown device operation");
     } catch { return fail("failed", "Device operation failed; refresh status before retrying"); }
   }

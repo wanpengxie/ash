@@ -368,7 +368,7 @@ export class ScreenNet {
     this.publishOutbox();
   }
 
-  async enqueueSay(text, attachments = [], option = null) {
+  async enqueueSay(text, attachments = [], option = null, target = "agent:main") {
     if (!this.uiTransport.isReady()) throw new Error("native transport not ready");
     const scope = this.currentScope;
     if (!scope) throw new Error("connect once before storing an offline message");
@@ -378,7 +378,8 @@ export class ScreenNet {
     if (option && (typeof option.in_reply_to !== "string" || !option.in_reply_to || typeof option.option_id !== "string" || !option.option_id || attachments.length))
       throw new Error("invalid option reply");
     const body = { text, ...(attachments.length ? { attachments } : {}), ...(option ? { in_reply_to: option.in_reply_to, option_id: option.option_id } : {}) };
-    const message = { to: "agent:main", kind: "request", word: "say", body, client_id: crypto.randomUUID() };
+    if (!/^agent:[a-z][a-z0-9_-]*$/.test(target)) throw new Error("invalid agent target");
+    const message = { to: target, kind: "request", word: "say", body, client_id: crypto.randomUUID() };
     await store.enqueue(this.endpoint, scope, message);
     await this.restorePending(scope);
     if (scope === this.currentScope) void this.flush();
@@ -391,6 +392,16 @@ export class ScreenNet {
       const response = await this.request("/api/send", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: this.token }, body: JSON.stringify({ to, kind: "event", word, body: {}, client_id: crypto.randomUUID() }) });
       return response.ok ? { ok: true } : { ok: false, reason: `HTTP ${response.status}` };
     } catch { return { ok: false, reason: "offline" }; }
+  }
+
+  /** Online-only control/read, shared by agent picker and work-thread controls. */
+  async agentRequest(word, body = {}) {
+    const response = await this.request("/api/send", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", [SCREEN_TOKEN_HEADER]: this.token },
+      body: JSON.stringify({ to: "service:agents", kind: "request", word, body, client_id: crypto.randomUUID(), wait: true }) });
+    const accepted = await response.json();
+    const reply = accepted?.reply;
+    if (!response.ok || reply?.reply_to !== accepted.id || reply?.from !== "service:agents" || reply?.word !== word || reply?.body?.ok !== true) throw new Error(reply?.body?.error?.message || "Agent service unavailable");
+    return reply.body.result;
   }
 
   /** A confirmed local-screen action; no offline queue or optimistic success. */

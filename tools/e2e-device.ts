@@ -31,7 +31,7 @@ try {
   const ticket = await link.ticket();
   const pairing = startDevice({ gateway: base, name: "Test workstation", stateDir: join(dir, "device"), workdir: join(dir, "work") }, ticket.ticket, {
     detect: async () => [{kind:"codex",installed:true,logged_in:true,models:[]}],
-    agentFactory: (_kind, options) => CodexSession.open(options, {command:process.execPath,args:[fileURLToPath(new URL("../packages/device/test/fixtures/agent-cli.mjs", import.meta.url)),"codex"]}),
+    agentFactory: (_kind, options) => CodexSession.open(options, {command:process.execPath,args:[fileURLToPath(new URL("../packages/device/test/fixtures/agent-cli.mjs", import.meta.url)),"codex", options.system?.includes("agent:remote") ? "auto" : "manual"]}),
   });
   const pending = await until(async () => [...link.pending.values()].find(p => p.name === "Test workstation"));
   const receipt = await mcp.call(binding, "device_pair_approve", { request_id: pending.request_id, kind: "laptop", local_agents: true }, controller.signal) as any;
@@ -107,7 +107,20 @@ try {
   assert.equal(events.at(-1).event.outcome,"interrupted");
   await peer.op("close",{},session);
   console.log("ok: real duplex gateway runs fake CLI turn, outbound tool, full result, interrupt and close");
+  link.closeAgentChannel(id);
+  const runtimes = await mcp.call(binding, "agent_runtimes", {}, controller.signal) as any;
+  assert.ok(runtimes.result.runtimes.some((r: any) => r.device === id && r.kind === "codex"));
+  const created = await mcp.call(binding, "agent_create", { id: "agent:remote", name: "Remote test", summary: "Integration helper", brief: "Answer test requests", runtime: { device: id, kind: "codex" } }, controller.signal) as any;
+  assert.equal(created.ok, true, JSON.stringify(created));
+  let answer = await mcp.call(binding, "agent_ask", { agent: "agent:remote", text: "Return the test answer", wait: true }, controller.signal) as any;
+  while (answer.status === "accepted") answer = await mcp.call(binding, "await_result", { request_id: answer.request_id }, controller.signal) as any;
+  assert.equal(answer.ok, true, JSON.stringify(answer));
+  assert.ok(answer.result.answer.length > 4096);
+  assert.ok(owner.ledger.list({ limit: 1000 }).some(m => m.from === "agent:remote" && m.word === "list" && m.to === "service:agents"), "remote outbound runs under the registered agent, not main");
+  console.log("ok: DSH MCP discovers runtime, creates remote Agent, delegates, executes its attributed callback and receives full answer");
   await manage("access_set", { device: id, local_agents: false });
+  const denied = await mcp.call(binding, "agent_ask", { agent: "agent:remote", text: "must not run", wait: true }, controller.signal) as any;
+  assert.equal(denied.ok, false);
   assert.throws(() => link.openAgentChannel(id, { event: () => {}, outbound: async () => ({}) }), /not authorized/);
   await manage("revoke", { device: id });
   assert.ok(!owner.members.describe("owner").members.some(m => m.id === id));

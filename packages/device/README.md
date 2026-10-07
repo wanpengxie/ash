@@ -1,11 +1,13 @@
-# Device endpoint — work in progress
+# Device endpoint — integration branch
 
 The construction branch provides a standalone Node device endpoint, the shared
 gateway transport, workspace tools, and local-agent drivers for Codex, Claude Code
-and WorkBuddy. The duplex session protocol is wired through the phone's OwnerLink.
-It does **not** yet expose remote agents to the phone's AgentSystem/MCP tools or
-provide an installer, device-management UI, or delegated conversation threads.
-Do not deploy this branch as a finished device-management feature.
+and WorkBuddy. Remote runtimes are wired into the phone's AgentSystem/MCP tools,
+including live delegation permissions, owner intent, work threads, @ recipients,
+scoped cancellation, and capsule progress. Device management uses one service for
+both MCP and settings. An installer and four platform archives are built locally.
+Production publication, gateway deployment and replacement of an existing client
+are separate owner-approved steps; none has been performed by this branch.
 
 ## Development
 
@@ -17,7 +19,7 @@ with an approved, published gateway revision and regenerate the lockfile.
 Build with `npm run build:device`. Run:
 
 ```sh
-node packages/device/dist/ash-device.mjs --config /absolute/path/device.json --pair CODE
+node packages/device/dist/ash-device.mjs run --config /absolute/path/device.json --pair CODE
 ```
 
 The config contains `gateway`, `name`, optional `kind` (`laptop` or `server`), and
@@ -35,8 +37,10 @@ applicable; this is display hygiene, not a security boundary.
 
 Native runtimes use their own installed login. This endpoint runs them with full
 local access, as configured for this feature. The **phone** must enforce the
-device's `local_agents` grant before opening/dispatching sessions; that policy
-integration is the next stage, not an exposed user-facing tool yet.
+device's `local_agents` grant before discovering, creating or dispatching sessions.
+DSH uses `agent_runtimes`, then `agent_create` with a device runtime. Native actions
+on the authorized computer run with that OS account's access; remote Ash tools
+retain the declared agent identity and the delegators' intersected permissions.
 
 `agents/host.ts` accepts one `/ash/device/stream` connection. Both ends send
 `hello {epoch}`. An `op` includes the device epoch, a stable `id`, `op`, `args`,
@@ -57,8 +61,12 @@ that turn, session and generation. `agents/remote.ts` implements the phone half.
   Read it through ordinary `workspace.read`. Progress is bounded to 4 KiB.
 - Only `agent_list`, `agent_ask`, and `agent_tell` are exposed as Ash tools.
   WorkBuddy's local HTTP MCP endpoint is authenticated and rejects browser origins.
-- CLI discovery happens at startup. Unknown login status is `null`, not logged-in.
-  Model-catalog discovery and live refresh still need to be connected to management.
+- Installed/login discovery refreshes in the background (at most once a minute).
+  Native model catalogs refresh at most every 15 minutes using initialization only,
+  never a paid model task. Unknown login status is `null`, not logged-in. Pick an
+  advertised model; an old local default may not be valid for the current account.
+- Phone reconnection waits up to ten minutes with visible disconnected status.
+  An uncertain acceptance/result is reconciled, never silently replayed.
 
 Claude's static SDK MCP declaration is passed as inline JSON (no credentials),
 which its CLI supports. This avoids Linux `/dev/fd` reopening of Node socket-pipes.
@@ -73,6 +81,67 @@ and duplex fake-CLI turns against a **fresh local** gateway only. Set `GATEWAY_U
 `BOOTSTRAP_SECRET`; no model key is needed. The gateway repository also has a
 `tunnel-e2e` script covering browser and duplex device traffic.
 
-Local installed Codex and Claude have passed initialize/open/close smoke checks
-without model turns. WorkBuddy is not installed on the Linux build host and still
-needs a real Mac smoke test. No Android code changed or APK was installed here.
+`tools/smoke-device-runtimes.ts --execute --only=codex --lifecycle` is an explicit
+real-provider smoke test using existing desktop logins. It sends only fixed text,
+forbids tools, and checks an advertised model, stopping and reopening a session.
+It must not be counted as passing merely because a CLI was found or initialized.
+
+## Browser tools
+
+`browser.script` uses an installed `ego-browser`, a private task space per caller
+and task, and `finish:true` to close that space. Native scripts have the computer
+account's authority and are actions, never advertised as read-only.
+
+The optional Kimi extension bridge listens on loopback (`/ws`, port 10086 or
+10089–10091). It advertises capabilities only while connected. The installed
+extension protocol supports navigation, snapshots, clicks, fill, evaluation,
+screenshots, upload and network inspection. It does not support the draft's
+tab-close/PDF operations, so those are not fabricated. Caller/task-owned tabs and
+snapshot references cannot be reused by another caller. An existing extension
+connection is not changed automatically. Long output and screenshots are ordinary
+files readable through workspace tools.
+
+## Installation and upgrades
+
+`npm run package:device -- --all` creates Linux/macOS x64/arm64 archives with a
+pinned, checksum-verified Node runtime, `install.sh`, and `SHA256SUMS` in
+`build/device`. No publishing occurs. Until releases exist, pairing explicitly
+returns `install_available:false` with a `setup_command` for a locally supplied
+test package; it does not offer a broken public download.
+
+`ash-device setup --gateway URL --pair CODE` pairs, waits for owner approval, then
+installs a per-user launchd/systemd service. `--no-service` pairs without replacing
+a service. `status` reveals no credentials. `uninstall` stops the service and
+preserves keys, work and installations. Do not run setup/uninstall against a real
+existing device merely to test installation.
+
+Updates accept an explicit official version plus approved SHA-256, reject unsafe
+archive entries, check platform and startup, then atomically switch `current`.
+An active task prevents updates; a failed check leaves the old version running.
+Previous versions remain available. Bounded, redacted operational logs are in
+`logs/device.log` plus three rotated backups; command/runtime output is not logged.
+
+## Verification snapshot — 2026-10-07
+
+- Full repository suite: 765 tests, 764 passed, one live-API test skipped; no failures.
+- Device tests: 28 passed. Chromium device settings and @/work-card tests: two passed.
+- Real local gateway: owner approval followed by explicit agent redemption, workspace
+  operations, native protocol callbacks, remote AgentSystem/MCP delegation, full
+  results, grant removal and device revocation all passed. Provider turns in this
+  gateway test use a deterministic fake CLI, not a real paid model.
+- Mac Codex and WorkBuddy: real model reply and session reopening passed using their
+  advertised models. Stop requests settled with a known completed outcome: these
+  very short tasks finished before cancellation, so this is not a long-running
+  provider interruption test. Deterministic CLI interruption tests passed.
+- Mac Claude: initialization works; the provider reports an expired OAuth session
+  that could not refresh. Credentials were not changed. Model execution remains
+  unverified until the owner logs in again.
+- Real Mac browser script: create task space, navigate, read, click and close passed.
+  Kimi uses a protocol-level mock extension test, not the owner's live connection.
+- Android unit tests and debug assembly passed. A matching-signed APK was installed
+  over the existing emulator app; no uninstall or data clearing. The @ picker and
+  settings screen were inspected. No real phone or production gateway was changed.
+
+Production pairing/reboot/old-client replacement and the public installer URL/QR
+remain release-acceptance work. A locally built archive or emulator screenshot is
+not evidence that those production steps have been completed.

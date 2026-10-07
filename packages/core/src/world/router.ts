@@ -17,6 +17,8 @@ export interface TrustedRouteContext extends AuthenticatedCallerContext {
   nativeUi?: boolean;
   screenLabel?: string;
   turn?: string;
+  /** Only the internal Agent system assigns a new delegation identity. */
+  thread?: string;
   approval?: RequestContextSnapshot["approval"];
 }
 export interface RouteHandlerContext { signal: AbortSignal; recovered: boolean; /** Server-stamped acceptance context; never supplied by a word body. */ caller?: Readonly<RequestContextSnapshot> }
@@ -153,6 +155,8 @@ export class WorldRouter {
   private reviewTimeoutMs = 5_000;
   private approvalMode: () => ApprovalMode = () => "auto";
   private devicePolicy: (member: string) => "full" | "approval" | null = () => null;
+  private agentAvailable: (member: string) => boolean = () => true;
+  setAgentAvailability(check: (member: string) => boolean): void { this.agentAvailable = check; }
   private deviceManagementApproval: (request: Pick<Message, "word" | "body">) => boolean = () => true;
   private deviceManagementCard?: (request: Message) => { title: string; detail: string };
   setDevicePolicy(policy: (member: string) => "full" | "approval" | null): void { this.devicePolicy = id => id === "device:phone" ? null : policy(id); }
@@ -578,6 +582,13 @@ export class WorldRouter {
   async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
 
   private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
+    if (AGENT_ID.test(from) && from !== "agent:main" && request.to === "person:owner" && request.kind === "request") {
+      const directlyAddressed = ctx.turn && this.ledger.turnMessages(ctx.turn).some(message => message.from === from && message.kind === "event" &&
+        ["turn.start", "read"].includes(message.word) && Array.isArray(message.body.ids) && message.body.ids.some(id => {
+          const input = this.ledger.byId(String(id)); return input?.from === "person:owner" && input.to === from && input.word === "say";
+        }));
+      if (!directlyAddressed) fail("forbidden", "Only an agent directly addressed by the owner may reply to the owner");
+    }
     if (request.to === "service:devices" && (ctx.remote || !ctx.local || !["person:owner", "agent:main"].includes(from)))
       fail("forbidden", "device management requires the local owner or main agent");
     if (request.to === "service:reflex" && ["task.stop", "task.end"].includes(request.word)) {
@@ -622,7 +633,8 @@ export class WorldRouter {
     // otherwise hears only its own timers and its schedule.
     const service = ctx.transport === "service" && ctx.local && !ctx.remote;
     if (toAgent && request.word === "say" && AGENT_ID.test(from)) fail("forbidden", "agents speak to each other through the Agent system");
-    if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") &&
+    if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") && from === "person:owner" && !this.agentAvailable(request.to!)) fail("offline", "This agent is stopped or its runtime is unavailable");
+    if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") && from !== "person:owner" &&
       !(service && ["service:agents", "service:clock", "service:work", "service:gate"].includes(from)))
       fail("forbidden", "only the Agent system and ash's schedule may speak to this agent");
     if (request.to === "service:agents" && request.word === "answer" &&
@@ -685,7 +697,8 @@ export class WorldRouter {
       ? ctx.approval.ttlMinutes * 60000 : endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint && wordEffect(endpoint.spec) !== "read" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
-    const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}) };
+    if (ctx.thread && !(ctx.transport === "service" && from === "service:agents" && ctx.local && !ctx.remote)) fail("forbidden", "only Agent system assigns delegation threads");
+    const input = { from, to: request.to, kind: request.kind, word: request.word, body: request.body, ...(origin ? { origin } : {}), ...(ctx.turn ? { turn: ctx.turn } : {}), ...(ctx.thread ? { thread: ctx.thread } : {}) };
     let accepted: ReturnType<Ledger["append"]>;
     if (signal?.aborted) fail("cancelled", "send aborted before acceptance");
     try { accepted = this.ledger.append(input, request.client_id ? { transportPrincipal: ctx.transportPrincipal, clientId: request.client_id } : undefined,

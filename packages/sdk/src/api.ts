@@ -317,6 +317,8 @@ export interface Message {
   reply_to?: string;
   origin?: { screen: string; label: string };
   turn?: string;
+  /** Server-stamped delegated work identity. */
+  thread?: string;
 }
 
 /** Read-only projection of a ledger row. It is never a Message or a send body. */
@@ -356,9 +358,10 @@ export function isStreamErrorV2(value: unknown): value is StreamErrorV2 {
 }
 
 export function isMessageSummaryV2(value: unknown): value is MessageSummaryV2 {
-  if (!streamObject(value) || !exactKeys(value, ["seq", "id", "ts", "from", "to", "kind", "word", "reply_to", "origin", "turn", "summary", "body_summary", "inline_attachments"]) || value.summary !== true || Object.hasOwn(value, "body") || !streamSeq(value.seq) || typeof value.id !== "string" || !value.id || !Number.isSafeInteger(value.ts) || typeof value.from !== "string" || !value.from || !(value.to === null || typeof value.to === "string") || !["request", "response", "event"].includes(String(value.kind)) || typeof value.word !== "string" || !value.word || !streamObject(value.body_summary)) return false;
+  if (!streamObject(value) || !exactKeys(value, ["seq", "id", "ts", "from", "to", "kind", "word", "reply_to", "origin", "turn", "thread", "summary", "body_summary", "inline_attachments"]) || value.summary !== true || Object.hasOwn(value, "body") || !streamSeq(value.seq) || typeof value.id !== "string" || !value.id || !Number.isSafeInteger(value.ts) || typeof value.from !== "string" || !value.from || !(value.to === null || typeof value.to === "string") || !["request", "response", "event"].includes(String(value.kind)) || typeof value.word !== "string" || !value.word || !streamObject(value.body_summary)) return false;
   if (value.reply_to !== undefined && (typeof value.reply_to !== "string" || !value.reply_to)) return false;
   if (value.turn !== undefined && (typeof value.turn !== "string" || !value.turn)) return false;
+  if (value.thread !== undefined && (typeof value.thread !== "string" || !value.thread)) return false;
   if (value.origin !== undefined && (!streamObject(value.origin) || !exactKeys(value.origin, ["screen", "label"]) || typeof value.origin.screen !== "string" || typeof value.origin.label !== "string")) return false;
   if (value.inline_attachments !== undefined) {
     if (!Array.isArray(value.inline_attachments) || !value.inline_attachments.every((item) => streamObject(item) && exactKeys(item, ["index", "name", "mime_type", "size"]) && Number.isSafeInteger(item.index) && typeof item.index === "number" && item.index >= 0 && typeof item.name === "string" && item.name.length > 0 && typeof item.mime_type === "string" && item.mime_type.length > 0 && Number.isSafeInteger(item.size) && typeof item.size === "number" && item.size >= 0)) return false;

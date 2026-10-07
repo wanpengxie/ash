@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { redactText } from "../redact";
 
 export type Frame = Record<string, any>;
 export interface Command { command: string; args: string[]; env?: NodeJS.ProcessEnv }
@@ -77,8 +78,9 @@ export class JsonProcess {
   settle(id: string | number, result: unknown, error?: unknown): boolean {
     const p = this.pending.get(String(id)); if (!p) return false;
     this.pending.delete(String(id)); clearTimeout(p.timer);
-    // Do not surface arbitrary runtime errors (which can include secrets).
-    error ? p.reject(new Error("runtime rejected request")) : p.resolve(result);
+    // Keep actionable diagnostics, but never forward raw credential-bearing frames.
+    const message = error && typeof error === "object" && typeof (error as Frame).message === "string" ? redactText((error as Frame).message).slice(0, 4096) : "runtime rejected request";
+    error ? p.reject(new Error(message)) : p.resolve(result);
     return true;
   }
 

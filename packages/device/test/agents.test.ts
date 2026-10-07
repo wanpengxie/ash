@@ -20,10 +20,12 @@ async function until(check: () => boolean) {
 for (const [kind, Driver] of [["codex", CodexSession], ["claude", ClaudeSession], ["workbuddy", WorkBuddySession]] as const) {
   test(`${kind}: open, attributed tools, steer, full result, interrupt, resume and crash`, async t => {
     const events: AgentEvent[] = [], outbound: string[] = [];
-    const options: OpenOptions = { cwd: process.cwd(), tools, onEvent: e => events.push(e), onOutbound: async call => { outbound.push(call.turn); return { agents: [] }; } };
+    let models: { id: string }[] = [];
+    const options: OpenOptions = { cwd: process.cwd(), tools, onModels: value => { models = value; }, onEvent: e => events.push(e), onOutbound: async call => { outbound.push(call.turn); return { agents: [] }; } };
     const command = { command: process.execPath, args: [fixture, kind] };
     const session = await Driver.open(options, command);
     t.after(() => session.close());
+    assert.equal(models[0]?.id, "test-model");
     const seed = events.find(e => e.type === "seed_updated"); assert.equal(seed?.type, "seed_updated");
     await session.select("test-model");
     await session.send("first", "hello");
@@ -44,6 +46,13 @@ for (const [kind, Driver] of [["codex", CodexSession], ["claude", ClaudeSession]
     assert.ok(!events.some(e => e.type === "turn_ended" && e.turn === "second"));
     await until(() => events.some(e => e.type === "turn_ended" && e.turn === "second"));
     assert.ok(events.some(e => e.type === "turn_ended" && e.turn === "second" && e.outcome === "interrupted"));
+    if (kind !== "workbuddy") {
+      await session.send("failed", "fail");
+      await until(() => events.some(e => e.type === "turn_ended" && e.turn === "failed"));
+      const failure = events.find(e => e.type === "turn_ended" && e.turn === "failed");
+      assert.ok(failure?.type === "turn_ended"); assert.equal(failure.outcome, "failed");
+      assert.match(failure.error!, /provider rejected/); assert.doesNotMatch(failure.error!, /hidden-value/);
+    }
     await session.close();
     const resumed = await Driver.open({ ...options, seed: seed!.type === "seed_updated" ? seed!.seed : "" }, command);
     t.after(() => resumed.close());

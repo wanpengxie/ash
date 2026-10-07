@@ -18,11 +18,13 @@
     "build:core": "npm run -s gen:ui && npm run -s gen:worker-rules && esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload",
     "build:container": "node tools/build-container-rootfs.mjs",
-    "build:device": "esbuild packages/device/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/device/dist/ash-device.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\""
+    "build:device": "esbuild packages/device/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/device/dist/ash-device.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "package:device": "npm run build:device && node tools/package-device.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^22.20.4",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
@@ -39,6 +41,7 @@
     "ash-gateway": "file:../ash-gateway-device",
     "entities": "8.1.0",
     "marked": "18.0.14",
+    "ws": "^8.22.0",
     "zod": "^4.6.5"
   }
 }

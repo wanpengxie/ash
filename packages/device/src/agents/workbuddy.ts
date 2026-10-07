@@ -51,6 +51,7 @@ export class WorkBuddySession implements AgentSession {
       session.session = result?.sessionId ?? loaded;
       if (!session.session) throw new Error("runtime did not return a session");
       session.model = result?.models?.currentModelId;
+      options.onModels?.((result?.models?.availableModels ?? []).filter((m: Frame) => typeof m.modelId === "string").map((m: Frame) => ({ id: m.modelId })));
       session.effort = result?.configOptions?.find((o: Frame) => o.id === "thought_level")?.currentValue;
       if (options.model || options.effort) await session.select(options.model, options.effort);
       options.onEvent({ type: "seed_updated", seed: prefix + session.session });

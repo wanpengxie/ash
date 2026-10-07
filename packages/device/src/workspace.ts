@@ -37,6 +37,7 @@ type Job = { id: string; child: ChildProcess; file: string; bytes: number; offse
 /** The OS account is the filesystem boundary; approval is enforced on the phone. */
 export class Workspace {
   private jobs = new Map<string, Job>();
+  get busy(): boolean { return [...this.jobs.values()].some(job => !job.done); }
   constructor(readonly workdir: string, readonly stateDir: string) {}
   private expand(p: string): string { return p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p; }
   private cwd(args: Record<string, any>): string { return resolve(this.expand(this.workdir), this.expand(args.workdir ?? ".")); }

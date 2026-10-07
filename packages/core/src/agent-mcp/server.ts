@@ -7,7 +7,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListResourcesRequestSchema, ListResourceTemplatesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
-import { AGENT_ID } from "../../../sdk/src/words";
+import { AGENT_ID, AGENT_RUNTIME_SCHEMA } from "../../../sdk/src/words";
 import { DEVICE_WORDS, deviceToolName } from "../../../sdk/src/device-words";
 import type { Ledger } from "../world/ledger";
 import type { WorldMembers } from "../world/member";
@@ -27,7 +27,7 @@ export class AgentBinding {
   policy: AgentPolicy;
   constructor(readonly member: string, readonly label: string, readonly sessionId: () => string | null, policy: AgentPolicy = {}) { this.policy = policy; }
   /** The fixed tools this agent may use (its declaration); all when it says nothing. */
-  allowsTool(name: string): boolean { return !this.policy.tools || this.policy.tools.includes(name) || META_ALWAYS.has(name); }
+  allowsTool(name: string): boolean { return META_ALWAYS.has(name) || ((!this.policy.tools || this.policy.tools.includes(name)) && (this.policy.tool?.(name, this.current?.turn) ?? true)); }
   allowsWord(member: string, word: string): boolean { return this.policy.words?.(member, word) ?? true; }
   begin(turn: string, signal: AbortSignal): void { this.current = { turn, signal }; }
   end(turn: string): void { if (this.current?.turn === turn) this.current = null; }
@@ -35,7 +35,7 @@ export class AgentBinding {
 }
 
 /** What an agent's declaration lets it use. */
-export interface AgentPolicy { tools?: readonly string[]; words?: (member: string, word: string) => boolean }
+export interface AgentPolicy { tools?: readonly string[]; tool?: (name: string, turn?: string) => boolean; words?: (member: string, word: string) => boolean }
 // Receipts can always be collected and cancelled, whatever else an agent may use.
 const META_ALWAYS = new Set(["await_result", "list_pending", "cancel", "human_pending", "human_pending_get", "human_pending_redeem", "human_pending_skip", "human_withdraw"]);
 
@@ -160,12 +160,13 @@ const TOOLS = [
     inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The question"), wait: { type: "boolean" } }, ["agent", "text"]) },
   { name: "agent_tell", description: "Tell another agent something without waiting. It handles it in a turn of its own; what it says back arrives later as a message to you, which you need not answer.",
     inputSchema: object({ agent: text("Agent id from agent_list"), text: text("The message") }, ["agent", "text"]) },
+  { name: "agent_runtimes", description: "Discover online computers allowed to host agents, their installed runtimes and models. Use before agent_create with runtime {device,kind,cwd?,model?,effort?}.", inputSchema: object({}) },
   // system: managing agents (only for agents given it)
   { name: "agent_create", description: "Create a new agent. It runs at once in its own session and workspace. Give id (agent:<lowercase name>), name, summary (what others are told it does), brief (its job, in its own words), and optionally tools (fixed tool names; default: discovery, talking to agents, history, status), words (ash capabilities as member/word patterns, e.g. service:self/read; default none) and every (seconds between scheduled wakes, >= 600).",
-    inputSchema: object({ id: text("agent:<lowercase name>"), name: text("Short name"), summary: text("One line others see"), brief: text("Its job"),
+    inputSchema: object({ id: text("agent:<lowercase name>"), runtime: AGENT_RUNTIME_SCHEMA, name: text("Short name"), summary: text("One line others see"), brief: text("Its job"),
       tools: { type: "array", items: { type: "string" } }, words: { type: "array", items: { type: "string" } }, every: { type: "integer", minimum: 600 } }, ["id", "name", "summary", "brief"]) },
   { name: "agent_update", description: "Change an agent's declaration (name, summary, brief, tools, words, every); it applies from its next turn.",
-    inputSchema: object({ agent: text("Agent id"), name: text("Short name"), summary: text("One line others see"), brief: text("Its job"),
+    inputSchema: object({ agent: text("Agent id"), runtime: AGENT_RUNTIME_SCHEMA, name: text("Short name"), summary: text("One line others see"), brief: text("Its job"),
       tools: { type: "array", items: { type: "string" } }, words: { type: "array", items: { type: "string" } }, every: { type: "integer", minimum: 600 } }, ["agent"]) },
   { name: "agent_start", description: "Let a stopped agent take turns again.", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
   { name: "agent_stop", description: "Stop an agent: its current turn is cancelled and it takes no new ones until started; messages wait for it.", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
@@ -388,12 +389,13 @@ export class AgentMcpServer {
         // Discovery and communication (agent words) and management (system words) are the Agent system's; these tools
         // only carry the request, as this agent. What each agent may use is its declaration's business.
         case "agent_list": return await this.send(binding, active.turn, "service:agents", "list", {}, turnSignal);
+        case "agent_runtimes": return await this.send(binding, active.turn, "service:agents", "runtimes", {}, turnSignal);
         case "agent_describe": return await this.send(binding, active.turn, "service:agents", "describe", { agent: args.agent }, turnSignal);
         case "agent_tell": return await this.send(binding, active.turn, "service:agents", "tell", { agent: args.agent, text: args.text }, turnSignal);
         case "agent_ask": return await this.job(binding, active.turn, "service:agents", "ask", { agent: args.agent, text: args.text },
           args.wait === false ? 0 : (this.options.maxWaitMs ?? MAX_WAIT_MS), turnSignal);
-        case "agent_create": return await this.job(binding, active.turn, "service:agents", "declare", pick(args, ["id", "name", "summary", "brief", "tools", "words", "every"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
-        case "agent_update": return await this.job(binding, active.turn, "service:agents", "update", pick(args, ["agent", "name", "summary", "brief", "tools", "words", "every"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        case "agent_create": return await this.job(binding, active.turn, "service:agents", "declare", pick(args, ["id", "name", "summary", "brief", "tools", "words", "every", "runtime"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
+        case "agent_update": return await this.job(binding, active.turn, "service:agents", "update", pick(args, ["agent", "name", "summary", "brief", "tools", "words", "every", "runtime"]), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal);
         case "agent_start":
         case "agent_stop":
         case "agent_restart":

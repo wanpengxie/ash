@@ -96,6 +96,7 @@ export interface LocalCapabilities {
   manifest(): Promise<{ protocol?: string; version?: string; name: string; kind: DeviceKind; capabilities: CapabilitySpec[]; agents?: unknown[] }>;
   call(capability: string, args: Record<string, unknown>, caller: string, signal?: AbortSignal): Promise<CallResult>;
   stream?(stream: import("ash-gateway/client/client").DeviceStream): void;
+  update?(version: string, sha256: string): Promise<unknown>;
 }
 
 /** Client role retains the existing gateway manifest/call protocol. */
@@ -158,6 +159,12 @@ export class ClientLink extends Link {
   private async serve(sid: string, inbound: Inbound, signal: AbortSignal): Promise<void> {
     const path = inbound.path.split("?")[0];
     const json = (status: number, body: unknown): EdgeResponse => ({ status, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (inbound.method === "POST" && path === "/ash/update") {
+      const input = JSON.parse(Buffer.concat(inbound.body).toString("utf8") || "{}");
+      if (!this.local.update || typeof input.version !== "string" || !/^v?\d+\.\d+\.\d+$/.test(input.version) || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) return this.reply(sid, json(400, { ok: false, error: "Invalid approved update" }));
+      try { return this.reply(sid, json(200, { ok: true, result: await this.local.update(input.version, input.sha256) })); }
+      catch (error) { return this.reply(sid, json(409, { ok: false, error: error instanceof Error ? error.message : "Update failed" })); }
+    }
     if (inbound.method === "GET" && path === "/ash/manifest") {
       const manifest = await this.local.manifest();
       return this.reply(sid, json(200, { ...manifest, capabilities: manifest.capabilities.map((capability) => ({

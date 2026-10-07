@@ -34,6 +34,8 @@ function short(text: string, bytes = 4096): string {
 
 /** Device-local sessions, one duplex link. No persistent action queue or automatic task replay. */
 export class AgentHost {
+  accepting = true;
+  get busy(): boolean { return [...this.sessions.values()].some(record => !!record.busy || !!record.opening || !!record.operating); }
   readonly epoch = randomUUID();
   private stream?: AgentStream;
   private sessions = new Map<string, SessionRecord>();
@@ -85,6 +87,7 @@ export class AgentHost {
     const error = (code: string, message: string) => ({ type: "op_result", id: frame.id, ok: false, error: { code, message } });
     if (typeof frame.id !== "string" || !idPattern.test(frame.id)) return error("invalid", "Invalid operation id");
     if (frame.epoch !== this.epoch) return error("result_unknown", "Device process changed; do not replay actions");
+    if (!this.accepting && ["open", "send", "steer"].includes(frame.op)) return error("busy", "Device update is in progress");
     const key = ownerEpoch + ":" + frame.id, input = JSON.stringify(frame), previous = this.operations.get(key);
     if (previous) return previous.input === input ? previous.result : error("invalid", "Operation id reused with different arguments");
     // Do not evict accepted operation IDs and silently make an old retry executable again.

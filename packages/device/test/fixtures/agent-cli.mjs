@@ -18,7 +18,9 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   const f = JSON.parse(line), p = f.params ?? {};
   if (f.method === 'crash') process.exit(7);
   if (kind === 'codex') {
+    if (process.argv[3] === 'auto' && f.id === 'tool-call' && f.result) { finish(false); continue; }
     if (f.method === 'initialize') result(f.id, { userAgent: 'fixture' });
+    else if (f.method === 'model/list') result(f.id, { data: [{ model: 'test-model', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }] });
     else if (f.method === 'thread/start' || f.method === 'thread/resume') {
       if (p.approvalPolicy !== 'never' || p.sandbox !== 'danger-full-access') throw new Error('wrong runtime configuration');
       if (p.dynamicTools?.some(t => t.type !== 'function')) throw new Error('wrong tool schema');
@@ -28,6 +30,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       // Started can arrive before the RPC acceptance response.
       notify('turn/started', { threadId: 'thread-1', turn: { id: active.id } });
       result(f.id, { turn: { id: active.id } });
+      if (p.input[0].text === 'fail') { notify('turn/completed', { threadId: 'thread-1', turn: { id: active.id, status: 'failed', error: { message: 'provider rejected token=hidden-value' } } }); active = undefined; continue; }
       notify('item/completed', { threadId: 'wrong-thread', turnId: active.id, item: { id: 'wrong', type: 'agentMessage', text: 'WRONG' } });
       notify('item/completed', { threadId: 'thread-1', turnId: 'old-turn', item: { id: 'late', type: 'agentMessage', text: 'LATE' } });
       notify('item/started', { threadId: 'thread-1', turnId: active.id, item: { id: 'shell', type: 'commandExecution', command: 'echo hello' } });
@@ -38,7 +41,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   }
   if (kind === 'claude') {
     if (f.type === 'control_request') {
-      emit({ type: 'control_response', response: { subtype: 'success', request_id: f.request_id, response: {} } });
+      emit({ type: 'control_response', response: { subtype: 'success', request_id: f.request_id, response: { models: [{ value: 'test-model', supportedEffortLevels: ['low'] }] } } });
       if (f.request.subtype === 'interrupt') setTimeout(() => finish(true), 40);
     } else if (f.type === 'user') {
       options = f;
@@ -48,6 +51,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       } else {
         active = { id: f.uuid };
         emit({ type: 'command_lifecycle', command_uuid: f.uuid, state: 'started' });
+        if (f.message.content[0].text === 'fail') { emit({ type: 'result', session_id: f.session_id, user_message_uuid: f.uuid, is_error: true, errors: ['provider rejected token=hidden-value'] }); active = undefined; continue; }
         if (f.message.content[0].text === 'crash') process.exit(7);
         emit({ type: 'assistant', session_id: f.session_id, message: { content: [{ type: 'text', text: 'Working' }, { type: 'tool_use', id: 'shell', name: 'Bash' }] } });
         emit({ type: 'control_request', request_id: 'tool-call', request: { subtype: 'mcp_message', server_name: 'ash', message: { jsonrpc: '2.0', id: 'call-1', method: 'tools/call', params: { name: 'agent_list', arguments: {} } } } });
@@ -58,7 +62,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     if (f.method === 'initialize') result(f.id, { protocolVersion: 1 });
     else if (f.method === 'session/new' || f.method === 'session/load') {
       endpoint = p.mcpServers[0];
-      result(f.id, { sessionId: 'wb-1', models: { currentModelId: 'old-model' }, configOptions: [{ id: 'thought_level', currentValue: 'low' }] });
+      result(f.id, { sessionId: 'wb-1', models: { currentModelId: 'old-model', availableModels: [{ modelId: 'test-model' }] }, configOptions: [{ id: 'thought_level', currentValue: 'low' }] });
     } else if (f.method === 'session/set_model' || f.method === 'session/set_config_option') result(f.id, {});
     else if (f.method === 'session/prompt') {
       active = { id: `native-${++counter}`, rpc: f.id };

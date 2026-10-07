@@ -9,7 +9,7 @@ export interface StreamPageQuery { after?: number; before?: number; limit?: numb
 
 // The SQL result contains projected metadata only. Raw attachment data never enters
 // a JS row, and iteration stops at the first excluded row of the requested order.
-const projected = `SELECT m.seq,m.id,m.ts,m."from",m."to",m.kind,m.word,m.reply_to,m.origin,m.turn,
+const projected = `SELECT m.seq,m.id,m.ts,m."from",m."to",m.kind,m.word,m.reply_to,m.origin,m.turn,m.thread,
   CASE WHEN json_type(m.body,'$.attachments')='array' THEN json_set(json_remove(m.body,'$.attachments'),'$.attachments',
     (SELECT json_group_array(CASE WHEN json_type(a.value,'$.workspace')='text' AND json_type(a.value,'$.path')='text'
       THEN json_object('name',json_extract(a.value,'$.name'),'mime_type',json_extract(a.value,'$.mime_type'),
@@ -42,6 +42,7 @@ export function readSummaryPage(db: DatabaseSync, q: StreamPageQuery = {}): { pa
       ...(row.reply_to === null ? {} : { reply_to: String(row.reply_to) }),
       ...(row.origin === null ? {} : { origin: JSON.parse(String(row.origin)) }),
       ...(row.turn === null ? {} : { turn: String(row.turn) }),
+      ...(row.thread == null ? {} : { thread: String(row.thread) }),
       ...(inline.length ? { inline_attachments: inline as MessageSummaryV2["inline_attachments"] } : {}),
     };
     if (!isMessageSummaryV2(summary)) throw new TypeError("invalid database summary projection");

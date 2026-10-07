@@ -41,21 +41,25 @@ export class ReflexMember implements Member {
   async handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
     if (message.word === "task.end") {
       if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "owner only" } };
-      const turn = String(message.body.turn), active = this.busyTurn();
-      if (active && active !== turn) return { ok: true, result: { ended: false } };
+      const turn = String(message.body.turn);
       const rows = this.router.ledger.turnMessages(turn);
-      if (!rows.some((r) => r.from === "agent:main" && r.word === "turn.start")) return { ok: true, result: { ended: false } };
+      const actor = rows.find(r => r.from.startsWith("agent:") && r.word === "turn.start")?.from;
+      if (!actor) return { ok: true, result: { ended: false } };
+      const active = actor === "agent:main" ? this.busyTurn() : !rows.some(r => r.from === actor && r.word === "turn.end") ? turn : null;
+      if (active && active !== turn) return { ok: true, result: { ended: false } };
       const ids = message.body.pending_ids as string[];
+      const ownedTask = (agent: string, pendingTurn: string | null | undefined) => agent === actor || !!pendingTurn &&
+        this.router.ledger.threadAncestors(pendingTurn).some(work => work.parent_turn === turn);
       const legacyAskOwned = (id: string) => {
         const ask = this.router.ledger.byId(id);
         if (!ask || ask.turn !== turn || ask.to !== "person:owner" || ask.word !== "ask" || ask.kind !== "request") return false;
-        if (ask.from === "agent:main") return true;
+        if (ask.from === actor) return true;
         const gate = this.router.ledger.gateCaseByAsk(id);
-        return ask.from === "service:gate" && !!gate && this.router.ledger.byId(gate.requestId)?.from === "agent:main";
+        return ask.from === "service:gate" && !!gate && this.router.ledger.byId(gate.requestId)?.from === actor;
       };
       if (ids.some((id) => {
         const p = this.router.ledger.humanPending(id);
-        return p ? p.agent !== "agent:main" || !this.router.ledger.humanOwnedBy("agent:main", p.pending_id) : !legacyAskOwned(id);
+        return p ? !ownedTask(p.agent, p.turn) || !this.router.ledger.humanOwnedBy(p.agent, p.pending_id) : !legacyAskOwned(id);
       }))
         return { ok: false, error: { code: "forbidden", message: "pending request is not owned by this agent" } };
       const withdraw = () => {
@@ -63,16 +67,16 @@ export class ReflexMember implements Member {
         // Other turns are touched only when the owner explicitly saw and selected their cards.
         const selected = new Set(ids);
         for (const p of this.router.ledger.activeHumanPending()) {
-          if (p.agent !== "agent:main" || !(p.turn === turn || selected.has(p.pending_id))) continue;
-          if (p.state === "waiting") this.router.withdrawHuman("agent:main", p.pending_id, "主人结束了本次交互");
-          else if (p.state === "answered" && p.type === "approval") this.router.withdrawHuman("agent:main", p.pending_id, "主人结束了本次交互，未执行", true);
+          if (!ownedTask(p.agent, p.turn) || !(p.turn === turn || selected.has(p.pending_id) || p.agent !== actor)) continue;
+          if (p.state === "waiting") this.router.withdrawHuman(p.agent, p.pending_id, "主人结束了本次交互");
+          else if (p.state === "answered" && p.type === "approval") this.router.withdrawHuman(p.agent, p.pending_id, "主人结束了本次交互，未执行", true);
         }
         // Internal DSH confirmations and old synchronous approvals have no human_pending row.
         this.router.cancel(this.router.ledger.trackedRequests().map((p) => p.message.id).filter(legacyAskOwned));
       };
       withdraw();
       if (!active) return { ok: true, result: { ended: true } };
-      const sent = await this.router.send({ ...decisionContext, turn }, { to: "agent:main", kind: "request", word: "cancel_turn",
+      const sent = await this.router.send({ ...decisionContext, turn }, { to: actor, kind: "request", word: "cancel_turn",
         body: { reason: "Owner ended the capsule interaction", by: message.id }, client_id: `task-end:${message.id}`, wait: true });
       const ended = sent.reply?.body.ok === true && ((sent.reply.body.result as { cancelled?: unknown })?.cancelled === true || this.busyTurn() === null);
       if (ended) withdraw();
@@ -80,9 +84,11 @@ export class ReflexMember implements Member {
     }
     if (message.word === "task.stop") {
       if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "owner only" } };
-      if (this.busyTurn() !== message.body.turn) return { ok: true, result: { cancelled: false } };
+      const rows = this.router.ledger.turnMessages(String(message.body.turn));
+      const actor = rows.find(r => r.from.startsWith("agent:") && r.word === "turn.start")?.from;
+      if (!actor || rows.some(r => r.from === actor && r.word === "turn.end") || actor === "agent:main" && this.busyTurn() !== message.body.turn) return { ok: true, result: { cancelled: false } };
       const sent = await this.router.send({ ...decisionContext, turn: String(message.body.turn) }, {
-        to: "agent:main", kind: "request", word: "cancel_turn", body: { reason: "Owner stopped the task from its status display", by: message.id },
+        to: actor, kind: "request", word: "cancel_turn", body: { reason: "Owner stopped the task from its status display", by: message.id },
         client_id: `task-stop:${message.id}`, wait: true });
       return { ok: true, result: { cancelled: sent.reply?.body.ok === true && (sent.reply.body.result as { cancelled?: unknown })?.cancelled === true } };
     }
