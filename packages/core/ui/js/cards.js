@@ -108,6 +108,15 @@ export function renderCard(parent, item, { onSelect, onPermission, optionPending
     if (card.summary) text(root, "small", card.summary);
     return root;
   }
+  if (card.type === "app") {
+    // Opens the shell app ("Ash 应用") on this app's page; Ash's chat itself never hosts an app's screens.
+    if (!/^[a-z][a-z0-9-]{0,47}$/.test(card.app)) return root;
+    root.classList.add("app-card");
+    const link = text(root, "a", `打开${card.name} · ${card.title}`);
+    link.href = `intent://open?app=${card.app}#Intent;package=ai.ash.apps;scheme=ash-app;end`;
+    if (card.text) text(root, "small", card.text);
+    return root;
+  }
   if (card.type === "permission") {
     text(root, "b", card.why || "需要授权");
     const button = text(root, "button", "去授权", "btn gray");

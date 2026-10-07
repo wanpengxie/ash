@@ -1,0 +1,87 @@
+<h1>趋势</h1>
+<div class="row" id="metrics" role="group" aria-label="指标">
+  <button type="button" data-metric="weight" aria-pressed="true">体重</button>
+  <button type="button" data-metric="steps" aria-pressed="false">步数</button>
+  <button type="button" data-metric="sleep" aria-pressed="false">睡眠</button>
+  <button type="button" data-metric="resting_heart_rate" aria-pressed="false">静息心率</button>
+</div>
+<div class="row" id="spans" role="group" aria-label="时间">
+  <button type="button" data-days="7" aria-pressed="true">7 天</button>
+  <button type="button" data-days="30" aria-pressed="false">30 天</button>
+</div>
+<div class="card">
+  <div id="title" class="label"></div>
+  <svg id="chart" viewBox="0 0 340 200" width="100%" role="img" aria-label="" style="display:block;touch-action:none"></svg>
+  <div id="tip" class="sub" aria-live="polite">&nbsp;</div>
+  <div id="stats" class="sub"></div>
+  <details style="margin-top:8px"><summary class="label">表格</summary><table id="table" class="sub" style="width:100%"></table></details>
+</div>
+<script>
+(() => {
+  const { call, fail } = window.health;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.getElementById("chart");
+  let metric = "weight", days = 7, data = null;
+  const shown = (value) => value === null ? "—" : metric === "sleep" ? `${Math.round(value / 6) / 10} 小时` : `${value} ${data.unit}`;
+  const short = (date) => `${Number(date.slice(5, 7))}月${Number(date.slice(8))}日`;
+  const node = (tag, attrs, text) => { const item = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) item.setAttribute(k, String(v)); if (text !== undefined) item.textContent = text; svg.append(item); return item; };
+  function draw() {
+    svg.replaceChildren();
+    const points = data.points, values = points.map((p) => p.value).filter((v) => v !== null);
+    const goal = typeof data.goal === "number" ? data.goal : null;
+    document.getElementById("title").textContent = `${data.label} · 最近 ${data.days} 天`;
+    svg.setAttribute("aria-label", `${data.label}最近 ${data.days} 天的折线图`);
+    if (!values.length) { node("text", { x: 170, y: 100, "text-anchor": "middle", fill: "var(--muted)", "font-size": 13 }, "这段时间没有数据"); return; }
+    const all = goal === null ? values : [...values, goal];
+    let lo = Math.min(...all), hi = Math.max(...all);
+    if (hi === lo) { hi += 1; lo = Math.max(0, lo - 1); }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const L = 40, R = 330, T = 12, B = 176;
+    const x = (i) => points.length === 1 ? (L + R) / 2 : L + (R - L) * i / (points.length - 1);
+    const y = (v) => B - (B - T) * (v - lo) / (hi - lo);
+    for (let k = 0; k <= 2; k++) {
+      const v = lo + (hi - lo) * k / 2;
+      node("line", { x1: L, x2: R, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 });
+      node("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": 11 }, metric === "sleep" ? String(Math.round(v / 6) / 10) : String(Math.round(v * 10) / 10));
+    }
+    node("text", { x: L, y: 194, fill: "var(--muted)", "font-size": 11 }, short(points[0].date));
+    node("text", { x: R, y: 194, "text-anchor": "end", fill: "var(--muted)", "font-size": 11 }, short(points[points.length - 1].date));
+    if (goal !== null) {
+      node("line", { x1: L, x2: R, y1: y(goal), y2: y(goal), stroke: "var(--muted)", "stroke-width": 1, "stroke-dasharray": "4 4" });
+      node("text", { x: R, y: y(goal) - 4, "text-anchor": "end", fill: "var(--muted)", "font-size": 11 }, "目标");
+    }
+    let path = "", open = false;
+    points.forEach((p, i) => { if (p.value === null) { open = false; return; } path += `${open ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`; open = true; });
+    node("path", { d: path, fill: "none", stroke: "var(--accent)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
+    if (points.length <= 31) points.forEach((p, i) => { if (p.value !== null) node("circle", { cx: x(i), cy: y(p.value), r: 4, fill: "var(--accent)", stroke: "var(--card)", "stroke-width": 2 }); });
+    const cross = node("line", { x1: 0, x2: 0, y1: T, y2: B, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" });
+    const pick = (event) => {
+      const box = svg.getBoundingClientRect();
+      const px = (event.clientX - box.left) / box.width * 340;
+      const i = Math.max(0, Math.min(points.length - 1, Math.round((px - L) / ((R - L) / Math.max(1, points.length - 1)))));
+      cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+      document.getElementById("tip").textContent = `${short(points[i].date)}：${shown(points[i].value)}`;
+    };
+    svg.onpointermove = pick; svg.onpointerdown = pick;
+    svg.onpointerleave = () => { cross.setAttribute("visibility", "hidden"); };
+  }
+  async function load() {
+    try {
+      data = await call("health.trend", { metric, days });
+      draw();
+      const s = data.stats;
+      document.getElementById("stats").textContent = s ? `最低 ${shown(s.min)} · 最高 ${shown(s.max)} · 平均 ${shown(s.avg)}${metric === "weight" ? ` · 变化 ${s.change >= 0 ? "+" : ""}${s.change} kg` : ""}` : "";
+      const table = document.getElementById("table");
+      table.replaceChildren(...data.points.slice().reverse().map((p) => { const row = document.createElement("tr"); row.innerHTML = "<td></td><td style='text-align:right'></td>"; row.cells[0].textContent = p.date; row.cells[1].textContent = shown(p.value); return row; }));
+    } catch (error) { fail(document.querySelector(".card"), error); }
+  }
+  const toggle = (group, attr, set) => document.getElementById(group).addEventListener("click", (event) => {
+    const button = event.target.closest("button"); if (!button) return;
+    for (const item of document.querySelectorAll(`#${group} button`)) item.setAttribute("aria-pressed", String(item === button));
+    set(button.dataset[attr]); load();
+  });
+  toggle("metrics", "metric", (value) => { metric = value; });
+  toggle("spans", "days", (value) => { days = Number(value); });
+  load();
+})();
+</script>

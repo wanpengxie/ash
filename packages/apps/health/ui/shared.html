@@ -1,0 +1,72 @@
+<style>
+:root{color-scheme:light dark;--bg:#f6f6f4;--card:#fcfcfb;--ink:#1d1d1b;--muted:#6b6b66;--line:#e4e3df;--accent:#2a78d6;--warn:#b5651d;--radius:16px;font-family:system-ui,-apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#121211;--card:#1a1a19;--ink:#ecebe8;--muted:#9c9b96;--line:#2c2c2a;--accent:#3987e5;--warn:#e0a060}}
+:root[data-theme=dark]{--bg:#121211;--card:#1a1a19;--ink:#ecebe8;--muted:#9c9b96;--line:#2c2c2a;--accent:#3987e5;--warn:#e0a060}
+*{box-sizing:border-box}body{margin:0;padding:16px;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.45}
+h1{font-size:20px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+.label{color:var(--muted);font-size:13px}.value{font-size:26px;font-weight:600;margin-top:4px}.unit{font-size:13px;color:var(--muted);margin-left:2px;font-weight:400}
+.sub{color:var(--muted);font-size:12px;margin-top:4px}.bar{height:6px;border-radius:3px;background:var(--line);margin-top:8px;overflow:hidden}.bar>i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}button,input{font:inherit;color:inherit}
+button{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:6px 14px;cursor:pointer}
+button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+input{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:8px 10px;width:100%}
+.note{color:var(--muted);font-size:12px;margin-top:12px}.warn{color:var(--warn)}
+</style>
+<script>
+// MCP Apps view side: JSON-RPC with the host (ui/initialize, tools/call on this app's own tools). The host is the
+// parent window (iframe), or a MessagePort it hands over first (Android WebView); over a port messages are JSON text.
+(() => {
+  let port = null, next = 0;
+  const waiting = new Map(), listeners = [];
+  const post = (message) => port ? port.postMessage(JSON.stringify(message)) : window.parent.postMessage(message, "*");
+  const theme = (context) => { if (context && (context.theme === "dark" || context.theme === "light")) document.documentElement.dataset.theme = context.theme; };
+  const receive = (raw) => {
+    let message = raw;
+    if (typeof raw === "string") { try { message = JSON.parse(raw); } catch { return; } }
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && waiting.has(message.id) && !message.method) {
+      const item = waiting.get(message.id); waiting.delete(message.id);
+      message.error ? item.reject(new Error(message.error.message || "host error")) : item.resolve(message.result);
+    } else if (message.method === "ui/notifications/host-context-changed") theme(message.params);
+    else if (message.method) for (const listener of listeners) listener(message);
+  };
+  window.addEventListener("message", (event) => {
+    if (!port && event.ports && event.ports[0]) { port = event.ports[0]; port.onmessage = (inner) => receive(inner.data); return; }
+    receive(event.data);
+  });
+  const request = (method, params, ms = 30000) => new Promise((resolve, reject) => {
+    const id = ++next; waiting.set(id, { resolve, reject });
+    setTimeout(() => { if (waiting.delete(id)) reject(new Error("host did not answer")); }, ms);
+    post({ jsonrpc: "2.0", id, method, params });
+  });
+  const ready = (async () => {
+    // A port may arrive a moment after load; give it the first tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const result = await request("ui/initialize", { protocolVersion: "2026-01-26", capabilities: {}, clientInfo: { name: "health", version: "1.0.0" } }, 5000);
+    theme(result && result.hostContext);
+    post({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+    new ResizeObserver(() => post({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight } })).observe(document.body);
+  })();
+  window.health = {
+    ready,
+    on: (listener) => listeners.push(listener),
+    /** Call one of this app's own tools; returns structuredContent, throws on a tool error. */
+    async call(name, args = {}) {
+      await ready;
+      const result = await request("tools/call", { name, arguments: args }, 60000);
+      if (!result || result.isError) throw new Error((result && result.content && result.content[0] && result.content[0].text) || "失败了");
+      return result.structuredContent || {};
+    },
+    el(tag, attrs = {}, ...children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs)) key === "class" ? node.className = value : node.setAttribute(key, value);
+      for (const child of children) node.append(child);
+      return node;
+    },
+    fail(target, error) {
+      target.replaceChildren(window.health.el("div", { class: "card warn" }, error && /host did not answer/.test(error.message) ? "请在「Ash 应用」里打开健康。" : `没读到数据：${error.message}`));
+    },
+  };
+})();
+</script>

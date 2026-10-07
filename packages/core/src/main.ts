@@ -13,7 +13,9 @@ import { DshTurnRunner } from "../../dsh-binding/src/runtime";
 import { dshWorkerModel } from "../../dsh-binding/src/workers";
 import { ModelEgress } from "../../agent-container/src/egress";
 import { ContainerHost } from "../../agent-container/src/host";
-import { DEFAULT_MODEL, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
+import { CONTAINER_PATH, DEFAULT_MODEL, inContainer, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
+import { AppRuntime, type AppLauncher } from "./apps/runtime";
+import { installBuiltinApps } from "./apps/builtin";
 import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
 import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
 import { AgentMcpServer, TOOL_NAMES, type AgentBinding, type AgentPolicy } from "./agent-mcp/server";
@@ -111,11 +113,34 @@ export interface Running {
   close(): Promise<void>;
 }
 
+/**
+ * Where apps live and how their MCP servers start: inside the container (proot) at /root/apps/<id>, with the
+ * container's own node; in direct mode (tests) next to the workspace on the host. Without a container there are none.
+ */
+function appLauncher(container: ContainerConfig | undefined): AppLauncher | null {
+  if (!container) return null;
+  if (container.direct) {
+    const root = join(dirname(container.direct.workspace), "apps");
+    return { root: () => root, spawn: (app, dir, env) => ({ command: app.server.command, args: app.server.args ?? [], cwd: dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8", ...(app.server.env ?? {}), ...env, ASH_APP_DIR: dir } }) };
+  }
+  return {
+    // Only once the container is unpacked: an apps folder must not appear inside an image still being installed.
+    root: () => existsSync(join(container.root, "ubuntu", "root")) ? join(container.root, "ubuntu", "root", "apps") : null,
+    spawn: (app, _dir, env) => {
+      const inside = `/root/apps/${app.id}`;
+      const run = inContainer(container.root, ["/bin/sh", "-c", 'cd "$0" && exec "$@"', inside, app.server.command, ...(app.server.args ?? [])],
+        { HOME: "/root", PATH: CONTAINER_PATH, TMPDIR: "/tmp", TERM: "dumb", LANG: "C.UTF-8", ...(app.server.env ?? {}), ...env, ASH_APP_DIR: inside });
+      return { command: run.command, args: run.args, env: run.env };
+    },
+  };
+}
+
 /** No old Store/Core is instantiated here; Ledger.open owns the one-way migration. */
 /** One line per device for the agent's turn context: online state and capability names, bounded. */
 function deviceSummary(members: WorldMembers): string {
   const summary = members.describe("agent") as { members?: { id: string; kind?: string; name?: string; online?: boolean; words?: (string | { word: string })[] }[] };
-  return (summary.members ?? []).filter((member) => member.id.startsWith("device:")).map((member) => {
+  return (summary.members ?? []).filter((member) => member.id.startsWith("device:") || member.id.startsWith("app:")).map((member) => {
     const words = (member.words ?? []).map((word) => typeof word === "string" ? word : word.word).join(", ");
     return `- ${member.id} (${member.name ?? member.id}, ${member.online ? "online" : "offline"}): ${words || "no capabilities"}`;
   }).join("\n").slice(0, 2000);
@@ -188,6 +213,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
+  let apps: AppRuntime | null = null;
   try {
     const world = new WorldRouter(ledger, async (request, caller) => {
       if (caller.remote) return Boolean(caller.pairedDeviceId && link && await link.isBrowserAuthorized(caller.pairedDeviceId));
@@ -197,6 +223,9 @@ export async function startOwner(config: Config): Promise<Running> {
         member === caller.member && `token:${createHash("sha256").update(key).digest("hex")}` === caller.transportPrincipal);
       if (caller.transportPrincipal === caller.member && agentSystem?.declaration(caller.member) && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:admin" && caller.member === "service:admin" && caller.local && !caller.remote) return true;
+      // A running app, within its grants (the router checks them again at dispatch).
+      if (caller.member.startsWith("app:") && caller.transportPrincipal === caller.member && caller.local && !caller.remote)
+        return Boolean(apps?.isRunning(caller.member.slice(4)));
       if (caller.transportPrincipal === "service:reflex" && caller.member === "service:reflex" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:cost" && caller.member === "service:cost" && caller.local && !caller.remote) return true;
       if (caller.transportPrincipal === "service:post" && caller.member === "service:post" && caller.local && !caller.remote) return true;
@@ -213,6 +242,10 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(new OwnerMember(config.owner ?? "Owner", ledger));
     members.register(new GateMember(ledger, world, members, { get: () => admin?.journal.approvalMode() ?? "auto", set: (mode) => admin!.journal.setApprovalMode(mode) }));
     world.setMemberNames((id) => { try { return members.describe("owner", id).members[0]?.name; } catch { return undefined; } });
+    // Independent apps (contract ash-app/1): found in the container, started once the owner installed them.
+    apps = new AppRuntime({ launcher: appLauncher(config.container), stateDir: config.stateDir, world, members, log,
+      builtins: (root) => installBuiltinApps(root, log) });
+    members.register(apps.member());
     const vaultFile = join(config.stateDir, "vault.json");
     let vaultStore: VaultStore;
     if (vaultSealRequired) {
@@ -412,6 +445,7 @@ export async function startOwner(config: Config): Promise<Running> {
       },
       ...(config.host ? { nativeUiToken: createHash("sha256").update(`${config.host.token}:home`).digest("hex") } : {}) });
     screensNow = () => ownerScreensLine(edge.screens);
+    edge.attachApps(apps);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       gatewayState: () => link ? { configured: true, ...link.state() } : { configured: false },
@@ -580,17 +614,19 @@ export async function startOwner(config: Config): Promise<Running> {
     writeFileSync(join(config.stateDir, "ui-url"), `${url}/?token=${ownerToken}\n`, { mode: 0o600 });
     hostLink?.startHealthChecks(members);
     link?.enable();
+    // Apps start in the background: a slow or broken app never delays ash.
+    void apps.start().catch((error) => log("apps failed to start", error));
     return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...(agentSystem?.agents() ?? [])], async close() {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
       link?.stop(); await taskStatus?.close(); widgets?.close(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); world.dispose(); ledger.close();
+      await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await apps?.close(); await egress?.close(); await self?.close(); world.dispose(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
     link?.stop(); await taskStatus?.close(); widgets?.close(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
+    await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await apps?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;
   }
 }

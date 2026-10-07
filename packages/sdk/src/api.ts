@@ -486,7 +486,7 @@ export interface WordSpec {
  * send: speaks or acts for the owner toward others · execute: runs a command · structure: changes how ash itself is set up.
  */
 export type WordEffect = "read" | "act" | "write" | "send" | "execute" | "structure";
-export interface MemberInfo { id: string; kind: "person" | "screen" | "agent" | "device" | "service" | "worker"; name: string; online?: boolean }
+export interface MemberInfo { id: string; kind: "person" | "screen" | "agent" | "device" | "service" | "worker" | "app"; name: string; online?: boolean }
 export interface DescribeSummary { members: (MemberInfo & { words: string[] })[] }
 export interface DescribeDetail { members: (MemberInfo & { words: WordSpec[] })[] }
 export type Describe = DescribeSummary | DescribeDetail;

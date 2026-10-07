@@ -131,6 +131,9 @@ function record(m) {
     if (m.word === "run.end" && turnId(b.run) && (m.turn === undefined || m.turn === b.run)) return { ...base, type: "run.end", turn: b.run, outcome: string(b.outcome) };
   }
   if (m.kind === "event" && m.from === "service:gate" && m.word === "human.pending" && typeof b.ask_id === "string") return { ...base, type: "human.pending", pending: b };
+  // An app's entry card (app.card, or a notify event Ash let through): one small row that opens the app.
+  if (m.kind === "event" && /^app:[a-z][a-z0-9-]{0,47}$/.test(m.from) && m.to === "person:owner" && typeof b.title === "string" && b.title)
+    return { ...base, type: "app.card", app: m.from.slice(4), name: string(b.name) || m.from.slice(4), title: b.title, text: string(b.text) };
   if (m.kind === "event" && m.from === "service:gate" && ["gate.asked", "gate.passed", "gate.denied"].includes(m.word)) return { ...base, type: m.word, requestId: string(b.request_id) };
   // Only selected display metadata is retained. Details are owner-authenticated and fetched on demand.
   if (m.kind === "request" && turnId(m.turn) && (/^agent:[a-z][a-z0-9_-]*$/.test(m.from) || m.from === "service:work") && memberId(m.to) && m.to !== "person:owner")
@@ -183,6 +186,7 @@ function project(records, snapshots = new Map()) {
       if (["offer", "heads_up"].includes(r.kind) && postStates.get(r.id)?.state !== "released") continue;
       view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "say", side: "agent", from: r.from, text: r.text, attachments: r.attachments, kind: r.kind, group: r.turn || null, reactions: reactions.get(r.id) || [] });
     }
+    else if (r.type === "app.card") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: { type: "app", app: r.app, name: r.name, title: r.title, text: r.text }, reactions: [] });
     else if (r.type === "show") view.conversation.push({ id: r.id, seq: r.seq, ts: r.ts, type: "card", side: "agent", card: r.card, locked: r.card.type === "options" && optionReplies.has(r.id), selected_option_id: optionReplies.get(r.id) || null, reactions: reactions.get(r.id) || [] });
     else if (r.type === "ask") {
       const answer = answers.get(r.id);
@@ -230,7 +234,7 @@ function project(records, snapshots = new Map()) {
  * progress strip and the activity sheet; they never need the conversation redrawn. This is the page's own selection and
  * it comes before drawing: render() runs only for rows that pass it.
  */
-const CONVERSATION_ROWS = new Set(["legacy.say", "owner.say", "agent.say", "show", "ask", "ask.answer", "react", "received", "read", "human.pending", "post.delivery"]);
+const CONVERSATION_ROWS = new Set(["legacy.say", "owner.say", "agent.say", "show", "ask", "ask.answer", "react", "received", "read", "human.pending", "post.delivery", "app.card"]);
 export function drawsConversation(message) {
   const row = record(message);
   return row !== null && CONVERSATION_ROWS.has(row.type);

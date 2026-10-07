@@ -13,6 +13,8 @@ import type { PostJournal } from "./world/post-journal";
 import { AVATARS, ICON_SVG, UI_HTML, WEB_MANIFEST } from "./ui";
 import { authScope } from "./auth-scope";
 import { activityDetail, activityAction } from "../../sdk/src/activity";
+import { appsRoute } from "./apps/http";
+import type { AppRuntime } from "./apps/runtime";
 
 export interface EdgeTokens { api: Record<string, string>; mcp: Record<string, string> }
 export interface EdgeCaller {
@@ -21,7 +23,7 @@ export interface EdgeCaller {
   local: boolean;
   remote: boolean;
   ownerProxy: boolean;
-  transport: "api" | "web_ui" | "phone" | "agent" | "device" | "service";
+  transport: "api" | "web_ui" | "phone" | "agent" | "device" | "service" | "app";
   pairedDeviceId?: string;
   nativeUi?: boolean;
 }
@@ -146,6 +148,7 @@ export class ScreenRegistry {
 export class EdgeRouter {
   readonly screens: ScreenRegistry;
   private postJournal: PostJournal | null = null;
+  private apps: AppRuntime | null = null;
   constructor(readonly ledger: Ledger, readonly world: WorldRouter, readonly members: WorldMembers, readonly tokens: EdgeTokens, readonly options: EdgeOptions) {
     if (options.authScopeKey.length !== 32) throw new Error("screen auth scope key required");
     let installed = screenRegistries.get(world);
@@ -160,6 +163,9 @@ export class EdgeRouter {
     this.screens = installed.registry;
     members.setScreenDirectory(installed.registry.directory, installed.word);
   }
+
+  /** The app runtime behind the shell app's owner routes (/api/apps…). */
+  attachApps(runtime: AppRuntime): void { this.apps = runtime; }
 
   /** Attached once during owner assembly, before the HTTP edge becomes visible. */
   attachPostJournal(journal: PostJournal): void {
@@ -208,6 +214,14 @@ export class EdgeRouter {
       }
       if (path.startsWith("/mcp/")) return await this.mcp(req, caller);
       if (!caller) fail(401, "unauthorized", "missing or invalid token");
+      // The shell app's routes, owner only; see apps/http.ts for the fixed list.
+      if (path === "/api/apps" || path.startsWith("/api/apps/")) {
+        if (caller!.member !== "person:owner" || !caller!.ownerProxy) fail(403, "forbidden", "apps are the owner's");
+        if (!this.apps) fail(404, "not_found", "apps unavailable");
+        const routed = await appsRoute({ runtime: this.apps!, send: (ctx, request) => this.world.send(ctx, request), waitFor: (id, ms) => this.waitFor(id, ms),
+          waitMs: Math.min(60_000, this.options.waitMs ?? 60_000) }, req.method, path, req.body, () => this.context(caller!, req));
+        if (routed) return routed;
+      }
       switch (`${req.method} ${path}`) {
       case "POST /api/send": {
         const parsed = jsonBody(req.body);

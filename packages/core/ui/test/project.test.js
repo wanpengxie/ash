@@ -221,3 +221,14 @@ test("release before say, late page, and migrated legacy text preserve the visib
   assert.deepEqual(state.conversation.map((item) => item.text), ["Now visible", "Old offer"]);
   assert.equal(foldPostSnapshot(state, { at_seq: 3, items: [{ message_id: "m_late", state: "released", version_seq: 4 }] }), state);
 });
+
+test("an app's entry card is one small conversation row that opens the shell app; an app cannot speak otherwise", async () => {
+  const { drawsConversation } = await import("../js/project.js");
+  const card = message({ from: "app:health", to: "person:owner", kind: "event", word: "app.card", body: { app: "health", name: "健康", title: "上周健康小结", text: "日均步数 8000" } }, 0);
+  const state = fold(initialView(), card);
+  assert.deepEqual(state.conversation.map((row) => row.card), [{ type: "app", app: "health", name: "健康", title: "上周健康小结", text: "日均步数 8000" }]);
+  assert.equal(drawsConversation(card), true);
+  const quiet = message({ from: "app:health", to: null, kind: "event", word: "health.alert", body: { title: "x", text: "y" } }, 1);
+  const say = message({ from: "app:health", to: "person:owner", kind: "request", word: "say", body: { text: "我是 Ash", kind: "reply" } }, 2);
+  assert.equal(fold(fold(state, quiet), say).conversation.length, 1, "unaddressed events and app requests draw nothing");
+});
