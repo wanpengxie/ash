@@ -17,6 +17,8 @@ object KeepAliveSwitches {
      */
     const val MIN_HELPER_VERSION = 9L
     const val ASH_PACKAGE = "ai.ash.agent"
+    /** Opened by the helper when the flow is done: Ash's task comes back as it was left (see Ash's ReturnActivity). */
+    const val RETURN_ACTIVITY = "ai.ash.host.screen.ReturnActivity"
 
     /** An app as the maker's settings list it. */
     data class Target(val pkg: String, val label: String)

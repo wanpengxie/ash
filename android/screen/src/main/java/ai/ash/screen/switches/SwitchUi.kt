@@ -27,7 +27,7 @@ interface SwitchUi {
     fun openSettings(): Boolean
     fun openAppDetails(pkg: String): Boolean
     fun back(): Boolean
-    /** Brings Ash back to the front (the home screen when it cannot). */
+    /** Brings Ash back to the front as the owner left it, the page the flow was started from on top (the home screen when it cannot). */
     fun returnToAsh()
     fun now(): Long
     fun sleep(ms: Long)

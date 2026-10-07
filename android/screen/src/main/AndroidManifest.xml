@@ -6,6 +6,9 @@
     <!-- Asked for by the owner through Ash: systems that clear background apps take the accessibility service along. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Ash's own signature permission: lets the helper bring Ash's task back to the front when it is done in Settings. -->
+    <uses-permission android:name="ai.ash.permission.WAKE" />
+
     <queries>
         <package android:name="ai.ash.agent" />
     </queries>
