@@ -118,6 +118,27 @@
             </intent-filter>
         </receiver>
 
+        <!-- Home-screen widgets: Ash itself, and one card from service:widgets. -->
+        <receiver android:name=".widget.AshWidgetProvider" android:exported="true" android:label="Ash">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/appwidget_ash" />
+        </receiver>
+        <receiver android:name=".widget.CardWidgetProvider" android:exported="true" android:label="Ash 卡片">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/appwidget_card" />
+        </receiver>
+        <receiver android:name=".widget.WidgetActionReceiver" android:exported="false" />
+        <activity android:name=".widget.CardPickerActivity" android:exported="true" android:label="Ash 卡片"
+            android:excludeFromRecents="true" android:taskAffinity="ai.ash.widget.picker">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <!-- Installing the helpers Ash carries (ai.ash.screen, ai.ash.senses): the installer reports here. -->
         <activity android:name=".host.HelperInstallActivity" android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" android:excludeFromRecents="true" android:launchMode="singleTop" />

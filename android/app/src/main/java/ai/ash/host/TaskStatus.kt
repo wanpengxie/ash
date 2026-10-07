@@ -37,7 +37,11 @@ object TaskStatus {
         runCatching { org.json.JSONArray(raw) }.getOrNull()?.let { a -> model.restoreNoticed((0 until a.length()).map { a.getString(it) }) }
     }
     fun start(ctx: Context) { main.post { if (app == null) loadNoticed(ctx.applicationContext); app = ctx.applicationContext; ai.ash.host.screen.ScreenBridge.start(ctx); ai.ash.host.senses.SensesBridge.start(ctx); main.removeCallbacks(tick); tick.run() } }
-    fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
+    fun close() { main.post {
+        main.removeCallbacks(tick); model.clear(); TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID)
+        val ctx = app; app = null; lastNotification = null
+        if (ctx != null) runCatching { ai.ash.widget.AshWidgetProvider.refresh(ctx, widgetView()) }
+    } }
     /** Show the current state again now (the screen helper connected, Ash's own screen came or went). */
     fun refresh() { main.post { render() } }
     fun accept(ctx: Context, body: JSONObject): Boolean {
@@ -54,7 +58,15 @@ object TaskStatus {
     private val tick = object : Runnable {
         override fun run() { if (app != null) { render(); main.postDelayed(this, 1000) } }
     }
+    /** What the Ash home-screen widget shows now, from the same frame and "noticed" record as the island. Main thread. */
+    fun widgetView(): ai.ash.widget.AshWidgetView = ai.ash.widget.AshWidgetModel.view(model.frame, model.noticedKeys().toSet(),
+        app != null, CoreService.state == "running", model.stale(System.currentTimeMillis()))
     private fun render() {
+        renderTask()
+        val ctx = app ?: return
+        runCatching { ai.ash.widget.AshWidgetProvider.refresh(ctx, widgetView()) }
+    }
+    private fun renderTask() {
         val ctx = app ?: return
         val now = System.currentTimeMillis()
         val frame = model.frame

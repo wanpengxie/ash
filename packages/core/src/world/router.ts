@@ -552,7 +552,12 @@ export class WorldRouter {
         if (!ctx.ownerProxy) fail("forbidden", "notification proxy not authorized");
         return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
       }
-      if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses, notification replies, pause, or task stop");
+      // Home-screen widgets: a button tap, a card picked while placing a widget, and which widgets are placed.
+      if (request.kind === "request" && request.to === "service:widgets" && ["widget.tap", "widget.bind", "widget.placed"].includes(request.word)) {
+        if (!ctx.ownerProxy || !ctx.local || ctx.remote) fail("forbidden", "widget input requires owner proxy");
+        return { from: "person:owner", origin: { screen: "device:phone", label: "Home-screen widget" } };
+      }
+      if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses, notification replies, pause, task stop, or widget input");
     }
     return { from: ctx.member };
   }
@@ -614,7 +619,7 @@ export class WorldRouter {
     const service = ctx.transport === "service" && ctx.local && !ctx.remote;
     if (toAgent && request.word === "say" && AGENT_ID.test(from)) fail("forbidden", "agents speak to each other through the Agent system");
     if (toAgent && request.to !== "agent:main" && request.word === "say" && this.endpoint(request.to!, "say") &&
-      !(service && ["service:agents", "service:clock", "service:work", "service:gate"].includes(from)))
+      !(service && ["service:agents", "service:clock", "service:work", "service:gate", "service:widgets"].includes(from)))
       fail("forbidden", "only the Agent system and ash's schedule may speak to this agent");
     if (request.to === "service:agents" && request.word === "answer" &&
       !(AGENT_ID.test(from) && ctx.transport === "agent" && ctx.transportPrincipal === from && ctx.local && !ctx.remote))

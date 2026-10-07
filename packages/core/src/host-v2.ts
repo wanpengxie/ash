@@ -7,6 +7,7 @@ import type { Signer } from "./gateway/link";
 import type { DeviceCapability } from "./world/router";
 import type { WorldMembers } from "./world/member";
 import type { TaskStatusFrame } from "./task-status";
+import type { WidgetState } from "./members/widgets";
 
 export interface HostConnection { url: string; token: string }
 
@@ -116,6 +117,11 @@ export class HostDeviceLink {
   }
   async taskStatus(frame: TaskStatusFrame): Promise<void> {
     if (!this.closed) await this.request("POST", "/task/status", frame, 1500);
+  }
+  /** The full home-screen widget state; the phone answers with the Ash widgets placed on its home screen. */
+  async widgets(state: WidgetState): Promise<{ widgets?: unknown }> {
+    if (this.closed) return {};
+    return (await this.request("POST", "/widgets", state, 3000)) as { widgets?: unknown };
   }
   /** Whether the task island is on the phone's screen right now. */
   async islandShown(): Promise<boolean> {

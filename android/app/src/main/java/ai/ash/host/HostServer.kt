@@ -22,6 +22,7 @@ import java.util.concurrent.RejectedExecutionException
  *   POST /present           show a notification            POST /present/hide {id}
  *   POST /alarm {at}        wake ash core at a time        GET /key, POST /sign {data}
  *   POST /restart {reason?} restart ash core (e.g. after a plugin change); answered before it happens
+ *   POST /widgets           home-screen widget cards; answers with the widgets placed
  * Every other app on the phone can reach loopback ports, so every request carries the bearer
  * token that only ash core (started by us, with the token in its config) knows.
  */
@@ -103,6 +104,7 @@ class HostServer(private val ctx: Context, private val token: String) {
             200 to r.toJson()
         }
         "POST /task/status" -> if (TaskStatus.accept(ctx, b)) 200 to JSONObject().put("ok", true) else 400 to JSONObject().put("error", "invalid_task_status")
+        "POST /widgets" -> ai.ash.widget.WidgetHost.accept(ctx, b)
         "POST /present" -> Present.show(ctx, b)
         "POST /island" -> 200 to JSONObject().put("showing", ai.ash.ui.TaskCapsule.showing())
         "POST /decision/surface" -> 200 to decisions.surface(b)

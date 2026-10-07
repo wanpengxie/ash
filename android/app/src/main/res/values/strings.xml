@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Ash</string>
+    <string name="widget_ash_description">Ash 的状态和等你看的事</string>
+    <string name="widget_card_description">Ash 或应用放的一张卡片</string>
 </resources>

@@ -25,6 +25,7 @@ import { resolveWorldConfigV2, type WorldConfigV2 } from "../../sdk/src/config";
 import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { TaskStatusBridge } from "./task-status";
+import { WidgetsMember } from "./members/widgets";
 import { heartbeatFlow } from "./flows/heartbeat";
 import { memoryFlow } from "./flows/memory";
 import { openerFlow } from "./flows/opener";
@@ -183,6 +184,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let cost: CostMember | null = null;
   let stopTour: (() => void) | null = null;
   let taskStatus: TaskStatusBridge | null = null;
+  let widgets: WidgetsMember | null = null;
   let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
@@ -392,6 +394,9 @@ export async function startOwner(config: Config): Promise<Running> {
           body: { reason: "first_meeting", context: {} }, client_id: "first-meeting:v1", wait: true });
       })().catch((error) => log("first meeting wake failed", error));
     });
+    widgets = new WidgetsMember({ router: world, file: join(config.stateDir, "widgets.json"),
+      ...(hostLink ? { push: (state) => hostLink.widgets(state) } : {}) });
+    members.register(widgets);
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault,
       fileWorkspaces: () => {
@@ -563,6 +568,7 @@ export async function startOwner(config: Config): Promise<Running> {
     await world.recover();
     await post.start();
     if (hostLink) taskStatus = new TaskStatusBridge(world, (frame) => hostLink.taskStatus(frame));
+    widgets.start();
     await agent.start();
     await agentSystem.start();
     await clock.start();
@@ -576,13 +582,13 @@ export async function startOwner(config: Config): Promise<Running> {
     link?.enable();
     return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...(agentSystem?.agents() ?? [])], async close() {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
-      link?.stop(); await taskStatus?.close(); hostLink?.close();
+      link?.stop(); await taskStatus?.close(); widgets?.close(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
       await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); world.dispose(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
-    link?.stop(); await taskStatus?.close(); hostLink?.close();
+    link?.stop(); await taskStatus?.close(); widgets?.close(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
     await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;

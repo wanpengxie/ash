@@ -13,4 +13,14 @@
         <item name="android:navigationBarColor">@color/bg_light</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
+    <!-- One line on the Ash widget: something the owner has not seen yet. -->
+    <style name="WidgetItem">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">6dp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textColor">@color/widget_fg</item>
+        <item name="android:textSize">13sp</item>
+    </style>
 </resources>

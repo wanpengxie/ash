@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/ash_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@drawable/widget_bg"
+    android:padding="12dp">
+    <ImageView
+        android:id="@+id/ash_face"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:contentDescription="Ash"
+        android:src="@drawable/ic_launcher" />
+    <TextView
+        android:id="@+id/ash_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:text="在线"
+        android:textColor="@color/widget_fg"
+        android:textSize="13sp" />
+    <Chronometer
+        android:id="@+id/ash_clock"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/widget_fg2"
+        android:textSize="12sp"
+        android:visibility="gone" />
+    <TextView
+        android:id="@+id/ash_count"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/accent"
+        android:textSize="12sp"
+        android:visibility="gone" />
+</LinearLayout>
