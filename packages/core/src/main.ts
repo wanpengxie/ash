@@ -341,7 +341,7 @@ export async function startOwner(config: Config): Promise<Running> {
     // ash's Agent system holds the declarations and brings each declared agent to life in the container: its own member,
     // inbox and turns, session, tool credential, workspace and schedule.
     const deviceRuntimes = new DeviceAgentRuntimes({ link: () => link, allowed: id => devices?.localAgentsAllowed(id) ?? false,
-      router: world, tools: agentTools, stateDir: config.stateDir });
+      router: world, tools: agentTools, stateDir: config.stateDir, log });
     const remoteIds = new Set<string>();
     const agentRuntime: AgentRuntime = {
       available: item => typeof item.runtime === "object" ? deviceRuntimes.available(item) : item.id === "agent:main" || container ? null : "Container runtime is not available",
@@ -363,10 +363,13 @@ export async function startOwner(config: Config): Promise<Running> {
       },
       reopen: async (id) => { if (remoteIds.has(id)) await deviceRuntimes.close(id); else await container?.closeSession(id); },
       dispose: async (id) => {
-        if (remoteIds.has(id)) { await deviceRuntimes.close(id, true); remoteIds.delete(id); }
-        const binding = otherBindings.get(id);
-        if (binding) agentTools!.retire(binding);
-        otherBindings.delete(id);
+        try { if (remoteIds.has(id)) await deviceRuntimes.close(id, true); }
+        finally {
+          remoteIds.delete(id);
+          const binding = otherBindings.get(id);
+          if (binding) agentTools!.retire(binding);
+          otherBindings.delete(id);
+        }
         await container?.closeSession(id, true);
       },
       apply: (item) => { const binding = otherBindings.get(item.id); if (binding) binding.policy = agentPolicy!(item); },

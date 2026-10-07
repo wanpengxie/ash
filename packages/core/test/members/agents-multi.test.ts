@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { wordContract } from "../../../sdk/src/words";
 import { AgentMcpServer, TOOL_NAMES, type AgentBinding } from "../../src/agent-mcp/server";
 import { AgentSystem, type AgentRuntime } from "../../src/agent-system/system";
+import { DeviceAgentRuntimes } from "../../src/agent-system/device-runtime";
 import { KEEPER_AGENT, MAIN_AGENT, resolveAgents, wordAllowed, type AgentDeclaration } from "../../src/agents";
 import { createAgentMember, type AgentTurnInput, type AgentTurnRunner } from "../../src/members/agent";
 import { Ledger } from "../../src/world/ledger";
@@ -145,7 +146,7 @@ async function world(scripts: Record<string, Script>) {
   const says = () => ledger.list({ after: 0, limit: 1000 }).filter((m) => m.kind === "request" && m.word === "say");
   const waitFor = async (check: () => boolean, ms = 4_000) => { const end = Date.now() + ms; while (Date.now() < end) { if (check()) return; await sleep(10); } throw new Error("state not reached"); };
   const call = (id: string, name: string, args: Record<string, unknown>) => tools.call(bindings.get(id)!, name, args, new AbortController().signal);
-  return { dir, ledger, router, members, main, system, tools, turns, bindings, reopened, says, waitFor, call,
+  return { dir, ledger, router, members, main, system, tools, turns, bindings, reopened, says, waitFor, call, runtime,
     async close() { await main.close(); await system.close(); await tools.close(); ledger.close(); } };
 }
 
@@ -267,4 +268,29 @@ test("only what reaches outside ash is judged: managing agents passes, a device 
     await sleep(50);
     turn.abort();
   } finally { await w.close(); }
+});
+
+test("an agent on a computer that is offline or re-paired is still removed; its remote session is forgotten", async () => {
+  const w = await world({});
+  try {
+    const created = await w.router.send(owner, { to: "service:agents", kind: "request", word: "declare",
+      body: { id: "agent:remote", name: "远程", summary: "在电脑上干活", brief: "test" }, wait: true });
+    assert.equal(created.reply?.body.ok, true, JSON.stringify(created.reply?.body));
+    // The computer it ran on was re-paired under a new identity: closing its session there can only fail.
+    w.runtime.dispose = async () => { throw new Error("local_agents is no longer authorized or computer is offline"); };
+    const removed = await w.router.send(owner, { to: "service:agents", kind: "request", word: "remove", body: { agent: "agent:remote" }, wait: true });
+    assert.deepEqual(removed.reply?.body, { ok: true, result: { removed: true } });
+    assert.equal(w.system.declaration("agent:remote"), undefined);
+    assert.ok(!w.members.describe("owner").members.some((m) => m.id === "agent:remote"));
+    assert.ok(!readFileSync(join(w.dir, "agents.json"), "utf8").includes("agent:remote"));
+  } finally { await w.close(); }
+
+  const dir = mkdtempSync(join(tmpdir(), "device-runtime-"));
+  mkdirSync(join(dir, "agents", "remote"), { recursive: true });
+  const session = join(dir, "agents", "remote", "device-session.json");
+  writeFileSync(session, JSON.stringify({ session: "s1", generation: "g1" }));
+  const pool = new DeviceAgentRuntimes({ link: () => null, allowed: () => false, router: {} as WorldRouter, tools: {} as AgentMcpServer, stateDir: dir });
+  pool.create(() => ({ id: "agent:remote", name: "远程", summary: "test", runtime: { device: "device:gone", kind: "codex" } } as AgentDeclaration), {} as AgentBinding);
+  await pool.close("agent:remote", true);
+  assert.equal(JSON.parse(readFileSync(session, "utf8")), null, "the session on an unreachable computer is forgotten here");
 });

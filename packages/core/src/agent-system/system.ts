@@ -384,10 +384,11 @@ export class AgentSystem implements Member {
     if (member) {
       member.setEnabled(false, "Removed by ash");
       this.options.members.unregisterAgent(target);
-      await member.close();
       this.live.delete(target);
+      await member.close().catch((error) => this.options.log?.("agent did not close cleanly", target, error));
     }
-    await this.options.runtime?.dispose(target);
+    // Cleaning up its runtime is best effort (a computer may be offline or re-paired); the removal itself always completes.
+    await this.options.runtime?.dispose(target).catch((error) => this.options.log?.("agent runtime not fully cleaned up", target, error));
     this.declarations.delete(target);
     delete this.lastWake[target];
     this.save();

@@ -17,6 +17,7 @@ interface Options {
   router: WorldRouter;
   tools: AgentMcpServer;
   stateDir: string;
+  log?: (...args: unknown[]) => void;
 }
 
 /** One multiplexed stream per computer; each session keeps its own live phone binding. */
@@ -158,10 +159,17 @@ export class DeviceTurnRunner implements AgentTurnRunner {
   }
   async close(forget = false): Promise<void> {
     if (!this.target) return;
-    const peer = await this.pool.peer(this.runtime.device);
-    await peer.op("close", {}, this.target);
-    if (forget) this.target = undefined;
-    else this.target.uncertain = undefined;
-    this.save();
+    if (!forget) {
+      const peer = await this.pool.peer(this.runtime.device);
+      await peer.op("close", {}, this.target);
+      this.target.uncertain = undefined; this.save();
+      return;
+    }
+    // Forgetting never depends on the computer: it may be offline, re-paired or gone. Close there if it answers soon.
+    try {
+      const signal = AbortSignal.timeout(10_000);
+      await (await this.pool.peer(this.runtime.device, signal)).op("close", {}, this.target, 10_000);
+    } catch (error) { this.options.log?.("remote session not closed on the computer; forgetting it here", this.declaration().id, error); }
+    this.target = undefined; this.save();
   }
 }
