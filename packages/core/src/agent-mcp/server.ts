@@ -173,8 +173,8 @@ const TOOLS = [
   { name: "agent_restart", description: "Cancel an agent's current turn and reopen its session (history is kept).", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
   { name: "agent_remove", description: "Remove an agent you created. Built-in agents can only be stopped.", inputSchema: object({ agent: text("Agent id") }, ["agent"]) },
   // meta
-  { name: "capability_list", description: "Everything else ash can do for you, live: each member (the phone, the owner's other devices, ash services) with its capabilities' names, one-line summaries and effect (read, act, write, send, execute, structure). New devices appear here as soon as they connect. Next: capability_describe, then capability_call.",
-    inputSchema: object({ member: text("Only this member") }) },
+  { name: "capability_list", description: "Everything else ash can do for you, live: each member with its capabilities' names, one-line summaries and effect (read, act, write, send, execute, structure). Members are the phone (device:phone), the owner's other devices, and ash's own services such as service:widgets (cards on the phone home screen) and service:apps (installed apps). Call it without member to see them all; new devices appear as soon as they connect. Next: capability_describe, then capability_call.",
+    inputSchema: object({ member: text("Only this member; omit to list every member") }) },
   { name: "capability_describe", description: "Full contract of one member's capabilities, or of one capability: description, input_schema, output_schema, effect, label, timeout.",
     inputSchema: object({ member: text("Member id, e.g. device:phone"), word: text("Capability name; omit for all of the member's") }, ["member"]) },
   { name: "capability_call", description: "Call one capability with a body matching its input_schema. Reads, rules and reviewer passes run normally. If approval is required, returns waiting_owner with pending_id as soon as the card is shown; do not poll or await_result. The answer arrives in your inbox; reassess before redeeming the frozen action. Only actual long execution returns accepted with request_id (15 s default, wait=true 50 s); collect that with await_result. wait=false returns immediately.",
@@ -545,15 +545,19 @@ export class AgentMcpServer {
   private list(binding: AgentBinding, only?: string): ToolResult {
     const summary = this.options.members.describe("agent");
     // Agents reach each other through the agent tools, not as capabilities.
-    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && member.id !== "service:gate" && member.id !== "service:devices" && (!only || member.id === only)).map((member) => {
+    const all = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && member.id !== "service:gate" && member.id !== "service:devices").map((member) => {
       let words: WordSpec[] = [];
       try { words = this.options.members.describe("agent", member.id).members[0]?.words ?? []; } catch { /* vanished */ }
       return { id: member.id, kind: member.kind, name: member.name, ...(member.online === undefined ? {} : { online: member.online }),
         capabilities: words.filter((word) => word.kind === "request" && binding.allowsWord(member.id, word.word)).map((word) => ({ word: word.word, ...(word.label ? { label: word.label } : {}),
           summary: word.description.split(/(?<=[.。])\s/u)[0]!.slice(0, 160), effect: effectOf(word) })) };
     }).filter((member) => member.capabilities.length);
-    if (only && !members.length) return failure("payload_invalid", `no member ${only}; call capability_list without member`);
-    return { ok: true, result: { members } };
+    if (!only) return { ok: true, result: { members: all } };
+    // One member's list must not read as everything there is: name the others, so a missing ability is looked for there.
+    const members = all.filter((member) => member.id === only);
+    const others = all.filter((member) => member.id !== only).map((member) => member.id);
+    if (!members.length) return failure("payload_invalid", `no member ${only}; members are ${others.join(", ") || "none"}; call capability_list without member to see what each can do`);
+    return { ok: true, result: { members, other_members: others, note: "Only this member is listed. Call capability_list without member to see every member and its capabilities." } };
   }
 
   private describe(binding: AgentBinding, member: string, word?: string): ToolResult {
