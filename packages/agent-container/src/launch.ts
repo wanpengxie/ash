@@ -118,13 +118,25 @@ export function prepareLaunch(config: ContainerConfig, egressBase: string, state
   };
 }
 
+/** The phone's shared storage (photos, downloads, documents) as Android mounts it for the app. */
+export const SHARED_STORAGE = "/storage/emulated/0";
+
+/**
+ * The phone's shared storage inside the container, at /sdcard and at its own path (so paths the phone reports work
+ * as they are). Bound whenever it exists: whether the agent may read it is Android's storage permission, checked on
+ * every access, so a permission the owner grants later works without restarting the container.
+ */
+export function storageBinds(storage: string | null = existsSync(SHARED_STORAGE) ? SHARED_STORAGE : null): string[] {
+  return storage ? ["-b", `${storage}:/sdcard`, "-b", `${storage}:${SHARED_STORAGE}`] : [];
+}
+
 /** A command run inside the container with exactly the given environment, as the agent's own processes are. */
-export function inContainer(root: string, argv: string[], inside: Record<string, string>): { command: string; args: string[]; env: Record<string, string> } {
+export function inContainer(root: string, argv: string[], inside: Record<string, string>, storage?: string | null): { command: string; args: string[]; env: Record<string, string> } {
   const vars = Object.entries(inside).map(([key, value]) => `${key}=${value}`);
   return {
     command: join(root, "proot", "bin", "proot"),
     args: ["--kill-on-exit", "--link2symlink", "-0", "-r", join(root, "ubuntu"), "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", `${join(root, "tmp")}:/tmp`,
-      "-w", "/root/work", "/usr/bin/env", "-i", ...vars, ...argv],
+      ...(storage === undefined ? storageBinds() : storageBinds(storage)), "-w", "/root/work", "/usr/bin/env", "-i", ...vars, ...argv],
     env: { LD_LIBRARY_PATH: join(root, "proot", "lib"), PROOT_LOADER: join(root, "proot", "libexec", "loader"), PROOT_TMP_DIR: join(root, "tmp"),
       PATH: process.env.PATH ?? "/system/bin" },
   };
