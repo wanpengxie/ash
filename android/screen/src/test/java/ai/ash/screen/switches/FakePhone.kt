@@ -1,14 +1,18 @@
 package ai.ash.screen.switches
 
-/** A node of a fake screen. A [list] shows only [window] of its rows at a time and scrolls like a RecyclerView. */
+/**
+ * A node of a fake screen. A list shows only [window] of its rows at a time and scrolls like a RecyclerView; an
+ * [endless] one says yes to a scroll at its end, as some lists do, and stays where it is.
+ */
 class FakeNode(
-    override val text: String = "",
+    override var text: String = "",
     override val packageName: String = "com.android.settings",
     override val clickable: Boolean = false,
     override val checkable: Boolean = false,
     checked: Boolean = false,
     override val enabled: Boolean = true,
     val window: Int = 0,
+    val endless: Boolean = false,
     var onClick: (() -> Unit)? = null,
     rows: List<FakeNode> = emptyList(),
 ) : UiNode {
@@ -29,14 +33,30 @@ class FakeNode(
     override fun click(): Boolean { clicks++; onClick?.invoke(); return true }
     override fun scroll(forward: Boolean): Boolean {
         val next = if (forward) offset + 2 else offset - 2
-        if (next < 0 || next >= rows.size) return false
+        if (next < 0 || next >= rows.size) return endless
         offset = next; return true
     }
 }
 
-/** A ColorOS-like settings: 设置 → 应用 → 自启动 → app page, and an app info page → 耗电管理. Time only moves when it sleeps. */
+/**
+ * A ColorOS-like settings: 设置 → 应用 → 自启动 → app page, and an app info page → 耗电管理. Time only moves when it sleeps.
+ *
+ * With [oneSwitch], the 自启动 list of ColorOS 15: each row of [apps] holds the app's one switch and a subtitle naming
+ * what it covers ([oneSwitch] per app, default 「开机自启动、后台自启动」), with 「已禁止」 when off; 「拦截记录」 on top,
+ * and the apps in two sections ([firstSection] apps in the first).
+ */
 class FakePhone(
     val apps: List<String> = listOf("微信", "地图", "Ash", "相机", "Ash 感知", "音乐", "Ash 屏幕助手", "天气"),
+    val oneSwitch: Map<String, String>? = null,
+    /** ColorOS 15 list: the one switch per app. */
+    val autostart: MutableMap<String, Boolean> = mutableMapOf(),
+    val firstSection: Int = 0,
+    /** ColorOS 15 list: the switch itself takes taps (else only its row does). */
+    val switchTakesTaps: Boolean = true,
+    /** ColorOS 15 list: the subtitle keeps showing the state the list was opened with. */
+    val staleSubtitle: Set<String> = emptySet(),
+    val listWindow: Int = 3,
+    val endlessList: Boolean = false,
     /** switch label → state per app label, for the 自启动 page. */
     val boot: MutableMap<String, Boolean> = mutableMapOf(),
     val background: MutableMap<String, Boolean> = mutableMapOf(),
@@ -74,7 +94,33 @@ class FakePhone(
 
     private fun main() = FakeNode(window = 3).add(row("WLAN") {}, row("蓝牙") {}, row("显示与亮度") {}, row("电池") {}, row("应用") { pages += appsPage() })
     private fun appsPage() = FakeNode(window = 3).add(row("默认应用") {}, row("应用分身") {}, row("自启动") { pages += list() }, row("权限") {})
-    private fun list() = FakeNode(window = 3).add(*apps.map { a -> row(a) { pages += appPage(a) } }.toTypedArray())
+    private fun list(): FakeNode {
+        val rows = oneSwitch?.let { covers ->
+            val (first, second) = apps.withIndex().partition { it.index < firstSection }
+            listOf(row("拦截记录") {}, FakeNode(text = "建议开启，关闭可能无法接收消息")) + first.map { listRow(it.value, covers) } +
+                FakeNode(text = "建议关闭，开启后会导致系统耗电增加") + second.map { listRow(it.value, covers) }
+        } ?: apps.map { a -> row(a) { pages += appPage(a) } }
+        return FakeNode(window = listWindow, endless = endlessList).add(*rows.toTypedArray())
+    }
+
+    private fun subtitle(covers: String, on: Boolean) = if (on) covers else "${covers}已禁止"
+
+    private fun listRow(app: String, covers: Map<String, String>): FakeNode {
+        val what = covers[app] ?: "开机自启动、后台自启动"
+        val shown = autostart[app] == true
+        val sub = FakeNode(text = subtitle(what, shown))
+        val box = FakeNode(checkable = true, checked = shown, clickable = switchTakesTaps)
+        val set = { on: Boolean -> autostart[app] = on; box.checked = on; if (app !in staleSubtitle) sub.text = subtitle(what, on) }
+        val tap = {
+            clickedLabels += app
+            if (app !in stuck) {
+                if (app in asksFirst && autostart[app] != true) dialog = FakeNode(text = "允许", clickable = true, onClick = { set(true); dialog = null })
+                else set(autostart[app] != true)
+            }
+        }
+        if (switchTakesTaps) box.onClick = tap
+        return FakeNode(clickable = true, onClick = tap).add(FakeNode().add(FakeNode(text = app), sub), box)
+    }
     private fun appPage(app: String) = FakeNode().apply {
         if (app !in noBootRow) add(switchRow(app, "开机自启动", boot))
         add(switchRow(app, "后台自启动", background))

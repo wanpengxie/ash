@@ -42,8 +42,11 @@ class AccessibilityUi(private val ctx: Context, private val service: A11yService
     override fun back() = service.global(AccessibilityService.GLOBAL_ACTION_BACK)
 
     override fun returnToAsh() {
+        // Ash's task as the owner left it (the page the flow was started from on top). Its launcher entry is the
+        // fallback only: that brings Ash's home page and closes the pages above it.
+        val back = Intent().setClassName(KeepAliveSwitches.ASH_PACKAGE, KeepAliveSwitches.RETURN_ACTIVITY).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val launch = ctx.packageManager.getLaunchIntentForPackage(KeepAliveSwitches.ASH_PACKAGE)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (launch == null || !start(launch)) service.global(AccessibilityService.GLOBAL_ACTION_HOME)
+        if (!start(back) && (launch == null || !start(launch))) service.global(AccessibilityService.GLOBAL_ACTION_HOME)
         // Ash is in front when the report reaches it.
         sleep(700)
     }
