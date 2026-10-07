@@ -1,18 +1,14 @@
-import { complete, getModel } from "@mariozechner/pi-ai";
+import { complete } from "@mariozechner/pi-ai";
 import type { WorkerModel } from "../../core/src/workers/llm";
 import type { WorkerUsage } from "../../core/src/workers/cost";
+import { DEEPSEEK_DEFAULT_MODEL, catalogProvider, resolveModel } from "../../core/src/workers/deepseek-model";
 
+export { catalogProvider };
 export const WORKER_MAX_TOKENS = 16_384;
 
-/** pi-ai files DeepSeek's own API under "deepseek"; ash's agent profile calls the same route "deepseek-official". */
-export const catalogProvider = (provider: string) => provider === "deepseek-official" ? "deepseek" : provider;
-
-/** USD-per-million rates from pi-ai's model catalog, or null when the model is unknown. */
+/** USD-per-million rates from pi-ai's model catalog (and the DeepSeek models it does not list yet), or null when the model is unknown. */
 export function catalogRates(provider: string, model: string): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
-  try {
-    const found = getModel(catalogProvider(provider) as "deepseek", model as "deepseek-v4-flash") as { cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } } | undefined;
-    return found?.cost ?? null;
-  } catch { return null; }
+  try { return resolveModel(provider, model)?.cost ?? null; } catch { return null; }
 }
 
 /**
@@ -22,11 +18,11 @@ export function catalogRates(provider: string, model: string): { input: number; 
 export function piWorkerModel(key: () => string | null, configured: () => { provider: string; model: string } | null | undefined): WorkerModel {
   return {
     async complete(prompt, signal) {
-      const setting = configured() ?? { provider: "deepseek", model: "deepseek-v4-flash" };
+      const setting = configured() ?? { provider: "deepseek", model: DEEPSEEK_DEFAULT_MODEL };
       const provider = catalogProvider(setting.provider);
       const apiKey = key();
       if (!apiKey) throw new Error("worker model unavailable: no API key");
-      const model = getModel(provider as "deepseek", setting.model as "deepseek-v4-flash");
+      const model = resolveModel(provider, setting.model);
       if (!model) throw new Error(`worker model unavailable: ${provider}/${setting.model}`);
       const reply = await complete(model, { systemPrompt: prompt.system, messages: [{ role: "user", content: prompt.user, timestamp: Date.now() }] },
         { apiKey, signal, maxTokens: WORKER_MAX_TOKENS });
