@@ -152,3 +152,12 @@ test("an empty conversation says it is loading until the first history page has 
   assert.equal(draw([], { loading: true }).children[0].textContent, "正在载入对话…");
   assert.equal(draw([]).children[0].textContent, "还没有对话。");
 });
+
+test("an approval card keeps the line breaks of its detail", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(css, /\.card\.ask \.ask-detail\{[^}]*white-space:pre-(line|wrap)/);
+  const detail = "健康 1.0.0：概览\n它需要：\n· 读取健康数据\n· 给你发通知";
+  const card = draw([{ type: "ask", seq: 1, ask: { id: "a1", title: "安装「健康」", detail, expires_at: Date.now() + 60_000, state: "pending", options: [] } }]).children[0];
+  assert.equal(card.children.find((node) => node.className === "ask-detail").textContent, detail);
+});
