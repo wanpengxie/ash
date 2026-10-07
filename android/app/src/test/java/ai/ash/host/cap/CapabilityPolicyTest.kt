@@ -50,7 +50,7 @@ class CapabilityPolicyTest {
         assertEquals("write", effect("media.save"))
         assertEquals("act", effect("camera.capture"))
         // The storage permission the owner grants once is the boundary: none of it is a structural change.
-        for (n in listOf("media.list", "media.albums", "media.read", "media.save")) assertEquals(n, "none", CapabilityPolicies.require(n).risk)
+        for (n in listOf("media.list", "media.albums", "media.read", "media.save", "camera.capture")) assertEquals(n, "none", CapabilityPolicies.require(n).risk)
     }
 
     @Test fun unknownEffectIsRejected() {

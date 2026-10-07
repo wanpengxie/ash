@@ -73,7 +73,8 @@ object CapabilityPolicies {
         "media.albums" to CapabilityPolicy("none", "read", "看你的相册"),
         "media.read" to CapabilityPolicy("none", "read", "看你的照片"),
         "media.save" to CapabilityPolicy("none", "write", "存图片到相册"),
-        "camera.capture" to CapabilityPolicy("outward", "act", "请你拍照"),
+        // The owner presses the shutter in the system camera, so the camera screen itself is the consent; no extra card.
+        "camera.capture" to CapabilityPolicy("none", "act", "请你拍照"),
         // The senses helper (Ash 感知): reading what it recorded or what a source holds needs no approval; changing what is
         // recorded, deleting records, or driving another app (Gadgetbridge) does.
         "location.get" to CapabilityPolicy("none", "read", "看手机位置"),
