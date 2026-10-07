@@ -28,8 +28,9 @@ enum class PinVerdict { WAIT, ADDED, NOTHING, GIVE_UP }
  * 「添加到桌面」. Some systems (ColorOS) drop the request until the owner lets 「Ash 应用」 create home-screen shortcuts,
  * leaving only a system note that is gone at once. So the request is watched — the launcher's accept callback, or the
  * shortcut turning up pinned — and when nothing came of it the owner is told where to allow it: once per tap, never
- * retried by itself. A launcher that asks the owner first covers the shell with its own question; if that was
- * answered with no, the owner chose it and nothing more is said.
+ * retried by itself. A launcher that covers the shell (its own question, or ColorOS's permission note) is waited for;
+ * if nothing was added once the shell is back, the owner is told too — a deliberate no can't be told apart from the
+ * permission block, so the note says both.
  */
 object Pin {
     /** Nothing by then, with the shell in front all along: the request went nowhere. */
@@ -51,7 +52,8 @@ object Pin {
         answered -> PinVerdict.ADDED
         elapsed >= GIVE_UP_MS -> PinVerdict.GIVE_UP
         focusedFor < SETTLE_MS -> PinVerdict.WAIT
-        asked -> PinVerdict.GIVE_UP
+        // ColorOS covers the shell with the launcher's page while it shows its permission note, then hands back with
+        // nothing added: that looks exactly like a launcher question answered no, so either way the owner is told.
         elapsed >= WAIT_MS -> PinVerdict.NOTHING
         else -> PinVerdict.WAIT
     }
@@ -139,7 +141,7 @@ object Pin {
         if (a.isFinishing || a.isDestroyed) return
         AlertDialog.Builder(a)
             .setTitle("没能添加到桌面")
-            .setMessage("「$name」的图标没有放到桌面上。\n\n" +
+            .setMessage("「$name」的图标没有放到桌面上。如果是你刚才点了取消，忽略这条就好。\n\n" +
                 "在 ColorOS（OPPO、一加、realme）等系统上，要先允许「Ash 应用」使用「创建桌面快捷方式」权限：" +
                 "点「去设置」，进入「权限」（可能在「其他权限」里），找到「创建桌面快捷方式」，选「允许」，再回来添加一次。")
             .setPositiveButton("去设置") { _, _ -> settings(a) }

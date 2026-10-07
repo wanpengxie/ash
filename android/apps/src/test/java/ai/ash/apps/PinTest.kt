@@ -19,8 +19,8 @@ class PinTest {
         assertEquals(PinVerdict.ADDED, Pin.verdict(Pin.GIVE_UP_MS + 1, answered = true, asked = true, focusedFor = 0))
         // The launcher asked (the shell was covered): while its question is up, keep waiting however long it takes.
         assertEquals(PinVerdict.WAIT, Pin.verdict(30_000, answered = false, asked = true, focusedFor = 0))
-        // Back in the shell with no callback: the owner said no (or went away); say nothing.
-        assertEquals(PinVerdict.GIVE_UP, Pin.verdict(30_000, answered = false, asked = true, focusedFor = Pin.SETTLE_MS))
+        // Back in the shell with nothing added (ColorOS permission note, or a no): the owner is told how to allow it.
+        assertEquals(PinVerdict.NOTHING, Pin.verdict(30_000, answered = false, asked = true, focusedFor = Pin.SETTLE_MS))
         assertEquals(PinVerdict.GIVE_UP, Pin.verdict(Pin.GIVE_UP_MS, answered = false, asked = true, focusedFor = 0))
     }
 }
