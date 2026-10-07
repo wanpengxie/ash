@@ -224,36 +224,37 @@ test("local gateway controls approve a pending device and revoke an existing dev
       async request(_path, init) {
         const wire = JSON.parse(init.body);
         sent.push(wire);
-        if (wire.word === "gateway.op" && wire.body.op === "approve") pending = false;
-        if (wire.word === "gateway.op" && wire.body.op === "revoke") device = false;
-        const result = wire.word === "gateway.state"
+        assert.equal(wire.to, "service:devices");
+        if (wire.word === "pair_approve") pending = false;
+        if (wire.word === "revoke") device = false;
+        const result = wire.word === "gateway_status"
           ? { configured: true, connected: true,
             pending: pending ? [{ request_id: "request-1", name: "Phone", fingerprint: "abc" }] : [],
             devices: device ? [{ id: "device:laptop", name: "Laptop", online: true }] : [] }
           : { approved: true, revoked: true };
         return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
-          from: "service:admin", to: "person:owner", word: wire.word, body: { ok: true, result } } }), { status: 200 });
+          from: wire.to, to: "person:owner", word: wire.word, body: { ok: true, result } } }), { status: 200 });
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
     panel.find("settingsGatewayRow").click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayList").children.length, 2);
-    panel.find("settingsGatewayList").children[0].children[1].click();
+    panel.find("settingsPending-request-1Approve").click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayList").children.length, 1);
-    const revoke = panel.find("settingsGatewayList").children[0].children[1];
+    const revoke = panel.find("settingsDevice-device:laptopRevoke");
     revoke.click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(sent.filter((item) => item.body.op === "revoke").length, 0, "one tap only says what removing does");
+    assert.equal(sent.filter((item) => item.word === "revoke").length, 0, "one tap only says what removing does");
     assert.match(panel.find("settingsGatewayStatus").textContent, /重新配对/);
     revoke.click();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayList").children.length, 0);
     assert.deepEqual(sent.map((item) => [item.word, item.body]), [
-      ["gateway.state", {}],
-      ["gateway.op", { op: "approve", request_id: "request-1", permissions: ["chat", "web_ui", "expose_capability"] }],
-      ["gateway.state", {}], ["gateway.op", { op: "revoke", device: "device:laptop" }], ["gateway.state", {}]]);
+      ["gateway_status", {}],
+      ["pair_approve", { request_id: "request-1", kind: "laptop", access: "approval", local_agents: false, web_ui: false }],
+      ["gateway_status", {}], ["revoke", { device: "device:laptop" }], ["gateway_status", {}]]);
   } finally { delete globalThis.document; }
 });
 
@@ -270,13 +271,13 @@ test("local gateway controls show a one-time pairing code with where to use it",
         const body = fail ? { ok: false, error: { code: "failed", message: "gateway operation failed" } }
           : { ok: true, result: { ticket: "pair-XYZ-123", expires_in: 300, gateway: "https://gw.example" } };
         return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
-          from: "service:admin", to: "person:owner", word: wire.word, body } }), { status: 200 });
+          from: wire.to, to: "person:owner", word: wire.word, body } }), { status: 200 });
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
     panel.find("settingsGatewayPair").click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(sent.map((item) => [item.word, item.body]), [["gateway.op", { op: "ticket" }]]);
+    assert.deepEqual(sent.map((item) => [item.word, item.body]), [["pair_start", { kind: "laptop" }]]);
     const shown = panel.find("settingsGatewayPairResult").textContent;
     assert.match(shown, /pair-XYZ-123/);
     assert.match(shown, /5 分钟/);
@@ -444,7 +445,7 @@ test("opening settings reads what each row should say: quiet hours, pause, keys,
   const results = {
     "settings.get": { delivery: { quiet: "22:00-07:30" }, paused: true },
     "usage.get": { periods: { today: { ...zero, cost_usd: 0.12 }, "7d": { ...zero, cost_usd: 1.5 }, "30d": { ...zero, cost_usd: 4 } }, by_scope: [] },
-    "gateway.state": { configured: true, connected: true, devices: [{ id: "device:a", name: "A" }], pending: [{ request_id: "r", name: "B" }] },
+    "gateway_status": { configured: true, connected: true, devices: [{ id: "device:a", name: "A" }], pending: [{ request_id: "r", name: "B" }] },
   };
   const net = { token: "t", screen: "screen:local", currentScope: "s", localManagement: true,
     async request(path, init) {

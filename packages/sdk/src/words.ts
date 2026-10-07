@@ -1,5 +1,6 @@
 import type { Card, JsonSchema, WordEffect, WordSpec } from "./api";
 import { matchesSchema } from "./schema";
+import { DEVICE_WORDS } from "./device-words";
 
 export interface WordContract extends WordSpec { member: string; direction: "in" | "out" }
 const str: JsonSchema = { type: "string" };
@@ -55,6 +56,7 @@ const noChange = obj({ no_change: obj({ checked: strings, details: str }, ["chec
 const workerResult = (normal: JsonSchema): JsonSchema => ({ oneOf: [normal, noChange] });
 
 const entries: WordContract[] = [];
+entries.push(...DEVICE_WORDS.map(spec => ({ ...spec, member: "service:devices", direction: "in" as const })));
 const guidance: Record<string, string> = {
   "agent:main/say": "Use to tell the agent something or answer an active option card. It acknowledges receipt immediately; read later conversation messages for the answer.",
   "person:owner/say": "Use to reply or offer a heads-up to the owner. This records immediately; it does not wait for a response or replace ask.",
@@ -198,7 +200,7 @@ const gateRule = obj({ id, subject: nonempty, device_id: id, capability_id: id, 
 ["id", "subject", "to", "word", "object_pattern", "risk", "contract_fingerprint", "created_at", "expires_at"]);
 // A word whose effect is not read is gated even when its legacy risk says none.
 const gateCurrentHistory = obj({ id, request_id: id, ask_id: id, subject: nonempty, to: id, word: id, risk: choice("none", "outward", "structure"),
-  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule", "review", "carry"), at: nonnegativeSafe, rule_id: id,
+  decision: choice("once", "always", "deny", "timeout", "cancelled", "rule", "review", "carry", "device_full"), at: nonnegativeSafe, rule_id: id,
   reason: { type: "string", maxLength: 500 }, label: { type: "string", maxLength: 120 }, source: { const: "current" } },
 ["id", "request_id", "decision", "at", "source"]);
 const gateLegacyScope: JsonSchema = { type: "string", pattern: "^(\\*|device:[A-Za-z0-9_-]+/(\\*|[A-Za-z0-9_.-]+))$" };
@@ -241,7 +243,7 @@ add("service:gate", "access.revoke", "request", obj({ id }, ["id"]), obj({ revok
 add("service:gate", "gate.asked", "event", obj({ request_id: id, ask_id: id, risk: choice("none", "outward", "structure"), to: id, word: id,
   expires_at: nonnegativeSafe }, ["request_id", "ask_id", "risk", "to", "word", "expires_at"]), undefined, { direction: "out" });
 // by review: the reviewer judged the action reversible or already asked for; carry: the same thing was allowed minutes ago.
-add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer", "review", "carry"), rule_id: id, ask_id: id,
+add("service:gate", "gate.passed", "event", obj({ request_id: id, by: choice("rule", "answer", "review", "carry", "device_full"), rule_id: id, ask_id: id,
   reason: { type: "string", minLength: 1, maxLength: 500 } }, ["request_id", "by"]), undefined, { direction: "out" });
 add("service:gate", "gate.denied", "event", obj({ request_id: id, by: choice("answer", "timeout"), ask_id: id },
   ["request_id", "by"]), undefined, { direction: "out" });

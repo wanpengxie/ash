@@ -1006,7 +1006,7 @@ export class Ledger {
    * Pass an accepted request without an owner ask: the reviewer judged it (review) or the same thing was allowed a few
    * minutes ago (carry). The phase change, the audit event and the history row commit together.
    */
-  passGate(requestId: string, subject: string, by: "review" | "carry", reason: string, risk: "none" | "outward" | "structure"): Message | null {
+  passGate(requestId: string, subject: string, by: "review" | "carry" | "device_full", reason: string, risk: "none" | "outward" | "structure"): Message | null {
     const why = reason.replace(/[\p{Cc}]+/gu, " ").trim().slice(0, 500);
     if (!subject || !why) return null;
     this.db.exec("BEGIN IMMEDIATE");
@@ -1287,7 +1287,7 @@ export class Ledger {
         ...(row.legacy_scope === null ? {} : { legacy_scope: String(row.legacy_scope) }) }
       : { id: String(row.id), request_id: String(row.request_id), ...(row.ask_id === null ? {} : { ask_id: String(row.ask_id) }),
         subject: String(row.caller_member), to: String(row.target), word: String(row.word), risk: row.risk as "none" | "outward" | "structure",
-        decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry", at: Number(row.at),
+        decision: row.decision as "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full", at: Number(row.at),
         ...(row.rule_id === null ? {} : { rule_id: String(row.rule_id) }),
         ...(typeof row.reason === "string" && row.reason ? { reason: row.reason.slice(0, 500) } : {}),
         ...(typeof row.evidence_label === "string" && row.evidence_label && row.target !== "service:gate" ? { label: row.evidence_label.slice(0, 120) } : {}), source: "current" }),
@@ -1427,7 +1427,7 @@ export class Ledger {
       entries.push({ request_id: String(row.request_id), at: Number(row.at), requester: String(row.requester), member: String(row.member), word: String(row.word),
         label: row.label === null ? "" : String(row.label), effect: row.effect === null ? "" : String(row.effect), turn: row.turn === null ? "" : String(row.turn),
         content: row.content === null ? "" : String(row.content), facts: parse(row.facts), review: parse(row.review), card: parse(row.card),
-        decision, decided_by: ["rule", "review", "carry"].includes(decision) ? decision : ["once", "always", "deny"].includes(decision) ? "owner" : decision,
+        decision, decided_by: ["rule", "review", "carry", "device_full"].includes(decision) ? decision : ["once", "always", "deny"].includes(decision) ? "owner" : decision,
         reason: history?.reason === null || history?.reason === undefined ? "" : String(history.reason),
         rule_id: history?.rule_id === null || history?.rule_id === undefined ? "" : String(history.rule_id),
         answered_at: answer ? answer.ts : null,

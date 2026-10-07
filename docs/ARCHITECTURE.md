@@ -75,6 +75,12 @@ Android App process                         Node ash core process
 
 The phone makes the outbound gateway connection. Paired browsers are additional screens; a paired laptop running the client role can expose its MCP capabilities as a device. Pairing, owner-only administration, and device grants remain distinct from an Agent's ordinary tool call.
 
+`service:devices` owns device management and persists local policy in `devices.json`. The settings UI and `device_*` / `gateway_*` MCP tools call the same words. Only the local owner and main Agent can manage devices. Agent requests to pair, widen permissions, or update require an owner card; approval leaves the action frozen until the originating Agent explicitly redeems it. Restrictive changes do not require a card. The legacy administration gateway operations delegate to this service.
+
+Computers default to `approval`: reads pass, writes/edits without an owner rule ask, and commands can be reviewed. Global `always` takes precedence over ordinary rules. An explicitly `full` computer bypasses action approval, recording `device_full`; this never changes the phone's policy. Local Agent use and browser UI access are separate grants, disabled by default on computers. Browser pairing grants only chat and UI access. Withdrawing local Agent access closes its channel and prevents reopening it. The remote AgentSystem runtime adapter is a separate integration step.
+
+The development device process and local-gateway round trip are testable with `tools/e2e-device.ts`. The release installer and updater are not implemented yet: pairing reports `install_available: false` and the update word returns failure instead of claiming an installation. No public installation URL is fabricated.
+
 ## Build and checks
 
 ### Activity presentation

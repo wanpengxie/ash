@@ -60,7 +60,7 @@ const at = (value, now) => {
 };
 const HISTORY_SHOWN = 20;
 const EFFECTS = { read: "读", act: "操作", write: "改数据", send: "对外发送", execute: "执行命令", structure: "改结构" };
-const DECIDED_BY = { rule: "你定的规则", review: "裁判（模型判断）", carry: "沿用你几分钟前的允许", owner: "你", timeout: "没人回答，过期", cancelled: "取消了", waiting: "还在等" };
+const DECIDED_BY = { device_full: "设备完全放开", rule: "你定的规则", review: "裁判（模型判断）", carry: "沿用你几分钟前的允许", owner: "你", timeout: "没人回答，过期", cancelled: "取消了", waiting: "还在等" };
 const ANSWERS = { once: "允许这一次", always: "以后都允许", deny: "不允许" };
 
 /** One record's evidence: what was asked, what the reviewer saw and said, the card, the answer, and whether it ran. */
@@ -191,7 +191,7 @@ export function renderApprovalsSheet(root, view, { now = Date.now(), onAnswer, a
   else for (const item of items.slice(0, HISTORY_SHOWN)) {
     const label = item.source === "current" ? safeText(item.label, 80) || actionLabel(item) : "较早的审批";
     const decision = { once: "仅这一次", always: "以后都允许", deny: "已拒绝", timeout: "过期没回答",
-      cancelled: "已取消", rule: "按规则放行", review: "由她判断后放行", carry: "刚允许过，沿用" }[item.decision] || "已记录";
+      cancelled: "已取消", rule: "按规则放行", review: "由她判断后放行", carry: "刚允许过，沿用", device_full: "设备完全放开放行" }[item.decision] || "已记录";
     const row = text(historyBox, "div", "", "set-line sheet-history");
     const body = text(row, "span", "", "set-text");
     text(body, "span", safeText(label, 80), "set-title");

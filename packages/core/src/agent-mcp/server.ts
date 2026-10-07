@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListResourcesRequestSchema, ListResourceTemplatesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { AGENT_ID } from "../../../sdk/src/words";
+import { DEVICE_WORDS, deviceToolName } from "../../../sdk/src/device-words";
 import type { Ledger } from "../world/ledger";
 import type { WorldMembers } from "../world/member";
 import { RouterError, type TrustedRouteContext, type WorldRouter } from "../world/router";
@@ -107,6 +108,7 @@ function fromError(error: unknown): ToolResult {
 }
 
 const TOOLS = [
+  ...DEVICE_WORDS.map(spec => ({ name: deviceToolName(spec.word), description: spec.description, inputSchema: { ...spec.input_schema, properties: { ...(spec.input_schema.properties as object), ...approvalFields } } })),
   // system
   { name: "system_status", description: "Current time and time zone, whether ash is paused by the owner, and quiet hours. Read-only.", inputSchema: object({}) },
   { name: "vault_list", description: "Names and kinds of the credentials in the owner's vault. Values are never returned; model keys are used by ash on your behalf.", inputSchema: object({}) },
@@ -118,9 +120,9 @@ const TOOLS = [
   { name: "timer_cancel", description: "Cancel a timer by id; cancelled=false means it already fired or never existed.", inputSchema: object({ id: text("Timer id from timer_set or timer_list") }, ["id"]) },
   { name: "approval_log", description: "Approval records, newest first: for each action that reached the approval gate, what was asked, the facts the reviewer saw and its verdict, the card the owner saw, the decision and who made it (rule, review, carry, owner, timeout), and whether the action then ran. Use it to work out why something was allowed, asked about or refused.",
     inputSchema: object({ request_id: text("One request"), requester: text("Only this agent, e.g. agent:main"), word: text("Only this capability, e.g. clipboard.set"),
-      decision: { type: "string", enum: ["rule", "review", "carry", "once", "always", "deny", "timeout", "cancelled", "waiting"] },
+      decision: { type: "string", enum: ["rule", "review", "carry", "device_full", "once", "always", "deny", "timeout", "cancelled", "waiting"] },
       before: { type: "integer", minimum: 1, description: "next_before from the previous page" }, limit: { type: "integer", minimum: 1, maximum: 50 } }) },
-  { name: "approval_rules", description: "The owner's approval rules: which agent may use which outside capability (and target) without asking, until when, and whether it was revoked; plus the approval mode (auto: ask only when needed; always: ask about every outside action that is not a read).",
+  { name: "approval_rules", description: "The owner's approval rules: which agent may use which outside capability (and target) without asking, until when, and whether it was revoked; plus the approval mode (auto: ask when needed; always: ask about non-read outside actions, except computers explicitly set to full access).",
     inputSchema: object({ before: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 100 } }) },
   { name: "approval_rule_add", description: "Ask for a new approval rule: for up to 30 days, one agent may use one outside capability without asking, optionally only for one target (site:<host>, a calendar id, a recipient id, or browse). ALWAYS returns waiting_owner with a pending_id when the card is shown. Do not poll; reassess and redeem after the answer arrives. Commands and payments cannot be covered.",
     inputSchema: object({ agent: text("Agent id, e.g. agent:main"), member: text("Device member, e.g. device:phone"), word: text("Capability, e.g. clipboard.set"),
@@ -318,6 +320,9 @@ export class AgentMcpServer {
     const turnSignal = AbortSignal.any([active.signal, signal]);
     if (turnSignal.aborted) return failure("result_unknown", "this turn or tool call was cancelled before acceptance");
     try {
+      const deviceWord = DEVICE_WORDS.find(spec => deviceToolName(spec.word) === name);
+      if (deviceWord) return await this.job(binding, active.turn, "service:devices", deviceWord.word,
+        pick(args, Object.keys(deviceWord.input_schema.properties ?? {})), this.options.fastPathMs ?? FAST_PATH_MS, turnSignal, args);
       switch (name) {
         case "human_pending":
           await this.options.router.refreshHumanPending();
@@ -337,7 +342,7 @@ export class AgentMcpServer {
           if (!item?.action || item.agent !== binding.member || !this.options.ledger.agentJob(binding.member, item.pending_id)) return failure("forbidden", "no frozen action for your current identity");
           if (item.state === "redeemed") return failure("denied", "approval already redeemed; inspect human_pending_get for the recorded result or unknown outcome");
           if (item.action.member !== "service:gate" && !binding.allowsWord(item.action.member, item.action.word)) return failure("forbidden", "this capability is no longer allowed for you");
-          const actionTool = item.action.member === "service:gate" ? ({ "rules.set": "approval_rule_add", "rules.revoke": "approval_rule_remove", "mode.set": "approval_mode_set" } as Record<string, string>)[item.action.word] : "capability_call";
+          const actionTool = item.action.member === "service:devices" ? deviceToolName(item.action.word) : item.action.member === "service:gate" ? ({ "rules.set": "approval_rule_add", "rules.revoke": "approval_rule_remove", "mode.set": "approval_mode_set" } as Record<string, string>)[item.action.word] : "capability_call";
           if (!actionTool || !binding.allowsTool(actionTool)) return failure("forbidden", "the original tool is no longer allowed for you");
           // The usual job collector handles long execution, but never a human wait.
           const execution = this.options.router.redeemHuman(this.context(binding, active.turn), item.pending_id,
@@ -399,6 +404,7 @@ export class AgentMcpServer {
           if (typeof args.member !== "string" || typeof args.word !== "string") return failure("payload_invalid", "member and word are required");
           if (args.member === "service:agents") return failure("forbidden", "use the agent tools for other agents");
           if (args.member === "service:gate") return failure("forbidden", "use the approval tools for approval records and rules");
+          if (args.member === "service:devices") return failure("forbidden", "use the device management tools");
           if (!binding.allowsWord(args.member, args.word)) return failure("forbidden", `${args.member}/${args.word} is not among the capabilities you may use`);
           if (args.body !== undefined && (typeof args.body !== "object" || args.body === null || Array.isArray(args.body))) return failure("payload_invalid", "body must be an object");
           return await this.job(binding, active.turn, args.member, args.word, (args.body ?? {}) as Record<string, unknown>,
@@ -537,7 +543,7 @@ export class AgentMcpServer {
   private list(binding: AgentBinding, only?: string): ToolResult {
     const summary = this.options.members.describe("agent");
     // Agents reach each other through the agent tools, not as capabilities.
-    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && member.id !== "service:gate" && (!only || member.id === only)).map((member) => {
+    const members = summary.members.filter((member) => !AGENT_ID.test(member.id) && member.id !== "service:agents" && member.id !== "service:gate" && member.id !== "service:devices" && (!only || member.id === only)).map((member) => {
       let words: WordSpec[] = [];
       try { words = this.options.members.describe("agent", member.id).members[0]?.words ?? []; } catch { /* vanished */ }
       return { id: member.id, kind: member.kind, name: member.name, ...(member.online === undefined ? {} : { online: member.online }),
@@ -549,6 +555,7 @@ export class AgentMcpServer {
   }
 
   private describe(binding: AgentBinding, member: string, word?: string): ToolResult {
+    if (member === "service:devices") return failure("payload_invalid", "use device_describe for device management");
     if (member === "service:agents") return failure("payload_invalid", "other agents are reached with the agent tools");
     let words: WordSpec[];
     try { words = this.options.members.describe("agent", member).members[0]?.words ?? []; }

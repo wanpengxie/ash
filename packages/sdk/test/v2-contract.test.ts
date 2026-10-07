@@ -15,8 +15,10 @@ function example(schema: JsonSchema): unknown {
   if (schema.anyOf) return example(schema.anyOf[0]);
   switch (schema.type) {
     case "null": return null;
-    case "string": return schema.pattern?.includes("[0-9a-f]{64}") ? "a".repeat(64)
+    case "string": return schema.pattern?.includes("[0-9a-f]{64}") || schema.pattern?.includes("[a-f0-9]{64}") ? "a".repeat(64)
+      : schema.pattern?.startsWith("^v?") ? "1.2.3"
       : schema.pattern?.startsWith("^agent:") ? "agent:main"
+      : schema.pattern === "^device:[A-Za-z0-9_-]+$" ? "device:phone"
       : schema.pattern?.startsWith("^device:") ? "device:phone/calendar.create"
       : schema.pattern?.startsWith("^(\\*|device:") ? "*"
       : schema.pattern?.includes("memory/") ? "memory/2020-01-01.md"

@@ -36,6 +36,8 @@ import { AgentMind } from "./members/agent-mind";
 import { AdminMember } from "./members/admin";
 import { ClockMember } from "./members/clock";
 import { GateMember } from "./members/gate";
+import { DevicesMember } from "./members/devices";
+import type { ResponseBody } from "../../sdk/src/api";
 import { OwnerMember } from "./members/owner";
 import { PostMember } from "./members/post";
 import { ReflexMember } from "./members/reflex";
@@ -407,24 +409,32 @@ export async function startOwner(config: Config): Promise<Running> {
       },
       ...(config.host ? { nativeUiToken: createHash("sha256").update(`${config.host.token}:home`).digest("hex") } : {}) });
     screensNow = () => ownerScreensLine(edge.screens);
+    const devices = new DevicesMember(join(config.stateDir, "devices.json"), () => link, world);
+    members.register(devices);
     admin = new AdminMember({ ledger, router: world, dbFile: join(config.stateDir, "ash.db"), delivery,
       onPauseChanged: () => { agent!.resamplePause(); work!.resamplePause(); },
       gatewayState: () => link ? { configured: true, ...link.state() } : { configured: false },
-      gatewayOp: async (body: Record<string, unknown>) => {
+      gatewayOp: async (body, context) => {
         if (!link) throw new Error("gateway unavailable");
+        let word: string, args: Record<string, unknown>;
         switch (body.op) {
-          case "approve":
-            await link.approve(body.request_id as string, body.permissions as Parameters<OwnerLink["approve"]>[1]);
-            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error));
-            return { approved: true };
-          case "reject": await link.reject(body.request_id as string); return { rejected: true };
-          case "ticket": return { ...(await link.ticket()) };
-          case "revoke": await link.revoke(body.device as string);
-            await link.refreshDevices().catch((error) => log("gateway device refresh failed", error)); // the next state read no longer lists it
-            return { revoked: true };
+          case "approve": {
+            const permissions = body.permissions as string[];
+            word = "pair_approve"; args = { request_id: body.request_id,
+              kind: permissions.includes("expose_capability") ? "laptop" : "browser",
+              access: "approval", local_agents: false, web_ui: permissions.includes("web_ui") }; break;
+          }
+          case "reject": word = "pair_reject"; args = { request_id: body.request_id }; break;
+          case "ticket": word = "pair_start"; args = { kind: "browser" }; break;
+          case "revoke": word = "revoke"; args = { device: body.device }; break;
           case "sync": await link.refreshDevices(); return { configured: true, ...link.state() };
           default: throw new Error("unsupported gateway operation");
         }
+        if (!context.caller?.transportPrincipal) throw new Error("missing owner authority");
+        const result = await world.send({ ...context.caller, transportPrincipal: context.caller.transportPrincipal, transport: "api" }, { to: "service:devices", kind: "request", word, body: args, wait: true });
+        const reply = result.reply?.body as ResponseBody | undefined;
+        if (!reply?.ok) throw new Error("device management operation failed");
+        return (reply.result ?? {}) as Record<string, unknown>;
       },
       ...(dsh ? { modelGet: () => dsh!.agentOptions() ?? {}, modelSet: async (provider: string, model: string) => {
         const selector = dsh!.ctx?.get("agentDefaultModel");
@@ -496,6 +506,7 @@ export async function startOwner(config: Config): Promise<Running> {
     if (gatewayUrl) {
       const signer = hostLink ? await hostLink.signer() : await fileSigner(config.stateDir);
       link = new OwnerLink(gatewayUrl, signer, edge, log);
+      link.setDeviceManagement((id, fallback) => devices.deviceName(id, fallback), id => devices.localAgentsAllowed(id));
       await link.claimIfNeeded(join(config.stateDir, "bootstrap-secret"), config.name ?? "Ash owner");
       void link.run();
       await link.waitConnected(); // remote recovery requires current grants, not an old snapshot

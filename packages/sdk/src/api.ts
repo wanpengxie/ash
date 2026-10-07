@@ -428,18 +428,18 @@ export interface GateAccessItemV2 {
   revoked_at?: number;
 }
 export type GateHistoryDecisionV2 =
-  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"
+  | "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full"
   | "legacy_unresolved" | "legacy_approved" | "legacy_denied" | "legacy_expired" | "legacy_cancelled"
   | "legacy_access_imported" | "legacy_access_expired" | "legacy_access_invalid";
 export type GateHistoryItemV2 =
   | { id: string; request_id: string; ask_id?: string; subject?: string; to?: string; word?: string; risk?: "none" | "outward" | "structure";
-      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry"; at: number; rule_id?: string;
+      decision: "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full"; at: number; rule_id?: string;
       /** Why the reviewer let it pass (decision review) — plain words for the owner. */
       reason?: string;
       /** The capability's own name for the action, from the evidence kept with it. */
       label?: string; source: "current" }
   | { id: string; subject?: string; to?: string; word?: string; risk?: "outward" | "structure";
-      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry">;
+      decision: Exclude<GateHistoryDecisionV2, "once" | "always" | "deny" | "timeout" | "cancelled" | "rule" | "review" | "carry" | "device_full">;
       at: number; legacy_scope?: string; source: "legacy" };
 /** Provenance stamped only by the v10 migration; never accepted from a normal send body. */
 export interface LegacyConversationMetadata {

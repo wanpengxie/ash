@@ -13,7 +13,7 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
   const agents = new AgentHost(resolve(config.stateDir), resolve(config.workdir), dependencies.agentFactory);
   const runtimes = await (dependencies.detect ?? detectRuntimes)();
   const link = new ClientLink(config.gateway, await fileSigner(config.stateDir), {
-    manifest: async () => ({ protocol: "ash-dev/1", version: "0.1.0", kind: config.kind ?? "laptop", name: config.name, capabilities: WORKSPACE_CAPABILITIES, agents: runtimes }),
+    manifest: async () => ({ protocol: "ash-dev/1", version: "0.1.0", kind: config.kind ?? "laptop", name: config.name, workdir: resolve(config.workdir), capabilities: WORKSPACE_CAPABILITIES, agents: runtimes }),
     call: (name, args, _caller, signal) => workspace.call(name, args, signal),
     stream: stream => agents.attach(stream),
   }, (...args) => console.error(...args));

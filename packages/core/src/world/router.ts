@@ -152,6 +152,13 @@ export class WorldRouter {
   private reviewer: Reviewer | null = null;
   private reviewTimeoutMs = 5_000;
   private approvalMode: () => ApprovalMode = () => "auto";
+  private devicePolicy: (member: string) => "full" | "approval" | null = () => null;
+  private deviceManagementApproval: (request: Pick<Message, "word" | "body">) => boolean = () => true;
+  private deviceManagementCard?: (request: Message) => { title: string; detail: string };
+  setDevicePolicy(policy: (member: string) => "full" | "approval" | null): void { this.devicePolicy = id => id === "device:phone" ? null : policy(id); }
+  setDeviceManagementApproval(check: (request: Pick<Message, "word" | "body">) => boolean): void { this.deviceManagementApproval = check; }
+  setDeviceManagementCard(card: (request: Message) => { title: string; detail: string }): void { this.deviceManagementCard = card; }
+  private forcedApproval(request: Pick<SendRequestV2, "to" | "word" | "body">): boolean { return ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`) || (request.to === "service:devices" && this.deviceManagementApproval(request)); }
   /** In memory only: what was allowed in the last five minutes, by subject x word x object. */
   private readonly carry = new Map<string, { until: number; reason: string }>();
   /** Carry keys of agent requests waiting on an owner card, recorded when the owner allows. */
@@ -455,7 +462,7 @@ export class WorldRouter {
       this.reviewTimeoutMs = options.timeoutMs;
     }
   }
-  /** "always" asks the owner for every non-read agent action that no owner rule covers. Read on every decision. */
+  /** "always" suspends ordinary rules; explicitly full-access computers remain exempt. Read on every decision. */
   setApprovalMode(mode: () => ApprovalMode): void { this.approvalMode = mode; }
   private currentApprovalMode(): ApprovalMode {
     try { return this.approvalMode() === "always" ? "always" : "auto"; } catch { return "always"; }
@@ -571,6 +578,8 @@ export class WorldRouter {
   async currentlyAuthorizedReflexPause(by: unknown): Promise<boolean> { return this.reflexPauseSource(by); }
 
   private async authorize(ctx: TrustedRouteContext, request: SendRequestV2, from: string): Promise<void> {
+    if (request.to === "service:devices" && (ctx.remote || !ctx.local || !["person:owner", "agent:main"].includes(from)))
+      fail("forbidden", "device management requires the local owner or main agent");
     if (request.to === "service:reflex" && ["task.stop", "task.end"].includes(request.word)) {
       if (ctx.remote || !ctx.local || from !== "person:owner" || !ctx.ownerProxy) fail("forbidden", "task stop requires current local owner authority");
     } else if (request.to === "service:reflex") {
@@ -672,7 +681,7 @@ export class WorldRouter {
     // Owner-wait TTL is independent of the capability execution timeout, restored at dispatch.
     if (ctx.approval && (ctx.transport !== "agent" || !Number.isInteger(ctx.approval.ttlMinutes) || ctx.approval.ttlMinutes < 1 || ctx.approval.ttlMinutes > 10080))
       fail("bad_request", "invalid approval context");
-    const timeoutMs = ctx.approval && endpoint && wordEffect(endpoint.spec) !== "read" && (request.to?.startsWith("device:") || ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`))
+    const timeoutMs = ctx.approval && endpoint && wordEffect(endpoint.spec) !== "read" && (request.to?.startsWith("device:") || this.forcedApproval(request))
       ? ctx.approval.ttlMinutes * 60000 : endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint && wordEffect(endpoint.spec) !== "read" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
@@ -892,8 +901,8 @@ export class WorldRouter {
     if (request.word === "mode.set") {
       const mode = body.mode === "always" ? "每次都问" : "有影响时才问";
       return { title: `${who} 想把审批档位改成「${mode}」`, detail: body.mode === "always"
-        ? "改了以后，所有对外部有影响的操作（读除外）都会先问你。"
-        : "改了以后，对外部有影响的操作先按你的规则和她的判断处理，拿不准时才问你；执行命令和付款仍然每次都问。" };
+        ? "改了以后，对外部有影响的操作（读除外）都会先问你，已有规则暂停使用；你单独设为「完全放开」的电脑除外。"
+        : "改了以后，对外部有影响的操作先按你的规则和她的判断处理，拿不准时才问你；手机执行命令和识别出的付款仍然每次都问。电脑使用你为它选择的档位。" };
     }
     if (request.word === "rules.revoke") return { title: `${who} 想撤销一条审批规则`, detail: `规则 ${String(body.id)}：撤销后，这类操作会重新按正常流程判断或问你。` };
     const label = body.member && body.word ? this.endpoint(body.member, body.word)?.spec.label ?? body.word : String(body.word);
@@ -955,6 +964,7 @@ export class WorldRouter {
   private async judge(pending: Pending, subject: string, effect: WordEffect): Promise<{ passed: true } | { passed: false; verdict?: ReviewVerdict } | null> {
     const { request, endpoint } = pending;
     if (!AGENT.test(request.from) || this.currentApprovalMode() === "always") return { passed: false };
+    if (this.devicePolicy(request.to!) === "approval" && ["workspace.write", "workspace.edit"].includes(request.word)) return { passed: false };
     const risk = endpoint.spec.risk ?? "none";
     const key = this.carryKey(pending, subject, effect);
     const carried = key ? this.carry.get(key) : undefined;
@@ -964,7 +974,7 @@ export class WorldRouter {
       return pending.settled ? null : { passed: false };
     }
     const reviewer = this.reviewer;
-    if (!reviewer || effect === "execute" || isPayment(request.word, endpoint.spec.label, request.body)) return { passed: false };
+    if (!reviewer || (effect === "execute" && this.devicePolicy(request.to!) !== "approval") || isPayment(request.word, endpoint.spec.label, request.body)) return { passed: false };
     const target = gateTarget(request.to!, request.word, request.body);
     const { ownerSaid, steps } = this.ledger.turnFacts(request.turn, request.from, request.seq);
     const facts: ReviewFacts = { requester: request.from, owner_said: ownerSaid,
@@ -1007,7 +1017,7 @@ export class WorldRouter {
   private askOwner(pending: Pending, identity: { subject: string; fingerprint: string }, effect: WordEffect, verdict?: ReviewVerdict, forced = false): void {
     const { request, endpoint } = pending;
     const expiresAt = Math.min(request.ts + (pending.context.approval?.ttlMinutes ?? 10) * 60000, pending.deadlineAt);
-    const plain = forced ? this.ruleChangeCard(request) : this.defaultCard(request, endpoint);
+    const plain = forced ? (request.to === "service:devices" ? this.deviceManagementCard?.(request) ?? this.defaultCard(request, endpoint) : this.ruleChangeCard(request)) : this.defaultCard(request, endpoint);
     const reviewed = verdict?.decision === "ask";
     const title = reviewed && verdict.title?.trim() ? plainText(verdict.title, 40) : plain.title;
     const reviewerDetail = reviewed && verdict.detail?.trim() ? verdict.detail.trim().slice(0, 600) : "";
@@ -1028,7 +1038,7 @@ export class WorldRouter {
         source: { word: request.word, to: request.to!, body_preview: plain.detail, body_full: this.actionOriginal(request) } } });
     if (!started) { this.finish(pending, errors("failed", "gate case unavailable"), request.to!, false); return; }
     this.ledger.gateEvidence(request.id, { card: { ask_id: started.ask.id, title, detail, options: (started.ask.body.options as unknown[]) ?? [],
-      ...(forced ? { forced: "rule changes always ask the owner" } : {}), ...(verdict?.decision === "ask" ? { by: "reviewer" } : { by: "plain" }) } });
+      ...(forced ? { forced: request.to === "service:devices" ? "device grants and updates always ask the owner" : "rule changes always ask the owner" } : {}), ...(verdict?.decision === "ask" ? { by: "reviewer" } : { by: "plain" }) } });
     pending.phase = "gate_waiting";
     const key = AGENT.test(request.from) ? this.carryKey(pending, identity.subject, effect) : null;
     if (key) {
@@ -1049,7 +1059,7 @@ export class WorldRouter {
       if (constraint) { this.finish(pending, errors("forbidden", constraint), request.to!, false); return; }
       // Only what reaches outside ash is judged: a capability of the phone or another device. ash's own system, human
       // and agent words (agents, timers, the owner's files, talking to the owner) are internal and never asked about.
-      const forced = AGENT.test(request.from) && ALWAYS_ASK_OWNER.has(`${request.to}/${request.word}`);
+      const forced = AGENT.test(request.from) && this.forcedApproval(request);
       const gateBypass = request.from === "person:owner" || (!request.to?.startsWith("device:") && !forced);
       const effect = wordEffect(endpoint.spec);
       if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
@@ -1065,17 +1075,23 @@ export class WorldRouter {
         const identity = this.gateIdentity(pending);
         this.ledger.gateEvidence(request.id, { label: endpoint.spec.label ?? request.word, effect, content: this.actionText(request).slice(0, 4000) });
         if (forced) { this.askOwner(pending, identity, effect, undefined, true); return; }
-        // "Every time" is the strongest owner setting: saved rules stay listed but are dormant until auto mode returns.
-        if (this.currentApprovalMode() === "always") { this.askOwner(pending, identity, effect); return; }
-        // In auto mode, owner rules come first; then carry-over and the reviewer, for agents only.
-        const ruleEvent = this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint);
-        if (ruleEvent) {
-          pending.phase = "dispatching";
-          this.publish(ruleEvent);
+        if (this.devicePolicy(request.to!) === "full") {
+          const event = this.ledger.passGate(request.id, identity.subject, "device_full", "主人已将此电脑设为完全放开", endpoint.spec.risk ?? "none");
+          if (!event) return;
+          pending.phase = "dispatching"; this.publish(event);
         } else {
-          const judged = await this.judge(pending, identity.subject, effect);
-          if (judged === null || pending.settled) return;
-          if (!judged.passed) { this.askOwner(pending, identity, effect, judged.verdict); return; }
+          // Saved rules stay listed but are dormant until auto mode returns.
+          if (this.currentApprovalMode() === "always") { this.askOwner(pending, identity, effect); return; }
+          // In auto mode, owner rules come first; then carry-over and the reviewer, for agents only.
+          const ruleEvent = this.ledger.passGateByRule(request.id, identity.subject, identity.fingerprint);
+          if (ruleEvent) {
+            pending.phase = "dispatching";
+            this.publish(ruleEvent);
+          } else {
+            const judged = await this.judge(pending, identity.subject, effect);
+            if (judged === null || pending.settled) return;
+            if (!judged.passed) { this.askOwner(pending, identity, effect, judged.verdict); return; }
+          }
         }
       }
       if (!this.durableGate && !gateBypass && pending.phase === "accepted" && effect !== "read") {
