@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Shell" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+    <!-- Dark status-bar icons over the light pages (Ui.systemBars keeps them right when the theme flips in place). -->
+    <style name="Shell" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

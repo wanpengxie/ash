@@ -36,6 +36,37 @@ class WidgetPlanTest {
         assertEquals(listOf(WNode.Button("刷新", "refresh")), WidgetPlan.actions(root))
     }
 
+    @Test fun spreadRowsKeepChildrenAtTheirOwnWidthWithGapsBetween() {
+        val head = (WidgetPlan.plan(weather) as WNode.Box).children[0] as WNode.Box
+        // The icon keeps to the city; one gap pushes the badge to the far end.
+        assertEquals(listOf(WNode.Icon("☀️"), WNode.Text("上海", TextStyle.CAPTION), null, WNode.Badge("晴")), WidgetPlan.rowSlots(head))
+        val around = WidgetPlan.plan(a2ui(c("root", "Row", "children" to JSONArray(listOf("a", "b")), "justify" to "spaceEvenly"),
+            c("a", "Text", "text" to "a"), c("b", "Text", "text" to "b"))) as WNode.Box
+        assertEquals(listOf(null, WNode.Text("a", TextStyle.BODY), null, WNode.Text("b", TextStyle.BODY), null), WidgetPlan.rowSlots(around))
+        val plain = WidgetPlan.plan(a2ui(c("root", "Row", "children" to JSONArray(listOf("a", "b"))),
+            c("a", "Image", "url" to "icon:cloud"), c("b", "Text", "text" to "霾"))) as WNode.Box
+        assertEquals(plain.children, WidgetPlan.rowSlots(plain))
+        val centred = WidgetPlan.plan(a2ui(c("root", "Row", "children" to JSONArray(listOf("a")), "align" to "center"), c("a", "Text", "text" to "a"))) as WNode.Box
+        assertFalse(centred.center)
+    }
+
+    @Test fun theFrameLeavesOutATitleTheCardAlreadyOpensWith() {
+        val today = WidgetPlan.plan(a2ui(c("root", "Column", "children" to JSONArray(listOf("t", "w"))),
+            c("t", "Text", "text" to "今日", "variant" to "h3"),
+            c("w", "Row", "children" to JSONArray(listOf("i", "s", "d")), "justify" to "spaceBetween"),
+            c("i", "Image", "url" to "icon:cloud"), c("s", "Text", "text" to "霾"), c("d", "Text", "text" to "19℃ · 今 16-28℃")))
+        assertTrue(WidgetPlan.opensWithTitle(today, "今日"))
+        assertTrue(WidgetPlan.opensWithTitle(today, " 今日 "))
+        assertFalse(WidgetPlan.opensWithTitle(today, "天气"))
+        assertFalse(WidgetPlan.opensWithTitle(today, ""))
+        // A heading row with a leading icon still counts; content that opens with something else keeps the frame title.
+        val headed = WidgetPlan.plan(a2ui(c("root", "Column", "children" to JSONArray(listOf("h", "n"))),
+            c("h", "Row", "children" to JSONArray(listOf("i", "t"))), c("i", "Image", "url" to "icon:weight"),
+            c("t", "Text", "text" to "体重"), c("n", "Text", "text" to "61.8", "variant" to "h1")))
+        assertTrue(WidgetPlan.opensWithTitle(headed, "体重"))
+        assertFalse(WidgetPlan.opensWithTitle(WidgetPlan.plan(weather), "今天天气"))
+    }
+
     @Test fun textVariantsAndAvatar() {
         val plan = WidgetPlan.plan(a2ui(c("root", "Column", "children" to JSONArray(listOf("a", "b", "c", "d"))),
             c("a", "Text", "text" to "标题", "variant" to "h2"), c("b", "Text", "text" to "正文"),

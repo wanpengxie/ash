@@ -10,6 +10,7 @@
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="0"
     android:initialLayout="@layout/widget_ash"
-    android:previewImage="@drawable/ic_launcher"
+    android:previewImage="@drawable/widget_preview_ash"
+    android:previewLayout="@layout/widget_ash_preview"
     android:description="@string/widget_ash_description"
     android:widgetCategory="home_screen" />

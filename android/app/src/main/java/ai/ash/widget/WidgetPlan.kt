@@ -8,7 +8,8 @@ enum class TextStyle { NUMBER, TITLE, BODY, CAPTION }
 
 /** One drawable piece of a card; the Android side turns it into RemoteViews without further decisions. */
 sealed class WNode {
-    data class Box(val vertical: Boolean, val center: Boolean, val spread: Boolean, val children: List<WNode>) : WNode()
+    /** spread: the children are pushed apart (gaps between them); around: gaps at both ends too. */
+    data class Box(val vertical: Boolean, val center: Boolean, val spread: Boolean, val children: List<WNode>, val around: Boolean = false) : WNode()
     data class Text(val text: String, val style: TextStyle) : WNode()
     data class Icon(val glyph: String) : WNode()
     object Avatar : WNode()
@@ -85,9 +86,11 @@ object WidgetPlan {
                 "Column", "Row" -> {
                     require(levels + 1 <= MAX_LEVELS) { "too deep" }
                     val kids = c.optJSONArray("children") ?: JSONArray()
-                    Box(kind == "Column", c.optString("align") == "center" || c.optString("justify") == "center",
-                        c.optString("justify") in setOf("spaceBetween", "spaceAround", "spaceEvenly", "stretch"),
-                        (0 until kids.length()).map { node(kids.getString(it), levels + 1) })
+                    val justify = c.optString("justify")
+                    // A Row's align is vertical (rows are always centred that way); only its justify centres it across.
+                    val center = if (kind == "Column") c.optString("align") == "center" || justify == "center" else justify == "center"
+                    Box(kind == "Column", center, justify in setOf("spaceBetween", "spaceAround", "spaceEvenly", "stretch"),
+                        (0 until kids.length()).map { node(kids.getString(it), levels + 1) }, around = justify in setOf("spaceAround", "spaceEvenly"))
                 }
                 "Text" -> WNode.Text(text(c, 300), when (c.optString("variant")) {
                     "h1" -> TextStyle.NUMBER; "h2", "h3" -> TextStyle.TITLE; "caption" -> TextStyle.CAPTION; else -> TextStyle.BODY })
@@ -112,6 +115,38 @@ object WidgetPlan {
             }
         }
         return node(a2ui.optString("root", "root"), 0)
+    }
+
+    /**
+     * A Row's drawing order: every child at its own width, with null where a stretchable gap goes. Only spread rows get
+     * gaps, and an icon or avatar keeps to what follows it (a weather row reads "☁️ 霾 ……… 19℃", not three islands).
+     */
+    fun rowSlots(row: WNode.Box): List<WNode?> {
+        if (!row.spread || row.vertical) return row.children
+        val out = ArrayList<WNode?>()
+        if (row.around) out.add(null)
+        row.children.forEachIndexed { i, child ->
+            out.add(child)
+            val last = i == row.children.lastIndex
+            if (!last && child !is WNode.Icon && child !is WNode.Avatar) out.add(null)
+        }
+        if (row.around && row.children.isNotEmpty()) out.add(null)
+        return out
+    }
+
+    /**
+     * True when the card's content already opens with its title (the usual A2UI card starts with a title Text), so the
+     * widget frame does not print the same words again above it. Leading icons, avatars and badges are looked past.
+     */
+    fun opensWithTitle(root: WNode, title: String): Boolean {
+        val want = title.trim()
+        if (want.isEmpty()) return false
+        fun first(n: WNode): String? = when (n) {
+            is WNode.Text -> n.text
+            is WNode.Box -> n.children.firstOrNull { it !is WNode.Icon && it !is WNode.Avatar && it !is WNode.Badge }?.let { first(it) }
+            else -> null
+        }
+        return first(root)?.trim()?.startsWith(want, ignoreCase = true) == true
     }
 
     /** Button actions in drawing order, for the owner's taps. */

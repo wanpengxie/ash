@@ -58,7 +58,8 @@ class CardWidgetProvider : AppWidgetProvider() {
             is CardView.Expired -> message(ctx, id, view.card.title, "已过期", pick = false)
             is CardView.Show -> RemoteViews(ctx.packageName, R.layout.widget_card).apply {
                 setTextViewText(R.id.card_title, view.card.title)
-                setViewVisibility(R.id.card_title, if (view.card.title.isBlank()) View.GONE else View.VISIBLE)
+                val framed = view.card.title.isNotBlank() && !WidgetPlan.opensWithTitle(view.root, view.card.title)
+                setViewVisibility(R.id.card_title, if (framed) View.VISIBLE else View.GONE)
                 removeAllViews(R.id.card_body)
                 addView(R.id.card_body, node(ctx, id, view.card.id, view.root))
                 setOnClickPendingIntent(R.id.card_root, openAsh(ctx, id))
@@ -68,12 +69,11 @@ class CardWidgetProvider : AppWidgetProvider() {
         private fun node(ctx: Context, widget: Int, card: String, n: WNode): RemoteViews {
             val pkg = ctx.packageName
             return when (n) {
-                is WNode.Box -> RemoteViews(pkg, if (n.vertical) (if (n.center) R.layout.w_col_center else R.layout.w_col) else R.layout.w_row).apply {
-                    for (child in n.children) {
-                        val drawn = node(ctx, widget, card, child)
-                        if (!n.vertical && n.spread) addView(R.id.w_box, RemoteViews(pkg, R.layout.w_cell).apply { addView(R.id.w_box, drawn) })
-                        else addView(R.id.w_box, drawn)
-                    }
+                is WNode.Box -> RemoteViews(pkg, when {
+                    n.vertical -> if (n.center) R.layout.w_col_center else R.layout.w_col
+                    else -> if (n.center) R.layout.w_row_center else R.layout.w_row
+                }).apply {
+                    for (slot in WidgetPlan.rowSlots(n)) addView(R.id.w_box, slot?.let { node(ctx, widget, card, it) } ?: RemoteViews(pkg, R.layout.w_gap))
                 }
                 is WNode.Text -> RemoteViews(pkg, when (n.style) {
                     TextStyle.NUMBER -> R.layout.w_text_number; TextStyle.TITLE -> R.layout.w_text_title

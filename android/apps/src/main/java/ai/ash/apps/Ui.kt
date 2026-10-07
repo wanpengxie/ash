@@ -4,17 +4,14 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ShortcutInfo
-import android.content.pm.ShortcutManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.view.View
 import android.view.WindowInsets
-import android.widget.Toast
+import android.view.WindowInsetsController
 
 /** Small shared pieces of the shell's screens. */
 object Ui {
@@ -37,6 +34,22 @@ object Ui {
         }
     }
 
+    /**
+     * The system bars are see-through (edge to edge), so their clock and icons must contrast with the page under them:
+     * dark on the light pages, light on the dark. Called again when the shell follows a dark-mode switch in place.
+     */
+    fun systemBars(a: Activity) {
+        val light = !night(a)
+        if (Build.VERSION.SDK_INT >= 30) {
+            val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            a.window.insetsController?.setSystemBarsAppearance(if (light) mask else 0, mask)
+        } else @Suppress("DEPRECATION") {
+            val decor = a.window.decorView
+            val mask = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            decor.systemUiVisibility = if (light) decor.systemUiVisibility or mask else decor.systemUiVisibility and mask.inv()
+        }
+    }
+
     fun square(b: Bitmap, size: Int = 192): Bitmap = if (b.width == size && b.height == size) b else Bitmap.createScaledBitmap(b, size, size, true)
 
     /** Recents shows the app's own name and icon on its card. */
@@ -48,17 +61,4 @@ object Ui {
     /** The intent that opens one app in its own task (the same intent each time, so its task is reused). */
     fun appIntent(ctx: Context, id: String): Intent =
         Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, AppActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
-
-    /** 「添加到桌面」: the launcher asks the owner, then shows the app's own icon and name. */
-    fun pin(ctx: Context, id: String, name: String, icon: Bitmap?) {
-        val sm = ctx.getSystemService(ShortcutManager::class.java)
-        if (sm == null || !sm.isRequestPinShortcutSupported) { Toast.makeText(ctx, "这个桌面不支持添加图标", Toast.LENGTH_LONG).show(); return }
-        val info = ShortcutInfo.Builder(ctx, "app:$id")
-            .setShortLabel(name.take(24)).setLongLabel(name)
-            .setIcon(icon?.let { Icon.createWithBitmap(square(it)) } ?: Icon.createWithResource(ctx, R.drawable.ic_launcher))
-            .setIntent(Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, OpenActivity::class.java))
-            .build()
-        runCatching { if (!sm.requestPinShortcut(info, null)) Toast.makeText(ctx, "桌面没有接受", Toast.LENGTH_LONG).show() }
-            .onFailure { Toast.makeText(ctx, "添加失败：${it.message}", Toast.LENGTH_LONG).show() }
-    }
 }
