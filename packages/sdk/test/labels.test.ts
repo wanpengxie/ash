@@ -42,7 +42,7 @@ test("every request word the owner can see being done is named in Chinese", asyn
   const { WORD_CONTRACTS } = await import("../src/words");
   const han = /\p{Script=Han}/u;
   for (const word of WORD_CONTRACTS.filter((item) => item.kind === "request")) {
-    assert.ok(han.test(word.label), `${word.member}/${word.word} has an English label: ${word.label}`);
+    assert.ok(han.test(word.label ?? ""), `${word.member}/${word.word} has an English label: ${word.label}`);
     const status = statusLabel(word.member, word.word, word.label);
     assert.ok(han.test(status), `${word.member}/${word.word} shows ${status} in the status line`);
   }
