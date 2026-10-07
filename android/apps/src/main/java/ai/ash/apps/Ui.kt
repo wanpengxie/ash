@@ -14,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.view.View
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.Toast
 
 /** Small shared pieces of the shell's screens. */
@@ -34,6 +35,22 @@ object Ui {
                 v.setPadding(i.left, i.top, i.right, i.bottom)
             } else @Suppress("DEPRECATION") v.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
             insets
+        }
+    }
+
+    /**
+     * The system bars are see-through (edge to edge), so their clock and icons must contrast with the page under them:
+     * dark on the light pages, light on the dark. Called again when the shell follows a dark-mode switch in place.
+     */
+    fun systemBars(a: Activity) {
+        val light = !night(a)
+        if (Build.VERSION.SDK_INT >= 30) {
+            val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            a.window.insetsController?.setSystemBarsAppearance(if (light) mask else 0, mask)
+        } else @Suppress("DEPRECATION") {
+            val decor = a.window.decorView
+            val mask = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            decor.systemUiVisibility = if (light) decor.systemUiVisibility or mask else decor.systemUiVisibility and mask.inv()
         }
     }
 

@@ -40,6 +40,7 @@ class MainActivity : Activity() {
         val scroll = ScrollView(this).apply { addView(column); setBackgroundColor(Ui.page(this@MainActivity)) }
         Ui.insets(scroll)
         setContentView(scroll)
+        Ui.systemBars(this)
     }
 
     override fun onResume() { super.onResume(); refresh() }

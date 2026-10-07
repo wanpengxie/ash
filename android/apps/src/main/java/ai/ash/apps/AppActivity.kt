@@ -138,6 +138,7 @@ class AppActivity : Activity() {
     }
 
     private fun paint() {
+        Ui.systemBars(this)
         root.setBackgroundColor(Ui.bar(this))
         bar.setBackgroundColor(Ui.bar(this))
         content.setBackgroundColor(Ui.page(this))
