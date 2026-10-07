@@ -3,6 +3,8 @@
 
     <!-- Apps may declare network domains (MCP Apps CSP); everything else is blocked in the page. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ColorOS only lists 「创建桌面快捷方式」 among an app's permissions (and lets the owner allow it) when the app asks for it. -->
+    <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
 
     <queries>
         <package android:name="ai.ash.agent" />
