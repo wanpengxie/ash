@@ -258,6 +258,33 @@ test("local gateway controls approve a pending device and revoke an existing dev
   } finally { delete globalThis.document; }
 });
 
+test("the devices page says in plain words why the gateway cannot be used", async () => {
+  globalThis.document = { createElement: (tag) => new Element(tag) };
+  try {
+    const panel = new Element("div");
+    let error = "claimed_by_other";
+    const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
+      async request(_path, init) {
+        const wire = JSON.parse(init.body);
+        const body = wire.word === "gateway_status" ? { ok: true, result: { configured: true, connected: false, error, pending: [], devices: [] } }
+          : { ok: false, error: { code: "failed", message: "not under test" } };
+        return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
+          from: wire.to, to: "person:owner", word: wire.word, body } }), { status: 200 });
+      } };
+    const settings = new SettingsControls(panel, net);
+    settings.registration({ local_management: true }); settings.network("online");
+    settings.opened();
+    for (let i = 0; i < 50 && panel.find("settingsGatewayRow").sub.textContent === "其他电脑和浏览器"; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsGatewayRow").sub.textContent, "网关连不上，点开看原因");
+    for (const [code, text] of [["claimed_by_other", /另一台手机认领/], ["bad_secret", /认领密钥不对/], ["unreachable", /连不上网关/]]) {
+      error = code;
+      panel.find("settingsGatewayRow").click();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.match(panel.find("settingsGatewayStatus").textContent, text);
+    }
+  } finally { delete globalThis.document; }
+});
+
 test("local gateway controls show a one-time pairing code with where to use it", async () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
   try {

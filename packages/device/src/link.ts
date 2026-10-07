@@ -24,7 +24,7 @@ export async function fileSigner(stateDir: string): Promise<Signer> {
 export abstract class Link {
   protected conn: Connection | null = null;
   protected readonly gateway: GatewayClient;
-  private stopped = false;
+  protected stopped = false;
   connected = false;
   lastError = "";
   constructor(url: string, readonly signer: Signer, protected readonly log: (...args: unknown[]) => void) {

@@ -60,6 +60,14 @@ const KEYS = [
   { ref: "DEEPSEEK_API_KEY", title: "DeepSeek Key", use: "用于：对话模型", hint: "没有它，Ash 无法对话。" },
   { ref: "OPENROUTER_API_KEY", title: "OpenRouter Key", use: "用于：快速判断（JEV 模型）", hint: "没有它，快速判断只能靠关键词。" },
 ];
+/** Why the gateway is not usable, as the owner should read it; the codes come from service:devices gateway_status. */
+const GATEWAY_PROBLEMS = {
+  claimed_by_other: "网关已被另一台手机认领，这台手机连不上。要换成这台手机，需要先在网关上清除原来的主人，再在下面填一把新的认领密钥。",
+  bad_secret: "认领密钥不对，网关没有接受。请在下面重新填写正确的密钥。",
+  missing_secret: "网关还没有主人。请在下面填写一次性认领密钥。",
+  unsupported: "网关的版本和 Ash 对不上，需要先更新网关。",
+  unreachable: "连不上网关，Ash 会自动重试。请检查网络和网关地址。",
+};
 const tokens = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 
 /** Usage as two lists: how much per period, then where the last week went. */
@@ -451,7 +459,7 @@ export class SettingsControls {
       gatewayList.replaceChildren();
       gatewayList.hidden = true;
       if (state?.configured !== true) { gatewayStatus.textContent = "还没有设置网关，其他设备暂时连不上。"; return state; }
-      gatewayStatus.textContent = state.connected ? "网关已连接。" : "网关暂时离线。";
+      gatewayStatus.textContent = state.connected ? "网关已连接。" : GATEWAY_PROBLEMS[state.error] ?? "网关暂时离线。";
       const act = async (word, body) => {
         const result = await deviceRequest(word, body);
         if (result?.ok !== true) throw new Error("gateway operation failed");
@@ -794,9 +802,10 @@ export class SettingsControls {
         const state = gateway.result ?? {};
         const devices = Array.isArray(state.devices) ? state.devices.length : 0;
         const waiting = Array.isArray(state.pending) ? state.pending.length : 0;
-        gatewayRow.sub.textContent = state.configured !== true ? "还没有设置网关"
+        const broken = state.configured === true && state.connected !== true && typeof state.error === "string";
+        gatewayRow.sub.textContent = state.configured !== true ? "还没有设置网关" : broken ? "网关连不上，点开看原因"
           : `${devices ? `${devices} 台设备` : "还没有连接其他设备"}${waiting ? ` · ${waiting} 个等你批准` : ""}`;
-        gatewayRow.sub.className = waiting ? "set-sub warn" : "set-sub";
+        gatewayRow.sub.className = waiting || broken ? "set-sub warn" : "set-sub";
       }
     };
 

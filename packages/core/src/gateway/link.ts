@@ -3,7 +3,8 @@ import { RemoteAgents } from "../../../device/src/agents/remote";
 export { ClientLink, fileSigner, type LocalCapabilities, type Signer } from "../../../device/src/link";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { Connection } from "ash-gateway/client/client";
+import { setTimeout as pause } from "node:timers/promises";
+import { Connection, GatewayError } from "ash-gateway/client/client";
 import { b64u, fromB64u, LIMITS, type Permission, PERMISSIONS, randomToken, shortFingerprint } from "ash-gateway/src/protocol";
 import type { CallResult } from "../../../sdk/src/api";
 import { isWordEffect } from "../../../sdk/src/words";
@@ -38,6 +39,22 @@ interface Inbound { method: string; path: string; headers: [string, string][]; b
 interface Outbound { device: string; status: number; chunks: Uint8Array[]; end: (error?: string) => void }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Why the gateway cannot be used, in a fixed vocabulary the owner's screen explains. Only `unreachable` is retried;
+ * the others need the owner (a new claim secret, a reset gateway, a newer gateway).
+ */
+export type GatewayProblem = "claimed_by_other" | "bad_secret" | "missing_secret" | "unsupported" | "unreachable";
+class GatewayRefused extends Error { constructor(readonly problem: GatewayProblem, message: string) { super(message); } }
+export function gatewayProblem(error: unknown): GatewayProblem {
+  if (error instanceof GatewayRefused) return error.problem;
+  if (error instanceof GatewayError) {
+    if (error.code === "bad_mac") return "bad_secret";
+    if (error.code === "already_claimed") return "claimed_by_other";
+  }
+  if (error instanceof Error && /unsupported gateway protocol/i.test(error.message)) return "unsupported";
+  return "unreachable";
+}
+
 export interface PendingPairing { request_id: string; client_id: string; name: string; pubkey: string; fingerprint: string; at: number }
 
 /** The owner tunnel forwards only authenticated web_ui devices to the v2 edge. */
@@ -60,22 +77,47 @@ export class OwnerLink extends Link {
   private syncTail: Promise<void> = Promise.resolve();
   private epoch = 0;
   readonly pending = new Map<string, PendingPairing>();
+  /** Set while claiming fails; a refusal other than `unreachable` stops the link until the owner changes the gateway. */
+  problem: GatewayProblem | null = null;
+  private readonly halted = new AbortController();
   constructor(url: string, signer: Signer, private readonly edge: EdgeRouter, log: (...args: unknown[]) => void) { super(url, signer, log); }
   enable(): void { this.serving = true; }
 
-  async waitConnected(timeoutMs = 30_000): Promise<void> {
+  /**
+   * Claim the gateway when needed, then stay connected. Never throws: ash runs without the gateway, an unreachable one is
+   * tried again with backoff, and a refusal is kept in `problem` for the owner to see.
+   */
+  async start(secretFile: string, name: string): Promise<void> {
+    let delay = 1000;
+    while (!this.stopped) {
+      try { await this.claimIfNeeded(secretFile, name); this.problem = null; this.lastError = ""; break; }
+      catch (error) {
+        this.problem = gatewayProblem(error); this.lastError = error instanceof Error ? error.message : String(error);
+        this.log("gateway unavailable", this.problem, this.lastError);
+        if (this.problem !== "unreachable") return;
+        try { await pause(delay * (0.5 + Math.random() / 2), undefined, { signal: this.halted.signal }); } catch { return; }
+        delay = Math.min(delay * 2, 60_000);
+      }
+    }
+    if (!this.stopped) await this.run().catch((error) => this.log("gateway link stopped", error));
+  }
+
+  /** Bounded: true once devices and grants are current, false as soon as the gateway is known to be unavailable. */
+  async waitConnected(timeoutMs = 30_000): Promise<boolean> {
     const until = Date.now() + timeoutMs;
-    while (!this.ready && Date.now() < until) await sleep(50);
-    if (!this.ready) throw new Error("gateway devices and grants unavailable during authorization recovery");
+    while (!this.ready && !this.problem && !this.lastError && !this.stopped && Date.now() < until) await sleep(50);
+    return this.ready;
   }
 
   async claimIfNeeded(secretFile: string, name: string): Promise<void> {
     const health = await this.gateway.health();
+    if (health.protocol !== undefined && health.protocol !== "ash-gw/1") throw new GatewayRefused("unsupported", "Unsupported gateway protocol");
     if (health.claimed === true) {
-      if (health.owner_id !== this.signer.id) throw new Error("gateway is claimed by a different owner device");
+      if (health.owner_id !== this.signer.id) throw new GatewayRefused("claimed_by_other", "gateway is claimed by a different owner device");
       return;
     }
-    if (health.claimed !== false || !existsSync(secretFile)) throw new Error("gateway claim status unavailable or bootstrap secret missing");
+    if (health.claimed !== false) throw new Error("gateway claim status unavailable");
+    if (!existsSync(secretFile)) throw new GatewayRefused("missing_secret", "gateway is unclaimed and no bootstrap secret is saved");
     const result = await this.gateway.claim(readFileSync(secretFile, "utf8").trim(), name);
     unlinkSync(secretFile);
     this.log("gateway claimed", result.owner_id);
@@ -125,7 +167,7 @@ export class OwnerLink extends Link {
   }
   override stop(): void {
     for (const entry of this.agentChannels.values()) entry.peer.close();
-    this.agentChannels.clear(); super.stop();
+    this.agentChannels.clear(); this.halted.abort(); super.stop();
   }
   private async addPending(raw: Record<string, string>): Promise<void> {
     const item: PendingPairing = { request_id: raw.request_id, client_id: raw.client_id, name: raw.name, pubkey: raw.pubkey, fingerprint: await shortFingerprint(raw.pubkey), at: Date.now() };
@@ -310,7 +352,12 @@ export class OwnerLink extends Link {
     await this.gateway.permissions(conn, id, permissions, Number(list.grant_version) + 1);
     await this.revalidateStreams(); await this.refreshDevices();
   }
-  state(): Record<string, unknown> { return { connected: this.connected, error: this.lastError || undefined,
+  /** The owner-facing reason the gateway is not usable now, or undefined while connected. */
+  private error(): GatewayProblem | undefined {
+    if (this.problem) return this.problem;
+    return this.connected || !this.lastError ? undefined : gatewayProblem(new Error(this.lastError));
+  }
+  state(): Record<string, unknown> { return { connected: this.connected, error: this.error(),
     pending: [...this.pending.values()],
     devices: this.paired.map((item) => ({ id: `device:${item.id}`, name: item.name, online: this.remoteDevices.get(item.id)?.member.online ?? item.online,
       permissions: item.permissions, lends: this.remoteDevices.has(item.id), capabilities: this.remoteDevices.get(item.id)?.member.capabilities().length ?? 0,

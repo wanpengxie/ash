@@ -552,15 +552,20 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(post);
     edge.attachPostJournal(post.journal);
     const gatewayFile = join(config.stateDir, "gateway.json");
-    const gatewayUrl = existsSync(gatewayFile) ? (JSON.parse(readFileSync(gatewayFile, "utf8")) as { url?: string }).url : config.gateway?.url;
-    if (gatewayUrl) {
+    let gatewayUrl = config.gateway?.url;
+    try { if (existsSync(gatewayFile)) gatewayUrl = (JSON.parse(readFileSync(gatewayFile, "utf8")) as { url?: string }).url; }
+    catch (error) { log("gateway setting unreadable; running without the gateway", error); gatewayUrl = undefined; }
+    // The gateway is optional: a refused claim, a wrong secret or an unreachable gateway never stops ash. The reason is
+    // shown on the owner's devices page; only an unreachable gateway is tried again.
+    if (gatewayUrl) try {
       const signer = hostLink ? await hostLink.signer() : await fileSigner(config.stateDir);
-      link = new OwnerLink(gatewayUrl, signer, edge, log);
-      link.setDeviceManagement((id, fallback) => devices!.deviceName(id, fallback), id => devices!.localAgentsAllowed(id));
-      await link.claimIfNeeded(join(config.stateDir, "bootstrap-secret"), config.name ?? "Ash owner");
-      void link.run();
-      await link.waitConnected(); // remote recovery requires current grants, not an old snapshot
-    }
+      const owner = new OwnerLink(gatewayUrl, signer, edge, log);
+      owner.setDeviceManagement((id, fallback) => devices!.deviceName(id, fallback), id => devices!.localAgentsAllowed(id));
+      link = owner;
+      void owner.start(join(config.stateDir, "bootstrap-secret"), config.name ?? "Ash owner");
+      // Remote recovery prefers current grants to an old snapshot, but waits only briefly; devices join as they connect.
+      if (!await owner.waitConnected()) log("gateway not connected at startup", owner.problem ?? owner.lastError);
+    } catch (error) { log("gateway setup failed; running without the gateway", error); }
     // Reconcile durable stop intents before router recovery can replay an old tool request.
     const committedPause = admin.currentCommittedPause();
     if (committedPause) agent.reconcileCommittedPause(committedPause.requestId, committedPause.targetTurn);
