@@ -52,35 +52,72 @@ internal data class TaskFrame(val session: String, val revision: Long, val turn:
     }
 }
 
-/** Ephemeral only. A host/core restart never resurrects an old task or stop button. */
+/**
+ * Ephemeral, except what the owner has already taken in ([noticed], persisted by the host): a host/core restart never
+ * resurrects an old task or stop button, and never shows the owner again what they already saw or closed.
+ */
 internal class TaskStatusModel {
-    companion object { const val STALE_MS = 100_000L }
+    companion object { const val STALE_MS = 100_000L; const val NOTICED_MAX = 500 }
     var frame: TaskFrame? = null; private set
     private var received = 0L
     private var finished = 0L
-    /** The owner closed the island for this turn: it stays away until the next turn (the notification carries on). */
-    var dismissed = false; private set
     private val retired = mutableSetOf<String>()
+    /**
+     * What the owner already knows about, by turn and question, not by session (a core restart starts a new session):
+     * `end:<turn>` an ended turn's result, `card:<id>` a question, `closed:<turn>` a turn whose island they closed.
+     * Ash in front or a closed island makes everything current known; the island returns only for something new.
+     */
+    private val noticed = LinkedHashSet<String>()
+    fun restoreNoticed(keys: Collection<String>) { noticed.addAll(keys); trim() }
+    fun noticedKeys(): List<String> = noticed.toList()
+    private fun trim() { while (noticed.size > NOTICED_MAX) noticed.remove(noticed.first()) }
+    /** The owner closed the island for this turn: it stays away for the rest of the turn (the notification carries on). */
+    val dismissed: Boolean get() = frame?.turn?.let { "closed:$it" in noticed } ?: false
     fun accept(next: TaskFrame, now: Long): Boolean {
         val old = frame
         if (next.session in retired || old?.session == next.session && next.revision <= old.revision) return false
         if (old != null && old.session != next.session) retired.add(old.session)
         if (retired.size > 32) retired.remove(retired.first())
         if (next.state == "done" && (old?.turn != next.turn || old?.state != "done")) finished = now
-        if (old?.turn != next.turn || old?.session != next.session) dismissed = false
         frame = next; received = now
         return true
     }
     /** A turn under way that has sent no status for this long shows as disconnected. */
     fun stale(now: Long): Boolean = frame?.state != "done" && now - received > STALE_MS
-    fun dismiss(turn: String): Boolean {
-        if (frame?.turn != turn) return false
-        dismissed = true; return true
+    private fun running(f: TaskFrame) = f.canStop && f.state !in setOf("done", "waiting_you")
+    /** What in this frame the owner could still be told about: the ended turn's result and each open question. */
+    private fun items(f: TaskFrame): List<String> {
+        val turn = f.turn ?: return emptyList()
+        return buildList {
+            if (!running(f)) add("end:$turn")
+            for (c in f.cards) if (c.state == "waiting") add("card:${c.id}")
+        }
     }
-    /** A turn is under way or has just ended (the notification); the island shows it unless the owner closed it. */
+    /** The owner has it in front of them (Ash is open): all of it is known now. True when that changed anything. */
+    fun notice(): Boolean {
+        val f = frame ?: return false
+        val before = noticed.size
+        noticed.removeAll(items(f).toSet()); noticed.addAll(items(f)); trim()
+        return noticed.size != before
+    }
+    fun dismiss(turn: String): Boolean {
+        val f = frame
+        if (f?.turn != turn) return false
+        noticed.addAll(items(f)); noticed.add("closed:$turn"); trim()
+        return true
+    }
+    /** A turn is under way or has just ended (the notification). */
     fun active(): Boolean = frame?.let { it.turn != null && it.state !in setOf("idle", "resting") } ?: false
-    fun visible(now: Long, homeVisible: Boolean = true, editing: Boolean = false): Boolean = active() && !dismissed
+    /**
+     * The island shows a task under way (unless closed for this turn), and otherwise only what the owner has not seen:
+     * a result or question they took in, in Ash or by closing the island, never comes back.
+     */
+    fun visible(now: Long, homeVisible: Boolean = true, editing: Boolean = false): Boolean {
+        val f = frame ?: return false
+        if (!active() || dismissed) return false
+        return running(f) || items(f).any { it !in noticed }
+    }
     fun canStop(turn: String, now: Long): Boolean = frame?.let { it.turn == turn && it.canStop && !stale(now) && active() } ?: false
     fun elapsed(now: Long): Long = frame?.let { ((if (it.state == "done") finished else now) - it.startedAt).coerceAtLeast(0) / 1000 } ?: 0
-    fun clear() { frame = null; retired.clear(); received = 0; finished = 0; dismissed = false }
+    fun clear() { frame = null; retired.clear(); received = 0; finished = 0 }
 }

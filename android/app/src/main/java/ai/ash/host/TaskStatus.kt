@@ -27,7 +27,16 @@ object TaskStatus {
     private var lastNotification: String? = null
     private const val CHANNEL = "ash.task"
     private const val ID = 7
-    fun start(ctx: Context) { main.post { app = ctx.applicationContext; ai.ash.host.screen.ScreenBridge.start(ctx); ai.ash.host.senses.SensesBridge.start(ctx); main.removeCallbacks(tick); tick.run() } }
+    private const val NOTICED = "ash_island_noticed"
+    private fun saveNoticed() {
+        val ctx = app ?: return
+        ctx.getSharedPreferences(NOTICED, Context.MODE_PRIVATE).edit().putString("keys", org.json.JSONArray(model.noticedKeys()).toString()).apply()
+    }
+    private fun loadNoticed(ctx: Context) {
+        val raw = ctx.getSharedPreferences(NOTICED, Context.MODE_PRIVATE).getString("keys", null) ?: return
+        runCatching { org.json.JSONArray(raw) }.getOrNull()?.let { a -> model.restoreNoticed((0 until a.length()).map { a.getString(it) }) }
+    }
+    fun start(ctx: Context) { main.post { if (app == null) loadNoticed(ctx.applicationContext); app = ctx.applicationContext; ai.ash.host.screen.ScreenBridge.start(ctx); ai.ash.host.senses.SensesBridge.start(ctx); main.removeCallbacks(tick); tick.run() } }
     fun close() { main.post { main.removeCallbacks(tick); model.clear(); TaskCapsule.hide(); app?.getSystemService(NotificationManager::class.java)?.cancel(ID); app = null; lastNotification = null } }
     /** Show the current state again now (the screen helper connected, Ash's own screen came or went). */
     fun refresh() { main.post { render() } }
@@ -52,15 +61,18 @@ object TaskStatus {
         if (!model.active() || frame == null) {
             TaskCapsule.hide(); ctx.getSystemService(NotificationManager::class.java).cancel(ID); lastNotification = null; return
         }
+        // Ash open: the owner has whatever is current in front of them, so it never pops up again outside Ash.
+        if (AppState.inFront && model.notice()) saveNoticed()
         val title = if (model.stale(now)) "连接中断，状态待确认" else notice ?: frame.text.ifBlank { "在忙" }
         val canStop = model.canStop(frame.turn!!, now) && stopping != frame.turn
-        if (model.dismissed) TaskCapsule.hide()
+        val onIsland = model.visible(now)
+        if (!onIsland) TaskCapsule.hide()
         else TaskCapsule.update(ctx, frame, model.elapsed(now), model.stale(now), stopping == null, canStop, notice)
         // A running turn is shown once: on the island, or, when the island is closed (or may not be drawn), as this
         // notification. What the turn says or asks reaches the owner through Ash's delivery, which notifies only when
         // the island is not on screen (Ash asks the phone at that moment).
         val manager = ctx.getSystemService(NotificationManager::class.java)
-        val islandOpen = !model.dismissed && TaskCapsule.ready()
+        val islandOpen = onIsland && TaskCapsule.ready()
         if (islandOpen || frame.state in setOf("done", "waiting_you") || !manager.areNotificationsEnabled()) {
             if (lastNotification != null) { manager.cancel(ID); lastNotification = null }
             return
@@ -86,7 +98,7 @@ object TaskStatus {
     /** Closes the island for the rest of this turn; from then on Ash notifies instead. */
     fun dismiss(turn: String) { main.post {
         if (!model.dismiss(turn)) return@post
-        TaskCapsule.hide(); render()
+        saveNoticed(); TaskCapsule.hide(); render()
     } }
     /** Explicit end, not a UI-only dismissal: withdraw pending actions before stopping this exact turn. */
     fun end(turn: String) { main.post {

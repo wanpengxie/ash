@@ -75,10 +75,33 @@ class TaskStatusModelTest {
         assertFalse(m.visible(63000, homeVisible = false))
         m.accept(frame(4, turn = "t_next"), 64000); assertTrue(m.visible(65000, homeVisible = false))
     }
-    @Test fun returningHomeDoesNotConsumeAReplyOrQuestion() {
-        val m = TaskStatusModel(); m.accept(frame(2, state = "done", canStop = false), 4000)
-        assertTrue(m.visible(9000, homeVisible = true, editing = true))
-        assertTrue(m.visible(10000, homeVisible = true, editing = false))
-        assertTrue(m.visible(11000, homeVisible = false))
+    private fun card(id: String, state: String = "waiting") = TaskCard(id, id, "service:gate", "t_a", "question", "问", "", "", listOf("a" to "A"), 99_999, false, state)
+    @Test fun whatTheOwnerSawInAshNeverComesBack() {
+        val m = TaskStatusModel(); m.accept(frame(2, state = "done", canStop = false).copy(reply = "好了"), 4000)
+        assertTrue(m.visible(5000))
+        assertTrue(m.notice()); assertFalse(m.visible(6000))
+        assertFalse(m.notice())
+        // A later frame of the same ended turn changes nothing.
+        m.accept(frame(3, state = "done", canStop = false).copy(reply = "好了"), 7000); assertFalse(m.visible(7000))
+    }
+    @Test fun aQuestionAlreadySeenStaysAwayButANewOneShows() {
+        val m = TaskStatusModel(); m.accept(frame(2, state = "waiting_you", canStop = false).copy(cards = listOf(card("q1"))), 4000)
+        assertTrue(m.visible(5000)); m.notice(); assertFalse(m.visible(5100))
+        m.accept(frame(3, state = "waiting_you", canStop = false).copy(cards = listOf(card("q1"), card("q2"))), 6000)
+        assertTrue(m.visible(6100))
+    }
+    @Test fun closingOrSeeingSurvivesACoreRestart() {
+        val m = TaskStatusModel(); m.accept(frame(2, state = "waiting_you", canStop = false).copy(cards = listOf(card("q1"))), 4000)
+        m.notice()
+        val after = TaskStatusModel(); after.restoreNoticed(m.noticedKeys())
+        after.accept(frame(1, session = "session-b", state = "waiting_you", canStop = false).copy(cards = listOf(card("q1"))), 9000)
+        assertFalse(after.visible(9100))
+        val running = TaskStatusModel(); running.accept(frame(), 2000); assertTrue(running.dismiss("t_a"))
+        val again = TaskStatusModel(); again.restoreNoticed(running.noticedKeys())
+        again.accept(frame(1, session = "session-b"), 3000); assertFalse(again.visible(3100))
+    }
+    @Test fun aTaskUnderWayStillShowsAfterTheOwnerLooked() {
+        val m = TaskStatusModel(); m.accept(frame(), 2000); m.notice(); assertTrue(m.visible(2100))
+        m.accept(frame(2, state = "done", canStop = false), 3000); assertTrue(m.visible(3100))
     }
 }
