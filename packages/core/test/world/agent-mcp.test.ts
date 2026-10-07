@@ -11,6 +11,7 @@ import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 
+const SCREEN = Buffer.concat([Buffer.from("ffd8ffe000104a464946", "hex"), Buffer.alloc(3000, 7)]);
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-login", member: "person:owner", local: true, remote: false, ownerProxy: true };
 
 async function world(options: { fastPathMs?: number; maxWaitMs?: number; artifacts?: string } = {}) {
@@ -28,10 +29,17 @@ async function world(options: { fastPathMs?: number; maxWaitMs?: number; artifac
         input_schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"], additionalProperties: false } },
       { name: "large.get", label: "Large", description: "Returns a large page. Read-only.", risk: "none",
         input_schema: { type: "object", properties: {}, additionalProperties: false } },
+      { name: "screen.see", label: "See", description: "Look at the screen. Read-only.", risk: "none",
+        input_schema: { type: "object", properties: {}, additionalProperties: false } },
     ],
     handle: async (message) => {
       if (message.word === "battery.get") return { ok: true, result: { level: 80 } };
       if (message.word === "large.get") return { ok: true, result: { page: "x".repeat(90_000) } };
+      if (message.word === "screen.see") return { ok: true, result: { content: [{ type: "text", text: "Screen 1080x2400 px" },
+        // A JPEG declared as PNG, wrapped base64 as some encoders write it, ten more than are shown, and one that is no image at all.
+        { type: "image", data: SCREEN.toString("base64").replace(/(.{40})/g, "$1\n"), mimeType: "image/png" },
+        ...Array.from({ length: 9 }, () => ({ type: "image", data: SCREEN.toString("base64"), mimeType: "image/jpeg" })),
+        { type: "image", data: Buffer.from("not an image").toString("base64"), mimeType: "image/png" }] } };
       await new Promise<void>((resolve) => { release = resolve; });
       return { ok: true, result: { done: message.body.n } };
     } });
@@ -83,7 +91,7 @@ test("human and meta tools act as the agent within its turn", async () => {
 
     const listed = await w.server.call(w.binding, "capability_list", {}, turn.signal) as ToolResult & { ok: true; result: { members: { id: string; capabilities: { word: string; effect: string }[] }[] } };
     const phone = listed.result.members.find((m) => m.id === "device:phone")!;
-    assert.deepEqual(phone.capabilities.map((c) => [c.word, c.effect]), [["battery.get", "read"], ["slow.run", "read"], ["large.get", "read"]]);
+    assert.deepEqual(phone.capabilities.map((c) => [c.word, c.effect]), [["battery.get", "read"], ["slow.run", "read"], ["large.get", "read"], ["screen.see", "read"]]);
     assert.ok(!listed.result.members.some((m) => m.id === "agent:main"), "she does not list herself");
 
     const described = await w.server.call(w.binding, "capability_describe", { member: "device:phone", word: "battery.get" }, turn.signal) as ToolResult & { ok: true; result: { capabilities: { input_schema: object; effect: string }[] } };
@@ -180,6 +188,30 @@ test("an oversized MCP result stays valid JSON and points to the complete worksp
     const full = readFileSync(parsed.result.artifact.path, "utf8");
     assert.equal(JSON.parse(full).result.page.length, 90_000);
     assert.equal(parsed.result.artifact.bytes, Buffer.byteLength(full));
+  } finally { turn.abort(); await client.close(); await w.server.close(); w.ledger.close(); }
+});
+
+test("images in a capability result reach the agent as MCP image content, not as base64 text", async () => {
+  const w = await world();
+  const turn = new AbortController();
+  w.binding.begin("t_see", turn.signal);
+  const client = new Client({ name: "agent", version: "1" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(w.url), { requestInit: { headers: { authorization: `Bearer ${w.binding.token}` } } }));
+    const response = await client.callTool({ name: "capability_call", arguments: { member: "device:phone", word: "screen.see", body: {} } });
+    const content = response.content as { type: string; text?: string; data?: string; mimeType?: string }[];
+    assert.equal(content[0]!.type, "text");
+    assert.equal(content.length, 9, "one text block and at most eight images");
+    for (const image of content.slice(1)) assert.deepEqual(image, { type: "image", data: SCREEN.toString("base64"), mimeType: "image/jpeg" });
+    const text = content[0]!.text!;
+    assert.ok(text.length < 4000, "the base64 stays out of the text");
+    assert.doesNotMatch(text, new RegExp(SCREEN.toString("base64").slice(0, 32).replace(/[+/]/g, "\\$&")));
+    const parts = (JSON.parse(text) as { result: { content: Record<string, unknown>[] } }).result.content;
+    assert.deepEqual(parts[0], { type: "text", text: "Screen 1080x2400 px" });
+    assert.deepEqual(parts[1], { type: "image", mimeType: "image/jpeg", bytes: SCREEN.length, shown: "image 1 after this text, as an image you can see" });
+    assert.match(String(parts[9]!.omitted), /first 8 images/);
+    assert.match(String(parts[11]!.omitted), /not a PNG, JPEG, WebP or GIF/);
+    assert.equal(response.isError, undefined);
   } finally { turn.abort(); await client.close(); await w.server.close(); w.ledger.close(); }
 });
 

@@ -60,6 +60,10 @@ const pick = (args: Record<string, unknown>, keys: string[]) => Object.fromEntri
 // The agent runtime gives each MCP call 60 s; a wait must answer before that.
 const MAX_WAIT_MS = 50_000;
 const MAX_RESULT_CHARS = 60_000;
+// Images in a result travel as MCP image content; the runtime normalizes and sizes them for the model itself.
+const MAX_RESULT_IMAGES = 8;
+const MAX_RESULT_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_RESULT_IMAGES_TOTAL = 20 * 1024 * 1024;
 
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const text = (description: string, extra: Record<string, unknown> = {}) => ({ type: "string", description, ...extra });
@@ -100,6 +104,40 @@ function fromResponse(body: ResponseBody, spec?: WordSpec): ToolResult {
     case "cancelled": return failure("result_unknown", message);
     default: return failure("capability_error", message, { code, ...(body.error.detail === undefined ? {} : { detail: body.error.detail }) });
   }
+}
+
+type ImageContent = { type: "image"; data: string; mimeType: string };
+
+/** The image format the bytes are, whatever the part claims; the runtime admits PNG, JPEG, WebP and GIF. */
+function sniffImage(data: Buffer): string | null {
+  if (data.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) return "image/png";
+  if (data.subarray(0, 3).equals(Buffer.from("ffd8ff", "hex"))) return "image/jpeg";
+  if (["GIF87a", "GIF89a"].includes(data.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
+}
+
+/**
+ * Take the image parts ({type:"image", data, mimeType}) out of a result: each becomes real image content for the model,
+ * and the JSON keeps a short note in its place instead of the base64 text.
+ */
+function takeImages(value: unknown, taken: { images: ImageContent[]; bytes: number; attach: boolean }, depth = 0): unknown {
+  if (!value || typeof value !== "object" || depth > 12) return value;
+  if (Array.isArray(value)) return value.map((item) => takeImages(item, taken, depth + 1));
+  const item = value as Record<string, unknown>;
+  if (item.type === "image" && typeof item.data === "string") {
+    const omitted = (why: string) => ({ ...item, data: undefined, omitted: why });
+    const data = Buffer.from(item.data.replace(/\s+/g, ""), "base64");
+    const mimeType = sniffImage(data);
+    if (!mimeType) return omitted("not a PNG, JPEG, WebP or GIF image");
+    if (!taken.attach) return omitted("images are not shown for a failed call");
+    if (taken.images.length >= MAX_RESULT_IMAGES) return omitted(`only the first ${MAX_RESULT_IMAGES} images of one result are shown`);
+    if (data.length > MAX_RESULT_IMAGE_BYTES || taken.bytes + data.length > MAX_RESULT_IMAGES_TOTAL) return omitted("image too large to show");
+    taken.images.push({ type: "image", data: data.toString("base64"), mimeType });
+    taken.bytes += data.length;
+    return { ...item, data: undefined, mimeType, bytes: data.length, shown: `image ${taken.images.length} after this text, as an image you can see` };
+  }
+  return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, takeImages(child, taken, depth + 1)]));
 }
 
 function fromError(error: unknown): ToolResult {
@@ -276,8 +314,9 @@ export class AgentMcpServer {
       server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((tool) => binding.allowsTool(tool.name)).map((tool) => ({ ...tool })) }));
       server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
         const result = await this.call(binding, call.params.name, (call.params.arguments ?? {}) as Record<string, unknown>, extra.signal);
-        const encoded = this.encodeResult(result);
-        return { content: [{ type: "text", text: encoded.body }], ...(encoded.isError ? { isError: true } : {}) };
+        const taken = { images: [] as ImageContent[], bytes: 0, attach: !(result && typeof result === "object" && "ok" in result && result.ok === false) };
+        const encoded = this.encodeResult(takeImages(result, taken) as ToolResult | Record<string, unknown>);
+        return { content: [{ type: "text", text: encoded.body }, ...taken.images], ...(encoded.isError ? { isError: true } : {}) };
       });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       response.on("close", () => { void transport.close(); void server.close(); });
