@@ -290,7 +290,10 @@ export async function startOwner(config: Config): Promise<Running> {
         if (typeof stored.provider === "string" && typeof stored.model === "string") return { provider: stored.provider, model: stored.model }; } } catch { /* fall back */ }
       return null;
     };
-    const containerModel = (): { provider: string; model: string } => migrateModelChoice(storedModel() ?? config.container?.model ?? DEFAULT_MODEL);
+    // The model is the runtime's own setting, kept in its sessions: once the main session is open its reported model is
+    // the answer. Before that (and for a brand-new session's start) ash uses the last choice it saw, or the default.
+    const containerModel = (): { provider: string; model: string } =>
+      container?.currentModel("main") ?? migrateModelChoice(storedModel() ?? config.container?.model ?? DEFAULT_MODEL);
     // The retired default id is unknown to the runtime; a stored choice of exactly it is rewritten once to its successor.
     const storedChoice = storedModel();
     if (storedChoice && migrateModelChoice(storedChoice) !== storedChoice) {
@@ -312,7 +315,8 @@ export async function startOwner(config: Config): Promise<Running> {
       const containerConfig = config.container!;
       egress = new ModelEgress({ key: () => vaultStore.get("DEEPSEEK_API_KEY"), upstream: containerConfig.modelUpstream });
       const egressBase = await egress.start();
-      container = new ContainerHost({ stateDir: config.stateDir, log, model: containerModel,
+      container = new ContainerHost({ stateDir: config.stateDir, log,
+        successor: (choice) => { const next = migrateModelChoice(choice); return next === choice ? null : next; },
         launch: () => prepareLaunch({ ...containerConfig, model: containerModel() }, egressBase, config.stateDir) });
       const mainDeclaration = declarations.find((item) => item.id === "agent:main")!;
       mainBinding = agentTools.bind("agent:main", "main", () => null, agentPolicy(mainDeclaration));

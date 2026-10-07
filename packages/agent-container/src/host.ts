@@ -7,12 +7,29 @@ import type { LaunchSpec } from "./launch";
 export interface McpEndpoint { url: string; token: string }
 export interface ContentBlock { type: string; [key: string]: unknown }
 
+export interface ModelChoice { provider: string; model: string }
+
+/** The model option's current value from an ACP configOptions list: a JSON [provider, model] pair. */
+export function modelOf(configOptions: unknown): ModelChoice | null {
+  if (!Array.isArray(configOptions)) return null;
+  const option = configOptions.find((item) => item && typeof item === "object" && (item as { id?: unknown }).id === "model") as { currentValue?: unknown } | undefined;
+  if (typeof option?.currentValue !== "string") return null;
+  try {
+    const pair = JSON.parse(option.currentValue) as unknown;
+    if (Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "string") return { provider: pair[0], model: pair[1] };
+  } catch { /* not a pair */ }
+  return null;
+}
+
 export interface ContainerHostOptions {
   launch: () => LaunchSpec;
   stateDir: string;
   log?: (...args: unknown[]) => void;
-  /** The model ash has chosen; a resumed session is switched to it, since the runtime resumes with the model in its log. */
-  model?: () => { provider: string; model: string };
+  /**
+   * The successor of a retired model id, or null. The model is the runtime's own setting, kept in each session and read
+   * back from it; ash only moves a session off an id the provider has retired, once.
+   */
+  successor?: (choice: ModelChoice) => ModelChoice | null;
 }
 
 /**
@@ -25,6 +42,8 @@ export class ContainerHost {
   private starting: AcpClient | null = null;
   private booting: Promise<AcpClient> | null = null;
   private readonly sessions = new Map<string, { id: string; mcp: McpEndpoint }>();
+  /** Each open session's model, as the runtime last reported it. */
+  private readonly models = new Map<string, ModelChoice>();
   private readonly opening = new Map<string, Promise<string>>();
   private readonly listeners = new Set<(sessionId: string, update: AcpUpdate) => void>();
   private readonly exitListeners = new Set<(reason: string) => void>();
@@ -108,13 +127,9 @@ export class ContainerHost {
       const started = Date.now();
       if (previous) {
         try {
-          await client.request("session/resume", { sessionId: previous, cwd: workspace, mcpServers: servers });
-          const chosen = this.options.model?.();
-          if (chosen) {
-            try { await client.request("session/set_config_option", { sessionId: previous, configId: "model", value: JSON.stringify([chosen.provider, chosen.model]) }); }
-            catch (error) { this.options.log?.(`session ${key} kept its own model: ${(error as Error).message}`); }
-          }
+          const resumed = await client.request<{ configOptions?: unknown }>("session/resume", { sessionId: previous, cwd: workspace, mcpServers: servers });
           this.sessions.set(key, { id: previous, mcp });
+          await this.adopt(key, previous, resumed?.configOptions);
           this.timings[`resume:${key}`] = Date.now() - started;
           return previous;
         } catch (error) {
@@ -123,10 +138,11 @@ export class ContainerHost {
           this.options.log?.(`session ${key} could not be resumed (${error.message}); starting a new one`);
         }
       }
-      const created = await client.request<{ sessionId: string }>("session/new", { cwd: workspace, mcpServers: servers });
+      const created = await client.request<{ sessionId: string; configOptions?: unknown }>("session/new", { cwd: workspace, mcpServers: servers });
       if (typeof created?.sessionId !== "string") throw new Error("agent runtime returned no session id");
       this.store(key, created.sessionId);
       this.sessions.set(key, { id: created.sessionId, mcp });
+      await this.adopt(key, created.sessionId, created.configOptions);
       this.timings[`new:${key}`] = Date.now() - started;
       return created.sessionId;
     })();
@@ -181,7 +197,24 @@ export class ContainerHost {
   /** Choose a model for a session. Values are the runtime's own option ids, a JSON [provider, model] pair. */
   async setModel(sessionId: string, provider: string, model: string): Promise<void> {
     const client = await this.boot();
-    await client.request("session/set_config_option", { sessionId, configId: "model", value: JSON.stringify([provider, model]) });
+    const answer = await client.request<{ configOptions?: unknown }>("session/set_config_option", { sessionId, configId: "model", value: JSON.stringify([provider, model]) });
+    for (const [key, live] of this.sessions) if (live.id === sessionId) this.models.set(key, modelOf(answer?.configOptions) ?? { provider, model });
+  }
+
+  /** The model a session runs on, as the runtime reported it; null before the session has been opened. */
+  currentModel(key: string): ModelChoice | null { return this.models.get(key) ?? null; }
+
+  /** Note the session's own model; a retired id is moved to its successor once, through the runtime's own setting. */
+  private async adopt(key: string, sessionId: string, configOptions: unknown): Promise<void> {
+    const current = modelOf(configOptions);
+    if (!current) return;
+    this.models.set(key, current);
+    const next = this.options.successor?.(current);
+    if (!next) return;
+    try {
+      await this.setModel(sessionId, next.provider, next.model);
+      this.options.log?.(`session ${key}: retired model ${current.model} -> ${next.model}`);
+    } catch (error) { this.options.log?.(`session ${key} stays on ${current.model}: ${(error as Error).message}`); }
   }
 
   async close(): Promise<void> {
