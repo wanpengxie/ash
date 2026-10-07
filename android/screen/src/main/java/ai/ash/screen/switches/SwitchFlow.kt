@@ -80,9 +80,12 @@ class SwitchFlow(
         var page = poll(stepMs) { pageOf(it) }
         var backs = 0
         while (page == null && backs++ < MAX_BACKS) {
-            if (locate("应用", ROW_MS) != null) { page = Page.HOME; break }
+            // Settings may still be starting (its splash screen): give 「应用」 the full step time before stepping back.
+            if (locate("应用", stepMs) != null) { page = Page.HOME; break }
+            page = allowedRoot()?.let { pageOf(it) }
+            if (page != null) break
             ui.back(); ui.settle()
-            page = poll(ROW_MS) { pageOf(it) }
+            page = poll(stepMs) { pageOf(it) }
         }
         if (page == null) throw Abort("设置里找不到「应用」")
         if (page == Page.HOME) {
