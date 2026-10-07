@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_MODEL, migrateModelChoice, patchText } from "../src/launch";
 import { catalogRates, piWorkerModel } from "../src/workers";
+import { modelOf } from "../src/host";
 import { DEEPSEEK_DEFAULT_MODEL, resolveModel } from "../../core/src/workers/deepseek-model";
 
 test("the default model is DeepSeek's image-reading Flash, by the id the runtime knows", () => {
@@ -34,4 +35,16 @@ test("background model calls resolve deepseek-flash although pi-ai's catalog doe
 test("a worker on an unknown model fails plainly instead of calling out", async () => {
   const worker = piWorkerModel(() => "sk-test", () => ({ provider: "deepseek-official", model: "no-such-model" }));
   await assert.rejects(worker.complete({ system: "s", user: "u" }, new AbortController().signal), /worker model unavailable: deepseek\/no-such-model/);
+});
+
+test("a session's model is read from the runtime's own config option", () => {
+  const options = [{ id: "model", type: "select", currentValue: JSON.stringify(["deepseek-official", "deepseek-flash"]), options: [] },
+    { id: "reasoning", currentValue: "high" }];
+  assert.deepEqual(modelOf(options), { provider: "deepseek-official", model: "deepseek-flash" });
+  assert.equal(modelOf(undefined), null);
+  assert.equal(modelOf([{ id: "model", currentValue: "not json" }]), null);
+  // Only a retired id is moved, and only to its successor.
+  assert.deepEqual(migrateModelChoice({ provider: "deepseek-official", model: "deepseek-v4-flash" }), DEFAULT_MODEL);
+  const kept = { provider: "deepseek-official", model: "deepseek-v4-pro" };
+  assert.equal(migrateModelChoice(kept), kept);
 });

@@ -167,6 +167,8 @@ test("the container runtime answers through ACP, uses ash tools over MCP, takes 
     assert.deepEqual(sayToOwner(running, mark), ["plain"]);
     assert.equal(JSON.parse(readFileSync(join(root, "state", "container-sessions.json"), "utf8")).main, sessions.main);
     assert.ok(running.container!.timings["resume:main"] !== undefined, "the main session was resumed");
+    // The model is the runtime's own: ash reads it back from the resumed session rather than imposing a stored copy.
+    assert.deepEqual(running.container!.currentModel("main"), { provider: "deepseek-official", model: "deepseek-flash" });
   } finally {
     await running?.close();
     server.close();
