@@ -4,18 +4,14 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ShortcutInfo
-import android.content.pm.ShortcutManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
-import android.widget.Toast
 
 /** Small shared pieces of the shell's screens. */
 object Ui {
@@ -65,17 +61,4 @@ object Ui {
     /** The intent that opens one app in its own task (the same intent each time, so its task is reused). */
     fun appIntent(ctx: Context, id: String): Intent =
         Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, AppActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
-
-    /** 「添加到桌面」: the launcher asks the owner, then shows the app's own icon and name. */
-    fun pin(ctx: Context, id: String, name: String, icon: Bitmap?) {
-        val sm = ctx.getSystemService(ShortcutManager::class.java)
-        if (sm == null || !sm.isRequestPinShortcutSupported) { Toast.makeText(ctx, "这个桌面不支持添加图标", Toast.LENGTH_LONG).show(); return }
-        val info = ShortcutInfo.Builder(ctx, "app:$id")
-            .setShortLabel(name.take(24)).setLongLabel(name)
-            .setIcon(icon?.let { Icon.createWithBitmap(square(it)) } ?: Icon.createWithResource(ctx, R.drawable.ic_launcher))
-            .setIntent(Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, OpenActivity::class.java))
-            .build()
-        runCatching { if (!sm.requestPinShortcut(info, null)) Toast.makeText(ctx, "桌面没有接受", Toast.LENGTH_LONG).show() }
-            .onFailure { Toast.makeText(ctx, "添加失败：${it.message}", Toast.LENGTH_LONG).show() }
-    }
 }

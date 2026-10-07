@@ -155,7 +155,7 @@ class AppActivity : Activity() {
         m.menu.add(0, 3, 2, "全部应用")
         m.setOnMenuItemClickListener {
             when (it.itemId) {
-                1 -> Ui.pin(this, appId, info?.name ?: appId, icon)
+                1 -> Pin.request(this, appId, info?.name ?: appId, icon)
                 2 -> load()
                 3 -> startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }

@@ -97,7 +97,7 @@ class MainActivity : Activity() {
         row.setOnClickListener { open(a) }
         row.setOnLongClickListener {
             AlertDialog.Builder(this).setTitle(a.name).setItems(arrayOf("打开", "添加到桌面")) { _, which ->
-                if (which == 0) open(a) else Ui.pin(this, a.id, a.name, icons[a.id])
+                if (which == 0) open(a) else Pin.request(this, a.id, a.name, icons[a.id])
             }.show()
             true
         }
