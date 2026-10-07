@@ -73,7 +73,7 @@ class BridgeService : Service() {
                 when {
                     name in setOf("screen.see", "screen.capture") && args.optInt("display", 0) != 0 -> call()
                     name in setOf("screen.see", "screen.capture") -> NativeIsland.withoutOverlay(call)
-                    name !in setOf("screen.read", "screen.touch_status") -> NativeIsland.withTouchPassthrough(call)
+                    name !in setOf("screen.read", "screen.touch_status", ai.ash.bridge.KeepAliveSwitches.CAPABILITY) -> NativeIsland.withTouchPassthrough(call)
                     else -> call()
                 }
             } catch (e: IllegalStateException) { CapResult.fail(e.message ?: "owner_input_busy") }

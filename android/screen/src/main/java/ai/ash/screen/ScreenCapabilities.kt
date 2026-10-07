@@ -1,11 +1,14 @@
 package ai.ash.screen
 
+import ai.ash.bridge.KeepAliveSwitches
 import ai.ash.host.cap.Cap
 import ai.ash.host.cap.CapResult
 import ai.ash.host.cap.Capability
 import ai.ash.host.cap.prop
 import ai.ash.host.cap.schema
 import ai.ash.screen.a11y.A11yService
+import ai.ash.screen.switches.AccessibilityUi
+import ai.ash.screen.switches.SwitchFlow
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Bitmap
@@ -428,8 +431,29 @@ object ScreenCapabilities {
         if (svc().global(id)) CapResult.text("Done: $name.") else CapResult.fail("the system refused $name")
     }
 
+    private val switchesRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Ash's own tool for the owner's tap on 「帮我打开」: turns on the keep-alive switches of Ash's three apps in the maker's
+     * settings. Never listed, so no agent can call it. [ai.ash.screen.switches.SwitchFlow] does the work.
+     */
+    private val keepAliveSwitches = Cap(
+        name = KeepAliveSwitches.CAPABILITY,
+        description = "Turn on the background-running switches of Ash's own apps (ColorOS only), for Ash.",
+        schema = schema("packages" to JSONObject().put("type", "array").put("items", JSONObject().put("type", "string"))),
+        availableIf = connected,
+    ) { _, a ->
+        val asked = a.optJSONArray("packages")?.let { l -> (0 until l.length()).map { l.optString(it) } }.orEmpty().mapNotNull { KeepAliveSwitches.target(it) }
+        val report = when {
+            !SwitchFlow.supported(Build.MANUFACTURER) -> KeepAliveSwitches.Report(KeepAliveSwitches.Outcome.UNSUPPORTED, "", emptyList())
+            !switchesRunning.compareAndSet(false, true) -> return@Cap CapResult.fail("already running")
+            else -> try { val service = svc(); SwitchFlow(AccessibilityUi(service, service), asked.map { it.pkg }).run() } finally { switchesRunning.set(false) }
+        }
+        CapResult.text(report.summary(asked), report.toJson())
+    }
+
     /** What the agent is offered (Ash adds screen.screenshot on top of [capture]). */
     val list: List<Capability> = listOf(read, see, tap, type, scroll, swipe, hold, touch, gesture, touchStatus, globalAction)
     /** Called by Ash itself, never listed. */
-    val hidden: List<Capability> = listOf(capture)
+    val hidden: List<Capability> = listOf(capture, keepAliveSwitches)
 }

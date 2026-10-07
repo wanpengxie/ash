@@ -13,6 +13,7 @@ import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import ai.ash.bridge.Bridge
+import ai.ash.host.screen.KeepAliveFlow
 import ai.ash.host.screen.ScreenBridge
 import android.widget.Toast
 import ai.ash.host.screen.ScreenInstaller
@@ -109,7 +110,11 @@ object Permissions {
             add(Permission(
                 "autostart", "Ash 自启动与后台运行", "被系统清理或手机重启后，Ash 自己回来；不开的话，被清理后要等你再打开它",
                 { it.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(it.packageName) },
-                { a -> PhoneMaker.current.openKeepAlive(a, a.packageName, "Ash") },
+                { a ->
+                    val own = { PhoneMaker.current.openKeepAlive(a, a.packageName, "Ash") }
+                    // The helper can turn the switches on for the owner; the written steps are the way back.
+                    if (a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(a.packageName)) KeepAliveFlow.offer(a, own) else own()
+                },
                 { c ->
                     if (!c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(c.packageName)) "先完成上一项「不受电池优化限制」"
                     else PhoneMaker.current.keepAliveFor("Ash")
@@ -199,7 +204,7 @@ object Permissions {
                 { a ->
                     if (SensesBridge.installedVersion(a) == 0L) HelperInstaller.install(a, Helper.SENSES)
                     else if (!a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(Bridge.SENSES_PACKAGE)) SensesBridge.openSetup(a)
-                    else PhoneMaker.current.openKeepAlive(a, Bridge.SENSES_PACKAGE, "Ash 感知")
+                    else KeepAliveFlow.offer(a) { PhoneMaker.current.openKeepAlive(a, Bridge.SENSES_PACKAGE, "Ash 感知") }
                 },
                 { c ->
                     when {

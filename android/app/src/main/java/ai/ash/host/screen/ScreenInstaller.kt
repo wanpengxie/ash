@@ -32,7 +32,7 @@ object ScreenInstaller {
             a.startActivity(Intent().setClassName(Bridge.SCREEN_PACKAGE, "ai.ash.screen.KeepAliveActivity"))
             return
         }
-        ai.ash.host.PhoneMaker.current.openKeepAlive(a, Bridge.SCREEN_PACKAGE, "Ash 屏幕助手")
+        KeepAliveFlow.offer(a) { ai.ash.host.PhoneMaker.current.openKeepAlive(a, Bridge.SCREEN_PACKAGE, "Ash 屏幕助手") }
     }
 
     /**
