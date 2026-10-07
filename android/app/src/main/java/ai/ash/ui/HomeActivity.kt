@@ -148,6 +148,7 @@ class HomeActivity : Activity() {
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 ai.ash.host.AppState.homePageLive = url == UI_ASSET_URL && pageEpoch != 0L
+                if (ai.ash.host.AppState.homePageLive && focusInput) focusComposer()
             }
 
             override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
@@ -197,6 +198,7 @@ class HomeActivity : Activity() {
             addView(cover, FrameLayout.LayoutParams(-1, -1))
         })
         if (!bridgeSupported) { status.text = "当前 WebView 不支持 Ash 安全通信"; return }
+        focusInput = intent?.getBooleanExtra(EXTRA_FOCUS_INPUT, false) == true
         poll()
         OnboardingActivity.showOnce(this)
     }
@@ -220,6 +222,30 @@ class HomeActivity : Activity() {
             }.start()
         }
         ui.postDelayed({ poll() }, 1000)
+    }
+
+    /** Set by the widget's "跟 Ash 说"; honoured once the page is live. */
+    private var focusInput = false
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_FOCUS_INPUT, false)) {
+            focusInput = true
+            if (ai.ash.host.AppState.homePageLive) focusComposer()
+        }
+    }
+
+    private fun focusComposer() {
+        focusInput = false
+        // Give the page a moment to lay out after coming to the front, then focus the message box and raise the keyboard.
+        ui.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            web.requestFocus()
+            web.evaluateJavascript("(() => { const t = document.getElementById('t'); if (!t) return false; t.focus(); return true; })()") { focused ->
+                if (focused == "true") getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.showSoftInput(web, 0)
+            }
+        }, 300)
     }
 
     override fun onResume() {
@@ -442,6 +468,8 @@ class HomeActivity : Activity() {
     private fun open(u: String) = startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
 
     companion object {
+        /** Open with the message box focused (the home-screen widget's "跟 Ash 说"). */
+        const val EXTRA_FOCUS_INPUT = "ai.ash.extra.FOCUS_INPUT"
         private const val UI_ASSET_ORIGIN = "https://appassets.androidplatform.net"
         private const val UI_ASSET_URL = "$UI_ASSET_ORIGIN/assets/ash-ui/index.html"
         private const val REQ_FILES = 7101

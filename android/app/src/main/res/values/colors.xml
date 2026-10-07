@@ -3,4 +3,10 @@
     <color name="bg_dark">#141415</color>
     <color name="bg_light">#F7F7F5</color>
     <color name="accent">#FF7A3D</color>
+    <!-- Home-screen widgets (values-night has the dark set). -->
+    <color name="widget_bg">#F2F7F7F5</color>
+    <color name="widget_fg">#1C1C1E</color>
+    <color name="widget_fg2">#6E6E73</color>
+    <color name="widget_line">#1F000000</color>
+    <color name="widget_chip">#14FF7A3D</color>
 </resources>

@@ -155,6 +155,41 @@ add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vau
   { label: "Checking a saved credential", description: "Whether one credential is saved, and what it is for. A value is never returned." });
 add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
   { direction: "out", audience: "owner", description: "A credential was saved or removed. Names only; the value is never on the ledger." });
+// Home-screen widgets: cards anyone may put on the owner's phone home screen, drawn natively from a small A2UI subset.
+const widgetCardId: JsonSchema = { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" };
+const widgetId: JsonSchema = { type: "string", minLength: 1, maxLength: 12 };
+const widgetSize = choice("2x2", "4x2", "4x4");
+const widgetCardInfo = obj({ id: widgetCardId, title: nonempty, size: widgetSize, owner: id, updated_at: nonnegativeSafe,
+  expires_at: { anyOf: [nonnegativeSafe, { type: "null" }] }, expired: bool, actions: strings }, ["id", "title", "size", "owner", "updated_at", "expires_at", "expired", "actions"]);
+const placedWidget = obj({ id: widgetId, type: choice("ash", "card") }, ["id", "type"]);
+const widgetListResult = obj({ cards: array(widgetCardInfo), widgets: array(obj({ id: widgetId, type: choice("ash", "card"), card: { anyOf: [widgetCardId, { type: "null" }] } }, ["id", "type", "card"])) }, ["cards", "widgets"]);
+export const WIDGET_A2UI_GUIDE = "a2ui is an A2UI v0.9 component list: {components:[...], root?:'root', data?:{...}}. Components are flat objects {id, component, ...} linked by id; " +
+  "the root (id 'root' unless root is given) is drawn. Allowed components only: " +
+  "Column {children:[ids], align?:'start'|'center'} and Row {children:[ids], justify?:'start'|'spaceBetween'} (at most 3 Column/Row levels); " +
+  "Text {text, variant?:'h1' big number|'h2'/'h3' title|'body' (default)|'caption' secondary} (at most 3 lines shown); " +
+  "Image {url:'avatar' (Ash's face) or 'icon:<name>' with name one of sun, cloud, rain, snow, wind, moon, heart, steps, weight, sleep, water, fire, calendar, clock, check, alert, star, bell, mail, home, car, money, chart}; no web images; " +
+  "Button {child:<id of a Text used as its label>, action:{event:{name:'<action name>'}}} (at most 2 buttons; a tap sends you widget.action with that name, it never runs anything by itself); " +
+  "Divider {axis?:'horizontal'}; ProgressBar {value: 0-100, label?}; Badge {text} (at most 8 characters). " +
+  "Any text, value or label may instead be {path:'/a/b'} read from the card's own data object. At most 40 components and 8 KB of JSON. " +
+  "Example: {components:[{id:'root',component:'Column',children:['t','n']},{id:'t',component:'Text',text:'Weight',variant:'caption'},{id:'n',component:'Text',text:{path:'/kg'},variant:'h1'}],data:{kg:'61.8 kg'}}";
+add("service:widgets", "widget.list", "request", empty, widgetListResult,
+  { label: "Checking home-screen widgets", effect: "read", description: "What is on the owner's phone home screen: each placed widget (the 'ash' widget, or an 'Ash 卡片' card widget with the card it shows), and every card that exists with its owner, size, expiry and button action names." });
+add("service:widgets", "widget.card.put", "request", obj({ id: { type: "string", minLength: 1, maxLength: 64 }, title: str, size: widgetSize,
+  a2ui: obj({}, [], true), ttl_min: { type: "integer", minimum: 1, maximum: 43200 } }, ["id", "title", "size", "a2ui"]),
+  obj({ card: widgetCardInfo, bound_widgets: array(widgetId) }, ["card", "bound_widgets"]),
+  { label: "Updating a home-screen card", effect: "write", description: "Create or replace (same id) a card the owner can place on the phone home screen with the 'Ash 卡片' widget; widgets already showing it redraw. " +
+    "id: lowercase letters, digits, . _ - (at most 64); title: at most 40 characters. The card belongs to whoever created it: only its creator or the owner may replace or remove it. size is the intended widget size (2x2 small, 4x2 wide, 4x4 large). " +
+    "ttl_min: after this many minutes the card shows as expired until updated. Invalid cards are refused with the reason. " + WIDGET_A2UI_GUIDE });
+add("service:widgets", "widget.card.remove", "request", obj({ id: widgetCardId }, ["id"]), obj({ removed: bool }, ["removed"]),
+  { label: "Removing a home-screen card", effect: "write", description: "Remove a card you created (the owner may remove any). Widgets that showed it ask the owner to pick another card." });
+add("service:widgets", "widget.bind", "request", obj({ widget: widgetId, card: widgetCardId }, ["widget", "card"]), obj({ widget: widgetId, card: widgetCardId }, ["widget", "card"]),
+  { label: "Choosing a widget's card", effect: "write", description: "Make one placed 'Ash 卡片' widget (an id from widget.list) show an existing card. The owner normally picks the card when placing the widget." });
+add("service:widgets", "widget.tap", "request", obj({ card: widgetCardId, action: { type: "string", minLength: 1, maxLength: 64 } }, ["card", "action"]), accepted,
+  { audience: "owner", label: "Passing on a widget tap", effect: "write", description: "The phone reports that the owner tapped a card button. Owner only." });
+add("service:widgets", "widget.placed", "request", obj({ widgets: { type: "array", items: placedWidget, maxItems: 64 } }, ["widgets"]), accepted,
+  { audience: "owner", label: "Noting placed widgets", effect: "write", description: "The phone reports which Ash widgets are on its home screen. Owner only." });
+add("service:widgets", "widget.action", "event", obj({ card: widgetCardId, action: nonempty, owner: id, title: str }, ["card", "action", "owner"]), undefined,
+  { direction: "out", description: "The owner tapped a button on a home-screen card. owner is the card's creator, who decides what it means; the tap itself does nothing else." });
 add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "review", "progress", "other"), provider: str, model: str,
   input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
   cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },
