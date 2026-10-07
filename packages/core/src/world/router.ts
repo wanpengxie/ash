@@ -583,16 +583,16 @@ export class WorldRouter {
       if (request.kind === "request" && ((request.to === "service:admin" && request.word === "pause") ||
         (request.to === "service:reflex" && ["task.stop", "task.end"].includes(request.word)))) {
         if (!ctx.ownerProxy || !ctx.local || ctx.remote) fail("forbidden", "local phone pause requires owner proxy");
-        return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
+        return { from: "person:owner", origin: { screen: "device:phone", label: "手机通知" } };
       }
       if ((request.kind === "request" && request.to === "agent:main" && request.word === "say") || (request.kind === "response" && request.word === "ask")) {
         if (!ctx.ownerProxy) fail("forbidden", "notification proxy not authorized");
-        return { from: "person:owner", origin: { screen: "device:phone", label: "Phone notification" } };
+        return { from: "person:owner", origin: { screen: "device:phone", label: "手机通知" } };
       }
       // Home-screen widgets: a button tap, a card picked while placing a widget, and which widgets are placed.
       if (request.kind === "request" && request.to === "service:widgets" && ["widget.tap", "widget.bind", "widget.placed"].includes(request.word)) {
         if (!ctx.ownerProxy || !ctx.local || ctx.remote) fail("forbidden", "widget input requires owner proxy");
-        return { from: "person:owner", origin: { screen: "device:phone", label: "Home-screen widget" } };
+        return { from: "person:owner", origin: { screen: "device:phone", label: "桌面小组件" } };
       }
       if (request.kind !== "event" || !request.word.startsWith("sense.")) fail("forbidden", "phone may only send senses, notification replies, pause, task stop, or widget input");
     }

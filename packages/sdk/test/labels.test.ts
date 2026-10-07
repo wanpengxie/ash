@@ -3,7 +3,7 @@ import test from "node:test";
 import { STATUS_FALLBACK_LABEL, nativeDetailLabel, statusLabel } from "../src/labels";
 
 test("status labels use declared human wording without leaking unrecognized tool names", () => {
-  assert.equal(statusLabel("service:clock", "list", "在看日程"), "在看日程");
+  assert.equal(statusLabel("device:phone", "calendar.list", "在看日程"), "在看日程");
   assert.equal(statusLabel("device:phone", "calendar_read", "在查看日历"), "在查看日历");
   for (const label of [undefined, "Working", "calendar_read", "device:phone/calendar_read", "\u202esecret", "raw\nsecret"])
     assert.equal(statusLabel("device:phone", "calendar_read", label), STATUS_FALLBACK_LABEL);
@@ -36,4 +36,16 @@ test("Ash's own services and tools read as plain words, not their English contra
   assert.equal(statusLabel("native", "mcp__ash__agent_create"), "在新建帮手");
   // A device capability keeps its own declared label.
   assert.equal(statusLabel("device:phone", "clipboard.set", "改剪贴板"), "改剪贴板");
+});
+
+test("every request word the owner can see being done is named in Chinese", async () => {
+  const { WORD_CONTRACTS } = await import("../src/words");
+  const han = /\p{Script=Han}/u;
+  for (const word of WORD_CONTRACTS.filter((item) => item.kind === "request")) {
+    assert.ok(han.test(word.label), `${word.member}/${word.word} has an English label: ${word.label}`);
+    const status = statusLabel(word.member, word.word, word.label);
+    assert.ok(han.test(status), `${word.member}/${word.word} shows ${status} in the status line`);
+  }
+  assert.equal(statusLabel("service:apps", "apps.install", "安装应用"), "在申请安装应用");
+  assert.equal(statusLabel("service:widgets", "widget.card.put", "更新桌面卡片"), "在更新桌面卡片");
 });

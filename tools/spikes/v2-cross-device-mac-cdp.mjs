@@ -96,7 +96,7 @@ if (mode === "start" || mode === "resume") {
   try {
     await until(evaluate, "(() => { try { return location.origin === 'http://127.0.0.1:14762' && Boolean(sessionStorage.getItem('ash.screen.token.v2')) } catch { return false } })()", "screen registration");
     const androidSeen = await evaluate("[...document.querySelectorAll('#log .msg')].some(e => e.textContent === 'android_probe_one')");
-    const androidLabel = await evaluate("[...document.querySelectorAll('#log .from')].some(e => e.textContent.includes('Phone browser'))");
+    const androidLabel = await evaluate("[...document.querySelectorAll('#log .from')].some(e => e.textContent.includes('手机浏览器'))");
     if (!androidSeen || !androidLabel) throw new Error("prior Android message/source missing in Mac DOM");
     const macSeen = await evaluate("[...document.querySelectorAll('#log .msg')].some(e => e.textContent === 'mac_probe_one')");
     if (!macSeen) await evaluate("(() => { const t=document.querySelector('#t'); t.value='mac_probe_one'; document.querySelector('#f').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})); return true; })()");
@@ -107,7 +107,7 @@ if (mode === "start" || mode === "resume") {
   const { ws, evaluate } = await connect();
   try {
     const androidSeen = await until(evaluate, "[...document.querySelectorAll('#log .msg')].some(e => e.textContent === 'android_probe_two')", "second Android message");
-    const androidLabel = await evaluate("[...document.querySelectorAll('#log .from')].some(e => e.textContent.includes('Phone browser'))");
+    const androidLabel = await evaluate("[...document.querySelectorAll('#log .from')].some(e => e.textContent.includes('手机浏览器'))");
     process.stdout.write(JSON.stringify({ registered: Boolean(await evaluate("sessionStorage.getItem('ash.screen.token.v2')")), androidSeen: Boolean(androidSeen), androidLabel: Boolean(androidLabel) }) + "\n");
   } finally { ws.close(); }
 } else {

@@ -218,7 +218,7 @@ export function boot({ uiTransport } = {}) {
   const openWorkspaceFile = uiTransport?.embedded ? (ref) => readWorkspaceFile(uiTransport, ref) : undefined;
   const net = new ScreenNet({
     uiTransport,
-    label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "Phone browser" : "Computer browser"),
+    label: sessionStorage.getItem("ash.screen.label.v2")?.trim().slice(0, 80) || (/Android|iPhone|iPad/i.test(navigator.userAgent) ? "手机浏览器" : "电脑浏览器"),
     onMessage: (message, context) => {
       timeline.add(message);
       identityName?.changed(message, context?.historical);
