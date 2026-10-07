@@ -125,6 +125,126 @@ class SwitchFlowTest {
         assertFalse(KeepAliveSwitches.Report(Outcome.ABORTED, "x", emptyList()).verified("ai.ash.agent"))
     }
 
+    // ---- ColorOS 15: one switch per app in the 自启动 list ----
+
+    /** The list as seen on a ColorOS 15 phone: other apps first, Ash's rows deep in the second section, side by side. */
+    private val filler = (1..30).map { "应用%02d".format(it) }
+    private val colorOs15Apps = listOf("京东", "Instagram") + filler + listOf("Discord", "Ash", "Ash 感知", "Ash 屏幕助手", "Ash 应用", "天气")
+    private val colorOs15Covers = mapOf("京东" to "后台自启动", "Discord" to "后台自启动", "Ash 屏幕助手" to "后台自启动", "Ash 应用" to "后台自启动")
+    private fun colorOs15(
+        on: Set<String> = setOf("京东", "Ash 感知", "Ash 屏幕助手"),
+        apps: List<String> = colorOs15Apps,
+        covers: Map<String, String> = colorOs15Covers,
+        switchTakesTaps: Boolean = true,
+        stuck: Set<String> = emptySet(),
+        asksFirst: Set<String> = emptySet(),
+        staleSubtitle: Set<String> = emptySet(),
+        endlessList: Boolean = false,
+    ) = FakePhone(
+        apps = apps, oneSwitch = covers, autostart = apps.associateWith { it in on }.toMutableMap(), firstSection = 2,
+        switchTakesTaps = switchTakesTaps, stuck = stuck, asksFirst = asksFirst, staleSubtitle = staleSubtitle, listWindow = 5, endlessList = endlessList,
+    )
+
+    @Test fun colorOs15ListRowIsReadByItsExactLabelAndTurnedOn() {
+        // Tonight's phone: Ash off, its neighbours 「Ash 感知」/「Ash 屏幕助手」 on, and 「后台自启动」 as another app's subtitle.
+        val p = colorOs15()
+        val r = run(p)
+        assertEquals(r.stoppedAt, Outcome.DONE, r.outcome)
+        assertEquals(State.TURNED_ON, r.state("ai.ash.agent", Kind.BOOT))
+        assertEquals(State.TURNED_ON, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertTrue(p.autostart["Ash"] == true)
+        assertEquals(State.WAS_ON, r.state("ai.ash.senses", Kind.BOOT))
+        assertEquals(State.WAS_ON, r.state("ai.ash.senses", Kind.BACKGROUND))
+        // Its one switch covers only 后台自启动: the phone has no 开机自启动 for it, which is not 「没找到」.
+        assertEquals(State.NOT_OFFERED, r.state("ai.ash.screen", Kind.BOOT))
+        assertEquals(State.WAS_ON, r.state("ai.ash.screen", Kind.BACKGROUND))
+        for (t in KeepAliveSwitches.targets) assertTrue(t.label, r.verified(t.pkg))
+        // Only Ash's own row was tapped in the list; nothing else changed.
+        val listed = colorOs15Apps.toSet()
+        assertEquals(listOf("Ash"), p.clickedLabels.filter { it in listed })
+        assertTrue(p.autostart["Ash 应用"] == false); assertTrue(p.autostart["Discord"] == false)
+        val text = r.summary(KeepAliveSwitches.targets)
+        assertTrue(text, text.contains("Ash：开机自启动（已打开）、后台自启动（已打开）"))
+        assertTrue(text, text.contains("Ash 屏幕助手：开机自启动（此手机不提供）、后台自启动（本来就开着）"))
+        assertTrue(p.returned)
+    }
+
+    @Test fun ashOffIsNeverReadFromItsNeighboursRows() {
+        // Only Ash: 「Ash 感知」 and 「Ash 屏幕助手」 (on) sit right below it and contain 「Ash」.
+        val p = colorOs15(stuck = setOf("Ash"))
+        val r = run(p, listOf("ai.ash.agent"))
+        assertEquals(State.FAILED, r.state("ai.ash.agent", Kind.BOOT))
+        assertEquals(State.FAILED, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertFalse(r.verified("ai.ash.agent"))
+        assertFalse(p.clickedLabels.any { it == "Ash 感知" || it == "Ash 屏幕助手" })
+    }
+
+    @Test fun aMissingRowNeverBorrowsTheOneThatSharesItsPrefix() {
+        val p = colorOs15(apps = colorOs15Apps - "Ash")
+        val r = run(p)
+        assertEquals(Outcome.DONE, r.outcome)
+        assertEquals(State.NOT_FOUND, r.state("ai.ash.agent", Kind.BOOT))
+        assertEquals(State.NOT_FOUND, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertTrue(r.verified("ai.ash.senses")); assertTrue(r.verified("ai.ash.screen"))
+        assertEquals(emptyList<String>(), p.clickedLabels.filter { it in colorOs15Apps })
+    }
+
+    @Test fun anOffSwitchCoveringOnlyBackgroundReportsBootAsNotOffered() {
+        val p = colorOs15(on = setOf("京东"))
+        val r = run(p)
+        assertEquals(State.NOT_OFFERED, r.state("ai.ash.screen", Kind.BOOT))
+        assertEquals(State.TURNED_ON, r.state("ai.ash.screen", Kind.BACKGROUND))
+        assertEquals(State.TURNED_ON, r.state("ai.ash.senses", Kind.BOOT))
+        for (t in KeepAliveSwitches.targets) assertTrue(t.label, r.verified(t.pkg))
+    }
+
+    @Test fun aSwitchThatTakesNoTapsIsTurnedOnThroughItsRow() {
+        val p = colorOs15(switchTakesTaps = false)
+        val r = run(p)
+        assertEquals(State.TURNED_ON, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertTrue(p.autostart["Ash"] == true)
+    }
+
+    @Test fun aListSwitchThatStaysOffIsFailedAfterAtMostTwoTaps() {
+        val p = colorOs15(stuck = setOf("Ash"))
+        val r = run(p)
+        assertEquals(State.FAILED, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertTrue(p.clickedLabels.count { it == "Ash" } <= 2)
+        assertTrue(r.verified("ai.ash.senses"))
+    }
+
+    @Test fun aSwitchItsSubtitleContradictsIsNotTappedAgain() {
+        // The switch turns on but the subtitle still says 已禁止: unsure, so it is not tapped back off.
+        val p = colorOs15(staleSubtitle = setOf("Ash"))
+        val r = run(p)
+        assertEquals(State.FAILED, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertEquals(1, p.clickedLabels.count { it == "Ash" })
+        assertTrue(p.autostart["Ash"] == true)
+    }
+
+    @Test fun aConfirmationInTheListIsAnswered() {
+        val p = colorOs15(asksFirst = setOf("Ash"))
+        val r = run(p)
+        assertEquals(State.TURNED_ON, r.state("ai.ash.agent", Kind.BACKGROUND))
+        assertTrue(r.verified("ai.ash.agent"))
+    }
+
+    @Test fun scrollingStopsAtTheEndOfAListThatNeverSaysNo() {
+        val p = colorOs15(apps = colorOs15Apps - "Ash 屏幕助手", endlessList = true)
+        val r = run(p)
+        assertEquals(r.stoppedAt, Outcome.DONE, r.outcome)
+        assertEquals(State.NOT_FOUND, r.state("ai.ash.screen", Kind.BACKGROUND))
+        assertTrue(r.verified("ai.ash.agent")); assertTrue(r.verified("ai.ash.senses"))
+    }
+
+    @Test fun notOfferedRoundTrips() {
+        val r = run(colorOs15())
+        val back = KeepAliveSwitches.Report.fromJson(JSONObject(r.toJson().toString()))
+        assertEquals(r.items, back.items)
+        assertEquals(State.NOT_OFFERED, back.state("ai.ash.screen", Kind.BOOT))
+        assertTrue(back.verified("ai.ash.screen"))
+    }
+
     @Test fun theFlowIsNotInTheAgentsManifest() {
         assertTrue(ai.ash.screen.ScreenCapabilities.list.none { it.name == KeepAliveSwitches.CAPABILITY })
         assertTrue(ai.ash.screen.ScreenCapabilities.hidden.any { it.name == KeepAliveSwitches.CAPABILITY })
