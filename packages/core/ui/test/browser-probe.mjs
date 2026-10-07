@@ -177,7 +177,7 @@ try {
   await until(() => ledger.list({ after: 240, limit: 1000 }).some((entry) => entry.word === "visible" && entry.origin?.label === "Second tab"), "second tab visible");
   await evaluate2("document.querySelector('#t').value = 'from second tab'; document.querySelector('#f').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}))");
   const crossTab = await until(() => ledger.list({ after: 240, limit: 1000 }).find((entry) => entry.word === "say" && entry.body?.text === "from second tab"), "second tab message");
-  const firstVisible = ledger.list({ after: 240, limit: 1000 }).find((entry) => entry.word === "visible" && entry.origin?.label === "Computer browser");
+  const firstVisible = ledger.list({ after: 240, limit: 1000 }).find((entry) => entry.word === "visible" && entry.origin?.label === "电脑浏览器");
   const secondVisible = ledger.list({ after: 240, limit: 1000 }).find((entry) => entry.word === "visible" && entry.origin?.label === "Second tab");
   assert.equal(crossTab.origin?.label, "Second tab");
   assert.equal(crossTab.origin?.screen, secondVisible?.origin?.screen);

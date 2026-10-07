@@ -16,6 +16,9 @@ const DAY = 24 * 60 * 60 * 1000;
 export const dayKey = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 export const startOfDay = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
 const round = (value, digits = 1) => Math.round(value * 10 ** digits) / 10 ** digits;
+/** A scale reads to 0.05 kg: keep two decimals, and always show at least one (71.95 → "71.95", 72 → "72.0"). */
+export const kg = (value) => { const v = round(value, 2); return v.toFixed(Number.isInteger(round(v * 10, 6)) ? 1 : 2); };
+const signedKg = (value) => `${value >= 0 ? "+" : "-"}${kg(Math.abs(value))}`;
 
 /** The app's own data: manual logs, goals, and what it already told Ash. */
 export class Store {
@@ -69,7 +72,7 @@ export function dailySeries(rows, logs, metric, days, now) {
     if (manual.has(date)) return { date, value: manual.get(date) };
     const list = byDay.get(date);
     if (!list.length) return { date, value: null };
-    if (metric === "weight") return { date, value: round(list.reduce((a, b) => (b.ts >= a.ts ? b : a)).value) };
+    if (metric === "weight") return { date, value: round(list.reduce((a, b) => (b.ts >= a.ts ? b : a)).value, 2) };
     if (metric === "resting_heart_rate") return { date, value: Math.round(Math.min(...list.map((item) => item.value))) };
     const totals = new Map();
     for (const item of list) totals.set(item.source, (totals.get(item.source) ?? 0) + item.value);
@@ -125,8 +128,8 @@ export class Health {
     const list = values(points);
     const known = points.filter((point) => point.value !== null);
     return { metric, label: METRICS[metric].label, unit: METRICS[metric].unit, days: span, points,
-      stats: list.length ? { min: Math.min(...list), max: Math.max(...list), avg: round(average(list)),
-        change: known.length > 1 ? round(known[known.length - 1].value - known[0].value) : 0 } : null,
+      stats: list.length ? { min: Math.min(...list), max: Math.max(...list), avg: round(average(list), metric === "weight" ? 2 : 1),
+        change: known.length > 1 ? round(known[known.length - 1].value - known[0].value, metric === "weight" ? 2 : 1) : 0 } : null,
       goal: this.store.data.goals[metric] ?? null, errors };
   }
 
@@ -162,9 +165,9 @@ export class Health {
       metrics.sleep = { avg_hours: hours(sleepAvg), nights_under_6h: short };
       lines.push(`平均睡眠 ${hours(sleepAvg)} 小时${short ? `，${short} 晚不足 6 小时` : ""}`); }
     const weights = weight.week.filter((point) => point.value !== null);
-    if (weights.length) { const change = weights.length > 1 ? round(weights[weights.length - 1].value - weights[0].value) : 0;
+    if (weights.length) { const change = weights.length > 1 ? round(weights[weights.length - 1].value - weights[0].value, 2) : 0;
       metrics.weight = { latest: weights[weights.length - 1].value, change };
-      lines.push(`体重 ${weights[weights.length - 1].value} kg${weights.length > 1 ? `（本周 ${change >= 0 ? "+" : ""}${change} kg）` : ""}`); }
+      lines.push(`体重 ${kg(weights[weights.length - 1].value)} kg${weights.length > 1 ? `（本周 ${signedKg(change)} kg）` : ""}`); }
     const rhrAvg = average(values(rhr.week));
     if (rhrAvg !== null) { metrics.resting_heart_rate = { avg: Math.round(rhrAvg) }; lines.push(`静息心率约 ${Math.round(rhrAvg)} 次/分`); }
     const week = steps.week;
@@ -180,9 +183,9 @@ export class Health {
     const { rows } = await this.readings(8);
     const weights = this.series(rows, "weight", 7).filter((point) => point.value !== null);
     if (weights.length > 1) {
-      const change = round(weights[weights.length - 1].value - weights[0].value);
+      const change = round(weights[weights.length - 1].value - weights[0].value, 2);
       if (Math.abs(change) > 1.5 && this.store.sent("weight_jump") !== today) {
-        await this.emit("health.alert", { kind: "weight_jump", title: "体重变化较大", text: `近 7 天体重${change > 0 ? "上升" : "下降"} ${Math.abs(change)} kg（${weights[0].value} → ${weights[weights.length - 1].value} kg）。` });
+        await this.emit("health.alert", { kind: "weight_jump", title: "体重变化较大", text: `近 7 天体重${change > 0 ? "上升" : "下降"} ${kg(Math.abs(change))} kg（${kg(weights[0].value)} → ${kg(weights[weights.length - 1].value)} kg）。` });
         this.store.markSent("weight_jump", today); sent.push("weight_jump");
       }
     }

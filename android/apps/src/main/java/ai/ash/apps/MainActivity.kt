@@ -107,7 +107,7 @@ class MainActivity : Activity() {
         if (a.usable) { startActivity(Ui.appIntent(this, a.id)); return }
         AlertDialog.Builder(this)
             .setTitle("「${a.name}」还不能用")
-            .setMessage(if (!a.enabled) "它已在 Ash 里停用。在 Ash 里重新启用后可用。" else "在 Ash 里批准后可用。")
+            .setMessage(if (!a.enabled) "它已在 Ash 里停用。到 Ash 的「设置 › 应用」里重新启用后可用。" else "到 Ash 的「设置 › 应用」里安装，或让 Ash 帮你装，批准后可用。")
             .setPositiveButton("打开 Ash") { _, _ -> Ash.open(this) }
             .setNegativeButton("取消", null)
             .show()

@@ -89,7 +89,7 @@ try {
   await until(() => owner.ledger.list({ limit: 1000 }).find((item) => item.from === "person:owner" &&
     item.to === "agent:main" && item.word === "say" && item.body?.text === "remote synthetic hello"), "remote chat");
   const remoteSay = owner.ledger.list({ limit: 1000 }).find((item) => item.body?.text === "remote synthetic hello");
-  assert.equal(remoteSay.origin?.label, "Computer browser");
+  assert.equal(remoteSay.origin?.label, "电脑浏览器");
   const remoteScreen = remoteSay.origin.screen;
 
   let effects = 0;

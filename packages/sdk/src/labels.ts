@@ -43,13 +43,22 @@ const nativeLabels: Readonly<Record<string, string>> = Object.freeze({
   mcp__ash__agent_stop: "在停下帮手",
   mcp__ash__agent_restart: "在重启帮手",
   mcp__ash__agent_remove: "在删除帮手",
+  mcp__ash__agent_runtimes: "在查能在哪儿开帮手",
+  mcp__ash__human_pending: "在核对待回复的事",
+  mcp__ash__human_pending_get: "在看原问题与回答",
+  mcp__ash__human_pending_redeem: "在执行你批准的事",
+  mcp__ash__human_pending_skip: "在说明为何不再继续",
+  mcp__ash__human_withdraw: "在撤回问题",
   mcp__ash__list_pending: "在看还没完的事",
   mcp__ash__cancel: "在取消",
 });
 
-/** Ash's own services declare English contract labels; the owner reads what she is doing in plain words. */
+/** What she is doing with one of Ash's own services, in the status line's "在…" voice (the declared label is the action's name). */
 const serviceLabels: Readonly<Record<string, string>> = Object.freeze({
   "service:agents/list": "在看有哪些帮手",
+  "service:agents/runtimes": "在查能在哪儿开帮手",
+  "service:agents/threads": "在看交出去的事",
+  "service:agents/thread.stop": "在停下交出去的事",
   "service:agents/describe": "在看帮手",
   "service:agents/ask": "在问帮手",
   "service:agents/tell": "在告诉帮手",
@@ -65,6 +74,17 @@ const serviceLabels: Readonly<Record<string, string>> = Object.freeze({
   "service:clock/cancel": "在取消提醒",
   "service:vault/list": "在看保存的密钥",
   "service:vault/describe": "在看保存的密钥",
+  "service:widgets/widget.list": "在看桌面小组件",
+  "service:widgets/widget.card.put": "在更新桌面卡片",
+  "service:widgets/widget.card.remove": "在移除桌面卡片",
+  "service:widgets/widget.bind": "在选小组件显示的卡片",
+  "service:apps/apps.list": "在看有哪些应用",
+  "service:apps/apps.describe": "在看应用详情",
+  "service:apps/apps.install": "在申请安装应用",
+  "service:apps/apps.enable": "在申请启用应用",
+  "service:apps/apps.disable": "在停用应用",
+  "service:apps/apps.revoke": "在收回应用的权限",
+  "service:apps/apps.refresh": "在查找新应用",
   "service:cost/usage.get": "在看用量",
   "service:cost/balance.get": "在看余额",
   "service:gate/audit": "在查审批记录",
@@ -121,9 +141,9 @@ export function nativeDetailLabel(word: string, args: unknown): string | null {
 /** The native namespace is display-only; it does not register a callable member. */
 export function statusLabel(member: string, word: string, declared?: string): string {
   if (member === "native") return Object.hasOwn(nativeLabels, word) ? nativeLabels[word] : STATUS_FALLBACK_LABEL;
-  // A label already written in Chinese is the service's own wording; only English contract labels are replaced.
+  // Ash's own service words read in the status voice; everything else keeps its declared label.
   const own = serviceLabel(member, word);
-  if (own && !/\p{Script=Han}/u.test(declared ?? "")) return own;
+  if (own) return own;
   const label = declared?.trim();
   if (!label || /[\p{Cc}\p{Cf}]/u.test(label) || label === "Working" || label === word || label === `${member}/${word}` ||
     (label.includes(":") && !/\s/.test(label)) || (label.includes("_") && !/\s/.test(label))) return STATUS_FALLBACK_LABEL;

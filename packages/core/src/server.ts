@@ -80,7 +80,7 @@ export class ScreenRegistry {
     this.sweep();
     const token = randomBytes(24).toString("base64url");
     const screen = `screen:${randomBytes(9).toString("base64url")}`;
-    const label = typeof labelHint === "string" && labelHint.trim() ? labelHint.trim().slice(0, 80) : "Screen";
+    const label = typeof labelHint === "string" && labelHint.trim() ? labelHint.trim().slice(0, 80) : "屏幕";
     this.registrations.set(token, { screen, principal: caller.transportPrincipal, label, expiresAt: this.now() + SCREEN_REGISTRATION_TTL_MS, connections: 0, visibleAt: null });
     return { screen, token, label, auth_scope,
       local_management: caller.member === "person:owner" && caller.ownerProxy && caller.local && !caller.remote };

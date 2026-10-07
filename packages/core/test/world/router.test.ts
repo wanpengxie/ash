@@ -417,7 +417,7 @@ test("screen and phone notification replies persist server-stamped origin, never
     assert.deepEqual(ledger.byId(screenReply.id)?.origin, { screen: "screen:tab_a", label: "Tab A" });
     const phoneAsk = await router.send(agent, { to: "person:owner", kind: "request", word: "ask", body });
     const phoneReply = await router.send(phone, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { choice: "deny" } } });
-    assert.deepEqual(ledger.byId(phoneReply.id)?.origin, { screen: "device:phone", label: "Phone notification" });
+    assert.deepEqual(ledger.byId(phoneReply.id)?.origin, { screen: "device:phone", label: "手机通知" });
     await assert.rejects(router.send(screen, { to: "agent:main", kind: "response", word: "ask", reply_to: phoneAsk.id, body: { ok: true, result: { choice: "once" } }, origin: { screen: "screen:other", label: "Other" } } as never), code("bad_request"));
   } finally { ledger.close(); }
 });

@@ -101,6 +101,20 @@ test("health tools: today, trend, log, goals and report from Ash's rows plus the
   assert.match(fallback.errors.join(" "), /health\.read: forbidden/);
 });
 
+test("health weight keeps a scale's 0.05 kg and always shows one decimal", async () => {
+  const { dailySeries, kg } = await load("logic.mjs");
+  const reading = (value: number) => [{ ts: MONDAY - 1000, metric: "weight", value, unit: "kg", source: "xiaomi_scale" }];
+  assert.equal(dailySeries(reading(71.95), [], "weight", 1, MONDAY)[0].value, 71.95);
+  assert.equal(dailySeries(reading(71.954), [], "weight", 1, MONDAY)[0].value, 71.95);
+  assert.deepEqual([kg(71.95), kg(72), kg(71.9), kg(70.25)], ["71.95", "72.0", "71.9", "70.25"]);
+  // The screens format the same way.
+  const shared = readFileSync(join(here, "../health/ui/shared.html"), "utf8");
+  const window = { health: {} as { num?: (metric: string, value: number) => string } };
+  const helper = shared.match(/const round = \(value, digits\) =>[^\n]*\n/)![0] + "window.health.num = " + shared.match(/num\(metric, value\) \{[\s\S]*?\n    \}/)![0].replace(/^num/, "function");
+  new Function("window", helper)(window);
+  assert.deepEqual([window.health.num!("weight", 71.95), window.health.num!("weight", 72), window.health.num!("sleep", 330), window.health.num!("steps", 8123.4)], ["71.95", "72.0", "5.5", "8123"]);
+});
+
 test("health alerts: weight change over 1.5 kg in 7 days, three short nights, and the Monday card, each once", async () => {
   const { Health, Store } = await load("logic.mjs");
   const store = new Store(join(mkdtempSync(join(tmpdir(), "ash-health-")), "data.json"));

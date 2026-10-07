@@ -85,6 +85,12 @@ test("human and meta tools act as the agent within its turn", async () => {
     const phone = listed.result.members.find((m) => m.id === "device:phone")!;
     assert.deepEqual(phone.capabilities.map((c) => [c.word, c.effect]), [["battery.get", "read"], ["slow.run", "read"], ["large.get", "read"]]);
     assert.ok(!listed.result.members.some((m) => m.id === "agent:main"), "she does not list herself");
+    const onlyPhone = await w.server.call(w.binding, "capability_list", { member: "device:phone" }, turn.signal) as ToolResult & { ok: true; result: { members: { id: string }[]; other_members: string[]; note: string } };
+    assert.deepEqual(onlyPhone.result.members.map((m) => m.id), ["device:phone"]);
+    assert.deepEqual(onlyPhone.result.other_members, listed.result.members.map((m) => m.id).filter((id) => id !== "device:phone"), "one member's list names the others");
+    assert.match(onlyPhone.result.note, /without member/);
+    const noSuch = await w.server.call(w.binding, "capability_list", { member: "device:nothing" }, turn.signal) as ToolResult & { ok: false };
+    assert.match(noSuch.error.message, /without member/);
 
     const described = await w.server.call(w.binding, "capability_describe", { member: "device:phone", word: "battery.get" }, turn.signal) as ToolResult & { ok: true; result: { capabilities: { input_schema: object; effect: string }[] } };
     assert.equal(described.result.capabilities[0]!.effect, "read");
