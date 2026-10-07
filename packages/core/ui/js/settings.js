@@ -430,16 +430,78 @@ export class SettingsControls {
     const pairResult = node("p", "", "set-status");
     pairResult.id = "settingsGatewayPairResult";
     pairResult.setAttribute("role", "status");
+    // The pairing code reaches only this screen, over an owner-only route that never touches the ledger; starting
+    // pairing (by the owner or by Ash) only says a code was issued. The page polls that route while it is open: a new
+    // revision means a request arrived, a device was approved or came online, so the list is read again.
+    const pairBox = node("div", "", "set-card");
+    pairBox.id = "settingsGatewayPairCode";
+    pairBox.hidden = true;
+    const pairText = node("p", "", "set-status");
+    pairText.id = "settingsGatewayPairCodeText";
+    const pairCommand = node("pre", "");
+    pairCommand.id = "settingsGatewayPairCommand";
+    const pairCopy = button("复制命令", "btn gray", "settingsGatewayPairCopy");
+    pairBox.append(pairText, pairCommand, pairCopy);
+    let shownCode = null, codeDeadline = 0, revision = null, polling = null;
+    pairCopy.addEventListener("click", () => { void (async () => {
+      try { await globalThis.navigator.clipboard.writeText(pairCommand.textContent); pairCopy.textContent = "已复制"; }
+      catch { pairCopy.textContent = "长按上面的命令复制"; }
+    })(); });
+    const countdown = (ms) => { const seconds = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; };
+    const showCode = () => {
+      const code = shownCode;
+      pairBox.hidden = !code;
+      if (!code) return;
+      const left = codeDeadline - Date.now();
+      const state = code.state === "active" && left <= 0 ? "expired" : code.state;
+      pairCommand.hidden = pairCopy.hidden = state !== "active" || !code.install_command;
+      if (state === "used") { pairText.textContent = "配对码已使用。新设备发来的连接请求在上面，确认是你的设备再批准。"; return; }
+      if (state === "expired") { pairText.textContent = "配对码已过期。需要时再点「添加设备」。"; return; }
+      const where = typeof code.gateway === "string" ? code.gateway : "网关地址";
+      pairText.textContent = code.kind === "browser"
+        ? `配对码：${code.ticket}（还剩 ${countdown(left)}，只能用一次）。在新浏览器打开 ${where}，输入配对码，再回到这里批准。`
+        : `配对码：${code.ticket}（还剩 ${countdown(left)}，只能用一次）。在要连接的电脑上打开“终端”，运行下面这一行，再回到这里批准：`;
+      pairCommand.textContent = code.install_command ?? "";
+    };
+    const pairingRequest = async () => {
+      const token = this.net.token, screen = this.net.screen, scope = this.net.currentScope;
+      if (!live() || !this.connected || !this.allowed || !this.net.localManagement || !token || !screen || !scope) return null;
+      const response = await this.net.request("/api/devices/pairing", { method: "GET", credentials: "same-origin", headers: { [SCREEN_TOKEN_HEADER]: token } });
+      if (!live() || token !== this.net.token || screen !== this.net.screen || scope !== this.net.currentScope || !response.ok) return null;
+      return await response.json();
+    };
+    const readPairing = async () => {
+      const view = await pairingRequest().catch(() => null);
+      if (!view || !live()) return;
+      if (view.code?.state !== shownCode?.state || view.code?.ticket !== shownCode?.ticket) pairCopy.textContent = "复制命令";
+      shownCode = view.code ?? null;
+      codeDeadline = Date.now() + (Number(view.code?.expires_in_ms) || 0);
+      showCode();
+      if (revision !== null && view.revision !== revision) await refreshGateway().catch(() => {});
+      revision = view.revision;
+    };
+    const watch = () => {
+      if (polling) return;
+      let tick = 0;
+      polling = setInterval(() => {
+        if (!live() || gatewayPage.hidden) { clearInterval(polling); polling = null; return; }
+        if (globalThis.document?.hidden) return;
+        showCode();
+        if (++tick % 2 === 0) void readPairing();
+      }, 1000);
+      polling.unref?.();
+    };
     pairCode.addEventListener("click", () => { void (async () => {
       pairCode.disabled = true;
       pairResult.textContent = "正在生成配对码…";
       try {
         const reply = await deviceRequest("pair_start", { kind: pairKind.value });
-        const ticket = reply?.ok === true ? reply.result?.ticket : null;
-        if (typeof ticket !== "string" || !ticket) throw new Error("no ticket");
-        const where = typeof reply.result.gateway === "string" ? reply.result.gateway : "网关地址";
-        pairResult.textContent = `配对码：${ticket}（5 分钟内有效，只能用一次）。网关：${where}。${reply.result.instructions || "在新设备输入配对码，再回到这里批准。"}`;
-      } catch { if (live()) pairResult.textContent = "生成失败：网关可能离线，请稍后重试。"; }
+        if (reply?.ok !== true || reply.result?.issued !== true) throw new Error("not issued");
+        await readPairing();
+        if (!live()) return;
+        if (shownCode?.state !== "active") throw new Error("code not shown");
+        pairResult.textContent = "";
+      } catch { if (live()) { pairResult.textContent = "生成失败：网关可能离线，请稍后重试。"; shownCode = null; showCode(); } }
       finally { pairCode.disabled = false; }
     })(); });
     const item = (title, subtitle) => {
@@ -485,7 +547,10 @@ export class SettingsControls {
       }
       for (const device of Array.isArray(state.devices) ? state.devices : []) {
         if (typeof device.id !== "string" || typeof device.name !== "string") continue;
-        const kind = device.kind === "browser" ? "浏览器" : `${device.kind === "server" ? "服务器" : "电脑"} · ${Number(device.capabilities) || 0} 个能力`;
+        // A computer lends its capabilities once its list has been read; until then the count would wrongly read zero.
+        const count = Number(device.capabilities) || (Array.isArray(device.capability_specs) ? device.capability_specs.length : 0);
+        const lends = device.lends === true || count > 0 ? ` · ${count} 个能力` : device.online ? " · 正在读取能力" : "";
+        const kind = device.kind === "browser" ? "浏览器" : `${device.kind === "server" ? "服务器" : "电脑"}${lends}`;
         const row = item(device.name, `${kind} · ${device.online ? "在线" : "离线"}${device.version ? ` · v${device.version}` : ""} · ${device.access === "full" ? "完全放开" : "按规则审批"}`);
         const revoke = button("移除", "btn gray");
         revoke.id = `settingsDevice-${device.id}Revoke`;
@@ -512,7 +577,7 @@ export class SettingsControls {
       if (gatewayList.hidden) gatewayStatus.textContent += "还没有连接其他设备。";
       return state;
     };
-    gatewayPage.append(gatewayStatus, gatewayList, pairKind, pairCode, pairResult);
+    gatewayPage.append(gatewayStatus, gatewayList, pairKind, pairCode, pairResult, pairBox);
     let loadGatewayConfig = null;
     if (android && typeof globalThis.__ashGatewayConfig === "function") {
       const url = document.createElement("input");
@@ -560,7 +625,10 @@ export class SettingsControls {
     const openGateway = async () => {
       gatewayStatus.textContent = "正在读取…";
       void loadGatewayConfig?.();
+      revision = null;
       try { await refreshGateway(); } catch { if (live()) gatewayStatus.textContent = "读取失败，请重试。"; }
+      await readPairing();
+      watch();
     };
 
     // ---- Browser logins (Android only)

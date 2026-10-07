@@ -232,3 +232,9 @@ test("an app's entry card is one small conversation row that opens the shell app
   const say = message({ from: "app:health", to: "person:owner", kind: "request", word: "say", body: { text: "我是 Ash", kind: "reply" } }, 2);
   assert.equal(fold(fold(state, quiet), say).conversation.length, 1, "unaddressed events and app requests draw nothing");
 });
+
+test("a device notice to the owner shows in the conversation", () => {
+  const notice = message({ from: "service:devices", to: "person:owner", kind: "request", word: "say", body: { text: "MacBookPro 想连上 Ash", kind: "due" } }, 0);
+  const view = fold(initialView(), notice);
+  assert.equal(view.conversation.at(-1)?.text, "MacBookPro 想连上 Ash");
+});

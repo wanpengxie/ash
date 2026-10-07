@@ -26,7 +26,7 @@ const memberId = (x) => typeof x === "string" && /^(agent|worker|device|service|
 /** How another agent is named in the activity. */
 const AGENT_TITLES = { "agent:keeper": "整理者在后台整理" };
 const agentTitle = (id) => AGENT_TITLES[id] || `${id.slice(6)} 在后台工作`;
-const ownerPublisher = (from) => /^agent:[a-z][a-z0-9_-]*$/.test(from) || ["service:gate", "service:work"].includes(from);
+const ownerPublisher = (from) => /^agent:[a-z][a-z0-9_-]*$/.test(from) || ["service:gate", "service:work", "service:devices"].includes(from);
 
 function safeCard(card) {
   if (!object(card)) return null;

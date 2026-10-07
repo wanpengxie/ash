@@ -21,9 +21,13 @@ const specs: [string, string, JsonSchema, boolean?][] = [
   ["gateway_status", "查看网关状态", object({})],
   ["gateway_setup_guide", "查看网关设置指引", object({})],
 ];
+/** Words whose result needs saying: the pairing code is shown on the owner's own screen and never returned. */
+const notes: Record<string, string> = {
+  pair_start: "配对码只显示在主人手机的「设置 → 已连接设备」里，结果不含配对码；请主人去那里查看，在新设备上输入或运行页面里的安装命令。",
+};
 export const DEVICE_WORDS: readonly (WordSpec & { input_schema: JsonSchema })[] = specs.map(([word, label, input_schema, mutation]) => ({
   word, kind: "request", input_schema, result_schema: { type: "object", additionalProperties: true },
-  description: `${label}。配对批准、扩大权限和更新需要主人确认；批准后须重新核对并兑换审批，不自动执行。`,
+  description: `${label}。${notes[word] ?? ""}配对批准、扩大权限和更新需要主人确认；批准后须重新核对并兑换审批，不自动执行。`,
   label, audience: "all", risk: mutation ? "structure" : "none", effect: mutation ? "structure" : "read",
 }));
 export const deviceToolName = (word: string): string => word.startsWith("gateway_") ? word : `device_${word}`;

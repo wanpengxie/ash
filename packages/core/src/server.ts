@@ -30,7 +30,7 @@ export interface EdgeCaller {
 export interface EdgeRequest { method: string; url: URL; headers: Record<string, string>; body: Buffer | null }
 export type EdgeResponse = { status: number; headers?: Record<string, string>; body?: string | Buffer } |
   { status: number; headers?: Record<string, string>; stream: (write: (chunk: string) => void, onClose: (fn: () => void) => void, end: () => void) => void };
-export interface EdgeOptions { authScopeKey: Buffer; /** Where the owner saves and removes credentials; values never take the message route. */ vault?: { save(ref: string, value: string): Promise<void>; remove(ref: string): Promise<boolean>; store: { list(): unknown[]; availability?(): { available: boolean } } }; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
+export interface EdgeOptions { authScopeKey: Buffer; /** The devices page's view of the pairing code; the code reaches the local owner's screen only through this route. */ pairing?: () => { revision: string; code: unknown }; /** Where the owner saves and removes credentials; values never take the message route. */ vault?: { save(ref: string, value: string): Promise<void>; remove(ref: string): Promise<boolean>; store: { list(): unknown[]; availability?(): { available: boolean } } }; workspaces?: Record<string, string>; /** Bounded test wait; production defaults to 60 seconds. */ waitMs?: number; /** Test-only clock for presence. */ clock?: () => number; /** Test-only screen ACK deadline. */ screenAckMs?: number; /** Test-only live stream sweep interval. */ streamBeatMs?: number }
 
 // Native proof is injected by Android's fixed transport, not supplied by a web page.
 export interface EdgeOptions { nativeUiToken?: string }
@@ -284,6 +284,12 @@ export class EdgeRouter {
         return { ...result, headers: { ...result.headers,
           "content-type": FILE_MIME[extname(rel).toLowerCase()] ?? "application/octet-stream",
           "content-security-policy": FILE_VIEW_CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } };
+      }
+      if (path === "/api/devices/pairing" && req.method === "GET") {
+        // Like a credential, the pairing code never takes the message route: only the local owner's own screen reads it.
+        if (!caller!.ownerProxy || !caller!.local || caller!.remote || caller!.member !== "person:owner") fail(403, "forbidden", "the pairing code is shown on the local owner screen only");
+        if (!this.options.pairing) fail(404, "not_found", "device pairing unavailable");
+        return encode(200, this.options.pairing!());
       }
       const secret = /^\/api\/vault(?:\/([A-Za-z_][A-Za-z0-9_]{0,63}))?$/.exec(path);
       if (secret && this.options.vault) return await this.vault(secret[1], req, caller!);

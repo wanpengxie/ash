@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DEVICE_WORDS } from "../../../sdk/src/device-words";
 import type { Message, ResponseBody } from "../../../sdk/src/api";
 import type { Member } from "../world/member";
-import type { RouteHandlerContext, WorldRouter } from "../world/router";
+import type { RouteHandlerContext, TrustedRouteContext, WorldRouter } from "../world/router";
 
 /** Transport is injected at composition; this member owns policy, not connections. */
 export interface DeviceManagementLink {
@@ -19,10 +20,26 @@ export interface DeviceManagementLink {
 }
 
 interface Policy { name: string; kind: "laptop" | "server" | "browser"; access: "approval" | "full"; local_agents: boolean; web_ui: boolean; paired_at: number }
+/** The one pairing code in use. It lives only here: never in a result, the ledger or anything an agent can read. */
+interface PairingCode { ticket: string; gateway: string; kind: string; issued_at: number; expires_at: number; used_at?: number }
+/** What the owner's devices page shows about the code: the code itself only while it can still be used. */
+export interface PairingView { revision: string; code: null | { state: "active" | "used" | "expired"; kind: string; gateway: string;
+  expires_in_ms: number; ticket?: string; install_command?: string } }
+
+/** The published installer; it takes the gateway and the code and pairs the computer. */
+export const DEVICE_INSTALLER = "https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh";
+const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
+export const installCommand = (gateway: string, ticket: string): string => `curl -fsSL ${DEVICE_INSTALLER} | sh -s -- ${quote(gateway)} ${quote(ticket)}`;
+/** A name another device chose for itself, safe inside an owner notice. */
+const label = (name: unknown): string => String(name ?? "").replace(/[\p{C}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 40) || "一台新设备";
+const service: TrustedRouteContext = { member: "service:devices", transport: "service", transportPrincipal: "service:devices", local: true, remote: false, ownerProxy: false };
 export class DevicesMember implements Member {
   readonly id = "service:devices"; readonly kind = "service" as const; readonly name = "设备管理"; readonly online = true;
   readonly idempotentRecovery = ["list", "describe", "pair_pending", "diagnose", "gateway_status", "gateway_setup_guide"];
   private policies: Record<string, Policy> = {};
+  private code: PairingCode | null = null;
+  /** Owner notices wait until the world has recovered; then they are sent as they happen. */
+  private notices: (() => void)[] | null = [];
   constructor(private file: string, private link: () => DeviceManagementLink | null, private router: WorldRouter) {
     if (existsSync(file)) this.policies = JSON.parse(readFileSync(file, "utf8")).devices ?? {};
     router.setDevicePolicy(member => this.policy(member));
@@ -30,6 +47,27 @@ export class DevicesMember implements Member {
     router.setDeviceManagementCard(request => this.approvalCard(request));
   }
   words() { return DEVICE_WORDS; }
+  /** Call after router recovery: notices held during startup are sent now. */
+  start(): void { const held = this.notices ?? []; this.notices = null; for (const send of held) send(); }
+  private notify(text: string, key: string): void {
+    const send = () => void this.router.send(service, { to: "person:owner", kind: "request", word: "say", body: { text, kind: "due" }, client_id: `devices:${key}` }).catch(() => {});
+    if (this.notices) this.notices.push(send); else send();
+  }
+  /** A computer or browser asked to pair: the code it used is spent, and the owner hears about it wherever they are. */
+  pairingRequested(request: { request_id: string; name: string; fingerprint: string }): void {
+    if (this.code && !this.code.used_at && this.code.expires_at > Date.now()) this.code.used_at = Date.now();
+    this.notify(`${label(request.name)} 想连上 Ash，指纹 ${label(request.fingerprint)}。是你的设备的话，去「设置 → 已连接设备」批准。`, `pair:${request.request_id}`);
+  }
+  /** For the local owner's screen only, outside the ledger. The revision changes whenever the page would show something new. */
+  pairingView(): PairingView {
+    const now = Date.now(), code = this.code;
+    if (code && Math.max(code.used_at ?? 0, code.expires_at) < now - 10 * 60_000) this.code = null;
+    const state = !this.code ? null : this.code.used_at ? "used" as const : this.code.expires_at <= now ? "expired" as const : "active" as const;
+    const view: PairingView["code"] = !this.code || !state ? null : { state, kind: this.code.kind, gateway: this.code.gateway, expires_in_ms: Math.max(0, this.code.expires_at - now),
+      ...(state === "active" ? { ticket: this.code.ticket, ...(this.code.kind === "browser" ? {} : { install_command: installCommand(this.code.gateway, this.code.ticket) }) } : {}) };
+    const revision = createHash("sha256").update(JSON.stringify({ gateway: this.state(), code: view && { state: view.state, at: this.code!.issued_at } })).digest("hex").slice(0, 16);
+    return { revision, code: view };
+  }
   deviceName(id: string, fallback: string): string { return this.policies[id]?.name ?? fallback; }
   private save(): void { mkdirSync(dirname(this.file), { recursive: true }); writeFileSync(this.file + ".tmp", JSON.stringify({ version: 1, devices: this.policies }), { mode: 0o600 }); renameSync(this.file + ".tmp", this.file); }
   private state(): Record<string, any> { return this.link()?.state() ?? { configured: false, connected: false, devices: [], pending: [] }; }
@@ -69,11 +107,12 @@ export class DevicesMember implements Member {
     try {
       if (message.word === "pair_pending") return { ok: true, result: { pending: [...link.pending.values()] } };
       if (message.word === "pair_start") {
-        const ticket = await link.ticket();
-        const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
-        return { ok: true, result: { ...ticket, kind: b.kind ?? "laptop", install_available: false,
-          setup_command: b.kind === "browser" ? null : `ash-device setup --gateway ${quote(ticket.gateway)} --pair ${quote(ticket.ticket)}`,
-          instructions: b.kind === "browser" ? "在新浏览器打开 gateway 地址，输入 ticket，再回 Ash 批准。" : "安装器已经构建但尚未发布。已取得测试包时，运行 setup_command；发布前不要提供不存在的下载链接。" } };
+        // The code goes to the owner's screen only; whoever started pairing learns that it was issued, never its value.
+        const issued = await link.ticket(), kind = String(b.kind ?? "laptop"), now = Date.now();
+        this.code = { ticket: issued.ticket, gateway: issued.gateway, kind, issued_at: now, expires_at: now + issued.expires_in * 1000 };
+        if (message.from !== "person:owner") this.notify(`Ash 生成了一个配对码，${Math.round(issued.expires_in / 60)} 分钟内有效。去「设置 → 已连接设备」查看，${kind === "browser" ? "在新浏览器里输入" : "在电脑上运行页面里的那一行命令"}。`, `code:${now}`);
+        return { ok: true, result: { issued: true, kind, expires_in: issued.expires_in, gateway: issued.gateway, code_shown_to: "owner",
+          instructions: "配对码只显示在主人手机的「设置 → 已连接设备」里，不会告诉你。请主人去那里查看并按提示连接新设备，再回来批准。" } };
       }
       if (message.word === "pair_reject") { await link.reject(String(b.request_id)); return { ok: true, result: { rejected: true } }; }
       if (message.word === "pair_approve") {

@@ -105,9 +105,10 @@ files readable through workspace tools.
 
 `npm run package:device -- --all` creates Linux/macOS x64/arm64 archives with a
 pinned, checksum-verified Node runtime, `install.sh`, and `SHA256SUMS` in
-`build/device`. No publishing occurs. Until releases exist, pairing explicitly
-returns `install_available:false` with a `setup_command` for a locally supplied
-test package; it does not offer a broken public download.
+`build/device`. No publishing occurs. The owner's devices page shows the pairing
+code together with the one-line install command for the `device-v0.1.0` release
+(`curl -fsSL …/install.sh | sh -s -- GATEWAY CODE`); the code is never returned to
+an agent or written to the ledger.
 
 `ash-device setup --gateway URL --pair CODE` pairs, waits for owner approval, then
 installs a per-user launchd/systemd service. `--no-service` pairs without replacing

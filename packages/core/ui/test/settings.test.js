@@ -230,7 +230,7 @@ test("local gateway controls approve a pending device and revoke an existing dev
         const result = wire.word === "gateway_status"
           ? { configured: true, connected: true,
             pending: pending ? [{ request_id: "request-1", name: "Phone", fingerprint: "abc" }] : [],
-            devices: device ? [{ id: "device:laptop", name: "Laptop", online: true }] : [] }
+            devices: device ? [{ id: "device:laptop", name: "Laptop", online: true, lends: true, capabilities: 10 }, { id: "device:new", name: "New", online: true }] : [] }
           : { approved: true, revoked: true };
         return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
           from: wire.to, to: "person:owner", word: wire.word, body: { ok: true, result } } }), { status: 200 });
@@ -239,10 +239,13 @@ test("local gateway controls approve a pending device and revoke an existing dev
     settings.registration({ local_management: true }); settings.network("online");
     panel.find("settingsGatewayRow").click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(panel.find("settingsGatewayList").children.length, 2);
+    assert.equal(panel.find("settingsGatewayList").children.length, 3);
+    const subtitle = (index) => panel.find("settingsGatewayList").children[index].children[0].children[1].textContent;
+    assert.match(subtitle(1), /^电脑 · 10 个能力 · 在线/);
+    assert.match(subtitle(2), /^电脑 · 正在读取能力 · 在线/, "a computer whose list is not read yet does not claim zero capabilities");
     panel.find("settingsPending-request-1Approve").click();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(panel.find("settingsGatewayList").children.length, 1);
+    assert.equal(panel.find("settingsGatewayList").children.length, 2);
     const revoke = panel.find("settingsDevice-device:laptopRevoke");
     revoke.click();
     await new Promise((resolve) => setImmediate(resolve));
@@ -285,36 +288,68 @@ test("the devices page says in plain words why the gateway cannot be used", asyn
   } finally { delete globalThis.document; }
 });
 
-test("local gateway controls show a one-time pairing code with where to use it", async () => {
+test("the pairing code is read from the owner-only route, with the install command, and is cleared once used", async () => {
   globalThis.document = { createElement: (tag) => new Element(tag) };
+  const copied = [];
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   try {
     const panel = new Element("div");
-    const sent = [];
-    let fail = false;
+    const sent = [], answers = [];
+    let fail = false, view = { revision: "r1", code: null }, pending = [];
+    const command = "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh | sh -s -- 'https://gw.example' 'pair-XYZ-123'";
     const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
-      async request(_path, init) {
+      async request(path, init) {
+        if (path === "/api/devices/pairing") {
+          assert.equal(init.method, "GET"); assert.equal(init.body, undefined);
+          return new Response(JSON.stringify(view), { status: 200 });
+        }
         const wire = JSON.parse(init.body);
         sent.push(wire);
-        const body = fail ? { ok: false, error: { code: "failed", message: "gateway operation failed" } }
-          : { ok: true, result: { ticket: "pair-XYZ-123", expires_in: 300, gateway: "https://gw.example" } };
+        if (wire.word === "pair_start" && !fail) view = { revision: "r2", code: { state: "active", kind: "laptop", gateway: "https://gw.example",
+          expires_in_ms: 299_000, ticket: "pair-XYZ-123", install_command: command } };
+        const body = wire.word === "gateway_status" ? { ok: true, result: { configured: true, connected: true, pending, devices: [] } }
+          : fail ? { ok: false, error: { code: "failed", message: "gateway operation failed" } }
+          : { ok: true, result: { issued: true, kind: "laptop", expires_in: 300, gateway: "https://gw.example", code_shown_to: "owner" } };
+        answers.push(body);
         return new Response(JSON.stringify({ id: "request-1", reply: { kind: "response", reply_to: "request-1",
           from: wire.to, to: "person:owner", word: wire.word, body } }), { status: 200 });
       } };
     const settings = new SettingsControls(panel, net);
     settings.registration({ local_management: true }); settings.network("online");
+    panel.find("settingsGatewayRow").click();
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(panel.find("settingsGatewayPairCode").hidden, true);
     panel.find("settingsGatewayPair").click();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(sent.map((item) => [item.word, item.body]), [["pair_start", { kind: "laptop" }]]);
-    const shown = panel.find("settingsGatewayPairResult").textContent;
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.filter((item) => item.word === "pair_start").map((item) => item.body), [{ kind: "laptop" }]);
+    assert.doesNotMatch(JSON.stringify(answers), /pair-XYZ-123/, "no message answer carries the code");
+    const shown = panel.find("settingsGatewayPairCodeText").textContent;
     assert.match(shown, /pair-XYZ-123/);
-    assert.match(shown, /5 分钟/);
-    assert.match(shown, /https:\/\/gw\.example/);
+    assert.match(shown, /还剩 4:59/);
+    assert.match(shown, /终端/);
+    assert.equal(panel.find("settingsGatewayPairCommand").textContent, command);
+    assert.doesNotMatch(shown + panel.find("settingsGatewayPairResult").textContent, /setup_command|尚未发布/);
+    panel.find("settingsGatewayPairCopy").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(copied, [command]);
+    assert.equal(panel.find("settingsGatewayPairCopy").textContent, "已复制");
+    // A computer used the code: the page notices by itself, shows the request and no longer shows the code.
+    const statusReads = sent.filter((item) => item.word === "gateway_status").length;
+    pending = [{ request_id: "request-9", name: "MacBookPro", fingerprint: "ab12" }];
+    view = { revision: "r3", code: { state: "used", kind: "laptop", gateway: "https://gw.example", expires_in_ms: 200_000 } };
+    for (let i = 0; i < 40 && !/已使用/.test(panel.find("settingsGatewayPairCodeText").textContent); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.match(panel.find("settingsGatewayPairCodeText").textContent, /已使用/);
+    assert.doesNotMatch(panel.find("settingsGatewayPairCodeText").textContent, /pair-XYZ-123/);
+    assert.equal(panel.find("settingsGatewayPairCommand").hidden, true);
+    assert.ok(sent.filter((item) => item.word === "gateway_status").length > statusReads, "a new revision reads the list again");
+    assert.ok(panel.find("settingsPending-request-9Approve"), "the new request is shown without reopening the page");
     fail = true;
     panel.find("settingsGatewayPair").click();
-    await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
     assert.match(panel.find("settingsGatewayPairResult").textContent, /生成失败/);
-    assert.doesNotMatch(panel.find("settingsGatewayPairResult").textContent, /pair-XYZ-123/);
-  } finally { delete globalThis.document; }
+    assert.equal(panel.find("settingsGatewayPairCode").hidden, true);
+    settings.network("offline");
+  } finally { delete globalThis.document; delete globalThis.navigator.clipboard; }
 });
 
 test("Android settings clear every browser login only after a second tap", async () => {

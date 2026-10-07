@@ -10,6 +10,7 @@ import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 import { Ledger } from "../../src/world/ledger";
 import type { OwnerLink } from "../../src/gateway/link";
+import { EdgeRouter, type EdgeCaller } from "../../src/server";
 
 const owner: TrustedRouteContext = { member: "person:owner", transport: "web_ui", transportPrincipal: "owner", screenId: "screen:test", screenLabel: "Test", local: true, remote: false, ownerProxy: true };
 const agent: TrustedRouteContext = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false, turn: "t_devices" };
@@ -26,7 +27,7 @@ async function fixture() {
     reject: async (id: string) => { pending.delete(id); }, refreshDevices: async () => {},
     setWebUi: async (id: string, allow: boolean) => { changes.push({ web: id, allow }); },
     revoke: async () => { paired = []; }, closeAgentChannel: (id: string) => { changes.push({ close: id }); } };
-  const service = new DevicesMember(file, () => link as unknown as OwnerLink, router); members.register(service);
+  const service = new DevicesMember(file, () => link as unknown as OwnerLink, router); members.register(service); service.start();
   for (const id of ["device:pc", "device:phone"]) router.registerDeviceBatch(id, [
     { name: "workspace.read", label: "Read file", description: "Read file", risk: "none", effect: "read", input_schema: { type: "object" } },
     { name: "workspace.write", label: "Write file", description: "Write file", risk: "structure", effect: "write", input_schema: { type: "object" } },
@@ -42,7 +43,7 @@ async function fixture() {
     await router.send(owner, { to: "service:gate", kind: "response", word: "ask", reply_to: item.ask_id, body: { ok: true, result: { choice } } });
     await router.refreshHumanPending();
   };
-  return { router, ledger, service, file, call, direct, answer, changes, executions,
+  return { router, ledger, members, service, file, call, direct, answer, changes, executions,
     close: async () => { router.dispose(); await server.close(); ledger.close(); } };
 }
 
@@ -86,5 +87,41 @@ test("computer approval reviews commands, asks writes; full bypasses always with
     const phone = await invoke("device:phone", "workspace.bash"); assert.equal(w.ledger.gateCase(phone)?.decision, "waiting");
     assert.equal(w.service.policy("device:phone"), null);
     await w.direct("revoke", { device: "device:pc" }); assert.equal(w.service.policy("device:pc"), null);
+  } finally { await w.close(); }
+});
+
+test("a pairing code never reaches an agent or the ledger; only the local owner's screen reads it, until it is used", async () => {
+  const w = await fixture(); try {
+    const started = await w.call("device_pair_start", { kind: "laptop" });
+    assert.equal(started.ok, true, JSON.stringify(started));
+    assert.equal(started.result.issued, true); assert.equal(started.result.expires_in, 300); await tick();
+    const ledger = () => JSON.stringify(w.ledger.list({ limit: 1000 }));
+    assert.doesNotMatch(JSON.stringify(started) + ledger(), /test-ticket/, "neither the agent's result nor the ledger holds the code");
+    // Started by Ash, so the owner is told where to find it.
+    assert.ok(w.ledger.list({ limit: 1000 }).some(m => m.from === "service:devices" && m.to === "person:owner" && m.word === "say" && /配对码/.test(String(m.body.text))));
+    const view = w.service.pairingView();
+    assert.equal(view.code?.state, "active"); assert.equal(view.code?.ticket, "test-ticket");
+    assert.equal(view.code?.install_command, "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh | sh -s -- 'https://test.invalid' 'test-ticket'");
+    const edge = new EdgeRouter(w.ledger, w.router, w.members, { api: { "owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1), pairing: () => w.service.pairingView() });
+    const read = async (caller: EdgeCaller) => { const res = await edge.handle({ method: "GET", url: new URL("/api/devices/pairing", "http://ash"), headers: {}, body: null }, caller);
+      return { status: res.status, body: JSON.parse(String("body" in res ? res.body : "{}")) }; };
+    const local: EdgeCaller = { member: "person:owner", transportPrincipal: "owner", local: true, remote: false, ownerProxy: true, transport: "api" };
+    assert.equal((await read(local)).body.code.ticket, "test-ticket");
+    assert.equal((await read({ ...local, local: false, remote: true, pairedDeviceId: "browser", transport: "web_ui" })).status, 403, "a paired browser cannot read it");
+    assert.equal((await read({ ...local, member: "agent:main", transportPrincipal: "agent:main", ownerProxy: false, transport: "agent" })).status, 403, "an agent cannot read it");
+    // A computer presents the code: it is spent, the owner hears about the request, and the page shows the change.
+    w.service.pairingRequested({ request_id: "pair-1", name: "MacBookPro\u0007", fingerprint: "ab12" }); await tick();
+    const used = w.service.pairingView();
+    assert.equal(used.code?.state, "used"); assert.equal(used.code?.ticket, undefined); assert.equal(used.code?.install_command, undefined);
+    assert.notEqual(used.revision, view.revision);
+    const notice = w.ledger.list({ limit: 1000 }).filter(m => m.from === "service:devices" && m.to === "person:owner" && m.word === "say").at(-1)!;
+    assert.match(String(notice.body.text), /^MacBookPro 想连上 Ash，指纹 ab12。/); assert.equal(notice.body.kind, "due");
+    w.service.pairingRequested({ request_id: "pair-1", name: "MacBookPro", fingerprint: "ab12" }); await tick();
+    assert.equal(w.ledger.list({ limit: 1000 }).filter(m => m.from === "service:devices" && m.word === "say" && /想连上/.test(String(m.body.text))).length, 1, "one notice per request");
+    // The owner starting pairing from the devices page gets no notice: the code is already on their screen.
+    const before = w.ledger.list({ limit: 1000 }).filter(m => m.from === "service:devices" && m.word === "say").length;
+    assert.equal((await w.direct("pair_start", { kind: "browser" })).ok, true); await tick();
+    assert.equal(w.ledger.list({ limit: 1000 }).filter(m => m.from === "service:devices" && m.word === "say").length, before);
+    assert.equal(w.service.pairingView().code?.install_command, undefined, "a browser gets the code, not a computer installer");
   } finally { await w.close(); }
 });

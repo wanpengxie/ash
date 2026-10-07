@@ -28,12 +28,20 @@ const until = async <T>(check: () => Promise<T | undefined>): Promise<T> => {
 };
 try {
   const link = owner.link!;
-  const ticket = await link.ticket();
-  const pairing = startDevice({ gateway: base, name: "Test workstation", stateDir: join(dir, "device"), workdir: join(dir, "work") }, ticket.ticket, {
+  // Ash starts pairing; the code itself is read only by the local owner's screen route, never from her result.
+  const started = await mcp.call(binding, "device_pair_start", { kind: "laptop" }, controller.signal) as any;
+  assert.equal(started.result?.issued, true, JSON.stringify(started));
+  assert.equal(JSON.stringify(started).includes("ticket\":\""), false, "the agent's result carries no pairing code");
+  const ownerToken = Object.entries(owner.tokens.api).find(([, member]) => member === "person:owner")![0];
+  const view = await (await fetch(`${owner.url}/api/devices/pairing`, { headers: { authorization: `Bearer ${ownerToken}` } })).json() as any;
+  assert.equal(view.code?.state, "active");
+  assert.equal(owner.ledger.list({ limit: 10000 }).some(m => JSON.stringify(m.body).includes(view.code.ticket)), false, "the code never enters the ledger");
+  const pairing = startDevice({ gateway: base, name: "Test workstation", stateDir: join(dir, "device"), workdir: join(dir, "work") }, view.code.ticket, {
     detect: async () => [{kind:"codex",installed:true,logged_in:true,models:[]}],
     agentFactory: (_kind, options) => CodexSession.open(options, {command:process.execPath,args:[fileURLToPath(new URL("../packages/device/test/fixtures/agent-cli.mjs", import.meta.url)),"codex", options.system?.includes("agent:remote") ? "auto" : "manual"]}),
   });
   const pending = await until(async () => [...link.pending.values()].find(p => p.name === "Test workstation"));
+  await until(async () => owner.ledger.list({ limit: 10000 }).find(m => m.from === "service:devices" && m.to === "person:owner" && String(m.body.text).startsWith("Test workstation 想连上")));
   const receipt = await mcp.call(binding, "device_pair_approve", { request_id: pending.request_id, kind: "laptop", local_agents: true }, controller.signal) as any;
   assert.ok(receipt.pending_id, JSON.stringify(receipt));
   const token = Object.entries(owner.tokens.api).find(([, member]) => member === "person:owner")![0];

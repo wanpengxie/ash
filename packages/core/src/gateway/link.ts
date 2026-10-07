@@ -169,9 +169,13 @@ export class OwnerLink extends Link {
     for (const entry of this.agentChannels.values()) entry.peer.close();
     this.agentChannels.clear(); this.halted.abort(); super.stop();
   }
+  /** Told once per pairing request this link has not seen before, live or found pending on connecting. */
+  onPairingRequest: ((item: PendingPairing) => void) | null = null;
   private async addPending(raw: Record<string, string>): Promise<void> {
     const item: PendingPairing = { request_id: raw.request_id, client_id: raw.client_id, name: raw.name, pubkey: raw.pubkey, fingerprint: await shortFingerprint(raw.pubkey), at: Date.now() };
+    const fresh = !this.pending.has(item.request_id);
     this.pending.set(item.request_id, item);
+    if (fresh) try { this.onPairingRequest?.(item); } catch (error) { this.log("pairing notice failed", error); }
   }
   protected onFrame(frame: Record<string, unknown>): void {
     if (frame.t === "tun" && typeof frame.sid === "string" && this.outbound.has(frame.sid)) { this.onOutbound(frame); return; }

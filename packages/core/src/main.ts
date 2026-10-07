@@ -448,6 +448,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(widgets);
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault,
+      pairing: () => devices!.pairingView(),
       fileWorkspaces: () => {
         if (!container || !config.workspaces?.home) return {};
         const home = config.workspaces.home;
@@ -564,6 +565,7 @@ export async function startOwner(config: Config): Promise<Running> {
       const signer = hostLink ? await hostLink.signer() : await fileSigner(config.stateDir);
       const owner = new OwnerLink(gatewayUrl, signer, edge, log);
       owner.setDeviceManagement((id, fallback) => devices!.deviceName(id, fallback), id => devices!.localAgentsAllowed(id));
+      owner.onPairingRequest = (item) => devices!.pairingRequested(item);
       link = owner;
       void owner.start(join(config.stateDir, "bootstrap-secret"), config.name ?? "Ash owner");
       // Remote recovery prefers current grants to an old snapshot, but waits only briefly; devices join as they connect.
@@ -630,6 +632,7 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     await reflex.runtime.recover();
     await world.recover();
+    devices.start();
     await post.start();
     if (hostLink) taskStatus = new TaskStatusBridge(world, (frame) => hostLink.taskStatus(frame));
     widgets.start();

@@ -79,7 +79,7 @@ The phone makes the outbound gateway connection. Paired browsers are additional 
 
 Computers default to `approval`: reads pass, writes/edits without an owner rule ask, and commands can be reviewed. Global `always` takes precedence over ordinary rules. An explicitly `full` computer bypasses action approval, recording `device_full`; this never changes the phone's policy. Local Agent use and browser UI access are separate grants, disabled by default on computers. Browser pairing grants only chat and UI access. Withdrawing local Agent access closes its channel and prevents reopening it. The remote AgentSystem runtime adapter is a separate integration step.
 
-The development device process and local-gateway round trip are testable with `tools/e2e-device.ts`. The release installer and updater are not implemented yet: pairing reports `install_available: false` and the update word returns failure instead of claiming an installation. No public installation URL is fabricated.
+The development device process and local-gateway round trip are testable with `tools/e2e-device.ts`. Pairing follows the key rule: agents may list devices and start pairing, but the pairing code is never in a result or the ledger. `pair_start` only reports that a code was issued; the code, its countdown and the one-line installer command (`install.sh GATEWAY CODE` from the `device-v0.1.0` release) are read by the local owner's devices page from an owner-only route, and approving a device stays the owner's. A pairing request is announced to the owner with the device name and fingerprint. A gateway that refuses the claim or cannot be reached never stops ash; `gateway_status` reports why.
 
 ## Build and checks
 
