@@ -1,5 +1,6 @@
 import { SCREEN_TOKEN_HEADER } from "../../../sdk/src/api.ts";
 import { ProactivePreferences } from "./settings-preferences.js";
+import { AppsSettings, appsSummary } from "./settings-apps.js";
 import { usdToCnyText as money, balanceText, CNY_ESTIMATE_NOTE } from "./money.js";
 
 function node(tag, label, className = "") {
@@ -220,6 +221,8 @@ export class SettingsControls {
     const vaultRow = navRow("settingsVaultRow", "key", "密钥", "DeepSeek、OpenRouter", () => vaultPage.open());
     const gatewayRow = navRow("settingsGatewayRow", "devices", "已连接设备", "其他电脑和浏览器", () => gatewayPage.open());
     const capability = [vaultRow, gatewayRow];
+    const appsRow = navRow("settingsAppsRow", "apps", "应用", `装在 ${name} 里的应用，以及它们能用什么`, () => appsPage.open());
+    capability.push(appsRow);
     if (android && typeof globalThis.__ashBrowserLogins === "function")
       capability.push(navRow("settingsBrowserRow", "globe", "浏览器登录", `${name} 的浏览器里登录过的网站`, () => browserPage.open()));
     if (android) capability.push(navRow("settingsConsole", "shield", "手机权限", "通知、无障碍、后台运行，以及诊断", null, "ash://console"));
@@ -583,6 +586,13 @@ export class SettingsControls {
       browserPage.append(clear, browserStatus);
     }
 
+    // ---- Apps: the same service:apps words an agent calls; installing here is the owner's own approval of what it needs.
+    const apps = new AppsSettings((word, body) => requestSetting(word, body, "service:apps"), { live, name,
+      onSummary: (list) => { appsRow.sub.textContent = appsSummary(list); } });
+    const appsPage = page("settingsApps", "应用",
+      `装在 ${name} 里的应用。安装时列出它要用的东西，你点了才算同意；停用后权限还留着，收回后要重新安装。`, () => apps.load());
+    appsPage.append(apps.root);
+
     // ---- Quiet hours
     const quietPage = page("settingsQuiet", "免打扰",
       `这段时间里，${name} 想主动跟你说的事会先攒着，到点再告诉你。你找她、你定的提醒，照常送达。`, () => loadQuiet());
@@ -773,6 +783,7 @@ export class SettingsControls {
 
     // ---- What the home rows say: read when the drawer opens and whenever you come back to it.
     this.refreshHome = async () => {
+      void apps.summary();
       const settled = (work) => work.catch(() => null);
       const [settings, usage, vault, gateway] = await Promise.all([
         settled(requestSetting("settings.get", {})), settled(requestSetting("usage.get", { days: 7 }, "service:cost")),
