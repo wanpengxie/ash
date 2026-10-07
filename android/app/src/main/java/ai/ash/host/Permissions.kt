@@ -80,6 +80,11 @@ object Permissions {
                 { a -> a.requestPermissions(arrayOf(Manifest.permission.READ_CALENDAR), 7102) },
             ))
             add(Permission(
+                "photos", "照片、视频和文件", "让 Ash 看你的照片和视频、找手机里的文件、把图片存进相册",
+                { it.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED },
+                ::askStorage,
+            ))
+            add(Permission(
                 "notifications", "通知", "提醒、需要你确认的卡片，都靠通知送达",
                 { it.getSystemService(NotificationManager::class.java).areNotificationsEnabled() },
                 { a ->
@@ -223,7 +228,7 @@ object Permissions {
                 { c -> if (AppsShell.installedVersion(c) == 0L) "先安装「Ash 应用」（Ash 自带，点一下即可安装）" else "Ash 应用需要更新，点一下即可更新" },
             ))
             if (Build.VERSION.SDK_INT >= 30) add(Permission(
-                "all_files", "所有文件访问", "让 Ash 读写手机存储里的照片、下载和文档",
+                "all_files", "所有文件访问", "让 Ash 读写手机存储里的所有文件，包括别的应用放在共享存储里的下载和文档",
                 { Environment.isExternalStorageManager() },
                 { a ->
                     try {
@@ -265,6 +270,20 @@ object Permissions {
                 },
             ))
         }
+    }
+
+    /** The system's own question the first time; once the owner said no for good, the app's permission page instead. */
+    private fun askStorage(a: Activity) {
+        val prefs = a.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val asked = prefs.getBoolean("asked:photos", false)
+        if (asked && !a.shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE)) {
+            Toast.makeText(a, "在「权限」里允许 Ash 访问照片和视频、文件", Toast.LENGTH_LONG).show()
+            a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri(a)))
+            return
+        }
+        prefs.edit().putBoolean("asked:photos", true).apply()
+        a.requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            Manifest.permission.ACCESS_MEDIA_LOCATION), 7103)
     }
 
     fun grantedCount(ctx: Context): Int = all.count { it.granted(ctx) }

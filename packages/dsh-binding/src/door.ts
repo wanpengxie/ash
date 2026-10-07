@@ -325,7 +325,7 @@ export class DshDoor {
         (args, exec) => send({ to: "person:owner", kind: "request", word: "say", body: { text: args.text, kind: args.kind ?? "reply" } }, exec)),
       descriptor("ash_react", "React to a specific owner message.", shape({ message_id: { type: "string" }, emoji: { type: "string" } }, ["message_id", "emoji"]),
         (args, exec) => send({ to: "person:owner", kind: "request", word: "react", body: { message_id: args.message_id, emoji: args.emoji } }, exec)),
-      descriptor("ash_show", "Show one owner card, including options or permission cards. A permission card only names an Android setting to switch on (calendar, notifications, battery, accessibility, all_files, usage, write_settings, overlay, shizuku), never access to a phone capability.", shape({ card: { type: "object" } }, ["card"]),
+      descriptor("ash_show", "Show one owner card, including options or permission cards. A permission card only names an Android setting to switch on (calendar, notifications, battery, accessibility, photos, all_files, usage, write_settings, overlay, shizuku), never access to a phone capability.", shape({ card: { type: "object" } }, ["card"]),
         (args, exec) => send({ to: "person:owner", kind: "request", word: "show", body: { card: args.card } }, exec)),
     ];
   }

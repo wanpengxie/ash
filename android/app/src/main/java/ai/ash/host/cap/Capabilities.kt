@@ -11,7 +11,7 @@ object Capabilities {
 
     /** Every module contributes its list here (system, screen/accessibility, shell/Shizuku, virtual screen). */
     val all: List<Capability> by lazy {
-        SystemCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list
+        SystemCapabilities.list + ShellCapabilities.list + VScreenCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list + MediaCapabilities.list
     }
     /**
      * Ash's own, and its helpers' while they are connected: the screen helper's ([ai.ash.host.screen.ScreenBridge]) and

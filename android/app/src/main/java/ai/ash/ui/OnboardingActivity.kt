@@ -217,7 +217,7 @@ class OnboardingActivity : Activity() {
         private const val SEEN = "onboarding_seen"
 
         private val ICONS = mapOf(
-            "notifications" to "🔔", "alerts" to "📳", "screen_keepalive" to "🛡️", "battery" to "🔋", "accessibility" to "👆", "all_files" to "📁",
+            "notifications" to "🔔", "alerts" to "📳", "screen_keepalive" to "🛡️", "battery" to "🔋", "accessibility" to "👆", "photos" to "🖼️", "all_files" to "📁",
             "usage" to "📊", "write_settings" to "⚙️", "overlay" to "🪟", "shizuku" to "🛠️",
         )
 

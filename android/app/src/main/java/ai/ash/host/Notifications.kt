@@ -235,6 +235,28 @@ object Notifications {
     }
 
     /**
+     * Asks the owner to take a photo for Ash: in the Ash app (or when Android lets Ash open screens) the camera simply
+     * opens; otherwise an urgent notification opens it on a tap. Returns how it was shown.
+     */
+    fun cameraHandoff(ctx: Context, intent: Intent, reason: String?, direct: Boolean): String {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (direct) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post { runCatching { ctx.startActivity(intent) } }
+            return "in_front"
+        }
+        val text = reason ?: "点一下打开相机"
+        val open = PendingIntent.getActivity(ctx, "camera".hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = builder(ctx, CH_URGENT)
+            .setContentTitle("Ash 想请你拍一张照片").setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(open).setFullScreenIntent(open, true).setCategory(Notification.CATEGORY_REMINDER)
+            .setAutoCancel(true).build()
+        ctx.getSystemService(NotificationManager::class.java).notify("camera-handoff", 0, n)
+        return "notification"
+    }
+
+    fun hideCameraHandoff(ctx: Context) = ctx.getSystemService(NotificationManager::class.java).cancel("camera-handoff", 0)
+
+    /**
      * While the agent's browser has a page open, one quiet ongoing notice names the latest page; tapping it shows that
      * page so the owner can watch, take over or close it. Null [latest] (nothing open) removes it.
      */
