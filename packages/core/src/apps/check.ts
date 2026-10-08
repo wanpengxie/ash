@@ -129,6 +129,7 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
     try { listed = (await client.listTools(undefined, { timeout: timeoutMs })).tools as typeof listed; }
     catch (cause) { problems.push(error("server tools/list", `tools/list 失败：${short(cause)}${output()}`, capabilities.tools ? undefined : "initialize 的回答里 capabilities 要有 tools: {}")); }
     const seen = new Set<string>();
+    let writes = 0;
     for (const tool of listed) {
       const where = `工具 ${short(tool.name, 80)}`;
       if (typeof tool.name !== "string" || !TOOL_NAME.test(tool.name)) { problems.push(warning(where, "名字不合规，不会登记成能力", "名字要匹配 ^[a-z][a-z0-9_.-]{0,63}$，例如 notes.add")); continue; }
@@ -142,6 +143,7 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
       try { deviceWordSpec({ name: tool.name, description: tool.description || tool.name, label: tool.title || tool.name, risk: "none", input_schema: schema as never }); ajvFor(schema); }
       catch (cause) { problems.push(warning(where, `inputSchema 编译不过（Ajv 严格模式），不会登记：${short(cause)}`)); continue; }
       tools.push(tool.name);
+      if (!(tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true)) writes++;
       if (!tool.title) problems.push(warning(where, "没有 title：审批卡上会直接显示工具名", "写一个中文动宾短语，如「记一笔」"));
       if (!tool.description) problems.push(warning(where, "没有 description：Agent 不知道它做什么"));
       if (!tool.annotations || typeof tool.annotations.readOnlyHint !== "boolean")
@@ -150,7 +152,13 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
       if (typeof linked === "string" && !(manifest.surfaces ?? []).some((item) => item.resource === linked))
         problems.push(warning(where, `_meta.ui.resourceUri 指向 ${short(linked, 120)}，但 app.json 的 surfaces 里没有这个页面`));
     }
-    if (!listed.length && !problems.some((item) => item.where === "server tools/list")) problems.push(warning("server tools/list", "一个工具都没有：Agent 没法通过 app:" + manifest.id + " 用它"));
+    // Every app is an organ of ash: what the owner can do with its data on a page, the agent can do through its tools.
+    const pages = (manifest.surfaces ?? []).length > 0;
+    if (!tools.length && !problems.some((item) => item.where === "server tools/list"))
+      problems.push((pages ? error : warning)("server tools/list", pages ? `只有页面、没有可用的工具：Agent 没法通过 app:${manifest.id} 看或改它的数据`
+        : `一个工具都没有：Agent 没法通过 app:${manifest.id} 用它`, "每个应用都要有给 Agent 用的工具：读数据的（readOnlyHint: true）和改数据的（readOnlyHint: false），页面也通过它们读写"));
+    else if (pages && tools.length && !writes)
+      problems.push(warning("server tools/list", "只有只读工具：页面上能改的数据，Agent 改不了", "页面上每种改数据的操作都写成一个工具（readOnlyHint: false），页面用 app.call 调它，Agent 用同一个"));
     for (const surface of manifest.surfaces ?? []) {
       const where = `页面 ${surface.id}（${surface.resource}）`;
       let read: Awaited<ReturnType<Client["readResource"]>>;
@@ -162,6 +170,8 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
       if (!content || !html.trim()) { problems.push(error(where, "返回的内容是空的", "contents[0].text 放整页 HTML")); continue; }
       surfaces.push(surface.id);
       if (content.mimeType !== UI_MIME) problems.push(warning(where, `mimeType 是 ${short(content.mimeType ?? "（没写）", 80)}`, `写 ${UI_MIME}`));
+      if (/localStorage\.setItem|indexedDB\.open/.test(html)) problems.push(warning(where, "页面把数据存在浏览器里（localStorage / IndexedDB）：Agent 看不到也改不了",
+        "主人的数据放在服务里（如 data.json），页面和 Agent 都通过工具读写；浏览器里只放页面自己的小状态"));
       if (!/ui\/initialize/.test(html)) problems.push(warning(where, "页面没有发 ui/initialize：调不了工具，也跟不上深浅色", "用 apps.scaffold 生成的 ui/app.js（window.app.call）"));
     }
   } finally {
