@@ -54,6 +54,9 @@ data class VNode(
     fun walk(): Sequence<VNode> = sequence { yield(this@VNode); for (c in children) yieldAll(c.walk()); items?.forEach { yieldAll(it.walk()) } }
     /** Nested RemoteViews below and including this one (a List's items not counted: they start afresh). */
     val depth: Int get() = 1 + (children.maxOfOrNull { it.depth } ?: 0)
+    /** The same, with every List drawn as plain rows ([CardPlan.plain]). */
+    val plainDepth: Int get() = 1 + maxOf(children.maxOfOrNull { it.plainDepth } ?: 0,
+        items?.let { (if (lay == Lay.GRID) 2 else 0) + (it.maxOfOrNull { i -> i.plainDepth } ?: 0) } ?: 0)
 }
 
 /** What the owner changed on the phone and the core has not drawn back yet: toggles, choices and tabs. */
@@ -84,6 +87,20 @@ object CardPlan {
 
     private val PLACES = mapOf("topStart" to (TOP or START), "top" to (TOP or CENTER_H), "topEnd" to (TOP or END), "start" to (CENTER_V or START),
         "center" to CENTER, "end" to (CENTER_V or END), "bottomStart" to (BOTTOM or START), "bottom" to (BOTTOM or CENTER_H), "bottomEnd" to (BOTTOM or END))
+
+    /**
+     * A List as plain rows (a Column of its items, or rows of cells for columns): what a widget draws most reliably,
+     * used while the rows fit; a List that does not fit is drawn as a real scrolling list instead.
+     */
+    fun plain(list: VNode): VNode {
+        val items = list.items ?: return list
+        val children = if (list.lay != Lay.GRID) items else items.chunked(list.columns).mapIndexed { r, cells ->
+            VNode(Lay.ROW, "${list.id}~row$r", width = Dim.Fill, gravity = TOP or START,
+                children = cells.map { VNode(Lay.SLOT_H, "${it.id}~cell", children = listOf(it), weight = 1, width = Dim.Dp(0f)) } +
+                    List(list.columns - cells.size) { VNode(Lay.SLOT_H, "${list.id}~empty$r$it", weight = 1, width = Dim.Dp(0f)) })
+        }
+        return list.copy(lay = Lay.COL, items = null, children = children, gravity = TOP or START)
+    }
 
     fun frame(root: CNode, title: String, opensWithTitle: Boolean): Frame {
         val own = root.style.background != null

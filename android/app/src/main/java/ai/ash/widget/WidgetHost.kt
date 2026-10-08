@@ -79,11 +79,11 @@ object WidgetHost {
         cached = parsed
         val done = CountDownLatch(1)
         main.post {
-            try {
-                CardWidgetProvider.updateAll(app)
-                checkUnplaced(app, parsed)
-            } catch (e: Exception) { Log.w(TAG, "drawing widgets failed", e) }
-            finally { done.countDown() }
+            // Drawing and checking finish asynchronously (as on the launcher); the answer waits for both.
+            val left = java.util.concurrent.atomic.AtomicInteger(2)
+            val one = { if (left.decrementAndGet() == 0) done.countDown() }
+            try { CardWidgetProvider.updateAll(app, one) } catch (e: Exception) { Log.w(TAG, "drawing widgets failed", e); one() }
+            try { checkUnplaced(app, parsed, one) } catch (e: Exception) { Log.w(TAG, "checking cards failed", e); one() }
         }
         // The core waits about three seconds for this answer; what is not checked by then is reported later.
         if (Looper.myLooper() != Looper.getMainLooper()) done.await(2, TimeUnit.SECONDS)
@@ -91,19 +91,22 @@ object WidgetHost {
     }
 
     /** Cards no widget shows yet are checked at their nominal size, so their creator learns about a problem before placing. */
-    private fun checkUnplaced(ctx: Context, state: WState) {
+    private fun checkUnplaced(ctx: Context, state: WState, done: () -> Unit) {
         val shown = HashSet<String>()
         val manager = AppWidgetManager.getInstance(ctx)
         for (id in manager.getAppWidgetIds(ComponentName(ctx, CardWidgetProvider::class.java)))
             (state.bindings[id.toString()] ?: localCard(ctx, id))?.let { shown.add(it) }
-        for (card in state.cards.values) {
-            if (card.id in shown || synchronized(reported) { reported[card.id]?.first == card.updatedAt }) continue
+        val todo = state.cards.values.filter { card -> card.id !in shown && synchronized(reported) { reported[card.id]?.first != card.updatedAt } }
+        val left = java.util.concurrent.atomic.AtomicInteger(todo.size + 1)
+        val one = { if (left.decrementAndGet() == 0) done() }
+        for (card in todo) {
             val render = card.render
-            if (render == null) { report(ctx, card, card.problem ?: "卡片内容缺失"); continue }
+            if (render == null) { report(ctx, card, card.problem ?: "卡片内容缺失"); one(); continue }
             val (w, h) = WidgetPlan.nominal(card.size)
-            val result = runCatching { CardWidgetProvider.render(ctx, 0, card, render, w, h) }.getOrElse { null to (it.message ?: it.javaClass.simpleName) }
-            report(ctx, card, result.second)
+            try { CardWidgetProvider.render(ctx, 0, card, render, w, h) { _, problem -> report(ctx, card, problem); one() } }
+            catch (e: Exception) { report(ctx, card, e.message ?: e.javaClass.simpleName); one() }
         }
+        one()
     }
 
     /** Note what drawing [card] came to; changes go to the core with the next answer, or on their own shortly. */

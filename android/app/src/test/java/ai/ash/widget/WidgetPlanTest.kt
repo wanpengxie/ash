@@ -54,6 +54,7 @@ class WidgetPlanTest {
         assertEquals(limits.getInt("levels"), CardSpec.LEVELS)
         assertEquals(limits.getInt("levelsWithSizes"), CardSpec.LEVELS_WITH_SIZES)
         assertEquals(limits.getInt("itemLevels"), CardSpec.ITEM_LEVELS)
+        assertEquals(limits.getInt("lists"), CardSpec.LISTS)
     }
 
     @Test fun aColumnInsideARowWrapsItsContentInsteadOfFillingTheRow() {
@@ -225,5 +226,34 @@ class WidgetPlanTest {
         val deep = (0 until 11).map { c(if (it == 0) "root" else "c$it", "Column", "children" to JSONArray(listOf(if (it == 10) "leaf" else "c${it + 1}"))) } + c("leaf", "Text", "text" to "x")
         val e = assertThrows(CardProblem::class.java) { CardSpec.parse(a2ui(*deep.toTypedArray())) }
         assertTrue(e.message!!, e.message!!.startsWith("这张卡片嵌套了 12 层，安卓小组件最多 10 层（root > c1 > c2"))
+    }
+
+    @Test fun thePhonesToDoCardDrawsItsRowsAsPlainChildrenWhileTheyFit() {
+        // On ColorOS the list area of this card came out empty: the list's adapter was set from a nested RemoteViews,
+        // which Android drops when the launcher applies the widget asynchronously. Lists are now drawn as plain rows
+        // while they fit (and otherwise get their adapter from the widget's top level, checked by CardCheck).
+        val render = render("the phone's to-do card")
+        val plan = CardPlan.plan(render)
+        val list = plan.find("list")
+        assertEquals(8, list.items!!.size)
+        assertTrue(plan.plainDepth <= CardSpec.LEVELS)
+        val rows = CardPlan.plain(list)
+        assertEquals(Lay.COL, rows.lay)
+        assertNull(rows.items)
+        assertEquals(8, rows.children.size)
+        val first = rows.children[0]
+        assertEquals(Lay.CHECK, first.lay)
+        assertEquals("门磁 / 摄像头比价", first.text!!.text)
+        assertEquals(false, first.checked)
+        assertEquals(Tap.Toggle("item@0", false), first.tap)
+        assertEquals(true, rows.children[4].checked)
+        assertEquals(CardSpec.colors["white"], first.textColor)
+        assertEquals("待办", plan.find("title").text!!.text)
+        // The List sits in a weighted slot of the root Column, so it gets the space between the title and the footer.
+        assertEquals(Lay.SLOT_V, plan.children[1].lay)
+        // A grid list as plain rows: rows of equal cells.
+        val grid = CardPlan.plain(list.copy(lay = Lay.GRID, columns = 3))
+        assertEquals(listOf(3, 3, 3), grid.children.map { it.children.size })
+        assertEquals(CardSpec.LISTS, 16)
     }
 }
