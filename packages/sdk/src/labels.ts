@@ -76,6 +76,7 @@ const serviceLabels: Readonly<Record<string, string>> = Object.freeze({
   "service:vault/describe": "在看保存的密钥",
   "service:widgets/widget.list": "在看桌面小组件",
   "service:widgets/widget.card.put": "在更新桌面卡片",
+  "service:widgets/widget.card.get": "在看桌面卡片的内容",
   "service:widgets/widget.card.preview": "在看桌面卡片的样子",
   "service:widgets/widget.card.validate": "在检查桌面卡片",
   "service:widgets/widget.card.remove": "在移除桌面卡片",
