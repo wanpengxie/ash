@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Message } from "../../sdk/src/api";
-import type { AgentTurnInput, AgentTurnOutput, AgentTurnRunner } from "../../core/src/members/agent";
+import type { AgentTurnInput, AgentTurnOutput, AgentTurnResult, AgentTurnRunner } from "../../core/src/members/agent";
 import type { MindTurnRunner } from "../../core/src/members/agent-mind";
 import type { ManagedPromptSnapshot } from "../../core/src/members/self";
 import type { WorldRouter } from "../../core/src/world/router";
@@ -24,6 +24,10 @@ const MIME = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const inside = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`)); };
 const SAY_TOOL = /(^|__)human_say$/;
+/** A model stream that broke off mid tool call: nothing ran, and the same request usually goes through on a second try. */
+const BROKEN_TOOL_INPUT = /tool input is invalid JSON/i;
+const RETRY_NOTE = "[ash] Your previous attempt at this message stopped on a model error (the tool input was invalid JSON) before any tool ran. " +
+  "Handle it now; if the same message already appears above, it is this one, not a new request.";
 const sameWords = (text: string) => text.replace(/\s+/gu, " ").trim();
 // A one-line report that the message just sent was sent ("已回复。", "已完成三步。") tells the owner nothing new.
 const STATUS_LINE = /^(?:好的?[，,]?\s*)?(?:我)?(?:已经?|都已)(?:回复|发送|发出|发给你|告诉你|通知|完成|做完|处理完|照做)[^\n]{0,40}$/u;
@@ -124,6 +128,8 @@ class TurnWatch {
   private pending = Promise.resolve();
   emitError: unknown;
   spoke = false;
+  /** A tool call was seen in this turn: something may have taken effect. */
+  acted = false;
   constructor(private readonly turn: string, private readonly emit: (output: AgentTurnOutput) => Promise<void>, private readonly signal: AbortSignal,
     private readonly router?: WorldRouter, private readonly actor = "agent:main", summarize?: ProgressSummarizer) {
     if (summarize && router && actor === "agent:main") this.progress = new ProgressSummaryWorker(summarize,
@@ -150,6 +156,7 @@ class TurnWatch {
             .catch((error) => { this.emitError ??= error; });
         }
       } else if (update.sessionUpdate === "tool_call" && typeof update.toolCallId === "string") {
+        this.acted = true;
         this.progress?.stageChanged();
         const name = typeof update.title === "string" ? update.title : "tool";
         const args = typeof update.rawInput === "string" ? update.rawInput : JSON.stringify(update.rawInput ?? {});
@@ -214,13 +221,13 @@ export class ContainerTurnRunner implements AgentTurnRunner {
     renameSync(temp, this.contextFile);
   }
 
-  async runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<{ reason: "completed" | "error"; error?: string }> {
+  async runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<AgentTurnResult> {
     if (signal.aborted) return { reason: "error", error: "turn cancelled before dispatch" };
     if (input.managedSnapshot) this.managed = renderMainContext(input.managedSnapshot);
     const fromOwner = input.messages.some((message: Message) => message.from === "person:owner");
     if (this.options.keyMissing()) {
       if (fromOwner) await emit({ id: `${input.turn}:no-model-key`, text: NO_MODEL_KEY });
-      return { reason: "error", error: "no model key" };
+      return { reason: "error", error: "no model key", told: fromOwner };
     }
     const { host, binding } = this.options;
     const started = Date.now();
@@ -233,8 +240,8 @@ export class ContainerTurnRunner implements AgentTurnRunner {
     }
     catch (error) {
       this.options.log?.("agent session unavailable", error);
-      if (fromOwner) await emit({ id: `${input.turn}:runtime-down`, text: "我的运行环境没能启动，这次没法回你。稍后再发一次试试；还不行的话重启一下 Ash。" }).catch(() => {});
-      return { reason: "error", error: `agent runtime unavailable: ${error instanceof Error ? error.message : String(error)}` };
+      const told = fromOwner && await emit({ id: `${input.turn}:runtime-down`, text: "我的运行环境没能启动，这次没法回你。稍后再发一次试试；还不行的话重启一下 Ash。" }).then(() => true, () => false);
+      return { reason: "error", error: `agent runtime unavailable: ${error instanceof Error ? error.message : String(error)}`, told };
     }
     const watch = new TurnWatch(input.turn, emit, signal, this.options.router, binding.member, this.options.summarizeProgress);
     const off = host.onUpdate((sid, update) => { if (sid === sessionId) watch.update(update); });
@@ -259,15 +266,25 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       await host.inject(sessionId, context);
       if (this.managed) this.rememberInjected({ session: sessionId, hash, turns: restate ? 1 : (before.turns ?? 0) + 1 });
       if (signal.aborted) return { reason: "error", error: "turn cancelled" };
-      const stop = await host.prompt(sessionId, content);
+      let stop: string;
+      try { stop = await host.prompt(sessionId, content); }
+      catch (error) {
+        await watch.settle();
+        // Once, and only when nothing of this turn could have taken effect: no tool call, no words to the owner, and
+        // no request of this turn in the ledger.
+        if (signal.aborted || !BROKEN_TOOL_INPUT.test(error instanceof Error ? error.message : String(error)) || watch.acted || watch.spoke ||
+          watch.emitError || this.turnActed(input.turn)) throw error;
+        this.options.log?.("model broke a tool call; trying the turn once more", input.turn);
+        stop = await host.prompt(sessionId, [{ type: "text", text: RETRY_NOTE }, ...content]);
+      }
       await watch.settle();
       if (watch.emitError) return { reason: "error", error: watch.emitError instanceof Error ? watch.emitError.message : "agent output failed" };
       if (signal.aborted || stop === "cancelled") return { reason: "error", error: "turn cancelled" };
       const failures = this.options.failuresSince(started, sessionId);
       if (failures.length && !watch.spoke) {
         const last = failures[failures.length - 1]!;
-        if (fromOwner) await emit({ id: `${input.turn}:model-failed`, text: modelFailureText({ status: last.status, message: last.message }) }).catch(() => {});
-        return { reason: "error", error: `model call failed (${last.status})` };
+        const told = fromOwner && await emit({ id: `${input.turn}:model-failed`, text: modelFailureText({ status: last.status, message: last.message }) }).then(() => true, () => false);
+        return { reason: "error", error: `model call failed (${last.status})`, told };
       }
       return { reason: "completed" };
     } catch (error) {
@@ -282,6 +299,12 @@ export class ContainerTurnRunner implements AgentTurnRunner {
       this.current = null;
       this.options.onActive?.(false);
     }
+  }
+
+  /** Whether the ledger holds any request this turn made (a tool, a capability, words to the owner). */
+  private turnActed(turn: string): boolean {
+    const member = this.options.binding.member;
+    return this.options.router?.ledger.turnMessages(turn).some((row) => row.from === member && row.kind === "request") ?? false;
   }
 
   async steer(input: { turn: string; messages: readonly Message[]; rendered: string }, signal: AbortSignal): Promise<boolean> {

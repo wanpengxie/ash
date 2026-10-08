@@ -7,6 +7,7 @@ import { AgentInbox, type StoredTurn } from "../world/agent-inbox";
 import { DEFAULT_TURN_TEXT_BUDGET, TurnTextBudgetError, renderTurnBatch } from "./agent-render";
 import { AgentStatus } from "./agent-status";
 import type { AgentMind, MindSnapshot } from "./agent-mind";
+import { RETRY_OPTION, isRetryText, turnFailureNotice } from "./agent-failure";
 
 /** Full messages are control data. A model adapter must inject only `rendered`, never stringify `messages`. */
 export interface AgentTurnInput {
@@ -19,6 +20,8 @@ export interface AgentTurnInput {
   peripheralContext?: string;
 }
 export interface AgentTurnOutput { id: string; text: string }
+/** told: a failed turn whose runtime already explained the failure to the owner itself (Ash then only offers a retry). */
+export interface AgentTurnResult { reason: "completed" | "error"; error?: string; told?: boolean }
 export interface AgentTurnRunner {
   /** Optional lower text cap; not a claim about the provider's total context window. */
   renderBudgetBytes?: number;
@@ -28,7 +31,7 @@ export interface AgentTurnRunner {
    */
   steer?(input: { turn: string; messages: readonly Message[]; rendered: string }, signal: AbortSignal): Promise<boolean>;
   /** Settlement must prove the underlying session is idle, including after abort. A turn/end event alone is insufficient. */
-  runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<{ reason: "completed" | "error"; error?: string }>;
+  runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<AgentTurnResult>;
 }
 
 export interface AgentMemberOptions {
@@ -316,10 +319,79 @@ export class AgentMember implements Member {
       this.inbox.markTurnEvent(turn.id, "start_logged");
     }
     if (turn.status === "ended" && !turn.endLogged) {
+      if (turn.reason === "error") await this.failureNotice(turn, ids);
+      if (this.closed) return;
       await this.event("turn.end", { turn: turn.id, reason: turn.reason, ...(turn.error ? { error: turn.error } : {}) }, `end:${turn.id}`, turn.id);
       if (this.closed) return;
       this.inbox.markTurnEvent(turn.id, "end_logged");
     }
+  }
+
+  /**
+   * A turn that was answering the owner and failed tells them so, once, before its end is recorded: what went wrong,
+   * whether anything was already done, and a retry button (replying 「重试」 works too). The stable client ids make a
+   * restart that repeats this step send nothing new. Turns no owner asked for only record their end in the activity.
+   */
+  private async failureNotice(turn: StoredTurn, ids: readonly string[]): Promise<void> {
+    if (!ids.some((id) => this.ledger.byId(id)?.from === "person:owner")) return;
+    const rows = this.ledger.turnMessages(turn.id).filter((row) => row.from === this.id && row.kind === "request");
+    const replied = rows.some((row) => row.to === "person:owner" && row.word === "say");
+    const notice = turnFailureNotice(turn.error, { steps: turnActions(rows).length, replied }, turn.told);
+    const send = (word: "say" | "show", body: Record<string, unknown>, clientId: string) =>
+      this.router.send(this.context(turn.id), { to: "person:owner", kind: "request", word, body, client_id: clientId });
+    try {
+      if (this.main) {
+        if (notice.text) await send("say", { text: notice.text, kind: "reply" }, `failed:${turn.id}`);
+        await send("show", { card: { type: "options", prompt: notice.prompt, options: [{ id: RETRY_OPTION, text: notice.option }] } }, `retry:${turn.id}`);
+      } else {
+        // Only the main agent's cards take an answer; another agent's owner just replies with the word.
+        await send("say", { text: `${notice.text ?? ""}${notice.option === "重试" ? "要再试一次就回我「重试」。" : "要我接着做就回我「接着做」。"}`, kind: "reply" }, `failed:${turn.id}`);
+      }
+    } catch { /* a notice that cannot be sent does not hold up the turn's end, which the activity still shows */ }
+  }
+
+  /**
+   * The failed turn an owner message asks to try again: the retry button on its notice, or a bare 「重试」 right after
+   * an owner turn that failed. Null when the message is anything else.
+   */
+  private retryTarget(messages: readonly Message[]): StoredTurn | null {
+    const last = messages.at(-1);
+    if (!last || last.from !== "person:owner") return null;
+    let target: StoredTurn | null = null;
+    if (typeof last.body.in_reply_to === "string") {
+      const card = last.body.option_id === RETRY_OPTION ? this.ledger.byId(last.body.in_reply_to) : null;
+      if (!card || card.from !== this.id || card.word !== "show" || !card.turn) return null;
+      try { target = this.inbox.turn(card.turn); } catch { return null; }
+    } else if (isRetryText(last.body.text)) {
+      // The most recent turn the owner was part of; turns no owner asked for (background work) are skipped.
+      target = this.inbox.recentTurns(20).find((turn) => turn.status === "ended" &&
+        this.inbox.turnIds(turn.id).some((id) => this.ledger.byId(id)?.from === "person:owner")) ?? null;
+    }
+    return target?.status === "ended" && target.reason === "error" ? target : null;
+  }
+
+  /** What the failed turn was asked, following earlier retries back to the original request. */
+  private retryRequest(turn: StoredTurn, depth = 0): Message[] {
+    const own = this.inbox.turnIds(turn.id).map((id) => this.ledger.byId(id))
+      .filter((message): message is Message => !!message && message.to === this.id && message.word === "say" && message.kind === "request");
+    if (!turn.retryOf || depth >= 3) return own;
+    let earlier: StoredTurn;
+    try { earlier = this.inbox.turn(turn.retryOf); } catch { return own; }
+    return [...this.retryRequest(earlier, depth + 1), ...own.filter((message) => !isRetryText(message.body.text))];
+  }
+
+  /** A trusted note for the retry turn: which attempt failed, how, and what it had already done. */
+  private retryNote(turn: StoredTurn): string {
+    const actions = turnActions(this.ledger.turnMessages(turn.id).filter((row) => row.from === this.id && row.kind === "request"))
+      .slice(-12).map((row) => {
+        const response = this.ledger.responseTo(row.id);
+        const state = !response ? "outcome unknown" : response.body.ok === true ? "succeeded" : "failed";
+        return `${row.to}/${row.word} (${state})`;
+      });
+    const error = [...String(turn.error ?? "unknown error")].slice(0, 200).join("");
+    return `[retry of a failed turn] The owner asks you to try again the earlier request that failed (turn ${turn.id}, error: ${JSON.stringify(error)}). ` +
+      (actions.length ? `That attempt had already run: ${actions.join("; ")}. Check what already took effect and do not repeat it.` : "That attempt ran no actions.") +
+      " The earlier request is repeated in this batch.\n";
   }
 
   private async reconcile(): Promise<void> {
@@ -352,16 +424,22 @@ export class AgentMember implements Member {
         if (this.isPaused() || !this.enabled) break;
         const batch = this.leadingBatch();
         if (!batch.ids.length) break;
-        const { ids, messages } = batch;
+        const { ids } = batch;
         const audience = batch.audience!;
+        // 「重试」 after a failed turn re-runs that turn's request, with a note on what the failed attempt already did.
+        const retry = audience === "owner" ? this.retryTarget(batch.messages) : null;
+        const earlier = retry ? this.retryRequest(retry).filter((message) => !ids.includes(message.id)) : [];
+        const messages = [...earlier, ...batch.messages];
+        const retryText = retry ? this.retryNote(retry) : "";
         const budget = this.runner.renderBudgetBytes ?? DEFAULT_TURN_TEXT_BUDGET;
         const stopFacts = this.inbox.stopFacts();
         const recent = this.managedSnapshot ? this.ledger.list({ after: this.lastManagedSeq, limit: 1000 }) : [];
         const changes = recent.filter((item) => item.from === "service:self" && item.to === null && item.kind === "event" && item.word === "self.changed");
         const changeText = changes.length ? `\n[self.changed facts since the previous turn]\n${changes.map((item) =>
           `${String(item.body.path)}: ${JSON.stringify(String(item.body.summary ?? "changed"))} (by ${String(item.body.by)})`).join("\n")}\n` : "";
-        const rendered = renderTurnBatch(messages, budget - Buffer.byteLength(changeText), stopFacts.map((fact) => fact.text)) + changeText; // failure leaves all pending
-        const turn = this.inbox.claim(ids);
+        const rendered = retryText + renderTurnBatch(messages, budget - Buffer.byteLength(changeText) - Buffer.byteLength(retryText),
+          stopFacts.map((fact) => fact.text)) + changeText; // failure leaves all pending
+        const turn = this.inbox.claim(ids, retry?.id);
         if (!turn) break;
         currentTurn = turn.id;
         const managedSnapshot = this.managedSnapshot ? await this.managedSnapshot() : undefined;
@@ -381,7 +459,7 @@ export class AgentMember implements Member {
         this.activeTurn = turn.id;
         this.activeAudience = audience;
         let emitOpen = true;
-        let result: { reason: "completed" | "error"; error?: string };
+        let result: AgentTurnResult;
         try {
           result = await this.runner.runTurn({ turn: turn.id, messages, rendered, stopFacts: stopFacts.map((fact) => fact.text), managedSnapshot,
             ...(typeof peripheralContext === "string" ? { peripheralContext } : {}) }, async (output) => {
@@ -401,7 +479,7 @@ export class AgentMember implements Member {
           result = { reason: "error", error: error instanceof Error ? error.message : "runner failed" };
         } finally { emitOpen = false; controller.abort(); this.active = null; this.activeTurn = null; this.activeAudience = null; this.quiescenceBlocked = false; }
         if (this.closed) break; // an interrupted turn is closed and explained on restart
-        const ended = this.inbox.finish(turn.id, result.reason, result.error);
+        const ended = this.inbox.finish(turn.id, result.reason, result.error, result.told === true);
         if (ended.reason === "completed") {
           this.inbox.consumeStopFacts(stopFacts.map((fact) => fact.turn));
           this.lastManagedSeq = recent.at(-1)?.seq ?? this.lastManagedSeq;
@@ -419,6 +497,16 @@ export class AgentMember implements Member {
       if (!this.closed && !this.error && this.inbox.pendingIds().length) this.schedule();
     }
   }
+}
+
+/**
+ * The actions a turn started, for "had anything been done". A runtime's own tool record covers its calls into Ash too,
+ * so when it has one those are not counted twice; words to the owner are not actions.
+ */
+function turnActions(rows: readonly Message[]): Message[] {
+  const tools = rows.filter((row) => row.to === "service:dsh-tool" && !/(^|_)human_(say|show|react)$/.test(row.word));
+  if (rows.some((row) => row.to === "service:dsh-tool")) return tools;
+  return rows.filter((row) => row.to !== "person:owner");
 }
 
 export function createAgentMember(options: AgentMemberOptions): AgentMember { return new AgentMember(options); }

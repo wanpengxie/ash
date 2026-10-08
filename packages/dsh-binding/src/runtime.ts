@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { Message } from "../../sdk/src/api";
-import type { AgentTurnInput, AgentTurnOutput, AgentTurnRunner } from "../../core/src/members/agent";
+import type { AgentTurnInput, AgentTurnOutput, AgentTurnResult, AgentTurnRunner } from "../../core/src/members/agent";
 import type { ManagedPromptSnapshot } from "../../core/src/members/self";
 import { renderMainContext } from "./context";
 import type { DoorTurnAdapter, DshRootAgent, DshSessionEvent } from "./host";
@@ -266,7 +266,7 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
       await new Promise<never>(() => {});
     }
   }
-  async runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<{ reason: "completed" | "error"; error?: string }> {
+  async runTurn(input: AgentTurnInput, emit: (output: AgentTurnOutput) => Promise<void>, signal: AbortSignal): Promise<AgentTurnResult> {
     const session = this.session;
     if (!session || this.busy) throw new Error("DSH session unavailable or still busy");
     if (signal.aborted) return { reason: "error", error: "turn cancelled before dispatch" };
@@ -274,9 +274,10 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
     // Without a model key a turn would die inside DSH and the owner would see nothing at all.
     if (await this.host.modelKeyMissing()) {
       // Only an owner's own message earns the reply; the clock and the senses wake her without anyone waiting for an answer.
-      if (input.messages.some((message) => message.from === "person:owner")) await emit({ id: `${input.turn}:no-model-key`, text: NO_MODEL_KEY });
+      const fromOwner = input.messages.some((message) => message.from === "person:owner");
+      if (fromOwner) await emit({ id: `${input.turn}:no-model-key`, text: NO_MODEL_KEY });
       // Never "completed": DSH ran no turn, and restart checks every completed core turn against DSH history.
-      return { reason: "error", error: "no model key" };
+      return { reason: "error", error: "no model key", told: fromOwner };
     }
     this.busy = true;
     // A stable one-to-one bridge from the durable core turn to DSH history.
@@ -371,9 +372,9 @@ export class DshTurnRunner implements AgentTurnRunner, DoorTurnAdapter {
       await pending;
       if (emitError) return { reason: "error", error: emitError instanceof Error ? emitError.message : "agent output failed" };
       // A model call that fails must not leave the owner staring at silence.
-      if (failure !== undefined && !signal.aborted && input.messages.some((message) => message.from === "person:owner"))
-        await emit({ id: `${input.turn}:model-failed`, text: modelFailureText(failure) }).catch(() => {});
-      return signal.aborted ? { reason: "error", error: "turn cancelled" } : result;
+      const told = failure !== undefined && !signal.aborted && input.messages.some((message) => message.from === "person:owner") &&
+        await emit({ id: `${input.turn}:model-failed`, text: modelFailureText(failure) }).then(() => true, () => false);
+      return signal.aborted ? { reason: "error", error: "turn cancelled" } : told && result.reason === "error" ? { ...result, told } : result;
     } catch (error) {
       await this.proveIdle(session.agent);
       return { reason: "error", error: error instanceof Error ? error.message : "DSH turn failed" };

@@ -141,7 +141,9 @@ test("same output id with changed body is rejected rather than creating a second
     await f.member.start();
     await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "go" }, wait: true });
     const rows = await f.waitFor((list) => list.some((m) => m.word === "turn.end"));
-    assert.equal(rows.filter((m) => m.word === "say" && m.kind === "request" && m.from === "agent:main" && m.to === "person:owner").length, 1);
+    const said = rows.filter((m) => m.word === "say" && m.kind === "request" && m.from === "agent:main" && m.to === "person:owner").map((m) => m.body.text);
+    // The runner's words once, then Ash's one notice that the turn failed.
+    assert.deepEqual(said, ["one", "刚才这件事没做成：出了点意外的错误。"]);
     assert.equal(rows.find((m) => m.word === "turn.end")?.body.reason, "error");
   } finally { await f.close(); }
 });
@@ -280,7 +282,8 @@ test("SIGKILL leaves read work interrupted but resumes unread inbox exactly once
       const ends = rows.filter((message) => message.word === "turn.end");
       assert.deepEqual(ends.map((message) => message.body.reason), ["error", "completed"]);
       assert.match(String(ends[0].body.error), /Interrupted by process restart/);
-      assert.deepEqual(rows.filter((message) => message.kind === "request" && message.from === "agent:main" && message.word === "say").map((message) => message.body.text), ["first answer", "recovered answer"]);
+      assert.deepEqual(rows.filter((message) => message.kind === "request" && message.from === "agent:main" && message.word === "say").map((message) => message.body.text),
+        ["first answer", "刚才那件事做到一半被打断了（Ash 重启）。", "recovered answer"]);
       const received = rows.filter((message) => message.word === "received");
       assert.equal(received.length, 4);
       assert.equal(new Set(received.flatMap((message) => message.body.ids as string[])).size, 4);

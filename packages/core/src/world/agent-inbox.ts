@@ -10,6 +10,10 @@ export interface StoredTurn {
   status: "active" | "ended";
   reason: StoredTurnReason | null;
   error: string | null;
+  /** The runtime already told the owner what went wrong in this failed turn. */
+  told: boolean;
+  /** The failed turn this one tries again, when the owner asked to retry it. */
+  retryOf: string | null;
   readLogged: boolean;
   startLogged: boolean;
   endLogged: boolean;
@@ -20,6 +24,7 @@ const turnId = () => `t_${randomBytes(9).toString("base64url")}`;
 const decodeTurn = (row: Row): StoredTurn => ({
   id: String(row.id), status: row.status as StoredTurn["status"],
   reason: (row.reason_v2 ?? row.reason) as StoredTurnReason | null, error: row.error === null ? null : String(row.error),
+  told: Boolean(row.told), retryOf: row.retry_of === null || row.retry_of === undefined ? null : String(row.retry_of),
   readLogged: Boolean(row.read_logged), startLogged: Boolean(row.start_logged), endLogged: Boolean(row.end_logged),
 });
 
@@ -57,6 +62,8 @@ export class AgentInbox {
     );`);
     const columns = this.db.prepare("PRAGMA table_info(turns)").all() as Row[];
     if (!columns.some((column) => column.name === "reason_v2")) this.db.exec("ALTER TABLE turns ADD COLUMN reason_v2 TEXT CHECK(reason_v2 IN ('completed','cancelled','error'))");
+    if (!columns.some((column) => column.name === "told")) this.db.exec("ALTER TABLE turns ADD COLUMN told INTEGER NOT NULL DEFAULT 0");
+    if (!columns.some((column) => column.name === "retry_of")) this.db.exec("ALTER TABLE turns ADD COLUMN retry_of TEXT");
   }
 
   accept(message: Message, agent = "agent:main"): boolean {
@@ -78,14 +85,14 @@ export class AgentInbox {
   markReceived(id: string): void { this.db.prepare("UPDATE inbox SET received_logged=1 WHERE message_id=?").run(id); }
 
   /** Claim the oldest pending messages, in order, as one new turn (a turn takes messages meant for one audience). */
-  claim(ids: readonly string[]): StoredTurn | null {
+  claim(ids: readonly string[], retryOf?: string): StoredTurn | null {
     if (!ids.length) return null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const pending = this.pendingIds();
       if (pending.length < ids.length || ids.some((id, index) => id !== pending[index])) throw new Error("pending inbox changed before claim");
       const id = turnId();
-      this.db.prepare("INSERT INTO turns(id,status,created_at) VALUES (?,'active',?)").run(id, Date.now());
+      this.db.prepare("INSERT INTO turns(id,status,created_at,retry_of) VALUES (?,'active',?,?)").run(id, Date.now(), retryOf ?? null);
       let changed = 0;
       for (const message of ids) changed += Number(this.db.prepare("UPDATE inbox SET state='read',turn_id=? WHERE message_id=? AND state='pending'").run(id, message).changes);
       if (changed !== ids.length) throw new Error("incomplete inbox claim");
@@ -165,9 +172,14 @@ export class AgentInbox {
     this.db.prepare(`UPDATE turns SET ${field}=1 WHERE id=?`).run(id);
   }
 
-  finish(id: string, reason: StoredTurnReason, error?: string): StoredTurn {
-    this.db.prepare("UPDATE turns SET status='ended',reason=?,reason_v2=?,error=? WHERE id=? AND status='active'").run(reason === "cancelled" ? "error" : reason, reason, error ?? null, id);
+  finish(id: string, reason: StoredTurnReason, error?: string, told = false): StoredTurn {
+    this.db.prepare("UPDATE turns SET status='ended',reason=?,reason_v2=?,error=?,told=? WHERE id=? AND status='active'").run(reason === "cancelled" ? "error" : reason, reason, error ?? null, told ? 1 : 0, id);
     return this.turn(id);
+  }
+
+  /** The most recent turns, newest first. */
+  recentTurns(limit: number): StoredTurn[] {
+    return (this.db.prepare("SELECT * FROM turns ORDER BY rowid DESC LIMIT ?").all(limit) as Row[]).map(decodeTurn);
   }
 
   interruptActive(): StoredTurn[] {
