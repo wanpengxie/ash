@@ -50,10 +50,22 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
     // ---------------------------------------------------------------------------------------------------------------
     // The frame around the card.
 
-    /** The whole widget for [root] at [wDp] x [hDp]; [scroll] puts the card in a one-item list so it scrolls. */
-    fun frame(render: CardRender, root: CNode, wDp: Float, scroll: Boolean): RemoteViews {
+    /** How a card's lists are drawn: as plain rows (when they fit), as scrolling lists, or the whole card as one scrolling item. */
+    enum class How { PLAIN, LISTS, SCROLL }
+
+    /** A built widget, and how many rows each scrolling list (by view id) must show, for [CardCheck]. */
+    class Built(val views: RemoteViews, val lists: Map<Int, Int>)
+
+    /** A scrolling list waiting for its adapter, which only the top-level RemoteViews can set (see [frame]). */
+    private class PendingList(val viewId: Int, val items: List<VNode>, val listId: String, val availW: Int)
+    private val pendingLists = ArrayList<PendingList>()
+    private var plainLists = false
+
+    /** The whole widget for [root] at [wDp] wide, its lists drawn as [how] says. */
+    fun frame(render: CardRender, root: CNode, wDp: Float, how: How): Built {
         val plan = CardPlan.plan(render, root, local, api31)
         val f = CardPlan.frame(root, card.title, WidgetPlan.opensWithTitle(root, card.title))
+        val scroll = how == How.SCROLL
         val rv = RemoteViews(pkg, if (scroll) R.layout.widget_card_scroll else R.layout.widget_card)
         rv.setTextViewText(R.id.card_title, card.title)
         rv.setViewVisibility(R.id.card_title, if (f.title) View.VISIBLE else View.GONE)
@@ -61,6 +73,9 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
         val widthPx = px(wDp)
         rv.setOnClickPendingIntent(R.id.card_root, PendingIntent.getActivity(ctx, 9100 + widgetId, WidgetActions.ash(ctx),
             PendingIntent.FLAG_UPDATE_CURRENT or immutable))
+        pendingLists.clear()
+        plainLists = how == How.PLAIN
+        val lists = LinkedHashMap<Int, Int>()
         if (!scroll) {
             if (f.ownBackground) {
                 rv.setInt(R.id.card_root, "setBackgroundColor", 0)
@@ -68,6 +83,9 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
             }
             rv.removeAllViews(R.id.card_body)
             rv.addView(R.id.card_body, build(plan, false, if (f.ownBackground) widthPx else widthPx - px(28f)))
+            // Android applies setRemoteAdapter only from the widget's top-level RemoteViews: in a nested one (added with
+            // addView) a launcher that applies asynchronously, as ColorOS's does, drops it and the list stays empty.
+            for (p in pendingLists) { collection(rv, p.viewId, p.items, p.listId, p.availW); lists[p.viewId] = p.items.size }
         } else {
             // The card's own background and corners move to the frame; the scrolling item carries the content.
             var item = CardPlan.item(render, root, local, api31)
@@ -79,9 +97,19 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
                 item = item.copy(bg = null, padding = null, radius = null)
             }
             collection(rv, R.id.card_list, listOf(item), CardItemsService.WHOLE_CARD, widthPx)
+            lists[R.id.card_list] = 1
         }
-        return rv
+        return Built(rv, lists)
     }
+
+    private val listIds = intArrayOf(R.id.w_list_0, R.id.w_list_1, R.id.w_list_2, R.id.w_list_3, R.id.w_list_4, R.id.w_list_5, R.id.w_list_6, R.id.w_list_7,
+        R.id.w_list_8, R.id.w_list_9, R.id.w_list_10, R.id.w_list_11, R.id.w_list_12, R.id.w_list_13, R.id.w_list_14, R.id.w_list_15)
+    private val listLayouts = intArrayOf(R.layout.w_list_0, R.layout.w_list_1, R.layout.w_list_2, R.layout.w_list_3, R.layout.w_list_4, R.layout.w_list_5,
+        R.layout.w_list_6, R.layout.w_list_7, R.layout.w_list_8, R.layout.w_list_9, R.layout.w_list_10, R.layout.w_list_11, R.layout.w_list_12,
+        R.layout.w_list_13, R.layout.w_list_14, R.layout.w_list_15)
+    private val gridLayouts = intArrayOf(R.layout.w_grid_0, R.layout.w_grid_1, R.layout.w_grid_2, R.layout.w_grid_3, R.layout.w_grid_4, R.layout.w_grid_5,
+        R.layout.w_grid_6, R.layout.w_grid_7, R.layout.w_grid_8, R.layout.w_grid_9, R.layout.w_grid_10, R.layout.w_grid_11, R.layout.w_grid_12,
+        R.layout.w_grid_13, R.layout.w_grid_14, R.layout.w_grid_15)
 
     // ---------------------------------------------------------------------------------------------------------------
     // One node.
@@ -125,8 +153,11 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
             Lay.PROGRESS -> R.layout.w_progress
             Lay.DIV_H -> R.layout.w_div_h
             Lay.DIV_V -> R.layout.w_div_v
-            Lay.LIST -> R.layout.w_list
-            Lay.GRID -> R.layout.w_grid
+            Lay.LIST, Lay.GRID -> {
+                val k = pendingLists.size
+                if (k >= listLayouts.size) throw CardProblem("一张卡片最多 ${listLayouts.size} 个滚动列表")
+                if (v.lay == Lay.GRID) gridLayouts[k] else listLayouts[k]
+            }
             Lay.CLOCK -> R.layout.w_clock
             Lay.CHRONO -> R.layout.w_chrono
         }
@@ -151,6 +182,7 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
 
     /** The RemoteViews for [v] and everything inside it. [inItem]: inside a scrolling list's item (taps fill in a template). */
     fun build(v: VNode, inItem: Boolean, availW: Int): RemoteViews {
+        if (plainLists && v.items != null) return build(CardPlan.plain(v), inItem, availW)
         val rv = RemoteViews(pkg, layout(v))
         val id = R.id.w_self
         if (!v.visible) rv.setViewVisibility(id, View.GONE)
@@ -206,8 +238,9 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
         v.tap?.let { tap(rv, v, it, inItem) }
         for (child in v.children) rv.addView(id, build(child, inItem, availW))
         v.items?.let { items ->
-            if (v.lay == Lay.GRID) rv.setInt(id, "setNumColumns", v.columns)
-            collection(rv, id, items, v.id, if (v.lay == Lay.GRID) availW / v.columns.coerceAtLeast(1) else availW)
+            val listId = listIds[pendingLists.size]
+            if (v.lay == Lay.GRID) rv.setInt(listId, "setNumColumns", v.columns)
+            pendingLists.add(PendingList(listId, items, v.id, if (v.lay == Lay.GRID) availW / v.columns.coerceAtLeast(1) else availW))
         }
         return rv
     }
@@ -293,34 +326,68 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
 }
 
 /**
- * Draws a widget's RemoteViews in Ash's own process before the launcher does, to catch what would come out blank,
- * fail to apply, or not fit (then the card is shown as a scrolling list). Main thread only.
+ * Draws a widget's RemoteViews in Ash's own process before the launcher does, the way a launcher does it (applied
+ * asynchronously under an AppWidgetHostView), to catch what would fail to apply, come out blank, leave a list empty,
+ * or not fit. Main thread only; [done] runs on the main thread.
  */
 object CardCheck {
     data class Result(val error: String?, val blank: Boolean, val overflow: Boolean)
 
-    fun inspect(ctx: Context, rv: RemoteViews, wPx: Int, hPx: Int): Result {
-        val root = try { rv.apply(ctx, FrameLayout(ctx)) } catch (e: Exception) {
-            return Result("安卓拒绝了这张卡片的画法（${e.javaClass.simpleName}: ${e.message?.take(200) ?: ""}）", blank = false, overflow = false)
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+    @Volatile private var provider: android.appwidget.AppWidgetProviderInfo? = null
+
+    fun inspect(ctx: Context, built: CardViews.Built, wPx: Int, hPx: Int, done: (Result) -> Unit) {
+        var finished = false
+        fun finish(r: Result) { if (!finished) { finished = true; done(r) } }
+        // Should the check itself hang, the widget is still drawn (unchecked) after a moment.
+        main.postDelayed({ finish(Result(null, blank = false, overflow = false)) }, 1500)
+        try {
+            val info = provider ?: android.appwidget.AppWidgetManager.getInstance(ctx).installedProviders
+                .firstOrNull { it.provider.packageName == ctx.packageName && it.provider.className == CardWidgetProvider::class.java.name }
+                ?.also { provider = it }
+            // A real widget host, inflating on an executor as launchers do: actions of nested RemoteViews then see their
+            // direct parent, not the host, exactly as on the home screen.
+            val host = android.appwidget.AppWidgetHostView(ctx)
+            if (info != null) host.setAppWidget(0, info)
+            if (Build.VERSION.SDK_INT >= 29) host.setExecutor { it.run() }
+            host.updateAppWidget(built.views)
+            fun look(tries: Int) {
+                if (finished) return
+                val content = host.getChildAt(0)
+                when {
+                    content != null && content.findViewById<View>(R.id.card_root) != null -> finish(measure(content, built.lists, wPx, hPx))
+                    content != null && tries > 3 -> finish(Result("安卓拒绝了这张卡片的画法（桌面显示了出错的样子）", blank = false, overflow = false))
+                    else -> main.postDelayed({ look(tries + 1) }, 20)
+                }
+            }
+            main.post { look(0) }
+        } catch (e: Exception) {
+            finish(Result("安卓拒绝了这张卡片的画法（${e.javaClass.simpleName}: ${e.message?.take(200) ?: ""}）", false, false))
         }
-        return try {
-            root.measure(View.MeasureSpec.makeMeasureSpec(wPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(hPx, View.MeasureSpec.EXACTLY))
-            root.layout(0, 0, wPx, hPx)
+    }
+
+    private fun measure(root: View, lists: Map<Int, Int>, wPx: Int, hPx: Int): Result = try {
+        root.measure(View.MeasureSpec.makeMeasureSpec(wPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(hPx, View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, wPx, hPx)
+        // Every scrolling list must have its rows (Android 12+ carries them in the update; earlier ones fetch them later).
+        val empty = if (Build.VERSION.SDK_INT >= 31) lists.entries.firstOrNull { (id, rows) ->
+            rows > 0 && ((root.findViewById<View>(id) as? AdapterView<*>)?.adapter?.count ?: 0) == 0 } else null
+        if (empty != null) Result("列表画出来是空的（应有 ${empty.value} 行，桌面没有接上列表内容）", blank = false, overflow = false)
+        else {
             val body = root.findViewById<View>(R.id.card_body) ?: root.findViewById(R.id.card_list)
             val content = (body as? ViewGroup)?.takeIf { it.id == R.id.card_body }?.getChildAt(0)
             var overflow = false
             if (content != null && body.height > 0) {
-                val lp = content.layoutParams
                 content.measure(View.MeasureSpec.makeMeasureSpec(body.width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
                 overflow = content.measuredHeight > body.height + 2
-                content.layoutParams = lp
                 body.measure(View.MeasureSpec.makeMeasureSpec(body.width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(body.height, View.MeasureSpec.EXACTLY))
                 body.layout(body.left, body.top, body.right, body.bottom)
             }
             Result(null, blank = body != null && !visible(body, body.width, body.height, 0, 0), overflow = overflow)
-        } catch (e: Exception) {
-            Result("这张卡片排版时出错（${e.javaClass.simpleName}: ${e.message?.take(200) ?: ""}）", blank = false, overflow = false)
         }
+    } catch (e: Exception) {
+        Result("这张卡片排版时出错（${e.javaClass.simpleName}: ${e.message?.take(200) ?: ""}）", blank = false, overflow = false)
     }
 
     /** Whether anything with content shows inside a [w] x [h] box, [x],[y] being this view's offset in it. */

@@ -75,6 +75,8 @@ object CardSpec {
     const val LEVELS = 10
     const val LEVELS_WITH_SIZES = 9
     const val ITEM_LEVELS = 11
+    /** Scrolling lists per layout: each needs its own prebuilt view id (res/layout/w_list_N.xml). */
+    const val LISTS = 16
 
     private fun c(hex: Long) = hex.toInt()
     /** Theme colours (light, dark); the same names as the core's CARD_COLORS. */
@@ -210,6 +212,8 @@ object CardSpec {
             val n = levels(r)
             if (n > budget) throw CardProblem("这张卡片嵌套了 $n 层，安卓小组件最多 $budget 层（${deepest(r).joinToString(" > ")}）")
             checkLists(r)
+            fun count(n: CNode): Int = (if (n.kind == "List") 1 else 0) + n.inner.sumOf { count(it) }
+            if (count(r) > LISTS) throw CardProblem("这张卡片有 ${count(r)} 个滚动列表，安卓小组件最多 $LISTS 个")
         }
         return CardRender(root, sizes, a2ui.optJSONObject("theme")?.opt("accent")?.let { tint(it) })
     }

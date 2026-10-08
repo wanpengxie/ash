@@ -5,6 +5,7 @@
   "levelsWithSizes": 9,
   "itemLevels": 11,
   "sizes": 16,
+  "lists": 16,
   "components": 1500,
   "json": 524288,
   "text": 20000
@@ -2363,6 +2364,445 @@
      }
     ]
    }
+  },
+  {
+   "name": "the phone's to-do card (its list came out empty on ColorOS)",
+   "expect": "ok",
+   "levels": 4,
+   "a2ui": {
+    "components": [
+     {
+      "id": "root",
+      "component": "Column",
+      "style": {
+       "background": "translucentDark",
+       "color": "white",
+       "cornerRadius": 20,
+       "padding": 14
+      },
+      "children": [
+       "title",
+       "list",
+       "divider",
+       "footer"
+      ]
+     },
+     {
+      "id": "title",
+      "component": "Text",
+      "text": "**待办**",
+      "variant": "h3"
+     },
+     {
+      "id": "list",
+      "component": "List",
+      "weight": 1,
+      "children": {
+       "componentId": "item",
+       "path": "/todo"
+      }
+     },
+     {
+      "id": "item",
+      "component": "CheckBox",
+      "label": {
+       "path": "title"
+      },
+      "value": {
+       "path": "done"
+      },
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      }
+     },
+     {
+      "id": "divider",
+      "component": "Divider"
+     },
+     {
+      "id": "btnlabel",
+      "component": "Text",
+      "text": "看趋势"
+     },
+     {
+      "id": "btn",
+      "component": "Button",
+      "variant": "primary",
+      "child": "btnlabel",
+      "action": {
+       "openApp": {
+        "app": "health",
+        "surface": "trends"
+       }
+      }
+     },
+     {
+      "id": "footer",
+      "component": "Row",
+      "justify": "spaceBetween",
+      "align": "center",
+      "children": [
+       "btn"
+      ]
+     }
+    ],
+    "data": {
+     "todo": [
+      {
+       "id": "t1",
+       "title": "门磁 / 摄像头比价",
+       "done": false
+      },
+      {
+       "id": "t2",
+       "title": "温控器背面拍型号",
+       "done": false
+      },
+      {
+       "id": "t3",
+       "title": "Gadgetbridge 开 Intent API",
+       "done": false
+      },
+      {
+       "id": "t4",
+       "title": "早上空腹称重",
+       "done": false
+      },
+      {
+       "id": "t5",
+       "title": "体脂秤接入 Ash",
+       "done": true
+      },
+      {
+       "id": "t6",
+       "title": "奥森灯光秀（10/7）",
+       "done": true
+      },
+      {
+       "id": "t7",
+       "title": "需求文档交给作者",
+       "done": true
+      },
+      {
+       "id": "t8",
+       "title": "回龙观 → 公司骑行记录",
+       "done": false
+      }
+     ]
+    }
+   },
+   "result": "ok",
+   "rendered": {
+    "root": "root",
+    "components": [
+     {
+      "id": "root",
+      "component": "Column",
+      "style": {
+       "background": "translucentDark",
+       "color": "white",
+       "cornerRadius": 20,
+       "padding": [
+        14,
+        14,
+        14,
+        14
+       ]
+      },
+      "children": [
+       "title",
+       "list",
+       "divider",
+       "footer"
+      ]
+     },
+     {
+      "id": "title",
+      "component": "Text",
+      "text": "**待办**",
+      "variant": "h3"
+     },
+     {
+      "id": "list",
+      "component": "List",
+      "weight": 1,
+      "children": [
+       "item@0",
+       "item@1",
+       "item@2",
+       "item@3",
+       "item@4",
+       "item@5",
+       "item@6",
+       "item@7"
+      ]
+     },
+     {
+      "id": "item@0",
+      "component": "CheckBox",
+      "item": "t1",
+      "itemPath": "/todo/0",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "门磁 / 摄像头比价",
+      "checked": false,
+      "bind": "/todo/0/done"
+     },
+     {
+      "id": "item@1",
+      "component": "CheckBox",
+      "item": "t2",
+      "itemPath": "/todo/1",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "温控器背面拍型号",
+      "checked": false,
+      "bind": "/todo/1/done"
+     },
+     {
+      "id": "item@2",
+      "component": "CheckBox",
+      "item": "t3",
+      "itemPath": "/todo/2",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "Gadgetbridge 开 Intent API",
+      "checked": false,
+      "bind": "/todo/2/done"
+     },
+     {
+      "id": "item@3",
+      "component": "CheckBox",
+      "item": "t4",
+      "itemPath": "/todo/3",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "早上空腹称重",
+      "checked": false,
+      "bind": "/todo/3/done"
+     },
+     {
+      "id": "item@4",
+      "component": "CheckBox",
+      "item": "t5",
+      "itemPath": "/todo/4",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "体脂秤接入 Ash",
+      "checked": true,
+      "bind": "/todo/4/done"
+     },
+     {
+      "id": "item@5",
+      "component": "CheckBox",
+      "item": "t6",
+      "itemPath": "/todo/5",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "奥森灯光秀（10/7）",
+      "checked": true,
+      "bind": "/todo/5/done"
+     },
+     {
+      "id": "item@6",
+      "component": "CheckBox",
+      "item": "t7",
+      "itemPath": "/todo/6",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "需求文档交给作者",
+      "checked": true,
+      "bind": "/todo/6/done"
+     },
+     {
+      "id": "item@7",
+      "component": "CheckBox",
+      "item": "t8",
+      "itemPath": "/todo/7",
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      },
+      "label": "回龙观 → 公司骑行记录",
+      "checked": false,
+      "bind": "/todo/7/done"
+     },
+     {
+      "id": "divider",
+      "component": "Divider",
+      "axis": "horizontal"
+     },
+     {
+      "id": "footer",
+      "component": "Row",
+      "children": [
+       "btn"
+      ],
+      "justify": "spaceBetween",
+      "align": "center"
+     },
+     {
+      "id": "btn",
+      "component": "Button",
+      "action": {
+       "openApp": {
+        "app": "health",
+        "surface": "trends"
+       }
+      },
+      "child": "btnlabel",
+      "variant": "primary"
+     },
+     {
+      "id": "btnlabel",
+      "component": "Text",
+      "text": "看趋势",
+      "variant": "body"
+     }
+    ]
+   }
+  },
+  {
+   "name": "more scrolling lists than Android has views for",
+   "expect": "error",
+   "error": "at most 16 scrolling lists",
+   "a2ui": {
+    "components": [
+     {
+      "id": "root",
+      "component": "Column",
+      "children": [
+       "l0",
+       "l1",
+       "l2",
+       "l3",
+       "l4",
+       "l5",
+       "l6",
+       "l7",
+       "l8",
+       "l9",
+       "l10",
+       "l11",
+       "l12",
+       "l13",
+       "l14",
+       "l15",
+       "l16"
+      ]
+     },
+     {
+      "id": "l0",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l1",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l2",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l3",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l4",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l5",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l6",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l7",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l8",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l9",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l10",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l11",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l12",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l13",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l14",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l15",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "l16",
+      "component": "List",
+      "children": []
+     }
+    ]
+   },
+   "result": "the card has 17 Lists in one layout; Android widgets take at most 16 scrolling lists (each needs its own prebuilt view) — merge them"
   },
   {
    "name": "video cannot be drawn",

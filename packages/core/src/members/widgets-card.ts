@@ -22,6 +22,8 @@ export const CARD_LIMITS = {
   itemLevels: 11,
   /** RemoteViews(Map<SizeF, RemoteViews>) takes at most 16 sizes. */
   sizes: 16,
+  /** Scrolling lists per layout: each needs a prebuilt view id, as Android sets list contents by id from the widget's top level. */
+  lists: 16,
   /** One widget update crosses the binder in a single ~1 MB transaction; bitmaps travel separately. */
   components: 1500,
   json: 512 * 1024,
@@ -889,6 +891,14 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
       bad(`the card nests ${n} levels deep (${branch.join(" > ")}); Android widgets allow at most ${budget}${sizes ? " with per-size layouts" : ""} ` +
         "(weighted children of a Row/Column, placed children of a Stack and Grid cells count one more) — flatten it, e.g. put Texts side by side in one Row instead of nesting Columns");
     }
+  }
+  const countLists = (id: string): number => {
+    const c = byId.get(id)!;
+    return (c.component === "List" ? 1 : 0) + [...(c.children ?? []), ...(c.child ? [c.child] : []), ...(c.tabs ?? []).map((t) => t.child)].reduce((n, k) => n + countLists(k), 0);
+  };
+  for (const root of roots) {
+    const n = countLists(root);
+    if (n > CARD_LIMITS.lists) bad(`the card has ${n} Lists in one layout; Android widgets take at most ${CARD_LIMITS.lists} scrolling lists (each needs its own prebuilt view) — merge them`);
   }
   const inList = (id: string, list: string): void => {
     const c = byId.get(id)!;
