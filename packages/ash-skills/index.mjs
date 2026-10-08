@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const names = ["first-meeting", "self-awareness", "forget", "wide-research"];
+const names = ["first-meeting", "self-awareness", "forget", "wide-research", "pulse-widget"];
 const root = fileURLToPath(new URL("./skills/", import.meta.url));
 
 function metadata(raw, file) {
