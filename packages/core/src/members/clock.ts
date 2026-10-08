@@ -50,6 +50,8 @@ export class ClockMember implements Member {
   }
   private allowedDelegate(message: Message, caller: Readonly<RequestContextSnapshot> | undefined): caller is RequestContextSnapshot {
     if (!caller || caller.member !== message.from || !caller.transportPrincipal) return false;
+    // The pulse service keeps its own timers (to itself, label "pulse:…"); they are never an agent's or the owner's.
+    if (message.from === "service:pulse") return caller.member === "service:pulse" && caller.transportPrincipal === "service:pulse" && caller.local && !caller.remote;
     if (message.from === "person:owner") return caller.ownerProxy &&
       (caller.transportPrincipal.startsWith("token:") || Boolean(caller.remote && caller.pairedDeviceId));
     return AGENT_ID.test(message.from) && caller.local && !caller.remote && caller.transportPrincipal === message.from;
@@ -59,10 +61,12 @@ export class ClockMember implements Member {
     const word = value.word;
     const body = value.body;
     const label = value.label;
-    if (typeof label !== "string" || !label.trim() || !body || typeof body !== "object" || Array.isArray(body)) return null;
+    if (typeof label !== "string" || !label.trim() || !body || typeof body !== "object" || Array.isArray(body) ||
+      typeof to !== "string" || typeof word !== "string") return null;
     // An agent's timer speaks to that agent itself; the owner's go to the main agent or to the owner.
-    const self = typeof to === "string" && AGENT_ID.test(to) && (to === from || (from === "person:owner" && to === "agent:main"));
-    if (!((self && (word === "say" || (to === "agent:main" && word === "wake"))) ||
+    const self = AGENT_ID.test(to) && (to === from || (from === "person:owner" && to === "agent:main"));
+    const pulse = from === "service:pulse" && to === "service:pulse" && word === "pulse.due" && label.startsWith("pulse:");
+    if (from === "service:pulse" ? !pulse : !((self && (word === "say" || (to === "agent:main" && word === "wake"))) ||
       (to === "person:owner" && word === "say" && (body as Record<string, unknown>).kind === "due"))) return null;
     const contract = wordContract(to, word);
     if (!contract?.input_schema || !matchesSchema(contract.input_schema, body) || !this.options.router.acceptsRequest(to, word, body)) return null;
@@ -82,7 +86,9 @@ export class ClockMember implements Member {
     const prior = this.journal.command(message.id);
     if (prior && (message.word === "set" || message.word === "cancel")) return { ok: true, result: prior };
     if (message.word === "list") {
-      const timers = this.journal.list().filter((item) => message.from === "person:owner" || item.createdBy === message.from)
+      // The pulse's timers are listed to the pulse alone, so they never read as someone's reminders.
+      const timers = this.journal.list().filter((item) => message.from === "service:pulse" ? item.createdBy === message.from
+        : item.createdBy !== "service:pulse" && (message.from === "person:owner" || item.createdBy === message.from))
         .map((item) => ({ id: item.id, next: item.next, every: item.every, to: item.payload?.to ?? null,
           word: item.payload?.word ?? null, label: item.payload?.label ?? null, blocked: item.blocked }));
       return { ok: true, result: { timers } };
