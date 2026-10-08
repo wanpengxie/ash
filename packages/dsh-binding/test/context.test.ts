@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { renderMainContext } from "../src/context";
 
@@ -10,10 +12,15 @@ test("main context keeps persona, rules and standing files in design order", () 
   assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])));
 });
 
-test("main context asks for the owner's calendar grant through an in-chat card", () => {
+test("main context points at the reminders skill for the calendar grant, and the skill holds the steps", () => {
   const context = renderMainContext({ soul: null, identity: null, user: null, memory: null, heartbeat: null });
-  assert.match(context, /没有 `calendar\.search`/);
-  assert.match(context, /`human_show`/);
-  assert.match(context, /`type` 为 `permission`，`permission` 为 `calendar`/);
-  assert.match(context, /获得授权并看到能力可用后，才查询日历/);
+  assert.match(context, /看不到 `calendar\.search`/);
+  assert.match(context, /不要说已经看过日历/);
+  assert.match(context, /技能 `reminders`/);
+  const skill = readFileSync(join(import.meta.dirname, "../../ash-skills/skills/reminders/SKILL.md"), "utf8");
+  assert.match(skill, /没有这个词/);
+  assert.match(skill, /不要声称已经读到了日历/);
+  assert.match(skill, /`human_show`/);
+  assert.match(skill, /`\{type: "permission", permission: "calendar"/);
+  assert.match(skill, /授权后看到能力出现再查/);
 });

@@ -300,7 +300,9 @@ async function build() {
   fs.copyFileSync(buildNodump(), path.join(tree, "ash/libashnodump.so"));
 
   // Ash skills are a separate DSH plugin. Never modify the published DSH tree.
-  fs.cpSync(path.join(ROOT, "packages/ash-skills"), path.join(tree, "ash-skills"), { recursive: true });
+  // Its tests stay in the repository: only the plugin, the skills (with their sample files) and the persona templates ship.
+  fs.cpSync(path.join(ROOT, "packages/ash-skills"), path.join(tree, "ash-skills"), { recursive: true,
+    filter: (source) => path.relative(path.join(ROOT, "packages/ash-skills"), source).split(path.sep)[0] !== "test" });
   // The agent's DSH runs in the container (tools/build-container-rootfs.mjs): model calls and
   // credentials go through ash core, so the in-process cost and vault plugins are not shipped.
 
