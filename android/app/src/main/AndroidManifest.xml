@@ -25,6 +25,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- ColorOS lists 「创建桌面快捷方式」 among Ash's permissions (so the owner can allow it) only when Ash asks for it. -->
+    <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <!-- Task status capsule and virtual-screen preview; explicitly granted by the owner. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -145,6 +147,9 @@
         </activity>
         <!-- The apps shell (ai.ash.apps) reaches the owner's apps here; every call checks it is signed like Ash. -->
         <service android:name=".host.apps.AppsHostService" android:exported="true" />
+        <!-- Ash's home-screen shortcut for one of the owner's apps (when the shell cannot pin its own): hands it to the shell. -->
+        <activity android:name=".host.apps.AppShortcutActivity" android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay" android:taskAffinity="" android:excludeFromRecents="true" android:noHistory="true" />
 
         <!-- The screen helper brings Ash back here after the keep-alive switches: Ash's task returns as it was left. -->
         <activity android:name=".host.screen.ReturnActivity" android:exported="true" android:permission="ai.ash.permission.WAKE"

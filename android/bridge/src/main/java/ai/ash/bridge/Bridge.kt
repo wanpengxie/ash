@@ -21,6 +21,10 @@ object Bridge {
     const val APPS_OPEN = "ai.ash.apps.OpenActivity"
     const val ASH_PACKAGE = "ai.ash.agent"
     const val APPS_HOST_SERVICE = "ai.ash.host.apps.AppsHostService"
+    /** IAppsHost.requestPin: the launcher was asked; the launcher cannot pin shortcuts; the system refused to ask. 0 is an older Ash. */
+    const val PIN_ASKED = 1
+    const val PIN_UNSUPPORTED = 2
+    const val PIN_FAILED = 3
     /** Every tool the senses helper offers: Ash keeps a policy for each (a tool without one is never offered). */
     val SENSES_TOOLS = listOf(
         "location.get", "location.track", "location.history", "activity.current", "activity.history", "sensors.steps",

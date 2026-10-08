@@ -145,6 +145,18 @@ object Ash {
         }
     }
 
+    /**
+     * 「添加到桌面」 asked by Ash, for when the shell's own request goes nowhere (ColorOS gives the shell no permission page).
+     * Bridge.PIN_ASKED, PIN_UNSUPPORTED, PIN_FAILED, or 0 when Ash is too old to do it. Blocks: never on the main thread.
+     */
+    fun requestPin(ctx: Context, id: String, name: String, icon: Bitmap?, result: android.content.IntentSender): Int =
+        try { connect(ctx).requestPin(id, name, icon, result) }
+        catch (e: AshUnavailable) { throw e }
+        catch (e: Exception) { Log.w(TAG, "pin request through Ash failed", e); host = null; throw AshUnavailable("连不上 Ash") }
+
+    /** Whether Ash's shortcut for this app is on the home screen (false when Ash cannot tell). Blocks. */
+    fun pinned(ctx: Context, id: String): Boolean = runCatching { connect(ctx).pinned(id) }.getOrDefault(false)
+
     /** Ash's own screen: where the owner approves an app. */
     fun open(ctx: Context) {
         val launch = ctx.packageManager.getLaunchIntentForPackage(Bridge.ASH_PACKAGE) ?: return
