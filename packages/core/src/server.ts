@@ -39,7 +39,7 @@ export interface EdgeOptions { fileWorkspaces?: () => Record<string, { root: str
 const MAX_BODY = 28 * 1024 * 1024;
 const FACES = new Map(Object.entries(AVATARS).map(([key, value]) => [`/avatars/${key}.webp`, Buffer.from(value, "base64")]));
 const SCREEN_HEADER = SCREEN_TOKEN_HEADER.toLowerCase();
-const managed = new Set(["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "PROACTIVE.md"]);
+const managed = new Set(["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "PROACTIVE.md", "PULSE.md"]);
 const encode = (status: number, body: unknown): EdgeResponse => ({ status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, body: JSON.stringify(body) });
 const fail = (status: number, code: string, message: string): never => { throw new EdgeError(status, code, message); };
 const whole = (text: string | null | undefined, min = 0, max = Number.MAX_SAFE_INTEGER): number | undefined => {
