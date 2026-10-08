@@ -77,6 +77,8 @@ internal object NativeIsland : IslandView.Actions {
     private var restore: (() -> Unit)? = null
     private var form = "compact"
     private var episode = ""
+    /** Settles a finished turn's mark back to the plain pill when the owner never looked ([IslandRules.SETTLE_MS]). */
+    private var settleTimer: Runnable? = null
     /** Where the pill sits (around the camera when it can), read again whenever the screen may have turned. */
     private var geometry: IslandPill.Geometry? = null
     /** The owner swiped the resident entry away: it stays away until Ash shows something new, or the next unlock. */
@@ -322,7 +324,14 @@ internal object NativeIsland : IslandView.Actions {
         if (incoming != null && (current == null || !pending(current) || current.optString("localState").isNotEmpty())) selected = incoming.optString("id")
         else if (incoming == null && ((reply.isNotEmpty() && ended) || (model.optBoolean("canStop") && cards.none { pending(it) }))) selected = null
         else if (current == null) selected = (incoming ?: cards.lastOrNull())?.optString("id")
-        if (next != episode && (incoming != null || reply.isNotEmpty() || ended)) form = "card"
+        // Only what needs the owner opens the card by itself; a reply or an ended turn marks the pill and settles later.
+        if (next != episode && IslandRules.opensCard(model.optString("kind"), incoming != null)) form = "card"
+        settleTimer?.let { main.removeCallbacks(it) }; settleTimer = null
+        if (incoming == null && IslandRules.settles(model.optString("kind")) && form == "compact") {
+            val turn = model.optString("turn")
+            val settle = Runnable { if (snapshot?.optString("turn") == turn && form == "compact" && !editing) ash?.dismiss(turn) }
+            settleTimer = settle; main.postDelayed(settle, IslandRules.SETTLE_MS)
+        }
         episode = next
         snapshot = model
         // Answers the agent has taken up are no longer local.
