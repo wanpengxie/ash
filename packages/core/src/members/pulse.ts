@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { WakeOutcome } from "./agent-mind";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { PULSE_EVENTS, wordContract } from "../../../sdk/src/words";
 import type { Member } from "../world/member";
@@ -194,7 +193,7 @@ export class PulseMember implements Member {
   }
 
   /** How a wake turn ended, from the mind queue. A pulse turn that failed or was stopped is recorded; its success is the agent's own note. */
-  wakeSettled(message: Message, outcome: WakeOutcome): void {
+  wakeSettled(message: Message, outcome: { ok: boolean; cancelled: boolean; error?: string }): void {
     if (message.to !== "agent:main" || (message.body as { reason?: unknown }).reason !== "pulse" || outcome.ok) return;
     const why = ((message.body as { context?: { why?: unknown } }).context?.why);
     this.record("failure", { while: "turn", why: typeof why === "string" ? why : "unknown", ...(outcome.cancelled ? { cancelled: true } : {}), ...(outcome.error ? { error: outcome.error } : {}) });
