@@ -182,41 +182,62 @@ add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vau
   { label: "看保存的密钥", description: "Whether one credential is saved, and what it is for. A value is never returned." });
 add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
   { direction: "out", audience: "owner", description: "A credential was saved or removed. Names only; the value is never on the ledger." });
-// Home-screen widgets: cards anyone may put on the owner's phone home screen, drawn natively from a small A2UI subset.
+// Home-screen widgets: cards anyone may put on the owner's phone home screen, drawn natively from A2UI.
 const widgetCardId: JsonSchema = { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" };
 const widgetId: JsonSchema = { type: "string", minLength: 1, maxLength: 12 };
 const widgetSize = choice("2x2", "4x2", "4x4");
 const widgetCardInfo = obj({ id: widgetCardId, title: nonempty, size: widgetSize, owner: id, updated_at: nonnegativeSafe,
-  expires_at: { anyOf: [nonnegativeSafe, { type: "null" }] }, expired: bool, actions: strings }, ["id", "title", "size", "owner", "updated_at", "expires_at", "expired", "actions"]);
+  expires_at: { anyOf: [nonnegativeSafe, { type: "null" }] }, expired: bool, actions: strings, problem: { anyOf: [str, { type: "null" }] } },
+  ["id", "title", "size", "owner", "updated_at", "expires_at", "expired", "actions"]);
 const placedWidget = obj({ id: widgetId, type: choice("ash", "card") }, ["id", "type"]);
 const widgetListResult = obj({ cards: array(widgetCardInfo), widgets: array(obj({ id: widgetId, type: choice("ash", "card"), card: { anyOf: [widgetCardId, { type: "null" }] } }, ["id", "type", "card"])) }, ["cards", "widgets"]);
-export const WIDGET_A2UI_GUIDE = "a2ui is an A2UI v0.9 component list: {components:[...], root?:'root', data?:{...}}. Components are flat objects {id, component, ...} linked by id; " +
-  "the root (id 'root' unless root is given) is drawn. Allowed components only: " +
-  "Column {children:[ids], align?:'start'|'center'} and Row {children:[ids], justify?:'start'|'spaceBetween'} (at most 3 Column/Row levels); " +
-  "Text {text, variant?:'h1' big number|'h2'/'h3' title|'body' (default)|'caption' secondary} (at most 3 lines shown); " +
-  "Image {url:'avatar' (Ash's face) or 'icon:<name>' with name one of sun, cloud, rain, snow, wind, moon, heart, steps, weight, sleep, water, fire, calendar, clock, check, alert, star, bell, mail, home, car, money, chart}; no web images; " +
-  "Button {child:<id of a Text used as its label>, action:{event:{name:'<action name>'}}} (at most 2 buttons; a tap sends you widget.action with that name, it never runs anything by itself); " +
-  "Divider {axis?:'horizontal'}; ProgressBar {value: 0-100, label?}; Badge {text} (at most 8 characters). " +
-  "Any text, value or label may instead be {path:'/a/b'} read from the card's own data object. At most 40 components and 8 KB of JSON. " +
-  "Example: {components:[{id:'root',component:'Column',children:['t','n']},{id:'t',component:'Text',text:'Weight',variant:'caption'},{id:'n',component:'Text',text:{path:'/kg'},variant:'h1'}],data:{kg:'61.8 kg'}}";
+const widgetRendered = obj({ card: widgetCardId, updated_at: nonnegativeSafe, problem: str }, ["card", "updated_at"]);
+export const WIDGET_A2UI_GUIDE = "a2ui is A2UI v0.9 (basic catalog) as a flat component list: {components:[{id, component, ...}], root?:'root', data?:{...}, sizes?, theme?:{primaryColor}}. " +
+  "Anything Android widgets can draw is allowed; what they cannot is refused with the reason. No limit on nesting style, number of buttons or text lines except Android's own (about 10 nested levels; a scrolling List's items get their own budget). " +
+  "Components: Text {text, variant: h1..h5|body|caption} — text keeps line breaks and emoji, and simple Markdown (**bold**, *italic*, `code`, ~~strike~~, [link](url), # heading, - list) is drawn as formatting, never shown raw. " +
+  "Row/Column {children, justify: start|center|end|spaceBetween|spaceAround|spaceEvenly|stretch, align: start|center|end|stretch}; Stack {children, align} (children overlap; a child's style.place: topStart..bottomEnd); Grid {children, columns}; Card {child}; " +
+  "List {children, columns?} scrolls vertically when longer than the widget (horizontal lists are impossible); Tabs {tabs:[{title, child}], selected?} (switches on the phone); Spacer {size?} (flexible when no size); Divider {axis}; " +
+  "Image {url, fit: contain|cover|fill|none|scaleDown, variant: icon|avatar|smallFeature|mediumFeature|largeFeature|header} with url https://… or data:image/png|jpeg|webp|gif;base64,… (the phone fetches, downsizes and caches; no SVG), 'avatar' / 'avatar:<face>' (Ash), 'icon:<name>'; " +
+  "Icon {name: an A2UI icon name (check, close, star, favorite, home, settings, refresh, add, delete, edit, mail, phone, person, search, share, warning, info, …) or Ash's sun, cloud, rain, snow, wind, moon, heart, steps, weight, sleep, water, fire, calendar, clock, alert, bell, car, money, chart; or {svgPath}}; " +
+  "Button {child: any component id, variant: default|primary|borderless, action}; CheckBox / Switch {label, value: bool or {path}}; ChoicePicker {options:[{label, value}], value:[...] or {path}, variant: mutuallyExclusive|multipleSelection, displayStyle: checkbox|chips}; " +
+  "ProgressBar {value, max?: 100, label?}; Badge {text}; Clock {format?, timeZone?} (live); Timer {since | until: epoch ms} (live count up/down). " +
+  "Not drawable in a widget (refused): Video, AudioPlayer, TextField, DateTimeInput, Slider, Modal, web pages, scripts, animation. " +
+  "Every component may have: weight (share of the free space in a Row/Column), visible (bool or {path}), accessibility {label}, action, and style {background, color (text/icon/tint; inherited by children), cornerRadius, padding, margin, width, height (dp | 'fill' | 'wrap'), fontSize (sp), fontWeight (normal|medium|bold|100-900), italic, underline, strikethrough, textAlign, maxLines, ellipsize (end|start|middle|none), lineHeight, letterSpacing, opacity}. " +
+  "Colours: '#RRGGBB', '#RRGGBBAA' (alpha last, e.g. '#000000B3' translucent dark), theme names text, textSecondary, accent, onAccent, background, surface, surfaceVariant, line, transparent, translucentDark, translucentLight, white, black, red, orange, yellow, green, teal, blue, purple, pink, gray (these follow the phone's dark mode), or {light, dark}. " +
+  "A background on the root replaces the widget's own background (and its title). " +
+  "Actions (any element; in a List each item is tappable): {event:{name, context?}} — sent back to you as widget.action with the item key, checked state or chosen values; " +
+  "{openApp:{app, surface?}} or {functionCall:{call:'openUrl', args:{url:'ui://<app>/<surface>'}}} — opens that app's page in 「Ash 应用」; {openAsh:{}}; openUrl with https/mailto/tel/geo. A CheckBox/Switch/ChoicePicker whose value is {path} writes the owner's choice back into the card's data. " +
+  "Values may be literals, {path:'/a/b'} into data (relative paths inside templates), or A2UI functions {call: formatString ('${/a} ${b}') | formatNumber | formatCurrency | formatDate | pluralize | and | or | not, args}. " +
+  "children may be a template {componentId, path:'/items'}: one copy per array element, with paths relative to the element (its id or key field is the item key in widget.action). " +
+  "sizes: [{width, height (dp), root}] gives other layouts for other widget sizes. " +
+  "Example: {components:[{id:'root',component:'Column',style:{background:'translucentDark',color:'white',padding:14},children:['t','l']},{id:'t',component:'Text',text:'**待办**',variant:'h3'}," +
+  "{id:'l',component:'List',children:{componentId:'row',path:'/todo'}},{id:'row',component:'CheckBox',label:{path:'title'},value:{path:'done'},action:{event:{name:'toggle'}}}],data:{todo:[{id:'a',title:'买菜',done:false}]}}";
 add("service:widgets", "widget.list", "request", empty, widgetListResult,
-  { label: "看桌面小组件", effect: "read", description: "What is on the owner's phone home screen: each placed widget (the 'ash' widget, or an 'Ash 卡片' card widget with the card it shows), and every card that exists with its owner, size, expiry and button action names." });
+  { label: "看桌面小组件", effect: "read", description: "What is on the owner's phone home screen: each placed widget (the 'ash' widget, or an 'Ash 卡片' card widget with the card it shows), and every card that exists with its owner, size, expiry, event action names and the phone's last problem drawing it (null when it drew fine or has not reported)." });
 add("service:widgets", "widget.card.put", "request", obj({ id: { type: "string", minLength: 1, maxLength: 64 }, title: str, size: widgetSize,
   a2ui: obj({}, [], true), ttl_min: { type: "integer", minimum: 1, maximum: 43200 } }, ["id", "title", "size", "a2ui"]),
-  obj({ card: widgetCardInfo, bound_widgets: array(widgetId) }, ["card", "bound_widgets"]),
+  obj({ card: widgetCardInfo, bound_widgets: array(widgetId), phone: choice("drawn", "problem", "unknown"), problem: str }, ["card", "bound_widgets"]),
   { label: "更新桌面卡片", effect: "write", description: "Create or replace (same id) a card the owner can place on the phone home screen with the 'Ash 卡片' widget; widgets already showing it redraw. " +
     "id: lowercase letters, digits, . _ - (at most 64); title: at most 40 characters. The card belongs to whoever created it: only its creator or the owner may replace or remove it. size is the intended widget size (2x2 small, 4x2 wide, 4x4 large). " +
-    "ttl_min: after this many minutes the card shows as expired until updated. Invalid cards are refused with the reason. " + WIDGET_A2UI_GUIDE });
+    "ttl_min: after this many minutes the card shows as expired until updated. Invalid cards are refused with the component, property and reason. " +
+    "The result says whether the phone drew it (phone: drawn), could not (phone: problem, with problem), or did not answer in time (unknown); a later problem (e.g. an image that failed to load) reaches you as widget.problem. " + WIDGET_A2UI_GUIDE });
+add("service:widgets", "widget.card.validate", "request", obj({ a2ui: obj({}, [], true) }, ["a2ui"]),
+  obj({ valid: bool, problem: str, components: { type: "integer", minimum: 0 }, levels: { type: "integer", minimum: 0 }, actions: strings }, ["valid"]),
+  { label: "检查桌面卡片", effect: "read", description: "Check a card's a2ui exactly as widget.card.put would, without saving or showing anything: valid, or the problem (which component, which property, why). levels is how deep it nests against Android's limit. Same format as widget.card.put." });
 add("service:widgets", "widget.card.remove", "request", obj({ id: widgetCardId }, ["id"]), obj({ removed: bool }, ["removed"]),
   { label: "移除桌面卡片", effect: "write", description: "Remove a card you created (the owner may remove any). Widgets that showed it ask the owner to pick another card." });
 add("service:widgets", "widget.bind", "request", obj({ widget: widgetId, card: widgetCardId }, ["widget", "card"]), obj({ widget: widgetId, card: widgetCardId }, ["widget", "card"]),
   { label: "选小组件显示的卡片", effect: "write", description: "Make one placed 'Ash 卡片' widget (an id from widget.list) show an existing card. The owner normally picks the card when placing the widget." });
-add("service:widgets", "widget.tap", "request", obj({ card: widgetCardId, action: { type: "string", minLength: 1, maxLength: 64 } }, ["card", "action"]), accepted,
-  { audience: "owner", label: "转达小组件上的点击", effect: "write", description: "The phone reports that the owner tapped a card button. Owner only." });
-add("service:widgets", "widget.placed", "request", obj({ widgets: { type: "array", items: placedWidget, maxItems: 64 } }, ["widgets"]), accepted,
-  { audience: "owner", label: "记下放好的小组件", effect: "write", description: "The phone reports which Ash widgets are on its home screen. Owner only." });
-add("service:widgets", "widget.action", "event", obj({ card: widgetCardId, action: nonempty, owner: id, title: str }, ["card", "action", "owner"]), undefined,
-  { direction: "out", description: "The owner tapped a button on a home-screen card. owner is the card's creator, who decides what it means; the tap itself does nothing else." });
+add("service:widgets", "widget.tap", "request", obj({ card: widgetCardId, action: { type: "string", minLength: 1, maxLength: 64 }, component: { type: "string", minLength: 1, maxLength: 200 },
+  checked: bool, value: { type: "array", items: str, maxItems: 100 } }, ["card"]), accepted,
+  { audience: "owner", label: "转达小组件上的点击", effect: "write", description: "The phone reports that the owner tapped, toggled or chose something on a card. Owner only." });
+add("service:widgets", "widget.placed", "request", obj({ widgets: { type: "array", items: placedWidget, maxItems: 64 }, rendered: { type: "array", items: widgetRendered, maxItems: 200 } }), accepted,
+  { audience: "owner", label: "记下放好的小组件", effect: "write", description: "The phone reports which Ash widgets are on its home screen, and which cards it could or could not draw. Owner only." });
+add("service:widgets", "widget.action", "event", obj({ card: widgetCardId, action: nonempty, owner: id, title: str, component: str, item: str, checked: bool, value: strings,
+  context: obj({}, [], true) }, ["card", "action", "owner"]), undefined,
+  { direction: "out", description: "The owner tapped, toggled or chose something on a home-screen card. owner is the card's creator, who decides what it means; component is the element, item the list item's key, checked / value the new state. The tap itself does nothing else." });
+add("service:widgets", "widget.problem", "event", obj({ card: widgetCardId, owner: id, title: str, problem: nonempty }, ["card", "owner", "problem"]), undefined,
+  { direction: "out", description: "The phone could not fully draw a home-screen card (problem says what and why); the card's creator should fix it." });
 // Independent apps (contract ash-app/1): discovery, install with the owner's approval of what an app needs, and grants.
 const appId: JsonSchema = { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" };
 const appInfo = obj({ id: appId, name: str, version: str, summary: str, publisher: str, enabled: bool, granted: bool, running: bool,

@@ -2,37 +2,33 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { AGENT_ID, wordContract } from "../../../sdk/src/words";
+import { CardError, cardActions, levels, setPointer, validateCard, type WidgetRender } from "./widgets-card";
 import type { Member } from "../world/member";
 import type { RouteHandlerContext, TrustedRouteContext, WorldRouter } from "../world/router";
 
 const service: TrustedRouteContext = { member: "service:widgets", transport: "service", transportPrincipal: "service:widgets",
   local: true, remote: false, ownerProxy: false };
 
-export const WIDGET_ICONS = ["sun", "cloud", "rain", "snow", "wind", "moon", "heart", "steps", "weight", "sleep", "water", "fire",
-  "calendar", "clock", "check", "alert", "star", "bell", "mail", "home", "car", "money", "chart"] as const;
-const ICONS = new Set<string>(WIDGET_ICONS);
 const CARD_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const WIDGET_ID = /^[0-9]{1,12}$/;
-const COMPONENT_ID = /^[A-Za-z0-9_.-]{1,64}$/;
-const ACTION = /^[A-Za-z0-9_.:-]{1,64}$/;
-const MAX_JSON = 8 * 1024;
-const MAX_COMPONENTS = 40;
-const MAX_LEVELS = 3;
-const MAX_BUTTONS = 2;
-const MAX_TEXT = 300;
 const MAX_CARDS = 50;
 const KEEP_EXPIRED_MS = 7 * 86_400_000;
 const SIZES = new Set(["2x2", "4x2", "4x4"]);
+/** How long widget.card.put waits for the phone to say whether it could draw the card. */
+const DRAW_WAIT_MS = 4000;
 
-/** One component as the phone draws it: literal values only, data bindings already resolved. */
-export interface WidgetComponent {
-  id: string; component: string; children?: string[]; align?: string; justify?: string; text?: string; variant?: string;
-  url?: string; child?: string; action?: { event: { name: string } }; axis?: string; value?: number; label?: string;
-}
-export interface WidgetRender { root: string; components: WidgetComponent[] }
+export type { WidgetComponent, WidgetRender } from "./widgets-card";
+export { validateCard } from "./widgets-card";
+/** The older name, kept for callers of the first card format. */
+export const validateA2ui = validateCard;
+
 export interface WidgetCard {
   id: string; title: string; size: "2x2" | "4x2" | "4x4"; owner: string; updated_at: number; expires_at: number | null;
   render: WidgetRender; actions: string[];
+  /** The card as put (bindings unresolved), so a toggle on the phone can write back into its data. */
+  source?: Record<string, unknown>;
+  /** What the phone said about drawing this version of the card. */
+  phone?: { updated_at: number; problem?: string };
 }
 export interface PlacedWidget { id: string; type: "ash" | "card" }
 /** What the phone keeps and draws; pushed in full on every change. */
@@ -42,149 +38,8 @@ export interface WidgetState {
   bindings: Record<string, string>;
 }
 
-const FIELDS: Record<string, readonly string[]> = {
-  Column: ["children", "align", "justify"],
-  Row: ["children", "align", "justify"],
-  Text: ["text", "variant"],
-  Image: ["url", "fit", "variant"],
-  Button: ["child", "action", "variant"],
-  Divider: ["axis"],
-  ProgressBar: ["value", "label"],
-  Badge: ["text"],
-};
-const TEXT_VARIANTS = new Set(["h1", "h2", "h3", "h4", "h5", "body", "caption"]);
-
-class CardError extends Error {}
 const bad = (message: string): never => { throw new CardError(message); };
 const plain = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
-
-function pointer(data: unknown, path: string): unknown {
-  if (path === "" || path === "/") return data;
-  if (!path.startsWith("/")) return undefined;
-  let at = data;
-  for (const raw of path.slice(1).split("/")) {
-    const key = raw.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (Array.isArray(at) && /^\d+$/.test(key)) at = at[Number(key)];
-    else if (plain(at) && Object.hasOwn(at, key)) at = at[key];
-    else return undefined;
-  }
-  return at;
-}
-
-/**
- * Check a card's A2UI v0.9 component list against the subset the phone can draw and resolve its data bindings.
- * Throws a message an agent can act on; never accepts an unknown component, field, icon or deeper tree.
- */
-export function validateA2ui(raw: unknown): WidgetRender {
-  if (!plain(raw)) bad("a2ui must be an object {components:[...], root?, data?}");
-  const a2ui = raw as Record<string, unknown>;
-  let size = 0;
-  try { size = Buffer.byteLength(JSON.stringify(a2ui), "utf8"); } catch { bad("a2ui is not plain JSON"); }
-  if (size > MAX_JSON) bad(`a2ui is ${size} bytes; at most ${MAX_JSON} bytes are allowed`);
-  for (const key of Object.keys(a2ui)) if (!["components", "root", "data"].includes(key)) bad(`a2ui has unsupported field "${key}" (allowed: components, root, data)`);
-  const data = a2ui.data ?? {};
-  if (!plain(data)) bad("a2ui.data must be an object");
-  const list = a2ui.components;
-  if (!Array.isArray(list) || list.length === 0) bad("a2ui.components must be a non-empty array of components");
-  const components = list as unknown[];
-  if (components.length > MAX_COMPONENTS) bad(`a2ui has ${components.length} components; at most ${MAX_COMPONENTS} are allowed`);
-  const root = a2ui.root ?? "root";
-  if (typeof root !== "string" || !COMPONENT_ID.test(root)) bad("a2ui.root must be a component id");
-  const byId = new Map<string, Record<string, unknown>>();
-  for (const [index, item] of components.entries()) {
-    if (!plain(item)) bad(`components[${index}] must be an object`);
-    const c = item as Record<string, unknown>;
-    if (typeof c.id !== "string" || !COMPONENT_ID.test(c.id)) bad(`components[${index}] needs an id (letters, digits, _ . -; at most 64)`);
-    const cid = c.id as string;
-    if (byId.has(cid)) bad(`component id "${cid}" is used twice`);
-    if (typeof c.component !== "string") bad(`component "${cid}" needs a component type`);
-    const allowed = FIELDS[c.component as string];
-    if (!allowed) bad(`component "${cid}" has unsupported type "${String(c.component)}"; allowed: ${Object.keys(FIELDS).join(", ")}`);
-    for (const key of Object.keys(c)) if (key !== "id" && key !== "component" && key !== "weight" && !allowed.includes(key))
-      bad(`${c.component} "${cid}" has unsupported field "${key}" (allowed: ${allowed.join(", ")})`);
-    byId.set(cid, c);
-  }
-  if (!byId.has(root as string)) bad(`root component "${String(root)}" is missing`);
-  const text = (value: unknown, where: string, max = MAX_TEXT): string => {
-    let resolved = value;
-    if (plain(value)) {
-      if (Object.keys(value).length !== 1 || typeof value.path !== "string") bad(`${where} must be a string or {path}`);
-      resolved = pointer(data, value.path as string);
-      if (resolved === undefined) bad(`${where} reads ${String(value.path)}, which is not in data`);
-    }
-    if (typeof resolved === "number" && Number.isFinite(resolved)) resolved = String(resolved);
-    if (typeof resolved !== "string") bad(`${where} must be text`);
-    const out = (resolved as string).replace(/[\p{Cc}\p{Cf}]/gu, (ch) => ch === "\n" ? "\n" : " ");
-    if (out.length > max) bad(`${where} is ${out.length} characters; at most ${max} are allowed`);
-    return out;
-  };
-  const out: WidgetComponent[] = [];
-  const seen = new Set<string>();
-  let buttons = 0;
-  const labels = new Set<string>();
-  for (const c of byId.values()) if (c.component === "Button") {
-    if (typeof c.child !== "string" || byId.get(c.child)?.component !== "Text") bad(`Button "${String(c.id)}" needs child: the id of a Text used as its label`);
-    labels.add(c.child as string);
-  }
-  const visit = (cid: string, levels: number, path: string[]): void => {
-    if (path.includes(cid)) bad(`component "${cid}" contains itself`);
-    if (seen.has(cid)) bad(`component "${cid}" is used in more than one place`);
-    const c = byId.get(cid);
-    if (!c) bad(`component "${path[path.length - 1]}" refers to missing component "${cid}"`);
-    seen.add(cid);
-    const node = c as Record<string, unknown>;
-    const kind = node.component as string;
-    const result: WidgetComponent = { id: cid, component: kind };
-    if (kind === "Column" || kind === "Row") {
-      if (levels + 1 > MAX_LEVELS) bad(`Column/Row "${cid}" is nested ${levels + 1} levels deep; at most ${MAX_LEVELS} are allowed`);
-      if (!Array.isArray(node.children) || node.children.some((child) => typeof child !== "string")) bad(`${kind} "${cid}" needs children: an array of component ids`);
-      const children = node.children as string[];
-      if (node.align !== undefined && !["start", "center", "end", "stretch"].includes(String(node.align))) bad(`${kind} "${cid}" align must be start, center, end or stretch`);
-      if (node.justify !== undefined && !["start", "center", "end", "spaceBetween", "spaceAround", "spaceEvenly", "stretch"].includes(String(node.justify))) bad(`${kind} "${cid}" has unsupported justify`);
-      out.push({ ...result, children: [...children], ...(node.align ? { align: String(node.align) } : {}), ...(node.justify ? { justify: String(node.justify) } : {}) });
-      for (const child of children) {
-        if (labels.has(child)) bad(`Text "${child}" is a button label and cannot also be a child of ${kind} "${cid}"`);
-        visit(child, levels + 1, [...path, cid]);
-      }
-      return;
-    }
-    if (kind === "Text") {
-      const variant = node.variant === undefined ? "body" : String(node.variant);
-      if (!TEXT_VARIANTS.has(variant)) bad(`Text "${cid}" variant must be one of h1 (big number), h2, h3 (title), body, caption (secondary)`);
-      out.push({ ...result, text: text(node.text, `Text "${cid}" text`), variant });
-    } else if (kind === "Image") {
-      const url = text(node.url, `Image "${cid}" url`, 80);
-      if (url !== "avatar" && !(url.startsWith("icon:") && ICONS.has(url.slice(5))))
-        bad(`Image "${cid}" url must be "avatar" or "icon:<name>" with name one of ${WIDGET_ICONS.join(", ")}; web images are not drawn`);
-      out.push({ ...result, url });
-    } else if (kind === "Button") {
-      if (++buttons > MAX_BUTTONS) bad(`a card may have at most ${MAX_BUTTONS} buttons`);
-      const action = node.action as Record<string, unknown> | undefined;
-      const event = plain(action) ? action.event : undefined;
-      const name = plain(event) ? event.name : undefined;
-      if (!plain(action) || Object.keys(action).length !== 1 || !plain(event) || typeof name !== "string" || !ACTION.test(name))
-        bad(`Button "${cid}" needs action: {event: {name: "<action name>"}} (letters, digits, _ . : -; at most 64)`);
-      const label = byId.get(node.child as string)!;
-      seen.add(node.child as string);
-      out.push({ ...result, child: node.child as string, action: { event: { name: name as string } } });
-      out.push({ id: node.child as string, component: "Text", text: text(label.text, `Text "${String(label.id)}" text`, 20), variant: "body" });
-    } else if (kind === "Divider") {
-      if (node.axis !== undefined && node.axis !== "horizontal") bad(`Divider "${cid}" axis must be horizontal`);
-      out.push(result);
-    } else if (kind === "ProgressBar") {
-      let value = node.value;
-      if (plain(value)) value = Number(text(value, `ProgressBar "${cid}" value`));
-      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) bad(`ProgressBar "${cid}" value must be a number from 0 to 100`);
-      out.push({ ...result, value: Math.round(value as number), ...(node.label !== undefined ? { label: text(node.label, `ProgressBar "${cid}" label`, 40) } : {}) });
-    } else if (kind === "Badge") {
-      out.push({ ...result, text: text(node.text, `Badge "${cid}" text`, 8) });
-    }
-  };
-  visit(root as string, 0, []);
-  const unused = [...byId.keys()].filter((key) => !seen.has(key));
-  if (unused.length) bad(`components not reachable from root: ${unused.slice(0, 5).join(", ")}`);
-  return { root: root as string, components: out };
-}
 
 interface Stored { version: 1; cards: WidgetCard[]; bindings: Record<string, string>; placed: PlacedWidget[] }
 
@@ -213,14 +68,20 @@ class WidgetFile {
 export interface WidgetsOptions {
   router: WorldRouter;
   file: string;
-  /** Hands the full state to the phone; the phone answers with the widgets placed on its home screen. */
-  push?: (state: WidgetState) => Promise<{ widgets?: unknown } | void>;
+  /**
+   * Hands the full state to the phone; the phone answers with the widgets placed on its home screen and, for each card
+   * it tried to draw, whether it could ({card, updated_at, problem?}).
+   */
+  push?: (state: WidgetState) => Promise<{ widgets?: unknown; rendered?: unknown } | void>;
   now?: () => number;
 }
 
+const TOGGLES = new Set(["CheckBox", "Switch", "ChoicePicker"]);
+
 /**
- * service:widgets: cards for the phone's home screen. Agents and apps put cards (a small A2UI subset), the owner places
- * them with the "Ash 卡片" widget; a button tap goes back to the card's creator as widget.action.
+ * service:widgets: cards for the phone's home screen. Agents and apps put cards (A2UI, drawn natively), the owner
+ * places them with the "Ash 卡片" widget; a tap or toggle goes back to the card's creator as widget.action, and what the
+ * phone could not draw goes back to it as widget.problem.
  */
 export class WidgetsMember implements Member {
   readonly id = "service:widgets";
@@ -242,15 +103,17 @@ export class WidgetsMember implements Member {
   private now(): number { return (this.options.now ?? Date.now)(); }
 
   words(): readonly WordSpec[] {
-    return ["widget.list", "widget.card.put", "widget.card.remove", "widget.bind", "widget.tap", "widget.placed"].map((word) => wordContract("service:widgets", word)!);
+    return ["widget.list", "widget.card.put", "widget.card.validate", "widget.card.remove", "widget.bind", "widget.tap", "widget.placed"]
+      .map((word) => wordContract("service:widgets", word)!);
   }
 
   /** Push once at startup so the phone draws what was saved. */
   start(): void { this.enqueue(); }
 
   private info(card: WidgetCard) {
+    const problem = card.phone && card.phone.updated_at === card.updated_at ? card.phone.problem ?? null : null;
     return { id: card.id, title: card.title, size: card.size, owner: card.owner, updated_at: card.updated_at, expires_at: card.expires_at,
-      expired: card.expires_at !== null && card.expires_at <= this.now(), actions: [...card.actions] };
+      expired: card.expires_at !== null && card.expires_at <= this.now(), actions: [...card.actions], problem };
   }
 
   snapshot(): WidgetState {
@@ -283,25 +146,40 @@ export class WidgetsMember implements Member {
       return { ok: true, result: { cards: this.state.cards.map((card) => this.info(card)),
         widgets: [...placed].map(([widget, type]) => ({ id: widget, type, card: type === "card" ? this.state.bindings[widget] ?? null : null })) } };
     }
+    case "widget.card.validate": {
+      try {
+        const render = validateCard(body.a2ui);
+        const roots = [render.root, ...(render.sizes ?? []).map((size) => size.root)];
+        const byId = new Map(render.components.map((c) => [c.id, c]));
+        return { ok: true, result: { valid: true, components: render.components.length, levels: Math.max(...roots.map((root) => levels(byId, root))),
+          actions: cardActions(render) } };
+      } catch (error) {
+        if (error instanceof CardError) return { ok: true, result: { valid: false, problem: error.message } };
+        throw error;
+      }
+    }
     case "widget.card.put": {
       const cardId = String(body.id);
       if (!CARD_ID.test(cardId)) bad("id must be lowercase letters, digits, . _ - (at most 64)");
       const title = String(body.title ?? "").trim();
       if (!title || title.length > 40) bad("title must be 1 to 40 characters");
       if (!SIZES.has(String(body.size))) bad("size must be 2x2, 4x2 or 4x4");
-      const render = validateA2ui(body.a2ui);
+      const render = validateCard(body.a2ui);
       const existing = this.state.cards.find((card) => card.id === cardId);
       if (existing && !this.mayChange(existing, message.from)) return { ok: false, error: { code: "forbidden", message: `card "${cardId}" belongs to ${existing.owner}; only it or the owner may change it` } };
       if (!existing && this.state.cards.length >= MAX_CARDS) this.purge();
       if (!existing && this.state.cards.length >= MAX_CARDS) bad(`there are already ${MAX_CARDS} cards; remove one first`);
-      const now = this.now();
+      // A replaced card is a new version even within the same millisecond, so the phone's answer matches this one.
+      const now = Math.max(this.now(), (existing?.updated_at ?? 0) + 1);
       const ttl = body.ttl_min;
       const card: WidgetCard = { id: cardId, title, size: body.size as WidgetCard["size"], owner: existing?.owner ?? message.from, updated_at: now,
-        expires_at: typeof ttl === "number" ? now + ttl * 60_000 : null, render,
-        actions: render.components.flatMap((c) => c.action ? [c.action.event.name] : []) };
+        expires_at: typeof ttl === "number" ? now + ttl * 60_000 : null, render, actions: cardActions(render),
+        source: structuredClone(body.a2ui as Record<string, unknown>) };
       this.state.cards = existing ? this.state.cards.map((item) => item.id === cardId ? card : item) : [...this.state.cards, card];
       this.commit();
-      return { ok: true, result: { card: this.info(card), bound_widgets: Object.entries(this.state.bindings).filter(([, value]) => value === cardId).map(([key]) => key) } };
+      const phone = await this.drawn(card);
+      return { ok: true, result: { card: this.info(card), bound_widgets: Object.entries(this.state.bindings).filter(([, value]) => value === cardId).map(([key]) => key),
+        ...phone } };
     }
     case "widget.card.remove": {
       const cardId = String(body.id);
@@ -327,27 +205,106 @@ export class WidgetsMember implements Member {
     }
     case "widget.placed": {
       if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "only the owner's phone reports placed widgets" } };
-      this.placed(body.widgets);
+      if (body.widgets !== undefined) this.placed(body.widgets);
+      if (body.rendered !== undefined) await this.rendered(body.rendered);
       return { ok: true, result: { accepted: true } };
     }
     case "widget.tap": {
       if (message.from !== "person:owner") return { ok: false, error: { code: "forbidden", message: "only the owner taps a widget" } };
-      const card = this.state.cards.find((item) => item.id === body.card);
-      if (!card) return { ok: false, error: { code: "not_found", message: "card no longer exists" } };
-      const action = String(body.action);
-      if (!card.actions.includes(action)) return { ok: false, error: { code: "bad_request", message: "this card has no such button" } };
-      await this.options.router.send(service, { to: null, kind: "event", word: "widget.action", body: { card: card.id, action, owner: card.owner, title: card.title } });
-      // The creator decides what a tap means: an agent hears it as a message in its own turn.
-      if (AGENT_ID.test(card.owner)) {
-        try {
-          await this.options.router.send(service, { to: card.owner, kind: "request", word: "say",
-            body: { text: `[widget.action] The owner tapped the button "${action}" on your home-screen card "${card.title}" (id ${card.id}). Decide what it means; anything risky still goes through approval.` } });
-        } catch { /* the event is on the ledger either way */ }
-      }
-      return { ok: true, result: { accepted: true } };
+      return await this.tap(body);
     }
     }
     return { ok: false, error: { code: "not_found", message: "widget word unavailable" } };
+  }
+
+  /** Wait briefly for the phone's answer to this version of the card: drawn, or why not. */
+  private async drawn(card: WidgetCard): Promise<{ phone: "drawn" | "problem" | "unknown"; problem?: string }> {
+    if (!this.options.push) return { phone: "unknown" };
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([this.settled(), new Promise<void>((resolve) => { timer = setTimeout(resolve, DRAW_WAIT_MS); timer.unref?.(); })]);
+    clearTimeout(timer);
+    const current = this.state.cards.find((item) => item.id === card.id);
+    const phone = current?.phone;
+    if (!phone || phone.updated_at !== card.updated_at) return { phone: "unknown" };
+    return phone.problem ? { phone: "problem", problem: phone.problem } : { phone: "drawn" };
+  }
+
+  /** A tap, a toggle or a choice on a placed card, from the owner's phone. */
+  private async tap(body: Record<string, unknown>): Promise<ResponseBody> {
+    const card = this.state.cards.find((item) => item.id === body.card);
+    if (!card) return { ok: false, error: { code: "not_found", message: "card no longer exists" } };
+    const componentId = typeof body.component === "string" ? body.component : undefined;
+    // Phones before the full card format sent only the event name.
+    const component = componentId !== undefined ? card.render.components.find((c) => c.id === componentId)
+      : card.render.components.find((c) => c.action && "event" in c.action && c.action.event.name === body.action);
+    if (!component) return { ok: false, error: { code: "not_found", message: "this card has no such element any more" } };
+    const event = component.action && "event" in component.action ? component.action.event : undefined;
+    const toggle = TOGGLES.has(component.component);
+    if (!event && !toggle) return { ok: false, error: { code: "bad_request", message: "this element sends nothing back" } };
+    const checked = typeof body.checked === "boolean" ? body.checked : undefined;
+    const value = Array.isArray(body.value) && body.value.every((v) => typeof v === "string") ? body.value as string[] : undefined;
+    if (toggle && component.component === "ChoicePicker" && !value) bad("a choice needs value: the selected option values");
+    if (toggle && component.component !== "ChoicePicker" && checked === undefined) bad("a toggle needs checked: true or false");
+    if (value && component.options) {
+      const known = new Set(component.options.map((o) => o.value));
+      if (value.some((v) => !known.has(v))) bad("value has an option this choice does not offer");
+    }
+    // Two-way binding: the owner's choice is written into the card's data, so the card keeps showing it.
+    if (toggle && component.bind && card.source) {
+      const source = structuredClone(card.source);
+      if (!plain(source.data)) source.data = {};
+      if (setPointer(source.data as Record<string, unknown>, component.bind, component.component === "ChoicePicker" ? value : checked)) {
+        try {
+          const render = validateCard(source);
+          card.source = source; card.render = render; card.actions = cardActions(render);
+          card.updated_at = Math.max(this.now(), card.updated_at + 1);
+          this.commit();
+        } catch { /* the card stays as it was; the event still goes to its creator */ }
+      }
+    }
+    const name = event?.name ?? "change";
+    const defId = component.id.replace(/[#@].*$/, "");
+    const detail = { card: card.id, action: name, owner: card.owner, title: card.title, component: defId,
+      ...(component.item !== undefined ? { item: component.item } : {}), ...(checked !== undefined && component.component !== "ChoicePicker" ? { checked } : {}),
+      ...(value ? { value } : {}), ...(event?.context ? { context: event.context } : {}) };
+    await this.options.router.send(service, { to: null, kind: "event", word: "widget.action", body: detail });
+    // The creator decides what a tap means: an agent hears it as a message in its own turn.
+    if (event && AGENT_ID.test(card.owner)) {
+      const what = [component.item !== undefined ? `item ${component.item}` : "", checked !== undefined ? `now ${checked ? "checked" : "unchecked"}` : "",
+        value ? `selected ${JSON.stringify(value)}` : "", event.context ? `context ${JSON.stringify(event.context)}` : ""].filter(Boolean).join("; ");
+      try {
+        await this.options.router.send(service, { to: card.owner, kind: "request", word: "say",
+          body: { text: `[widget.action] The owner tapped "${name}" on your home-screen card "${card.title}" (id ${card.id}${what ? `; ${what}` : ""}). Decide what it means; anything risky still goes through approval.` } });
+      } catch { /* the event is on the ledger either way */ }
+    }
+    return { ok: true, result: { accepted: true } };
+  }
+
+  /** The phone's word on drawing each card: kept per card version, and a new problem goes to the card's creator. */
+  private async rendered(raw: unknown): Promise<void> {
+    if (!Array.isArray(raw)) return;
+    let changed = false;
+    const tell: { card: WidgetCard; problem: string }[] = [];
+    for (const item of raw.slice(0, 200)) {
+      if (!plain(item) || typeof item.card !== "string" || typeof item.updated_at !== "number") continue;
+      const card = this.state.cards.find((c) => c.id === item.card);
+      if (!card || card.updated_at !== item.updated_at) continue;
+      const problem = typeof item.problem === "string" && item.problem ? item.problem.slice(0, 1000) : undefined;
+      if (card.phone?.updated_at === card.updated_at && card.phone.problem === problem) continue;
+      card.phone = { updated_at: card.updated_at, ...(problem ? { problem } : {}) };
+      changed = true;
+      if (problem) tell.push({ card, problem });
+    }
+    if (changed) this.store.save(this.state);
+    for (const { card, problem } of tell) {
+      await this.options.router.send(service, { to: null, kind: "event", word: "widget.problem", body: { card: card.id, owner: card.owner, title: card.title, problem } });
+      if (AGENT_ID.test(card.owner)) {
+        try {
+          await this.options.router.send(service, { to: card.owner, kind: "request", word: "say",
+            body: { text: `[widget.problem] The phone could not fully draw your home-screen card "${card.title}" (id ${card.id}): ${problem}. Fix the card with widget.card.put (widget.card.validate checks it first).` } });
+        } catch { /* on the ledger either way */ }
+      }
+    }
   }
 
   private placed(raw: unknown): void {
@@ -380,6 +337,7 @@ export class WidgetsMember implements Member {
         try {
           const answer = await push(this.snapshot());
           if (answer && Array.isArray(answer.widgets)) this.placed(answer.widgets);
+          if (answer && answer.rendered !== undefined) await this.rendered(answer.rendered);
         } catch { /* the phone may be starting; the next change or startup pushes again */ }
       }
     })().finally(() => { this.sending = null; if (this.queued && !this.closed) this.enqueue(); });
