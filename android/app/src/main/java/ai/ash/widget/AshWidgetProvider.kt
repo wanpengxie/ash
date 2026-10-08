@@ -51,7 +51,7 @@ class AshWidgetProvider : AppWidgetProvider() {
             val small = width in 1..199
             val rv = RemoteViews(ctx.packageName, if (small) R.layout.widget_ash_small else R.layout.widget_ash)
             WidgetHost.face(ctx, view.avatar)?.let { rv.setImageViewBitmap(R.id.ash_face, it) } ?: rv.setImageViewResource(R.id.ash_face, R.drawable.ic_launcher)
-            rv.setTextViewText(R.id.ash_status, view.status)
+            rv.setTextViewText(R.id.ash_status, CardText.markdown(view.status))
             if (view.since != null) {
                 rv.setChronometer(R.id.ash_clock, SystemClock.elapsedRealtime() - (System.currentTimeMillis() - view.since).coerceAtLeast(0), null, true)
                 rv.setViewVisibility(R.id.ash_clock, View.VISIBLE)
@@ -67,7 +67,7 @@ class AshWidgetProvider : AppWidgetProvider() {
                 for ((i, res) in items.withIndex()) {
                     val item = view.items.getOrNull(i)
                     rv.setViewVisibility(res, if (item == null) View.GONE else View.VISIBLE)
-                    rv.setTextViewText(res, item?.text ?: "")
+                    rv.setTextViewText(res, CardText.markdown(item?.text ?: ""))
                 }
                 rv.setViewVisibility(R.id.ash_empty, if (view.items.isEmpty()) View.VISIBLE else View.GONE)
                 rv.setOnClickPendingIntent(R.id.ash_say, open(ctx, 9002, true))
