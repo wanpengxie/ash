@@ -76,6 +76,7 @@ class AppActivity : Activity() {
         val id = AppIds.fromLink(intent?.dataString)
         if (id == null) { finish(); return }
         appId = id
+        surface = intent?.getStringExtra(Ui.EXTRA_SURFACE)?.takeIf { AppIds.validSurface(it) }
         build()
         Ui.taskCard(this, appId, null)
         load()
@@ -83,8 +84,13 @@ class AppActivity : Activity() {
 
     override fun onNewIntent(next: Intent) {
         super.onNewIntent(next)
-        // The same app's task, brought back: keep the page as it is (another app always gets a task of its own).
-        if (AppIds.fromLink(next.dataString) != appId) startActivity(next.setClass(this, OpenActivity::class.java).setFlags(0).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        // The same app's task, brought back: keep the page as it is unless a page was asked for (another app always
+        // gets a task of its own).
+        if (AppIds.fromLink(next.dataString) != appId) { startActivity(next.setClass(this, OpenActivity::class.java).setFlags(0).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return }
+        val asked = next.getStringExtra(Ui.EXTRA_SURFACE)?.takeIf { AppIds.validSurface(it) } ?: return
+        val a = info
+        if (a == null) { surface = asked; return }
+        if (asked != surface && a.surfaces.any { it.first == asked }) { surface = asked; renderTabs(); open(asked) }
     }
 
     @Deprecated("Deprecated in Java")

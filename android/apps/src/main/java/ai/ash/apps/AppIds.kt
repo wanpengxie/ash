@@ -21,14 +21,19 @@ object AppIds {
     fun link(id: String): String { require(valid(id)); return "$SCHEME://$HOST?app=$id" }
 
     /** The app id in ash-app://open?app=<id>, or null for anything else. */
-    fun fromLink(link: String?): String? {
+    fun fromLink(link: String?): String? = param(link, "app")?.takeIf { valid(it) }
+
+    /** The page in ash-app://open?app=<id>&surface=<page> (a home-screen card opens one), or null. */
+    fun surfaceFromLink(link: String?): String? = if (fromLink(link) == null) null else param(link, "surface")?.takeIf { validSurface(it) }
+
+    private fun param(link: String?, name: String): String? {
         val uri = runCatching { URI(link ?: return null) }.getOrNull() ?: return null
         if (uri.scheme != SCHEME || uri.host != HOST || uri.rawUserInfo != null || uri.port != -1) return null
         if (!uri.rawPath.isNullOrEmpty() && uri.rawPath != "/") return null
-        val app = (uri.rawQuery ?: return null).split('&').mapNotNull {
+        val values = (uri.rawQuery ?: return null).split('&').mapNotNull {
             val i = it.indexOf('=')
-            if (i > 0 && it.substring(0, i) == "app") runCatching { URLDecoder.decode(it.substring(i + 1), "UTF-8") }.getOrNull() else null
+            if (i > 0 && it.substring(0, i) == name) runCatching { URLDecoder.decode(it.substring(i + 1), "UTF-8") }.getOrNull() else null
         }
-        return app.singleOrNull()?.takeIf { valid(it) }
+        return values.singleOrNull()
     }
 }

@@ -17,6 +17,8 @@ object Bridge {
     /** The apps shell: draws the owner's apps; reaches Ash's core only through [APPS_HOST_SERVICE]. */
     const val APPS_PACKAGE = "ai.ash.apps"
     const val APPS_LAUNCHER = "ai.ash.apps.MainActivity"
+    /** Opens one app (ash-app://open?app=<id>&surface=<page>), from a link, a home-screen icon or a card. */
+    const val APPS_OPEN = "ai.ash.apps.OpenActivity"
     const val ASH_PACKAGE = "ai.ash.agent"
     const val APPS_HOST_SERVICE = "ai.ash.host.apps.AppsHostService"
     /** Every tool the senses helper offers: Ash keeps a policy for each (a tool without one is never offered). */
