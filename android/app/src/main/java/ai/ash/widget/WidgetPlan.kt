@@ -6,7 +6,8 @@ import org.json.JSONObject
 /** One card from the core; [render] is null and [problem] says why when the phone cannot draw it. */
 data class WCard(val id: String, val title: String, val size: String, val owner: String, val updatedAt: Long, val expiresAt: Long?,
     val render: CardRender?, val problem: String? = null)
-data class WState(val revision: Long, val cards: Map<String, WCard>, val bindings: Map<String, String>)
+/** [previews]: cards the core wants a preview picture of, each with the request number to echo back (older cores send none). */
+data class WState(val revision: Long, val cards: Map<String, WCard>, val bindings: Map<String, String>, val previews: Map<String, Long> = emptyMap())
 
 /** What one "Ash 卡片" widget shows. */
 sealed class CardView {
@@ -37,7 +38,9 @@ object WidgetPlan {
         }
         val bindings = LinkedHashMap<String, String>()
         b.optJSONObject("bindings")?.let { o -> o.keys().forEach { k -> o.optString(k).takeIf { it.isNotBlank() }?.let { bindings[k] = it } } }
-        return WState(b.optLong("revision"), cards, bindings)
+        val previews = LinkedHashMap<String, Long>()
+        b.optJSONObject("previews")?.let { o -> o.keys().forEach { k -> if (o.optLong(k, -1L) >= 0L) previews[k] = o.optLong(k) } }
+        return WState(b.optLong("revision"), cards, bindings, previews)
     }
 
     /** The bound card wins over the one picked on the phone only when the core knows a binding for this widget. */

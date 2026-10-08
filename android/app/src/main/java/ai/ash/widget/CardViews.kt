@@ -350,21 +350,28 @@ object CardCheck {
 
     @Volatile private var provider: android.appwidget.AppWidgetProviderInfo? = null
 
+    /**
+     * A real widget host with [views] applied, inflating on an executor as launchers do: actions of nested RemoteViews then
+     * see their direct parent, not the host, exactly as on the home screen. The applied view is its first child, in a moment.
+     */
+    fun host(ctx: Context, views: RemoteViews): android.appwidget.AppWidgetHostView {
+        val info = provider ?: android.appwidget.AppWidgetManager.getInstance(ctx).installedProviders
+            .firstOrNull { it.provider.packageName == ctx.packageName && it.provider.className == CardWidgetProvider::class.java.name }
+            ?.also { provider = it }
+        val host = android.appwidget.AppWidgetHostView(ctx)
+        if (info != null) host.setAppWidget(0, info)
+        if (Build.VERSION.SDK_INT >= 29) host.setExecutor { it.run() }
+        host.updateAppWidget(views)
+        return host
+    }
+
     fun inspect(ctx: Context, built: CardViews.Built, wPx: Int, hPx: Int, done: (Result) -> Unit) {
         var finished = false
         fun finish(r: Result) { if (!finished) { finished = true; done(r) } }
         // Should the check itself hang, the widget is still drawn (unchecked) after a moment.
         main.postDelayed({ finish(Result(null, blank = false, overflow = false)) }, 1500)
         try {
-            val info = provider ?: android.appwidget.AppWidgetManager.getInstance(ctx).installedProviders
-                .firstOrNull { it.provider.packageName == ctx.packageName && it.provider.className == CardWidgetProvider::class.java.name }
-                ?.also { provider = it }
-            // A real widget host, inflating on an executor as launchers do: actions of nested RemoteViews then see their
-            // direct parent, not the host, exactly as on the home screen.
-            val host = android.appwidget.AppWidgetHostView(ctx)
-            if (info != null) host.setAppWidget(0, info)
-            if (Build.VERSION.SDK_INT >= 29) host.setExecutor { it.run() }
-            host.updateAppWidget(built.views)
+            val host = host(ctx, built.views)
             fun look(tries: Int) {
                 if (finished) return
                 val content = host.getChildAt(0)

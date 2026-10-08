@@ -43,6 +43,8 @@ object WidgetHost {
     /** The last word sent to the core per card: version and problem (null = drew fine). */
     private val reported = HashMap<String, Pair<Long, String?>>()
     private val unsent = LinkedHashMap<String, JSONObject>()
+    /** The last preview request handled per card: its version and the core's request number. */
+    private val previewed = HashMap<String, Pair<Long, Long>>()
 
     private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private fun file(ctx: Context) = File(ctx.applicationContext.filesDir, FILE)
@@ -80,14 +82,52 @@ object WidgetHost {
         val done = CountDownLatch(1)
         main.post {
             // Drawing and checking finish asynchronously (as on the launcher); the answer waits for both.
-            val left = java.util.concurrent.atomic.AtomicInteger(2)
+            val left = java.util.concurrent.atomic.AtomicInteger(3)
             val one = { if (left.decrementAndGet() == 0) done.countDown() }
             try { CardWidgetProvider.updateAll(app, one) } catch (e: Exception) { Log.w(TAG, "drawing widgets failed", e); one() }
             try { checkUnplaced(app, parsed, one) } catch (e: Exception) { Log.w(TAG, "checking cards failed", e); one() }
+            try { takePreviews(app, parsed, one) } catch (e: Exception) { Log.w(TAG, "drawing previews failed", e); one() }
         }
         // The core waits about three seconds for this answer; what is not checked by then is reported later.
         if (Looper.myLooper() != Looper.getMainLooper()) done.await(2, TimeUnit.SECONDS)
         return 200 to JSONObject().put("ok", true).put("widgets", placed(app)).put("rendered", drain())
+            // Tells the core that cards it asks for come back as pictures (older apps never say so, and are never waited on).
+            .put("previews", true)
+    }
+
+    /** Draw a picture of each card the core asked for (once per request), one after the other; each goes out with the next report. */
+    private fun takePreviews(ctx: Context, state: WState, done: () -> Unit) {
+        val todo = state.previews.mapNotNull { (id, ask) ->
+            val card = state.cards[id] ?: return@mapNotNull null
+            synchronized(previewed) {
+                if (previewed[id] == card.updatedAt to ask) null else { previewed[id] = card.updatedAt to ask; card to ask }
+            }
+        }
+        fun next(i: Int) {
+            if (i == todo.size) return done()
+            val (card, ask) = todo[i]
+            try { CardPreview.take(ctx, card, card.render) { r -> attachPreview(ctx, card, ask, r); next(i + 1) } }
+            catch (e: Exception) { attachPreview(ctx, card, ask, PreviewResult.Failed(e.message ?: e.javaClass.simpleName)); next(i + 1) }
+        }
+        next(0)
+    }
+
+    /** Put the preview (or why there is none) into the next report for [card], answering request [ask]. */
+    private fun attachPreview(ctx: Context, card: WCard, ask: Long, result: PreviewResult) {
+        val (key, value) = CardPreview.report(result)
+        synchronized(unsent) {
+            val entry = unsent[card.id]?.takeIf { it.optLong("updated_at") == card.updatedAt } ?: JSONObject().put("card", card.id).put("updated_at", card.updatedAt).apply {
+                // The report replaces what the core knows of this version, so it keeps saying the problem it already named.
+                synchronized(reported) { reported[card.id]?.takeIf { it.first == card.updatedAt }?.second }?.let { put("problem", it.take(1000)) }
+            }
+            entry.remove("preview"); entry.remove("preview_problem")
+            entry.put(key, value).put("preview_ask", ask)
+            unsent[card.id] = entry
+        }
+        // Within an accept() the answer carries it; later (the lists were slow) it goes by itself.
+        flushContext = ctx.applicationContext
+        main.removeCallbacks(flush)
+        main.postDelayed(flush, 300)
     }
 
     /** Cards no widget shows yet are checked at their nominal size, so their creator learns about a problem before placing. */
@@ -116,7 +156,12 @@ object WidgetHost {
             reported[card.id] = card.updatedAt to problem
         }
         synchronized(unsent) {
-            unsent[card.id] = JSONObject().put("card", card.id).put("updated_at", card.updatedAt).apply { if (problem != null) put("problem", problem.take(1000)) }
+            val kept = unsent[card.id]?.takeIf { it.optLong("updated_at") == card.updatedAt }
+            unsent[card.id] = JSONObject().put("card", card.id).put("updated_at", card.updatedAt).apply {
+                if (problem != null) put("problem", problem.take(1000))
+                // A preview waiting to be sent for this version stays in the report.
+                for (name in listOf("preview", "preview_problem", "preview_ask")) kept?.opt(name)?.let { put(name, it) }
+            }
         }
         val app = ctx.applicationContext
         // Within an accept() the answer carries it; otherwise (an image arrived or failed later) it goes by itself.

@@ -100,13 +100,15 @@ class CardWidgetProvider : AppWidgetProvider() {
          * Build [card] at [wDp] x [hDp] (and, on Android 12+, its per-size layouts), checking each layout in Ash's own
          * process first (on the main thread): lists are drawn as plain rows while they fit, as scrolling lists when they
          * do not, and a card taller than the widget without lists scrolls as a whole. [done] gets the views, or null when
-         * the card cannot be shown, and what went wrong, if anything.
+         * the card cannot be shown, and what went wrong, if anything. [single] draws only the layout for this size (not one per
+         * size on Android 12+), as a preview picture needs; [onBuilt] gets the checked build of that layout.
          */
-        fun render(ctx: Context, id: Int, card: WCard, render: CardRender, wDp: Float, hDp: Float, done: (RemoteViews?, String?) -> Unit) {
+        fun render(ctx: Context, id: Int, card: WCard, render: CardRender, wDp: Float, hDp: Float, single: Boolean = false,
+            onBuilt: ((CardViews.Built) -> Unit)? = null, done: (RemoteViews?, String?) -> Unit) {
             val builder = CardViews(ctx, id, card, night(ctx), WidgetHost.local(card)) { updateCard(ctx, card.id) }
             val density = ctx.resources.displayMetrics.density
             val checks = Looper.myLooper() == Looper.getMainLooper()
-            val layouts = if (render.sizes.isNotEmpty() && Build.VERSION.SDK_INT >= 31) render.sizes.map { Triple(it.width, it.height, it.root) }
+            val layouts = if (!single && render.sizes.isNotEmpty() && Build.VERSION.SDK_INT >= 31) render.sizes.map { Triple(it.width, it.height, it.root) }
                 else listOf(Triple(wDp, hDp, WidgetPlan.pick(render, wDp, hDp)))
             val budget = if (layouts.size > 1) CardSpec.LEVELS_WITH_SIZES else CardSpec.LEVELS
             val drawn = ArrayList<Pair<SizeF?, RemoteViews>>()
@@ -122,7 +124,7 @@ class CardWidgetProvider : AppWidgetProvider() {
                 val plainFits = lists && CardPlan.plan(render, root, WidgetHost.local(card), builder.api31).plainDepth <= budget
                 fun attempt(how: CardViews.How) {
                     val built = try { builder.frame(render, root, w, how) } catch (e: CardProblem) { return done(null, e.message) }
-                    if (!checks) { drawn.add(size to built.views); return step(i + 1) }
+                    if (!checks) { onBuilt?.invoke(built); drawn.add(size to built.views); return step(i + 1) }
                     CardCheck.inspect(ctx, built, (w * density).toInt(), (h * density).toInt()) { r ->
                         when {
                             r.error != null -> done(null, r.error)
@@ -130,7 +132,7 @@ class CardWidgetProvider : AppWidgetProvider() {
                             // Rows that do not fit become a real scrolling list; a card without lists scrolls as a whole.
                             r.overflow && how == CardViews.How.PLAIN -> attempt(CardViews.How.LISTS)
                             r.overflow && how == CardViews.How.LISTS && !lists -> attempt(CardViews.How.SCROLL)
-                            else -> { drawn.add(size to built.views); step(i + 1) }
+                            else -> { onBuilt?.invoke(built); drawn.add(size to built.views); step(i + 1) }
                         }
                     }
                 }
