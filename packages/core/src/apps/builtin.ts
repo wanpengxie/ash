@@ -1,8 +1,9 @@
 // ash's own apps travel inside the core and are put into the apps folder when missing or older; the app's own data
 // (data.json and anything else it wrote) is left alone, and a same or newer version is never overwritten.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BUILTIN_APPS } from "./builtin.generated";
+import { APP_CONTRACT_DOC, HELLO_EXAMPLE, HELLO_EXAMPLE_BINARY } from "./contract.generated";
 import { compareVersions } from "./schema";
 
 export function installBuiltinApps(root: string, log: (...args: unknown[]) => void = () => {}, apps = BUILTIN_APPS): string[] {
@@ -24,4 +25,24 @@ export function installBuiltinApps(root: string, log: (...args: unknown[]) => vo
     log("built-in app installed", app.id, app.version, current ? `(was ${current})` : "");
   }
   return installed;
+}
+
+/**
+ * The contract and the hello example next to the apps, for an agent to read with its own tools: <root>/APP-CONTRACT.md
+ * and <root>/_examples/hello/ (not an app folder: "_examples" is no app id, so discovery passes it by). Rewritten only
+ * when ash's copy differs.
+ */
+export function installAppDocs(root: string): void {
+  const files: Record<string, string | Buffer> = { "APP-CONTRACT.md": APP_CONTRACT_DOC };
+  for (const [name, text] of Object.entries(HELLO_EXAMPLE)) files[`_examples/hello/${name}`] = text;
+  for (const [name, data] of Object.entries(HELLO_EXAMPLE_BINARY)) files[`_examples/hello/${name}`] = Buffer.from(data, "base64");
+  for (const [name, content] of Object.entries(files)) {
+    const file = join(root, name);
+    const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+    try { if (existsSync(file) && readFileSync(file).equals(bytes)) continue; } catch { /* rewrite */ }
+    mkdirSync(dirname(file), { recursive: true });
+    const temp = `${file}.tmp-${process.pid}`;
+    writeFileSync(temp, bytes, { mode: 0o644 });
+    renameSync(temp, file);
+  }
 }

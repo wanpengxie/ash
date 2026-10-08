@@ -1,0 +1,24 @@
+<h1>你好</h1>
+<section data-view="main">
+  <div class="card">
+    <div class="muted">名字（可以不填；填「错误」看看失败时的样子）</div>
+    <div class="row" style="margin-top:8px"><input id="who" maxlength="20" placeholder="主人"><button id="greet" type="button">打招呼</button></div>
+    <div id="out" style="margin-top:8px"></div>
+  </div>
+  <button class="plain" type="button" onclick="app.show('about')">关于</button>
+</section>
+<section data-view="about" hidden>
+  <div class="card">这是 Ash 应用契约 ash-app/1 的最小例子：一个页面（ui://hello/home），一个工具（hello.greet）。同一页里用 app.show("视图名") 切换视图。</div>
+  <button class="plain" type="button" onclick="app.show('main')">返回</button>
+</section>
+<script>
+(() => {
+  const out = document.getElementById("out");
+  document.getElementById("greet").addEventListener("click", async () => {
+    const who = document.getElementById("who").value.trim();
+    out.className = "muted"; out.textContent = "正在调用…";
+    try { const result = await app.call("hello.greet", who ? { who } : {}); out.className = ""; out.textContent = result.text; }
+    catch (error) { out.className = "error"; out.textContent = error.message; }
+  });
+})();
+</script>

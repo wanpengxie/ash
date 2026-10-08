@@ -81,6 +81,16 @@ export function dailySeries(rows, logs, metric, days, now) {
 }
 
 const values = (series) => series.map((point) => point.value).filter((value) => typeof value === "number");
+
+/** A failed call into Ash as the owner should read it: Ash's own sentence, never a code. */
+export const plain = (error) => (error && typeof error.ownerText === "string" && error.ownerText.trim()) || "没读到，稍后再试";
+/** The phone's per-source failures (source → reason) as one line naming the sources. */
+const sourceErrors = (errors) => {
+  const names = errors && typeof errors === "object" && !Array.isArray(errors) ? Object.keys(errors).slice(0, 4) : [];
+  return names.length ? `有的来源没读到（${names.join("、")}）` : "有的来源没读到";
+};
+/** The time of the latest reading of a metric (the end of a span), or null. */
+const latestAt = (rows, phone) => rows.reduce((at, row) => row?.metric === phone && typeof row.value === "number" ? Math.max(at ?? 0, typeof row.ts_end === "number" ? row.ts_end : row.ts) : at, null);
 const average = (list) => list.length ? list.reduce((a, b) => a + b, 0) / list.length : null;
 const hours = (minutes) => round(minutes / 60, 1);
 
@@ -88,49 +98,79 @@ export class Health {
   /** ash: { call(member, word, body) → result, event(name, body) }; store: Store. */
   constructor({ ash, store, now = Date.now }) { this.ash = ash; this.store = store; this.now = now; }
 
+  /**
+   * The phone's readings for the last `days` days. When the phone cannot answer (its senses helper restarting, say),
+   * Ash hands over what it already recorded (error.recent): those rows are used and marked `stale` with their time.
+   */
   async readings(days) {
     const now = this.now();
     try {
       const result = phoneJson(await this.ash.call("device:phone", "health.read", { metrics: ["weight", "steps", "sleep", "heart_rate"],
         from: new Date(startOfDay(now) - (days - 1) * DAY).toISOString(), to: new Date(now).toISOString(), max_rows: 20000 }));
-      return { rows: Array.isArray(result.rows) ? result.rows : [], errors: result.source_errors ? [JSON.stringify(result.source_errors).slice(0, 200)] : [] };
-    } catch (error) { return { rows: [], errors: [`health.read: ${error instanceof Error ? error.message : error}`.slice(0, 200)] }; }
+      return { rows: Array.isArray(result.rows) ? result.rows : [], errors: result.source_errors ? [sourceErrors(result.source_errors)] : [], stale: null };
+    } catch (error) {
+      process.stderr.write(`health.read failed: ${error instanceof Error ? error.message : error}\n`);
+      const recent = error && typeof error === "object" ? error.recent : null;
+      const rows = Array.isArray(recent?.rows) ? recent.rows : [];
+      return { rows, errors: [plain(error)], stale: rows.length ? { as_of: typeof recent.as_of === "number" ? recent.as_of : rows.reduce((at, row) => Math.max(at, Number(row?.ts) || 0), 0), source: String(recent.source ?? "Ash 的记录") } : null, failed: true };
+    }
   }
 
   series(rows, metric, days) { return dailySeries(rows, this.store.data.logs, metric, days, this.now()); }
 
+  /**
+   * Today at a glance. Each value carries `at`, the time of its latest reading. If the phone cannot answer, the page still
+   * shows numbers: Ash's recorded readings, or else what this app read last time, with `stale: {as_of, source}`.
+   */
   async today() {
     const now = this.now();
-    const { rows, errors } = await this.readings(8);
-    const last = (metric) => { const s = this.series(rows, metric, 8); return s[s.length - 1].value; };
+    const { rows, errors, stale, failed } = await this.readings(8);
+    const today = dayKey(now);
+    // Normally today's value; from older records, the latest day that has one (its date says which).
+    const pick = (metric) => {
+      const known = this.series(rows, metric, 8).filter((point) => point.value !== null);
+      const last = known[known.length - 1];
+      return !last || (!stale && last.date !== today) ? null : last;
+    };
     const weightSeries = this.series(rows, "weight", 8).filter((point) => point.value !== null);
-    let steps = last("steps");
-    try {
-      const counter = phoneJson(await this.ash.call("device:phone", "sensors.steps", {}));
-      if (typeof counter.steps_today === "number" && (steps === null || counter.steps_today > steps)) steps = counter.steps_today;
-    } catch (error) { errors.push(`sensors.steps: ${error instanceof Error ? error.message : error}`.slice(0, 200)); }
-    const sleep = last("sleep");
+    const stepsDay = pick("steps");
+    let steps = stepsDay ? { value: stepsDay.value, date: stepsDay.date, at: latestAt(rows, "steps") } : null;
+    if (!failed) {
+      try {
+        const counter = phoneJson(await this.ash.call("device:phone", "sensors.steps", {}));
+        if (typeof counter.steps_today === "number" && (steps === null || steps.date !== today || counter.steps_today > steps.value)) steps = { value: counter.steps_today, date: today, at: now };
+      } catch (error) { errors.push(plain(error)); }
+    }
+    const sleep = pick("sleep"), rhr = pick("resting_heart_rate");
     const goals = { ...this.store.data.goals };
     const weight = weightSeries.length ? weightSeries[weightSeries.length - 1] : null;
-    return { date: dayKey(now),
-      weight: weight ? { value: weight.value, date: weight.date, goal: goals.weight ?? null } : null,
-      steps: steps === null ? null : { value: steps, goal: goals.steps ?? null },
-      sleep: sleep === null ? null : { minutes: sleep, hours: hours(sleep), goal: goals.sleep ?? null },
-      resting_heart_rate: last("resting_heart_rate") === null ? null : { value: last("resting_heart_rate") },
-      goals, errors };
+    const result = { date: today,
+      weight: weight ? { value: weight.value, date: weight.date, at: latestAt(rows, "weight"), goal: goals.weight ?? null } : null,
+      steps: steps === null ? null : { ...steps, goal: goals.steps ?? null },
+      sleep: sleep === null ? null : { minutes: sleep.value, hours: hours(sleep.value), date: sleep.date, at: latestAt(rows, "sleep"), goal: goals.sleep ?? null },
+      resting_heart_rate: rhr === null ? null : { value: rhr.value, date: rhr.date, at: latestAt(rows, "heart_rate") },
+      goals, errors: [...new Set(errors)], stale };
+    const any = result.weight || result.steps || result.sleep || result.resting_heart_rate;
+    if (!failed && any) { this.store.data.last = { at: now, today: { ...result, errors: [], stale: null } }; this.store.save(); }
+    // Nothing from the phone or Ash's records: what this app itself read last time is better than blanks.
+    if (failed && !any && this.store.data.last?.today) {
+      const kept = this.store.data.last;
+      return { ...kept.today, date: today, goals, errors: result.errors, stale: { as_of: kept.at, source: "上次读到的" } };
+    }
+    return result;
   }
 
   async trend(metric, days = 7) {
     if (!METRICS[metric]) throw new Error(`metric must be one of ${Object.keys(METRICS).join(", ")}`);
     const span = Math.max(1, Math.min(90, Math.trunc(days)));
-    const { rows, errors } = await this.readings(span);
+    const { rows, errors, stale } = await this.readings(span);
     const points = this.series(rows, metric, span);
     const list = values(points);
     const known = points.filter((point) => point.value !== null);
     return { metric, label: METRICS[metric].label, unit: METRICS[metric].unit, days: span, points,
       stats: list.length ? { min: Math.min(...list), max: Math.max(...list), avg: round(average(list), metric === "weight" ? 2 : 1),
         change: known.length > 1 ? round(known[known.length - 1].value - known[0].value, metric === "weight" ? 2 : 1) : 0 } : null,
-      goal: this.store.data.goals[metric] ?? null, errors };
+      goal: this.store.data.goals[metric] ?? null, errors, stale };
   }
 
   log(metric, value, ts) {

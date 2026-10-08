@@ -129,7 +129,8 @@ const askExpiry = (message: Pick<Message, "to" | "word" | "body">): number | nul
   message.to === "person:owner" && message.word === "ask" && typeof message.body.expires_at === "number" && Number.isFinite(message.body.expires_at)
     ? Math.ceil(message.body.expires_at) : null;
 
-function ajvFor(schema: unknown): ValidateFunction {
+/** Compile an external (device or app) input schema exactly as registration does; throws with Ajv's reason. */
+export function ajvFor(schema: unknown): ValidateFunction {
   if (!plainObject(schema)) throw new TypeError("device schema must be an object");
   const dialect = schema.$schema;
   const options = { strict: true, allErrors: true, coerceTypes: false, removeAdditional: false, useDefaults: false, validateFormats: true } as const;
@@ -160,6 +161,7 @@ export class WorldRouter {
   private reviewer: Reviewer | null = null;
   private appGrant: ((app: string, to: string, word: string) => boolean) | null = null;
   private gateCard: ((request: Message) => { title: string; detail: string } | null) | null = null;
+  private gatePrecheck: ((request: Message) => Promise<ResponseBody | null>) | null = null;
   private reviewTimeoutMs = 5_000;
   private approvalMode: () => ApprovalMode = () => "auto";
   private devicePolicy: (member: string) => "full" | "approval" | null = () => null;
@@ -471,6 +473,11 @@ export class WorldRouter {
   setAppGrants(check: (app: string, to: string, word: string) => boolean): void { this.appGrant = check; }
   /** Owner card text for requests a plain card cannot explain (an app install lists what the app needs). */
   setGateCard(card: (request: Message) => { title: string; detail: string } | null): void { this.gateCard = card; }
+  /**
+   * A check that runs before anyone is asked about a gated request: an answer refuses the request with it (for example an
+   * app that cannot be installed as written), so the owner is never shown a card for something that would fail anyway.
+   */
+  setGatePrecheck(check: (request: Message) => Promise<ResponseBody | null>): void { this.gatePrecheck = check; }
   /** Who may call a device capability: the owner, agents, and an app within its grants. */
   private mayCallDevice(from: string, to: string, word: string): boolean {
     if (deviceCaller(from)) return true;
@@ -1114,6 +1121,12 @@ export class WorldRouter {
       const forced = AGENT.test(request.from) && this.forcedApproval(request);
       const gateBypass = request.from === "person:owner" || (!external(request.to) && !forced && !GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
       const effect = wordEffect(endpoint.spec);
+      if (this.gatePrecheck && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
+        let refused: ResponseBody | null;
+        try { refused = await this.gatePrecheck(detached(request)); } catch { refused = null; }
+        if (pending.settled) return;
+        if (refused && !refused.ok) { this.finish(pending, refused, request.to!, false); return; }
+      }
       if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;

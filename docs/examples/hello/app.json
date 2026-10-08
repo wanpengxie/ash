@@ -1,0 +1,23 @@
+{
+  "contract": "ash-app/1",
+  "id": "hello",
+  "name": "你好",
+  "version": "0.1.0",
+  "icon": "icon.png",
+  "summary": "最小的 Ash 应用：一个页面，一个工具",
+  "publisher": "example",
+  "server": {
+    "command": "node",
+    "args": [
+      "server.mjs"
+    ]
+  },
+  "surfaces": [
+    {
+      "id": "home",
+      "title": "首页",
+      "resource": "ui://hello/home"
+    }
+  ],
+  "needs": []
+}

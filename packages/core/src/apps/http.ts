@@ -6,6 +6,7 @@
 //   POST /api/apps/<id>/message {text}     → an owner message to agent:main, prefixed with the app's name
 import type { Message, SendRequestV2 } from "../../../sdk/src/api";
 import type { TrustedRouteContext } from "../world/router";
+import { ownerText } from "./bridge";
 import type { AppRuntime } from "./runtime";
 
 export interface AppsHttpResponse { status: number; headers?: Record<string, string>; body?: string | Buffer }
@@ -63,7 +64,9 @@ export async function appsRoute(deps: AppsHttpDeps, method: string, path: string
     if (!reply) return json(202, { pending: true, id: sent.id });
     const result = reply.body as { ok: boolean; result?: Record<string, unknown>; error?: { code?: string; message?: string } };
     if (result.ok) return json(200, { content: [], ...(result.result ?? {}) });
-    return json(200, { content: [{ type: "text", text: String(result.error?.message ?? "failed") }], isError: true });
+    // The app's own failure is its own words; anything else (offline, refused, timed out) is said plainly for the owner.
+    const code = String(result.error?.code ?? "failed"), text = String(result.error?.message ?? "failed");
+    return json(200, { content: [{ type: "text", text: code === "failed" ? text : ownerText(`app:${id}`, input.tool, code, text) }], isError: true });
   }
   // message
   const text = typeof input.text === "string" ? input.text.trim() : "";

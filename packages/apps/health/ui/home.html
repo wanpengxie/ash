@@ -8,7 +8,7 @@
 <div id="note" class="note"></div>
 <script>
 (() => {
-  const { el, call, fail, num } = window.health;
+  const { el, call, fail, num, when, note, say } = window.health;
   const cards = document.getElementById("cards");
   const card = (label, value, unit, sub, progress) => el("div", { class: "card" }, el("div", { class: "label" }, label),
     el("div", { class: "value" }, value === null ? "—" : String(value), ...(value === null ? [] : [el("span", { class: "unit" }, unit)])),
@@ -18,12 +18,15 @@
     try {
       const today = await call("health.today");
       const w = today.weight, s = today.steps, z = today.sleep, h = today.resting_heart_rate;
+      // Old numbers (from Ash's records or an earlier read) say when they are from.
+      const old = (item) => item && (today.stale || (item.date && item.date !== today.date)) ? (when(item.at) || item.date) : "";
+      const sub = (...parts) => parts.filter(Boolean).join(" · ");
       cards.replaceChildren(
-        card("体重", w ? num("weight", w.value) : null, "kg", w ? `${w.date === today.date ? "今天" : w.date}${w.goal ? ` · 目标 ${num("weight", w.goal)} kg` : ""}` : "还没有记录", null),
-        card("步数", s ? num("steps", s.value) : null, "步", s && s.goal ? `目标 ${num("steps", s.goal)} 步` : "", s && s.goal ? s.value / s.goal : null),
-        card("睡眠", z ? num("sleep", z.minutes) : null, "小时", z && z.goal ? `目标 ${num("sleep", z.goal)} 小时` : "昨晚", z && z.goal ? z.minutes / z.goal : null),
-        card("静息心率", h ? num("resting_heart_rate", h.value) : null, "次/分", "今天最低心率", null));
-      document.getElementById("note").textContent = today.errors && today.errors.length ? `部分数据没读到：${today.errors.join("；")}` : "";
+        card("体重", w ? num("weight", w.value) : null, "kg", w ? sub(old(w) || (w.date === today.date ? "今天" : w.date), w.goal ? `目标 ${num("weight", w.goal)} kg` : "") : "还没有记录", null),
+        card("步数", s ? num("steps", s.value) : null, "步", sub(old(s), s && s.goal ? `目标 ${num("steps", s.goal)} 步` : ""), s && s.goal ? s.value / s.goal : null),
+        card("睡眠", z ? num("sleep", z.minutes) : null, "小时", sub(old(z) || "昨晚", z && z.goal ? `目标 ${num("sleep", z.goal)} 小时` : ""), z && z.goal ? z.minutes / z.goal : null),
+        card("静息心率", h ? num("resting_heart_rate", h.value) : null, "次/分", old(h) ? `${old(h)} 那天最低` : "今天最低心率", null));
+      document.getElementById("note").textContent = note(today);
     } catch (error) { fail(cards, error); }
   }
   document.getElementById("save").addEventListener("click", async () => {
@@ -31,7 +34,7 @@
     const out = document.getElementById("saved");
     if (!(value > 0)) { out.textContent = "请输入体重"; return; }
     try { await call("health.log", { metric: "weight", value }); out.textContent = `已记下 ${num("weight", value)} kg`; document.getElementById("weight").value = ""; load(); }
-    catch (error) { out.textContent = `没记上：${error.message}`; }
+    catch (error) { out.textContent = `没记上：${say(error)}`; }
   });
   load();
 })();
