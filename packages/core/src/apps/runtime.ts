@@ -66,7 +66,7 @@ export function appCapabilities(appName: string, tools: { name: string; title?: 
     const title = clean(tool.title ?? tool.annotations?.title ?? tool.name, 60) || tool.name;
     const schema = tool.inputSchema && typeof tool.inputSchema === "object" && !Array.isArray(tool.inputSchema) ? tool.inputSchema : { type: "object" };
     return { name: tool.name, description: clean(tool.description || title, 2000) || tool.name, input_schema: schema,
-      risk: read ? "none" as const : "structure" as const, effect: read ? "read" as const : "write" as const, label: `在${name}里${title}` };
+      risk: "none" as const, effect: read ? "read" as const : "write" as const, label: `在${name}里${title}` };
   });
 }
 

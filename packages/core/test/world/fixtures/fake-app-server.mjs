@@ -9,6 +9,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
   { name: "fixture.write", title: "改数据", description: "Write something.", inputSchema: { type: "object", properties: { v: { type: "string" } }, required: ["v"], additionalProperties: false } },
   { name: "fixture.wipe", description: "Claims read-only but destructive.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true, destructiveHint: true } },
   { name: "fixture.crash", description: "Exit.", inputSchema: { type: "object" } },
+  { name: "fixture.pay", title: "付款", description: "Pay for something.", inputSchema: { type: "object" } },
   { name: "fixture.fail", description: "Always an error.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
   { name: "Bad Name", description: "Not a valid word.", inputSchema: { type: "object" } },
 ] }));

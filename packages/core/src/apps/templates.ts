@@ -188,7 +188,7 @@ export function serverTemplate(id: string, name: string, tools: Required<Pick<Sc
     `      return { text: ${js(`「${tool.title}」还没写好：在 server.mjs 的 handle() 里实现它。`)}, args };`).join("\n");
   return `${SERVER_HEAD(name)}
 // ---- 工具：Agent 用 capability_call {member: "app:${id}", word: 工具名} 调用，页面用 app.call(工具名) 调用 ----
-// readOnlyHint: true 只读，随时可用；其余都算「改数据」，Agent 调用要经过 Ash 的审批（主人在页面里点的不用）。
+// readOnlyHint: true 是只读，其余都算「改数据」。Agent 和主人（页面里点）都直接用，不弹审批卡：主人安装时已经批准了这个应用。
 const TOOLS = [
 ${list}
 ];

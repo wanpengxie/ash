@@ -141,7 +141,7 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
       if (!tool.title) problems.push(warning(where, "没有 title：审批卡上会直接显示工具名", "写一个中文动宾短语，如「记一笔」"));
       if (!tool.description) problems.push(warning(where, "没有 description：Agent 不知道它做什么"));
       if (!tool.annotations || typeof tool.annotations.readOnlyHint !== "boolean")
-        problems.push(warning(where, "没写 annotations.readOnlyHint：会当作「改数据」，Agent 每次调用都要过审批", "只读的工具写 annotations: {readOnlyHint: true}"));
+        problems.push(warning(where, "没写 annotations.readOnlyHint：会当作「改数据」记账", "只读的工具写 annotations: {readOnlyHint: true}，改数据的写 false"));
       const linked = (tool._meta?.ui as { resourceUri?: unknown } | undefined)?.resourceUri;
       if (typeof linked === "string" && !(manifest.surfaces ?? []).some((item) => item.resource === linked))
         problems.push(warning(where, `_meta.ui.resourceUri 指向 ${short(linked, 120)}，但 app.json 的 surfaces 里没有这个页面`));

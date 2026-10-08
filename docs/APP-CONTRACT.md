@@ -116,7 +116,7 @@
 ```jsonc
 {
   "name": "notes.add",                 // ^[a-z][a-z0-9_.-]{0,63}$，约定 <应用 id>.<动作>；不合规的不登记
-  "title": "记一条笔记",                // 给人看的短语：审批卡上写成「在<应用名>里记一条笔记」
+  "title": "记一条笔记",                // 给人看的短语：记录里写成「在<应用名>里记一条笔记」
   "description": "Add a note …",       // 给 Agent 看：做什么、参数什么意思
   "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"], "additionalProperties": false },
   "annotations": { "readOnlyHint": false, "destructiveHint": false },
@@ -126,8 +126,10 @@
 
 - **登记**：应用启动后，合规的工具成为成员 `app:<id>` 的能力，名字就是能力名（`word`）。Agent 用 `capability_list {member: "app:<id>"}` 看到它们，用 `capability_call {member: "app:<id>", word: "notes.add", body: {text: "…"}}` 调用。
 - **参数**：`inputSchema` 必须是 `type: "object"` 的 JSON Schema（默认 draft-07；写 `$schema` 可用 2019-09 / 2020-12），用 Ajv **严格模式**编译：拼错的关键字、不认识的格式都会让这个工具被单独拒掉（`apps.validate` 会指出来）。没有参数就写 `{"type":"object","properties":{},"additionalProperties":false}`。调用时 Ash 先按它校验 `body`，不合规的调用到不了应用。
-- **风险由 Ash 定**：只有 `annotations.readOnlyHint: true` 且没有 `destructiveHint: true` 的工具算只读（随时可调）；其余一律按「改数据」：Agent 调用要经过 Ash 的审批（规则、裁判或主人的卡片）。主人在应用页面里点的操作是主人自己做的，不用审批，但都记账。
+- **应用是 Ash 的器官，用它自己的工具不弹卡**：主人安装时批准了这个应用和它要用的一切（`needs`），这就是边界。之后 Agent 调用这个应用自己的工具——读也好、改数据也好——都直接执行，不再弹审批卡（只有识别出的付款仍然每次问主人）。应用自己再去用 Ash 的东西（手机能力、提醒、入口卡片），仍然只能在授权范围内（§5）。主人在应用页面里点的操作是主人自己做的，同样不用审批；两者都记账。
+- **效果照实标**：只有 `annotations.readOnlyHint: true` 且没有 `destructiveHint: true` 的工具算「读」，其余一律标「改数据」。这只影响记账、超时和 Agent 看到的说明，不会因此弹卡。
 - **结果**：`tools/call` 的结果原样作为能力结果 `{content, structuredContent?}` 交给调用者。建议总给 `structuredContent`（一个对象），`content` 里放它的 JSON 文本或一句话。
+- **主人改了什么，Ash 会知道**：主人在页面里调用改数据的工具成功后，Ash 记一条 `app.activity {app, name, tool, summary}` 给主 Agent，并放进它每一轮看到的「应用里最近的变化」（最近一天、最新几条）。这不会叫醒它。`summary` 默认是「<工具的 title>：参数 → 结果」；改数据的工具最好在结果里带 `_meta: {activity: "勾掉了：给物业打电话"}`，一句话说清改了什么（脚手架的服务里，`handle()` 返回的对象带 `activity` 字段即可）。只读的调用不记。
 - **错误**：工具失败时回 `{content: [{type: "text", text: "原因"}], isError: true}`。调用者拿到 `{ok: false, error: {code: "failed", message: "原因"}}`（最多 2000 字），页面上 `app.call` 抛出的错误 `message` 也是这句话——**它会直接显示给主人，请写清楚的中文**。服务崩溃或回 JSON-RPC 错误也算失败。
 - **时间**：只读工具 60 秒内要回答，改数据的 10 分钟；页面上的一次调用最多等 60 秒。
 
@@ -166,7 +168,7 @@
 | `ui/notifications/host-context-changed {theme…}` | 深浅色等变了 |
 | `ui/notifications/tool-input {arguments: {}}` | 页面被单独打开（不是某次工具调用带出来的），没有参数 |
 
-页面调不到别的应用和 Ash 的能力；应用要用 Ash 的东西，只能由它的服务在授权范围内去调（§5、§7）。页面发起的改数据操作需要审批时，审批卡由 Ash 自己弹，不在应用页面里批。
+页面调不到别的应用和 Ash 的能力；应用要用 Ash 的东西，只能由它的服务在授权范围内去调（§5、§7）。服务去调的能力需要主人确认时，审批卡由 Ash 自己弹，不在应用页面里批。
 
 脚手架和 hello 例子里的 `ui/app.js` 把这些包成了 `window.app`：`await app.call("工具名", 参数)`（返回 `structuredContent`，失败抛出带原因的错误）、`app.show("视图")`、`await app.tell("文字")`、`await app.openLink(url)`、`app.el(tag, attrs, ...children)`。
 

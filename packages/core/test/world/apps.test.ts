@@ -57,6 +57,9 @@ async function world(options: { apps?: Record<string, unknown>; builtins?: boole
     { name: "look", description: "Look", label: "看一眼", risk: "none", input_schema: { type: "object", additionalProperties: true } },
     { name: "poke", description: "Poke", label: "戳一下", risk: "outward", input_schema: { type: "object", additionalProperties: true } },
   ], (message) => { if (message.word === "look") { looks++; return { ok: true, result: { seen: true } }; } pokes++; return { ok: true, result: { poked: true } }; }));
+  members.registerDevice(new DeviceMember("device:phone", "Phone", [
+    { name: "health.read", description: "Read health data", label: "读健康数据", risk: "none", input_schema: { type: "object", additionalProperties: true } },
+  ], () => ({ ok: true, result: { rows: [] } })));
   router.register({ member: "agent:main", spec: wordContract("agent:main", "say")!, handle: () => ({ ok: true, result: { accepted: true } }) });
   router.enableDurableGate();
   const launcher: AppLauncher = { root: () => root, spawn: (app, appDir, env) => ({ command: app.server.command, args: app.server.args ?? [], cwd: appDir,
@@ -124,7 +127,7 @@ test("built-in apps are installed when missing or older and never overwrite a sa
   assert.deepEqual(installBuiltinApps(root), [], "newer (changed by the owner) stays");
 });
 
-test("an app's tools become capabilities with ash's risk and label", () => {
+test("an app's tools become capabilities with an honest effect, no risk of their own, and ash's label", () => {
   const caps = appCapabilities("健康", [
     { name: "health.today", title: "看今日健康", description: "Today", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
     { name: "health.log", description: "Log", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } },
@@ -132,8 +135,9 @@ test("an app's tools become capabilities with ash's risk and label", () => {
     { name: "health.bare", inputSchema: { type: "object" } },
     { name: "Not Valid", inputSchema: { type: "object" } },
   ]);
-  assert.deepEqual(caps.map((cap) => [cap.name, cap.risk, cap.effect]), [["health.today", "none", "read"], ["health.log", "structure", "write"],
-    ["health.wipe", "structure", "write"], ["health.bare", "structure", "write"]]);
+  // The effect stays honest; the risk is none: an app's own tools are its organ's, approved with the app at install.
+  assert.deepEqual(caps.map((cap) => [cap.name, cap.risk, cap.effect]), [["health.today", "none", "read"], ["health.log", "none", "write"],
+    ["health.wipe", "none", "write"], ["health.bare", "none", "write"]]);
   assert.equal(caps[0]!.label, "在健康里看今日健康");
   assert.equal(caps[1]!.label, "在健康里health.log");
 });
@@ -158,19 +162,18 @@ test("install asks the owner on the gate card listing every need; approval store
     const described = w.members.describe("agent", "app:fixture").members[0]!;
     assert.equal(described.kind, "app");
     const words = Object.fromEntries(described.words.map((word) => [word.word, word]));
-    assert.deepEqual(Object.keys(words).sort(), ["fixture.crash", "fixture.fail", "fixture.read", "fixture.wipe", "fixture.write"]);
-    assert.deepEqual([words["fixture.read"]!.risk, words["fixture.write"]!.risk, words["fixture.wipe"]!.risk], ["none", "structure", "structure"]);
+    assert.deepEqual(Object.keys(words).sort(), ["fixture.crash", "fixture.fail", "fixture.pay", "fixture.read", "fixture.wipe", "fixture.write"]);
+    assert.deepEqual([words["fixture.read"]!.effect, words["fixture.write"]!.effect, words["fixture.wipe"]!.effect], ["read", "write", "write"]);
+    assert.deepEqual([words["fixture.read"]!.risk, words["fixture.write"]!.risk, words["fixture.wipe"]!.risk], ["none", "none", "none"]);
     assert.equal(words["fixture.write"]!.label, "在测试应用里改数据");
 
-    // Agents call it like a device: a read runs at once; a write waits for the owner.
+    // Agents use it as an organ of ash: reads and writes alike run at once, no card (see "no card" below).
     const read = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.read", body: { n: 1 }, wait: true });
     const result = read.reply!.body as { ok: boolean; result: { structuredContent: Record<string, unknown> } };
     assert.equal(result.ok, true);
     assert.equal(result.result.structuredContent.app, "fixture");
     assert.equal(result.result.structuredContent.has_token, true);
     assert.match(String(result.result.structuredContent.url), /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
-    const write = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.write", body: { v: "x" } });
-    await until(() => Boolean(w.ledger.gateCase(write.id)), "write approval card");
     const failed = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.fail", body: {}, wait: true });
     assert.deepEqual(failed.reply!.body, { ok: false, error: { code: "failed", message: "nope" } });
   } finally { await w.close(); }
@@ -282,5 +285,41 @@ test("the shell app's owner routes: list, icon, surface, call and message", asyn
     const said = w.ledger.byId(message.json().id)!;
     assert.deepEqual([said.from, said.to, said.word, said.body.text], ["person:owner", "agent:main", "say", "[来自「测试应用」] 帮我看看"]);
     assert.equal((await http("GET", "/api/apps/nothing/icon")).status, 404);
+  } finally { await w.close(); }
+});
+
+test("an agent uses an installed app's own tools with no card; the app's own reach outside stays within its grants", async () => {
+  const w = await world({ apps: { fixture: fixtureManifest(), steps: fixtureManifest("steps", {
+    surfaces: [{ id: "home", title: "首页", resource: "ui://steps/home" }],
+    needs: [{ member: "device:phone", words: ["health.read"], why: "读步数" }, { member: "device:fake", words: ["poke"], why: "戳一下" }] }) } });
+  try {
+    await install(w, "fixture");
+    // The main agent writes into the app (todo.add on the phone): it runs at once, nothing reaches the gate.
+    const write = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.write", body: { v: "明天给物业打电话" }, wait: true });
+    assert.equal(write.reply!.body.ok, true, JSON.stringify(write.reply!.body));
+    assert.equal(w.ledger.gateCase(write.id), null, "no approval case, no card");
+    // The same through capability_call's approval context: still no card, and the normal run time rather than a card's lifetime.
+    const viaTool = await w.router.send({ ...agent, approval: { ttlMinutes: 10, purpose: "记一条待办" } },
+      { to: "app:fixture", kind: "request", word: "fixture.write", body: { v: "交水费" }, wait: true });
+    assert.equal(viaTool.reply!.body.ok, true);
+    assert.equal(w.ledger.gateCase(viaTool.id), null);
+    assert.equal(w.ledger.humanPendingList().items.length, 0, "nothing waits on the owner");
+    // A recognised payment still asks the owner, as everywhere.
+    const pay = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.pay", body: {} });
+    await until(() => Boolean(w.ledger.gateCase(pay.id)), "payment card");
+
+    // The app's own call to device:phone health.read needs its grant: fixture was not granted it.
+    const app: TrustedRouteContext = { transport: "app", member: "app:fixture", transportPrincipal: "app:fixture", local: true, remote: false, ownerProxy: false };
+    await assert.rejects(w.router.send(app, { to: "device:phone", kind: "request", word: "health.read", body: {} }), /granted/);
+    const refused = await w.runtime.bridge.call("fixture", "capability_call", { member: "device:phone", word: "health.read", body: {} }) as { ok: boolean; error?: { code: string } };
+    assert.deepEqual([refused.ok, refused.error?.code], [false, "forbidden"]);
+    // An app granted it reads at once; its granted non-read reach outside still asks the owner on a card.
+    await install(w, "steps");
+    assert.deepEqual(await w.runtime.bridge.call("steps", "capability_call", { member: "device:phone", word: "health.read", body: {} }), { ok: true, result: { rows: [] } });
+    const steps: TrustedRouteContext = { ...app, member: "app:steps", transportPrincipal: "app:steps" };
+    const poke = await w.router.send(steps, { to: "device:fake", kind: "request", word: "poke", body: {} });
+    await until(() => Boolean(w.ledger.gateCase(poke.id)), "the app's poke asks the owner");
+    assert.equal(w.ledger.byId(w.ledger.gateCase(poke.id)!.askId)!.body.title, "「测试应用」需要你确认");
+    assert.equal(w.pokes(), 0);
   } finally { await w.close(); }
 });

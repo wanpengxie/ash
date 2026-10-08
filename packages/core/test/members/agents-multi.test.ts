@@ -95,6 +95,8 @@ test("delegation carries durable thread identity, owner evidence and current per
     w.ledger.saveAgentThread({ ...thread, id: "w_limited", turn: "t_limited", from: "agent:keeper", to: "agent:main", parent_turn: undefined });
     assert.equal(w.system.toolAllowed("agent:main", "t_limited", "agent_remove"), false);
     assert.equal(w.system.wordAllowed("agent:main", "t_limited", "device:phone", "screen.tap"), false);
+    // Nor an app's tools: they take no card, but a helper still gets them only when delegated.
+    assert.equal(w.system.wordAllowed("agent:main", "t_limited", "app:todo", "todo.add"), false);
   } finally { await w.close(); }
 });
 
@@ -155,6 +157,7 @@ test("declarations: the keeper is built in, kept in ash's state, and limited to 
   assert.deepEqual(resolveAgents(undefined, false).map((agent) => agent.id), ["agent:main"]);
   assert.ok(MAIN_AGENT.manage && !KEEPER_AGENT.manage);
   assert.ok(wordAllowed(KEEPER_AGENT, "service:self", "apply_plan") && !wordAllowed(KEEPER_AGENT, "device:phone", "clipboard.set"));
+  assert.ok(!wordAllowed(KEEPER_AGENT, "app:todo", "todo.add"), "a helper does not get the apps' tools by default");
   assert.ok(!KEEPER_AGENT.tools!.some((tool) => tool.startsWith("human_") || ["agent_create", "agent_stop", "agent_remove"].includes(tool)));
   const w = await world({});
   try {
