@@ -2249,6 +2249,122 @@
    }
   },
   {
+   "name": "a Stack's align places every child in a slot",
+   "expect": "ok",
+   "levels": 3,
+   "a2ui": {
+    "components": [
+     {
+      "id": "root",
+      "component": "Stack",
+      "align": "bottomEnd",
+      "children": [
+       "a",
+       "b"
+      ]
+     },
+     {
+      "id": "a",
+      "component": "Text",
+      "text": "a"
+     },
+     {
+      "id": "b",
+      "component": "Text",
+      "text": "b",
+      "style": {
+       "place": "topStart"
+      }
+     }
+    ]
+   },
+   "result": "ok",
+   "rendered": {
+    "root": "root",
+    "components": [
+     {
+      "id": "root",
+      "component": "Stack",
+      "children": [
+       "a",
+       "b"
+      ],
+      "align": "bottomEnd"
+     },
+     {
+      "id": "a",
+      "component": "Text",
+      "text": "a",
+      "variant": "body"
+     },
+     {
+      "id": "b",
+      "component": "Text",
+      "style": {
+       "place": "topStart"
+      },
+      "text": "b",
+      "variant": "body"
+     }
+    ]
+   }
+  },
+  {
+   "name": "justify stretch gives every child a slot",
+   "expect": "ok",
+   "levels": 3,
+   "a2ui": {
+    "components": [
+     {
+      "id": "root",
+      "component": "Row",
+      "children": [
+       "a",
+       "b"
+      ],
+      "justify": "stretch"
+     },
+     {
+      "id": "a",
+      "component": "Text",
+      "text": "a"
+     },
+     {
+      "id": "b",
+      "component": "Text",
+      "text": "b"
+     }
+    ]
+   },
+   "result": "ok",
+   "rendered": {
+    "root": "root",
+    "components": [
+     {
+      "id": "root",
+      "component": "Row",
+      "children": [
+       "a",
+       "b"
+      ],
+      "justify": "stretch"
+     },
+     {
+      "id": "a",
+      "component": "Text",
+      "text": "a",
+      "variant": "body"
+     },
+     {
+      "id": "b",
+      "component": "Text",
+      "text": "b",
+      "variant": "body"
+     }
+    ]
+   }
+  },
+  {
    "name": "video cannot be drawn",
    "expect": "error",
    "error": "Video \"root\" cannot be drawn",

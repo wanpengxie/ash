@@ -134,6 +134,9 @@
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/appwidget_card" />
         </receiver>
         <receiver android:name=".widget.WidgetActionReceiver" android:exported="false" />
+        <!-- A card's scrolling list on Android before 12 (later ones carry list items in the widget update). -->
+        <service android:name=".widget.CardItemsService" android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
         <activity android:name=".widget.CardPickerActivity" android:exported="true" android:label="Ash 卡片"
             android:excludeFromRecents="true" android:taskAffinity="ai.ash.widget.picker">
             <intent-filter>

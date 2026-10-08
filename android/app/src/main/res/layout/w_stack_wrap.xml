@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A card Stack: children overlap. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_self"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:clipToOutline="true" />

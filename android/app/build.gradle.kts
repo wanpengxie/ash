@@ -191,6 +191,8 @@ android {
 tasks.named("preBuild") { dependsOn(copyPayload) }
 // Only packaging needs the container (unit tests do not merge assets, so they run without it).
 tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(copyContainer, copyScreen, copySenses, copyApps) }
+// The card cases the core checks too (npm run gen:widget-cards): the phone's tests read them, so they rerun when they change.
+tasks.withType<Test>().configureEach { inputs.file(rootProject.file("../packages/core/test/fixtures/widget-cards.json")).withPropertyName("widgetCards") }
 
 dependencies {
     implementation(project(":bridge"))

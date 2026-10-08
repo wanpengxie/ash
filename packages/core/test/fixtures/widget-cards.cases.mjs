@@ -66,6 +66,9 @@ export const cases = [
     data: { mood: ["good"] } } },
   { name: "per-size layouts", expect: "ok", levels: 2, a2ui: { components: [col("root", ["big", "note"]), text("big", "61.8", { variant: "h1" }), text("note", "kg"), col("small", ["big2"]), text("big2", "61.8")],
     sizes: [{ width: 110, height: 110, root: "small" }, { width: 250, height: 110, root: "root" }] } },
+  { name: "a Stack's align places every child in a slot", expect: "ok", levels: 3, a2ui: { components: [
+    { id: "root", component: "Stack", align: "bottomEnd", children: ["a", "b"] }, text("a", "a"), text("b", "b", { style: { place: "topStart" } })] } },
+  { name: "justify stretch gives every child a slot", expect: "ok", levels: 3, a2ui: { components: [row("root", ["a", "b"], { justify: "stretch" }), text("a", "a"), text("b", "b")] } },
   { name: "video cannot be drawn", expect: "error", error: "Video \"root\" cannot be drawn", a2ui: { components: [{ id: "root", component: "Video", url: "https://x/v.mp4" }] } },
   { name: "text input cannot be drawn", expect: "error", error: "TextField \"root\" cannot be drawn", a2ui: { components: [{ id: "root", component: "TextField", label: "x" }] } },
   { name: "sliders cannot be drawn", expect: "error", error: "Slider \"root\" cannot be drawn", a2ui: { components: [{ id: "root", component: "Slider", max: 10, value: 1 }] } },

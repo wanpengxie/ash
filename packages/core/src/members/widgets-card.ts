@@ -589,7 +589,7 @@ function imageUrl(url: string, where: string): string {
 
 /**
  * How many nested RemoteViews a component needs: one for itself, plus one for a weighted child of a Row/Column (every
- * child when it justifies "stretch") or a placed child of a Stack (each sits in a slot), and a Grid's rows and cells. A List counts once: its items are
+ * child when it justifies "stretch") or a Stack child placed anywhere but the top start (each sits in a slot), and a Grid's rows and cells. A List counts once: its items are
  * separate RemoteViews with their own budget. WidgetPlan.levels on the phone counts the same way.
  */
 export function levels(byId: Map<string, WidgetComponent>, id: string): number {
@@ -599,7 +599,7 @@ export function levels(byId: Map<string, WidgetComponent>, id: string): number {
   case "Row": case "Column":
     return 1 + Math.max(0, ...(c.children ?? []).map((k) => of(k) + ((byId.get(k)!.weight ?? 0) > 0 || c.justify === "stretch" ? 1 : 0)));
   case "Stack":
-    return 1 + Math.max(0, ...(c.children ?? []).map((k) => of(k) + (placed(byId.get(k)!) ? 1 : 0)));
+    return 1 + Math.max(0, ...(c.children ?? []).map((k) => of(k) + ((byId.get(k)!.style?.place ?? c.align ?? "topStart") !== "topStart" ? 1 : 0)));
   case "Grid": return 3 + Math.max(0, ...(c.children ?? []).map(of));
   case "Card": case "Button": return 1 + (c.child ? of(c.child) : 0);
   case "Tabs": return 1 + Math.max(2, ...(c.tabs ?? []).map((t) => of(t.child)));
@@ -607,7 +607,6 @@ export function levels(byId: Map<string, WidgetComponent>, id: string): number {
   default: return 1;
   }
 }
-const placed = (c: WidgetComponent) => !!c.style?.place && c.style.place !== "topStart";
 
 /** The deepest branch, for the error message. */
 function deepest(byId: Map<string, WidgetComponent>, id: string): string[] {
