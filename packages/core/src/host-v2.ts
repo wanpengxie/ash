@@ -118,10 +118,10 @@ export class HostDeviceLink {
   async taskStatus(frame: TaskStatusFrame): Promise<void> {
     if (!this.closed) await this.request("POST", "/task/status", frame, 1500);
   }
-  /** The full home-screen widget state; the phone answers with the Ash widgets placed on its home screen. */
-  async widgets(state: WidgetState): Promise<{ widgets?: unknown }> {
+  /** The full home-screen widget state; the phone answers with the Ash widgets placed on its home screen and which cards it could draw. */
+  async widgets(state: WidgetState): Promise<{ widgets?: unknown; rendered?: unknown }> {
     if (this.closed) return {};
-    return (await this.request("POST", "/widgets", state, 3000)) as { widgets?: unknown };
+    return (await this.request("POST", "/widgets", state, 3000)) as { widgets?: unknown; rendered?: unknown };
   }
   /** Whether the task island is on the phone's screen right now. */
   async islandShown(): Promise<boolean> {
