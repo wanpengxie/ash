@@ -20,7 +20,7 @@
 
 `style` 可用：`background`、`color`（子孙继承）、`cornerRadius`、`padding`、`margin`（数字、`[上下, 左右]`、`[上, 右, 下, 左]` 或 `{top, end, bottom, start}`，单位 dp）、`width`/`height`（dp、`fill`、`wrap`）、`fontSize`、`fontWeight`、`italic`、`underline`、`strikethrough`、`textAlign`、`maxLines`、`ellipsize`（`end`/`middle`/`start`/`none`）、`lineHeight`、`letterSpacing`、`opacity`、`place`（`Stack` 子项位置）。
 
-文字里的简单 Markdown（粗体、斜体、行内代码、删除线、链接、`#` 标题、`-` 列表）画成格式。图片是 `https://` 或 `data:image/...;base64`（不支持 SVG）；`Image` 的 `url` 还可以是 `avatar`（Ash 的脸）或 `icon:<名字>`。图标名：A2UI 常用名（`check`、`close`、`star`、`favorite`、`home`、`settings`、`refresh`、`add`、`delete`、`edit`、`mail`、`phone`、`person`、`search`、`share`、`warning`、`info` 等）和 Ash 自己的（`sun`、`cloud`、`rain`、`snow`、`wind`、`moon`、`heart`、`steps`、`weight`、`sleep`、`water`、`fire`、`calendar`、`clock`、`alert`、`bell`、`car`、`money`、`chart`）。
+文字里写 `**粗体**`、`*斜体*`、行内代码、删除线、链接、标题或 `-` 列表这类简单 Markdown，会画成对应的格式，不会原样显示。图片是 `https://` 或 `data:image/...;base64`（不支持 SVG）；`Image` 的 `url` 还可以是 `avatar`（Ash 的脸）或 `icon:<名字>`。图标名：A2UI 常用名（`check`、`close`、`star`、`favorite`、`home`、`settings`、`refresh`、`add`、`delete`、`edit`、`mail`、`phone`、`person`、`search`、`share`、`warning`、`info` 等）和 Ash 自己的（`sun`、`cloud`、`rain`、`snow`、`wind`、`moon`、`heart`、`steps`、`weight`、`sleep`、`water`、`fire`、`calendar`、`clock`、`alert`、`bell`、`car`、`money`、`chart`）。
 
 ## 主题色
 
