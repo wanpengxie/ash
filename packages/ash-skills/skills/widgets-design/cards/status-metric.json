@@ -1,0 +1,16 @@
+{
+  "id": "steps-today",
+  "title": "步数",
+  "size": "2x2",
+  "ttl_min": 180,
+  "a2ui": {
+    "components": [
+      { "id": "root", "component": "Column", "justify": "center", "children": ["label", "value", "bar", "hint"], "action": { "openAsh": {} } },
+      { "id": "label", "component": "Text", "text": "今日步数", "variant": "caption" },
+      { "id": "value", "component": "Text", "text": { "call": "formatNumber", "args": { "value": { "path": "/steps" } } }, "variant": "h1", "style": { "maxLines": 1 } },
+      { "id": "bar", "component": "ProgressBar", "value": { "path": "/steps" }, "max": { "path": "/goal" }, "style": { "margin": [4, 0, 4, 0] } },
+      { "id": "hint", "component": "Text", "text": { "path": "/hint" }, "variant": "caption", "style": { "maxLines": 1 } }
+    ],
+    "data": { "steps": 6842, "goal": 8000, "hint": "目标 8,000 · 差 1,158" }
+  }
+}

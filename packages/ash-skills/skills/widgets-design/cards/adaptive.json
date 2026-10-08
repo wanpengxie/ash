@@ -1,0 +1,27 @@
+{
+  "id": "commute",
+  "title": "通勤",
+  "size": "4x2",
+  "ttl_min": 90,
+  "a2ui": {
+    "components": [
+      { "id": "root", "component": "Row", "align": "center", "children": ["lead", "detail"] },
+      { "id": "lead", "component": "Column", "align": "center", "style": { "width": 96 }, "children": ["mins", "unit"] },
+      { "id": "mins", "component": "Text", "text": { "path": "/mins" }, "variant": "h1", "style": { "color": "accent" } },
+      { "id": "unit", "component": "Text", "text": "分钟到公司", "variant": "caption" },
+      { "id": "detail", "component": "Column", "weight": 1, "children": ["route", "state", "leave"] },
+      { "id": "route", "component": "Text", "text": { "path": "/route" }, "variant": "h4", "style": { "maxLines": 1 } },
+      { "id": "state", "component": "Text", "text": { "path": "/state" }, "style": { "maxLines": 2 } },
+      { "id": "leave", "component": "Text", "text": { "path": "/leave" }, "variant": "caption" },
+      { "id": "small", "component": "Column", "justify": "center", "children": ["s_mins", "s_unit", "s_leave"] },
+      { "id": "s_mins", "component": "Text", "text": { "path": "/mins" }, "variant": "h1", "style": { "color": "accent" } },
+      { "id": "s_unit", "component": "Text", "text": "分钟到公司", "variant": "caption" },
+      { "id": "s_leave", "component": "Text", "text": { "path": "/leave" }, "variant": "caption", "style": { "maxLines": 1 } }
+    ],
+    "sizes": [
+      { "width": 150, "height": 150, "root": "small" },
+      { "width": 320, "height": 150, "root": "root" }
+    ],
+    "data": { "mins": "32", "route": "地铁 2 号线 → 9 号线", "state": "9 号线有小幅延误，比平时多 5 分钟", "leave": "建议 08:10 前出门" }
+  }
+}

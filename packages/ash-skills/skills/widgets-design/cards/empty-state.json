@@ -1,0 +1,13 @@
+{
+  "id": "inbox-empty",
+  "title": "收件箱",
+  "size": "4x2",
+  "a2ui": {
+    "components": [
+      { "id": "root", "component": "Column", "align": "center", "justify": "center", "children": ["ic", "msg", "sub"], "action": { "openAsh": {} } },
+      { "id": "ic", "component": "Icon", "name": "check", "style": { "fontSize": 30, "color": "green" } },
+      { "id": "msg", "component": "Text", "text": "今天没有要处理的事", "variant": "h3", "style": { "margin": [6, 0, 2, 0], "textAlign": "center" } },
+      { "id": "sub", "component": "Text", "text": "有新的我会放在这里", "variant": "caption", "style": { "textAlign": "center" } }
+    ]
+  }
+}

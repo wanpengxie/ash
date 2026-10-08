@@ -1,0 +1,26 @@
+{
+  "id": "todo-list",
+  "title": "待办",
+  "size": "4x4",
+  "a2ui": {
+    "components": [
+      { "id": "root", "component": "Column", "children": ["head", "list", "empty"] },
+      { "id": "head", "component": "Row", "align": "center", "children": ["title", "left"] },
+      { "id": "title", "component": "Text", "text": "待办", "variant": "h3", "weight": 1 },
+      { "id": "left", "component": "Badge", "text": { "path": "/left" } },
+      { "id": "list", "component": "List", "style": { "margin": [6, 0, 0, 0] }, "children": { "componentId": "item", "path": "/items" } },
+      { "id": "item", "component": "CheckBox", "label": { "path": "title" }, "value": { "path": "done" }, "action": { "event": { "name": "toggle" } }, "style": { "maxLines": 2 } },
+      { "id": "empty", "component": "Text", "text": "都做完了，歇一会儿", "variant": "caption", "visible": { "path": "/empty" } }
+    ],
+    "data": {
+      "left": "3 件没做",
+      "empty": false,
+      "items": [
+        { "id": "milk", "title": "买牛奶和鸡蛋", "done": false },
+        { "id": "mail", "title": "回复房东的邮件", "done": false },
+        { "id": "pay", "title": "交燃气费", "done": false },
+        { "id": "gym", "title": "健身房退卡", "done": true }
+      ]
+    }
+  }
+}
