@@ -72,8 +72,30 @@ input{border:1px solid var(--line);background:var(--bg);border-radius:10px;paddi
       for (const child of children) node.append(child);
       return node;
     },
+    /** An error as the owner reads it: the sentence Ash or the app gave in Chinese, never a code. */
+    say(error) {
+      const message = error && error.message ? String(error.message) : "";
+      if (/host did not answer/.test(message)) return "请在「Ash 应用」里打开健康。";
+      return /[\u4e00-\u9fff]/.test(message) ? message : "出了点问题，稍后再试";
+    },
+    /** When a reading was taken: 今天 09:30, 昨天 21:00, or 10月6日 08:00. */
+    when(ts) {
+      if (typeof ts !== "number" || !Number.isFinite(ts)) return "";
+      const d = new Date(ts), now = new Date();
+      const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+      const ago = Math.round((day(now) - day(d)) / 86400000);
+      return ago === 0 ? `今天 ${hm}` : ago === 1 ? `昨天 ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+    },
+    /** The line under the cards: why some numbers are old (and from when), or what could not be read. */
+    note(data) {
+      if (!data) return "";
+      const errors = Array.isArray(data.errors) ? data.errors : [];
+      if (data.stale) return `${errors[0] || "感知暂时不在线"}。下面是${data.stale.as_of ? ` ${window.health.when(data.stale.as_of)} ` : "之前"}的数据（${data.stale.source || "Ash 的记录"}）。`;
+      return errors.length ? errors.join("；") : "";
+    },
     fail(target, error) {
-      target.replaceChildren(window.health.el("div", { class: "card warn" }, error && /host did not answer/.test(error.message) ? "请在「Ash 应用」里打开健康。" : `没读到数据：${error.message}`));
+      target.replaceChildren(window.health.el("div", { class: "card warn" }, `没读到数据：${window.health.say(error)}`));
     },
   };
 })();

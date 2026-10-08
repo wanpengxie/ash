@@ -17,10 +17,16 @@ export function ashClient(url, token) {
     try {
       const result = await (await connect()).callTool({ name, arguments: args }, undefined, { timeout: 60_000 });
       const out = result.structuredContent ?? JSON.parse(result.content?.find((item) => item.type === "text")?.text ?? "{}");
-      if (!out.ok) throw Object.assign(new Error(`${out.error?.code ?? "failed"}: ${out.error?.message ?? ""}`), { code: out.error?.code });
+      // owner_text is Ash's sentence for the owner; recent is what Ash already recorded when the phone could not answer.
+      if (!out.ok) throw Object.assign(new Error(`${out.error?.code ?? "failed"}: ${out.error?.message ?? ""}`),
+        { code: out.error?.code, ownerText: out.error?.owner_text, recent: out.error?.recent });
       return out.result;
     } catch (error) {
-      if (!error.code) { try { await client?.close(); } catch { /* gone */ } client = null; }
+      if (!error.code) {
+        try { await client?.close(); } catch { /* gone */ }
+        client = null;
+        if (!error.ownerText) error.ownerText = "连不上 Ash，稍后再试";
+      }
       throw error;
     }
   };

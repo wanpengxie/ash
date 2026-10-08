@@ -16,6 +16,7 @@ import { ContainerHost } from "../../agent-container/src/host";
 import { CONTAINER_PATH, DEFAULT_MODEL, inContainer, migrateModelChoice, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
 import { AppRuntime, type AppLauncher } from "./apps/runtime";
 import { installAppDocs, installBuiltinApps } from "./apps/builtin";
+import { recentFacts } from "./apps/recent";
 import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
 import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
 import { AgentMcpServer, TOOL_NAMES, type AgentBinding, type AgentPolicy } from "./agent-mcp/server";
@@ -219,6 +220,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
   let apps: AppRuntime | null = null;
+  let senseArchiveForApps: SenseArchive | null = null;
   try {
     const world = new WorldRouter(ledger, async (request, caller) => {
       if (caller.remote) return Boolean(caller.pairedDeviceId && link && await link.isBrowserAuthorized(caller.pairedDeviceId));
@@ -249,7 +251,9 @@ export async function startOwner(config: Config): Promise<Running> {
     world.setMemberNames((id) => { try { return members.describe("owner", id).members[0]?.name; } catch { return undefined; } });
     // Independent apps (contract ash-app/1): found in the container, started once the owner installed them.
     apps = new AppRuntime({ launcher: appLauncher(config.container), stateDir: config.stateDir, world, members, log,
-      builtins: (root) => { installBuiltinApps(root, log); installAppDocs(root); } });
+      builtins: (root) => { installBuiltinApps(root, log); installAppDocs(root); },
+      // When the phone cannot answer a granted health read, the app gets what the senses archive already holds.
+      recent: recentFacts(() => senseArchiveForApps) });
     members.register(apps.member());
     const vaultFile = join(config.stateDir, "vault.json");
     let vaultStore: VaultStore;
@@ -427,6 +431,7 @@ export async function startOwner(config: Config): Promise<Running> {
     members.register(clock);
     // Batched phone facts are kept as files in the owner's home, where the agent reads them like any file.
     const senseArchive = live && config.workspaces?.home ? new SenseArchive({ home: config.workspaces.home }) : null;
+    senseArchiveForApps = senseArchive;
     work = new WorkMember({ ledger, router: world, isPaused: () => clock!.journal.isPaused(),
       flows: live && config.workspaces?.home ? [memoryFlow(ledger, (run) => {
         try { work!.trigger("proactive", "event", `memory:${run}`); } catch { /* a suggestion cannot undo committed memory */ }

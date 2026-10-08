@@ -98,7 +98,40 @@ test("health tools: today, trend, log, goals and report from Ash's rows plus the
   const offline = new Health({ ash: fakeAsh(now, { fail: true }).ash, store, now: () => now });
   const fallback = await offline.today();
   assert.equal(fallback.weight.value, 71.2);
-  assert.match(fallback.errors.join(" "), /health\.read: forbidden/);
+  assert.deepEqual(fallback.errors, ["没读到，稍后再试"], "plain words for the owner, never a code");
+  assert.deepEqual(fake.calls.filter((call) => call.word === "sensors.steps").length, 2, "the step counter is asked only when the phone answered");
+});
+
+test("when the phone's senses are away, today and trends show what Ash recorded (or what the app read last), with its time", async () => {
+  const { Health, Store } = await load("logic.mjs");
+  const now = MONDAY;
+  // Ash's records stop at yesterday evening; the phone answers "no capability" while its senses helper restarts.
+  const recorded = rows(now - DAY).map(({ ts_end: _end, ...row }) => row);
+  const away = (recent: unknown) => ({ async call(_member: string, word: string) {
+    throw Object.assign(new Error(`failed: the phone has no capability ${word}`), { code: "failed", ownerText: "感知暂时不在线，稍后再试", recent });
+  }, async event() {} });
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "ash-health-")), "data.json"));
+  const recent = { as_of: Math.max(...recorded.map((row) => row.ts as number)), source: "Ash 的感知记录", rows: recorded };
+  const today = await new Health({ ash: away(recent), store, now: () => now }).today();
+  assert.deepEqual(today.errors, ["感知暂时不在线，稍后再试"]);
+  assert.deepEqual(today.stale, { as_of: recent.as_of, source: "Ash 的感知记录" });
+  assert.equal(today.weight.value, 72, "the latest weight Ash has");
+  assert.equal(today.steps.value, 5000, "the latest day's steps instead of a blank");
+  assert.equal(today.steps.date, "2026-10-04");
+  assert.equal(typeof today.steps.at, "number");
+  assert.equal(today.resting_heart_rate.value, 58);
+  const trend = await new Health({ ash: away(recent), store, now: () => now }).trend("weight", 7);
+  assert.equal(trend.stale.source, "Ash 的感知记录");
+  assert.equal(trend.points.filter((point: { value: number | null }) => point.value !== null).length, 6);
+
+  // Nothing recorded by Ash either: what this app read last time, marked as such.
+  const fresh = new Store(join(mkdtempSync(join(tmpdir(), "ash-health-")), "data.json"));
+  const before = await new Health({ ash: fakeAsh(now - 3600_000, { steps: 9321 }).ash, store: fresh, now: () => now - 3600_000 }).today();
+  assert.equal(before.stale, null);
+  const later = await new Health({ ash: away(undefined), store: fresh, now: () => now }).today();
+  assert.deepEqual(later.stale, { as_of: now - 3600_000, source: "上次读到的" });
+  assert.equal(later.steps.value, 9321);
+  assert.deepEqual(later.errors, ["感知暂时不在线，稍后再试"]);
 });
 
 test("health weight keeps a scale's 0.05 kg and always shows one decimal", async () => {
@@ -163,7 +196,7 @@ async function fakeAshEndpoint(token: string, now: number) {
       seen.push({ name: call.params.name, args });
       let result: Record<string, unknown>;
       if (call.params.name === "capability_call" && args.word === "health.read") result = { ok: true, result: { content: [{ type: "text", text: JSON.stringify({ rows: rows(now) }) }] } };
-      else if (call.params.name === "capability_call") result = { ok: false, error: { code: "forbidden", message: "not granted" } };
+      else if (call.params.name === "capability_call") result = { ok: false, error: { code: "forbidden", message: "not granted", owner_text: "安装时没有批准这一项，用不了" } };
       else result = { ok: true, result: { recorded: true } };
       return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
     });
@@ -205,7 +238,7 @@ test("the bundled server the core installs runs over stdio: tools, a call throug
     const today = await client.callTool({ name: "health.today", arguments: {} });
     const data = today.structuredContent as { weight: { value: number }; errors: string[] };
     assert.equal(typeof data.weight.value, "number");
-    assert.match(data.errors.join(" "), /sensors\.steps: forbidden/);
+    assert.deepEqual(data.errors, ["安装时没有批准这一项，用不了"], "Ash's sentence for the owner, not a code");
     const logged = await client.callTool({ name: "health.log", arguments: { metric: "weight", value: 70.5 } });
     assert.equal(logged.isError, undefined);
     assert.equal(JSON.parse(readFileSync(join(dir, "data.json"), "utf8")).logs[0].value, 70.5, "its data lives in ASH_APP_DIR");

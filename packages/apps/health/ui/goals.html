@@ -18,13 +18,13 @@
     if (goals.weight) form.weight.value = goals.weight;
     if (goals.steps) form.steps.value = goals.steps;
     if (goals.sleep) form.sleep.value = Math.round(goals.sleep / 6) / 10;
-  }).catch((error) => { out.textContent = /host did not answer/.test(error.message) ? "请在「Ash 应用」里打开健康。" : `没读到目标：${error.message}`; });
+  }).catch((error) => { out.textContent = /host did not answer/.test(error.message) ? "请在「Ash 应用」里打开健康。" : `没读到目标：${window.health.say(error)}`; });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const goals = [["weight", Number(form.weight.value)], ["steps", Number(form.steps.value)], ["sleep", Math.round(Number(form.sleep.value) * 60)]].filter(([, value]) => value > 0);
     if (!goals.length) { out.textContent = "至少填一项"; return; }
     try { for (const [metric, target] of goals) await call("health.goal.set", { metric, target }); out.textContent = "已保存"; }
-    catch (error) { out.textContent = `没保存上：${error.message}`; }
+    catch (error) { out.textContent = `没保存上：${window.health.say(error)}`; }
   });
 })();
 </script>

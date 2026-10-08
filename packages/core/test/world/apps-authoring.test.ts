@@ -1,5 +1,6 @@
 // Writing apps (contract ash-app/1): the contract an agent reads, the skeleton it starts from, the check that says what
 // is wrong, an install that refuses a broken app before the owner is asked, and an agent-written app on the owner's card.
+// Also what an app gets when the phone cannot answer: a plain sentence for the owner and what ash already recorded.
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,9 +8,11 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { wordContract } from "../../../sdk/src/words";
+import { ownerText } from "../../src/apps/bridge";
 import { installAppDocs } from "../../src/apps/builtin";
 import { checkManifest } from "../../src/apps/check";
 import { APP_CONTRACT_DOC, HELLO_EXAMPLE, HELLO_EXAMPLE_BINARY } from "../../src/apps/contract.generated";
+import { recentFacts } from "../../src/apps/recent";
 import { AppRuntime, type AppLauncher } from "../../src/apps/runtime";
 import { APP_SCHEMA } from "../../src/apps/schema";
 import { APP_CSS, APP_JS, scaffoldFiles } from "../../src/apps/templates";
@@ -31,7 +34,7 @@ const until = async (condition: () => boolean, label: string, ms = 15000) => {
 };
 
 /** A world with one fake phone whose senses helper can be "away" (as after Android killed it). */
-async function world() {
+async function world(recent?: ReturnType<typeof recentFacts>) {
   const dir = mkdtempSync(join(tmpdir(), "ash-apps-author-"));
   const root = join(dir, "apps");
   mkdirSync(root);
@@ -52,7 +55,8 @@ async function world() {
   router.enableDurableGate();
   const launcher: AppLauncher = { root: () => root, agentRoot: "/root/apps", spawn: (app, appDir, env) => ({ command: app.server.command === "node" ? process.execPath : app.server.command,
     args: app.server.args ?? [], cwd: appDir, env: { PATH: process.env.PATH ?? "", ...env, ASH_APP_DIR: appDir } }) };
-  const runtime = new AppRuntime({ launcher, stateDir: join(dir, "state"), world: router, members, backoffMs: () => 50, bridgeWaitMs: 2000, trialMs: 10_000 });
+  const runtime = new AppRuntime({ launcher, stateDir: join(dir, "state"), world: router, members, backoffMs: () => 50, bridgeWaitMs: 2000, trialMs: 10_000,
+    ...(recent ? { recent } : {}) });
   members.register(runtime.member());
   await runtime.start();
   const call = async (word: string, body: Record<string, unknown>, from: TrustedRouteContext = agent) => {
@@ -83,7 +87,7 @@ test("the contract an agent reads is the published doc, with the schema and a he
   assert.equal(HELLO_EXAMPLE["ui/app.js"], APP_JS, "the example's page script is the scaffold's");
   assert.equal(HELLO_EXAMPLE["ui/app.css"], APP_CSS);
   assert.ok(HELLO_EXAMPLE_BINARY["icon.png"]);
-  for (const part of ["## 2. 服务", "stdin 收、stdout 发", "## 3. 工具", "## 4. 页面", "ui/initialize", "## 5. `needs`", "## 6. 事件", "## 9. 最小例子"])
+  for (const part of ["## 2. 服务", "stdin 收、stdout 发", "## 3. 工具", "## 4. 页面", "ui/initialize", "## 5. `needs`", "## 6. 事件", "owner_text", "## 9. 最小例子"])
     assert.ok(APP_CONTRACT_DOC.includes(part), part);
   const docs = mkdtempSync(join(tmpdir(), "ash-app-docs-"));
   installAppDocs(docs);
@@ -234,4 +238,41 @@ test("validate says exactly what is wrong, and install refuses a broken app with
     assert.equal((await w.call("apps.validate", { path: "/etc" })).result.problems[0].where, "path");
     assert.equal((await install(w, "nothing")).reply.body.ok, false);
   } finally { await w.close(); }
+});
+
+test("when the phone cannot answer, an app gets a plain sentence for the owner and what ash already recorded", async () => {
+  const now = Date.now();
+  const archive = { lines: (_kind: "health", from: number, to: number) => [
+    { ts: now - 3 * 3600_000, metric: "steps", value: 4200, unit: "count", source: "gadgetbridge:watch" },
+    { ts: now - 2 * 3600_000, metric: "weight", value: 61.8, unit: "kg", source: "scale" },
+    { ts: now - 40 * 86_400_000, metric: "steps", value: 1, unit: "count", source: "old" },
+  ].filter((line) => line.ts >= from && line.ts < to) };
+  const w = await world(recentFacts(() => archive, () => now));
+  try {
+    const files = scaffoldFiles({ id: "watcher", name: "看着", publisher: "tests" });
+    const manifest = { ...JSON.parse(String(files["app.json"])), needs: [{ member: "device:phone", words: ["health.read"], why: "读健康数据" }] };
+    write(join(w.root, "watcher"), { "server.mjs": String(files["server.mjs"]), "app.json": JSON.stringify(manifest) });
+    w.runtime.grants.grant("watcher", manifest.version, manifest.needs);
+    await w.runtime.refresh();
+    assert.equal(w.runtime.isRunning("watcher"), true);
+    w.phone.helper = false;
+    const away = await w.runtime.bridge.call("watcher", "capability_call", { member: "device:phone", word: "health.read", body: { metrics: ["steps", "weight"], from: new Date(now - 7 * 86_400_000).toISOString() } });
+    assert.equal(away.ok, false);
+    const error = (away as { error: { code: string; message: string; owner_text: string; recent: { as_of: number; source: string; rows: { metric: string }[] } } }).error;
+    assert.equal(error.message, "the phone has no capability health.read");
+    assert.equal(error.owner_text, "感知暂时不在线，稍后再试");
+    assert.deepEqual(error.recent.rows.map((row) => row.metric), ["steps", "weight"]);
+    assert.equal(error.recent.as_of, now - 2 * 3600_000);
+    assert.equal(error.recent.source, "Ash 的感知记录");
+    // Not granted: no sentence about the phone, no records.
+    const refused = await w.runtime.bridge.call("watcher", "capability_call", { member: "device:phone", word: "look", body: {} });
+    assert.deepEqual(refused, { ok: false, error: { code: "forbidden", message: "device:phone/look was not granted to this app", owner_text: "安装时没有批准这一项，用不了" } });
+    w.phone.helper = true;
+    assert.equal((await w.runtime.bridge.call("watcher", "capability_call", { member: "device:phone", word: "health.read", body: {} })).ok, true);
+  } finally { await w.close(); }
+  assert.equal(ownerText("device:phone", "health.read", "offline", "device offline"), "手机暂时没连上 Ash，稍后再试");
+  assert.equal(ownerText("device:phone", "health.read", "failed", "health.read is not available right now (a permission or service is off on the phone)"), "感知现在用不了：手机上相关的权限或服务可能没打开");
+  assert.equal(ownerText("device:phone", "screen.tap", "failed", "the phone has no capability screen.tap"), "手机上的这项功能暂时不在线，稍后再试");
+  assert.equal(ownerText("app:notes", "notes.add", "offline", "笔记 is not running"), "这个应用暂时不在线，稍后再试");
+  assert.equal(ownerText("device:phone", "health.read", "pending", "still running"), "还在处理，或在等你在 Ash 里确认");
 });

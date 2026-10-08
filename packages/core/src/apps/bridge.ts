@@ -11,6 +11,12 @@ import type { ResponseBody, WordSpec } from "../../../sdk/src/api";
 import type { WorldMembers } from "../world/member";
 import { RouterError, type TrustedRouteContext, type WorldRouter } from "../world/router";
 
+/**
+ * What ash itself already recorded for a capability that cannot answer right now (the phone or its helper is away):
+ * for example device:phone health.read from the senses archive. Null when ash has nothing for it.
+ */
+export type RecentFacts = (member: string, word: string, body: Record<string, unknown>) => { as_of: number | null; source: string; [key: string]: unknown } | null;
+
 export interface AppBridgeOptions {
   world: WorldRouter;
   members: WorldMembers;
@@ -21,9 +27,32 @@ export interface AppBridgeOptions {
   log?: (...args: unknown[]) => void;
   /** How long one capability_call waits before answering "still running" (default 50 s). */
   waitMs?: number;
+  recent?: RecentFacts;
 }
 
-type Result = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
+type Result = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string; owner_text?: string; recent?: unknown } };
+
+/** Words served by the phone's senses helper, which Android may stop and restart on its own. */
+const SENSES = /^(health|sensors|location|activity|sense)\./;
+/** The error says the capability is not there right now (helper disconnected, device away), not that the call was wrong. */
+const away = (code: string, message: string) => code === "offline" || code === "not_found" ||
+  /has no capability|is not available right now|unknown word|not registered|device offline|not running/i.test(message);
+
+/** A failed call as the owner should read it on an app's page: plain words, no codes. */
+export function ownerText(member: string, word: string, code: string, message: string): string {
+  const thing = SENSES.test(word) && member.startsWith("device:") ? "感知" : member.startsWith("device:") ? "手机上的这项功能" : member.startsWith("app:") ? "这个应用" : "Ash";
+  if (/is not available right now/i.test(message)) return `${thing}现在用不了：手机上相关的权限或服务可能没打开`;
+  if (member.startsWith("device:") && (code === "offline" || /device offline/i.test(message))) return "手机暂时没连上 Ash，稍后再试";
+  if (away(code, message)) return `${thing}暂时不在线，稍后再试`;
+  switch (code) {
+    case "pending": return "还在处理，或在等你在 Ash 里确认";
+    case "forbidden": return "安装时没有批准这一项，用不了";
+    case "denied": return "你没有同意这次操作";
+    case "timeout": return `${thing}没有及时回应，稍后再试`;
+    case "cancelled": return "这次操作取消了";
+    default: return "没办成，稍后再试";
+  }
+}
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object" as const, properties, required, additionalProperties: false });
 const text = (description: string) => ({ type: "string", description });
 export const APP_BRIDGE_TOOLS = [
@@ -107,6 +136,29 @@ export class AppBridge {
     } catch { return []; }
   }
 
+  /** A granted call, made as app:<id> through the router and gate. */
+  private async capabilityCall(app: string, id: string, member: string, word: string, body: Record<string, unknown>): Promise<Result> {
+    const ctx: TrustedRouteContext = { transport: "app", member: app, transportPrincipal: app, local: true, remote: false, ownerProxy: false };
+    const sent = this.options.world.send(ctx, { to: member, kind: "request", word, body,
+      wait: true, client_id: `app:${id}:${Date.now()}:${++this.seq}:${randomBytes(4).toString("hex")}` });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = await Promise.race([sent, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), this.options.waitMs ?? 50_000); })]);
+    clearTimeout(timer);
+    if (!waited) { sent.catch(() => {}); return this.failed(member, word, body, "pending", "still running or waiting for the owner's approval in ash; try again later"); }
+    const reply = waited.reply?.body as ResponseBody | undefined;
+    if (!reply) return this.failed(member, word, body, "result_unknown", "no answer was recorded");
+    return reply.ok ? { ok: true, result: reply.result ?? {} } : this.failed(member, word, body, reply.error.code, reply.error.message);
+  }
+
+  /** A failure as the app gets it: the code and message, a sentence for the owner, and what ash already has when the device is away. */
+  private failed(member: string, word: string, body: Record<string, unknown>, code: string, message: string): Result {
+    let recent: unknown = null;
+    if (away(code, message) || code === "timeout") {
+      try { recent = this.options.recent?.(member, word, body) ?? null; } catch (error) { this.options.log?.("recent facts failed", error instanceof Error ? error.message : error); }
+    }
+    return { ok: false, error: { code, message, owner_text: ownerText(member, word, code, message), ...(recent ? { recent } : {}) } };
+  }
+
   /** One tool call from app <id>. */
   async call(id: string, name: string, args: Record<string, unknown>): Promise<Result> {
     const app = `app:${id}`;
@@ -130,17 +182,12 @@ export class AppBridge {
         case "capability_call": {
           if (typeof args.member !== "string" || typeof args.word !== "string") return fail("payload_invalid", "member and word are required");
           if (args.body !== undefined && (typeof args.body !== "object" || args.body === null || Array.isArray(args.body))) return fail("payload_invalid", "body must be an object");
-          if (!this.options.allows(app, args.member, args.word)) return fail("forbidden", `${args.member}/${args.word} was not granted to this app`);
-          const ctx: TrustedRouteContext = { transport: "app", member: app, transportPrincipal: app, local: true, remote: false, ownerProxy: false };
-          const sent = this.options.world.send(ctx, { to: args.member, kind: "request", word: args.word, body: (args.body ?? {}) as Record<string, unknown>,
-            wait: true, client_id: `app:${id}:${Date.now()}:${++this.seq}:${randomBytes(4).toString("hex")}` });
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const waited = await Promise.race([sent, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), this.options.waitMs ?? 50_000); })]);
-          clearTimeout(timer);
-          if (!waited) { sent.catch(() => {}); return fail("pending", "still running or waiting for the owner's approval in ash; try again later"); }
-          const body = waited.reply?.body as ResponseBody | undefined;
-          if (!body) return fail("result_unknown", "no answer was recorded");
-          return body.ok ? { ok: true, result: body.result ?? {} } : fail(body.error.code, body.error.message);
+          if (!this.options.allows(app, args.member, args.word)) return this.failed(args.member, args.word, {}, "forbidden", `${args.member}/${args.word} was not granted to this app`);
+          try { return await this.capabilityCall(app, id, args.member, args.word, (args.body ?? {}) as Record<string, unknown>); }
+          catch (error) {
+            if (error instanceof RouterError) return this.failed(args.member, args.word, (args.body ?? {}) as Record<string, unknown>, error.code, error.message);
+            throw error;
+          }
         }
         case "ash_event": {
           if (typeof args.name !== "string") return fail("payload_invalid", "name is required");

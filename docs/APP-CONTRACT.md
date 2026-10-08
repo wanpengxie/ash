@@ -208,7 +208,11 @@
 | `capability_call {member, word, body?}` | 调用一个已授权能力；最多等 50 秒，仍在执行或在等主人审批时返回 `pending` |
 | `ash_event {name, body?}` | 发事件（§6） |
 
-结果都是 `{ok: true, result}` 或 `{ok: false, error: {code, message}}`（同时在 `structuredContent` 和文本里）：`forbidden` 没授权、`pending` 还在执行或在等主人审批、`offline` 不在线、`failed` 能力自己报错……
+结果都是 `{ok: true, result}` 或 `{ok: false, error: {code, message, owner_text, recent?}}`（同时在 `structuredContent` 和文本里）：
+
+- `code` / `message` 给程序和 Agent 看（`forbidden` 没授权、`pending` 还在等、`offline` 不在线、`failed` 能力自己报错……）。
+- `owner_text`：**给主人看的一句中文**，页面上显示它而不是 `message`。例如手机的感知服务被系统暂时关掉、正在重启时是「感知暂时不在线，稍后再试」，手机没连上是「手机暂时没连上 Ash，稍后再试」，权限没开是「感知现在用不了：手机上相关的权限或服务可能没打开」。
+- `recent`：设备暂时答不了、而 Ash 自己已经有记录时，附上最近的记录，`{as_of, source, …}`（`as_of` 是其中最新一条的时间，毫秒）。本版只有 `device:phone` 的 `health.read`：`recent.rows` 是 Ash 感知记录里同一时间段、同样格式的读数（`{ts, metric, value, unit, source}`）。页面应显示这些值并注明时间，而不是留白。
 
 ## 8. 壳 App 的接口（主人身份，Ash 已有的鉴权 HTTP 接口）
 

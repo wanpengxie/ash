@@ -8,7 +8,7 @@ import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import { wordContract } from "../../../sdk/src/words";
 import type { AppMemberLike, Member, WorldMembers } from "../world/member";
 import type { DeviceCapability, RouteHandlerContext, WorldRouter } from "../world/router";
-import { AppBridge } from "./bridge";
+import { AppBridge, type RecentFacts } from "./bridge";
 import { BUILTIN_APPS } from "./builtin.generated";
 import { checkFolder, trialRun, type AppProblem } from "./check";
 import { APP_CONTRACT_DOC, HELLO_EXAMPLE } from "./contract.generated";
@@ -37,6 +37,8 @@ export interface AppRuntimeOptions {
   bridgeWaitMs?: number;
   /** Put ash's own apps into the apps folder before each discovery (missing or older ones only). */
   builtins?: (root: string) => void;
+  /** What ash already recorded, for an app whose granted read failed because the device is away (see AppBridge). */
+  recent?: RecentFacts;
   /** How long a trial run (apps.validate, and the check before an install card) may take to start and answer. */
   trialMs?: number;
 }
@@ -99,7 +101,8 @@ export class AppRuntime {
     this.log = options.log ?? (() => {});
     this.grants = new AppGrants(join(options.stateDir, "app-grants.json"));
     this.bridge = new AppBridge({ world: options.world, members: options.members, log: this.log, waitMs: options.bridgeWaitMs,
-      allows: (app, member, word) => this.grants.allows(app, member, word), event: (id, name, body) => this.event(id, name, body) });
+      allows: (app, member, word) => this.grants.allows(app, member, word), event: (id, name, body) => this.event(id, name, body),
+      ...(options.recent ? { recent: options.recent } : {}) });
     options.world.setAppGrants((app, member, word) => this.running.has(app.replace(/^app:/, "")) && this.grants.allows(app, member, word));
     options.world.setGateCard((request) => this.card(request));
     options.world.setGatePrecheck((request) => this.precheck(request));

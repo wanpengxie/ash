@@ -16,9 +16,10 @@
   <div id="stats" class="sub"></div>
   <details style="margin-top:8px"><summary class="label">表格</summary><table id="table" class="sub" style="width:100%"></table></details>
 </div>
+<div id="note" class="note"></div>
 <script>
 (() => {
-  const { call, fail, num } = window.health;
+  const { call, fail, num, note } = window.health;
   const NS = "http://www.w3.org/2000/svg";
   const svg = document.getElementById("chart");
   let metric = "weight", days = 7, data = null;
@@ -69,6 +70,7 @@
     try {
       data = await call("health.trend", { metric, days });
       draw();
+      document.getElementById("note").textContent = note(data);
       const s = data.stats;
       document.getElementById("stats").textContent = s ? `最低 ${shown(s.min)} · 最高 ${shown(s.max)} · 平均 ${shown(s.avg)}${metric === "weight" ? ` · 变化 ${s.change >= 0 ? "+" : "-"}${num("weight", Math.abs(s.change))} kg` : ""}` : "";
       const table = document.getElementById("table");
