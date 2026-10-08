@@ -657,6 +657,17 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
   const out: WidgetComponent[] = [];
   const byId = new Map<string, WidgetComponent>();
   const reached = new Set<string>();
+  /** Mark a definition and everything it names as part of the card, without drawing it. */
+  const designed = (id: string, seen = new Set<string>()): void => {
+    const def = defs.get(id);
+    if (!def || seen.has(id)) return;
+    seen.add(id); reached.add(id);
+    const kids = def.children;
+    if (Array.isArray(kids)) for (const kid of kids) { if (typeof kid === "string") designed(kid, seen); }
+    else if (plain(kids) && typeof kids.componentId === "string") designed(kids.componentId, seen);
+    if (typeof def.child === "string") designed(def.child, seen);
+    if (Array.isArray(def.tabs)) for (const tab of def.tabs) if (plain(tab) && typeof tab.child === "string") designed(tab.child, seen);
+  };
   const MAX = CARD_LIMITS.components;
 
   /** Instantiate definition [defId] as [outId] in data [scope]; [item] is the list item it belongs to. */
@@ -689,6 +700,8 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
         const at = absolute(value.path, scope);
         const items = pointer(data, at);
         if (!Array.isArray(items)) bad(`${where} children template reads ${at}, which is not an array in data`);
+        // A template with no items now is still part of the card (it draws once there are items).
+        if (!(items as unknown[]).length) designed(value.componentId as string);
         return (items as unknown[]).map((entry, i) => {
           const key = plain(entry) && (typeof entry.id === "string" || typeof entry.id === "number") ? String(entry.id)
             : plain(entry) && (typeof entry.key === "string" || typeof entry.key === "number") ? String(entry.key) : String(i);
