@@ -716,7 +716,7 @@ export class AppRuntime {
     }
     this.rediscover(body.id);
     return { ok: true, result: { id: body.id, path, files: Object.keys(files).sort(),
-      next: `改 ${path}/server.mjs 里的 TOOLS 和 handle()，和 ui/ 下的页面；要用手机等能力就在 app.json 的 needs 里写上。然后 apps.validate {id:"${body.id}"} 检查，apps.install {id:"${body.id}"} 安装（由你直接授权它要的能力）。契约全文：apps.contract。` } };
+      next: `改 ${path}/server.mjs 里的 TOOLS 和 handle()，和 ui/ 下的页面；要用手机等能力就在 app.json 的 needs 里写上。然后 apps.validate {id:"${body.id}"} 检查，apps.install {id:"${body.id}"} 安装（主人批准它要的东西）。契约全文：apps.contract。` } };
   }
 
   /** service:apps — the owner's and agents' words for apps. */

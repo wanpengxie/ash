@@ -114,20 +114,11 @@ const external = (to: string | null | undefined): boolean => Boolean(to?.startsW
  */
 const ownAppWord = (request: Pick<Message, "from" | "to" | "word" | "body">, label: string | undefined): boolean =>
   AGENT.test(request.from) && APP.test(request.to ?? "") && !isPayment(request.word, label, request.body);
-/**
- * Judged by the gate when someone other than the owner asks. An installed app's calls are not: what it may reach was
- * granted when it was installed (checked on every call against its grants); each use is only recorded. (Approval for
- * app-initiated actions is not designed yet.)
- */
+/** Judged by the gate when someone other than the owner asks. */
 const gated = (request: Pick<Message, "from" | "to" | "word" | "body">, label: string | undefined): boolean =>
-  external(request.to) && !ownAppWord(request, label) && !APP.test(request.from);
-/**
- * ash's own words that widen what an app may do. The main agent grants an app what it needs on its own (it is the
- * steward, and an app's needs are phone capabilities the main agent already holds); another agent's request asks.
- */
+  external(request.to) && !ownAppWord(request, label);
+/** ash's own words that widen what an app may do: an agent's request always asks the owner. */
 const GATED_SERVICE_WORDS = new Set(["service:apps/apps.install", "service:apps/apps.enable"]);
-const gatedServiceWord = (request: Pick<Message, "from" | "to" | "word">): boolean =>
-  request.from !== "agent:main" && GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`);
 const CARRY_MS = 5 * 60_000;
 const PAYMENT = /\b(pay|payment|purchase|checkout|transfer)\b|支付|付款|购买|下单|转账|充值|买单/i;
 /** Payments always reach the owner: no reviewer pass, no carry-over and no "always". */
@@ -1143,7 +1134,7 @@ export class WorldRouter {
       // ash's own system, human and agent words (agents, timers, the owner's files, talking to the owner) are internal and
       // never asked about; so are an agent's calls of an installed app's own tools (see ownAppWord).
       const forced = AGENT.test(request.from) && this.forcedApproval(request);
-      const gateBypass = request.from === "person:owner" || (!gated(request, endpoint.spec.label) && !forced && !gatedServiceWord(request));
+      const gateBypass = request.from === "person:owner" || (!gated(request, endpoint.spec.label) && !forced && !GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
       const effect = wordEffect(endpoint.spec);
       // An agent's install is checked first even when no card follows (the main agent grants on its own): a broken app
       // is refused with its problems, never installed.
