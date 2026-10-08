@@ -162,6 +162,7 @@ export class AgentMember implements Member {
     // cancel a newer turn that happened to start before this request dispatched.
     if (message.from === "service:reflex" && message.turn && active?.id !== message.turn)
       return { ok: true, result: { cancelled: false } };
+    if (message.from === "service:admin") this.mind?.()?.cancelAll();
     return this.cancelActive(message.id, reason, by);
   }
 

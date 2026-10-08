@@ -639,7 +639,7 @@ export async function startOwner(config: Config): Promise<Running> {
       members.register(cost);
       if (!self) throw new Error("managed files unavailable");
       containerRunner!.primeManagedSnapshot(await self.promptSnapshot());
-      mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
+      mind = new AgentMind(mindRunner!, () => self!.promptSnapshot(), (message, outcome) => pulse?.wakeSettled(message, outcome));
       // Start the runtime and open her session now, so the first message does not wait for it. A failure here is
       // reported on that message instead of stopping ash.
       void container.session("main", { url: agentTools!.url, token: mainBinding!.token })
@@ -664,7 +664,7 @@ export async function startOwner(config: Config): Promise<Running> {
         nativeMode: "audited", resume: { file: join(config.stateDir, "dsh-main-session.json"), startedTurns, completedTurns } });
       await dsh.startMind({ members, router: world, workspace: config.workspaces!.home, managedRoot: config.workspaces!.home,
         protectedRoots: [config.stateDir, config.dsh!.home ?? join(config.stateDir, "dsh-home")], nativeMode: "disabled", adapter: mindRunner as DshMindRunner });
-      mind = new AgentMind(mindRunner!, () => self!.promptSnapshot());
+      mind = new AgentMind(mindRunner!, () => self!.promptSnapshot(), (message, outcome) => pulse?.wakeSettled(message, outcome));
     }
     await reflex.runtime.recover();
     await world.recover();

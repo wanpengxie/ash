@@ -69,8 +69,3 @@ test("the two layers: a short introduction in the system prompt names the skill,
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(registered.some((item) => item.name === "pulse-widget"));
 });
-
-test("a wake is answered when its turn ends, so the request may wait for minutes: a short timeout would cancel the turn", () => {
-  const spec = wordContract("agent:main", "wake")!;
-  assert.ok((spec.timeout_ms ?? 0) >= 600_000, `wake timeout is ${spec.timeout_ms}`);
-});

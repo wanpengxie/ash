@@ -477,3 +477,18 @@ test("the agent sees the pulse words in capability_list/describe, but not the ow
     assert.ok(f.members.describe("agent", "service:widgets").members[0]!.words.some((word) => word.word === "widget.card.get"));
   } finally { await f.close(); }
 });
+
+test("a pulse turn that failed or was stopped is recorded by the mind queue's report; one that succeeded, or another reason, is not", async () => {
+  const f = await fixture();
+  try {
+    f.pulse.start(); await f.place();
+    const msg = (reason: string) => ({ to: "agent:main", body: { reason, context: { why: "schedule" } } }) as any;
+    f.pulse.wakeSettled(msg("pulse"), { ok: true, cancelled: false });
+    f.pulse.wakeSettled(msg("heartbeat"), { ok: false, cancelled: false, error: "x" });
+    f.pulse.wakeSettled(msg("pulse"), { ok: false, cancelled: true });
+    f.pulse.wakeSettled(msg("pulse"), { ok: false, cancelled: false, error: "model call failed" });
+    const history = (await f.pulseCall("pulse.history", { limit: 10 })).result.entries.filter((entry: any) => entry.kind === "failure");
+    assert.deepEqual(history.map((entry: any) => [entry.while, entry.why, entry.cancelled ?? false, entry.error ?? null]),
+      [["turn", "schedule", false, "model call failed"], ["turn", "schedule", true, null]]);
+  } finally { await f.close(); }
+});
