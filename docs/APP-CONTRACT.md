@@ -3,6 +3,11 @@
 版本：`ash-app/1`（2026-10）。任何应用——Ash 自带的、Agent 写的、或别人写的——按这份契约提供一个服务，就成为 Ash 体系的一员：
 
 - **对 Agent**：应用的工具成为 Ash 成员 `app:<id>` 的能力（words），Agent 用已有的 `capability_list / capability_describe / capability_call` 调用。
+
+**每个应用都是 Ash 的一个器官**：主人在页面里能做的，Agent 用同样的工具也能做；装好的应用连同它管什么（`role`）每一轮都摆在主 Agent 面前，属于它职责的事 Ash 会自己记进去；主人在页面里改了什么、应用报了什么事，Ash 都知道（§6）。所以：
+
+- **必须有给 Agent 用的工具，读和写都要有**：应用的数据怎么看、怎么改，都要有对应的工具（§3）。页面也只通过这些工具读写数据（`app.call`），不要把主人的数据只存在页面里（`localStorage`）。
+- **写清 `role`**：一句话说它管什么、什么时候该用它（§1）。
 - **对人**：应用的页面是 `ui://` HTML 资源（[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) 规范），由独立的壳 App「Ash 应用」在隔离的 WebView 里画出来。Ash 的对话里最多出现一张「打开 XX」入口卡片。
 - **对 Ash**：应用要用 Ash 的东西（例如手机的健康数据），只能用主人在安装时批准过的范围（grants）。
 
@@ -15,7 +20,7 @@
 | 步骤 | 能力 | 说明 |
 |---|---|---|
 | 读契约 | `apps.contract {}` | 返回这份文档全文、`app.json` 的 JSON Schema、最小例子 hello 的全部文件。容器里也有同样的文件：`/root/apps/APP-CONTRACT.md`、`/root/apps/_examples/hello/` |
-| 生成骨架 | `apps.scaffold {id, name, summary?, surfaces?, tools?}` | 在 `/root/apps/<id>/` 写出一个能直接运行的应用（见 §9）。已有 `app.json` 的文件夹不会被覆盖 |
+| 生成骨架 | `apps.scaffold {id, name, summary?, role?, surfaces?, tools?}` | 在 `/root/apps/<id>/` 写出一个能直接运行的应用（见 §9）。已有 `app.json` 的文件夹不会被覆盖 |
 | 改 | 直接改文件 | `/root/apps/<id>/` 对你可写：`server.mjs` 里的工具，`ui/` 下的页面，`app.json` 的 `needs` |
 | 检查 | `apps.validate {id}` 或 `{path: "/root/apps/<文件夹>"}` | 像安装一样检查，再试运行一次服务：返回 `{ok, problems:[{level, where, problem, fix?}], tools, surfaces}`。`level: "error"` 会挡住安装，`"warning"` 不挡 |
 | 安装 | `apps.install {id}` | 先做同样的检查，不通过就直接拒绝（`error.detail.problems` 列出每个问题），**不会**去打扰主人；通过了才弹审批卡，主人批准后应用启动，成为 `app:<id>` |
@@ -44,10 +49,12 @@
 | `version` | 是 | `主.次.修`，如 `1.0.0`（可带 `-beta.1` 之类后缀）。版本变了，`apps.refresh` 会重启已安装的应用 |
 | `icon` | 否 | 同目录下的文件名，`^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(png\|svg\|webp)$`。见下面「图标」 |
 | `summary` | 是 | 一句话说明，1–200 字。会出现在审批卡上 |
+| `role` | 否（强烈建议） | 这个器官管什么、什么时候该用它，1–200 字，例如「主人和 Ash 的待办：说到要做的事就记进来，做完了就勾掉」。主 Agent 每一轮都看到它（连同应用 id、名字和工具名），据此自己决定把事情记进哪个应用。没写就用 `summary` 代替（`apps.validate` 会提醒）。`apps.scaffold` 先用 `summary` 填上 |
 | `publisher` | 是 | 发布者，1–80 字。Agent 写的应用写自己的成员 id（如 `agent:main`，`apps.scaffold` 会替你写好）；审批卡据此标明「Ash 自己写的，没有发布过」。只有和 Ash 自带的完全一致的应用才算「Ash 自带」 |
 | `server` | 是 | `{command, args?, env?}`：服务的启动命令（§2）。`command` 1–200 字；`args` 最多 32 项、每项 ≤ 500 字；`env` 最多 32 个，名字 `^[A-Z][A-Z0-9_]{0,63}$` 且**不能以 `ASH_` 开头**，值 ≤ 2000 字 |
 | `surfaces` | 否 | 页面列表 `[{id, title, resource}]`，最多 16 个：`id` 是 `^[a-z][a-z0-9-]{0,31}$`（不能重复），`title` 1–20 字，`resource` 是 `ui://…` URI（约定写 `ui://<应用 id>/<页面 id>`）。见 §4 |
-| `events` | 否 | 应用会发给 Ash 的事件名，最多 32 个，如 `notes.due`：小写，**至少含一个点**。`app.card` 是内置的，不用也不能写。见 §6 |
+| `events` | 否 | 应用会发给 Ash 的事件名，最多 32 个，如 `notes.due`：小写，**至少含一个点**。`app.card`、`app.activity` 是内置的，不用也不能写。见 §6 |
+| `wake_events` | 否 | `events` 里哪些事件要**马上叫醒** Ash，而不是等下一次对话时才看到，如 `["notes.due"]`。每个都必须也在 `events` 里；每个应用每天最多叫醒 3 次。见 §6 |
 | `needs` | 否 | 要用 Ash 的什么，最多 16 项；安装时主人在一张卡上逐项看到、一次批准。见 §5 |
 | `tools` | 否 | 任意数组，仅供阅读；Ash 以服务的 `tools/list` 为准 |
 
@@ -195,7 +202,8 @@
 
 应用通过 Ash 端点的 `ash_event {name, body}` 发事件（`body` 是对象，JSON 后 ≤ 4000 字节）：
 
-- **声明过的事件**（`events` 里的名字）：Ash 记账，发送者是 `app:<id>`。如果主人批准了 `notify`、且 `body.text` 有内容，它会作为一张小卡出现在主人的对话里（标题取 `body.title`，没有就用应用名；正文 `body.text` ≤ 200 字；每个应用每天最多 3 张，多出的只记账）。是否叫醒主 Agent 由 Ash 的规则决定，不由应用决定。没声明的事件被拒绝。
+- **声明过的事件**（`events` 里的名字）：Ash 记账，发送者是 `app:<id>`。如果主人批准了 `notify`、且 `body.text` 有内容，它会作为一张小卡出现在主人的对话里（标题取 `body.title`，没有就用应用名；正文 `body.text` ≤ 200 字；每个应用每天最多 3 张，多出的只记账），否则发给主 Agent（`agent:main`）。无论哪种，主 Agent 都会在「应用里最近的变化」里看到它（`body.text`，没有就用 `body.title`）。
+- **叫醒**：平常的事件不叫醒主 Agent，它下一次对话时看到。`wake_events` 里的事件会马上叫醒它（`reason: "app_event"`，带上应用、它的 `role`、事件名和 `body`），每个应用每天最多 3 次，多出的只记账。没声明的事件被拒绝。
 - **`app.card {title, text?}`**（入口卡片）：需要 `card` 授权；对话里出现一张小卡「打开<应用名> · <title>」（`title` ≤ 40 字，`text` ≤ 200 字），主人点开就进入「Ash 应用」里的这个应用（第一个页面）。每个应用每天最多 1 张，多出的被拒绝。
 - 发事件的时机由应用自己定（例如服务里的定时器）；试运行（`ASH_TRIAL=1`）时不要发。
 
@@ -228,7 +236,7 @@
 
 ## 9. 最小例子 hello（一个页面，一个工具）
 
-完整文件在 `docs/examples/hello/`，容器里在 `/root/apps/_examples/hello/`（`apps.contract` 的 `example.files` 也有）。它就是 `apps.scaffold {id: "hello", name: "你好", tools: [{name: "hello.greet", title: "打招呼", read_only: true}]}` 生成后改了两处（工具的参数和实现、页面）。要试：把文件夹复制成 `/root/apps/hello/`，`apps.validate {id: "hello"}`，`apps.install {id: "hello"}`。
+完整文件在 `docs/examples/hello/`，容器里在 `/root/apps/_examples/hello/`（`apps.contract` 的 `example.files` 也有）。它就是 `apps.scaffold {id: "hello", name: "你好", tools: [{name: "hello.greet", title: "打招呼", read_only: true}]}` 生成后改了三处（工具的参数和实现、页面、`role`）。要试：把文件夹复制成 `/root/apps/hello/`，`apps.validate {id: "hello"}`，`apps.install {id: "hello"}`。
 
 ```text
 hello/
@@ -250,6 +258,7 @@ hello/
   "version": "0.1.0",
   "icon": "icon.png",
   "summary": "最小的 Ash 应用：一个页面，一个工具",
+  "role": "演示用：主人想让 Ash 打个招呼时用 hello.greet",
   "publisher": "example",
   "server": { "command": "node", "args": ["server.mjs"] },
   "surfaces": [{ "id": "home", "title": "首页", "resource": "ui://hello/home" }],

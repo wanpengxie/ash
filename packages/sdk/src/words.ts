@@ -240,7 +240,7 @@ add("service:widgets", "widget.problem", "event", obj({ card: widgetCardId, owne
   { direction: "out", description: "The phone could not fully draw a home-screen card (problem says what and why); the card's creator should fix it." });
 // Independent apps (contract ash-app/1): discovery, install with the owner's approval of what an app needs, and grants.
 const appId: JsonSchema = { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" };
-const appInfo = obj({ id: appId, name: str, version: str, summary: str, publisher: str, enabled: bool, granted: bool, running: bool,
+const appInfo = obj({ id: appId, name: str, version: str, summary: str, role: str, publisher: str, enabled: bool, granted: bool, running: bool,
   needs: array(obj({}, [], true)), surfaces: array(obj({}, [], true)), events: strings, tools: strings, error: str }, ["id", "name", "version", "enabled", "granted", "running"], true);
 add("service:apps", "apps.list", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
   { label: "看有哪些应用", description: "Every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running." });
@@ -269,11 +269,14 @@ add("service:apps", "apps.contract", "request", empty,
     "pages (ui:// resources), tools, needs, events, entry cards. Also the app.json JSON Schema and a small runnable example app (hello: one page, one tool) with its files. " +
     "The same doc and example are in the container at doc_path and example.path." });
 add("service:apps", "apps.scaffold", "request", obj({ id: appId, name: { type: "string", minLength: 1, maxLength: 40 }, summary: { type: "string", minLength: 1, maxLength: 200 },
+  role: { type: "string", minLength: 1, maxLength: 200 },
   surfaces: { type: "array", items: appSurface, minItems: 1, maxItems: 16 }, tools: { type: "array", items: appTool, minItems: 1, maxItems: 32 } }, ["id", "name"]),
   obj({ id: appId, path: str, files: strings, next: str }, ["id", "path", "files", "next"], true),
   { effect: "write", label: "写应用骨架", description: "Write a new app's skeleton into /root/apps/<id>/ (app.json, a dependency-free server.mjs, one ui/<page>.html per surface, " +
     "shared ui/app.css and ui/app.js, icon.png). It runs as it is: each tool answers with a placeholder until you write it in server.mjs. " +
-    "surfaces default to one page home; tools default to one read-only <id>.status. Refuses a folder that already has an app.json. " +
+    "role (default: summary) says what the app is for and when to use it; you and Ash see it in every conversation. " +
+    "surfaces default to one page home; tools default to one read-only <id>.status: give the app tools that read and change its data, " +
+    "so you can do through them everything the owner does on its pages. Refuses a folder that already has an app.json. " +
     "No approval is needed: it only writes files. Then edit, apps.validate, and apps.install (the owner approves what it needs)." });
 add("service:apps", "apps.validate", "request", obj({ id: appId, path: { type: "string", minLength: 1, maxLength: 300 } }),
   obj({ id: str, path: str, ok: bool, problems: array(appProblem), tools: strings, surfaces: strings }, ["path", "ok", "problems", "tools", "surfaces"], true),

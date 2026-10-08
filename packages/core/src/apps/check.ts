@@ -36,7 +36,7 @@ function schemaProblem(item: ErrorObject): AppProblem | null {
     case "maxItems": return error(at, `最多 ${p.limit} 项`);
     case "maxProperties": return error(at, `最多 ${p.limit} 个`);
     case "not": return /\/server\/env/.test(item.instancePath) || item.schemaPath.includes("propertyNames")
-      ? error(at, "环境变量名不能以 ASH_ 开头（那是 Ash 给的）") : error(at, "app.card 是内置事件，不用在 events 里声明");
+      ? error(at, "环境变量名不能以 ASH_ 开头（那是 Ash 给的）") : error(at, "app.card、app.activity 是 Ash 内置的事件，不用也不能在 events 里声明");
     case "propertyNames": return null;
     case "oneOf": return /^\/needs\/\d+$/.test(item.instancePath)
       ? error(at, "这一项不是合法的 need", '每项是 {"member":"device:phone","words":["…"],"why":"…"}、{"notify":true,"why":"…"}、{"card":true,"why":"…"} 或 {"widgets":true,"why":"…"} 之一，why 必填')
@@ -67,6 +67,8 @@ export function checkManifest(text: string, folder: string): { manifest: AppMani
   if (!ID.test(folder)) problems.push(error("文件夹", `文件夹名 ${folder} 不是合法的应用 id（${APP_ID_PATTERN}）`));
   if (problems.length) return { manifest: null, problems };
   const checked = validateManifest(raw);
+  const wake = !checked.ok && /^wake_events (\S+) is not in events$/.exec(checked.error);
+  if (wake) return { manifest: null, problems: [error("app.json /wake_events", `${wake[1]} 没有写在 events 里`, "wake_events 里的每个事件都要先在 events 里声明")] };
   if (!checked.ok) return { manifest: null, problems: [error("app.json", ({ "duplicate surface id": "surfaces 里有重复的 id", "each member or kind of need appears once": "needs 里同一个成员（或 notify/card/widgets）只能出现一次", "an app does not need itself": "needs 里不能写自己（app:<自己的 id>）" } as Record<string, string>)[checked.error] ?? checked.error)] };
   const manifest = checked.manifest;
   for (const surface of manifest.surfaces ?? []) if (!surface.resource.startsWith(`ui://${manifest.id}/`))
@@ -80,6 +82,8 @@ export function checkFolder(dir: string, folder: string): { manifest: AppManifes
   if (!existsSync(join(dir, "app.json"))) return { manifest: null, problems: [error("app.json", "文件夹里没有 app.json", "看 apps.contract 第 1 节，或用 apps.scaffold 生成")] };
   const { manifest, problems } = checkManifest(readFileSync(join(dir, "app.json"), "utf8"), folder);
   if (!manifest) return { manifest, problems };
+  if (!manifest.role) problems.push(warning("app.json /role", "没写 role：Ash 只能拿 summary 猜什么时候该用它",
+    "写一句它管什么、什么时候用，例如「主人和 Ash 的待办：说到要做的事就记进来」"));
   if (!manifest.icon) problems.push(warning("app.json /icon", "没有图标：会显示默认图标", "放一个正方形 PNG（192×192 或更大）在文件夹里，icon 写它的文件名"));
   else {
     const file = join(dir, manifest.icon);

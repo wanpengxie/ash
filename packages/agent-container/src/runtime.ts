@@ -318,6 +318,7 @@ export class ContainerMindRunner implements MindTurnRunner {
         `For reason first_week_tour, send the one hint in context with human_say kind heads_up, then stop. ` +
         `For reason app_open, the opener found something timely; send one short relevant line with human_say kind heads_up, then stop. ` +
         `For reasons geofence_enter, geofence_exit, cycling_start and cycling_end, follow the ash-senses skill: speak with human_say kind heads_up only if something about this place or ride matters to the owner now; otherwise finish silently. ` +
+        `For reason app_event, one of your apps (context.app; what it is for: context.role) reported context.event: handle it as that app's job says, for example note a follow-up in the right app with capability_call (no card); use human_say kind heads_up only if the owner should hear it now; otherwise finish silently. ` +
         `For other reasons, if the owner should hear something, use human_say with kind offer, heads_up, or due. Otherwise finish silently.`;
       const stop = await host.prompt(sessionId, [{ type: "text", text }]);
       await watch.settle();

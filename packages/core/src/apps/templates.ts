@@ -5,7 +5,7 @@ import { deflateSync } from "node:zlib";
 
 export interface ScaffoldTool { name: string; title?: string; description?: string; read_only?: boolean }
 export interface ScaffoldSurface { id: string; title: string }
-export interface ScaffoldInput { id: string; name: string; summary?: string; surfaces?: ScaffoldSurface[]; tools?: ScaffoldTool[]; publisher: string }
+export interface ScaffoldInput { id: string; name: string; summary?: string; role?: string; surfaces?: ScaffoldSurface[]; tools?: ScaffoldTool[]; publisher: string }
 
 /** Shared by every page: the conversation with the host (MCP Apps) and a few helpers. Inlined into each page by server.mjs. */
 export const APP_JS = `// 页面和 Ash 之间（MCP Apps，JSON-RPC 2.0）。每一页都会带上这个文件，页面里用 window.app：
@@ -144,7 +144,9 @@ async function callTool(name, args) {
   try {
     const result = await handle(name, args ?? {});
     const data = result && typeof result === "object" && !Array.isArray(result) ? result : { value: result ?? null };
-    return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    // 改数据的工具可以在结果里带 activity：一句话说这次改了什么（如「勾掉了：给物业打电话」）。主人在页面里改的时候，Ash 看到的就是这句话。
+    return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data,
+      ...(typeof data.activity === "string" ? { _meta: { activity: data.activity } } : {}) };
   } catch (error) {
     return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
   }
@@ -238,7 +240,9 @@ export function scaffoldFiles(input: ScaffoldInput): Record<string, string | Buf
   const tools = (input.tools?.length ? input.tools : [{ name: `${input.id}.status`, title: "看状态", description: "What the app has now.", read_only: true }])
     .map((tool) => ({ name: tool.name, title: tool.title ?? tool.name, description: tool.description ?? tool.title ?? tool.name, read_only: tool.read_only ?? false }));
   const manifest = {
-    contract: "ash-app/1", id: input.id, name: input.name, version: "0.1.0", icon: "icon.png", summary: input.summary ?? input.name, publisher: input.publisher,
+    contract: "ash-app/1", id: input.id, name: input.name, version: "0.1.0", icon: "icon.png", summary: input.summary ?? input.name,
+    // What this organ is for and when Ash uses it; the agent sees it in every conversation. Sharpen it when the app grows.
+    role: input.role ?? input.summary ?? input.name, publisher: input.publisher,
     server: { command: "node", args: ["server.mjs"] },
     surfaces: surfaces.map((surface) => ({ id: surface.id, title: surface.title, resource: `ui://${input.id}/${surface.id}` })),
     needs: [],

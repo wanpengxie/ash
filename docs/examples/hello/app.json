@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "icon": "icon.png",
   "summary": "最小的 Ash 应用：一个页面，一个工具",
+  "role": "演示用：主人想让 Ash 打个招呼时用 hello.greet",
   "publisher": "example",
   "server": {
     "command": "node",

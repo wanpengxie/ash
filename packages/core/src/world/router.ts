@@ -493,8 +493,12 @@ export class WorldRouter {
     if (deviceCaller(from)) return true;
     try { return APP.test(from) && Boolean(this.appGrant?.(from, to, word)); } catch { return false; }
   }
-  /** Record an event an app emitted (its declared events and entry cards); the ledger keeps who said it. */
-  recordAppEvent(app: string, word: string, body: Record<string, unknown>, to: "person:owner" | null): Message {
+  /**
+   * Record an event an app emitted (its declared events and entry cards), or that the owner changed its data
+   * (app.activity); the ledger keeps who said it. To the owner it shows in the conversation; to agent:main it is for
+   * the main agent, which sees it in its context.
+   */
+  recordAppEvent(app: string, word: string, body: Record<string, unknown>, to: "person:owner" | "agent:main" | null): Message {
     if (!APP.test(app) || !/^[a-z][a-z0-9._-]{0,63}$/.test(word) || !plainObject(body)) throw new TypeError("invalid app event");
     const stored = this.ledger.append({ from: app, to, kind: "event", word, body });
     this.publish(stored.message);
@@ -681,7 +685,7 @@ export class WorldRouter {
       fail("forbidden", "gate change requires current local owner");
     const toAgent = typeof request.to === "string" && AGENT_ID.test(request.to);
     if (toAgent && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
-    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
+    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work", "service:apps"].includes(from)) fail("forbidden", "wake is internal only");
     // The owner talks with the main agent. Agents speak to each other only through the Agent system; a declared agent
     // otherwise hears only its own timers and its schedule.
     const service = ctx.transport === "service" && ctx.local && !ctx.remote;

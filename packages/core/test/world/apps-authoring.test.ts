@@ -117,6 +117,7 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
     assert.deepEqual(made.result.files, ["app.json", "icon.png", "server.mjs", "ui/app.css", "ui/app.js", "ui/home.html", "ui/new.html"]);
     const manifest = JSON.parse(readFileSync(join(w.root, "notes/app.json"), "utf8"));
     assert.equal(manifest.publisher, "agent:main");
+    assert.equal(manifest.role, "记几句话", "role starts as the summary");
     assert.equal((await w.call("apps.scaffold", { id: "notes", name: "又一个" })).error?.code, "bad_request", "never overwrites an app");
 
     const report = await w.call("apps.validate", { id: "notes" });
@@ -201,7 +202,7 @@ test("validate says exactly what is wrong, and install refuses a broken app with
     assert.ok(said.includes("app.json /: 缺少必填字段 summary"), said.join("\n"));
     assert.ok(said.includes("app.json /: 不认识的字段 colour（ash-app/1 不允许多余字段）"), said.join("\n"));
     assert.ok(said.includes("app.json /needs/0: 这一项不是合法的 need"), said.join("\n"));
-    assert.ok(said.includes("app.json /events/0: app.card 是内置事件，不用在 events 里声明"), said.join("\n"));
+    assert.ok(said.includes("app.json /events/0: app.card、app.activity 是 Ash 内置的事件，不用也不能在 events 里声明"), said.join("\n"));
     assert.equal(said.length, 4, said.join("\n"));
     assert.match(checkManifest("{ nope", "broken").problems[0]!.problem, /不是合法的 JSON/);
     assert.match(checkManifest(JSON.stringify(base), "other").problems[0]!.problem, /id 是 broken，但文件夹叫 other/);
