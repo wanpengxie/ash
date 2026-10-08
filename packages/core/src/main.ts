@@ -468,6 +468,8 @@ export async function startOwner(config: Config): Promise<Running> {
     widgets = new WidgetsMember({ router: world, file: join(config.stateDir, "widgets.json"),
       ...(hostLink ? { push: (state) => hostLink.widgets(state) } : {}) });
     members.register(widgets);
+    // Apps draw their own home-screen cards from their data; a tap on one goes back to the app.
+    apps.attachCards(widgets);
     if (hostLink) members.registerDevice(hostLink.device());
     const edge = new EdgeRouter(ledger, world, members, tokens, { workspaces: config.workspaces, authScopeKey: loadAuthScopeKey(config.stateDir), vault,
       pairing: () => devices!.pairingView(),

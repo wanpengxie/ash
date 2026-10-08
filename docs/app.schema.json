@@ -140,6 +140,66 @@
       },
       "description": "Events (each also in events) that should wake Ash at once rather than wait for the next conversation; a few a day at most."
     },
+    "data_dir": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$",
+      "not": {
+        "enum": [
+          "ui",
+          "node_modules"
+        ]
+      },
+      "description": "The folder (inside the app's folder) where the app keeps the owner's data; apps.reset empties it, apps.remove {keep_data} keeps it."
+    },
+    "cards": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Home-screen cards the app draws from its own data: the tool returns the card (A2UI), taps go to the action tool.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "size",
+          "tool"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,14}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "size": {
+            "enum": [
+              "2x2",
+              "4x2",
+              "4x4"
+            ]
+          },
+          "tool": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+            "description": "A read-only tool of this app that returns the card: {components, root?, data?, sizes?, theme?}."
+          },
+          "action": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+            "description": "The tool a tap, toggle or choice on the card calls: {card, action, component?, item?, checked?, value?, context?}."
+          },
+          "refresh_min": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1440,
+            "description": "Redraw at least this often (minutes; default 30), besides after every change."
+          }
+        }
+      }
+    },
     "needs": {
       "type": "array",
       "maxItems": 16,

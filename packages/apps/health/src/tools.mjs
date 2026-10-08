@@ -1,6 +1,6 @@
 // The five tools and three screens of 健康, as MCP shapes. Screens follow MCP Apps: ui:// resources of type
 // text/html;profile=mcp-app, linked from tools through _meta.ui.resourceUri.
-import { GOAL_METRICS, METRICS } from "./logic.mjs";
+import { GOAL_METRICS, METRICS, kg } from "./logic.mjs";
 
 export const UI_MIME = "text/html;profile=mcp-app";
 const metric = { type: "string", enum: Object.keys(METRICS), description: "weight (kg), steps, sleep (minutes) or resting_heart_rate (bpm)" };
@@ -17,6 +17,8 @@ export const TOOLS = [
   { name: "health.goal.set", title: "设健康目标", description: "Set a goal: target weight (kg), daily steps, or nightly sleep (minutes).",
     inputSchema: { type: "object", properties: { metric: { type: "string", enum: GOAL_METRICS }, target: { type: "number", exclusiveMinimum: 0 } }, required: ["metric", "target"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false }, _meta: { ui: { resourceUri: "ui://health/goals" } } },
+  { name: "health.card", title: "画今日健康卡片", description: "The home-screen card (A2UI): today's weight and steps, with a button that opens the trends. Ash calls it to redraw the card.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: "health.report", title: "看健康周报", description: "The last 7 days in a few numbers and one paragraph, against the week before.",
     inputSchema: { type: "object", properties: { period: { type: "string", enum: ["week"] } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
 ];
@@ -38,9 +40,42 @@ export async function callTool(health, name, args) {
       case "health.log": return ok({ logged: health.log(String(args.metric ?? ""), args.value, args.ts) });
       case "health.goal.set": return ok(health.setGoal(String(args.metric ?? ""), args.target));
       case "health.report": { const report = await health.report(true); return ok(report, report.text); }
+      case "health.card": return ok(todayCard(await health.today()));
       default: return failed(`unknown tool ${name}`);
     }
   } catch (error) { return failed(error instanceof Error ? error.message : String(error)); }
+}
+
+/**
+ * The home-screen card (app.json cards "today"): weight and steps from health.today, a step goal bar, and 「看趋势」 that
+ * opens the trends page. Old numbers (the phone could not answer) say when they are from.
+ */
+export function todayCard(today) {
+  const w = today.weight, s = today.steps;
+  const day = (item) => !item ? "" : item.date === today.date && !today.stale ? "今天" : item.date ? item.date.slice(5) : "";
+  const stepsSub = s && s.goal ? `目标 ${s.goal}` : day(s);
+  const components = [
+    { id: "root", component: "Column", children: ["head", "nums", "foot"], action: { openApp: { app: "health" } } },
+    { id: "head", component: "Row", align: "center", children: ["icon", "title"] },
+    { id: "icon", component: "Icon", name: "heart", style: { color: "red" } },
+    { id: "title", component: "Text", text: "今日健康", variant: "h5", style: { margin: [0, 0, 0, 6] } },
+    { id: "nums", component: "Row", children: ["weight", "steps"], style: { margin: [6, 0, 6, 0] } },
+    { id: "weight", component: "Column", weight: 1, children: ["wl", "wv", "ws"] },
+    { id: "wl", component: "Text", text: "体重", variant: "caption" },
+    { id: "wv", component: "Text", text: w ? `${kg(w.value)} kg` : "—", variant: "h3" },
+    { id: "ws", component: "Text", text: w ? day(w) : "还没有记录", variant: "caption" },
+    { id: "steps", component: "Column", weight: 1, children: ["sl", "sv", ...(s && s.goal ? ["sb"] : []), "ss"] },
+    { id: "sl", component: "Text", text: "步数", variant: "caption" },
+    { id: "sv", component: "Text", text: s ? String(s.value) : "—", variant: "h3" },
+    ...(s && s.goal ? [{ id: "sb", component: "ProgressBar", value: Math.min(s.value, s.goal), max: s.goal }] : []),
+    { id: "ss", component: "Text", text: stepsSub || " ", variant: "caption" },
+    { id: "foot", component: "Row", align: "center", children: ["note", "open"] },
+    { id: "note", component: "Text", weight: 1, variant: "caption", style: { maxLines: 1, ellipsize: "end" },
+      text: today.stale ? "手机暂时没读到，显示的是之前的记录" : today.errors?.length ? today.errors[0] : " " },
+    { id: "open", component: "Button", child: "open_label", variant: "primary", action: { openApp: { app: "health", surface: "trends" } } },
+    { id: "open_label", component: "Text", text: "看趋势" },
+  ];
+  return { components };
 }
 
 /** pages: { shared, home, trends, goals } HTML fragments; every screen is one self-contained page, no network. */

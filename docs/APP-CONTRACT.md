@@ -8,7 +8,7 @@
 
 - **必须有给 Agent 用的工具，读和写都要有**：应用的数据怎么看、怎么改，都要有对应的工具（§3）。只有页面、没有工具的应用不能安装；有页面却只有只读工具，`apps.validate` 会提醒。页面也只通过这些工具读写数据（`app.call`），不要把主人的数据只存在页面里（`localStorage`）。
 - **写清 `role`**：一句话说它管什么、什么时候该用它（§1）。
-- **对人**：应用的页面是 `ui://` HTML 资源（[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) 规范），由独立的壳 App「Ash 应用」在隔离的 WebView 里画出来。Ash 的对话里最多出现一张「打开 XX」入口卡片。
+- **对人**：应用的页面是 `ui://` HTML 资源（[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) 规范），由独立的壳 App「Ash 应用」在隔离的 WebView 里画出来。应用还可以带**桌面卡片**：用它自己的数据画，主人放到手机桌面上，在卡片上勾一下就改了应用里的数据（§6）。Ash 的对话里最多出现一张「打开 XX」入口卡片。
 - **对 Ash**：应用要用 Ash 的东西（例如手机的健康数据），只能用主人在安装时批准过的范围（grants）。
 
 本版只定义**容器里的应用**：应用是 Ash 容器里的一个文件夹 `/root/apps/<id>/`，服务是一个说 MCP 的 stdio 进程。手机原生 App 和电脑上的应用是以后的版本。
@@ -20,13 +20,25 @@
 | 步骤 | 能力 | 说明 |
 |---|---|---|
 | 读契约 | `apps.contract {}` | 返回这份文档全文、`app.json` 的 JSON Schema、最小例子 hello 的全部文件。容器里也有同样的文件：`/root/apps/APP-CONTRACT.md`、`/root/apps/_examples/hello/` |
-| 生成骨架 | `apps.scaffold {id, name, summary?, role?, surfaces?, tools?}` | 在 `/root/apps/<id>/` 写出一个能直接运行的应用（见 §9）。已有 `app.json` 的文件夹不会被覆盖 |
-| 改 | 直接改文件 | `/root/apps/<id>/` 对你可写：`server.mjs` 里的工具，`ui/` 下的页面，`app.json` 的 `needs` |
+| 生成骨架 | `apps.scaffold {id, name, summary?, role?, surfaces?, tools?}` | 在 `/root/apps/<id>/` 写出一个能直接运行的应用：一张能用的清单（数据在 `data/`，工具 `<id>.list / add / done / remove`），第一页列出清单、每条能勾选做完/没做完，一张桌面卡片（`<id>.card` 画、`<id>.card.tap` 收点击）。`tools` 里另起名字的工具先回一句占位话。已有 `app.json` 的文件夹不会被覆盖 |
+| 改 | 直接改文件 | `/root/apps/<id>/` 对你可写：`server.mjs` 里的工具，`ui/` 下的页面，`app.json` 的 `needs`、`cards` |
 | 检查 | `apps.validate {id}` 或 `{path: "/root/apps/<文件夹>"}` | 像安装一样检查，再试运行一次服务：返回 `{ok, problems:[{level, where, problem, fix?}], tools, surfaces}`。`level: "error"` 会挡住安装，`"warning"` 不挡 |
 | 安装 | `apps.install {id}` | 先做同样的检查，不通过就直接拒绝（`error.detail.problems` 列出每个问题），**不会**去打扰主人；通过了才弹审批卡，主人批准后应用启动，成为 `app:<id>` |
 | 用 | `capability_call {member: "app:<id>", word: "<工具名>", body}` | 主人在「Ash 应用」里打开它的页面 |
 
-改了已安装应用的文件以后：页面每次打开都现读，不用做什么；工具列表只在启动时读一次，要再 `apps.install {id}` 一次（会重启它，并重新弹卡确认 needs）。
+### 管理已装的应用
+
+这些也都不需要主人批准（它们只在主人已经批准的范围里做事，或者收窄范围）：
+
+| 能力 | 说明 |
+|---|---|
+| `apps.restart {id}` | 改了 `server.mjs`、工具或 `cards` 以后重启服务，让改动生效。先像 `apps.validate` 一样检查，不通过就不重启（旧的继续跑），`error.detail.problems` 列出问题。`needs` 变了要用 `apps.install`（主人重新批准） |
+| `apps.logs {id, lines?}` | 服务最近的输出：stderr、stdout 上不是协议的内容、Ash 记的启动/退出/重启；`last_exit` 是最后一次怎么结束的（退出码或信号）。默认 100 行，最多 400 |
+| `apps.reset {id}` | 清空应用的数据文件夹（`data_dir`）并重启它，卡片随之重画。没写 `data_dir` 的应用不能清。主人的数据清了就没了：只在主人要的时候，或者给自己还在写的应用用 |
+| `apps.remove {id, keep_data?}` | 卸载：停掉、收回主人给的全部授权、拿掉它的桌面卡片，并删掉 `/root/apps/<id>/`。`keep_data: true` 时文件夹留着（数据和文件都在），之后可以再 `apps.install`。Ash 自带的应用删不掉（会被装回来），用 `apps.disable` 停用 |
+| `apps.disable / apps.enable {id}`、`apps.revoke {id, need?}` | 停用、重新打开（Agent 重新打开要主人确认）、收回授权，见 §5 |
+
+改了已安装应用的文件以后：页面每次打开都现读，不用做什么；工具列表和 `app.json` 只在启动时读，用 `apps.restart {id}` 重启（`needs` 变了则要再 `apps.install {id}`，会重新弹卡确认）。
 
 ## 1. 应用文件夹和 `app.json`
 
@@ -36,7 +48,7 @@
   icon.png        图标（可选；文件名写在 app.json 的 icon）
   server.mjs      服务（文件名随意，写在 server.args 里）
   ui/…            页面文件（随意组织，服务读它们拼成页面）
-  data.json …     应用自己的数据（随意）
+  data/…          主人的数据（文件夹名写在 app.json 的 data_dir）
 ```
 
 `app.json` 由 Ash 在启动、`apps.refresh`、`apps.validate`、`apps.install` 时用 JSON Schema 校验：[`docs/app.schema.json`](app.schema.json)（`apps.contract` 的 `schema`）。**不允许多余字段**。
@@ -56,6 +68,8 @@
 | `events` | 否 | 应用会发给 Ash 的事件名，最多 32 个，如 `notes.due`：小写，**至少含一个点**。`app.card`、`app.activity` 是内置的，不用也不能写。见 §6 |
 | `wake_events` | 否 | `events` 里哪些事件要**马上叫醒** Ash，而不是等下一次对话时才看到，如 `["notes.due"]`。每个都必须也在 `events` 里；每个应用每天最多叫醒 3 次。见 §6 |
 | `needs` | 否 | 要用 Ash 的什么，最多 16 项；安装时主人在一张卡上逐项看到、一次批准。见 §5 |
+| `data_dir` | 否（强烈建议） | 应用把主人的数据放在自己文件夹里的哪个子文件夹，如 `"data"`：一个文件夹名（`^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$`，不能是 `.`、`..`、`ui`、`node_modules`，服务的文件不能放在里面）。`apps.reset` 清空的就是它，`apps.remove {keep_data: true}` 留下的也是它。没写的话 `apps.validate` 会提醒，`apps.reset` 不能用。`apps.scaffold` 写 `"data"` |
+| `cards` | 否 | 桌面卡片 `[{id, title, size, tool, action?, refresh_min?}]`，最多 8 张，见 §6「桌面卡片」：`id` 是 `^[a-z][a-z0-9-]{0,14}$`（不能重复），`title` 1–40 字，`size` 是 `"2x2"`、`"4x2"` 或 `"4x4"`，`tool` 是画这张卡片的只读工具，`action` 是主人点卡片时调用的工具，`refresh_min`（5–1440，默认 30）是至少多久重画一次 |
 | `tools` | 否 | 任意数组，仅供阅读；Ash 以服务的 `tools/list` 为准 |
 
 **图标**：正方形，PNG（最稳）或 WebP，建议 192×192 或更大，不超过 512 KB。SVG 在 Ash 的网页里能显示，但手机上的「Ash 应用」画图标只认 PNG/WebP，SVG 会显示成默认图标（`apps.validate` 会提醒）。`apps.scaffold` 会生成一个简单的 PNG。
@@ -72,14 +86,14 @@
 | 变量 | 含义 |
 |---|---|
 | `ASH_APP_ID` | 应用 id |
-| `ASH_APP_DIR` | 应用文件夹（`/root/apps/<id>`）；应用自己的数据放这里 |
+| `ASH_APP_DIR` | 应用文件夹（`/root/apps/<id>`）；主人的数据放在它下面的 `data_dir` 里 |
 | `ASH_MCP_URL` | 回调 Ash 的 MCP 端点（Streamable HTTP，本机回环，§7） |
 | `ASH_MCP_TOKEN` | 该端点的凭证（`Authorization: Bearer …`），每次启动都换 |
 | `ASH_TRIAL` | 只在试运行时为 `1`：这时凭证无效，不要在启动时就去调 Ash 或发事件 |
 | `HOME`、`PATH`、`TMPDIR`、`LANG`、`TERM` | `/root`、容器的 PATH、`/tmp`、`C.UTF-8`、`dumb` |
 | `app.json` 的 `server.env` | 原样给出 |
 
-- 崩溃（进程退出）后 Ash 按 1 秒起、翻倍、最长 1 分钟的间隔重启；停用、撤销全部授权、删除文件夹后停止。Ash 关掉 stdin 就是让它退出。
+- 崩溃（进程退出）后 Ash 按 1 秒起、翻倍、最长 1 分钟的间隔重启；停用、撤销全部授权、卸载、删除文件夹后停止。Ash 关掉 stdin 就是让它退出。stderr 的最后几百行和每次怎么结束的，`apps.logs` 都看得到。
 - 服务端可以用容器的网络；页面不行（§4）。容器里别的地方（例如 `/root/work`）是主人和 Agent 的，应用只用自己的文件夹。
 
 ### 通信：stdio 上的 MCP
@@ -136,7 +150,8 @@
 - **应用是 Ash 的器官，用它自己的工具不弹卡**：主人安装时批准了这个应用和它要用的一切（`needs`），这就是边界。之后 Agent 调用这个应用自己的工具——读也好、改数据也好——都直接执行，不再弹审批卡（只有识别出的付款仍然每次问主人）。应用自己再去用 Ash 的东西（手机能力、提醒、入口卡片），仍然只能在授权范围内（§5）。主人在应用页面里点的操作是主人自己做的，同样不用审批；两者都记账。
 - **效果照实标**：只有 `annotations.readOnlyHint: true` 且没有 `destructiveHint: true` 的工具算「读」，其余一律标「改数据」。这只影响记账、超时和 Agent 看到的说明，不会因此弹卡。
 - **结果**：`tools/call` 的结果原样作为能力结果 `{content, structuredContent?}` 交给调用者。建议总给 `structuredContent`（一个对象），`content` 里放它的 JSON 文本或一句话。
-- **主人改了什么，Ash 会知道**：主人在页面里调用改数据的工具成功后，Ash 记一条 `app.activity {app, name, tool, summary}` 给主 Agent，并放进它每一轮看到的「应用里最近的变化」（最近一天、最新几条）。这不会叫醒它。`summary` 默认是「<工具的 title>：参数 → 结果」；改数据的工具最好在结果里带 `_meta: {activity: "勾掉了：给物业打电话"}`，一句话说清改了什么（脚手架的服务里，`handle()` 返回的对象带 `activity` 字段即可）。只读的调用不记。
+- **主人改了什么，Ash 会知道**：主人在页面里（或在桌面卡片上，§6）调用改数据的工具成功后，Ash 记一条 `app.activity {app, name, tool, summary}` 给主 Agent，并放进它每一轮看到的「应用里最近的变化」（最近一天、最新几条）。这不会叫醒它。`summary` 默认是「<工具的 title>：参数 → 结果」；改数据的工具最好在结果里带 `_meta: {activity: "勾掉了：给物业打电话"}`，一句话说清改了什么（脚手架的服务里，`handle()` 返回的对象带 `activity` 字段即可）。只读的调用不记。
+- **卡片跟着数据变**：任何人（主人的页面、Agent、卡片上的点击）调用改数据的工具成功后，Ash 都会重画这个应用的桌面卡片。只读工具发现数据变了（例如从别处同步来了新数据），可以在结果里带 `_meta: {cards_changed: true}` 让 Ash 重画。
 - **错误**：工具失败时回 `{content: [{type: "text", text: "原因"}], isError: true}`。调用者拿到 `{ok: false, error: {code: "failed", message: "原因"}}`（最多 2000 字），页面上 `app.call` 抛出的错误 `message` 也是这句话——**它会直接显示给主人，请写清楚的中文**。服务崩溃或回 JSON-RPC 错误也算失败。
 - **时间**：只读工具 60 秒内要回答，改数据的 10 分钟；页面上的一次调用最多等 60 秒。
 
@@ -187,7 +202,7 @@
 { "member": "device:phone", "words": ["health.read"], "why": "读取你的健康数据" } // 调用某个成员的这些能力（device:* 或其他 app:*，最多 32 个）
 { "notify": true, "why": "到期时提醒你" }          // 声明过的事件可以作为提醒出现在对话里（§6）
 { "card": true, "why": "每周一张小结卡片" }        // 可以发 app.card 入口卡片（§6）
-{ "widgets": true, "why": "…" }                   // 预留：桌面小组件（本版不使用）
+{ "widgets": true, "why": "…" }                   // 预留（本版不使用；桌面卡片用 cards，不需要授权）
 ```
 
 - 同一个成员（或 `notify` / `card` / `widgets`）只能出现一次；不能写自己。成员和能力名用 `capability_list` / `capability_describe` 查（手机是 `device:phone`）；`apps.validate` 会提醒现在查不到的成员和能力（可能拼错了，也可能只是暂时不在线）。
@@ -196,9 +211,10 @@
   - 正文：`<应用名> <版本>（来源）：<summary>`，来源是「Ash 自带」「Ash 自己写的，没有发布过，也没有别人检查过」或「发布者写的是「X」，Ash 无法核实」；然后「它需要：」逐项列出 `· <why>（device:phone：health.read、…）`、`· <why>（提醒你）`、`· <why>（在对话里放入口卡片）`，没有 needs 就写「不需要用 Ash 的其他东西」；最后说明文件在哪、会成为 `app:<id>`、可以随时撤销。
   - 主人批准后，这份 `needs` 原样写进授权表，应用随即启动。主人自己发起的安装就是批准本身。
 - 之后应用每次调用 Ash 都按授权表检查：只有批准过的「成员 + 能力」可调，范围不会自己扩大。应用的调用以 `app:<id>` 身份经过正常的路由和关口：只读能力直接执行；其他能力弹 Ash 的审批卡由主人决定（应用的请求不经过自动审查）。应用更新后新增的 `needs` 不会自动生效，要再走一次 `apps.install`。
-- 撤销：`apps.revoke {id, need?}`（`need` 是成员 id 或 `notify` / `card` / `widgets`；不填则撤销全部并停止应用）；`apps.disable / apps.enable {id}` 停用和重新打开（Agent 重新打开要主人确认）。`apps.list / apps.describe / apps.refresh` 查看和重新发现（结果里有 `path`、`origin: builtin | agent | other`、`running`、`error`）。
+- 卸载、重启、日志、清数据见 §0「管理已装的应用」。
+- 撤销：`apps.revoke {id, need?}`（`need` 是成员 id 或 `notify` / `card` / `widgets`；不填则撤销全部并停止应用）；`apps.disable / apps.enable {id}` 停用和重新打开（Agent 重新打开要主人确认）。`apps.list / apps.describe / apps.refresh` 查看和重新发现（结果里有 `path`、`origin: builtin | agent | other`、`running`、`error`、`cards`）。
 
-## 6. 事件和入口卡片（应用 → Ash）
+## 6. 事件、入口卡片和桌面卡片（应用 → Ash）
 
 应用通过 Ash 端点的 `ash_event {name, body}` 发事件（`body` 是对象，JSON 后 ≤ 4000 字节）：
 
@@ -206,6 +222,22 @@
 - **叫醒**：平常的事件不叫醒主 Agent，它下一次对话时看到。`wake_events` 里的事件会马上叫醒它（`reason: "app_event"`，带上应用、它的 `role`、事件名和 `body`），每个应用每天最多 3 次，多出的只记账。没声明的事件被拒绝。
 - **`app.card {title, text?}`**（入口卡片）：需要 `card` 授权；对话里出现一张小卡「打开<应用名> · <title>」（`title` ≤ 40 字，`text` ≤ 200 字），主人点开就进入「Ash 应用」里的这个应用（第一个页面）。每个应用每天最多 1 张，多出的被拒绝。
 - 发事件的时机由应用自己定（例如服务里的定时器）；试运行（`ASH_TRIAL=1`）时不要发。
+
+### 桌面卡片（`app.json` 的 `cards`）
+
+应用自己的数据，主人在手机桌面上看、在桌面上改：
+
+```json
+"cards": [{ "id": "main", "title": "待办", "size": "4x4", "tool": "todo.card", "action": "todo.card.tap" }]
+```
+
+- **画**：Ash 调用 `tool`（参数 `{}`），它的 `structuredContent` 就是卡片：`{components:[…], root?, data?, sizes?, theme?}`，格式和 `widget.card.put` 的 `a2ui` 完全一样（A2UI，安卓小组件画得出的都行；`widget.card.validate` 能单独检查）。也可以回 `{a2ui, title?}` 换标题。卡片要从应用**现在的数据**画，不要写死。
+- **什么时候画**：应用启动时；任何人调用了它改数据的工具以后（主人的页面、Agent、卡片上的点击都算，连着几次只画一次）；工具结果带 `_meta.cards_changed` 时；以及每 `refresh_min` 分钟（默认 30）。内容没变就不会打扰手机。
+- **归谁**：卡片在桌面上的 id 是 `<应用 id>.<卡片 id>`（如 `todo.main`），主人是 `app:<id>`。它出现在 `widget.list` 里，Agent 用 `widget.bind` 把它放到主人的「Ash 卡片」小组件上，主人放小组件时也能选它。别人不能用 `widget.card.put` 改它，Agent 也不该另做一张同样数据的卡片（那份副本会过时）。应用卸载时卡片一起拿掉。
+- **点**：卡片上的勾选框、开关、选择和带 `{event:{name}}` 的按钮，Ash 都交给 `action` 工具：`{card: "<卡片 id>", action: "<事件名，没有就是 change>", component?, item?, checked?, value?, context?}`（`item` 是列表里那一条的 key：数据里的 `id` 或 `key`）。它以主人的身份执行，和主人在页面里改一样记给主 Agent（§3，结果带 `_meta.activity` 最好）；之后卡片按应用的数据重画，所以应用没改的话，勾选会退回去。没写 `action` 的卡片，点击只记账。勾选框的 `value` 用 `{path}` 绑定数据，手机上会先显示勾上，不用等。
+- **打开页面**：`{openApp: {app: "<id>", surface?: "<页面 id>"}}` 的按钮直接打开「Ash 应用」里的那一页，不经过 `action`。
+- **检查**：`apps.validate` 会真的调一次每张卡片的 `tool` 并按手机的规则检查（工具不存在、没标只读、画不出来都会指出来）；画不出来时卡片保留上一版，没有上一版就显示「暂时画不出来」，原因在 `apps.describe` 的 `cards[].problem`。
+- 不需要授权：卡片只有主人自己放到桌面上才会出现。
 
 ## 7. Ash 给应用的端点（`ASH_MCP_URL`）
 
@@ -236,7 +268,7 @@
 
 ## 9. 最小例子 hello（一个页面，一个工具）
 
-完整文件在 `docs/examples/hello/`，容器里在 `/root/apps/_examples/hello/`（`apps.contract` 的 `example.files` 也有）。它就是 `apps.scaffold {id: "hello", name: "你好", tools: [{name: "hello.greet", title: "打招呼", read_only: true}]}` 生成后改了三处（工具的参数和实现、页面、`role`）。要试：把文件夹复制成 `/root/apps/hello/`，`apps.validate {id: "hello"}`，`apps.install {id: "hello"}`。
+完整文件在 `docs/examples/hello/`，容器里在 `/root/apps/_examples/hello/`（`apps.contract` 的 `example.files` 也有）。它用的是 `apps.scaffold` 生成的服务框架（协议、页面拼装、数据文件夹、回 Ash 的 `ash()`），只把清单和卡片换成了一个工具 `hello.greet`、一个页面。要试：把文件夹复制成 `/root/apps/hello/`，`apps.validate {id: "hello"}`，`apps.install {id: "hello"}`。
 
 ```text
 hello/
@@ -261,6 +293,7 @@ hello/
   "role": "演示用：主人想让 Ash 打个招呼时用 hello.greet",
   "publisher": "example",
   "server": { "command": "node", "args": ["server.mjs"] },
+  "data_dir": "data",
   "surfaces": [{ "id": "home", "title": "首页", "resource": "ui://hello/home" }],
   "needs": []
 }
@@ -314,12 +347,12 @@ document.getElementById("greet").addEventListener("click", async () => {
 
 装好以后：Agent `capability_call {member: "app:hello", word: "hello.greet", body: {who: "皮皮"}}` 得到 `{content: […], structuredContent: {text: "你好，皮皮！现在是 …", who: "皮皮"}}`；主人在「Ash 应用」里打开「你好」，点「打招呼」看到同一句话。
 
-更完整的例子是 Ash 自带的「健康」：`packages/apps/health/`（三个页面、五个工具、调用 `device:phone`、发事件和入口卡片）。
+更完整的例子是 Ash 自带的「健康」：`packages/apps/health/`（三个页面、六个工具、调用 `device:phone`、发事件和入口卡片、一张桌面卡片「今日健康」带「看趋势」按钮）。`apps.scaffold` 生成的骨架本身就是一个带桌面卡片的小清单应用。
 
 ## 10. 本版不包含
 
 - 手机原生 App 和电脑上的应用。
-- 桌面小组件（`widgets` 只是预留）。
+- 桌面卡片以外的小组件形式（`widgets` 只是预留）。
 - 从一个页面跳到另一个 surface（请在一页内切换视图）。
 - `_meta.ui.visibility`：仅供页面调用（`["app"]`）的工具本版仍登记为普通能力。
 - 应用更新后新增的 `needs` 不会单独提醒主人；要再走一次 `apps.install` 才生效。

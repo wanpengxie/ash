@@ -111,7 +111,7 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
   const w = await world();
   try {
     const made = await w.call("apps.scaffold", { id: "notes", name: "笔记", summary: "记几句话", surfaces: [{ id: "home", title: "全部" }, { id: "new", title: "新建" }],
-      tools: [{ name: "notes.list", title: "看笔记", read_only: true }, { name: "notes.add", title: "记一条" }] });
+      tools: [{ name: "notes.list", title: "看笔记", read_only: true }, { name: "notes.add", title: "记一条" }, { name: "notes.export", title: "导出" }] });
     assert.equal(made.ok, true, JSON.stringify(made));
     assert.equal(made.result.path, "/root/apps/notes");
     assert.deepEqual(made.result.files, ["app.json", "icon.png", "server.mjs", "ui/app.css", "ui/app.js", "ui/home.html", "ui/new.html"]);
@@ -123,7 +123,8 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
     const report = await w.call("apps.validate", { id: "notes" });
     assert.equal(report.ok, true);
     assert.equal(report.result.ok, true, JSON.stringify(report.result.problems));
-    assert.deepEqual([report.result.tools, report.result.surfaces], [["notes.list", "notes.add"], ["home", "new"]]);
+    // A working list (with its card and done/undone toggles on the first page), and a placeholder for each further tool.
+    assert.deepEqual([report.result.tools, report.result.surfaces], [["notes.list", "notes.add", "notes.done", "notes.remove", "notes.card", "notes.card.tap", "notes.export"], ["home", "new"]]);
     assert.deepEqual(report.result.problems.filter((item: { level: string }) => item.level === "error"), []);
     assert.equal((await w.call("apps.validate", { path: "/root/apps/notes/" })).result.ok, true, "the same folder by its container path");
 
@@ -135,10 +136,15 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
     assert.match(String(ask!.body.detail), /不需要用 Ash 的其他东西/);
     assert.match(String(ask!.body.detail), /\/root\/apps\/notes\//);
     assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
-    const read = await w.router.send(agent, { to: "app:notes", kind: "request", word: "notes.list", body: {}, wait: true });
-    const result = read.reply!.body as { ok: boolean; result: { structuredContent: { text: string } } };
-    assert.equal(result.ok, true);
-    assert.match(result.result.structuredContent.text, /「看笔记」还没写好/);
+    const call = async (word: string, body: Record<string, unknown> = {}) =>
+      ((await w.router.send(agent, { to: "app:notes", kind: "request", word, body, wait: true })).reply!.body as { ok: boolean; result: { structuredContent: any } }).result.structuredContent; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const { item } = await call("notes.add", { title: "第一条" });
+    await call("notes.done", { item: item.id, done: true });
+    assert.deepEqual((await call("notes.list")).items.map((entry: { title: string; done: boolean }) => [entry.title, entry.done]), [["第一条", true]]);
+    assert.match((await call("notes.export")).text, /「导出」还没写好/);
+    const home = await w.runtime.surface("notes", "home");
+    assert.match(home!.html, /type: "checkbox"/);
+    assert.match(home!.html, /app\.call\("notes\.done"/);
     const page = await w.runtime.surface("notes", "new");
     assert.match(page!.html, /^<!doctype html>/);
     assert.match(page!.html, /ui\/initialize/);
@@ -294,8 +300,9 @@ test("every app is an organ: pages without tools do not install; read-only tools
     assert.match(String((refused.reply.body as { error: { message: string } }).error.message), /只有页面、没有可用的工具/);
 
     // Read-only tools behind pages that can change things, and the owner's data kept in the page: warnings.
-    const viewer = scaffoldFiles({ id: "viewer", name: "只能看", publisher: "agent:main", tools: [{ name: "viewer.list", title: "看", read_only: true }] });
+    const viewer = scaffoldFiles({ id: "viewer", name: "只能看", publisher: "agent:main" });
     write(join(w.root, "viewer"), { ...Object.fromEntries(Object.entries(viewer).filter(([, text]) => typeof text === "string")) as Record<string, string>,
+      "server.mjs": String(viewer["server.mjs"]).replaceAll("readOnlyHint: false", "readOnlyHint: true"),
       "ui/home.html": `${String(viewer["ui/home.html"])}<script>localStorage.setItem("items", "[]")</script>` });
     report = (await w.call("apps.validate", { id: "viewer" })).result;
     assert.equal(report.ok, true, "warnings do not block");

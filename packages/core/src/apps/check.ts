@@ -6,6 +6,7 @@ import Ajv, { type ErrorObject } from "ajv";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { deviceWordSpec } from "../../../sdk/src/words";
+import { CardError, validateCard } from "../members/widgets-card";
 import { ajvFor } from "../world/router";
 import { APP_ID_PATTERN, APP_SCHEMA, validateManifest, type AppManifest } from "./schema";
 
@@ -36,7 +37,8 @@ function schemaProblem(item: ErrorObject): AppProblem | null {
     case "maxItems": return error(at, `最多 ${p.limit} 项`);
     case "maxProperties": return error(at, `最多 ${p.limit} 个`);
     case "not": return /\/server\/env/.test(item.instancePath) || item.schemaPath.includes("propertyNames")
-      ? error(at, "环境变量名不能以 ASH_ 开头（那是 Ash 给的）") : error(at, "app.card、app.activity 是 Ash 内置的事件，不用也不能在 events 里声明");
+      ? error(at, "环境变量名不能以 ASH_ 开头（那是 Ash 给的）") : item.instancePath === "/data_dir" ? error(at, "data_dir 不能是 ui 或 node_modules：apps.reset 会清空它")
+        : error(at, "app.card、app.activity 是 Ash 内置的事件，不用也不能在 events 里声明");
     case "propertyNames": return null;
     case "oneOf": return /^\/needs\/\d+$/.test(item.instancePath)
       ? error(at, "这一项不是合法的 need", '每项是 {"member":"device:phone","words":["…"],"why":"…"}、{"notify":true,"why":"…"}、{"card":true,"why":"…"} 或 {"widgets":true,"why":"…"} 之一，why 必填')
@@ -69,7 +71,8 @@ export function checkManifest(text: string, folder: string): { manifest: AppMani
   const checked = validateManifest(raw);
   const wake = !checked.ok && /^wake_events (\S+) is not in events$/.exec(checked.error);
   if (wake) return { manifest: null, problems: [error("app.json /wake_events", `${wake[1]} 没有写在 events 里`, "wake_events 里的每个事件都要先在 events 里声明")] };
-  if (!checked.ok) return { manifest: null, problems: [error("app.json", ({ "duplicate surface id": "surfaces 里有重复的 id", "each member or kind of need appears once": "needs 里同一个成员（或 notify/card/widgets）只能出现一次", "an app does not need itself": "needs 里不能写自己（app:<自己的 id>）" } as Record<string, string>)[checked.error] ?? checked.error)] };
+  if (!checked.ok) return { manifest: null, problems: [error("app.json", ({ "duplicate surface id": "surfaces 里有重复的 id", "duplicate card id": "cards 里有重复的 id", "data_dir is a folder name": "data_dir 要是一个文件夹名（如 data），不能是 . 或 ..",
+    "data_dir holds the server": "data_dir 里不能放服务的文件：apps.reset 会清空它", "each member or kind of need appears once": "needs 里同一个成员（或 notify/card/widgets）只能出现一次", "an app does not need itself": "needs 里不能写自己（app:<自己的 id>）" } as Record<string, string>)[checked.error] ?? checked.error)] };
   const manifest = checked.manifest;
   for (const surface of manifest.surfaces ?? []) if (!surface.resource.startsWith(`ui://${manifest.id}/`))
     problems.push(warning(`app.json surfaces ${surface.id}`, `resource ${surface.resource} 不在 ui://${manifest.id}/ 下`, `习惯写成 ui://${manifest.id}/${surface.id}`));
@@ -84,6 +87,8 @@ export function checkFolder(dir: string, folder: string): { manifest: AppManifes
   if (!manifest) return { manifest, problems };
   if (!manifest.role) problems.push(warning("app.json /role", "没写 role：Ash 只能拿 summary 猜什么时候该用它",
     "写一句它管什么、什么时候用，例如「主人和 Ash 的待办：说到要做的事就记进来」"));
+  if (!manifest.data_dir) problems.push(warning("app.json /data_dir", "没写 data_dir：Ash 不知道哪些文件是主人的数据，apps.reset 清不了，apps.remove 也没法只留数据",
+    "把数据放在应用文件夹里的一个子文件夹（如 data/），写 \"data_dir\": \"data\""));
   if (!manifest.icon) problems.push(warning("app.json /icon", "没有图标：会显示默认图标", "放一个正方形 PNG（192×192 或更大）在文件夹里，icon 写它的文件名"));
   else {
     const file = join(dir, manifest.icon);
@@ -159,6 +164,27 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
         : `一个工具都没有：Agent 没法通过 app:${manifest.id} 用它`, "每个应用都要有给 Agent 用的工具：读数据的（readOnlyHint: true）和改数据的（readOnlyHint: false），页面也通过它们读写"));
     else if (pages && tools.length && !writes)
       problems.push(warning("server tools/list", "只有只读工具：页面上能改的数据，Agent 改不了", "页面上每种改数据的操作都写成一个工具（readOnlyHint: false），页面用 app.call 调它，Agent 用同一个"));
+    // Each home-screen card: its tools exist, and the card tool draws a card the phone can show (from the data there is now).
+    for (const card of manifest.cards ?? []) {
+      const where = `卡片 ${card.id}`;
+      const tool = listed.find((item) => item.name === card.tool);
+      if (card.action && !tools.includes(card.action))
+        problems.push(error(where, `action 写的是 ${card.action}，但服务的工具里没有它`, "点卡片会调用这个工具：{card, action, component?, item?, checked?, value?, context?}，它改应用的数据"));
+      if (!tool || !tools.includes(card.tool)) { problems.push(error(where, `tool 写的是 ${card.tool}，但服务的工具里没有它`, "写一个只读工具，返回卡片 {components, data?}（structuredContent）")); continue; }
+      if (tool.annotations?.readOnlyHint !== true) problems.push(warning(where, `${card.tool} 没标只读（readOnlyHint: true）`, "画卡片的工具只读数据；改数据的放在 action 工具里"));
+      try {
+        const result = await client.callTool({ name: card.tool, arguments: {} }, undefined, { timeout: timeoutMs });
+        const data = result.structuredContent && typeof result.structuredContent === "object" ? result.structuredContent as Record<string, unknown> : null;
+        const text = (Array.isArray(result.content) ? result.content : []).map((item) => (item as { text?: unknown })?.text ?? "").join(" ");
+        if (result.isError) problems.push(error(where, `${card.tool} 出错了：${short(text) || "没有说明"}`));
+        else if (!data || !(Array.isArray(data.components) || (data.a2ui && typeof data.a2ui === "object")))
+          problems.push(error(where, `${card.tool} 没有返回卡片`, "structuredContent 就是卡片 {components:[…], root?, data?, sizes?}（或 {a2ui, title?}），格式同 widget.card.put 的 a2ui"));
+        else validateCard(Array.isArray(data.components) ? data : data.a2ui);
+      } catch (cause) {
+        if (cause instanceof CardError) problems.push(error(where, `手机画不出这张卡片：${short(cause, 500)}`, "格式同 widget.card.put 的 a2ui；widget.card.validate 可以单独检查"));
+        else problems.push(error(where, `${card.tool} 没有回答：${short(cause)}${output()}`));
+      }
+    }
     for (const surface of manifest.surfaces ?? []) {
       const where = `页面 ${surface.id}（${surface.resource}）`;
       let read: Awaited<ReturnType<Client["readResource"]>>;

@@ -2,18 +2,22 @@
   "contract": "ash-app/1",
   "id": "health",
   "name": "健康",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "icon": "icon.svg",
   "summary": "体重、步数、睡眠、心率的每日概览和趋势",
   "role": "主人的健康记录：说到体重、睡眠、步数、心率或健康目标时用它，查看用 health.today/health.trend，记下用 health.log，设目标用 health.goal.set",
   "publisher": "ash",
   "server": { "command": "node", "args": ["server.mjs"] },
+  "data_dir": "data",
   "surfaces": [
     { "id": "home", "title": "今日", "resource": "ui://health/home" },
     { "id": "trends", "title": "趋势", "resource": "ui://health/trends" },
     { "id": "goals", "title": "目标", "resource": "ui://health/goals" }
   ],
   "events": ["health.alert"],
+  "cards": [
+    { "id": "today", "title": "今日健康", "size": "4x2", "tool": "health.card", "refresh_min": 60 }
+  ],
   "needs": [
     { "member": "device:phone", "words": ["health.read", "health.summary", "sensors.steps"], "why": "读取你的健康数据：体重、步数、睡眠、心率" },
     { "notify": true, "why": "体重一周变化较大或连续睡眠不足时提醒你" },

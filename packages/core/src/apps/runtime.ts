@@ -1,6 +1,7 @@
 // ash's side of contract ash-app/1: find apps in the container, start the ones the owner installed, register each as
 // member app:<id> whose words are its MCP tools, keep the grants, record its events, and serve the shell app.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import type { ChildProcess } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -13,7 +14,7 @@ import { BUILTIN_APPS } from "./builtin.generated";
 import { checkFolder, trialRun, type AppProblem } from "./check";
 import { APP_CONTRACT_DOC, HELLO_EXAMPLE } from "./contract.generated";
 import { AppGrants } from "./grants";
-import { APP_CONTRACT, APP_ID_PATTERN, APP_SCHEMA, needKey, validateManifest, type AppManifest, type AppNeed } from "./schema";
+import { APP_CONTRACT, APP_ID_PATTERN, APP_SCHEMA, needKey, validateManifest, type AppCard, type AppManifest, type AppNeed } from "./schema";
 import { scaffoldFiles, type ScaffoldSurface, type ScaffoldTool } from "./templates";
 
 export interface AppSpawn { command: string; args: string[]; env: Record<string, string>; cwd?: string }
@@ -48,8 +49,21 @@ export interface AppReport { id: string; path: string; ok: boolean; problems: Ap
 export interface AppInfo {
   id: string; name: string; version: string; summary: string; role: string; publisher: string; enabled: boolean; granted: boolean; running: boolean;
   needs: AppNeed[]; surfaces: { id: string; title: string; resource: string }[]; events: string[]; tools: string[]; error?: string;
+  /** Its home-screen cards: `card` is the id widget.list and widget.bind use; `problem` why it could not be drawn last time. */
+  cards: { id: string; title: string; size: string; card: string; problem?: string }[];
   /** The folder as the agent sees it, and who made the app. */
   path: string; origin: AppOrigin;
+}
+
+/**
+ * Where an app's home-screen cards live (service:widgets): ash draws each declared card from the app's card tool and
+ * hands it over as the app's own (owner app:<id>); a tap on it comes back here and goes to the app.
+ */
+export interface AppCardHost {
+  putAppCard(app: string, card: { id: string; title: string; size: string }, a2ui: unknown): { ok: true; changed: boolean } | { ok: false; problem: string };
+  removeAppCards(app: string, keep?: readonly string[]): void;
+  cardInfo(id: string): { problem: string | null } | null;
+  setAppTap(handler: ((app: string, card: string, detail: Record<string, unknown>) => Promise<void>) | null): void;
 }
 
 /** Something that happened in an app that the main agent should know: the owner changed its data on a page, or it reported an event. */
@@ -63,11 +77,21 @@ const ACTIVITY_SHOWN = 8, ACTIVITY_KEPT = 40, ACTIVITY_MS = 24 * 3_600_000;
 /** At most this many wakes a day per app, however many wake-worthy events it reports. */
 const WAKES_A_DAY = 3;
 const ID = new RegExp(APP_ID_PATTERN);
-const SERVICE_WORDS = ["apps.list", "apps.describe", "apps.install", "apps.enable", "apps.disable", "apps.revoke", "apps.refresh", "apps.contract", "apps.scaffold", "apps.validate"];
+const SERVICE_WORDS = ["apps.list", "apps.describe", "apps.install", "apps.enable", "apps.disable", "apps.revoke", "apps.refresh", "apps.contract", "apps.scaffold", "apps.validate",
+  "apps.restart", "apps.logs", "apps.reset", "apps.remove"];
+/** What apps.logs keeps of each app's server: the last lines of its stderr and of ash's own notes about it. */
+const LOG_LINES = 400, LOG_LINE_CHARS = 1000;
 const clean = (value: unknown, max: number) => String(value ?? "").replace(/[\p{C}\s]+/gu, " ").trim().slice(0, max);
 /** A local "10-08 14:02" for the agent's context. */
 const stamp = (ts: number) => new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 const MIME: Record<string, string> = { ".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp" };
+/** An app card's id on the home screen. */
+export const appCardId = (app: string, card: string) => `${app}.${card}`;
+/** Cards are redrawn after every change, and at least this often (app.json refresh_min). */
+const CARD_REFRESH_MIN = 30;
+/** Changes in quick succession are drawn once. */
+const CARD_DEBOUNCE_MS = 200;
+const CARD_TOOL_MS = 30_000;
 
 /**
  * An app's MCP tools as ash capabilities. The effect is honest: only a read-only, non-destructive claim is a read, the
@@ -113,6 +137,14 @@ export class AppRuntime {
   private readonly log: (...args: unknown[]) => void;
   private readonly activityFile: string;
   private activity: AppActivity[] = [];
+  private cardHost: AppCardHost | null = null;
+  /** Why each app card (by its home-screen id) could not be drawn last time. */
+  private readonly cardProblems = new Map<string, string>();
+  private readonly cardTimers = new Map<string, { soon?: ReturnType<typeof setTimeout>; every?: ReturnType<typeof setInterval> }>();
+  private readonly drawing = new Map<string, Promise<void>>();
+  private readonly redraw = new Set<string>();
+  /** Each app's recent output (stderr, protocol errors, ash's notes on starts and exits) and how its server last ended. */
+  private readonly output = new Map<string, { lines: string[]; exit: { ts: number; code: number | null; signal: string | null; reason: string } | null }>();
 
   constructor(private readonly options: AppRuntimeOptions) {
     this.log = options.log ?? (() => {});
@@ -140,6 +172,8 @@ export class AppRuntime {
     this.closed = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
+    for (const id of [...this.cardTimers.keys()]) this.stopCards(id);
+    this.cardHost?.setAppTap(null);
     await Promise.all([...this.running.keys()].map((id) => this.stop(id)));
     await this.bridge.close();
   }
@@ -209,6 +243,8 @@ export class AppRuntime {
       const grant = this.grants.get(id);
       if (!item || !("manifest" in item) || !grant?.enabled) await this.stop(id);
       else if (item.manifest.version !== this.running.get(id)!.version) await this.stop(id);
+      // An app that is gone takes its cards with it; a turned-off one keeps them for when it is back.
+      if (!item || !("manifest" in item) || !grant) this.cardHost?.removeAppCards(id);
     }
     for (const [id, item] of this.found) if ("manifest" in item && this.grants.get(id)?.enabled && !this.running.has(id)) await this.launch(id);
   }
@@ -227,6 +263,11 @@ export class AppRuntime {
     return { id, name: m?.name ?? id, version: m?.version ?? "", summary: m?.summary ?? "", role: m?.role ?? m?.summary ?? "", publisher: m?.publisher ?? "",
       enabled: Boolean(grant?.enabled), granted: Boolean(grant), running: Boolean(running?.member?.online),
       needs: grant?.needs ?? m?.needs ?? [], surfaces: m?.surfaces ?? [], events: m?.events ?? [], tools: running?.tools ?? [], ...(error ? { error } : {}),
+      cards: (m?.cards ?? []).map((card) => {
+        const at = appCardId(id, card.id);
+        const problem = this.cardProblems.get(at) ?? this.cardHost?.cardInfo(at)?.problem ?? undefined;
+        return { id: card.id, title: card.title, size: card.size, card: at, ...(problem ? { problem } : {}) };
+      }),
       path: this.agentPath(id), origin: this.origin(id) };
   }
   list(): AppInfo[] { return [...this.found.keys()].map((id) => this.info(id)!); }
@@ -238,9 +279,10 @@ export class AppRuntime {
   context(): string {
     const lines = this.list().filter((app) => app.granted && app.enabled && app.version).map((app) => {
       const tools = app.tools.length ? `；工具 ${app.tools.slice(0, 12).join(", ")}${app.tools.length > 12 ? " …" : ""}` : app.running ? "" : "（暂时没在运行）";
-      return `- app:${app.id}「${clean(app.name, 40)}」：${clean(app.role, 160)}${tools}`;
+      const cards = app.cards.length ? `；桌面卡片 ${app.cards.map((card) => card.card).join(", ")}` : "";
+      return `- app:${app.id}「${clean(app.name, 40)}」：${clean(app.role, 160)}${tools}${cards}`;
     });
-    const apps = lines.length ? `Your apps (organs of Ash: what belongs to an app's job goes into it; call its tools with capability_call, member app:<id>, no approval card):\n${lines.join("\n")}`.slice(0, 3000) : "";
+    const apps = lines.length ? `Your apps (organs of Ash: what belongs to an app's job goes into it; call its tools with capability_call, member app:<id>, no approval card; an app's desktop card shows its own data and is placed with widget.bind, never copied into a card of your own):\n${lines.join("\n")}`.slice(0, 3000) : "";
     const since = Date.now() - ACTIVITY_MS;
     const recent = this.activity.filter((item) => item.ts >= since).slice(-ACTIVITY_SHOWN).map((item) =>
       `- ${stamp(item.ts)} app:${item.app}「${clean(item.name, 40)}」${item.kind === "owner" ? "主人在页面里" : `报告 ${item.what}`}：${clean(item.summary, 300)}`);
@@ -264,7 +306,7 @@ export class AppRuntime {
    * The owner changed an app's data on its page (a successful non-read tool call): recorded for agent:main, and shown in
    * its context. Routine edits wake nobody. The app may say what happened in one sentence (result _meta.activity).
    */
-  private ownerChanged(id: string, message: Message, label: string, result: { structuredContent?: unknown; _meta?: unknown }): void {
+  private ownerChanged(id: string, message: { word: string; body: Record<string, unknown> }, label: string, result: { structuredContent?: unknown; _meta?: unknown }): void {
     const manifest = this.manifest(id);
     if (!manifest) return;
     const said = result._meta && typeof result._meta === "object" ? clean((result._meta as Record<string, unknown>).activity, 300) : "";
@@ -284,21 +326,31 @@ export class AppRuntime {
     const token = this.bridge.bind(id);
     const spec = launcher.spawn(manifest, this.dir(id)!, { ASH_APP_ID: id, ASH_MCP_URL: this.bridge.url, ASH_MCP_TOKEN: token });
     const transport = new StdioClientTransport({ command: spec.command, args: spec.args, env: spec.env, ...(spec.cwd ? { cwd: spec.cwd } : {}), stderr: "pipe" });
-    transport.stderr?.on("data", (chunk) => this.log(`[app ${id}]`, String(chunk).trim().slice(0, 500)));
+    transport.stderr?.on("data", (chunk) => { this.log(`[app ${id}]`, String(chunk).trim().slice(0, 500)); this.note(id, String(chunk), "stderr"); });
     const client = new Client({ name: "ash", version: "1.0.0" });
     const state: Running = { client, member: null, tools: [], started: Date.now(), stopping: false, version: manifest.version };
     this.running.set(id, state);
     client.onclose = () => { if (this.running.get(id) === state) void this.exited(id, state); };
+    client.onerror = (error) => this.note(id, `MCP：${error instanceof Error ? error.message : error}（stdout 只能写协议消息，日志写 stderr）`, "ash");
+    this.note(id, `启动 ${manifest.version}：${spec.command} ${spec.args.join(" ")}`.slice(0, 300), "ash");
     try {
       await client.connect(transport, { timeout: 60_000 });
+      // How the process ends (exit code or signal), for apps.logs.
+      (transport as unknown as { _process?: ChildProcess })._process?.once("exit", (code, signal) => {
+        const reason = state.stopping ? "Ash 让它停下" : code === 0 ? "自己退出了" : signal ? `被信号 ${signal} 结束` : `出错退出（退出码 ${code}）`;
+        this.output.get(id)!.exit = { ts: Date.now(), code, signal, reason };
+        this.note(id, `服务结束：${reason}`, "ash");
+      });
       const listed = await client.listTools(undefined, { timeout: 60_000 });
       const capabilities = appCapabilities(manifest.name, listed.tools as Parameters<typeof appCapabilities>[1]);
       const accepted = this.register(id, manifest.name, capabilities, state);
       state.tools = accepted.map((item) => item.name);
       this.lastError.delete(id);
       this.log("app started", id, manifest.version, state.tools.join(","));
+      this.startCards(id);
     } catch (error) {
       this.lastError.set(id, `start failed: ${error instanceof Error ? error.message : error}`.slice(0, 300));
+      this.note(id, `没有启动起来：${error instanceof Error ? error.message : error}`, "ash");
       this.log("app failed to start", id, error instanceof Error ? error.message : error);
       if (this.running.get(id) === state) await this.exited(id, state);
     }
@@ -328,22 +380,127 @@ export class AppRuntime {
     }
   }
 
-  private async callTool(id: string, state: Running, message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
+  private callTool(id: string, state: Running, message: Message, context: RouteHandlerContext): Promise<ResponseBody> {
+    return this.invoke(id, state, { word: message.word, body: message.body, from: message.from }, context.signal);
+  }
+
+  /** One call of an app's tool, by the owner (a page, a card) or an agent. A change redraws the app's cards. */
+  private async invoke(id: string, state: Running, call: { word: string; body: Record<string, unknown>; from: string }, signal: AbortSignal): Promise<ResponseBody> {
     try {
-      const result = await state.client.callTool({ name: message.word, arguments: message.body }, undefined, { signal: context.signal, timeout: 590_000 });
+      const result = await state.client.callTool({ name: call.word, arguments: call.body }, undefined, { signal, timeout: 590_000 });
       const content = Array.isArray(result.content) ? result.content : [];
       if (result.isError) {
         const text = content.map((item) => item && typeof item === "object" && (item as { type?: unknown }).type === "text" ? String((item as { text?: unknown }).text ?? "") : "").join("\n").trim();
         return { ok: false, error: { code: "failed", message: text.slice(0, 2000) || "the app's tool failed" } };
       }
-      // The owner's own change on a page: the main agent learns of it (the organ reports back).
-      const capability = message.from === "person:owner" ? state.member?.capabilities().find((item) => item.name === message.word) : undefined;
-      if (capability && capability.effect !== "read") this.ownerChanged(id, message, capability.label, result);
+      const capability = state.member?.capabilities().find((item) => item.name === call.word);
+      // The owner's own change on a page or a card: the main agent learns of it (the organ reports back).
+      if (call.from === "person:owner" && capability && capability.effect !== "read") this.ownerChanged(id, call, capability.label, result);
+      // Whoever changed the app's data, its cards show it; a read may say its cards changed too (_meta.cards_changed).
+      const meta = result._meta && typeof result._meta === "object" ? result._meta as Record<string, unknown> : {};
+      if ((capability && capability.effect !== "read") || meta.cards_changed === true || Array.isArray(meta.cards_changed)) this.cardsChanged(id);
       return { ok: true, result: { content, ...(result.structuredContent && typeof result.structuredContent === "object" ? { structuredContent: result.structuredContent } : {}) } };
     } catch (error) {
-      if (context.signal.aborted) return { ok: false, error: { code: "cancelled", message: "call cancelled" } };
+      if (signal.aborted) return { ok: false, error: { code: "cancelled", message: "call cancelled" } };
       return { ok: false, error: { code: state.stopping || !state.member?.online ? "offline" : "failed", message: error instanceof Error ? error.message.slice(0, 500) : "app call failed" } };
     }
+  }
+
+  // ---- Home-screen cards: drawn from the app's data whenever it changes, and a tap goes to the app itself ----
+
+  /** Connect the home-screen cards (service:widgets); running apps draw theirs at once. */
+  attachCards(host: AppCardHost): void {
+    this.cardHost = host;
+    host.setAppTap((app, card, detail) => this.cardTap(app, card, detail));
+    for (const id of this.running.keys()) if (this.isRunning(id)) this.startCards(id);
+  }
+
+  private startCards(id: string): void {
+    const cards = this.manifest(id)?.cards ?? [];
+    this.stopCards(id);
+    if (!this.cardHost) return;
+    this.cardHost.removeAppCards(id, cards.map((card) => appCardId(id, card.id)));
+    if (!cards.length) return;
+    const minutes = Math.min(...cards.map((card) => card.refresh_min ?? CARD_REFRESH_MIN));
+    const every = setInterval(() => void this.drawCards(id), minutes * 60_000);
+    every.unref?.();
+    this.cardTimers.set(id, { every });
+    void this.drawCards(id);
+  }
+
+  private stopCards(id: string): void {
+    const timers = this.cardTimers.get(id);
+    if (timers) { clearTimeout(timers.soon); clearInterval(timers.every); }
+    this.cardTimers.delete(id);
+  }
+
+  /** The app's data changed: draw its cards again shortly (changes in quick succession once). */
+  private cardsChanged(id: string, delay = CARD_DEBOUNCE_MS): void {
+    const timers = this.cardTimers.get(id);
+    if (!timers || this.closed) return;
+    clearTimeout(timers.soon);
+    timers.soon = setTimeout(() => { timers.soon = undefined; void this.drawCards(id); }, delay);
+    timers.soon.unref?.();
+  }
+
+  /** Draw every card of app <id> from its card tool; one drawing at a time, a change meanwhile draws once more. */
+  drawCards(id: string): Promise<void> {
+    const running = this.drawing.get(id);
+    if (running) { this.redraw.add(id); return running; }
+    const work = (async () => {
+      do {
+        this.redraw.delete(id);
+        const state = this.running.get(id), manifest = this.manifest(id);
+        if (!state?.member?.online || !manifest || !this.cardHost || this.closed) return;
+        for (const card of manifest.cards ?? []) await this.drawCard(id, state, card);
+      } while (this.redraw.has(id) && !this.closed);
+    })().catch((error) => this.log("app cards not drawn", id, error instanceof Error ? error.message : error))
+      .finally(() => { this.drawing.delete(id); });
+    this.drawing.set(id, work);
+    return work;
+  }
+
+  private async drawCard(id: string, state: Running, card: AppCard): Promise<void> {
+    const at = appCardId(id, card.id);
+    const host = this.cardHost!;
+    let a2ui: unknown = null, title = card.title, problem = "";
+    if (!state.tools.includes(card.tool)) problem = `卡片的工具 ${card.tool} 不在这个应用的工具里`;
+    else {
+      try {
+        const result = await state.client.callTool({ name: card.tool, arguments: {} }, undefined, { timeout: CARD_TOOL_MS });
+        const data = result.structuredContent && typeof result.structuredContent === "object" ? result.structuredContent as Record<string, unknown> : null;
+        if (result.isError) problem = `卡片的工具 ${card.tool} 出错了：${clean((Array.isArray(result.content) ? result.content : []).map((item) => (item as { text?: unknown })?.text ?? "").join(" "), 300) || "没有说明"}`;
+        else if (data && Array.isArray(data.components)) a2ui = data;
+        else if (data && data.a2ui && typeof data.a2ui === "object") { a2ui = data.a2ui; title = clean(data.title, 40) || card.title; }
+        else problem = `卡片的工具 ${card.tool} 没有返回卡片：structuredContent 要是 {components, data?, …}`;
+      } catch (error) { problem = `卡片的工具 ${card.tool} 没有回答：${error instanceof Error ? error.message.slice(0, 200) : error}`; }
+    }
+    if (!problem) {
+      const put = host.putAppCard(id, { id: at, title, size: card.size }, a2ui);
+      if (put.ok) { this.cardProblems.delete(at); return; }
+      problem = `卡片画不出来：${put.problem}`;
+    }
+    if (this.cardProblems.get(at) !== problem) this.log("app card problem", at, problem);
+    this.cardProblems.set(at, problem);
+    // Never a blank spot: until the app draws it, the card says so and opens the app.
+    if (!host.cardInfo(at)) host.putAppCard(id, { id: at, title: card.title, size: card.size }, {
+      components: [{ id: "root", component: "Column", justify: "center", children: ["t", "m"], action: { openApp: { app: id } } },
+        { id: "t", component: "Text", text: card.title, variant: "h4" }, { id: "m", component: "Text", text: "暂时画不出来，点开看看", variant: "caption" }] });
+  }
+
+  /** A tap, toggle or choice on one of the app's cards: the app's action tool, as the owner's own change. */
+  private async cardTap(id: string, widgetCard: string, detail: Record<string, unknown>): Promise<void> {
+    const card = (this.manifest(id)?.cards ?? []).find((item) => appCardId(id, item.id) === widgetCard);
+    const state = this.running.get(id);
+    if (!card || !state?.member?.online) return;
+    if (card.action && state.tools.includes(card.action)) {
+      const pick = (key: string) => detail[key] !== undefined ? { [key]: detail[key] } : {};
+      const body = { card: card.id, action: detail.action, ...pick("component"), ...pick("item"), ...pick("checked"), ...pick("value"), ...pick("context") };
+      const answer = await this.invoke(id, state, { word: card.action, body, from: "person:owner" }, AbortSignal.timeout(60_000));
+      if (!answer.ok) this.log("app card tap failed", widgetCard, answer.error.message);
+    }
+    // Drawn again whatever happened, so the card shows the app's data, not what the tap assumed.
+    this.cardsChanged(id, 0);
   }
 
   /** The server went away: mark offline and restart with backoff (1 s, doubling, at most a minute). */
@@ -357,12 +514,14 @@ export class AppRuntime {
     this.failures.set(id, failures);
     const delay = this.options.backoffMs?.(failures) ?? Math.min(60_000, 1000 * 2 ** (failures - 1));
     this.log("app exited; restarting", id, `in ${delay} ms`);
+    this.note(id, `服务停了，${Math.round(delay / 100) / 10} 秒后重启（第 ${failures} 次）`, "ash");
     clearTimeout(this.timers.get(id));
     this.timers.set(id, setTimeout(() => { this.timers.delete(id); if (this.grants.get(id)?.enabled) void this.launch(id); }, delay));
   }
 
   async stop(id: string): Promise<void> {
     clearTimeout(this.timers.get(id)); this.timers.delete(id);
+    this.stopCards(id);
     const state = this.running.get(id);
     this.bridge.unbind(id);
     try { this.options.members.removeApp(`app:${id}`); } catch { /* not registered */ }
@@ -371,6 +530,32 @@ export class AppRuntime {
     if (state.member) state.member.online = false;
     this.running.delete(id);
     try { await state.client.close(); } catch { /* already gone */ }
+  }
+
+  /** One or more lines of an app's output, kept for apps.logs (bounded). */
+  private note(id: string, text: string, stream: "stderr" | "ash"): void {
+    let log = this.output.get(id);
+    if (!log) { log = { lines: [], exit: null }; this.output.set(id, log); }
+    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    for (const line of text.split(/\r?\n/)) if (line.trim()) log.lines.push(`${time} ${stream === "ash" ? "[Ash] " : ""}${line.slice(0, LOG_LINE_CHARS)}`);
+    if (log.lines.length > LOG_LINES) log.lines.splice(0, log.lines.length - LOG_LINES);
+  }
+
+  /** apps.logs: the server's recent stderr and ash's notes on it, and how it last ended. */
+  logs(id: string, lines = 100): { id: string; running: boolean; lines: string[]; last_exit: { ts: number; code: number | null; signal: string | null; reason: string } | null; error?: string } {
+    const log = this.output.get(id);
+    const error = this.lastError.get(id) ?? (this.found.get(id) && "error" in this.found.get(id)! ? (this.found.get(id) as { error: string }).error : undefined);
+    return { id, running: this.isRunning(id), lines: (log?.lines ?? []).slice(-Math.max(1, Math.min(LOG_LINES, lines))), last_exit: log?.exit ?? null, ...(error ? { error } : {}) };
+  }
+
+  /** The app's data folder (app.json data_dir) on this host, or why there is none. */
+  private dataDir(id: string): { dir: string } | { problem: string } {
+    const manifest = this.manifest(id), dir = this.dir(id);
+    if (!manifest || !dir) return { problem: `没有应用 ${id}` };
+    if (!manifest.data_dir) return { problem: `${this.agentPath(id)}/app.json 没写 data_dir：Ash 不知道哪些文件是它的数据。把数据放进一个子文件夹（如 data/），在 app.json 写 "data_dir": "data"` };
+    const data = join(dir, manifest.data_dir);
+    try { if (lstatSync(data).isSymbolicLink()) return { problem: `${manifest.data_dir} 是一个链接，Ash 不去清它指向的地方` }; } catch { /* not there yet: nothing to clear */ }
+    return { dir: data };
   }
 
   /** An app's MCP client, for reading its UI resources. */
@@ -443,8 +628,10 @@ export class AppRuntime {
       while (this.offered.size > 64) this.offered.delete(this.offered.keys().next().value!);
       const who = origin === "builtin" ? "Ash 自带" : origin === "agent" ? "Ash 自己写的，没有发布过，也没有别人检查过"
         : `发布者写的是「${clean(manifest.publisher, 40)}」，Ash 无法核实`;
+      const cards = (manifest.cards ?? []).map((card) => `「${clean(card.title, 20)}」`).join("、");
       return { title: origin === "agent" ? `安装 Ash 写的应用「${clean(manifest.name, 20)}」` : `安装「${clean(manifest.name, 20)}」`,
         detail: `${clean(manifest.name, 40)} ${manifest.version}（${who}）：${clean(manifest.summary, 200)}\n它需要：\n${lines.length ? lines.join("\n") : "· 不需要用 Ash 的其他东西"}\n` +
+          (cards ? `它带桌面卡片 ${cards}：用「Ash 卡片」小组件放到桌面上，显示它自己的数据。\n` : "") +
           `批准后它在容器里运行（文件在 ${this.agentPath(id)}/），成为 app:${id}；可以随时撤销。` };
     }
     if (/^app:/.test(request.from)) {
@@ -584,11 +771,62 @@ export class AppRuntime {
         await this.stop(id);
         return { ok: true, result: this.info(id)! };
       }
+      case "apps.logs": {
+        if (!this.found.has(id)) return fail("not_found", `no app ${id}; apps.list shows what exists`);
+        return { ok: true, result: this.logs(id, typeof message.body.lines === "number" ? message.body.lines : 100) };
+      }
+      case "apps.restart": {
+        this.rediscover(id);
+        const manifest = this.manifest(id), grant = this.grants.get(id);
+        if (!this.found.has(id)) return fail("not_found", `${this.agentPath(id)}/ 下没有应用`);
+        if (!grant) return fail("failed", `${id} 还没装：用 apps.install`);
+        if (!grant.enabled) return fail("failed", `${id} 停用了：用 apps.enable 重新打开`);
+        const report = await this.validate({ id });
+        if (!report.ok || !manifest) return this.refusal(report);
+        if (JSON.stringify(manifest.needs ?? []) !== JSON.stringify(grant.needs))
+          return fail("failed", `${this.agentPath(id)}/app.json 的 needs 和主人批准的不一样了：要用 apps.install 让主人重新批准，没有重启`);
+        await this.stop(id);
+        this.failures.delete(id);
+        await this.launch(id);
+        const info = this.info(id)!;
+        return info.running ? { ok: true, result: { ...info, problems: report.problems } }
+          : fail("failed", `重启了但没起来：${info.error ?? "原因见 apps.logs"}`);
+      }
+      case "apps.reset": {
+        if (!this.found.has(id)) return fail("not_found", `no app ${id}`);
+        const data = this.dataDir(id);
+        if ("problem" in data) return fail("failed", data.problem);
+        const was = this.running.has(id);
+        await this.stop(id);
+        rmSync(data.dir, { recursive: true, force: true });
+        mkdirSync(data.dir, { recursive: true });
+        this.note(id, "数据清空了（apps.reset）", "ash");
+        if (was && this.grants.get(id)?.enabled) await this.launch(id);
+        return { ok: true, result: { ...this.info(id)!, cleared: `${this.agentPath(id)}/${this.manifest(id)!.data_dir}` } };
+      }
+      case "apps.remove": {
+        if (!this.found.has(id)) return fail("not_found", `no app ${id}`);
+        if (BUILTIN_APPS.some((app) => app.id === id))
+          return fail("failed", `${id} 是 Ash 自带的应用，删了下次启动又会装回来：用 apps.disable 停用它（apps.reset 清空它的数据）`);
+        const keep = message.body.keep_data === true;
+        await this.stop(id);
+        this.grants.revoke(id);
+        this.cardHost?.removeAppCards(id);
+        const root = this.options.launcher?.root() ?? null;
+        if (!keep && root && ID.test(id)) {
+          rmSync(join(root, id), { recursive: true, force: true });
+          this.found.delete(id);
+          this.output.delete(id);
+          return { ok: true, result: { id, removed: true, kept: null } };
+        }
+        this.note(id, "卸载了，文件夹留着（keep_data）", "ash");
+        return { ok: true, result: { id, removed: true, kept: this.agentPath(id) } };
+      }
       case "apps.revoke": {
         if (!this.found.has(id)) return fail("not_found", `no app ${id}`);
         const need = typeof message.body.need === "string" ? message.body.need : undefined;
         const left = this.grants.revoke(id, need);
-        if (!left) await this.stop(id);
+        if (!left) { await this.stop(id); this.cardHost?.removeAppCards(id); }
         return { ok: true, result: this.info(id)! };
       }
       default: return fail("not_found", "unknown word");

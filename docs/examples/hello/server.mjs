@@ -2,9 +2,9 @@
 // 在 stdin/stdout 上说 MCP（每行一条 JSON-RPC 2.0 消息）。
 //   要改的：TOOLS（有哪些工具）和 handle()（工具怎么做）。页面在 ui/ 里：ui/<页面 id>.html 是那一页的正文，
 //   ui/app.css、ui/app.js 每页共用，由 page() 拼成一整页交给 Ash。页面列表来自 app.json 的 surfaces。
-//   数据放在 ASH_APP_DIR（就是这个文件夹）里，例如 data.json。
+//   主人的数据放在 app.json 的 data_dir（data/）里：apps.reset 清空的就是它，apps.remove {keep_data} 留下的也是它。
 //   stdout 只能走协议：日志请用 console.error（下面已把 console.log 转到 stderr）。
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -13,10 +13,11 @@ const DIR = process.env.ASH_APP_DIR || process.cwd();
 const APP = JSON.parse(readFileSync(join(DIR, "app.json"), "utf8"));
 const UI_MIME = "text/html;profile=mcp-app";
 
-// ---- 数据：这个应用自己的一个 JSON 文件 ----
-const DATA = join(DIR, "data.json");
+// ---- 数据：data_dir 里的一个 JSON 文件 ----
+const DATA_DIR = join(DIR, APP.data_dir ?? "data");
+const DATA = join(DATA_DIR, "data.json");
 const load = () => { try { return existsSync(DATA) ? JSON.parse(readFileSync(DATA, "utf8")) : {}; } catch { return {}; } };
-const save = (data) => { writeFileSync(`${DATA}.tmp`, JSON.stringify(data, null, 1)); renameSync(`${DATA}.tmp`, DATA); };
+const save = (data) => { mkdirSync(DATA_DIR, { recursive: true }); writeFileSync(`${DATA}.tmp`, JSON.stringify(data, null, 1)); renameSync(`${DATA}.tmp`, DATA); };
 
 // ---- 回 Ash（ASH_MCP_URL）：只能用主人安装时批准的（app.json 的 needs）----
 //   await ash("capability_call", { member: "device:phone", word: "health.read", body: { … } })

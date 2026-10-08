@@ -332,7 +332,7 @@ test("the main agent sees its installed apps as organs: one line each, what it i
     assert.equal(w.runtime.context(), "", "nothing installed, nothing listed");
     await install(w, "fixture");
     const lines = w.runtime.context().split("\n");
-    assert.match(lines[0]!, /^Your apps \(organs of Ash: what belongs to an app's job goes into it; .*no approval card\):$/);
+    assert.match(lines[0]!, /^Your apps \(organs of Ash: what belongs to an app's job goes into it; .*no approval card; .*widget\.bind.*\):$/);
     assert.deepEqual(lines.slice(1), ["- app:fixture「测试应用」：记主人和 Ash 的待办：主人说要做什么事时用它；工具 fixture.read, fixture.write, fixture.wipe, fixture.crash, fixture.pay, fixture.fail"]);
     assert.equal(w.runtime.info("other")!.role, "A fixture", "without a role, its summary stands in");
     await w.router.send(screen, { to: "service:apps", kind: "request", word: "apps.disable", body: { id: "fixture" }, wait: true });

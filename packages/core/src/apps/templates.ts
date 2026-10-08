@@ -95,9 +95,9 @@ const SERVER_HEAD = (name: string) => `// ${name} 的服务（Ash 应用契约 a
 // 在 stdin/stdout 上说 MCP（每行一条 JSON-RPC 2.0 消息）。
 //   要改的：TOOLS（有哪些工具）和 handle()（工具怎么做）。页面在 ui/ 里：ui/<页面 id>.html 是那一页的正文，
 //   ui/app.css、ui/app.js 每页共用，由 page() 拼成一整页交给 Ash。页面列表来自 app.json 的 surfaces。
-//   数据放在 ASH_APP_DIR（就是这个文件夹）里，例如 data.json。
+//   主人的数据放在 app.json 的 data_dir（data/）里：apps.reset 清空的就是它，apps.remove {keep_data} 留下的也是它。
 //   stdout 只能走协议：日志请用 console.error（下面已把 console.log 转到 stderr）。
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -106,10 +106,11 @@ const DIR = process.env.ASH_APP_DIR || process.cwd();
 const APP = JSON.parse(readFileSync(join(DIR, "app.json"), "utf8"));
 const UI_MIME = "text/html;profile=mcp-app";
 
-// ---- 数据：这个应用自己的一个 JSON 文件 ----
-const DATA = join(DIR, "data.json");
+// ---- 数据：data_dir 里的一个 JSON 文件 ----
+const DATA_DIR = join(DIR, APP.data_dir ?? "data");
+const DATA = join(DATA_DIR, "data.json");
 const load = () => { try { return existsSync(DATA) ? JSON.parse(readFileSync(DATA, "utf8")) : {}; } catch { return {}; } };
-const save = (data) => { writeFileSync(\`\${DATA}.tmp\`, JSON.stringify(data, null, 1)); renameSync(\`\${DATA}.tmp\`, DATA); };
+const save = (data) => { mkdirSync(DATA_DIR, { recursive: true }); writeFileSync(\`\${DATA}.tmp\`, JSON.stringify(data, null, 1)); renameSync(\`\${DATA}.tmp\`, DATA); };
 
 // ---- 回 Ash（ASH_MCP_URL）：只能用主人安装时批准的（app.json 的 needs）----
 //   await ash("capability_call", { member: "device:phone", word: "health.read", body: { … } })
@@ -190,54 +191,165 @@ lines.on("close", () => process.exit(0));
 
 const js = (value: unknown) => JSON.stringify(value);
 
-/** server.mjs for the given tools: each answers with a placeholder until it is written. */
-export function serverTemplate(id: string, name: string, tools: Required<Pick<ScaffoldTool, "name" | "title" | "description" | "read_only">>[]): string {
-  const list = tools.map((tool) => `  {\n    name: ${js(tool.name)}, title: ${js(tool.title)},\n    description: ${js(tool.description)},\n` +
+type Tool = Required<Pick<ScaffoldTool, "name" | "title" | "description" | "read_only">>;
+
+/** The working list every new app starts with: its tools, by name suffix. */
+const LIST_TOOLS: { suffix: string; title: string; description: string; read_only: boolean; input: string }[] = [
+  { suffix: "list", title: "看清单", description: "Every item, open ones first: {items:[{id, title, done, at}]}.", read_only: true,
+    input: `{ type: "object", properties: {}, additionalProperties: false }` },
+  { suffix: "add", title: "加一条", description: "Add an item: title.", read_only: false,
+    input: `{ type: "object", properties: { title: { type: "string", minLength: 1, maxLength: 200 } }, required: ["title"], additionalProperties: false }` },
+  { suffix: "done", title: "标记完成", description: "Mark an item (its id) done (done: true) or not done (done: false).", read_only: false,
+    input: `{ type: "object", properties: { item: { type: "string", minLength: 1 }, done: { type: "boolean" } }, required: ["item", "done"], additionalProperties: false }` },
+  { suffix: "remove", title: "删掉一条", description: "Remove an item (its id).", read_only: false,
+    input: `{ type: "object", properties: { item: { type: "string", minLength: 1 } }, required: ["item"], additionalProperties: false }` },
+  { suffix: "card", title: "画桌面卡片", description: "The home-screen card (A2UI) drawn from the list. Ash calls it whenever the app's data changes.", read_only: true,
+    input: `{ type: "object", properties: {}, additionalProperties: false }` },
+  { suffix: "card.tap", title: "在桌面卡片上勾选", description: "A tap on the home-screen card (sent by Ash): ticks or unticks the item.", read_only: false,
+    input: `{ type: "object", properties: { card: { type: "string" }, action: { type: "string" }, component: { type: "string" }, item: { type: "string" }, checked: { type: "boolean" },\n      value: { type: "array", items: { type: "string" } }, context: { type: "object" } }, required: ["card", "action"], additionalProperties: false }` },
+];
+
+/** What each list tool does, in server.mjs. */
+const LIST_CASES: Record<string, string> = {
+  list: `{ const items = load().items ?? []; return { items: [...items.filter((item) => !item.done), ...items.filter((item) => item.done)] }; }`,
+  add: `{
+      const title = String(args.title ?? "").trim().slice(0, 200);
+      if (!title) throw new Error("要写点什么");
+      const data = load();
+      const item = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title, done: false, at: Date.now() };
+      data.items = [...(data.items ?? []), item];
+      save(data);
+      return { item, activity: \`加了一条：\${title}\` };
+    }`,
+  done: `{
+      const data = load(), item = find(data, args.item);
+      item.done = args.done !== false;
+      save(data);
+      return { item, activity: \`\${item.done ? "勾掉了" : "取消了勾选"}：\${item.title}\` };
+    }`,
+  remove: `{
+      const data = load(), item = find(data, args.item);
+      data.items = data.items.filter((entry) => entry !== item);
+      save(data);
+      return { removed: item.id, activity: \`删掉了：\${item.title}\` };
+    }`,
+  card: `return card();`,
+  "card.tap": `{
+      // 卡片上一条的勾选框：item 是那一条的 id，checked 是勾上还是取消。别的点击（没有 item）这里不用管。
+      if (args.item === undefined) return { ignored: true };
+      const data = load(), item = find(data, args.item);
+      item.done = typeof args.checked === "boolean" ? args.checked : !item.done;
+      save(data);
+      return { item, activity: \`在桌面卡片上\${item.done ? "勾掉了" : "取消了勾选"}：\${item.title}\` };
+    }`,
+};
+
+const CARD_FUNCTION = (id: string) => `
+// ---- 桌面卡片（app.json 的 cards）：数据一变（页面、Agent、卡片上点的都算），Ash 就调用 ${id}.card 重画；
+// 主人点卡片上的勾选框，Ash 调用 ${id}.card.tap {card, action, item, checked}。卡片的格式和 widget.card.put 的 a2ui 一样（A2UI：components + data）。
+function card() {
+  const items = load().items ?? [];
+  const open = items.filter((item) => !item.done);
+  const shown = [...open, ...items.filter((item) => item.done)].slice(0, 30);
+  return {
+    components: [
+      { id: "root", component: "Column", children: ["head", "list", "empty"] },
+      { id: "head", component: "Row", align: "center", children: ["title", "left"], action: { openApp: { app: APP.id } } },
+      { id: "title", component: "Text", text: APP.name, variant: "h4", weight: 1 },
+      { id: "left", component: "Badge", text: { path: "/left" } },
+      { id: "list", component: "List", children: { componentId: "row", path: "/items" } },
+      { id: "row", component: "CheckBox", label: { path: "title" }, value: { path: "done" }, action: { event: { name: "toggle" } } },
+      { id: "empty", component: "Text", text: "还没有，或者都做完了", variant: "caption", visible: { path: "/empty" } },
+    ],
+    data: { left: String(open.length), empty: shown.length === 0, items: shown.map(({ id, title, done }) => ({ id, title, done })) },
+  };
+}
+`;
+
+/** server.mjs: the working list, its card, and each further tool answering with a placeholder until it is written. */
+export function serverTemplate(id: string, name: string, list: Tool[], extra: Tool[]): string {
+  const listed = list.map((tool, index) => `  {\n    name: ${js(tool.name)}, title: ${js(tool.title)},\n    description: ${js(tool.description)},\n` +
+    `    inputSchema: ${LIST_TOOLS[index]!.input},\n    annotations: { readOnlyHint: ${tool.read_only} },\n  },`);
+  const more = extra.map((tool) => `  {\n    name: ${js(tool.name)}, title: ${js(tool.title)},\n    description: ${js(tool.description)},\n` +
     `    inputSchema: { type: "object", properties: {}, additionalProperties: false },\n` +
-    `    annotations: { readOnlyHint: ${tool.read_only} },\n  },`).join("\n");
-  const cases = tools.map((tool) => `    case ${js(tool.name)}:\n      // TODO：在这里写「${tool.title}」。args 是调用参数（按 inputSchema）。\n` +
-    `      return { text: ${js(`「${tool.title}」还没写好：在 server.mjs 的 handle() 里实现它。`)}, args };`).join("\n");
+    `    annotations: { readOnlyHint: ${tool.read_only} },\n  },`);
+  const cases = [
+    ...list.map((tool, index) => `    case ${js(tool.name)}: ${LIST_CASES[LIST_TOOLS[index]!.suffix]}`),
+    ...extra.map((tool) => `    case ${js(tool.name)}:\n      // TODO：在这里写「${tool.title}」。args 是调用参数（按 inputSchema）。\n` +
+      `      return { text: ${js(`「${tool.title}」还没写好：在 server.mjs 的 handle() 里实现它。`)}, args };`),
+  ].join("\n");
   return `${SERVER_HEAD(name)}
 // ---- 工具：Agent 用 capability_call {member: "app:${id}", word: 工具名} 调用，页面用 app.call(工具名) 调用 ----
-// readOnlyHint: true 是只读，其余都算「改数据」。Agent 和主人（页面里点）都直接用，不弹审批卡：主人安装时已经批准了这个应用。
+// readOnlyHint: true 是只读，其余都算「改数据」。Agent 和主人（页面里点、桌面卡片上点）都直接用，不弹审批卡：主人安装时已经批准了这个应用。
+// 开头这几个是一张能用的清单（data.json 的 items）：改成这个应用真正要管的东西。
 const TOOLS = [
-${list}
+${[...listed, ...more].join("\n")}
 ];
 
 // 要存东西：const data = load(); …; save(data);
+const find = (data, id) => {
+  const item = (data.items ?? []).find((entry) => entry.id === String(id));
+  if (!item) throw new Error("没有这一条：可能已经删掉了");
+  return item;
+};
+
+// 改数据的工具返回 activity（一句话说改了什么）：主人在页面或卡片上改的时候，Ash 看到的就是这句话。
 async function handle(name, args) {
   switch (name) {
 ${cases}
   }
   throw new Error(\`没有这个工具：\${name}\`);
 }
-${SERVER_TAIL}`;
+${CARD_FUNCTION(id)}${SERVER_TAIL}`;
 }
 
-/** The body of one page: the first page tries the first tool; the others are empty pages to fill. */
-export function pageTemplate(surface: ScaffoldSurface, first: boolean, tool: { name: string; title: string } | null): string {
-  if (!first || !tool) return `<h1>${surface.title}</h1>\n<div class="card muted">这一页还空着：在 ui/${surface.id}.html 里写它。</div>\n`;
+/** The first page: the list with done/undone toggles and a box to add one; the other pages are empty to fill. */
+export function pageTemplate(surface: ScaffoldSurface, first: boolean, id: string): string {
+  if (!first) return `<h1>${surface.title}</h1>\n<div class="card muted">这一页还空着：在 ui/${surface.id}.html 里写它。</div>\n`;
   return `<h1>${surface.title}</h1>
 <section data-view="main">
-  <div class="card">
-    <div class="muted">点一下，调用工具 ${tool.name}</div>
-    <div class="row" style="margin-top:8px"><button id="run" type="button">${tool.title}</button></div>
-    <div id="out" style="margin-top:8px"></div>
-  </div>
+  <form id="add" class="card row"><input id="title" maxlength="200" placeholder="写一条…" autocomplete="off"><button type="submit">加一条</button></form>
+  <ul id="list" class="list"></ul>
+  <div id="out" class="muted"></div>
   <button class="plain" type="button" onclick="app.show('about')">关于</button>
 </section>
 <section data-view="about" hidden>
-  <div class="card">同一页里的另一个视图：用 app.show("视图名") 切换，不用另开页面。</div>
+  <div class="card">同一页里的另一个视图：用 app.show("视图名") 切换，不用另开页面。这里的每个操作都是调用工具（app.call），Ash 用的是同一套工具。</div>
   <button class="plain" type="button" onclick="app.show('main')">返回</button>
 </section>
 <script>
 (() => {
-  const out = document.getElementById("out");
-  document.getElementById("run").addEventListener("click", async () => {
-    out.className = "muted"; out.textContent = "正在调用…";
-    try { const result = await app.call(${js(tool.name)}); out.className = ""; out.textContent = result.text ?? JSON.stringify(result); }
-    catch (error) { out.className = "error"; out.textContent = error.message; }
+  const list = document.getElementById("list"), out = document.getElementById("out"), input = document.getElementById("title");
+  const say = (text, error) => { out.className = error ? "error" : "muted"; out.textContent = text; };
+  async function refresh() {
+    try {
+      const { items = [] } = await app.call(${js(`${id}.list`)});
+      list.replaceChildren(...items.map((item) => {
+        const box = app.el("input", { type: "checkbox", "aria-label": "做完了" });
+        box.checked = item.done;
+        box.addEventListener("change", async () => {
+          box.disabled = true;
+          try { await app.call(${js(`${id}.done`)}, { item: item.id, done: box.checked }); await refresh(); }
+          catch (error) { box.checked = !box.checked; box.disabled = false; say(error.message, true); }
+        });
+        const remove = app.el("button", { type: "button", class: "plain small" }, "删掉");
+        remove.addEventListener("click", async () => {
+          try { await app.call(${js(`${id}.remove`)}, { item: item.id }); await refresh(); } catch (error) { say(error.message, true); }
+        });
+        return app.el("li", { class: item.done ? "item done" : "item" }, app.el("label", {}, box, app.el("span", {}, item.title)), remove);
+      }));
+      say(items.length ? "" : "还没有。写一条，或者让 Ash 帮你记。");
+    } catch (error) { say(error.message, true); }
+  }
+  document.getElementById("add").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const title = input.value.trim();
+    if (!title) return;
+    try { await app.call(${js(`${id}.add`)}, { title }); input.value = ""; await refresh(); } catch (error) { say(error.message, true); }
   });
+  // Ash 或桌面卡片也会改数据：回到这一页时重新读。
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+  refresh();
 })();
 </script>
 `;
@@ -246,25 +358,34 @@ export function pageTemplate(surface: ScaffoldSurface, first: boolean, tool: { n
 /** Every file of a new app, by its path inside the app folder. */
 export function scaffoldFiles(input: ScaffoldInput): Record<string, string | Buffer> {
   const surfaces = input.surfaces?.length ? input.surfaces : [{ id: "home", title: "首页" }];
-  const tools = (input.tools?.length ? input.tools : [{ name: `${input.id}.status`, title: "看状态", description: "What the app has now.", read_only: true }])
+  // The working list's tools; a tool the agent named the same keeps its title and description.
+  const given = new Map((input.tools ?? []).map((tool) => [tool.name, tool]));
+  const list = LIST_TOOLS.map((tool) => {
+    const name = `${input.id}.${tool.suffix}`, mine = given.get(name);
+    return { name, title: mine?.title ?? tool.title, description: mine?.description ?? tool.description, read_only: tool.read_only };
+  });
+  const extra = (input.tools ?? []).filter((tool) => !list.some((item) => item.name === tool.name))
     .map((tool) => ({ name: tool.name, title: tool.title ?? tool.name, description: tool.description ?? tool.title ?? tool.name, read_only: tool.read_only ?? false }));
   const manifest = {
     contract: "ash-app/1", id: input.id, name: input.name, version: "0.1.0", icon: "icon.png", summary: input.summary ?? input.name,
     // What this organ is for and when Ash uses it; the agent sees it in every conversation. Sharpen it when the app grows.
     role: input.role ?? input.summary ?? input.name, publisher: input.publisher,
     server: { command: "node", args: ["server.mjs"] },
+    // The owner's data lives here: apps.reset empties it, apps.remove {keep_data} keeps it.
+    data_dir: "data",
     surfaces: surfaces.map((surface) => ({ id: surface.id, title: surface.title, resource: `ui://${input.id}/${surface.id}` })),
+    // A home-screen card drawn from the app's data (server.mjs card()); a tick on it calls the action tool.
+    cards: [{ id: "main", title: input.name.slice(0, 40), size: "4x4", tool: `${input.id}.card`, action: `${input.id}.card.tap` }],
     needs: [],
   };
   const files: Record<string, string | Buffer> = {
     "app.json": `${JSON.stringify(manifest, null, 2)}\n`,
-    "server.mjs": serverTemplate(input.id, input.name, tools),
+    "server.mjs": serverTemplate(input.id, input.name, list, extra),
     "ui/app.js": APP_JS,
     "ui/app.css": APP_CSS,
     "icon.png": iconPng(input.id),
   };
-  const firstTool = tools.find((tool) => tool.read_only) ?? tools[0] ?? null;
-  surfaces.forEach((surface, index) => { files[`ui/${surface.id}.html`] = pageTemplate(surface, index === 0, firstTool); });
+  surfaces.forEach((surface, index) => { files[`ui/${surface.id}.html`] = pageTemplate(surface, index === 0, input.id); });
   return files;
 }
 
