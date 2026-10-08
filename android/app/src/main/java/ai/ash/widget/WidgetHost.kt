@@ -86,7 +86,7 @@ object WidgetHost {
             finally { done.countDown() }
         }
         // The core waits about three seconds for this answer; what is not checked by then is reported later.
-        done.await(2, TimeUnit.SECONDS)
+        if (Looper.myLooper() != Looper.getMainLooper()) done.await(2, TimeUnit.SECONDS)
         return 200 to JSONObject().put("ok", true).put("widgets", placed(app)).put("rendered", drain())
     }
 
