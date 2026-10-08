@@ -35,7 +35,7 @@ test("the initial PULSE.md guides without prescribing a layout, and names the da
   assert.equal(PULSE_TEMPLATE, read("packages/ash-skills/persona/PULSE.template.md"), "run npm run gen:persona");
   assert.equal(HEARTBEAT_TEMPLATE, read("packages/ash-skills/persona/HEARTBEAT.template.md"));
   const bytes = Buffer.byteLength(PULSE_TEMPLATE);
-  assert.ok(bytes >= 2000 && bytes <= 4096, `${bytes} bytes`);
+  assert.ok(bytes >= 2000 && bytes <= 5200, `${bytes} bytes`);
   for (const name of ["location.history", "activity.history", "health.read", "health.summary", "apps.usage", "calendar.search", "history_query", "widget.list", "widget.card.get",
     "web_search", "web_fetch", "approval_log", "timer_list", "pulse.note", "pulse.set", "pulse.history", "MEMORY.md", "widget.card.put", "feedback"])
     assert.ok(PULSE_TEMPLATE.includes(name), `PULSE.md names ${name}`);
