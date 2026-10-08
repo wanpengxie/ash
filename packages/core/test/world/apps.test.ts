@@ -23,6 +23,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "../../../..");
 const fixtureServer = join(here, "fixtures/fake-app-server.mjs");
 const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+/** A declared agent other than the main one: what it asks to widen for an app still reaches the owner. */
+const helper: TrustedRouteContext = { ...agent, member: "agent:helper", transportPrincipal: "agent:helper" };
 const screen: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "owner-principal", local: true, remote: false, ownerProxy: true,
   screenId: "screen:approved", screenLabel: "Test screen" };
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner", transport: "api", ownerProxy: true, local: true, remote: false };
@@ -74,9 +76,16 @@ async function world(options: { apps?: Record<string, unknown>; builtins?: boole
   return { dir, root, ledger, router, members, runtime, close, wakes, looks: () => looks, pokes: () => pokes };
 }
 
-/** An agent asks to install; the owner answers the gate card on a screen. */
-async function install(w: Awaited<ReturnType<typeof world>>, id: string, choice: "once" | "deny" = "once") {
+/** The main agent installs: it grants the app's needs itself, no card. */
+async function install(w: Awaited<ReturnType<typeof world>>, id: string) {
   const sent = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
+  await until(() => Boolean(w.ledger.responseTo(sent.id)), "install result", 15000);
+  return { id: sent.id, reply: w.ledger.responseTo(sent.id)! };
+}
+
+/** Another agent asks to install; the owner answers the gate card on a screen. */
+async function installAsked(w: Awaited<ReturnType<typeof world>>, id: string, choice: "once" | "deny" = "once") {
+  const sent = await w.router.send(helper, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
   await until(() => Boolean(w.ledger.gateCase(sent.id)), "install card");
   const gate = w.ledger.gateCase(sent.id)!;
   const ask = w.ledger.byId(gate.askId)!;
@@ -144,11 +153,11 @@ test("an app's tools become capabilities with an honest effect, no risk of their
   assert.equal(caps[1]!.label, "在健康里health.log");
 });
 
-test("install asks the owner on the gate card listing every need; approval stores the grants and starts app:<id>", async () => {
+test("another agent's install asks the owner on the gate card listing every need; approval stores the grants and starts app:<id>", async () => {
   const w = await world();
   try {
-    // An agent's install is never auto-approved: no reviewer runs, the card names what the app needs.
-    const denied = await install(w, "fixture", "deny");
+    // An agent other than the main one is never auto-approved: no reviewer runs, the card names what the app needs.
+    const denied = await installAsked(w, "fixture", "deny");
     assert.equal(denied.ask.body.title, "安装「测试应用」");
     assert.match(String(denied.ask.body.detail), /看一眼（device:fake：look）/);
     assert.match(String(denied.ask.body.detail), /入口卡片/);
@@ -156,7 +165,7 @@ test("install asks the owner on the gate card listing every need; approval store
     assert.equal(denied.reply.body.ok, false);
     assert.equal(existsSync(join(w.dir, "state/app-grants.json")), false);
 
-    const { reply } = await install(w, "fixture");
+    const { reply } = await installAsked(w, "fixture");
     assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
     const grants = JSON.parse(readFileSync(join(w.dir, "state/app-grants.json"), "utf8"));
     assert.equal(grants.apps.fixture.enabled, true);
@@ -178,6 +187,27 @@ test("install asks the owner on the gate card listing every need; approval store
     assert.match(String(result.result.structuredContent.url), /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     const failed = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.fail", body: {}, wait: true });
     assert.deepEqual(failed.reply!.body, { ok: false, error: { code: "failed", message: "nope" } });
+  } finally { await w.close(); }
+});
+
+test("the main agent's install grants the app's needs itself: no card, the grants recorded, the app runs", async () => {
+  const w = await world();
+  try {
+    const { id, reply } = await install(w, "fixture");
+    assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
+    assert.equal(w.ledger.gateCase(id), null, "no approval case, no card");
+    assert.equal(w.ledger.list({ limit: 1000 }).filter((message) => message.word === "ask").length, 0, "nothing reached the owner");
+    assert.equal(w.ledger.humanPendingList().items.length, 0);
+    const grants = JSON.parse(readFileSync(join(w.dir, "state/app-grants.json"), "utf8"));
+    assert.equal(grants.apps.fixture.enabled, true);
+    assert.deepEqual(grants.apps.fixture.needs, fixtureManifest().needs, "exactly what app.json asks for");
+    assert.equal(w.runtime.isRunning("fixture"), true);
+    const read = await w.router.send(agent, { to: "app:fixture", kind: "request", word: "fixture.read", body: {}, wait: true });
+    assert.equal(read.reply!.body.ok, true);
+    // The grant is used at once: the app's granted device word runs.
+    assert.deepEqual(await w.runtime.bridge.call("fixture", "capability_call", { member: "device:fake", word: "look", body: {} }), { ok: true, result: { seen: true } });
+    // The install itself is in the ledger, as asked by the main agent.
+    assert.ok(w.ledger.list({ limit: 1000 }).some((message) => message.id === id && message.from === "agent:main" && message.word === "apps.install"));
   } finally { await w.close(); }
 });
 
@@ -225,7 +255,7 @@ test("an app reaches ash only within its grants and its events are recorded, rat
   } finally { await w.close(); }
 });
 
-test("a crashed app comes back; disable stops it; enable by an agent asks the owner", async () => {
+test("a crashed app comes back; disable stops it; enable by another agent asks the owner, by the main agent runs at once", async () => {
   const w = await world();
   try {
     await install(w, "fixture");
@@ -239,9 +269,14 @@ test("a crashed app comes back; disable stops it; enable by an agent asks the ow
 
     await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.disable", body: { id: "fixture" }, wait: true });
     assert.equal(w.runtime.isRunning("fixture"), false);
-    const enable = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.enable", body: { id: "fixture" } });
+    const enable = await w.router.send(helper, { to: "service:apps", kind: "request", word: "apps.enable", body: { id: "fixture" } });
     await until(() => Boolean(w.ledger.gateCase(enable.id)), "enable card");
     assert.equal(w.ledger.byId(w.ledger.gateCase(enable.id)!.askId)!.body.title, "重新打开「测试应用」");
+    assert.equal(w.runtime.isRunning("fixture"), false, "not before the owner answers");
+    const enabled = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.enable", body: { id: "fixture" }, wait: true });
+    assert.equal(enabled.reply!.body.ok, true, JSON.stringify(enabled.reply!.body));
+    assert.equal(w.ledger.gateCase(enabled.id), null, "the main agent's enable has no card");
+    assert.equal(w.runtime.isRunning("fixture"), true);
   } finally { await w.close(); }
 });
 
@@ -315,14 +350,22 @@ test("an agent uses an installed app's own tools with no card; the app's own rea
     await assert.rejects(w.router.send(app, { to: "device:phone", kind: "request", word: "health.read", body: {} }), /granted/);
     const refused = await w.runtime.bridge.call("fixture", "capability_call", { member: "device:phone", word: "health.read", body: {} }) as { ok: boolean; error?: { code: string } };
     assert.deepEqual([refused.ok, refused.error?.code], [false, "forbidden"]);
-    // An app granted it reads at once; its granted non-read reach outside still asks the owner on a card.
+    // An app granted it reads at once; its granted non-read reach outside runs too, with no card, and is recorded.
     await install(w, "steps");
     assert.deepEqual(await w.runtime.bridge.call("steps", "capability_call", { member: "device:phone", word: "health.read", body: {} }), { ok: true, result: { rows: [] } });
     const steps: TrustedRouteContext = { ...app, member: "app:steps", transportPrincipal: "app:steps" };
-    const poke = await w.router.send(steps, { to: "device:fake", kind: "request", word: "poke", body: {} });
-    await until(() => Boolean(w.ledger.gateCase(poke.id)), "the app's poke asks the owner");
-    assert.equal(w.ledger.byId(w.ledger.gateCase(poke.id)!.askId)!.body.title, "「测试应用」需要你确认");
-    assert.equal(w.pokes(), 0);
+    const poke = await w.router.send(steps, { to: "device:fake", kind: "request", word: "poke", body: { n: 1 }, wait: true });
+    assert.deepEqual(poke.reply!.body, { ok: true, result: { poked: true } });
+    assert.equal(w.ledger.gateCase(poke.id), null, "no approval case, no card");
+    assert.equal(w.pokes(), 1);
+    assert.deepEqual(await w.runtime.bridge.call("steps", "capability_call", { member: "device:fake", word: "poke", body: { n: 2 } }), { ok: true, result: { poked: true } });
+    assert.equal(w.pokes(), 2);
+    const rows = w.ledger.list({ limit: 1000 }).filter((message) => message.from === "app:steps" && message.to === "device:fake" && message.word === "poke");
+    assert.deepEqual(rows.map((message) => message.body), [{ n: 1 }, { n: 2 }], "every use is in the ledger");
+    assert.equal(w.ledger.list({ limit: 1000 }).filter((message) => message.word === "ask").length, 1, "only the payment's card reached the owner");
+    // Its ungranted words are still refused: fixture was never granted poke.
+    await assert.rejects(w.router.send(app, { to: "device:fake", kind: "request", word: "poke", body: {} }), /granted/);
+    assert.equal(w.pokes(), 2);
   } finally { await w.close(); }
 });
 
@@ -332,7 +375,7 @@ test("the main agent sees its installed apps as organs: one line each, what it i
     assert.equal(w.runtime.context(), "", "nothing installed, nothing listed");
     await install(w, "fixture");
     const lines = w.runtime.context().split("\n");
-    assert.match(lines[0]!, /^Your apps \(organs of Ash: what belongs to an app's job goes into it; .*no approval card\):$/);
+    assert.match(lines[0]!, /^Your apps \(organs of Ash: what belongs to an app's job goes into it; .*no approval card; .*widget\.bind.*\):$/);
     assert.deepEqual(lines.slice(1), ["- app:fixture「测试应用」：记主人和 Ash 的待办：主人说要做什么事时用它；工具 fixture.read, fixture.write, fixture.wipe, fixture.crash, fixture.pay, fixture.fail"]);
     assert.equal(w.runtime.info("other")!.role, "A fixture", "without a role, its summary stands in");
     await w.router.send(screen, { to: "service:apps", kind: "request", word: "apps.disable", body: { id: "fixture" }, wait: true });

@@ -30,6 +30,10 @@ export interface WidgetCard {
   /** What the phone said about drawing this version of the card. */
   phone?: { updated_at: number; problem?: string };
 }
+/** A card as widget.list reports it. */
+export interface WidgetCardInfo {
+  id: string; title: string; size: string; owner: string; updated_at: number; expires_at: number | null; expired: boolean; actions: string[]; problem: string | null;
+}
 export interface PlacedWidget { id: string; type: "ash" | "card" }
 /** What the phone keeps and draws; pushed in full on every change. */
 export interface WidgetState {
@@ -39,6 +43,7 @@ export interface WidgetState {
 }
 
 const bad = (message: string): never => { throw new CardError(message); };
+class Forbidden extends Error {}
 const plain = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
 interface Stored { version: 1; cards: WidgetCard[]; bindings: Record<string, string>; placed: PlacedWidget[] }
@@ -94,6 +99,7 @@ export class WidgetsMember implements Member {
   private queued = false;
   private sending: Promise<void> | null = null;
   private closed = false;
+  private appTap: ((app: string, card: string, detail: Record<string, unknown>) => Promise<void>) | null = null;
 
   constructor(private readonly options: WidgetsOptions) {
     this.store = new WidgetFile(options.file);
@@ -110,7 +116,7 @@ export class WidgetsMember implements Member {
   /** Push once at startup so the phone draws what was saved. */
   start(): void { this.enqueue(); }
 
-  private info(card: WidgetCard) {
+  private info(card: WidgetCard): WidgetCardInfo {
     const problem = card.phone && card.phone.updated_at === card.updated_at ? card.phone.problem ?? null : null;
     return { id: card.id, title: card.title, size: card.size, owner: card.owner, updated_at: card.updated_at, expires_at: card.expires_at,
       expired: card.expires_at !== null && card.expires_at <= this.now(), actions: [...card.actions], problem };
@@ -133,6 +139,7 @@ export class WidgetsMember implements Member {
     try { return await this.dispatch(message); }
     catch (error) {
       if (error instanceof CardError) return { ok: false, error: { code: "bad_request", message: error.message } };
+      if (error instanceof Forbidden) return { ok: false, error: { code: "forbidden", message: error.message } };
       throw error;
     }
   }
@@ -159,26 +166,9 @@ export class WidgetsMember implements Member {
       }
     }
     case "widget.card.put": {
-      const cardId = String(body.id);
-      if (!CARD_ID.test(cardId)) bad("id must be lowercase letters, digits, . _ - (at most 64)");
-      const title = String(body.title ?? "").trim();
-      if (!title || title.length > 40) bad("title must be 1 to 40 characters");
-      if (!SIZES.has(String(body.size))) bad("size must be 2x2, 4x2 or 4x4");
-      const render = validateCard(body.a2ui);
-      const existing = this.state.cards.find((card) => card.id === cardId);
-      if (existing && !this.mayChange(existing, message.from)) return { ok: false, error: { code: "forbidden", message: `card "${cardId}" belongs to ${existing.owner}; only it or the owner may change it` } };
-      if (!existing && this.state.cards.length >= MAX_CARDS) this.purge();
-      if (!existing && this.state.cards.length >= MAX_CARDS) bad(`there are already ${MAX_CARDS} cards; remove one first`);
-      // A replaced card is a new version even within the same millisecond, so the phone's answer matches this one.
-      const now = Math.max(this.now(), (existing?.updated_at ?? 0) + 1);
-      const ttl = body.ttl_min;
-      const card: WidgetCard = { id: cardId, title, size: body.size as WidgetCard["size"], owner: existing?.owner ?? message.from, updated_at: now,
-        expires_at: typeof ttl === "number" ? now + ttl * 60_000 : null, render, actions: cardActions(render),
-        source: structuredClone(body.a2ui as Record<string, unknown>) };
-      this.state.cards = existing ? this.state.cards.map((item) => item.id === cardId ? card : item) : [...this.state.cards, card];
-      this.commit();
+      const card = this.put(message.from, body);
       const phone = await this.drawn(card);
-      return { ok: true, result: { card: this.info(card), bound_widgets: Object.entries(this.state.bindings).filter(([, value]) => value === cardId).map(([key]) => key),
+      return { ok: true, result: { card: this.info(card), bound_widgets: Object.entries(this.state.bindings).filter(([, value]) => value === card.id).map(([key]) => key),
         ...phone } };
     }
     case "widget.card.remove": {
@@ -216,6 +206,66 @@ export class WidgetsMember implements Member {
     }
     return { ok: false, error: { code: "not_found", message: "widget word unavailable" } };
   }
+
+  /** Create or replace a card for [from]; throws a CardError (or Forbidden) saying why not. Unchanged cards are left alone. */
+  private put(from: string, body: Record<string, unknown>, options: { keepUnchanged?: boolean } = {}): WidgetCard {
+    const cardId = String(body.id);
+    if (!CARD_ID.test(cardId)) bad("id must be lowercase letters, digits, . _ - (at most 64)");
+    const title = String(body.title ?? "").trim();
+    if (!title || title.length > 40) bad("title must be 1 to 40 characters");
+    if (!SIZES.has(String(body.size))) bad("size must be 2x2, 4x2 or 4x4");
+    const render = validateCard(body.a2ui);
+    const existing = this.state.cards.find((card) => card.id === cardId);
+    if (existing && !this.mayChange(existing, from)) throw new Forbidden(`card "${cardId}" belongs to ${existing.owner}; only it or the owner may change it`);
+    if (!existing && this.state.cards.length >= MAX_CARDS) this.purge();
+    if (!existing && this.state.cards.length >= MAX_CARDS) bad(`there are already ${MAX_CARDS} cards; remove one first`);
+    const ttl = body.ttl_min;
+    // An app's card is redrawn often with the same content: nothing to send then.
+    if (existing && options.keepUnchanged && ttl === undefined && existing.expires_at === null && existing.title === title && existing.size === body.size &&
+      JSON.stringify(existing.source) === JSON.stringify(body.a2ui)) return existing;
+    // A replaced card is a new version even within the same millisecond, so the phone's answer matches this one.
+    const now = Math.max(this.now(), (existing?.updated_at ?? 0) + 1);
+    const card: WidgetCard = { id: cardId, title, size: body.size as WidgetCard["size"], owner: existing?.owner ?? from, updated_at: now,
+      expires_at: typeof ttl === "number" ? now + ttl * 60_000 : null, render, actions: cardActions(render),
+      source: structuredClone(body.a2ui as Record<string, unknown>) };
+    this.state.cards = existing ? this.state.cards.map((item) => item.id === cardId ? card : item) : [...this.state.cards, card];
+    this.commit();
+    return card;
+  }
+
+  /**
+   * An app's own card (owner app:<id>), drawn from the app's data by ash's app runtime: created or replaced, never
+   * waiting for the phone. A problem (an invalid card, an id another member already uses) comes back as text.
+   */
+  putAppCard(app: string, card: { id: string; title: string; size: string }, a2ui: unknown): { ok: true; changed: boolean } | { ok: false; problem: string } {
+    try {
+      const before = this.state.cards.find((item) => item.id === card.id)?.updated_at;
+      const put = this.put(`app:${app}`, { id: card.id, title: card.title, size: card.size, a2ui }, { keepUnchanged: true });
+      return { ok: true, changed: put.updated_at !== before };
+    } catch (error) {
+      if (error instanceof CardError || error instanceof Forbidden) return { ok: false, problem: error.message };
+      throw error;
+    }
+  }
+
+  /** Remove app <app>'s cards except [keep] (cards it no longer declares, or all when it is gone). */
+  removeAppCards(app: string, keep: readonly string[] = []): void {
+    const owner = `app:${app}`;
+    const gone = new Set(this.state.cards.filter((card) => card.owner === owner && !keep.includes(card.id)).map((card) => card.id));
+    if (!gone.size) return;
+    this.state.cards = this.state.cards.filter((card) => !gone.has(card.id));
+    this.state.bindings = Object.fromEntries(Object.entries(this.state.bindings).filter(([, value]) => !gone.has(value)));
+    this.commit();
+  }
+
+  /** One card as widget.list shows it, or null. */
+  cardInfo(id: string): WidgetCardInfo | null {
+    const card = this.state.cards.find((item) => item.id === id);
+    return card ? this.info(card) : null;
+  }
+
+  /** Where a tap on an app's card goes: the app itself (its declared action tool), set by ash's app runtime. */
+  setAppTap(handler: ((app: string, card: string, detail: Record<string, unknown>) => Promise<void>) | null): void { this.appTap = handler; }
 
   /** Wait briefly for the phone's answer to this version of the card: drawn, or why not. */
   private async drawn(card: WidgetCard): Promise<{ phone: "drawn" | "problem" | "unknown"; problem?: string }> {
@@ -268,6 +318,11 @@ export class WidgetsMember implements Member {
       ...(component.item !== undefined ? { item: component.item } : {}), ...(checked !== undefined && component.component !== "ChoicePicker" ? { checked } : {}),
       ...(value ? { value } : {}), ...(event?.context ? { context: event.context } : {}) };
     await this.options.router.send(service, { to: null, kind: "event", word: "widget.action", body: detail });
+    // An app's card: the tap goes to the app itself, which changes its data and draws the card again.
+    if (/^app:/.test(card.owner) && this.appTap) {
+      try { await this.appTap(card.owner.slice(4), card.id, detail); } catch { /* the app runtime reports its own failures */ }
+      return { ok: true, result: { accepted: true } };
+    }
     // The creator decides what a tap means: an agent hears it as a message in its own turn.
     if (event && AGENT_ID.test(card.owner)) {
       const what = [component.item !== undefined ? `item ${component.item}` : "", checked !== undefined ? `now ${checked ? "checked" : "unchecked"}` : "",

@@ -218,6 +218,7 @@ add("service:widgets", "widget.card.put", "request", obj({ id: { type: "string",
   a2ui: obj({}, [], true), ttl_min: { type: "integer", minimum: 1, maximum: 43200 } }, ["id", "title", "size", "a2ui"]),
   obj({ card: widgetCardInfo, bound_widgets: array(widgetId), phone: choice("drawn", "problem", "unknown"), problem: str }, ["card", "bound_widgets"]),
   { label: "更新桌面卡片", effect: "write", description: "Create or replace (same id) a card the owner can place on the phone home screen with the 'Ash 卡片' widget; widgets already showing it redraw. " +
+    "When the data belongs to an app (a todo list, health numbers…), use that app's own card instead (owner app:<id> in widget.list, drawn from the app's data and kept current; place it with widget.bind) — a copy of its data here goes stale. " +
     "id: lowercase letters, digits, . _ - (at most 64); title: at most 40 characters. The card belongs to whoever created it: only its creator or the owner may replace or remove it. size is the intended widget size (2x2 small, 4x2 wide, 4x4 large). " +
     "ttl_min: after this many minutes the card shows as expired until updated. Invalid cards are refused with the component, property and reason. " +
     "The result says whether the phone drew it (phone: drawn), could not (phone: problem, with problem), or did not answer in time (unknown); a later problem (e.g. an image that failed to load) reaches you as widget.problem. " + WIDGET_A2UI_GUIDE });
@@ -235,13 +236,15 @@ add("service:widgets", "widget.placed", "request", obj({ widgets: { type: "array
   { audience: "owner", label: "记下放好的小组件", effect: "write", description: "The phone reports which Ash widgets are on its home screen, and which cards it could or could not draw. Owner only." });
 add("service:widgets", "widget.action", "event", obj({ card: widgetCardId, action: nonempty, owner: id, title: str, component: str, item: str, checked: bool, value: strings,
   context: obj({}, [], true) }, ["card", "action", "owner"]), undefined,
-  { direction: "out", description: "The owner tapped, toggled or chose something on a home-screen card. owner is the card's creator, who decides what it means; component is the element, item the list item's key, checked / value the new state. The tap itself does nothing else." });
+  { direction: "out", description: "The owner tapped, toggled or chose something on a home-screen card. owner is the card's creator, who decides what it means; component is the element, item the list item's key, checked / value the new state. " +
+    "On an app's card (owner app:<id>) the tap goes to the app's own action tool, which changes the app's data; otherwise the tap itself does nothing else." });
 add("service:widgets", "widget.problem", "event", obj({ card: widgetCardId, owner: id, title: str, problem: nonempty }, ["card", "owner", "problem"]), undefined,
   { direction: "out", description: "The phone could not fully draw a home-screen card (problem says what and why); the card's creator should fix it." });
 // Independent apps (contract ash-app/1): discovery, install with the owner's approval of what an app needs, and grants.
 const appId: JsonSchema = { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" };
 const appInfo = obj({ id: appId, name: str, version: str, summary: str, role: str, publisher: str, enabled: bool, granted: bool, running: bool,
-  needs: array(obj({}, [], true)), surfaces: array(obj({}, [], true)), events: strings, tools: strings, error: str }, ["id", "name", "version", "enabled", "granted", "running"], true);
+  needs: array(obj({}, [], true)), surfaces: array(obj({}, [], true)), events: strings, tools: strings, error: str,
+  cards: array(obj({ id: str, title: str, size: str, card: widgetCardId, problem: str }, ["id", "title", "size", "card"])) }, ["id", "name", "version", "enabled", "granted", "running"], true);
 add("service:apps", "apps.list", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
   { label: "看有哪些应用", description: "Every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running." });
 add("service:apps", "apps.describe", "request", obj({ id: appId }, ["id"]), appInfo,
@@ -258,6 +261,22 @@ add("service:apps", "apps.revoke", "request", obj({ id: appId, need: nonempty },
   { risk: "structure", effect: "write", label: "收回应用的权限", description: "Take back one need (need: a member id such as device:phone, or notify / widgets / card), or every grant when need is left out, which stops the app." });
 add("service:apps", "apps.refresh", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
   { label: "查找新应用", description: "Read /root/apps again: new apps appear, removed ones stop." });
+// Running apps: restart after editing, read what the server said, clear its data, remove it. No approval: they stay
+// within what the owner already granted, or narrow it.
+add("service:apps", "apps.restart", "request", obj({ id: appId }, ["id"]), obj({ id: appId, running: bool, problems: array(obj({}, [], true)) }, ["id", "running"], true),
+  { effect: "execute", label: "重启应用", description: "Restart an installed app's server so edits to its files (server.mjs, tools, app.json cards) take effect. It is checked first as apps.validate does: " +
+    "a failing app is not restarted and the problems come back (error.detail.problems). If app.json's needs changed, use apps.install instead (the owner approves them). Pages need no restart." });
+add("service:apps", "apps.logs", "request", obj({ id: appId, lines: { type: "integer", minimum: 1, maximum: 400 } }, ["id"]),
+  obj({ id: appId, running: bool, lines: strings, last_exit: { anyOf: [obj({ ts: nonnegativeSafe, code: { anyOf: [{ type: "integer" }, { type: "null" }] }, signal: { anyOf: [str, { type: "null" }] }, reason: str }, ["ts", "reason"], true), { type: "null" }] }, error: str },
+    ["id", "running", "lines", "last_exit"]),
+  { label: "看应用日志", description: "An app's recent output: what its server wrote to stderr, protocol errors (anything but MCP on stdout), and Ash's notes on starts, exits and restarts (newest last, default 100 lines, at most 400). " +
+    "last_exit says how the server last ended (exit code or signal); error is why it is not running, if Ash knows." });
+add("service:apps", "apps.reset", "request", obj({ id: appId }, ["id"]), obj({ id: appId, cleared: str }, ["id", "cleared"], true),
+  { effect: "write", label: "清空应用数据", description: "Empty the app's data folder (app.json data_dir, e.g. /root/apps/<id>/data) and restart it, so it starts over with no data; its cards redraw. " +
+    "Only for an app that declares data_dir. The owner's data is gone afterwards: do it only when the owner wants it, or for an app you are still building." });
+add("service:apps", "apps.remove", "request", obj({ id: appId, keep_data: bool }, ["id"]), obj({ id: appId, removed: bool, kept: { anyOf: [str, { type: "null" }] } }, ["id", "removed", "kept"]),
+  { effect: "write", label: "卸载应用", description: "Uninstall an app: stop it, drop everything the owner granted it and its home-screen cards, and delete its folder /root/apps/<id>/. " +
+    "keep_data: true keeps the folder (its data and files) so it can be installed again as it was. Ash's own apps cannot be removed (they come back): disable them instead." });
 // Writing apps: the contract to read, a skeleton to start from, and a check that says exactly what is wrong.
 const appProblem = obj({ level: choice("error", "warning"), where: str, problem: str, fix: str }, ["level", "where", "problem"]);
 const appTool = obj({ name: { type: "string", pattern: "^[a-z][a-z0-9_.-]{0,63}$" }, title: { type: "string", minLength: 1, maxLength: 60 },
@@ -273,10 +292,12 @@ add("service:apps", "apps.scaffold", "request", obj({ id: appId, name: { type: "
   surfaces: { type: "array", items: appSurface, minItems: 1, maxItems: 16 }, tools: { type: "array", items: appTool, minItems: 1, maxItems: 32 } }, ["id", "name"]),
   obj({ id: appId, path: str, files: strings, next: str }, ["id", "path", "files", "next"], true),
   { effect: "write", label: "写应用骨架", description: "Write a new app's skeleton into /root/apps/<id>/ (app.json, a dependency-free server.mjs, one ui/<page>.html per surface, " +
-    "shared ui/app.css and ui/app.js, icon.png). It runs as it is: each tool answers with a placeholder until you write it in server.mjs. " +
+    "shared ui/app.css and ui/app.js, icon.png). It runs as it is: a small working list in data.json with tools <id>.list, <id>.add, <id>.done (mark done/undone), <id>.remove, " +
+    "a home-screen card (app.json cards: tool <id>.card draws it from the data, a tick on it calls <id>.card.tap) and a first page with the list and done/undone toggles. " +
+    "Change them to what the app is about; tools you name besides those answer with a placeholder until you write them in server.mjs. " +
     "role (default: summary) says what the app is for and when to use it; you and Ash see it in every conversation. " +
-    "surfaces default to one page home; tools default to one read-only <id>.status: give the app tools that read and change its data, " +
-    "so you can do through them everything the owner does on its pages. Refuses a folder that already has an app.json. " +
+    "surfaces default to one page home: give the app tools that read and change its data, " +
+    "so you can do through them everything the owner does on its pages and its card. Refuses a folder that already has an app.json. " +
     "No approval is needed: it only writes files. Then edit, apps.validate, and apps.install (the owner approves what it needs)." });
 add("service:apps", "apps.validate", "request", obj({ id: appId, path: { type: "string", minLength: 1, maxLength: 300 } }),
   obj({ id: str, path: str, ok: bool, problems: array(appProblem), tools: strings, surfaces: strings }, ["path", "ok", "problems", "tools", "surfaces"], true),

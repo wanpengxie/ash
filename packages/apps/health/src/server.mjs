@@ -1,5 +1,6 @@
 // 健康 — an Ash app (contract ash-app/1): an MCP server over stdio with five tools and three MCP Apps screens.
-import { join } from "node:path";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -9,7 +10,11 @@ import { PAGES } from "./pages.mjs";
 import { TOOLS, callTool, RESOURCES, readResource } from "./tools.mjs";
 
 const dir = process.env.ASH_APP_DIR || "/root/apps/health";
-const health = new Health({ ash: ashClient(process.env.ASH_MCP_URL, process.env.ASH_MCP_TOKEN), store: new Store(join(dir, "data.json")) });
+// The owner's data lives in data/ (app.json data_dir: what apps.reset empties); 1.0.x kept it next to app.json.
+const data = join(dir, "data", "data.json");
+mkdirSync(dirname(data), { recursive: true });
+if (!existsSync(data) && existsSync(join(dir, "data.json"))) renameSync(join(dir, "data.json"), data);
+const health = new Health({ ash: ashClient(process.env.ASH_MCP_URL, process.env.ASH_MCP_TOKEN), store: new Store(data) });
 const server = new Server({ name: "health", version: "1.0.0" }, { capabilities: { tools: {}, resources: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 server.setRequestHandler(CallToolRequestSchema, async (request) => callTool(health, request.params.name, request.params.arguments ?? {}));

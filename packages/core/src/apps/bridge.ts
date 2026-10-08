@@ -58,7 +58,7 @@ const text = (description: string) => ({ type: "string", description });
 export const APP_BRIDGE_TOOLS = [
   { name: "capability_list", description: "What this app may use of ash (granted by the owner at install): members and their capabilities.", inputSchema: object({ member: text("Only this member") }) },
   { name: "capability_describe", description: "Full contract of one granted capability (or all of a member's granted ones): input_schema, effect, label.", inputSchema: object({ member: text("Member id, e.g. device:phone"), word: text("Capability name") }, ["member"]) },
-  { name: "capability_call", description: "Call one granted capability. Reads run at once; anything that changes something may wait for the owner's approval in ash.", inputSchema: object({ member: text("Member id"), word: text("Capability name"), body: { type: "object", description: "Input matching its input_schema" } }, ["member", "word"]) },
+  { name: "capability_call", description: "Call one granted capability. It runs at once and every call is recorded in Ash's ledger.", inputSchema: object({ member: text("Member id"), word: text("Capability name"), body: { type: "object", description: "Input matching its input_schema" } }, ["member", "word"]) },
   { name: "ash_event", description: "Tell ash something happened: one of the events in app.json, or app.card {title, text} for an entry card in the owner's conversation (needs the card grant; at most one a day).", inputSchema: object({ name: text("Event name"), body: { type: "object" } }, ["name"]) },
 ] as const;
 
@@ -144,7 +144,7 @@ export class AppBridge {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const waited = await Promise.race([sent, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), this.options.waitMs ?? 50_000); })]);
     clearTimeout(timer);
-    if (!waited) { sent.catch(() => {}); return this.failed(member, word, body, "pending", "still running or waiting for the owner's approval in ash; try again later"); }
+    if (!waited) { sent.catch(() => {}); return this.failed(member, word, body, "pending", "still running in ash; try again later"); }
     const reply = waited.reply?.body as ResponseBody | undefined;
     if (!reply) return this.failed(member, word, body, "result_unknown", "no answer was recorded");
     return reply.ok ? { ok: true, result: reply.result ?? {} } : this.failed(member, word, body, reply.error.code, reply.error.message);

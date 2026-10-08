@@ -33,6 +33,11 @@ export const cases = [
     ...chain(9).map((c) => c.id === "c8" ? { ...c, weight: 1 } : c)] } },
   { name: "per-size layouts take one level of the budget", expect: "error", error: "at most 9 with per-size layouts", levels: 10, a2ui: { components: [...chain(9), text("small", "s")],
     sizes: [{ width: 100, height: 100, root: "small" }, { width: 300, height: 200, root: "root" }] } },
+  { name: "an app's list card before it has items: the template waits, the empty note shows", expect: "ok", levels: 2, a2ui: { components: [
+    col("root", ["title", "list", "empty"]), text("title", "待办", { variant: "h4" }),
+    { id: "list", component: "List", children: { componentId: "item", path: "/items" } },
+    { id: "item", component: "CheckBox", label: { path: "title" }, value: { path: "done" }, action: { event: { name: "toggle" } } },
+    text("empty", "还没有", { variant: "caption", visible: { path: "/empty" } })], data: { items: [], empty: true } } },
   { name: "a to-do list: template items with checkboxes and buttons", expect: "ok", levels: 2, a2ui: { components: [
     col("root", ["title", "list"]), text("title", { call: "formatString", args: { value: "待办 ${/count} 项" } }, { variant: "h3" }),
     { id: "list", component: "List", children: { componentId: "item", path: "/todo" } },

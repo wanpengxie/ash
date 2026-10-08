@@ -5,6 +5,10 @@ import Ajv from "ajv";
 export const APP_CONTRACT = "ash-app/1";
 export const APP_ID_PATTERN = "^[a-z][a-z0-9-]{0,47}$";
 const why = { type: "string", minLength: 1, maxLength: 200 };
+const TOOL_NAME = "^[a-z][a-z0-9_.-]{0,63}$";
+/** An app card's id; on the home screen the card is <app id>.<card id> (at most 64 characters, like every card id). */
+export const APP_CARD_ID_PATTERN = "^[a-z][a-z0-9-]{0,14}$";
+export const APP_CARD_SIZES = ["2x2", "4x2", "4x4"] as const;
 
 export const APP_SCHEMA = {
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -50,6 +54,26 @@ export const APP_SCHEMA = {
     events: { type: "array", maxItems: 32, items: { type: "string", pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$", not: { enum: ["app.card", "app.activity"] } } },
     wake_events: { type: "array", maxItems: 32, items: { type: "string", pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$" },
       description: "Events (each also in events) that should wake Ash at once rather than wait for the next conversation; a few a day at most." },
+    data_dir: { type: "string", pattern: "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$", not: { enum: ["ui", "node_modules"] },
+      description: "The folder (inside the app's folder) where the app keeps the owner's data; apps.reset empties it, apps.remove {keep_data} keeps it." },
+    cards: {
+      type: "array",
+      maxItems: 8,
+      description: "Home-screen cards the app draws from its own data: the tool returns the card (A2UI), taps go to the action tool.",
+      items: {
+        type: "object",
+        required: ["id", "title", "size", "tool"],
+        additionalProperties: false,
+        properties: {
+          id: { type: "string", pattern: APP_CARD_ID_PATTERN },
+          title: { type: "string", minLength: 1, maxLength: 40 },
+          size: { enum: [...APP_CARD_SIZES] },
+          tool: { type: "string", pattern: TOOL_NAME, description: "A read-only tool of this app that returns the card: {components, root?, data?, sizes?, theme?}." },
+          action: { type: "string", pattern: TOOL_NAME, description: "The tool a tap, toggle or choice on the card calls: {card, action, component?, item?, checked?, value?, context?}." },
+          refresh_min: { type: "integer", minimum: 5, maximum: 1440, description: "Redraw at least this often (minutes; default 30), besides after every change." },
+        },
+      },
+    },
     needs: {
       type: "array",
       maxItems: 16,
@@ -69,6 +93,7 @@ export const APP_SCHEMA = {
   },
 } as const;
 
+export interface AppCard { id: string; title: string; size: typeof APP_CARD_SIZES[number]; tool: string; action?: string; refresh_min?: number }
 export type AppNeed = { member: string; words: string[]; why: string } | { notify: true; why: string } | { widgets: true; why: string } | { card: true; why: string };
 export interface AppManifest {
   contract: typeof APP_CONTRACT;
@@ -86,6 +111,10 @@ export interface AppManifest {
   /** Declared events that wake the main agent at once. */
   wake_events?: string[];
   needs?: AppNeed[];
+  /** The folder inside the app's folder that holds its data (apps.reset empties it). */
+  data_dir?: string;
+  /** Home-screen cards drawn from the app's data. */
+  cards?: AppCard[];
 }
 
 /** The key a need is granted and revoked by: its member id, or notify / widgets / card. */
@@ -98,6 +127,11 @@ export function validateManifest(raw: unknown): { ok: true; manifest: AppManifes
   const manifest = raw as AppManifest;
   const surfaces = manifest.surfaces ?? [];
   if (new Set(surfaces.map((item) => item.id)).size !== surfaces.length) return { ok: false, error: "duplicate surface id" };
+  if (manifest.data_dir !== undefined && /^\.+$/.test(manifest.data_dir)) return { ok: false, error: "data_dir is a folder name" };
+  const script = manifest.server.args?.[0];
+  if (manifest.data_dir !== undefined && script && script.replace(/^\.\//, "").startsWith(`${manifest.data_dir}/`)) return { ok: false, error: "data_dir holds the server" };
+  const cards = manifest.cards ?? [];
+  if (new Set(cards.map((item) => item.id)).size !== cards.length) return { ok: false, error: "duplicate card id" };
   const keys = (manifest.needs ?? []).map(needKey);
   if (new Set(keys).size !== keys.length) return { ok: false, error: "each member or kind of need appears once" };
   if ((manifest.needs ?? []).some((need) => "member" in need && need.member === `app:${manifest.id}`)) return { ok: false, error: "an app does not need itself" };

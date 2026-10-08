@@ -1206,6 +1206,98 @@
    }
   },
   {
+   "name": "an app's list card before it has items: the template waits, the empty note shows",
+   "expect": "ok",
+   "levels": 2,
+   "a2ui": {
+    "components": [
+     {
+      "id": "root",
+      "component": "Column",
+      "children": [
+       "title",
+       "list",
+       "empty"
+      ]
+     },
+     {
+      "id": "title",
+      "component": "Text",
+      "text": "待办",
+      "variant": "h4"
+     },
+     {
+      "id": "list",
+      "component": "List",
+      "children": {
+       "componentId": "item",
+       "path": "/items"
+      }
+     },
+     {
+      "id": "item",
+      "component": "CheckBox",
+      "label": {
+       "path": "title"
+      },
+      "value": {
+       "path": "done"
+      },
+      "action": {
+       "event": {
+        "name": "toggle"
+       }
+      }
+     },
+     {
+      "id": "empty",
+      "component": "Text",
+      "text": "还没有",
+      "variant": "caption",
+      "visible": {
+       "path": "/empty"
+      }
+     }
+    ],
+    "data": {
+     "items": [],
+     "empty": true
+    }
+   },
+   "result": "ok",
+   "rendered": {
+    "root": "root",
+    "components": [
+     {
+      "id": "root",
+      "component": "Column",
+      "children": [
+       "title",
+       "list",
+       "empty"
+      ]
+     },
+     {
+      "id": "title",
+      "component": "Text",
+      "text": "待办",
+      "variant": "h4"
+     },
+     {
+      "id": "list",
+      "component": "List",
+      "children": []
+     },
+     {
+      "id": "empty",
+      "component": "Text",
+      "text": "还没有",
+      "variant": "caption"
+     }
+    ]
+   }
+  },
+  {
    "name": "a to-do list: template items with checkboxes and buttons",
    "expect": "ok",
    "levels": 2,

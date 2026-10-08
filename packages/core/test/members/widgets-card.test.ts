@@ -102,3 +102,11 @@ test("setPointer writes a value and creates objects on the way, never prototypes
   assert.equal(setPointer(data, "/__proto__/x", 1), false);
   assert.deepEqual(data, { todo: [{ done: true }], a: { b: 1 } });
 });
+
+test("a list template with no items yet is part of the card, not an unreachable component", () => {
+  const card = (items: unknown[]) => validateCard({ components: [{ id: "root", component: "List", children: { componentId: "row", path: "/items" } },
+    { id: "row", component: "Row", children: ["box"] }, { id: "box", component: "CheckBox", label: { path: "title" }, value: { path: "done" } }], data: { items } });
+  assert.deepEqual(card([]).components.map((c) => c.id), ["root"]);
+  assert.deepEqual(card([{ id: "a", title: "x", done: true }]).components.map((c) => c.id), ["root", "row@0", "box@0"]);
+  assert.throws(() => validateCard({ components: [{ id: "root", component: "Text", text: "a" }, { id: "lost", component: "Text", text: "b" }] }), /not reachable from root: lost/);
+});

@@ -8,6 +8,8 @@ import ai.ash.ui.transport.ownerBearerFromPrivateUiUrl
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
+import android.graphics.Bitmap
 import android.os.Binder
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
@@ -37,6 +39,12 @@ class AppsHostService : Service() {
             // The pipe is handed back at once; the core may take long (a tool call can wait for the owner's approval).
             return later { if (!AppsRoutes.allowed(m, p)) reply(403, "not an apps route") else forward(ctx, m, p, body ?: "") }
         }
+        override fun requestPin(app: String?, label: String?, icon: Bitmap?, result: IntentSender?): Int {
+            check()
+            val bitmap = icon?.takeIf { it.width in 1..1024 && it.height in 1..1024 }
+            return AppPins.request(this@AppsHostService, app ?: "", label ?: "", bitmap, result)
+        }
+        override fun pinned(app: String?): Boolean { check(); return AppPins.pinned(this@AppsHostService, app ?: "") }
     }
 
     companion object {

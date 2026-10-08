@@ -25,6 +25,8 @@ import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "../../../..");
 const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+/** A declared agent other than the main one: its install asks the owner on a card. */
+const helper: TrustedRouteContext = { ...agent, member: "agent:helper", transportPrincipal: "agent:helper" };
 const screen: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "owner-principal", local: true, remote: false, ownerProxy: true,
   screenId: "screen:approved", screenLabel: "Test screen" };
 const until = async (condition: () => boolean, label: string, ms = 15000) => {
@@ -67,9 +69,9 @@ async function world(recent?: ReturnType<typeof recentFacts>) {
   return { dir, root, ledger, router, members, runtime, call, close, phone };
 }
 
-/** An agent asks to install; the owner answers the card. */
-async function install(w: Awaited<ReturnType<typeof world>>, id: string) {
-  const sent = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
+/** An agent installs: the main agent's install runs at once; another agent's asks the owner, who answers the card. */
+async function install(w: Awaited<ReturnType<typeof world>>, id: string, by: TrustedRouteContext = agent) {
+  const sent = await w.router.send(by, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
   await until(() => Boolean(w.ledger.gateCase(sent.id) || w.ledger.responseTo(sent.id)), "install card or refusal");
   const gate = w.ledger.gateCase(sent.id);
   if (!gate) return { ask: null, reply: w.ledger.responseTo(sent.id)! };
@@ -111,7 +113,7 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
   const w = await world();
   try {
     const made = await w.call("apps.scaffold", { id: "notes", name: "笔记", summary: "记几句话", surfaces: [{ id: "home", title: "全部" }, { id: "new", title: "新建" }],
-      tools: [{ name: "notes.list", title: "看笔记", read_only: true }, { name: "notes.add", title: "记一条" }] });
+      tools: [{ name: "notes.list", title: "看笔记", read_only: true }, { name: "notes.add", title: "记一条" }, { name: "notes.export", title: "导出" }] });
     assert.equal(made.ok, true, JSON.stringify(made));
     assert.equal(made.result.path, "/root/apps/notes");
     assert.deepEqual(made.result.files, ["app.json", "icon.png", "server.mjs", "ui/app.css", "ui/app.js", "ui/home.html", "ui/new.html"]);
@@ -123,22 +125,28 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
     const report = await w.call("apps.validate", { id: "notes" });
     assert.equal(report.ok, true);
     assert.equal(report.result.ok, true, JSON.stringify(report.result.problems));
-    assert.deepEqual([report.result.tools, report.result.surfaces], [["notes.list", "notes.add"], ["home", "new"]]);
+    // A working list (with its card and done/undone toggles on the first page), and a placeholder for each further tool.
+    assert.deepEqual([report.result.tools, report.result.surfaces], [["notes.list", "notes.add", "notes.done", "notes.remove", "notes.card", "notes.card.tap", "notes.export"], ["home", "new"]]);
     assert.deepEqual(report.result.problems.filter((item: { level: string }) => item.level === "error"), []);
     assert.equal((await w.call("apps.validate", { path: "/root/apps/notes/" })).result.ok, true, "the same folder by its container path");
 
     const listed = w.runtime.info("notes")!;
     assert.deepEqual([listed.origin, listed.path, listed.granted], ["agent", "/root/apps/notes", false]);
-    const { ask, reply } = await install(w, "notes");
+    const { ask, reply } = await install(w, "notes", helper);
     assert.equal(ask!.body.title, "安装 Ash 写的应用「笔记」");
     assert.match(String(ask!.body.detail), /Ash 自己写的，没有发布过/);
     assert.match(String(ask!.body.detail), /不需要用 Ash 的其他东西/);
     assert.match(String(ask!.body.detail), /\/root\/apps\/notes\//);
     assert.equal(reply.body.ok, true, JSON.stringify(reply.body));
-    const read = await w.router.send(agent, { to: "app:notes", kind: "request", word: "notes.list", body: {}, wait: true });
-    const result = read.reply!.body as { ok: boolean; result: { structuredContent: { text: string } } };
-    assert.equal(result.ok, true);
-    assert.match(result.result.structuredContent.text, /「看笔记」还没写好/);
+    const call = async (word: string, body: Record<string, unknown> = {}) =>
+      ((await w.router.send(agent, { to: "app:notes", kind: "request", word, body, wait: true })).reply!.body as { ok: boolean; result: { structuredContent: any } }).result.structuredContent; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const { item } = await call("notes.add", { title: "第一条" });
+    await call("notes.done", { item: item.id, done: true });
+    assert.deepEqual((await call("notes.list")).items.map((entry: { title: string; done: boolean }) => [entry.title, entry.done]), [["第一条", true]]);
+    assert.match((await call("notes.export")).text, /「导出」还没写好/);
+    const home = await w.runtime.surface("notes", "home");
+    assert.match(home!.html, /type: "checkbox"/);
+    assert.match(home!.html, /app\.call\("notes\.done"/);
     const page = await w.runtime.surface("notes", "new");
     assert.match(page!.html, /^<!doctype html>/);
     assert.match(page!.html, /ui\/initialize/);
@@ -151,7 +159,7 @@ test("the hello example installs as it is, and its server reaches ash with the s
   try {
     cpSync(join(repo, "docs/examples/hello"), join(w.root, "hello"), { recursive: true });
     assert.equal((await w.call("apps.validate", { id: "hello" })).result.ok, true);
-    const { ask, reply } = await install(w, "hello");
+    const { ask, reply } = await install(w, "hello", helper);
     assert.equal(ask!.body.title, "安装「你好」");
     assert.match(String(ask!.body.detail), /发布者写的是「example」，Ash 无法核实/);
     assert.equal(reply.body.ok, true);
@@ -168,7 +176,9 @@ test("the hello example installs as it is, and its server reaches ash with the s
     manifest.needs = [{ member: "device:phone", words: ["look"], why: "看一眼" }];
     write(join(w.root, "peek"), { ...Object.fromEntries(Object.entries(files).filter(([, value]) => typeof value === "string")) as Record<string, string>,
       "server.mjs": server, "app.json": JSON.stringify(manifest) });
-    assert.equal((await install(w, "peek")).reply.body.ok, true);
+    const peek = await install(w, "peek");
+    assert.equal(peek.ask, null, "the main agent grants the app's needs itself");
+    assert.equal(peek.reply.body.ok, true, JSON.stringify(peek.reply.body));
     const looked = await w.router.send(agent, { to: "app:peek", kind: "request", word: "peek.look", body: {}, wait: true });
     assert.deepEqual((looked.reply!.body as { result: { structuredContent: unknown } }).result.structuredContent, { ok: true, result: { seen: true } });
   } finally { await w.close(); }
@@ -178,7 +188,8 @@ test("an install grants exactly the needs its card showed: needs changed while t
   const w = await world();
   try {
     assert.equal((await w.call("apps.scaffold", { id: "sneaky", name: "悄悄" })).ok, true);
-    const sent = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.install", body: { id: "sneaky" } });
+    // Another agent's install: the owner is shown the needs on a card.
+    const sent = await w.router.send(helper, { to: "service:apps", kind: "request", word: "apps.install", body: { id: "sneaky" } });
     await until(() => Boolean(w.ledger.gateCase(sent.id)), "install card");
     const file = join(w.root, "sneaky/app.json");
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), needs: [{ member: "device:phone", words: ["look"], why: "看一眼" }] }));
@@ -225,8 +236,12 @@ test("validate says exactly what is wrong, and install refuses a broken app with
     assert.match(report.problems.find((item: { where: string }) => item.where.startsWith("页面")).problem, /resources\/read 读不出来/);
     assert.ok(report.problems.some((item: { where: string; problem: string }) => item.where === "app.json /icon" && /没有图标/.test(item.problem)));
 
-    // The agent's install is refused with the problems; no card reaches the owner.
+    // An agent's install is refused with the problems, the main agent's (which needs no card) and another's alike;
+    // no card reaches the owner.
     const asksBefore = w.ledger.list({ limit: 1000 }).filter((message) => message.word === "ask").length;
+    const other = await install(w, "broken", helper);
+    assert.equal(other.ask, null);
+    assert.match(String((other.reply.body as { error: { message: string } }).error.message), /^应用 broken 没通过检查，没有安装/);
     const { ask, reply } = await install(w, "broken");
     assert.equal(ask, null);
     const body = reply.body as { ok: false; error: { code: string; message: string; detail: { problems: { where: string }[] } } };
@@ -294,8 +309,9 @@ test("every app is an organ: pages without tools do not install; read-only tools
     assert.match(String((refused.reply.body as { error: { message: string } }).error.message), /只有页面、没有可用的工具/);
 
     // Read-only tools behind pages that can change things, and the owner's data kept in the page: warnings.
-    const viewer = scaffoldFiles({ id: "viewer", name: "只能看", publisher: "agent:main", tools: [{ name: "viewer.list", title: "看", read_only: true }] });
+    const viewer = scaffoldFiles({ id: "viewer", name: "只能看", publisher: "agent:main" });
     write(join(w.root, "viewer"), { ...Object.fromEntries(Object.entries(viewer).filter(([, text]) => typeof text === "string")) as Record<string, string>,
+      "server.mjs": String(viewer["server.mjs"]).replaceAll("readOnlyHint: false", "readOnlyHint: true"),
       "ui/home.html": `${String(viewer["ui/home.html"])}<script>localStorage.setItem("items", "[]")</script>` });
     report = (await w.call("apps.validate", { id: "viewer" })).result;
     assert.equal(report.ok, true, "warnings do not block");

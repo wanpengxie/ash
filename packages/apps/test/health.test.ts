@@ -15,6 +15,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BUILTIN_APPS } from "../../core/src/apps/builtin.generated";
 import { appCapabilities } from "../../core/src/apps/runtime";
+import { validateManifest } from "../../core/src/apps/schema";
+import { validateCard } from "../../core/src/members/widgets-card";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = join(here, "../health/src");
@@ -166,7 +168,7 @@ test("the tools' MCP shapes map to ash capabilities with the intended risk; scre
   const { TOOLS, RESOURCES, readResource, UI_MIME } = await load("tools.mjs");
   const caps = appCapabilities("健康", TOOLS);
   assert.deepEqual(caps.map((cap) => [cap.name, cap.effect]), [["health.today", "read"], ["health.trend", "read"], ["health.log", "write"],
-    ["health.goal.set", "write"], ["health.report", "read"]]);
+    ["health.goal.set", "write"], ["health.card", "read"], ["health.report", "read"]]);
   assert.equal(caps[0]!.label, "在健康里看今日健康");
   const linked = TOOLS.filter((tool: { _meta?: { ui?: { resourceUri?: string } } }) => tool._meta?.ui?.resourceUri).map((tool: { _meta: { ui: { resourceUri: string } } }) => tool._meta.ui.resourceUri);
   assert.deepEqual(linked, ["ui://health/home", "ui://health/trends", "ui://health/goals"]);
@@ -227,6 +229,8 @@ test("the bundled server the core installs runs over stdio: tools, a call throug
   const app = BUILTIN_APPS.find((item) => item.id === "health")!;
   const dir = mkdtempSync(join(tmpdir(), "ash-health-app-"));
   for (const [name, text] of Object.entries(app.files)) writeFileSync(join(dir, name), text);
+  // Data from 1.0.x (next to app.json) moves into data_dir on start.
+  writeFileSync(join(dir, "data.json"), JSON.stringify({ logs: [], goals: { steps: 8000 }, sent: {} }));
   assert.deepEqual(JSON.parse(app.files["app.json"]!), JSON.parse(readFileSync(join(here, "../health/app.json"), "utf8")), "the bundle carries the current app.json");
   const endpoint = await fakeAshEndpoint("t0ken", Date.now());
   const client = new Client({ name: "test", version: "1" });
@@ -234,14 +238,16 @@ test("the bundled server the core installs runs over stdio: tools, a call throug
     await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(dir, "server.mjs")], cwd: dir, stderr: "pipe",
       env: { PATH: process.env.PATH ?? "", ASH_APP_ID: "health", ASH_APP_DIR: dir, ASH_MCP_URL: endpoint.url, ASH_MCP_TOKEN: "t0ken" } }));
     const tools = (await client.listTools()).tools.map((tool) => tool.name);
-    assert.deepEqual(tools, ["health.today", "health.trend", "health.log", "health.goal.set", "health.report"]);
+    assert.deepEqual(tools, ["health.today", "health.trend", "health.log", "health.goal.set", "health.card", "health.report"]);
     const today = await client.callTool({ name: "health.today", arguments: {} });
     const data = today.structuredContent as { weight: { value: number }; errors: string[] };
     assert.equal(typeof data.weight.value, "number");
     assert.deepEqual(data.errors, ["安装时没有批准这一项，用不了"], "Ash's sentence for the owner, not a code");
     const logged = await client.callTool({ name: "health.log", arguments: { metric: "weight", value: 70.5 } });
     assert.equal(logged.isError, undefined);
-    assert.equal(JSON.parse(readFileSync(join(dir, "data.json"), "utf8")).logs[0].value, 70.5, "its data lives in ASH_APP_DIR");
+    const saved = JSON.parse(readFileSync(join(dir, "data/data.json"), "utf8"));
+    assert.equal(saved.logs[0].value, 70.5, "its data lives in its data_dir");
+    assert.deepEqual(saved.goals, { steps: 8000 }, "the older data file was moved, not lost");
     const bad = await client.callTool({ name: "health.goal.set", arguments: { metric: "mood", target: 1 } });
     assert.equal(bad.isError, true);
     const resources = (await client.listResources()).resources.map((item) => [item.uri, item.mimeType]);
@@ -249,4 +255,23 @@ test("the bundled server the core installs runs over stdio: tools, a call throug
     const home = await client.readResource({ uri: "ui://health/home" });
     assert.match(String((home.contents[0] as { text: string }).text), /今日/);
   } finally { await client.close(); await endpoint.close(); }
+});
+
+test("the home-screen card: today's weight and steps from the same data as the page, and a button to the trends", async () => {
+  const { Health, Store } = await load("logic.mjs");
+  const { todayCard } = await load("tools.mjs");
+  const manifest = JSON.parse(readFileSync(join(here, "../health/app.json"), "utf8"));
+  assert.equal(validateManifest(manifest).ok, true);
+  assert.deepEqual(manifest.cards, [{ id: "today", title: "今日健康", size: "4x2", tool: "health.card", refresh_min: 60 }]);
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "ash-health-card-")), "data.json"));
+  const health = new Health({ ash: fakeAsh(MONDAY, { steps: 12000 }).ash, store, now: () => MONDAY });
+  health.setGoal("steps", 10000);
+  const render = validateCard(todayCard(await health.today()));
+  const text = (id: string) => render.components.find((c) => c.id === id)?.text;
+  assert.deepEqual([text("wv"), text("ws"), text("sv"), text("ss")], ["72.0 kg", "今天", "12000", "目标 10000"]);
+  assert.deepEqual(render.components.find((c) => c.id === "open")!.action, { openApp: { app: "health", surface: "trends" } });
+  // Without the phone or any record: dashes, never a broken card.
+  const empty = new Health({ ash: fakeAsh(MONDAY, { fail: true }).ash, store: new Store(join(mkdtempSync(join(tmpdir(), "ash-health-card-")), "data.json")), now: () => MONDAY });
+  const blank = validateCard(todayCard(await empty.today()));
+  assert.equal(blank.components.find((c) => c.id === "wv")!.text, "—");
 });
