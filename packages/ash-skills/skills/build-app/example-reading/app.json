@@ -1,0 +1,20 @@
+{
+  "contract": "ash-app/1",
+  "id": "reading",
+  "name": "阅读记录",
+  "version": "1.0.0",
+  "icon": "icon.png",
+  "summary": "记主人想读、在读和读完的书，以及读到哪一页",
+  "role": "主人的书单：说到想读、在读、读完了哪本书，或读到哪一页，就记进来；问读了多少本时来这里查",
+  "publisher": "agent:main",
+  "server": { "command": "node", "args": ["server.mjs"] },
+  "data_dir": "data",
+  "surfaces": [
+    { "id": "shelf", "title": "书架", "resource": "ui://reading/shelf" },
+    { "id": "stats", "title": "统计", "resource": "ui://reading/stats" }
+  ],
+  "cards": [
+    { "id": "main", "title": "在读", "size": "4x2", "tool": "reading.card", "action": "reading.card.tap" }
+  ],
+  "needs": []
+}

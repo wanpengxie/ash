@@ -1,0 +1,17 @@
+<h1>统计</h1>
+<div class="card" id="numbers">读取中…</div>
+<div class="card"><div class="muted">最近 6 个月读完的本数</div><div id="months"></div></div>
+<div id="out" class="muted"></div>
+<script>
+(async () => {
+  try {
+    const s = await app.call("reading.stats");
+    document.getElementById("numbers").textContent = `想读 ${s.want} 本，在读 ${s.reading} 本，读完 ${s.done} 本；今年读完 ${s.this_year} 本。`;
+    const top = Math.max(1, ...s.months.map((m) => m.done));
+    document.getElementById("months").replaceChildren(...s.months.map((m) => app.el("div", { class: "row" },
+      app.el("span", { style: "width:4.5em" }, m.month.slice(5) + " 月"),
+      app.el("div", { style: `height:10px;border-radius:5px;background:var(--accent);width:${(m.done / top) * 60}%;min-width:2px;opacity:${m.done ? 1 : 0.25}` }),
+      app.el("span", { class: "muted" }, ` ${m.done}`))));
+  } catch (error) { const out = document.getElementById("out"); out.className = "error"; out.textContent = error.message; }
+})();
+</script>

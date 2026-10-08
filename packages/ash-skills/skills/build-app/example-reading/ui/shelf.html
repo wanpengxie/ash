@@ -1,0 +1,47 @@
+<h1>书架</h1>
+<section data-view="main">
+  <form id="add" class="card row"><input id="title" maxlength="120" placeholder="书名" autocomplete="off"><button type="submit">想读</button></form>
+  <h2>在读</h2><ul id="reading" class="list"></ul>
+  <h2>想读</h2><ul id="want" class="list"></ul>
+  <h2>读完</h2><ul id="done" class="list"></ul>
+  <div id="out" class="muted"></div>
+</section>
+<script>
+(() => {
+  const out = document.getElementById("out"), input = document.getElementById("title");
+  const say = (text, error) => { out.className = error ? "error" : "muted"; out.textContent = text; };
+  const run = async (tool, args) => { try { await app.call(tool, args); await refresh(); } catch (error) { say(error.message, true); } };
+  function line(book) {
+    const detail = book.status === "reading" ? (book.pages ? `第 ${book.page} / ${book.pages} 页` : `读到第 ${book.page} 页`) : book.rating ? `${"★".repeat(book.rating)}` : book.author || "";
+    const buttons = [];
+    if (book.status !== "done") {
+      const page = app.el("input", { type: "number", min: "0", placeholder: "页", "aria-label": "读到第几页", style: "width:4.5em" });
+      page.addEventListener("change", () => page.value !== "" && run("reading.progress", { book: book.id, page: Number(page.value) }));
+      const finish = app.el("button", { type: "button", class: "plain small" }, "读完");
+      finish.addEventListener("click", () => run("reading.finish", { book: book.id }));
+      buttons.push(page, finish);
+    }
+    const remove = app.el("button", { type: "button", class: "plain small" }, "删掉");
+    remove.addEventListener("click", () => run("reading.remove", { book: book.id }));
+    return app.el("li", { class: "item" }, app.el("span", {}, `《${book.title}》`, app.el("span", { class: "muted" }, detail ? `  ${detail}` : "")), ...buttons, remove);
+  }
+  async function refresh() {
+    try {
+      const { books = [] } = await app.call("reading.list");
+      for (const status of ["reading", "want", "done"]) {
+        const items = books.filter((book) => book.status === status);
+        document.getElementById(status).replaceChildren(...(items.length ? items.map(line) : [app.el("li", { class: "muted" }, "（空）")]));
+      }
+      say("");
+    } catch (error) { say(error.message, true); }
+  }
+  document.getElementById("add").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const title = input.value.trim();
+    if (title) run("reading.add", { title }).then(() => { input.value = ""; });
+  });
+  // Ash 或桌面卡片也会改数据：回到这一页时重新读。
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+  refresh();
+})();
+</script>

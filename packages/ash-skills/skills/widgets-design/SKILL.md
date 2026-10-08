@@ -1,0 +1,62 @@
+---
+name: widgets-design
+description: 在手机桌面的「Ash 卡片」上做好看、不被截断的卡片：独立卡片还是应用自己的卡片、尺寸能放多少、怎么写、怎么放、怎么核对。
+whenToUse: 要在桌面放一张卡片（今日摘要、待办、状态、日程等），或要改、修一张已有的卡片，或收到 widget.problem 时。
+---
+
+# 做一张好的桌面卡片
+
+卡片是桌面上的一小块屏幕，主人扫一眼就要看懂。先想清楚他看了要知道什么、最多放几行，放得下的才是好卡片。样例在本目录 `cards/`（容器里是 `/opt/ash/ash-skills/skills/widgets-design/cards/`），每个文件就是 `widget.card.put` 的参数；先挑最接近的改，不要从空白写起。组件、颜色、限制的细表在同目录 `reference.md`。
+
+## 用哪种卡片
+
+- 数据属于某个应用（待办、健康……）：用**应用自己的卡片**（`widget.list` 里 `owner` 是 `app:<id>`），用 `widget.bind` 放上桌面。不要另做一份独立副本：副本会过时，勾了也改不到应用。
+- 你自己整理出来的一次性内容（今天的安排摘要、调研结论、倒计时）：用**独立卡片** `widget.card.put`。它不会自己更新：设 `ttl_min`（过期显示「已过期」），或用会走的 `Clock`/`Timer`，或隔天重新 put。
+- 要主人打字、选日期、拖滑块：卡片做不到。放一个 `openApp` 或 `openAsh` 的按钮。
+
+## 放之前
+
+你不能替主人在桌面添加小组件，只能把卡片绑到他已经放好的「Ash 卡片」上。`widget.list` 的 `widgets` 里有 `type: "card"` 的才行。没有就先 put 好，再告诉主人「桌面长按空白处，添加小组件，选 Ash 卡片，再选这张卡」；不要反复 `widget.bind`。有就 `widget.bind {widget, card}`。
+
+## 能放多少
+
+`size` 是 `2x2`、`4x2`、`4x4`，内容区大约 122×122、302×122、302×302 dp（外框留 14 dp）。13sp 正文一行约 9 / 23 / 23 个汉字，能放 5–6 / 5–6 / 14–16 行；数字字母约占汉字一半宽。这是估算，主人把系统字号调大还会更挤，留 20% 余地。
+
+- **2x2 只讲一件事**：一个标签、一个 `h1` 大数字、一句提示。**4x2** 一个标题加 3–4 行。要更多就换 `4x4`；列表只放前几条，再加一行「还有 N 件」。
+- 文字默认折行不限行数；一行能说完的（标题、事项、数值）写 `style.maxLines: 1`，才会截成「…」。
+- 内容比小组件高时手机**不报错**，列表变成可滚动，没有列表的整张卡也变成可滚动，主人只看到被切掉的一半。所以 `phone: drawn` 只说明画出来了，不说明好看。
+- 不同大小要不同版面：`a2ui.sizes: [{width, height, root}]`（见 `cards/adaptive.json`）。
+
+## 颜色与点击
+
+- 颜色用主题名（`text`、`textSecondary`、`accent`、`green`、`red`……），它们自己跟着深色模式变；要具体色写 `{light, dark}`。只写一个十六进制色，总有一种模式看不清。根上写了 `background` 会替掉外框的背景和标题，字色要自己配。
+- 容器没有 gap：相关行之间 `style.margin` 留 2–4 dp，块之间 6–10 dp。`align`、`justify`、`weight` 写在组件上，不在 `style` 里。
+- `CheckBox`/`Switch`/`ChoicePicker` 的 `value` 写 `{path}`：手机先显示勾上，同时 `widget.action` 送到你（带 `item`、`checked`、`value`）。**你要真的去改对应数据**，否则下次重画又退回去。`Button` 的 `action`：`{event}`（告诉你）、`{openApp: {app, surface?}}`、`{openAsh: {}}`、`openUrl`。
+
+## 做法
+
+1. 想好给谁看、看什么，数行数选 `size`；挑样例，改文字，数据放 `data`、组件用 `{path}` 引用（`data` 里没有的路径会被拒绝）。
+2. `widget.card.validate {a2ui}`：只检查，看 `valid`、`problem`（哪个组件、哪个属性、为什么）、`levels`（不超过 10）。
+3. `widget.card.put {id, title, size, a2ui, ttl_min?}`；同一 `id` 再 put 即替换。看 `phone`：`drawn` 画出来了；`problem` 附原因，要改；`unknown` 是 4 秒内没回，稍后看 `widget.list` 里这张卡的 `problem`。
+4. 绑上桌面（见上），对主人说清放在哪个小组件、里面有什么。
+
+## 好的样子
+
+- **今天的安排（4x2）**，`cards/daily-summary.json`：图标加日期加「3 件」徽标，一条分隔线，最多三行「时间 + 一行事项」，末尾一行小字写更新时间，点一下回到 Ash。事项用 `List` 模板，空了显示「今天没有安排」。`ttl_min: 1500`，隔天没更新就显示已过期，不会拿昨天当今天。
+- **一个数字（2x2）**，`cards/status-metric.json`：小标签、`h1` 数字、进度条、一行提示，全 `maxLines: 1`。
+- **待办勾选（4x4）**，`cards/todo-list.json`：独立卡片，勾选作为 `widget.action` 回到你。主人若有待办应用，用应用的卡片，别用它。
+- 另有 `agenda.json`（左日期右日程）、`empty-state.json`（没内容时也要有一个图标加一句话，别留白）。
+
+## 常见错误
+
+- 放太多，主人要在小组件里滑动才看到后半；先砍内容，再考虑换大一号。
+- 长句不设 `maxLines`，折成四五行把别的挤出去。
+- 只写十六进制色，深色模式下字和背景糊在一起。
+- 为应用里的数据另做独立卡片；或做完不看结果就说「放好了」（桌面没有 Ash 卡片时什么也不会出现）。
+- 用 `Text` 写「☑ 买牛奶」冒充勾选；要能点就用 `CheckBox`。
+
+## 怎么核对
+
+1. `validate` 没有 `problem`；`put` 的 `phone` 是 `drawn`；`widget.list` 里这张卡的 `problem` 为 `null`。
+2. 若结果带预览图，认真看：有没有被切掉的字、挤在一起的文字、深浅色下是否都看得清；有问题就改了再放，直到图是好的。
+3. 之后收到 `widget.problem`（如图片没取到），照原因修，`validate` 后再 `put`。

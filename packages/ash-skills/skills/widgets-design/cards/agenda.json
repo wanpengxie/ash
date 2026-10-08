@@ -1,0 +1,129 @@
+{
+  "id": "agenda",
+  "title": "日程",
+  "size": "4x2",
+  "ttl_min": 1500,
+  "a2ui": {
+    "components": [
+      {
+        "id": "root",
+        "component": "Row",
+        "children": [
+          "day",
+          "sep",
+          "events"
+        ],
+        "action": {
+          "openAsh": {}
+        }
+      },
+      {
+        "id": "day",
+        "component": "Column",
+        "align": "center",
+        "justify": "center",
+        "style": {
+          "width": 64
+        },
+        "children": [
+          "wk",
+          "num",
+          "mon"
+        ]
+      },
+      {
+        "id": "wk",
+        "component": "Text",
+        "text": {
+          "path": "/weekday"
+        },
+        "variant": "caption",
+        "style": {
+          "color": "accent"
+        }
+      },
+      {
+        "id": "num",
+        "component": "Text",
+        "text": {
+          "path": "/day"
+        },
+        "variant": "h1"
+      },
+      {
+        "id": "mon",
+        "component": "Text",
+        "text": {
+          "path": "/month"
+        },
+        "variant": "caption"
+      },
+      {
+        "id": "sep",
+        "component": "Divider",
+        "axis": "vertical",
+        "style": {
+          "margin": [
+            0,
+            10,
+            0,
+            6
+          ]
+        }
+      },
+      {
+        "id": "events",
+        "component": "Column",
+        "weight": 1,
+        "justify": "center",
+        "children": [
+          "list",
+          "more"
+        ]
+      },
+      {
+        "id": "list",
+        "component": "List",
+        "children": {
+          "componentId": "line",
+          "path": "/e"
+        }
+      },
+      {
+        "id": "line",
+        "component": "Text",
+        "text": {
+          "path": "text"
+        },
+        "style": {
+          "maxLines": 1
+        }
+      },
+      {
+        "id": "more",
+        "component": "Text",
+        "text": {
+          "path": "/more"
+        },
+        "variant": "caption"
+      }
+    ],
+    "data": {
+      "weekday": "周四",
+      "day": "8",
+      "month": "10月",
+      "e": [
+        {
+          "text": "09:30  物业来修水管"
+        },
+        {
+          "text": "15:00  周会"
+        },
+        {
+          "text": "19:30  给妈妈打电话"
+        }
+      ],
+      "more": "明天还有 2 件"
+    }
+  }
+}

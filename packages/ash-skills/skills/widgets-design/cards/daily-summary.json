@@ -1,0 +1,33 @@
+{
+  "id": "today-summary",
+  "title": "今天",
+  "size": "4x2",
+  "ttl_min": 1500,
+  "a2ui": {
+    "components": [
+      { "id": "root", "component": "Column", "children": ["head", "line", "list", "none", "foot"] },
+      { "id": "head", "component": "Row", "align": "center", "children": ["ic", "title", "count"] },
+      { "id": "ic", "component": "Icon", "name": "calendar", "style": { "fontSize": 18 } },
+      { "id": "title", "component": "Text", "text": { "path": "/date" }, "variant": "h4", "weight": 1, "style": { "margin": [0, 0, 0, 6], "maxLines": 1 } },
+      { "id": "count", "component": "Badge", "text": { "path": "/count" } },
+      { "id": "line", "component": "Divider", "style": { "margin": [6, 0, 4, 0] } },
+      { "id": "list", "component": "List", "children": { "componentId": "ev", "path": "/events" } },
+      { "id": "ev", "component": "Row", "align": "center", "children": ["ev_time", "ev_title"] },
+      { "id": "ev_time", "component": "Text", "text": { "path": "time" }, "variant": "caption", "style": { "width": 44 } },
+      { "id": "ev_title", "component": "Text", "text": { "path": "title" }, "weight": 1, "style": { "maxLines": 1, "ellipsize": "end" } },
+      { "id": "none", "component": "Text", "text": "今天没有安排", "variant": "caption", "visible": { "path": "/empty" } },
+      { "id": "foot", "component": "Text", "text": { "path": "/note" }, "variant": "caption", "style": { "margin": [4, 0, 0, 0], "maxLines": 1 }, "action": { "openAsh": {} } }
+    ],
+    "data": {
+      "date": "10月8日 周四",
+      "count": "3 件",
+      "empty": false,
+      "events": [
+        { "time": "09:30", "title": "和物业确认维修时间" },
+        { "time": "15:00", "title": "周会（线上）" },
+        { "time": "19:30", "title": "给妈妈打电话" }
+      ],
+      "note": "08:00 更新 · 点一下问 Ash"
+    }
+  }
+}
