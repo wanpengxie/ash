@@ -191,7 +191,15 @@ const widgetCardInfo = obj({ id: widgetCardId, title: nonempty, size: widgetSize
   ["id", "title", "size", "owner", "updated_at", "expires_at", "expired", "actions"]);
 const placedWidget = obj({ id: widgetId, type: choice("ash", "card") }, ["id", "type"]);
 const widgetListResult = obj({ cards: array(widgetCardInfo), widgets: array(obj({ id: widgetId, type: choice("ash", "card"), card: { anyOf: [widgetCardId, { type: "null" }] } }, ["id", "type", "card"])) }, ["cards", "widgets"]);
-const widgetRendered = obj({ card: widgetCardId, updated_at: nonnegativeSafe, problem: str }, ["card", "updated_at"]);
+const previewTheme = choice("dark", "light");
+const previewSide: JsonSchema = { type: "integer", minimum: 1, maximum: 1200 };
+const previewDp = obj({ width: num, height: num }, ["width", "height"]);
+// What the phone reports for a card it was asked to draw as an image: the PNG (base64, a few hundred KB at most), or why not.
+const widgetPreviewReport = obj({ png: { type: "string", minLength: 1, maxLength: 360000 }, width: previewSide, height: previewSide, theme: previewTheme, dp: previewDp }, ["png", "width", "height", "theme"]);
+const widgetRendered = obj({ card: widgetCardId, updated_at: nonnegativeSafe, problem: str, preview: widgetPreviewReport, preview_problem: str, preview_ask: nonnegativeSafe }, ["card", "updated_at"]);
+// The card as the phone draws it: an image part, which the agent receives as a picture it can see.
+const widgetPreviewImage = obj({ type: { const: "image" }, data: str, mimeType: { const: "image/png" }, width: previewSide, height: previewSide, theme: previewTheme,
+  size: widgetSize, layout_dp: previewDp, drawn_at: nonnegativeSafe }, ["type", "data", "mimeType", "width", "height", "theme", "size", "drawn_at"]);
 export const WIDGET_A2UI_GUIDE = "a2ui is A2UI v0.9 (basic catalog) as a flat component list: {components:[{id, component, ...}], root?:'root', data?:{...}, sizes?, theme?:{primaryColor}}. " +
   "Anything Android widgets can draw is allowed; what they cannot is refused with the reason. No limit on nesting style, number of buttons or text lines except Android's own (about 10 nested levels; a scrolling List's items get their own budget). " +
   "Components: Text {text, variant: h1..h5|body|caption} — text keeps line breaks and emoji, and simple Markdown (**bold**, *italic*, `code`, ~~strike~~, [link](url), # heading, - list) is drawn as formatting, never shown raw. " +
@@ -216,12 +224,16 @@ add("service:widgets", "widget.list", "request", empty, widgetListResult,
   { label: "看桌面小组件", effect: "read", description: "What is on the owner's phone home screen: each placed widget (the 'ash' widget, or an 'Ash 卡片' card widget with the card it shows), and every card that exists with its owner, size, expiry, event action names and the phone's last problem drawing it (null when it drew fine or has not reported)." });
 add("service:widgets", "widget.card.put", "request", obj({ id: { type: "string", minLength: 1, maxLength: 64 }, title: str, size: widgetSize,
   a2ui: obj({}, [], true), ttl_min: { type: "integer", minimum: 1, maximum: 43200 } }, ["id", "title", "size", "a2ui"]),
-  obj({ card: widgetCardInfo, bound_widgets: array(widgetId), phone: choice("drawn", "problem", "unknown"), problem: str }, ["card", "bound_widgets"]),
+  obj({ card: widgetCardInfo, bound_widgets: array(widgetId), phone: choice("drawn", "problem", "unknown"), problem: str, preview: widgetPreviewImage, preview_problem: str }, ["card", "bound_widgets"]),
   { label: "更新桌面卡片", effect: "write", description: "Create or replace (same id) a card the owner can place on the phone home screen with the 'Ash 卡片' widget; widgets already showing it redraw. " +
     "When the data belongs to an app (a todo list, health numbers…), use that app's own card instead (owner app:<id> in widget.list, drawn from the app's data and kept current; place it with widget.bind) — a copy of its data here goes stale. " +
     "id: lowercase letters, digits, . _ - (at most 64); title: at most 40 characters. The card belongs to whoever created it: only its creator or the owner may replace or remove it. size is the intended widget size (2x2 small, 4x2 wide, 4x4 large). " +
     "ttl_min: after this many minutes the card shows as expired until updated. Invalid cards are refused with the component, property and reason. " +
-    "The result says whether the phone drew it (phone: drawn), could not (phone: problem, with problem), or did not answer in time (unknown); a later problem (e.g. an image that failed to load) reaches you as widget.problem. " + WIDGET_A2UI_GUIDE });
+    "The result says whether the phone drew it (phone: drawn), could not (phone: problem, with problem), or did not answer in time (unknown); a later problem (e.g. an image that failed to load) reaches you as widget.problem. " +
+    "When the phone can draw it, the result also carries a preview image of the card as the home screen shows it (at the widget's size, in the phone's current dark or light theme): look at it, and fix cut-off text, overflow and empty lists before telling the owner it is done. widget.card.preview shows it again later. " + WIDGET_A2UI_GUIDE });
+add("service:widgets", "widget.card.preview", "request", obj({ id: widgetCardId }, ["id"]),
+  obj({ card: widgetCardInfo, preview: widgetPreviewImage, preview_problem: str, fresh: bool, note: str }, ["card", "fresh"]),
+  { label: "看桌面卡片的样子", effect: "read", description: "Look at a card again: the phone draws it as the home-screen widget would (its size on this phone, in the current dark or light theme) and returns the picture as an image you can see, or says why it cannot. Use it after the owner changes theme, after an app's card refreshed, or to check a card you did not just put. fresh: false means the phone did not answer in time and the image is the last one it drew." });
 add("service:widgets", "widget.card.validate", "request", obj({ a2ui: obj({}, [], true) }, ["a2ui"]),
   obj({ valid: bool, problem: str, components: { type: "integer", minimum: 0 }, levels: { type: "integer", minimum: 0 }, actions: strings }, ["valid"]),
   { label: "检查桌面卡片", effect: "read", description: "Check a card's a2ui exactly as widget.card.put would, without saving or showing anything: valid, or the problem (which component, which property, why). levels is how deep it nests against Android's limit. Same format as widget.card.put." });
