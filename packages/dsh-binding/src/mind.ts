@@ -42,6 +42,7 @@ export class DshMindRunner implements MindTurnRunner {
         `For reason app_open, the opener found something timely; send one short relevant line with ash_say kind heads_up, then stop. ` +
         `For reasons geofence_enter, geofence_exit, cycling_start, cycling_end and health_source_stale, follow the ash-senses skill: speak with ash_say kind heads_up only if something about this place, ride or health data source matters to the owner now; otherwise finish silently. ` +
         `For reason app_event, one of your apps (context.app; what it is for: context.role) reported context.event: handle it as that app's job says; use ash_say kind heads_up only if the owner should hear it now; otherwise finish silently. ` +
+        `For reason pulse: read PULSE.md (your own guidance) and follow it; fetch any data you need yourself with tools; you may update the home-screen card with widget.card.put (look at the returned preview and fix cut-off or overflow before finishing), or do nothing; record what you did with pulse.note; your own text here reaches nobody. ` +
         `For other reasons, if the owner should hear something, use ash_say with kind offer, heads_up, or due. Otherwise finish silently.`;
       session.agent.followup({ id: promptId, role: "user", content: [{ type: "text", text }], source: { kind: "user" } });
       const reason = await ended;

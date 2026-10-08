@@ -46,7 +46,7 @@ const sha = { type: "string", pattern: "^[0-9a-f]{64}$" } as const satisfies Jso
 const positiveSafe: JsonSchema = { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER };
 const nonnegativeSafe: JsonSchema = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const datePath = { type: "string", pattern: "^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
-const selfPath = { type: "string", pattern: "^(SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE)\\.md$|^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
+const selfPath = { type: "string", pattern: "^(SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE|PULSE)\\.md$|^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$" } as const satisfies JsonSchema;
 // Requests accept any short path so that service:self answers a non-managed one with forbidden (F-S22).
 const selfPathRequest = { type: "string", minLength: 1, maxLength: 256 } as const satisfies JsonSchema;
 const edit = obj({ op: choice("replace", "delete", "insert_after"), start: { type: "integer", minimum: 1 }, end: { type: "integer", minimum: 1 }, guard: str, text: str, reason: choice("promote", "correct", "complete", "expire", "dedupe", "condense", "demote"), evidence: strings }, ["op", "start", "end", "guard", "reason", "evidence"]);
@@ -234,6 +234,10 @@ add("service:widgets", "widget.card.put", "request", obj({ id: { type: "string",
 add("service:widgets", "widget.card.preview", "request", obj({ id: widgetCardId }, ["id"]),
   obj({ card: widgetCardInfo, preview: widgetPreviewImage, preview_problem: str, fresh: bool, note: str }, ["card", "fresh"]),
   { label: "看桌面卡片的样子", effect: "read", description: "Look at a card again: the phone draws it as the home-screen widget would (its size on this phone, in the current dark or light theme) and returns the picture as an image you can see, or says why it cannot. Use it after the owner changes theme, after an app's card refreshed, or to check a card you did not just put. fresh: false means the phone did not answer in time and the image is the last one it drew." });
+add("service:widgets", "widget.card.get", "request", obj({ id: widgetCardId }, ["id"]),
+  obj({ card: widgetCardInfo, a2ui: obj({}, [], true), feedback: array(obj({ ts: nonnegativeSafe, feedback: nonempty, action: nonempty, card_updated_at: nonnegativeSafe, component: str, item: str },
+    ["ts", "feedback", "action", "card_updated_at"])), preview: widgetPreviewImage, preview_problem: str, note: str }, ["card", "a2ui", "feedback"]),
+  { label: "看桌面卡片的内容", effect: "read", description: "Read one card back: what it says (its a2ui as it was put), size, owner, last update, the owner's answers recorded on it (feedback: what a feedback button said and when; card_updated_at tells which version of the card was answered), and the picture of how the home screen shows it now (the same image as widget.card.preview; preview_problem says why there is none). Use it to see what you showed before and how it was received; widget.list only gives titles." });
 add("service:widgets", "widget.card.validate", "request", obj({ a2ui: obj({}, [], true) }, ["a2ui"]),
   obj({ valid: bool, problem: str, components: { type: "integer", minimum: 0 }, levels: { type: "integer", minimum: 0 }, actions: strings }, ["valid"]),
   { label: "检查桌面卡片", effect: "read", description: "Check a card's a2ui exactly as widget.card.put would, without saving or showing anything: valid, or the problem (which component, which property, why). levels is how deep it nests against Android's limit. Same format as widget.card.put." });
@@ -252,6 +256,37 @@ add("service:widgets", "widget.action", "event", obj({ card: widgetCardId, actio
     "On an app's card (owner app:<id>) the tap goes to the app's own action tool, which changes the app's data; otherwise the tap itself does nothing else." });
 add("service:widgets", "widget.problem", "event", obj({ card: widgetCardId, owner: id, title: str, problem: nonempty }, ["card", "owner", "problem"]), undefined,
   { direction: "out", description: "The phone could not fully draw a home-screen card (problem says what and why); the card's creator should fix it." });
+// Pulse: Ash's own home-screen card as the window through which it speaks first. Only exists while an "Ash 卡片" widget is placed.
+const pulseClock: JsonSchema = { type: "string", pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" };
+const pulseDays: JsonSchema = { anyOf: [choice("daily", "weekdays", "weekends"), { type: "array", items: { type: "integer", minimum: 0, maximum: 6 }, minItems: 1, maxItems: 7 }] };
+const pulseSlot = obj({ time: { anyOf: [pulseClock, obj({ at: positiveSafe }, ["at"])] }, days: pulseDays }, ["time"]);
+export const PULSE_EVENTS = ["geofence_enter", "geofence_exit", "approval_waiting", "app_event", "calendar_soon", "source_stalled"] as const;
+const pulseEvent = obj({ event: choice(...PULSE_EVENTS), min_gap_min: { type: "integer", minimum: 1, maximum: 1440 } }, ["event"]);
+const pulseWhy = choice("schedule", "event", "review");
+const pulseNoteKind = choice("pulse", "review", "gap");
+const pulseEntry = obj({ id: positiveSafe, ts: nonnegativeSafe, kind: nonempty }, ["id", "ts", "kind"], true);
+add("service:pulse", "pulse.get", "request", empty,
+  obj({ active: bool, reason: str, enabled: bool, schedule: array(obj({}, [], true)), events: array(pulseEvent), review_time: pulseClock,
+    budget: obj({ per_day: positiveSafe, today_count: nonnegativeSafe, left: nonnegativeSafe }, ["per_day", "today_count", "left"]),
+    next_wakes: array(nonnegativeSafe), history: array(pulseEntry), gaps: array(pulseEntry), guidance: obj({}, [], true) }, ["active", "enabled", "schedule", "events", "budget", "history", "guidance"], true),
+  { label: "看主动更新的安排", effect: "read", description: "Your pulse: whether it is active (it exists only while an 'Ash 卡片' widget is on the home screen; otherwise active:false, reason:'no widget'), whether the owner has it switched on, your wake schedule, the events you watch, today's wake count against the daily budget, the next scheduled wakes, the latest history entries, gaps you noted, and the version info of your own guidance file PULSE.md." });
+add("service:pulse", "pulse.set", "request", obj({ schedule: { type: "array", items: pulseSlot, maxItems: 48 }, events: { type: "array", items: pulseEvent, maxItems: 12 }, review_time: pulseClock,
+    guidance: { type: "string", minLength: 1, maxLength: 20000 }, reason: { type: "string", minLength: 1, maxLength: 500 } }, ["reason"]),
+  obj({ changed: strings, next_wakes: array(nonnegativeSafe), guidance_version: nonnegativeSafe }, ["changed"], true),
+  { label: "改主动更新的安排", effect: "write", description: "Change your own pulse and say why (reason is required and is kept in the history). Any of: schedule (list of {time:'HH:MM' local, days:'daily'|'weekdays'|'weekends'|[0..6 with 0 = Sunday]} or {time:{at: epoch ms}} for one moment; replaces the whole list; the next 48 hours become real timers), events (the events to watch, replaces the list: geofence_enter, geofence_exit, approval_waiting, app_event, calendar_soon, source_stalled, each with min_gap_min between two wakes of that kind, default 60), review_time ('HH:MM': when ash checks that today's self-summary was recorded, default 21:00), guidance (the full new text of PULSE.md, written through service:self so it keeps versions and can be rolled back with service:self rollback). Other fields are refused." });
+add("service:pulse", "pulse.history", "request", obj({ limit: { type: "integer", minimum: 1, maximum: 100 }, before: positiveSafe }),
+  obj({ entries: array(pulseEntry), next_before: positiveSafe }, ["entries"]),
+  { label: "看主动更新的记录", effect: "read", description: "Page through your pulse history, newest first: wakes (why, when), what you did (pulse.note), reviews, the owner's feedback on your cards, changes to schedule or guidance with their reasons, skipped wakes and why. limit (default 20), before: an entry id from next_before to read older ones." });
+add("service:pulse", "pulse.note", "request", obj({ did: nonempty, why: str, kind: pulseNoteKind, data_used: array(nonempty) }, ["did"]),
+  obj({ recorded: bool, id: positiveSafe }, ["recorded", "id"]),
+  { label: "记下这次做了什么", effect: "write", description: "Record what you did on this wake and why (did, why, data_used: what you looked at). kind: pulse (default) for an ordinary wake, review for your daily self-summary, gap for something you wanted to know or do but could not get; gaps are collected so the missing source can be added. Nothing here ever reaches the owner." });
+add("service:pulse", "pulse.fire", "request", obj({ why: pulseWhy }),
+  obj({ fired: bool, reason: str }, ["fired"]),
+  { label: "试一次主动更新", effect: "write", description: "Wake yourself now as a pulse (why defaults to schedule) to try your guidance and cards; it does not use the daily budget. Needs the pulse to be active and switched on." });
+add("service:pulse", "pulse.switch", "request", obj({ enabled: bool }, ["enabled"]), obj({ enabled: bool }, ["enabled"]),
+  { audience: "owner", label: "开关主动更新", effect: "write", description: "Owner only: switch the whole pulse on or off. Off keeps PULSE.md, history and feedback." });
+add("service:pulse", "pulse.due", "request", obj({ kind: choice("wake", "floor"), at: nonnegativeSafe }, ["kind", "at"]), accepted,
+  { audience: "owner", label: "到点了", effect: "write", description: "Internal: the clock reports one of the pulse's own timers." });
 // Independent apps (contract ash-app/1): discovery, install with the owner's approval of what an app needs, and grants.
 const appId: JsonSchema = { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" };
 const appInfo = obj({ id: appId, name: str, version: str, summary: str, role: str, publisher: str, enabled: bool, granted: bool, running: bool,

@@ -11,7 +11,7 @@ import { SelfJournal, type SelfOperation as Operation } from "../world/self-jour
 const names = ["read", "write", "append", "apply_plan", "rollback", "history"] as const;
 const contracts = names.map((name) => wordContract("service:self", name) as WordSpec | undefined);
 if (contracts.some((item) => !item)) throw new Error("self contracts unavailable");
-const fixed = new Set(["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "PROACTIVE.md"]);
+const fixed = new Set(["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "PROACTIVE.md", "PULSE.md"]);
 const dated = /^memory\/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$/;
 const hash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 function readText(path: string): string {

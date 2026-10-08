@@ -30,6 +30,8 @@ import { ClientLink, fileSigner, OwnerLink } from "./gateway/link";
 import { HostDeviceLink, type HostConnection } from "./host-v2";
 import { TaskStatusBridge } from "./task-status";
 import { WidgetsMember } from "./members/widgets";
+import { PulseMember } from "./members/pulse";
+import { HEARTBEAT_TEMPLATE, PULSE_TEMPLATE } from "./prompts/persona.generated";
 import { heartbeatFlow } from "./flows/heartbeat";
 import { memoryFlow } from "./flows/memory";
 import { openerFlow } from "./flows/opener";
@@ -216,6 +218,7 @@ export async function startOwner(config: Config): Promise<Running> {
   let stopTour: (() => void) | null = null;
   let taskStatus: TaskStatusBridge | null = null;
   let widgets: WidgetsMember | null = null;
+  let pulse: PulseMember | null = null;
   let stopFirstMeeting: (() => void) | null = null;
   let link: OwnerLink | null = null;
   let server: Awaited<ReturnType<typeof startEdgeServer>> | null = null;
@@ -243,6 +246,10 @@ export async function startOwner(config: Config): Promise<Running> {
       // An app's wake-worthy event (wake_events), sent by ash's app runtime.
       if (caller.transportPrincipal === "service:apps" && caller.member === "service:apps" && caller.local && !caller.remote &&
         request.from === "service:apps" && request.to === "agent:main" && request.word === "wake") return true;
+      // The pulse service: its own timers at the clock, its guidance file, and waking the main agent.
+      if (caller.transportPrincipal === "service:pulse" && caller.member === "service:pulse" && caller.local && !caller.remote && request.from === "service:pulse" &&
+        ((request.to === "service:clock" && ["set", "cancel", "list"].includes(request.word)) || (request.to === "service:self" && ["read", "history", "write"].includes(request.word)) ||
+          (request.to === "agent:main" && request.word === "wake"))) return true;
       if (caller.transportPrincipal === "service:gate" && caller.member === "service:gate" && caller.local && !caller.remote &&
         request.from === "service:gate" && (request.to === "person:owner" && request.word === "ask" ||
           request.to?.startsWith("agent:") && request.word === "say")) return true;
@@ -468,6 +475,11 @@ export async function startOwner(config: Config): Promise<Running> {
     widgets = new WidgetsMember({ router: world, file: join(config.stateDir, "widgets.json"),
       ...(hostLink ? { push: (state) => hostLink.widgets(state) } : {}) });
     members.register(widgets);
+    // Ash's own home-screen card as its window to the owner; it exists only while an "Ash 卡片" widget is placed.
+    pulse = new PulseMember({ router: world, file: join(config.stateDir, "pulse.json"), isPaused: () => clock!.journal.isPaused(),
+      templates: { pulse: PULSE_TEMPLATE, heartbeat: HEARTBEAT_TEMPLATE }, log });
+    pulse.attach(widgets);
+    members.register(pulse);
     // Apps draw their own home-screen cards from their data; a tap on one goes back to the app.
     apps.attachCards(widgets);
     if (hostLink) members.registerDevice(hostLink.device());
@@ -663,6 +675,7 @@ export async function startOwner(config: Config): Promise<Running> {
     await agent.start();
     await agentSystem.start();
     await clock.start();
+    pulse.start();
     work.start();
     server = await startEdgeServer(edge, host, port);
     const address = server.address();
@@ -675,13 +688,13 @@ export async function startOwner(config: Config): Promise<Running> {
     void apps.start().catch((error) => log("apps failed to start", error));
     return { url, tokens, ledger, world, members, edge, link, dsh, container, agents: () => [agent!, ...(agentSystem?.agents() ?? [])], async close() {
       stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
-      link?.stop(); await taskStatus?.close(); widgets?.close(); hostLink?.close();
+      link?.stop(); await taskStatus?.close(); widgets?.close(); pulse?.close(); hostLink?.close();
       if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
       await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await apps?.close(); await egress?.close(); await self?.close(); world.dispose(); ledger.close();
     } };
   } catch (error) {
     stopTour?.(); stopFirstMeeting?.(); senses?.close(); cost?.close();
-    link?.stop(); await taskStatus?.close(); widgets?.close(); hostLink?.close();
+    link?.stop(); await taskStatus?.close(); widgets?.close(); pulse?.close(); hostLink?.close();
     if (server) await new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
     await reflex?.close(); await post?.close(); await clock?.close(); work?.close(); await agent?.close(); await agentSystem?.close(); await mind?.close(); admin?.close(); await dsh?.close(); (provisioning as ChildProcess | null)?.kill(); await container?.close(); await agentTools?.close(); await apps?.close(); await egress?.close(); await self?.close(); ledger.close();
     throw error;

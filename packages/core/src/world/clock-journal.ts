@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { RequestContextSnapshot } from "./ledger";
 
 type Row = Record<string, unknown>;
-export interface ClockPayload { to: string; word: "wake" | "say"; body: Record<string, unknown>; label: string }
+export interface ClockPayload { to: string; word: "wake" | "say" | "pulse.due"; body: Record<string, unknown>; label: string }
 export interface ClockTimer { id: string; next: number; every: number | null; payload: ClockPayload | null; createdBy: string; delegated: RequestContextSnapshot | null; sourceRequestId: string | null; legacy: boolean; blocked: string | null }
 export interface ClockFire { timerId: string; scheduledAt: number; payload: ClockPayload | null; createdBy: string; delegated: RequestContextSnapshot | null; sourceRequestId: string | null; legacy: boolean; outcome: "dispatched" | "skipped" | "failed" | null; reason: string | null; requestId: string | null; eventId: string | null }
 

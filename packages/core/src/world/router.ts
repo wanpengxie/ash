@@ -671,7 +671,19 @@ export class WorldRouter {
       const workFlowWrite = ctx.transport === "service" && from === "service:work" && (request.word === "append" || request.word === "apply_plan" ||
         (request.word === "write" && request.body.expected_hash === null && (request.body.path === "MEMORY.md" || request.body.path === "USER.md")));
       const agentWrite = AGENT_ID.test(from) && ctx.transport === "agent" && ctx.transportPrincipal === from;
-      if (ctx.remote || !ctx.local || !(from === "person:owner" || agentWrite || workFlowWrite)) fail("forbidden", "managed writes require local authority");
+      // The pulse service writes the main agent's own guidance when the agent asks it to, and creates its first checklist.
+      const pulseWrite = ctx.transport === "service" && from === "service:pulse" && ctx.transportPrincipal === "service:pulse" && request.word === "write" &&
+        (request.body.path === "PULSE.md" || (request.body.path === "HEARTBEAT.md" && request.body.expected_hash === null));
+      if (ctx.remote || !ctx.local || !(from === "person:owner" || agentWrite || workFlowWrite || pulseWrite)) fail("forbidden", "managed writes require local authority");
+    }
+    if (request.to === "service:pulse") {
+      // The switch is the owner's, like pausing; the pulse's own timers come only from the clock; the rest is the main agent's (and the owner's).
+      if (request.word === "pulse.switch" && (ctx.remote || !ctx.local || from !== "person:owner"))
+        fail("forbidden", "the pulse switch requires current local owner authority");
+      else if (request.word === "pulse.due" && !(ctx.transport === "service" && from === "service:clock" && ctx.transportPrincipal === "service:clock" && ctx.local && !ctx.remote))
+        fail("forbidden", "pulse timers are reported by the clock only");
+      else if (!["pulse.switch", "pulse.due"].includes(request.word) && from !== "agent:main" && from !== "person:owner")
+        fail("forbidden", "the pulse belongs to the main agent and the owner");
     }
     if (request.to === "service:work" && (request.word === "run" || request.word === "runs") && from !== "person:owner")
       fail("forbidden", "only owner may inspect or start background work");
@@ -685,7 +697,7 @@ export class WorldRouter {
       fail("forbidden", "gate change requires current local owner");
     const toAgent = typeof request.to === "string" && AGENT_ID.test(request.to);
     if (toAgent && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
-    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work", "service:apps"].includes(from)) fail("forbidden", "wake is internal only");
+    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work", "service:apps", "service:pulse"].includes(from)) fail("forbidden", "wake is internal only");
     // The owner talks with the main agent. Agents speak to each other only through the Agent system; a declared agent
     // otherwise hears only its own timers and its schedule.
     const service = ctx.transport === "service" && ctx.local && !ctx.remote;

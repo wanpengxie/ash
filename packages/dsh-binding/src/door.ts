@@ -35,7 +35,7 @@ export interface DoorOptions {
 const NATIVE = ["read", "read_image", "glob", "grep", "web_search", "web_fetch", "write", "edit"] as const;
 const REQUIRED = ["read", "write", "edit"] as const;
 const OWN = ["ash_describe", "ash_send", "ash_say", "ash_react", "ash_show"] as const;
-const MANAGED_FILES = ["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "PROACTIVE.md"] as const;
+const MANAGED_FILES = ["SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "HEARTBEAT.md", "PROACTIVE.md", "PULSE.md"] as const;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const errorText = (error: unknown): string => error instanceof Error ? error.message : "tool failed";
 const inside = (root: string, target: string): boolean => { const rel = relative(root, target); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)); };

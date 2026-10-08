@@ -41,6 +41,10 @@ export interface WidgetCardInfo {
   id: string; title: string; size: string; owner: string; updated_at: number; expires_at: number | null; expired: boolean; actions: string[]; problem: string | null;
 }
 export interface PlacedWidget { id: string; type: "ash" | "card" }
+/** What the owner answered on a card's feedback button (an action whose event context carries feedback: "…"). */
+export interface CardFeedback { ts: number; feedback: string; action: string; card_updated_at: number; component?: string; item?: string }
+const MAX_FEEDBACK_PER_CARD = 50;
+const MAX_FEEDBACK_TEXT = 200;
 /** What the phone keeps and draws; pushed in full on every change. */
 export interface WidgetState {
   revision: number;
@@ -63,20 +67,23 @@ const bad = (message: string): never => { throw new CardError(message); };
 class Forbidden extends Error {}
 const plain = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
-interface Stored { version: 1; cards: WidgetCard[]; bindings: Record<string, string>; placed: PlacedWidget[] }
+interface Stored { version: 1; cards: WidgetCard[]; bindings: Record<string, string>; placed: PlacedWidget[]; feedback: Record<string, CardFeedback[]> }
 
 /** widgets.json in ash's state directory, replaced atomically. */
 class WidgetFile {
   constructor(private readonly file: string) {}
   load(): Stored {
-    const empty: Stored = { version: 1, cards: [], bindings: {}, placed: [] };
+    const empty: Stored = { version: 1, cards: [], bindings: {}, placed: [], feedback: {} };
     if (!existsSync(this.file)) return empty;
     try {
       const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<Stored>;
       const cards = Array.isArray(raw.cards) ? raw.cards.filter((card) => card && CARD_ID.test(card.id) && card.render && Array.isArray(card.render.components)) : [];
       const bindings = plain(raw.bindings) ? Object.fromEntries(Object.entries(raw.bindings).filter(([key, value]) => WIDGET_ID.test(key) && typeof value === "string")) as Record<string, string> : {};
       const placed = Array.isArray(raw.placed) ? raw.placed.filter((item) => item && WIDGET_ID.test(item.id) && (item.type === "ash" || item.type === "card")) : [];
-      return { version: 1, cards, bindings, placed };
+      const ids = new Set(cards.map((card) => card.id));
+      const feedback = plain(raw.feedback) ? Object.fromEntries(Object.entries(raw.feedback).filter(([key, list]) => ids.has(key) && Array.isArray(list))
+        .map(([key, list]) => [key, (list as CardFeedback[]).filter((item) => plain(item) && typeof item.feedback === "string" && typeof item.ts === "number").slice(-MAX_FEEDBACK_PER_CARD)])) : {};
+      return { version: 1, cards, bindings, placed, feedback };
     } catch { return empty; }
   }
   save(state: Stored): void {
@@ -128,6 +135,7 @@ export class WidgetsMember implements Member {
   private previewCapable = false;
   private previewWaiters = new Set<() => void>();
   private appTap: ((app: string, card: string, detail: Record<string, unknown>) => Promise<void>) | null = null;
+  private placedListeners = new Set<() => void>();
 
   constructor(private readonly options: WidgetsOptions) {
     this.store = new WidgetFile(options.file);
@@ -137,7 +145,7 @@ export class WidgetsMember implements Member {
   private now(): number { return (this.options.now ?? Date.now)(); }
 
   words(): readonly WordSpec[] {
-    return ["widget.list", "widget.card.put", "widget.card.preview", "widget.card.validate", "widget.card.remove", "widget.bind", "widget.tap", "widget.placed"]
+    return ["widget.list", "widget.card.put", "widget.card.get", "widget.card.preview", "widget.card.validate", "widget.card.remove", "widget.bind", "widget.tap", "widget.placed"]
       .map((word) => wordContract("service:widgets", word)!);
   }
 
@@ -201,6 +209,12 @@ export class WidgetsMember implements Member {
       return { ok: true, result: { card: this.info(card), bound_widgets: Object.entries(this.state.bindings).filter(([, value]) => value === card.id).map(([key]) => key),
         ...phone, ...preview } };
     }
+    case "widget.card.get": {
+      const card = this.state.cards.find((item) => item.id === body.id);
+      if (!card) return { ok: false, error: { code: "not_found", message: `no card "${String(body.id)}"; widget.list shows the cards` } };
+      return { ok: true, result: { card: this.info(card), a2ui: structuredClone(card.source ?? card.render), feedback: (this.state.feedback[card.id] ?? []).map((item) => ({ ...item })),
+        ...(await this.latestPreview(card)) } };
+    }
     case "widget.card.preview": {
       const card = this.state.cards.find((item) => item.id === body.id);
       if (!card) return { ok: false, error: { code: "not_found", message: `no card "${String(body.id)}"; widget.list shows the cards` } };
@@ -213,6 +227,7 @@ export class WidgetsMember implements Member {
       if (!this.mayChange(existing, message.from)) return { ok: false, error: { code: "forbidden", message: `card "${cardId}" belongs to ${existing.owner}; only it or the owner may remove it` } };
       this.state.cards = this.state.cards.filter((card) => card.id !== cardId);
       this.state.bindings = Object.fromEntries(Object.entries(this.state.bindings).filter(([, value]) => value !== cardId));
+      delete this.state.feedback[cardId];
       this.previews.delete(cardId); this.wanted.delete(cardId);
       this.commit();
       return { ok: true, result: { removed: true } };
@@ -227,6 +242,7 @@ export class WidgetsMember implements Member {
       if (!placed) this.state.placed = [...this.state.placed, { id: widget, type: "card" }];
       this.state.bindings = { ...this.state.bindings, [widget]: cardId };
       this.commit();
+      if (!placed) this.placedChanged();
       return { ok: true, result: { widget, card: cardId } };
     }
     case "widget.placed": {
@@ -361,6 +377,27 @@ export class WidgetsMember implements Member {
     return { ...got, fresh: got.fresh ?? false, ...(got.fresh === false && got.preview ? { note: "the phone did not answer in time; this is the last preview it drew" } : {}) };
   }
 
+  /** The preview of the card's current version: the one the phone already drew, else the phone is asked (same image as widget.card.preview). */
+  private async latestPreview(card: WidgetCard): Promise<Record<string, unknown>> {
+    const have = this.previews.get(card.id);
+    const { fresh: _fresh, ...rest } = have && have.updated_at === card.updated_at && have.png ? await this.previewOf(card, 0) : await this.freshPreview(card);
+    return rest;
+  }
+
+  /** "Ash 卡片" widgets on the home screen, including ones only known by the card they show. */
+  placedCardWidgets(): string[] {
+    const ids = new Set(this.state.placed.filter((item) => item.type === "card").map((item) => item.id));
+    for (const key of Object.keys(this.state.bindings)) if (!this.state.placed.some((item) => item.id === key)) ids.add(key);
+    return [...ids];
+  }
+
+  /** Called whenever the set of placed widgets changes (the phone's report, or the owner placing a widget with a card). */
+  onPlaced(listener: () => void): () => void {
+    this.placedListeners.add(listener);
+    return () => { this.placedListeners.delete(listener); };
+  }
+  private placedChanged(): void { for (const listener of [...this.placedListeners]) { try { listener(); } catch { /* a listener cannot undo the report */ } } }
+
   /** A tap, a toggle or a choice on a placed card, from the owner's phone. */
   private async tap(body: Record<string, unknown>): Promise<ResponseBody> {
     const card = this.state.cards.find((item) => item.id === body.card);
@@ -397,10 +434,21 @@ export class WidgetsMember implements Member {
     }
     const name = event?.name ?? "change";
     const defId = component.id.replace(/[#@].*$/, "");
+    const feedback = event?.context && typeof (event.context as Record<string, unknown>).feedback === "string" && !/^app:/.test(card.owner)
+      ? String((event.context as Record<string, unknown>).feedback).replace(/\s+/g, " ").trim().slice(0, MAX_FEEDBACK_TEXT) : "";
     const detail = { card: card.id, action: name, owner: card.owner, title: card.title, component: defId,
       ...(component.item !== undefined ? { item: component.item } : {}), ...(checked !== undefined && component.component !== "ChoicePicker" ? { checked } : {}),
       ...(value ? { value } : {}), ...(event?.context ? { context: event.context } : {}) };
     await this.options.router.send(service, { to: null, kind: "event", word: "widget.action", body: detail });
+    // A feedback button is the owner's answer to the card, not an instruction: it is kept with the card (and heard by the
+    // pulse history through the widget.action event above) and wakes nobody.
+    if (feedback) {
+      const list = [...(this.state.feedback[card.id] ?? []), { ts: this.now(), feedback, action: name, card_updated_at: card.updated_at, component: defId,
+        ...(component.item !== undefined ? { item: String(component.item) } : {}) }];
+      this.state.feedback[card.id] = list.slice(-MAX_FEEDBACK_PER_CARD);
+      this.store.save(this.state);
+      return { ok: true, result: { accepted: true } };
+    }
     // An app's card: the tap goes to the app itself, which changes its data and draws the card again.
     if (/^app:/.test(card.owner) && this.appTap) {
       try { await this.appTap(card.owner.slice(4), card.id, detail); } catch { /* the app runtime reports its own failures */ }
@@ -482,6 +530,7 @@ export class WidgetsMember implements Member {
     if (!changed) return;
     this.state.placed = next; this.state.bindings = bindings;
     this.store.save(this.state);
+    this.placedChanged();
   }
 
   /** Long-expired cards that no widget shows go first when space runs out. */

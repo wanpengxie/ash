@@ -104,7 +104,7 @@ export function checkTree(tree: Tree, terms: string[] = []): Finding[] {
   }
   for (const file of names.filter(f => f.startsWith(core) && /\.[jt]s$/.test(f) && f !== core + "members/self.ts")) {
     const value = tree[file];
-    if (/(?:SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE)\.md|\.ash\/(?:versions|staging)|memory\//.test(value) && /(?:writeFile|appendFile|rename|copyFile|mkdir|unlink|rmSync|createWriteStream)\s*\(/.test(value)) add("AR4", file, "possible direct intrinsic file write outside self member");
+    if (/(?:SOUL|IDENTITY|USER|MEMORY|HEARTBEAT|PROACTIVE|PULSE)\.md|\.ash\/(?:versions|staging)|memory\//.test(value) && /(?:writeFile|appendFile|rename|copyFile|mkdir|unlink|rmSync|createWriteStream)\s*\(/.test(value)) add("AR4", file, "possible direct intrinsic file write outside self member");
   }
 
   const activeTerms = terms.filter(Boolean);
