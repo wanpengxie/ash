@@ -16,6 +16,8 @@ import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 
 const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+/** A declared agent other than the main one: its install asks the owner on a card. */
+const helper: TrustedRouteContext = { ...agent, member: "agent:helper", transportPrincipal: "agent:helper" };
 const owner: TrustedRouteContext = { member: "person:owner", transport: "api", transportPrincipal: "owner:synthetic", local: true, remote: false, ownerProxy: true };
 const screen: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "owner-principal", local: true, remote: false, ownerProxy: true,
   screenId: "screen:approved", screenLabel: "Test screen" };
@@ -46,8 +48,9 @@ async function world() {
   await runtime.start();
   const send = async (ctx: TrustedRouteContext, to: string, word: string, body: Record<string, unknown>) =>
     (await router.send(ctx, { to, kind: "request", word, body, wait: true })).reply!.body as { ok: boolean; result?: any; error?: { code: string; message: string } }; // eslint-disable-line @typescript-eslint/no-explicit-any
-  const install = async (id: string) => {
-    const sent = await router.send(agent, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
+  /** The main agent's install runs at once; another agent's asks the owner, who answers the card. */
+  const install = async (id: string, by: TrustedRouteContext = agent) => {
+    const sent = await router.send(by, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
     await until(() => Boolean(ledger.gateCase(sent.id) || ledger.responseTo(sent.id)), "install card");
     const gate = ledger.gateCase(sent.id);
     const ask = gate ? ledger.byId(gate.askId)! : null;
@@ -71,7 +74,7 @@ test("a scaffolded app's card is drawn from its data and follows every change: t
     assert.deepEqual(manifest.cards, [{ id: "main", title: "待办", size: "4x4", tool: "todo.card", action: "todo.card.tap" }]);
     const report = await w.send(agent, "service:apps", "apps.validate", { id: "todo" });
     assert.equal(report.result.ok, true, JSON.stringify(report.result.problems));
-    const { ask, reply } = await w.install("todo");
+    const { ask, reply } = await w.install("todo", helper);
     assert.equal(reply.ok, true);
     assert.match(String(ask!.body.detail), /桌面卡片 「待办」/);
 

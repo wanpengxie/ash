@@ -1145,7 +1145,10 @@ export class WorldRouter {
       const forced = AGENT.test(request.from) && this.forcedApproval(request);
       const gateBypass = request.from === "person:owner" || (!gated(request, endpoint.spec.label) && !forced && !gatedServiceWord(request));
       const effect = wordEffect(endpoint.spec);
-      if (this.gatePrecheck && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
+      // An agent's install is checked first even when no card follows (the main agent grants on its own): a broken app
+      // is refused with its problems, never installed.
+      const precheck = !gateBypass || (AGENT.test(request.from) && GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
+      if (this.gatePrecheck && pending.phase === "accepted" && effect !== "read" && precheck) {
         let refused: ResponseBody | null;
         try { refused = await this.gatePrecheck(detached(request)); } catch { refused = null; }
         if (pending.settled) return;

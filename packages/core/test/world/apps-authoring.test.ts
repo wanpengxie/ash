@@ -25,6 +25,8 @@ import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "../../../..");
 const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
+/** A declared agent other than the main one: its install asks the owner on a card. */
+const helper: TrustedRouteContext = { ...agent, member: "agent:helper", transportPrincipal: "agent:helper" };
 const screen: TrustedRouteContext = { transport: "web_ui", member: "person:owner", transportPrincipal: "owner-principal", local: true, remote: false, ownerProxy: true,
   screenId: "screen:approved", screenLabel: "Test screen" };
 const until = async (condition: () => boolean, label: string, ms = 15000) => {
@@ -67,9 +69,9 @@ async function world(recent?: ReturnType<typeof recentFacts>) {
   return { dir, root, ledger, router, members, runtime, call, close, phone };
 }
 
-/** An agent asks to install; the owner answers the card. */
-async function install(w: Awaited<ReturnType<typeof world>>, id: string) {
-  const sent = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
+/** An agent installs: the main agent's install runs at once; another agent's asks the owner, who answers the card. */
+async function install(w: Awaited<ReturnType<typeof world>>, id: string, by: TrustedRouteContext = agent) {
+  const sent = await w.router.send(by, { to: "service:apps", kind: "request", word: "apps.install", body: { id } });
   await until(() => Boolean(w.ledger.gateCase(sent.id) || w.ledger.responseTo(sent.id)), "install card or refusal");
   const gate = w.ledger.gateCase(sent.id);
   if (!gate) return { ask: null, reply: w.ledger.responseTo(sent.id)! };
@@ -130,7 +132,7 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
 
     const listed = w.runtime.info("notes")!;
     assert.deepEqual([listed.origin, listed.path, listed.granted], ["agent", "/root/apps/notes", false]);
-    const { ask, reply } = await install(w, "notes");
+    const { ask, reply } = await install(w, "notes", helper);
     assert.equal(ask!.body.title, "安装 Ash 写的应用「笔记」");
     assert.match(String(ask!.body.detail), /Ash 自己写的，没有发布过/);
     assert.match(String(ask!.body.detail), /不需要用 Ash 的其他东西/);
@@ -157,7 +159,7 @@ test("the hello example installs as it is, and its server reaches ash with the s
   try {
     cpSync(join(repo, "docs/examples/hello"), join(w.root, "hello"), { recursive: true });
     assert.equal((await w.call("apps.validate", { id: "hello" })).result.ok, true);
-    const { ask, reply } = await install(w, "hello");
+    const { ask, reply } = await install(w, "hello", helper);
     assert.equal(ask!.body.title, "安装「你好」");
     assert.match(String(ask!.body.detail), /发布者写的是「example」，Ash 无法核实/);
     assert.equal(reply.body.ok, true);
@@ -174,7 +176,9 @@ test("the hello example installs as it is, and its server reaches ash with the s
     manifest.needs = [{ member: "device:phone", words: ["look"], why: "看一眼" }];
     write(join(w.root, "peek"), { ...Object.fromEntries(Object.entries(files).filter(([, value]) => typeof value === "string")) as Record<string, string>,
       "server.mjs": server, "app.json": JSON.stringify(manifest) });
-    assert.equal((await install(w, "peek")).reply.body.ok, true);
+    const peek = await install(w, "peek");
+    assert.equal(peek.ask, null, "the main agent grants the app's needs itself");
+    assert.equal(peek.reply.body.ok, true, JSON.stringify(peek.reply.body));
     const looked = await w.router.send(agent, { to: "app:peek", kind: "request", word: "peek.look", body: {}, wait: true });
     assert.deepEqual((looked.reply!.body as { result: { structuredContent: unknown } }).result.structuredContent, { ok: true, result: { seen: true } });
   } finally { await w.close(); }
@@ -184,7 +188,8 @@ test("an install grants exactly the needs its card showed: needs changed while t
   const w = await world();
   try {
     assert.equal((await w.call("apps.scaffold", { id: "sneaky", name: "悄悄" })).ok, true);
-    const sent = await w.router.send(agent, { to: "service:apps", kind: "request", word: "apps.install", body: { id: "sneaky" } });
+    // Another agent's install: the owner is shown the needs on a card.
+    const sent = await w.router.send(helper, { to: "service:apps", kind: "request", word: "apps.install", body: { id: "sneaky" } });
     await until(() => Boolean(w.ledger.gateCase(sent.id)), "install card");
     const file = join(w.root, "sneaky/app.json");
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), needs: [{ member: "device:phone", words: ["look"], why: "看一眼" }] }));
@@ -231,8 +236,12 @@ test("validate says exactly what is wrong, and install refuses a broken app with
     assert.match(report.problems.find((item: { where: string }) => item.where.startsWith("页面")).problem, /resources\/read 读不出来/);
     assert.ok(report.problems.some((item: { where: string; problem: string }) => item.where === "app.json /icon" && /没有图标/.test(item.problem)));
 
-    // The agent's install is refused with the problems; no card reaches the owner.
+    // An agent's install is refused with the problems, the main agent's (which needs no card) and another's alike;
+    // no card reaches the owner.
     const asksBefore = w.ledger.list({ limit: 1000 }).filter((message) => message.word === "ask").length;
+    const other = await install(w, "broken", helper);
+    assert.equal(other.ask, null);
+    assert.match(String((other.reply.body as { error: { message: string } }).error.message), /^应用 broken 没通过检查，没有安装/);
     const { ask, reply } = await install(w, "broken");
     assert.equal(ask, null);
     const body = reply.body as { ok: false; error: { code: string; message: string; detail: { problems: { where: string }[] } } };
