@@ -125,7 +125,7 @@ add("agent:main", "say", "request", { oneOf: [
   obj({ text: { const: "" }, attachments: { type: "array", items: attachmentInput, minItems: 1 }, in_reply_to: id, option_id: id }, ["text", "attachments"]),
 ] }, accepted, { label: "读你的消息", description: "Use to speak to the agent or send attachments; accepted immediately and queued." });
 add("agent:main", "cancel_turn", "request", obj({ reason: nonempty, by: id }, ["reason"]), obj({ cancelled: bool }, ["cancelled"]), { audience: "owner", description: "Control only; stop the current turn and settle pending requests." });
-add("agent:main", "wake", "request", obj({ reason: nonempty, context: obj({}, [], true) }, ["reason", "context"]), accepted, { audience: "owner", description: "Internal wake for the secondary session." });
+add("agent:main", "wake", "request", obj({ reason: nonempty, context: obj({}, [], true) }, ["reason", "context"]), accepted, { audience: "owner", timeout_ms: 600_000, description: "Internal wake for the secondary session. The reply comes when the wake turn ends, which can take minutes (the turn is cancelled if the request times out)." });
 add("agent:main", "typing", "event", empty, undefined, { audience: "owner", description: "Current authenticated screen is composing a message." });
 add("agent:main", "status", "event", obj({ state: choice("idle", "listening", "thinking", "working", "done", "waiting_you", "resting"), text: str }, ["state", "text"]), undefined, { direction: "out" });
 add("agent:main", "received", "event", obj({ ids: strings }, ["ids"]), undefined, { direction: "out" });
