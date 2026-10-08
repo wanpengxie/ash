@@ -75,6 +75,12 @@ class SandboxTest {
         assertNull(AppIds.fromLink("ash-app://open?app=..%2Fx"))
         assertNull(AppIds.fromLink("ash-app://open"))
         assertNull(AppIds.fromLink(null))
+        // A home-screen card may open one page of the app.
+        assertEquals("health", AppIds.fromLink("ash-app://open?app=health&surface=trends"))
+        assertEquals("trends", AppIds.surfaceFromLink("ash-app://open?app=health&surface=trends"))
+        assertNull(AppIds.surfaceFromLink("ash-app://open?app=health"))
+        assertNull(AppIds.surfaceFromLink("ash-app://open?app=health&surface=..%2Fx"))
+        assertNull(AppIds.surfaceFromLink("ash-app://open?app=Bad&surface=trends"))
     }
 
     @Test fun appListSkipsWhatItCannotOpen() {

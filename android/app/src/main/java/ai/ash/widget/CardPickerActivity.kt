@@ -32,7 +32,7 @@ class CardPickerActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 64, 48, 48) }
         root.addView(TextView(this).apply { text = "选择要显示的卡片"; textSize = 20f; setTextColor(fg); setTypeface(typeface, Typeface.BOLD); setPadding(0, 0, 0, 24) })
         val now = System.currentTimeMillis()
-        val cards = WidgetHost.state(this)?.cards?.values.orEmpty().filter { it.root != null }
+        val cards = WidgetHost.state(this)?.cards?.values.orEmpty().toList()
         if (cards.isEmpty()) {
             root.addView(TextView(this).apply {
                 text = "还没有卡片。可以跟 Ash 说「在桌面放一张今天天气的卡片」，放好后点这个小组件再选。"
@@ -47,7 +47,7 @@ class CardPickerActivity : Activity() {
                 isClickable = true
                 addView(TextView(context).apply { text = card.title; textSize = 17f; setTextColor(fg) })
                 addView(TextView(context).apply {
-                    text = listOfNotNull(card.size, owner(card.owner), if (expired) "已过期" else null).joinToString(" · ")
+                    text = listOfNotNull(card.size, owner(card.owner), if (expired) "已过期" else null, if (card.render == null) "画不出来" else null).joinToString(" · ")
                     textSize = 13f; setTextColor(fg2)
                 })
                 setOnClickListener { WidgetHost.pick(this@CardPickerActivity, id, card.id); finish() }

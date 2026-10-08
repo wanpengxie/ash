@@ -40,4 +40,12 @@ class AshWidgetModelTest {
         val f = frame("waiting_you", false, (1..5).map { card("q$it") })
         assertEquals(3, AshWidgetModel.view(f, emptySet(), hostUp = true, coreRunning = true, stale = false).items.size)
     }
+
+    @Test fun aReplyInMarkdownShowsItsFirstReadableLine() {
+        val f = frame("done", false, reply = "```\n**订好了**，周六晚七点\n- 地点：老地方", outcome = "completed")
+        val v = AshWidgetModel.view(f, emptySet(), hostUp = true, coreRunning = true, stale = false)
+        assertEquals("Ash：**订好了**，周六晚七点", v.items.single().text)
+        // The widget draws it as formatting: the marks never show.
+        assertEquals("Ash：订好了，周六晚七点", Markdown.parse(v.items.single().text).text)
+    }
 }

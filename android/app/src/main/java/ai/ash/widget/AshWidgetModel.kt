@@ -31,7 +31,8 @@ object AshWidgetModel {
                 add(AshItem("card:${c.id}", "$label：${c.title}"))
             }
             if (!running && "end:$turn" !in noticed) {
-                val reply = frame.reply.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+                // The first line that shows something once Markdown is drawn (a reply may open with a code fence or a rule).
+                val reply = frame.reply.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() && Markdown.parse(it).text.isNotBlank() && !it.startsWith("```") }
                 if (reply != null) add(AshItem("end:$turn", "Ash：$reply"))
                 else if (frame.outcome == "completed") add(AshItem("end:$turn", "任务完成"))
             }

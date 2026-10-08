@@ -3,59 +3,37 @@ package ai.ash.widget
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** How a card's text is drawn: A2UI h1 is a big number, h2/h3 a title, caption secondary, anything else body. */
-enum class TextStyle { NUMBER, TITLE, BODY, CAPTION }
-
-/** One drawable piece of a card; the Android side turns it into RemoteViews without further decisions. */
-sealed class WNode {
-    /** spread: the children are pushed apart (gaps between them); around: gaps at both ends too. */
-    data class Box(val vertical: Boolean, val center: Boolean, val spread: Boolean, val children: List<WNode>, val around: Boolean = false) : WNode()
-    data class Text(val text: String, val style: TextStyle) : WNode()
-    data class Icon(val glyph: String) : WNode()
-    object Avatar : WNode()
-    data class Button(val label: String, val action: String) : WNode()
-    object Divider : WNode()
-    data class Progress(val value: Int, val label: String) : WNode()
-    data class Badge(val text: String) : WNode()
-}
-
-data class WCard(val id: String, val title: String, val size: String, val owner: String, val expiresAt: Long?, val root: WNode?)
+/** One card from the core; [render] is null and [problem] says why when the phone cannot draw it. */
+data class WCard(val id: String, val title: String, val size: String, val owner: String, val updatedAt: Long, val expiresAt: Long?,
+    val render: CardRender?, val problem: String? = null)
 data class WState(val revision: Long, val cards: Map<String, WCard>, val bindings: Map<String, String>)
 
 /** What one "Ash 卡片" widget shows. */
 sealed class CardView {
     object Unbound : CardView()
     data class Expired(val card: WCard) : CardView()
-    data class Show(val card: WCard, val root: WNode) : CardView()
+    data class Broken(val card: WCard, val problem: String) : CardView()
+    data class Show(val card: WCard, val render: CardRender) : CardView()
 }
 
-/**
- * The phone's half of the card format: the core already checked the A2UI subset and resolved data bindings; this maps
- * the pushed component list to a render plan, re-checking the limits so a bad state can never draw something else.
- */
+/** The phone's half of service:widgets: the pushed state, which card each widget shows, and the frame around it. */
 object WidgetPlan {
-    const val MAX_LEVELS = 3
-    const val MAX_BUTTONS = 2
-    const val MAX_COMPONENTS = 40
-
-    private val glyphs = mapOf(
-        "sun" to "☀️", "cloud" to "☁️", "rain" to "🌧️", "snow" to "❄️", "wind" to "🌬️", "moon" to "🌙", "heart" to "❤️",
-        "steps" to "👣", "weight" to "⚖️", "sleep" to "😴", "water" to "💧", "fire" to "🔥", "calendar" to "📅", "clock" to "⏰",
-        "check" to "✅", "alert" to "⚠️", "star" to "⭐", "bell" to "🔔", "mail" to "✉️", "home" to "🏠", "car" to "🚗",
-        "money" to "💰", "chart" to "📈")
-
-    fun glyph(name: String): String? = glyphs[name]
+    /** Roughly what a launcher gives each widget size, in dp (portrait), for checking a card before it is placed. */
+    fun nominal(size: String): Pair<Float, Float> = when (size) { "2x2" -> 150f to 150f; "4x4" -> 330f to 330f; else -> 330f to 150f }
 
     fun parseState(b: JSONObject): WState {
         val cards = LinkedHashMap<String, WCard>()
         val list = b.optJSONArray("cards") ?: JSONArray()
-        for (i in 0 until minOf(list.length(), 100)) {
+        for (i in 0 until minOf(list.length(), 200)) {
             val c = list.optJSONObject(i) ?: continue
             val id = c.optString("id")
             if (id.isBlank()) continue
-            val root = runCatching { plan(c.getJSONObject("a2ui")) }.getOrNull()
-            cards[id] = WCard(id, c.optString("title").take(40), c.optString("size", "4x2"), c.optString("owner"),
-                if (c.isNull("expires_at") || !c.has("expires_at")) null else c.optLong("expires_at"), root)
+            var problem: String? = null
+            val render = try { CardSpec.parse(c.getJSONObject("a2ui")) }
+                catch (e: CardProblem) { problem = e.message; null }
+                catch (e: Exception) { problem = "卡片格式手机读不懂（${e.message ?: e.javaClass.simpleName}）"; null }
+            cards[id] = WCard(id, c.optString("title").take(40), c.optString("size", "4x2"), c.optString("owner"), c.optLong("updated_at"),
+                if (c.isNull("expires_at") || !c.has("expires_at")) null else c.optLong("expires_at"), render, problem)
         }
         val bindings = LinkedHashMap<String, String>()
         b.optJSONObject("bindings")?.let { o -> o.keys().forEach { k -> o.optString(k).takeIf { it.isNotBlank() }?.let { bindings[k] = it } } }
@@ -67,94 +45,35 @@ object WidgetPlan {
         val cardId = state?.bindings?.get(widgetId.toString()) ?: localCard ?: return CardView.Unbound
         val card = state?.cards?.get(cardId) ?: return CardView.Unbound
         if (card.expiresAt != null && card.expiresAt <= now) return CardView.Expired(card)
-        val root = card.root ?: return CardView.Unbound
-        return CardView.Show(card, root)
-    }
-
-    fun plan(a2ui: JSONObject): WNode {
-        val list = a2ui.getJSONArray("components")
-        require(list.length() in 1..MAX_COMPONENTS)
-        val byId = HashMap<String, JSONObject>()
-        for (i in 0 until list.length()) list.getJSONObject(i).let { byId[it.getString("id")] = it }
-        val used = HashSet<String>()
-        var buttons = 0
-        fun text(c: JSONObject, max: Int) = c.optString("text").replace(Regex("[\\p{Cc}&&[^\\n]]"), " ").take(max)
-        fun node(id: String, levels: Int): WNode {
-            require(used.add(id)) { "component $id used twice" }
-            val c = byId[id] ?: throw IllegalArgumentException("missing $id")
-            return when (val kind = c.getString("component")) {
-                "Column", "Row" -> {
-                    require(levels + 1 <= MAX_LEVELS) { "too deep" }
-                    val kids = c.optJSONArray("children") ?: JSONArray()
-                    val justify = c.optString("justify")
-                    // A Row's align is vertical (rows are always centred that way); only its justify centres it across.
-                    val center = if (kind == "Column") c.optString("align") == "center" || justify == "center" else justify == "center"
-                    Box(kind == "Column", center, justify in setOf("spaceBetween", "spaceAround", "spaceEvenly", "stretch"),
-                        (0 until kids.length()).map { node(kids.getString(it), levels + 1) }, around = justify in setOf("spaceAround", "spaceEvenly"))
-                }
-                "Text" -> WNode.Text(text(c, 300), when (c.optString("variant")) {
-                    "h1" -> TextStyle.NUMBER; "h2", "h3" -> TextStyle.TITLE; "caption" -> TextStyle.CAPTION; else -> TextStyle.BODY })
-                "Image" -> {
-                    val url = c.optString("url")
-                    if (url == "avatar") WNode.Avatar
-                    else WNode.Icon(glyph(url.removePrefix("icon:")).takeIf { url.startsWith("icon:") } ?: throw IllegalArgumentException("unknown image"))
-                }
-                "Button" -> {
-                    require(++buttons <= MAX_BUTTONS) { "too many buttons" }
-                    val labelId = c.getString("child")
-                    val label = byId[labelId] ?: throw IllegalArgumentException("missing label")
-                    used.add(labelId)
-                    val action = c.getJSONObject("action").getJSONObject("event").getString("name")
-                    require(Regex("[A-Za-z0-9_.:-]{1,64}").matches(action))
-                    WNode.Button(text(label, 20), action)
-                }
-                "Divider" -> WNode.Divider
-                "ProgressBar" -> WNode.Progress(c.optInt("value").coerceIn(0, 100), c.optString("label").take(40))
-                "Badge" -> WNode.Badge(text(c, 8))
-                else -> throw IllegalArgumentException("unsupported $kind")
-            }
-        }
-        return node(a2ui.optString("root", "root"), 0)
-    }
-
-    /**
-     * A Row's drawing order: every child at its own width, with null where a stretchable gap goes. Only spread rows get
-     * gaps, and an icon or avatar keeps to what follows it (a weather row reads "☁️ 霾 ……… 19℃", not three islands).
-     */
-    fun rowSlots(row: WNode.Box): List<WNode?> {
-        if (!row.spread || row.vertical) return row.children
-        val out = ArrayList<WNode?>()
-        if (row.around) out.add(null)
-        row.children.forEachIndexed { i, child ->
-            out.add(child)
-            val last = i == row.children.lastIndex
-            if (!last && child !is WNode.Icon && child !is WNode.Avatar) out.add(null)
-        }
-        if (row.around && row.children.isNotEmpty()) out.add(null)
-        return out
+        val render = card.render ?: return CardView.Broken(card, card.problem ?: "卡片内容缺失")
+        return CardView.Show(card, render)
     }
 
     /**
      * True when the card's content already opens with its title (the usual A2UI card starts with a title Text), so the
-     * widget frame does not print the same words again above it. Leading icons, avatars and badges are looked past.
+     * widget frame does not print the same words again above it. Leading icons, images and badges are looked past.
      */
-    fun opensWithTitle(root: WNode, title: String): Boolean {
+    fun opensWithTitle(root: CNode, title: String): Boolean {
         val want = title.trim()
         if (want.isEmpty()) return false
-        fun first(n: WNode): String? = when (n) {
-            is WNode.Text -> n.text
-            is WNode.Box -> n.children.firstOrNull { it !is WNode.Icon && it !is WNode.Avatar && it !is WNode.Badge }?.let { first(it) }
+        fun first(n: CNode): String? = when (n.kind) {
+            "Text" -> Markdown.parse(n.text).text
+            "Row", "Column", "Stack", "Card" -> n.inner.firstOrNull { it.kind !in setOf("Icon", "Image", "Badge") }?.let { first(it) }
             else -> null
         }
         return first(root)?.trim()?.startsWith(want, ignoreCase = true) == true
     }
 
-    /** Button actions in drawing order, for the owner's taps. */
-    fun actions(node: WNode): List<WNode.Button> = when (node) {
-        is WNode.Box -> node.children.flatMap { actions(it) }
-        is WNode.Button -> listOf(node)
-        else -> emptyList()
+    /** The layout for a widget of [width] x [height] dp: the largest per-size layout that fits, else the smallest. */
+    fun pick(render: CardRender, width: Float, height: Float): CNode {
+        if (render.sizes.isEmpty()) return render.root
+        val fits = render.sizes.filter { it.width <= width + 0.5f && it.height <= height + 0.5f }
+        return (fits.maxByOrNull { it.width * it.height } ?: render.sizes.minByOrNull { it.width * it.height })!!.root
+    }
+
+    /** Find a component (a template copy, a per-size copy) anywhere in the card. */
+    fun find(render: CardRender, id: String): CNode? {
+        fun walk(n: CNode): CNode? = if (n.id == id) n else n.inner.firstNotNullOfOrNull { walk(it) }
+        return (listOf(render.root) + render.sizes.map { it.root }).firstNotNullOfOrNull { walk(it) }
     }
 }
-
-private typealias Box = WNode.Box

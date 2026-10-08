@@ -60,7 +60,14 @@ object Ui {
         runCatching { a.setTaskDescription(ActivityManager.TaskDescription(name, icon?.let { square(it) }, bar(a))) }
     }
 
-    /** The intent that opens one app in its own task (the same intent each time, so its task is reused). */
-    fun appIntent(ctx: Context, id: String): Intent =
+    /** Which page to show, when the app was opened for one (a home-screen card's action). */
+    const val EXTRA_SURFACE = "ai.ash.apps.surface"
+
+    /**
+     * The intent that opens one app in its own task (the same data each time, so its task is reused); [surface] asks for
+     * one of its pages and travels as an extra, not in the data, so it does not make a second task.
+     */
+    fun appIntent(ctx: Context, id: String, surface: String? = null): Intent =
         Intent(Intent.ACTION_VIEW, Uri.parse(AppIds.link(id))).setClass(ctx, AppActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+            .apply { if (surface != null) putExtra(EXTRA_SURFACE, surface) }
 }

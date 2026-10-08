@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- A card Column/Row; CardViews sets its size, gravity, box and colours. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/w_box"
+    android:id="@+id/w_self"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:gravity="start" />
+    android:baselineAligned="false"
+    android:clipToOutline="true" />

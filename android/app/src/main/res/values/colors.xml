@@ -7,6 +7,7 @@
     <color name="widget_bg">#F2F7F7F5</color>
     <color name="widget_fg">#1C1C1E</color>
     <color name="widget_fg2">#6E6E73</color>
+    <color name="widget_surface_variant">#EDEDEF</color>
     <color name="widget_line">#1F000000</color>
     <color name="widget_chip">#14FF7A3D</color>
 </resources>
