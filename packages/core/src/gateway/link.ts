@@ -1,4 +1,4 @@
-import { Link, type Signer } from "../../../device/src/link";
+import { bounded, Link, STEP_MS, type Signer } from "../../../device/src/link";
 import { RemoteAgents } from "../../../device/src/agents/remote";
 export { ClientLink, fileSigner, type LocalCapabilities, type Signer } from "../../../device/src/link";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
@@ -110,7 +110,7 @@ export class OwnerLink extends Link {
   }
 
   async claimIfNeeded(secretFile: string, name: string): Promise<void> {
-    const health = await this.gateway.health();
+    const health = await bounded(this.gateway.health(), STEP_MS, "gateway health");
     if (health.protocol !== undefined && health.protocol !== "ash-gw/1") throw new GatewayRefused("unsupported", "Unsupported gateway protocol");
     if (health.claimed === true) {
       if (health.owner_id !== this.signer.id) throw new GatewayRefused("claimed_by_other", "gateway is claimed by a different owner device");

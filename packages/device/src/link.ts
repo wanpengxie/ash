@@ -11,6 +11,19 @@ export type TunnelResponse = { status: number; headers?: Record<string, string>;
 type EdgeResponse = TunnelResponse;
 interface Inbound { method: string; path: string; headers: [string, string][]; body: Uint8Array[]; from?: string }
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** Each step of reaching the gateway gets this long; on a slow mobile network a request can otherwise hang for minutes. */
+export const STEP_MS = 20_000;
+/**
+ * [work], or a timeout error after [ms]. What arrives late is handed to [late] (a connection is closed there), so a
+ * stalled request never holds up the next attempt.
+ */
+export function bounded<T>(work: Promise<T>, ms: number, what: string, late?: (value: T) => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; reject(new Error(`timeout: ${what} took over ${ms / 1000}s`)); }, ms); });
+  work.then((value) => { if (timedOut) late?.(value); }, () => {});
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+}
 export async function fileSigner(stateDir: string): Promise<Signer> {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const file = join(stateDir, "device.jwk");
@@ -42,9 +55,10 @@ export abstract class Link {
     while (!this.stopped) {
       let beat: ReturnType<typeof setInterval> | undefined;
       try {
-        const health = await this.gateway.health();
+        const health = await bounded(this.gateway.health(), STEP_MS, "gateway health");
         if (health.protocol !== "ash-gw/1") { this.stopped = true; throw new Error("Unsupported gateway protocol"); }
-        const conn = await this.gateway.connect(await this.gateway.authenticate());
+        const session = await bounded(this.gateway.authenticate(), STEP_MS, "gateway sign-in");
+        const conn = await bounded(this.gateway.connect(session), STEP_MS, "gateway connection", (late) => late.close());
         this.conn = conn; this.connected = true; this.lastError = ""; delay = 1000;
         conn.onUnmatched = (frame) => this.onFrame(frame);
         let lastHeard = Date.now();
@@ -56,7 +70,7 @@ export abstract class Link {
           if (Date.now() - lastHeard > 90_000) { conn.ws.close(4000, "silent"); expired(); }
           else conn.ws.send("ping");
         }, 30_000);
-        await this.onConnected(conn);
+        await bounded(this.onConnected(conn), STEP_MS * 3, "gateway first sync");
         const closed = await Promise.race([conn.closed, silent]);
         if (closed && closed.code === 4003) { this.stopped = true; this.lastError = "Device revoked"; this.onRevoked(); }
       } catch (error) {
