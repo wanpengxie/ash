@@ -1,5 +1,6 @@
 package ai.ash.senses
 
+import ai.ash.senses.health.HealthWatch
 import ai.ash.senses.health.XiaomiScaleSource
 import android.Manifest
 import android.app.NotificationManager
@@ -22,6 +23,8 @@ object Senses {
         app = ctx.applicationContext
         // A new process: the scale's background scan is started again, in case the system dropped it.
         XiaomiScaleSource.rearm(ctx.applicationContext)
+        // Health sources are checked for stopped data every few hours (a non-waking alarm, set once).
+        HealthWatch.arm(ctx.applicationContext)
     }
     fun ctx(): Context = app ?: error("senses not initialised")
 

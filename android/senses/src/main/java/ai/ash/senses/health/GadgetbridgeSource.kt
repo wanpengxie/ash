@@ -175,27 +175,65 @@ object GadgetbridgeSource {
         out.sortedBy { it.ts }.take(max)
     }
 
-    fun status(ctx: Context): JSONObject {
+    /**
+     * The newest real reading in the export: sample rows with a real value (not Gadgetbridge's "no reading" marks) and
+     * finished sessions. A row stamped in the future (a watch with a wrong clock) is not counted. This is the data's
+     * time; the export file can be rewritten on time while nothing new came from the watch.
+     */
+    private fun latest(o: Opened, plan: GadgetbridgeSchema.Plan, now: Long): GadgetbridgeSchema.Latest {
+        val found = mutableListOf<GadgetbridgeSchema.Found>()
+        val horizon = 0L..(now + 3_600_000L)
+        fun max(table: String, ts: String): Long? = o.db.rawQuery("SELECT MAX(${quote(ts)}) FROM ${quote(table)}", null)
+            .use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null }
+        fun collect(metric: String, table: String, ts: String, device: String?, where: String) {
+            val limit = GadgetbridgeSchema.rangeIn(max(table, ts) ?: return, horizon).last
+            val dev = device?.let { quote(it) }
+            val sql = "SELECT ${dev ?: "NULL"}, MAX(${quote(ts)}) FROM ${quote(table)} WHERE ${quote(ts)} <= ? AND $where" + (dev?.let { " GROUP BY $it" } ?: "")
+            o.db.rawQuery(sql, arrayOf(limit.toString())).use { c ->
+                while (c.moveToNext()) {
+                    if (c.isNull(1)) continue
+                    val source = GadgetbridgeSchema.source(if (c.isNull(0)) null else o.devices[c.getLong(0)])
+                    found += GadgetbridgeSchema.Found(metric, source, GadgetbridgeSchema.toMillis(c.getLong(1)))
+                }
+            }
+        }
+        for (s in plan.samples) for ((metric, column) in s.metrics) collect(metric, s.table, s.ts, s.device, GadgetbridgeSchema.validSql(metric, quote(column)))
+        for (s in plan.sessions) collect(s.metric, s.table, s.end, s.device, "${quote(s.end)} > ${quote(s.start)}")
+        return GadgetbridgeSchema.latest(found)
+    }
+
+    fun status(ctx: Context, now: Long = System.currentTimeMillis()): JSONObject {
         val o = JSONObject().put("id", "gadgetbridge").put("installed", installedVersion(ctx) != null)
         installedVersion(ctx)?.let { o.put("version", it) }
         val tree = folder(ctx)
         o.put("folder_granted", tree != null)
         if (tree == null) return o
         val doc = newest(ctx)
-        if (doc == null) { o.put("export", JSONObject.NULL); return o }
+        if (doc == null) { o.put("export", JSONObject.NULL).put("latest_error", "no export in the granted folder"); return o }
+        // modified is the file's time: Gadgetbridge can rewrite it on schedule with nothing new from the watch.
         o.put("export", JSONObject().put("name", doc.name).put("modified", doc.modified).put("size", doc.size))
         runCatching {
             open(ctx) { op ->
                 o.put("database_version", op.version)
                 when (val p = op.plan) {
-                    is GadgetbridgeSchema.Unsupported -> o.put("schema", "unsupported").put("tables", JSONArray(p.tables))
-                    is GadgetbridgeSchema.Plan -> o.put("schema", "ok")
-                        .put("metrics", JSONArray((p.samples.flatMap { it.metrics.keys } + p.sessions.map { it.metric }).distinct()))
-                        .put("devices", JSONArray(op.devices.values.distinct().map { GadgetbridgeSchema.source(it) }))
-                        .put("notes", JSONArray(p.notes))
+                    is GadgetbridgeSchema.Unsupported -> o.put("schema", "unsupported").put("tables", JSONArray(p.tables)).put("latest_error", "unsupported export")
+                    is GadgetbridgeSchema.Plan -> {
+                        o.put("schema", "ok")
+                            .put("metrics", JSONArray((p.samples.flatMap { it.metrics.keys } + p.sessions.map { it.metric }).distinct()))
+                            .put("devices", JSONArray(op.devices.values.distinct().map { GadgetbridgeSchema.source(it) }))
+                            .put("notes", JSONArray(p.notes))
+                        val latest = latest(op, p, now)
+                        o.put("latest_data_ts", latest.ts ?: JSONObject.NULL)
+                            .put("latest_by_metric", JSONObject(latest.byMetric as Map<*, *>))
+                            .put("latest_by_device", JSONObject(latest.bySource as Map<*, *>))
+                    }
                 }
             }
-        }.onFailure { o.put("schema_error", (it as? SenseError)?.let { e -> "${e.code}: ${e.message}" } ?: it.toString()) }
+        }.onFailure {
+            val why = (it as? SenseError)?.let { e -> "${e.code}: ${e.message}" } ?: it.toString()
+            o.put("schema_error", why)
+            if (!o.has("latest_data_ts")) o.put("latest_error", why)
+        }
         return o
     }
 

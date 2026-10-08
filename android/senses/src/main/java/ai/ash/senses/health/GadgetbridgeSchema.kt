@@ -76,6 +76,38 @@ object GadgetbridgeSchema {
     private fun long(v: Any?): Long? = when (v) { is Number -> v.toLong(); is String -> v.toLongOrNull(); else -> null }
     private fun double(v: Any?): Double? = when (v) { is Number -> v.toDouble(); is String -> v.toDoubleOrNull(); else -> null }
 
+    /** A real measurement, not one of Gadgetbridge's "no reading" marks (0, 255, negative). */
+    fun valid(metric: String, v: Double): Boolean = when (metric) {
+        "steps" -> v > 0 && v < 100_000
+        "heart_rate" -> v >= 25 && v <= 240
+        "spo2" -> v >= 50 && v <= 100
+        else -> false
+    }
+
+    /** [valid] as an SQL condition on [column] (already quoted). */
+    fun validSql(metric: String, column: String): String = when (metric) {
+        "steps" -> "$column > 0 AND $column < 100000"
+        "heart_rate" -> "$column >= 25 AND $column <= 240"
+        "spo2" -> "$column >= 50 AND $column <= 100"
+        else -> "0"
+    }
+
+    /** One newest reading found: of [metric], from [source], at [ts] (ms). */
+    data class Found(val metric: String, val source: String, val ts: Long)
+
+    /** The newest real reading in an export: overall, per metric and per device (source). */
+    data class Latest(val ts: Long?, val byMetric: Map<String, Long>, val bySource: Map<String, Long>)
+
+    fun latest(found: List<Found>): Latest {
+        val byMetric = sortedMapOf<String, Long>()
+        val bySource = sortedMapOf<String, Long>()
+        for (f in found) {
+            byMetric[f.metric] = maxOf(byMetric[f.metric] ?: Long.MIN_VALUE, f.ts)
+            bySource[f.source] = maxOf(bySource[f.source] ?: Long.MIN_VALUE, f.ts)
+        }
+        return Latest(found.maxOfOrNull { it.ts }, byMetric, bySource)
+    }
+
     /**
      * Sample rows (column → value, as read) into readings. Steps add up per hour (a reading a minute would bury
      * everything else); heart rate and blood oxygen stay as measured. Gadgetbridge marks "no reading" with 0, 255 or
@@ -91,10 +123,10 @@ object GadgetbridgeSchema {
             for ((metric, column) in plan.metrics) {
                 if (metric !in wanted) continue
                 val v = double(r[column]) ?: continue
+                if (!valid(metric, v)) continue
                 when (metric) {
-                    "steps" -> if (v > 0 && v < 100_000) { val hour = ts - Math.floorMod(ts, 3_600_000L); hourly[hour to source] = (hourly[hour to source] ?: 0.0) + v }
-                    "heart_rate" -> if (v >= 25 && v <= 240) out += HealthRow(ts, metric, v, source)
-                    "spo2" -> if (v >= 50 && v <= 100) out += HealthRow(ts, metric, v, source)
+                    "steps" -> { val hour = ts - Math.floorMod(ts, 3_600_000L); hourly[hour to source] = (hourly[hour to source] ?: 0.0) + v }
+                    "heart_rate", "spo2" -> out += HealthRow(ts, metric, v, source)
                 }
             }
         }

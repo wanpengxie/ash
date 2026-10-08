@@ -11,13 +11,15 @@ import org.json.JSONObject
  *   a segment is sent again (same ts_start) once it has its end
  * - sense.health {batch_id, items: [{ts, metric, value, unit, source}]}
  * - sense.geofence {name, transition: enter|exit, ts}
+ * - sense.source {source, state: stale|fresh, ts, stale_hours, summary, last_data_ts?}: a health source stopped
+ *   bringing new readings (told once), or they came back; summary is plain Chinese for the owner
  *
  * Times are epoch milliseconds; at most [MAX_ITEMS] items per batch. The batch id is also the event's client id, so a
  * batch offered twice is recorded once.
  */
 internal object SensesEvents {
     const val MAX_ITEMS = 500
-    val WORDS = setOf("sense.location", "sense.activity", "sense.health", "sense.geofence")
+    val WORDS = setOf("sense.location", "sense.activity", "sense.health", "sense.geofence", "sense.source")
     private val STATES = setOf("still", "walking", "running", "cycling", "in_vehicle")
 
     data class Event(val id: String, val word: String, val body: JSONObject)
@@ -35,12 +37,21 @@ internal object SensesEvents {
 
     private fun keys(o: JSONObject): Set<String> = o.keys().asSequence().toSet()
     private fun time(v: Any?): Boolean = v is Number && v.toLong() > 0 && v.toDouble() == Math.floor(v.toDouble())
+    private val SOURCE_KEYS = setOf("source", "state", "ts", "stale_hours", "summary")
+    private fun text(v: Any?, max: Int): Boolean = v is String && v.isNotBlank() && v.length <= max
     private fun num(v: Any?): Boolean = v is Number && !v.toDouble().isNaN() && !v.toDouble().isInfinite()
 
     fun valid(word: String, body: JSONObject, id: String): Boolean {
         if (word == "sense.geofence") {
             return keys(body) == setOf("name", "transition", "ts") && body.opt("name") is String && body.optString("name").isNotBlank() &&
                 body.opt("transition") in setOf("enter", "exit") && time(body.opt("ts"))
+        }
+        if (word == "sense.source") {
+            val keys = keys(body)
+            return keys.containsAll(SOURCE_KEYS) && (keys - SOURCE_KEYS - "last_data_ts").isEmpty() &&
+                text(body.opt("source"), 64) && body.opt("state") in setOf("stale", "fresh") && time(body.opt("ts")) &&
+                (body.opt("stale_hours") as? Number)?.let { it.toDouble() == Math.floor(it.toDouble()) && it.toInt() in 1..720 } == true &&
+                text(body.opt("summary"), 200) && (!body.has("last_data_ts") || time(body.opt("last_data_ts")))
         }
         if (keys(body) != setOf("batch_id", "items") || body.opt("batch_id") != id) return false
         val items = body.optJSONArray("items") ?: return false

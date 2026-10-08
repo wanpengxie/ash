@@ -44,6 +44,20 @@ class SensesEventsTest {
         assertNull(SensesEvents.parse(ok.toString()))
     }
 
+    @Test fun sourceEvents() {
+        fun env(body: JSONObject) = JSONObject().put("batch_id", "s1").put("word", "sense.source").put("body", body).toString()
+        val body = JSONObject().put("source", "gadgetbridge").put("state", "stale").put("ts", 1_791_403_200_000L).put("stale_hours", 12)
+            .put("summary", "手表数据（Gadgetbridge）已经 26 小时没有新数据了，最后一条是 10月7日 02:00").put("last_data_ts", 1_791_309_600_000L)
+        assertNotNull(SensesEvents.parse(env(body)))
+        // last_data_ts is optional; anything else must match.
+        assertNotNull(SensesEvents.parse(env(JSONObject(body.toString()).apply { remove("last_data_ts") })))
+        assertNull(SensesEvents.parse(env(JSONObject(body.toString()).put("state", "late"))))
+        assertNull(SensesEvents.parse(env(JSONObject(body.toString()).put("stale_hours", 0))))
+        assertNull(SensesEvents.parse(env(JSONObject(body.toString()).put("summary", ""))))
+        assertNull(SensesEvents.parse(env(JSONObject(body.toString()).put("extra", 1))))
+        assertNull(SensesEvents.parse(env(JSONObject(body.toString()).apply { remove("summary") })))
+    }
+
     @Test fun envelopeRules() {
         assertNull(SensesEvents.parse(batch("sense.screen", fix)))
         assertNull(SensesEvents.parse(batch("sense.location")))

@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import ai.ash.senses.health.HealthImport
+import ai.ash.senses.health.HealthWatch
 import ai.ash.senses.health.XiaomiScaleSource
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -163,6 +164,7 @@ class AlarmReceiver : BroadcastReceiver() {
         Senses.init(ctx)
         when (intent.action) {
             TICK, PROBE -> Recorder.alarm(ctx, intent.action!!)
+            HealthWatch.ACTION -> { val pending = goAsync(); HealthWatch.run(ctx.applicationContext) { pending.finish() } }
             Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 if (Senses.config(ctx).recording) Recorder.start(ctx)
                 // The scale is heard whether or not recording is on.

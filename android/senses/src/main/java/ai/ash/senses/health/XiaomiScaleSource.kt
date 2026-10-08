@@ -219,7 +219,9 @@ object XiaomiScaleSource {
         if (mac == null) return o
         o.put("model", p.getString("model", XiaomiScale.MODEL)).put("mac", mac).put("metrics", org.json.JSONArray().put("weight"))
             .put("bluetooth_permission", Senses.bluetooth(ctx))
-        last(ctx)?.let { o.put("last_reading", JSONObject().put("ts", it.ts).put("value", it.value).put("unit", it.unit)) }
+        val last = last(ctx)
+        last?.let { o.put("last_reading", JSONObject().put("ts", it.ts).put("value", it.value).put("unit", it.unit)) }
+        o.put("latest_data_ts", last?.ts ?: JSONObject.NULL)
         problem(ctx)?.let { o.put("problem", it) }
         return o
     }

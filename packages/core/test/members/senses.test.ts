@@ -133,3 +133,40 @@ test("geofence crossings and ride starts and ends wake the mind once each, at mo
     assert.equal("distance_km" in wakes[4].context, false);
   } finally { senses.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a health source that stopped bringing data wakes the mind once per stop, per source; its coming back does not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ash-senses-source-"));
+  const ledger = await Ledger.open(join(dir, "ash.db"));
+  const router = new WorldRouter(ledger, async () => true);
+  const members = new WorldMembers(router);
+  const wakes: { reason: string; context: Record<string, unknown> }[] = [];
+  members.register({ id: "agent:main", kind: "agent", name: "Ash", online: true,
+    words: () => [wordContract("agent:main", "wake")!], handle(message) {
+      wakes.push({ reason: String(message.body.reason), context: message.body.context as Record<string, unknown> });
+      return { ok: true, result: { accepted: true } };
+    } });
+  const now = Date.UTC(2026, 9, 7, 20, 0);
+  const last = now - 26 * 3_600_000;
+  const senses = new SensesMember({ router, heartbeat: async () => "", isPaused: () => false, opener: () => {}, proactive: () => {}, now: () => now });
+  members.register(senses);
+  const send = (body: Record<string, unknown>) => router.send(phone, { to: null, kind: "event", word: "sense.source", body });
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const summary = "手表数据（Gadgetbridge）已经 26 小时没有新数据了，最后一条是 10月7日 02:00";
+  try {
+    await send({ source: "gadgetbridge", state: "stale", ts: now, stale_hours: 12, summary, last_data_ts: last });
+    await until(() => wakes.length === 1);
+    assert.deepEqual(wakes[0], { reason: "health_source_stale",
+      context: { source: "gadgetbridge", stale_hours: 12, last_data_at: new Date(last).toISOString(), summary } });
+    // The same stop told again: nothing. Coming back: recorded only.
+    await send({ source: "gadgetbridge", state: "stale", ts: now, stale_hours: 12, summary, last_data_ts: last });
+    await send({ source: "gadgetbridge", state: "fresh", ts: now, stale_hours: 12, summary: "手表数据（Gadgetbridge）又有新数据了", last_data_ts: now });
+    // A notice from long ago is not news.
+    await send({ source: "health_connect", state: "stale", ts: now - 25 * 3_600_000, stale_hours: 12, summary: "x", last_data_ts: last - 25 * 3_600_000 });
+    await settle();
+    assert.equal(wakes.length, 1);
+    // Another source within the ten minutes is not held back by the first.
+    await send({ source: "health_connect", state: "stale", ts: now, stale_hours: 12, summary: "Health Connect 里的健康数据已经 13 小时没有新数据了", last_data_ts: now - 13 * 3_600_000 });
+    await until(() => wakes.length === 2);
+    assert.equal(wakes[1].context.source, "health_connect");
+  } finally { senses.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+});

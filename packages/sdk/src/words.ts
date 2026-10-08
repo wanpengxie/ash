@@ -356,6 +356,10 @@ add("service:senses", "sense.health", "event", senseBatch(obj({ ts: nonnegativeS
   ["ts", "metric", "value", "unit", "source"])), undefined, { audience: "owner" });
 add("service:senses", "sense.geofence", "event", obj({ name: senseText(64), transition: choice("enter", "exit"), ts: nonnegativeSafe }, ["name", "transition", "ts"]),
   undefined, { audience: "owner" });
+add("service:senses", "sense.source", "event", obj({ source: senseText(64), state: choice("stale", "fresh"), ts: nonnegativeSafe,
+  stale_hours: { type: "integer", minimum: 1, maximum: 720 }, summary: senseText(200), last_data_ts: nonnegativeSafe },
+  ["source", "state", "ts", "stale_hours", "summary"]), undefined,
+  { audience: "owner", description: "A health source on the phone stopped bringing new readings for stale_hours (sent once), or they came back. last_data_ts is its newest reading; summary is plain Chinese for the owner." });
 add("service:reflex", "reflex.judged", "event", obj({ message_id: id, stage: choice("keyword", "jev"), intent: str, confidence: { type: "number", minimum: 0, maximum: 1 }, acted: bool,
   fallback: choice("timeout", "unavailable", "invalid", "error"), fallback_ms: { type: "integer", minimum: 0 } }, ["message_id", "stage", "intent", "confidence", "acted"]), undefined,
   { direction: "out", description: "One reflex decision. fallback says why JEV was asked but the keyword rule decided." });

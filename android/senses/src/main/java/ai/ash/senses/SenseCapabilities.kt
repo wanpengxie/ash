@@ -106,7 +106,7 @@ object SenseCapabilities {
             else o.put("steps_today", today.steps).put("since", today.since).put("complete", today.complete)
             CapResult.json(o)
         },
-        Cap("health.sources", "Health data sources and their state: Health Connect (installed, which permissions granted), Gadgetbridge (installed, export folder granted, newest export, recognised metrics) and xiaomi_scale (a Xiaomi scale the owner set up: configured or not, its last weigh-in).") { ctx, args ->
+        Cap("health.sources", "Health data sources and their state: Health Connect (installed, which permissions granted), Gadgetbridge (installed, export folder granted, newest export file, recognised metrics) and xiaomi_scale (a Xiaomi scale the owner set up: configured or not, its last weigh-in). For each set-up source: latest_data_ts, the time of its newest actual reading (not the export file's time: Gadgetbridge can rewrite the file with nothing new from the watch), latest_data_age_h, and stale (true when older than stale_hours; null when not checked), with stale_summary in plain Chinese for the owner. Ash is also told once by a sense.source event when a source goes stale, and when it comes back.") { ctx, args ->
             SenseArgs.only(args, emptySet())
             CapResult.json(JSONObject().put("sources", HealthHub.sources(ctx)))
         },
@@ -125,7 +125,7 @@ object SenseCapabilities {
             CapResult.json(JSONObject().put("from", r.first).put("to", r.last + 1).put("rows", JSONArray().apply { reading.rows.forEach { put(it.toJson()) } })
                 .apply { if (reading.errors.length() > 0) put("source_errors", reading.errors) })
         },
-        Cap("health.summary", "A day's or a week's health in a few numbers (steps, heart rate, sleep, weight, ...), computed by rule from health.read.",
+        Cap("health.summary", "A day's or a week's health in a few numbers (steps, heart rate, sleep, weight, ...), computed by rule from health.read. stale_sources lists sources whose newest reading is older than their threshold (e.g. the watch stopped sending), each with a plain-Chinese summary to tell the owner; missing numbers may be why.",
             schema(
                 "period" to prop("string", "day (default) or week (the 7 days ending with date)", enum = listOf("day", "week")),
                 "date" to prop("string", "YYYY-MM-DD (default: today)"),
@@ -133,8 +133,10 @@ object SenseCapabilities {
             SenseArgs.only(args, setOf("period", "date"))
             val (period, r) = SenseArgs.summaryRange(args, now())
             val reading = HealthHub.read(ctx, HealthMetric.names, r, HealthHub.SOURCES, 200_000)
+            val stale = runCatching { HealthHub.stale(HealthHub.sources(ctx)) }.getOrDefault(JSONArray())
             CapResult.json(JSONObject().put("period", period).put("from", r.first).put("to", r.last + 1).put("summary", HealthSummary.of(reading.rows, r))
-                .apply { if (reading.errors.length() > 0) put("source_errors", reading.errors) })
+                .apply { if (reading.errors.length() > 0) put("source_errors", reading.errors) }
+                .apply { if (stale.length() > 0) put("stale_sources", stale) })
         },
         Cap("health.sync", "Ask Gadgetbridge to fetch new data from the watch and export its database now, and wait (up to 90 s) for the export. Needs Gadgetbridge's Intent API enabled. Errors: source_unavailable, timeout.") { ctx, args ->
             SenseArgs.only(args, emptySet())
@@ -146,13 +148,16 @@ object SenseCapabilities {
             SenseArgs.only(args, emptySet())
             CapResult.json(AshLink.status(ctx).put("stored", Senses.store.counts()))
         },
-        Cap("sense.configure", "Change what is recorded: recording on/off, interval_min, accuracy (high|balanced|low), retention_days, geofences (named circles; crossing one is reported to Ash). Only the given keys change. Errors: permission_denied, bad_args.",
+        Cap("sense.configure", "Change what is recorded: recording on/off, interval_min, accuracy (high|balanced|low), retention_days, geofences (named circles; crossing one is reported to Ash), stale_hours (per health source, hours without a new reading before it counts as stale; 0 = not checked; defaults health_connect 12, gadgetbridge 12, xiaomi_scale 0). Only the given keys change. Errors: permission_denied, bad_args.",
             schema(
                 "recording" to prop("boolean", "Record location and motion"),
                 "interval_min" to prop("integer", "Minutes between points (${SenseConfig.MIN_INTERVAL} to ${SenseConfig.MAX_INTERVAL})"),
                 "accuracy" to prop("string", "Location accuracy", enum = SenseConfig.ACCURACIES),
                 "retention_days" to prop("integer", "Days to keep recorded rows (1 to ${SenseConfig.MAX_RETENTION})"),
                 "geofences" to arrayProp("All geofences (replaces the list; [] removes them)", geofenceItem),
+                "stale_hours" to JSONObject().put("type", "object").put("description", "Hours per source (0 to ${SenseConfig.MAX_STALE_HOURS}; 0 = not checked); only the sources given change")
+                    .put("properties", JSONObject().apply { for (k in SenseConfig.STALE_DEFAULTS.keys) put(k, JSONObject().put("type", "integer")) })
+                    .put("additionalProperties", false),
             )) { ctx, args -> configure(ctx, args) },
         Cap("sense.delete", "Delete recorded rows of a kind (location, activity, steps, health, all) in a time range (default: everything), including rows not yet delivered to Ash.",
             schema(

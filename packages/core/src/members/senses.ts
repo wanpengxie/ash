@@ -3,7 +3,7 @@ import type { Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
 import type { Member } from "../world/member";
 import { WorldRouter, type TrustedRouteContext } from "../world/router";
 import type { SenseArchive } from "./senses-archive";
-import { activityTimeline, cyclingWakes, geofenceWake, WakeLimiter, type LocationLine, type Segment, type SenseWake } from "./senses-facts";
+import { activityTimeline, cyclingWakes, geofenceWake, sourceWake, WakeLimiter, type LocationLine, type Segment, type SenseWake } from "./senses-facts";
 
 const service: TrustedRouteContext = { member: "service:senses", transport: "service", transportPrincipal: "service:senses",
   local: true, remote: false, ownerProxy: false };
@@ -25,7 +25,8 @@ const RIDE_LOOKBACK_MS = 12 * 3_600_000;
 
 /**
  * Phone facts are already validated and recorded by the router. This member archives batched facts into the owner's
- * home workspace and applies wake rules; only a geofence crossing or a ride starting or ending wakes the mind.
+ * home workspace and applies wake rules; only a geofence crossing, a ride starting or ending, or a health source that
+ * stopped bringing data wakes the mind.
  */
 export class SensesMember implements Member {
   readonly id = "service:senses";
@@ -48,6 +49,10 @@ export class SensesMember implements Member {
         if (message.body.kind === "upcoming") void this.calendarReminder(message).catch(() => {});
       }
       if (["sense.location", "sense.activity", "sense.health", "sense.geofence"].includes(message.word)) this.batch(message);
+      if (message.word === "sense.source") {
+        const wake = sourceWake(message.body as Parameters<typeof sourceWake>[0], this.now());
+        if (wake) this.wake(wake, this.now());
+      }
     });
   }
 
@@ -78,7 +83,7 @@ export class SensesMember implements Member {
 
   /** One wake per fact, at most one of a kind per ten minutes; a dropped wake stays in the archive. */
   private wake(wake: SenseWake, now: number): void {
-    if (this.woken.has(wake.key) || !this.limiter.allow(wake.kind, now)) return;
+    if (this.woken.has(wake.key) || !this.limiter.allow(wake.bucket ?? wake.kind, now)) return;
     this.woken.add(wake.key);
     void this.options.router.send(service, { to: "agent:main", kind: "request", word: "wake",
       body: { reason: wake.kind, context: wake.context }, client_id: `sense:${wake.key}`, wait: true }).catch(() => {});

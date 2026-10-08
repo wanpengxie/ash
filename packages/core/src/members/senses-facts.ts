@@ -146,8 +146,9 @@ export function cyclingSessions(timeline: readonly Segment[]): Ride[] {
 }
 
 /** Only these phone facts are worth a model turn. */
-export type WakeKind = "geofence_enter" | "geofence_exit" | "cycling_start" | "cycling_end";
-export interface SenseWake { kind: WakeKind; key: string; context: Record<string, unknown> }
+export type WakeKind = "geofence_enter" | "geofence_exit" | "cycling_start" | "cycling_end" | "health_source_stale";
+/** bucket: what the ten-minute limit counts (default: the kind). */
+export interface SenseWake { kind: WakeKind; key: string; context: Record<string, unknown>; bucket?: string }
 /** A fact older than this is archived only: waking for it would be news about the past. */
 export const WAKE_FRESH_MS = 30 * 60_000;
 /** The same kind of wake at most once in this window. */
@@ -158,6 +159,21 @@ export function geofenceWake(event: { name: string; transition: "enter" | "exit"
   if (now - event.ts > WAKE_FRESH_MS || event.ts - now > WAKE_FRESH_MS) return null;
   return { kind: event.transition === "enter" ? "geofence_enter" : "geofence_exit", key: geofenceKey(event),
     context: { place: event.name, transition: event.transition, at: iso(event.ts), summary: `${event.transition === "enter" ? "到达" : "离开"}${event.name}` } };
+}
+
+/** A notice older than this is not worth a turn: the source has likely been looked at, or come back, since. */
+export const SOURCE_WAKE_FRESH_MS = 24 * 3_600_000;
+
+/**
+ * A health source that stopped bringing new readings (the phone says so once per stop): one wake, so the owner can be
+ * told. Its coming back is recorded only.
+ */
+export function sourceWake(event: { source: string; state: "stale" | "fresh"; ts: number; stale_hours: number; summary: string; last_data_ts?: number },
+  now: number): SenseWake | null {
+  if (event.state !== "stale" || Math.abs(now - event.ts) > SOURCE_WAKE_FRESH_MS) return null;
+  return { kind: "health_source_stale", key: `source_stale:${event.source}:${event.last_data_ts ?? "none"}`, bucket: `health_source_stale:${event.source}`,
+    context: { source: event.source, stale_hours: event.stale_hours, ...(event.last_data_ts === undefined ? {} : { last_data_at: iso(event.last_data_ts) }),
+      summary: event.summary } };
 }
 
 /**
@@ -187,12 +203,12 @@ export function cyclingWakes(batch: readonly Segment[], timeline: readonly Segme
 
 /** In-memory guard: a kind of wake that fired within the window is dropped, not queued. */
 export class WakeLimiter {
-  private readonly last = new Map<WakeKind, number>();
+  private readonly last = new Map<string, number>();
   constructor(private readonly intervalMs = WAKE_INTERVAL_MS) {}
-  allow(kind: WakeKind, now: number): boolean {
-    const prior = this.last.get(kind);
+  allow(bucket: string, now: number): boolean {
+    const prior = this.last.get(bucket);
     if (prior !== undefined && now - prior < this.intervalMs && now >= prior) return false;
-    this.last.set(kind, now);
+    this.last.set(bucket, now);
     return true;
   }
 }

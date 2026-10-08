@@ -66,7 +66,7 @@ object HealthConnectSource {
     fun granted(ctx: Context): Set<String> =
         if (state(ctx) != "available") emptySet() else runCatching { runBlocking { client(ctx).permissionController.getGrantedPermissions() } }.getOrDefault(emptySet())
 
-    fun status(ctx: Context): JSONObject {
+    fun status(ctx: Context, now: Long = System.currentTimeMillis()): JSONObject {
         val state = state(ctx)
         val o = JSONObject().put("id", "health_connect").put("state", state)
         if (state != "available") return o
@@ -74,7 +74,36 @@ object HealthConnectSource {
         o.put("granted", JSONArray(RECORDS.keys.filter { permission(it) in granted }))
             .put("missing", JSONArray(RECORDS.keys.filter { permission(it) !in granted }))
             .put("background", BACKGROUND in granted)
+        if (RECORDS.keys.none { permission(it) in granted }) return o
+        try {
+            val byMetric = latest(ctx, granted, now)
+            o.put("latest_data_ts", byMetric.values.maxOrNull() ?: JSONObject.NULL).put("latest_by_metric", JSONObject(byMetric as Map<*, *>))
+        } catch (e: SenseError) { o.put("latest_error", "${e.code}: ${e.message}") }
         return o
+    }
+
+    /** How far back the newest reading is looked for: older than this is stale under any threshold. */
+    private const val LATEST_LOOKBACK_MS = 31 * 86_400_000L
+
+    /** The newest reading's time per granted metric (one record each, newest first), within the last month. */
+    fun latest(ctx: Context, granted: Set<String>, now: Long): Map<String, Long> {
+        val client = client(ctx)
+        val filter = TimeRangeFilter.between(Instant.ofEpochMilli(now - LATEST_LOOKBACK_MS), Instant.ofEpochMilli(now + 3_600_000L))
+        val out = sortedMapOf<String, Long>()
+        try {
+            runBlocking {
+                for ((metric, type) in RECORDS) {
+                    if (permission(metric) !in granted) continue
+                    val page = client.readRecords(ReadRecordsRequest(type, filter, ascendingOrder = false, pageSize = 1))
+                    page.records.firstOrNull()?.let { r -> rows(metric, r).maxOfOrNull { it.tsEnd ?: it.ts }?.let { out[metric] = minOf(it, now) } }
+                }
+            }
+        } catch (e: SecurityException) {
+            throw SenseError("permission_denied", "Health Connect refused the read: ${e.message}" + if (BACKGROUND !in granted) " (no background-read permission)" else "")
+        } catch (e: IllegalStateException) {
+            throw SenseError("source_unavailable", "Health Connect could not be read: ${e.message}")
+        }
+        return out
     }
 
     /** The readings of [metrics] in [range] it is allowed to read. Throws [SenseError] when it can read none of them. */

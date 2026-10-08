@@ -9,7 +9,9 @@ object Batches {
     const val ACTIVITY = "sense.activity"
     const val HEALTH = "sense.health"
     const val GEOFENCE = "sense.geofence"
-    val WORDS = setOf(LOCATION, ACTIVITY, HEALTH, GEOFENCE)
+    /** A health source went stale or came back: {source, state, ts, stale_hours, summary, last_data_ts?}. */
+    const val SOURCE = "sense.source"
+    val WORDS = setOf(LOCATION, ACTIVITY, HEALTH, GEOFENCE, SOURCE)
     const val MAX_ITEMS = 500
 
     /** Items split into batches of at most [MAX_ITEMS], each with its own id. */
@@ -26,11 +28,11 @@ object Batches {
     }
 
     /**
-     * [body] of [word] without the items in [range]; null when nothing is left to deliver. A geofence event is one
-     * item itself.
+     * [body] of [word] without the items in [range]; null when nothing is left to deliver. A geofence or source event
+     * is one item itself.
      */
     fun without(word: String, body: JSONObject, range: LongRange): JSONObject? {
-        if (word == GEOFENCE) return if (body.optLong("ts") in range) null else body
+        if (word == GEOFENCE || word == SOURCE) return if (body.optLong("ts") in range) null else body
         val items = body.optJSONArray("items") ?: return null
         val kept = JSONArray()
         for (i in 0 until items.length()) { val it = items.optJSONObject(i) ?: continue; if (itemTime(word, it) !in range) kept.put(it) }
@@ -42,7 +44,7 @@ object Batches {
     fun kindOf(word: String): String = when (word) {
         LOCATION, GEOFENCE -> "location"
         ACTIVITY -> "activity"
-        HEALTH -> "health"
+        HEALTH, SOURCE -> "health"
         else -> "other"
     }
 

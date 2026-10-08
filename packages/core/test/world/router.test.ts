@@ -454,7 +454,7 @@ test("phone sense broadcast accepts only declared schemas from the trusted phone
   } finally { ledger.close(); }
 });
 
-test("batched location, activity, health and geofence senses: bounded schemas, phone only, one ledger row per batch retry", async () => {
+test("batched location, activity, health, geofence and source senses: bounded schemas, phone only, one ledger row per batch retry", async () => {
   const { ledger, router } = await setup();
   try {
     const seen: string[] = [];
@@ -467,13 +467,14 @@ test("batched location, activity, health and geofence senses: bounded schemas, p
       ["sense.health", { batch_id: "hl-1", items: [{ ts, metric: "steps", value: 120, unit: "count", source: "com.google.android.apps.healthdata" },
         { ts, metric: "weight", value: 61.5, unit: "kg", source: "scale" }, { ts, metric: "heart_rate", value: 72, unit: "", source: "watch" }] }],
       ["sense.geofence", { name: "home", transition: "exit", ts }],
+      ["sense.source", { source: "gadgetbridge", state: "stale", ts, stale_hours: 12, summary: "手表数据（Gadgetbridge）已经 26 小时没有新数据了", last_data_ts: ts - 26 * 3_600_000 }],
     ];
     for (const [word, body] of good) await router.send(phone, { to: null, kind: "event", word, body, client_id: `${word}:1` });
     assert.deepEqual(seen, good.map(([word]) => word));
     // The phone retries a batch with the same client id: one ledger row, nothing published again.
     const again = await router.send(phone, { to: null, kind: "event", word: "sense.location", body: good[0][1], client_id: "sense.location:1" });
     assert.equal(again.id, ledger.list({ limit: 100 }).find((message) => message.word === "sense.location")!.id);
-    assert.equal(seen.length, 4);
+    assert.equal(seen.length, good.length);
     const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...point, ts: ts + i }));
     await router.send(phone, { to: null, kind: "event", word: "sense.location", body: { batch_id: "loc-max", items: many(500) } });
     const bad: [string, Record<string, unknown>][] = [
@@ -499,6 +500,11 @@ test("batched location, activity, health and geofence senses: bounded schemas, p
       ["sense.geofence", { name: "", transition: "enter", ts }],
       ["sense.geofence", { name: "n".repeat(65), transition: "enter", ts }],
       ["sense.geofence", { name: "home", transition: "enter" }],
+      ["sense.source", { source: "gadgetbridge", state: "late", ts, stale_hours: 12, summary: "x" }],
+      ["sense.source", { source: "gadgetbridge", state: "stale", ts, stale_hours: 0, summary: "x" }],
+      ["sense.source", { source: "gadgetbridge", state: "stale", ts, stale_hours: 12 }],
+      ["sense.source", { source: "gadgetbridge", state: "stale", ts, stale_hours: 12, summary: "s".repeat(201) }],
+      ["sense.source", { source: "gadgetbridge", state: "stale", ts, stale_hours: 12, summary: "x", extra: 1 }],
     ];
     const before = ledger.lastSeq();
     for (const [word, body] of bad) await assert.rejects(router.send(phone, { to: null, kind: "event", word, body }), code("bad_request"), `${word} ${JSON.stringify(body).slice(0, 80)}`);

@@ -19,9 +19,14 @@ data class SenseConfig(
     val accuracy: String = "balanced",
     val retentionDays: Int = 30,
     val geofences: List<Geofence> = emptyList(),
+    /** Per health source: hours without a new reading before it counts as stale (0: not checked). */
+    val staleHours: Map<String, Int> = STALE_DEFAULTS,
 ) {
     fun toJson(): JSONObject = JSONObject().put("recording", recording).put("interval_min", intervalMin).put("accuracy", accuracy)
         .put("retention_days", retentionDays).put("geofences", JSONArray().apply { geofences.forEach { put(it.toJson()) } })
+        .put("stale_hours", JSONObject(staleHours as Map<*, *>))
+
+    fun staleHours(source: String): Int = staleHours[source] ?: STALE_DEFAULTS[source] ?: 0
 
     companion object {
         val ACCURACIES = listOf("high", "balanced", "low")
@@ -29,7 +34,13 @@ data class SenseConfig(
         const val MAX_INTERVAL = 240
         const val MAX_RETENTION = 3650
         const val MAX_GEOFENCES = 50
-        private val KEYS = setOf("recording", "interval_min", "accuracy", "retention_days", "geofences")
+        const val MAX_STALE_HOURS = 720
+        /**
+         * A watch or Health Connect writes all day: half a day with nothing new means the data stopped. Weigh-ins are
+         * occasional, so the scale is not checked unless the owner asks.
+         */
+        val STALE_DEFAULTS: Map<String, Int> = linkedMapOf("health_connect" to 12, "gadgetbridge" to 12, "xiaomi_scale" to 0)
+        private val KEYS = setOf("recording", "interval_min", "accuracy", "retention_days", "geofences", "stale_hours")
 
         /** The stored form; anything unreadable falls back to the defaults (recording off). */
         fun stored(text: String?): SenseConfig {
@@ -50,6 +61,16 @@ data class SenseConfig(
             }
             if (args.has("retention_days")) next = next.copy(retentionDays = SenseArgs.int(args, "retention_days", 1, MAX_RETENTION))
             if (args.has("geofences")) next = next.copy(geofences = geofences(args.opt("geofences")))
+            if (args.has("stale_hours")) next = next.copy(staleHours = staleHours(next.staleHours, args.opt("stale_hours")))
+            return next
+        }
+
+        /** [current] with the sources named in [value] changed (the others keep theirs). */
+        fun staleHours(current: Map<String, Int>, value: Any?): Map<String, Int> {
+            val o = value as? JSONObject ?: throw SenseError.badArgs("stale_hours must be an object: {source: hours}, sources ${STALE_DEFAULTS.keys.joinToString()}")
+            SenseArgs.only(o, STALE_DEFAULTS.keys, "stale_hours")
+            val next = LinkedHashMap(STALE_DEFAULTS).apply { putAll(current) }
+            for (k in o.keys()) next[k] = SenseArgs.int(o, k, 0, MAX_STALE_HOURS)
             return next
         }
 
