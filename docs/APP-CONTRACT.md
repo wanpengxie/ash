@@ -15,7 +15,7 @@
 
 ## 0. 从零写一个应用（给 Agent）
 
-`service:apps` 的这几个能力就是写应用的全部路径，都不需要主人批准，只有最后的安装要：
+`service:apps` 的这几个能力就是写应用的全部路径，都不需要主人批准，安装也由主 Agent 直接授权：
 
 | 步骤 | 能力 | 说明 |
 |---|---|---|
@@ -23,7 +23,7 @@
 | 生成骨架 | `apps.scaffold {id, name, summary?, role?, surfaces?, tools?}` | 在 `/root/apps/<id>/` 写出一个能直接运行的应用：一张能用的清单（数据在 `data/`，工具 `<id>.list / add / done / remove`），第一页列出清单、每条能勾选做完/没做完，一张桌面卡片（`<id>.card` 画、`<id>.card.tap` 收点击）。`tools` 里另起名字的工具先回一句占位话。已有 `app.json` 的文件夹不会被覆盖 |
 | 改 | 直接改文件 | `/root/apps/<id>/` 对你可写：`server.mjs` 里的工具，`ui/` 下的页面，`app.json` 的 `needs`、`cards` |
 | 检查 | `apps.validate {id}` 或 `{path: "/root/apps/<文件夹>"}` | 像安装一样检查，再试运行一次服务：返回 `{ok, problems:[{level, where, problem, fix?}], tools, surfaces}`。`level: "error"` 会挡住安装，`"warning"` 不挡 |
-| 安装 | `apps.install {id}` | 先做同样的检查，不通过就直接拒绝（`error.detail.problems` 列出每个问题），**不会**去打扰主人；通过了才弹审批卡，主人批准后应用启动，成为 `app:<id>` |
+| 安装 | `apps.install {id}` | 先做同样的检查，不通过就直接拒绝（`error.detail.problems` 列出每个问题），**不会**去打扰主人；通过了就由主 Agent 直接授权它声明的 `needs`（不能超出主 Agent 自己有的；其它 Agent 发起的安装仍要主人批准），应用随即启动，成为 `app:<id>` |
 | 用 | `capability_call {member: "app:<id>", word: "<工具名>", body}` | 主人在「Ash 应用」里打开它的页面 |
 
 ### 管理已装的应用
@@ -209,7 +209,7 @@
 - **安装**：Agent 调 `apps.install {id}`。先检查（同 `apps.validate`），不通过直接拒绝；通过后总会弹出 Ash 的审批卡（裁判不能替主人批，也没有「总是允许」）：
   - 标题：`安装「<应用名>」`；Agent 写的应用是 `安装 Ash 写的应用「<应用名>」`。
   - 正文：`<应用名> <版本>（来源）：<summary>`，来源是「Ash 自带」「Ash 自己写的，没有发布过，也没有别人检查过」或「发布者写的是「X」，Ash 无法核实」；然后「它需要：」逐项列出 `· <why>（device:phone：health.read、…）`、`· <why>（提醒你）`、`· <why>（在对话里放入口卡片）`，没有 needs 就写「不需要用 Ash 的其他东西」；最后说明文件在哪、会成为 `app:<id>`、可以随时撤销。
-  - 主人批准后，这份 `needs` 原样写进授权表，应用随即启动。主人自己发起的安装就是批准本身。
+  - 授权时，这份 `needs` 原样写进授权表（之后应用直接调用这些能力，不经审批，每次调用都记进账本；应用发起的审批还没有设计），应用随即启动。主人自己发起的安装就是批准本身。
 - 之后应用每次调用 Ash 都按授权表检查：只有批准过的「成员 + 能力」可调，范围不会自己扩大。应用的调用以 `app:<id>` 身份经过正常的路由和关口：只读能力直接执行；其他能力弹 Ash 的审批卡由主人决定（应用的请求不经过自动审查）。应用更新后新增的 `needs` 不会自动生效，要再走一次 `apps.install`。
 - 卸载、重启、日志、清数据见 §0「管理已装的应用」。
 - 撤销：`apps.revoke {id, need?}`（`need` 是成员 id 或 `notify` / `card` / `widgets`；不填则撤销全部并停止应用）；`apps.disable / apps.enable {id}` 停用和重新打开（Agent 重新打开要主人确认）。`apps.list / apps.describe / apps.refresh` 查看和重新发现（结果里有 `path`、`origin: builtin | agent | other`、`running`、`error`、`cards`）。
