@@ -226,7 +226,9 @@ add("service:apps", "apps.list", "request", empty, obj({ apps: array(appInfo) },
 add("service:apps", "apps.describe", "request", obj({ id: appId }, ["id"]), appInfo,
   { label: "看应用详情", description: "One app: what it needs from ash (needs), its screens (surfaces), events and tools." });
 add("service:apps", "apps.install", "request", obj({ id: appId }, ["id"]), appInfo,
-  { risk: "structure", effect: "execute", label: "安装应用", description: "Install an app: the owner approves, on one card, everything it needs (needs). Then its grants are stored and it starts as member app:<id>. An agent's request always asks the owner." });
+  { risk: "structure", effect: "execute", label: "安装应用", description: "Install an app from /root/apps/<id>/ (ash's own, or one you wrote): it is checked first as apps.validate does, " +
+    "and a failing app is refused with the problems (error.detail.problems) before anyone is asked. Then the owner approves, on one card, everything it needs (needs); " +
+    "an app you wrote is shown as written by you, not published. Then its grants are stored and it starts as member app:<id>. Installing again after editing restarts it with the new files." });
 add("service:apps", "apps.enable", "request", obj({ id: appId }, ["id"]), appInfo,
   { risk: "structure", effect: "execute", label: "重新启用应用", description: "Start an installed app that was turned off, within the grants the owner already gave. An agent's request asks the owner." });
 add("service:apps", "apps.disable", "request", obj({ id: appId }, ["id"]), appInfo,
@@ -235,6 +237,29 @@ add("service:apps", "apps.revoke", "request", obj({ id: appId, need: nonempty },
   { risk: "structure", effect: "write", label: "收回应用的权限", description: "Take back one need (need: a member id such as device:phone, or notify / widgets / card), or every grant when need is left out, which stops the app." });
 add("service:apps", "apps.refresh", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
   { label: "查找新应用", description: "Read /root/apps again: new apps appear, removed ones stop." });
+// Writing apps: the contract to read, a skeleton to start from, and a check that says exactly what is wrong.
+const appProblem = obj({ level: choice("error", "warning"), where: str, problem: str, fix: str }, ["level", "where", "problem"]);
+const appTool = obj({ name: { type: "string", pattern: "^[a-z][a-z0-9_.-]{0,63}$" }, title: { type: "string", minLength: 1, maxLength: 60 },
+  description: { type: "string", minLength: 1, maxLength: 2000 }, read_only: bool }, ["name"]);
+const appSurface = obj({ id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" }, title: { type: "string", minLength: 1, maxLength: 20 } }, ["id", "title"]);
+add("service:apps", "apps.contract", "request", empty,
+  obj({ contract: str, doc: str, doc_path: str, schema: obj({}, [], true), example: obj({ path: str, files: obj({}, [], true) }, ["path", "files"]) }, ["contract", "doc", "schema", "example"], true),
+  { label: "看应用契约", description: "The ash-app/1 contract for writing an app, in full (doc, markdown): app.json fields, how ash starts the server and talks to it, " +
+    "pages (ui:// resources), tools, needs, events, entry cards. Also the app.json JSON Schema and a small runnable example app (hello: one page, one tool) with its files. " +
+    "The same doc and example are in the container at doc_path and example.path." });
+add("service:apps", "apps.scaffold", "request", obj({ id: appId, name: { type: "string", minLength: 1, maxLength: 40 }, summary: { type: "string", minLength: 1, maxLength: 200 },
+  surfaces: { type: "array", items: appSurface, minItems: 1, maxItems: 16 }, tools: { type: "array", items: appTool, minItems: 1, maxItems: 32 } }, ["id", "name"]),
+  obj({ id: appId, path: str, files: strings, next: str }, ["id", "path", "files", "next"], true),
+  { effect: "write", label: "写应用骨架", description: "Write a new app's skeleton into /root/apps/<id>/ (app.json, a dependency-free server.mjs, one ui/<page>.html per surface, " +
+    "shared ui/app.css and ui/app.js, icon.png). It runs as it is: each tool answers with a placeholder until you write it in server.mjs. " +
+    "surfaces default to one page home; tools default to one read-only <id>.status. Refuses a folder that already has an app.json. " +
+    "No approval is needed: it only writes files. Then edit, apps.validate, and apps.install (the owner approves what it needs)." });
+add("service:apps", "apps.validate", "request", obj({ id: appId, path: { type: "string", minLength: 1, maxLength: 300 } }),
+  obj({ id: str, path: str, ok: bool, problems: array(appProblem), tools: strings, surfaces: strings }, ["path", "ok", "problems", "tools", "surfaces"], true),
+  { label: "检查应用", description: "Check an app folder the way install will: app.json against the contract (each missing or wrong field by its path), " +
+    "the icon file, then a trial start of its server (it must start and speak MCP over stdio), its tools (names, input schemas) and every page " +
+    "(each surface's ui:// resource must be served as HTML). Give id (the folder /root/apps/<id>) or path (/root/apps/<folder>). " +
+    "ok is true when nothing would stop it from installing and opening; warnings are worth fixing but do not block. Nothing is installed or changed." });
 add("service:cost", "usage.recorded", "event", obj({ scope: choice("chat", "mind", "background", "title", "compaction", "review", "progress", "other"), provider: str, model: str,
   input_tokens: nonnegativeSafe, output_tokens: nonnegativeSafe, cache_read_tokens: nonnegativeSafe, cache_write_tokens: nonnegativeSafe,
   cost_usd: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] }, cost_source: { anyOf: [str, { type: "null" }] }, ms: nonnegativeSafe, ok: bool, at: nonnegativeSafe },

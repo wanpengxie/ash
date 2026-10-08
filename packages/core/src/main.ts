@@ -15,7 +15,7 @@ import { ModelEgress } from "../../agent-container/src/egress";
 import { ContainerHost } from "../../agent-container/src/host";
 import { CONTAINER_PATH, DEFAULT_MODEL, inContainer, migrateModelChoice, prepareLaunch, provisionCommand, type ContainerConfig } from "../../agent-container/src/launch";
 import { AppRuntime, type AppLauncher } from "./apps/runtime";
-import { installBuiltinApps } from "./apps/builtin";
+import { installAppDocs, installBuiltinApps } from "./apps/builtin";
 import { ContainerMindRunner, ContainerTurnRunner } from "../../agent-container/src/runtime";
 import { catalogRates, piWorkerModel } from "../../agent-container/src/workers";
 import { AgentMcpServer, TOOL_NAMES, type AgentBinding, type AgentPolicy } from "./agent-mcp/server";
@@ -124,14 +124,15 @@ function appLauncher(container: ContainerConfig | undefined): AppLauncher | null
   if (!container) return null;
   if (container.direct) {
     const root = join(dirname(container.direct.workspace), "apps");
-    return { root: () => root, spawn: (app, dir, env) => ({ command: app.server.command, args: app.server.args ?? [], cwd: dir,
+    return { root: () => root, agentRoot: root, spawn: (app, dir, env) => ({ command: app.server.command, args: app.server.args ?? [], cwd: dir,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8", ...(app.server.env ?? {}), ...env, ASH_APP_DIR: dir } }) };
   }
   return {
     // Only once the container is unpacked: an apps folder must not appear inside an image still being installed.
     root: () => existsSync(join(container.root, "ubuntu", "root")) ? join(container.root, "ubuntu", "root", "apps") : null,
-    spawn: (app, _dir, env) => {
-      const inside = `/root/apps/${app.id}`;
+    agentRoot: "/root/apps",
+    spawn: (app, dir, env) => {
+      const inside = `/root/apps/${basename(dir)}`;
       const run = inContainer(container.root, ["/bin/sh", "-c", 'cd "$0" && exec "$@"', inside, app.server.command, ...(app.server.args ?? [])],
         { HOME: "/root", PATH: CONTAINER_PATH, TMPDIR: "/tmp", TERM: "dumb", LANG: "C.UTF-8", ...(app.server.env ?? {}), ...env, ASH_APP_DIR: inside });
       return { command: run.command, args: run.args, env: run.env };
@@ -248,7 +249,7 @@ export async function startOwner(config: Config): Promise<Running> {
     world.setMemberNames((id) => { try { return members.describe("owner", id).members[0]?.name; } catch { return undefined; } });
     // Independent apps (contract ash-app/1): found in the container, started once the owner installed them.
     apps = new AppRuntime({ launcher: appLauncher(config.container), stateDir: config.stateDir, world, members, log,
-      builtins: (root) => installBuiltinApps(root, log) });
+      builtins: (root) => { installBuiltinApps(root, log); installAppDocs(root); } });
     members.register(apps.member());
     const vaultFile = join(config.stateDir, "vault.json");
     let vaultStore: VaultStore;
