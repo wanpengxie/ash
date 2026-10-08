@@ -40,11 +40,13 @@ object Ui {
      */
     fun systemBars(a: Activity) {
         val light = !night(a)
+        // decorView creates the window's decor if the page is not built yet (Window.insetsController would then be null
+        // and throw): the app page sets its colours before its content view exists.
+        val decor = a.window.decorView
         if (Build.VERSION.SDK_INT >= 30) {
             val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            a.window.insetsController?.setSystemBarsAppearance(if (light) mask else 0, mask)
+            decor.windowInsetsController?.setSystemBarsAppearance(if (light) mask else 0, mask)
         } else @Suppress("DEPRECATION") {
-            val decor = a.window.decorView
             val mask = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             decor.systemUiVisibility = if (light) decor.systemUiVisibility or mask else decor.systemUiVisibility and mask.inv()
         }
