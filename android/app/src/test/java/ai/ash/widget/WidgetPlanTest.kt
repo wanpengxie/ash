@@ -57,8 +57,9 @@ class WidgetPlanTest {
     }
 
     @Test fun aColumnInsideARowWrapsItsContentInsteadOfFillingTheRow() {
-        // Column > Row > Column > Text was accepted and then drew blank on the phone: each inner Column filled the whole
-        // Row (match_parent), so the Row was twice the widget's width and its content landed outside the widget.
+        // Column > Row > Column > Text was accepted and then drew blank on the phone. The old renderer gave each inner
+        // Column the whole Row's width (match_parent), so a Row of Columns was several widgets wide and its content
+        // overflowed out of view. Columns in a Row now wrap their content; CardCheck catches anything else blank.
         val plan = CardPlan.plan(render("Column > Row > Column > Text"))
         val row = plan.find("r")
         assertEquals(Lay.ROW, row.lay)
