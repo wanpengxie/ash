@@ -303,20 +303,43 @@ internal class Sampler(private val ctx: Context) {
         if (!Senses.locationPermission(ctx)) { Recorder.lastProblem = "location permission was withdrawn"; return }
         lastFixAttempt = now
         val config = Senses.config(ctx)
-        val fix = try {
-            LocationReader.fix(ctx, config.accuracy, if (config.accuracy == "high") 60_000 else 30_000) { !running }
-        } catch (e: SenseError) {
-            Recorder.lastProblem = "${e.code}: ${e.message}"
-            Log.i("ash.senses", "no point ($reason): ${e.code}")
-            return
-        }
+        val fix = point(config) ?: return
         // Turned off while waiting: nothing is kept.
         if (!running || !Senses.config(ctx).recording) return
         Recorder.lastProblem = null
+        // A last-known fix can be the point already kept.
+        if (store.lastFix()?.let { it.ts == fix.ts && it.lat == fix.lat && it.lon == fix.lon } == true) return
         store.addFix(fix)
         if (!fix.mocked) geofences(fix, config)
         evaluate()
         AshLink.flush()
+    }
+
+    /**
+     * One point for the track. Battery first: one provider (the accuracy setting's usual one). Only after it failed
+     * [LocationPolicy.FALLBACK_AFTER] times in a row are all providers asked together, at once and then for a while.
+     */
+    private fun point(config: SenseConfig): Fix? {
+        val timeout = if (config.accuracy == "high") 60_000L else 30_000L
+        var state = LocationReader.background(ctx)
+        var mode = state.mode(System.currentTimeMillis())
+        while (true) {
+            val outcome = runCatching { LocationReader.fix(ctx, config.accuracy, timeout, mode) { !running } }
+            val error = outcome.exceptionOrNull() as? SenseError
+            if (outcome.isFailure && error == null) throw outcome.exceptionOrNull()!!
+            if (error?.code == "not_recording") return null
+            // Only the providers' failures count: no permission or location off is not theirs.
+            if (error == null || error.code == "no_fix") {
+                state = LocationPolicy.after(state, mode, error == null, System.currentTimeMillis())
+                LocationReader.saveBackground(ctx, state)
+            }
+            if (error == null) return outcome.getOrNull()!!.fix
+            val next = state.mode(System.currentTimeMillis())
+            if (mode == LocationPolicy.Mode.BACKGROUND && next == LocationPolicy.Mode.BACKGROUND_FALLBACK && running) { mode = next; continue }
+            Recorder.lastProblem = "${error.code}: ${error.message}"
+            Log.i("ash.senses", "no point: ${error.code}")
+            return null
+        }
     }
 
     private fun geofences(fix: Fix, config: SenseConfig) {

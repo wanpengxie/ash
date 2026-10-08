@@ -120,6 +120,7 @@ object AshLink {
         return JSONObject().put("version", BuildConfig.VERSION_CODE).put("recording", config.recording).put("recorder_running", Recorder.running())
             .put("config", config.toJson()).put("permissions", Senses.permissions(ctx)).put("location_on", Senses.locationOn(ctx))
             .put("step_counter", StepReader.available(ctx)).put("pending_batches", runCatching { Senses.store.pendingBatches() }.getOrDefault(0L))
+            .put("location", runCatching { LocationReader.status(ctx) }.getOrElse { JSONObject().put("error", it.toString()) })
             .apply { Recorder.lastProblem?.let { put("problem", it) } }
     }
 

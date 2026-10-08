@@ -33,7 +33,7 @@ object SenseCapabilities {
     private fun now() = System.currentTimeMillis()
 
     val list: List<Capability> = listOf(
-        Cap("location.get", "The phone's location now (one fresh fix; nothing is stored unless recording is on). Errors: permission_denied, location_off, no_fix.",
+        Cap("location.get", "The phone's location now: the fused, GPS and network providers are asked together and the first fix good enough for the accuracy wins (a fix from the last 2 minutes may answer at once). The result says which provider answered, its accuracy, the fix's age, whether the accuracy asked for was met, and why other providers gave nothing (e.g. GPS switched off by the system). Nothing is stored. Errors: permission_denied, location_off, no_fix (the message gives each provider's reason).",
             schema(
                 "accuracy" to prop("string", "high (GPS), balanced (default) or low (network)", enum = SenseConfig.ACCURACIES),
                 "timeout_s" to prop("integer", "Seconds to wait for a fix (5 to 120, default 30)"),
@@ -42,8 +42,16 @@ object SenseCapabilities {
             val accuracy = args.opt("accuracy") as? String ?: Senses.config(ctx).accuracy
             if (accuracy !in SenseConfig.ACCURACIES) throw SenseError.badArgs("accuracy must be one of ${SenseConfig.ACCURACIES.joinToString()}")
             val timeout = SenseArgs.limit(args, "timeout_s", 30, 120).coerceAtLeast(5)
-            val fix = LocationReader.fix(ctx, accuracy, timeout * 1000L)
-            CapResult.json(fix.toJson().put("timestamp", fix.ts).put("age_s", (now() - fix.ts) / 1000))
+            val r = LocationReader.fix(ctx, accuracy, timeout * 1000L)
+            val a = r.attempt
+            CapResult.json(r.fix.toJson().put("timestamp", r.fix.ts).put("age_s", (a.ageMs ?: (now() - r.fix.ts)) / 1000)
+                .put("source", if (a.fromLastKnown) "last_known" else "live").put("accuracy_met", a.accuracyMet)
+                .put("providers_asked", JSONArray(a.asked)).put("waited_ms", a.waitedMs)
+                .apply {
+                    if (!a.accuracyMet) put("wanted_accuracy_m", LocationPolicy.target(accuracy))
+                    if (a.reasons.isNotEmpty()) put("provider_reasons", JSONObject(a.reasons as Map<*, *>))
+                        .put("provider_notes", LocationPolicy.explainAll(a.reasons, timeout.toLong()))
+                })
         },
         Cap("location.track", "Turn location and motion recording on or off. While on, the companion app keeps a notification with a stop button, takes a point when movement starts or stops and every interval_min minutes (still or moving), and pushes new points to Ash. Errors: permission_denied.",
             schema(
@@ -134,7 +142,7 @@ object SenseCapabilities {
             if (Senses.config(ctx).recording) ai.ash.senses.health.HealthImport.run(ctx)
             CapResult.json(result)
         },
-        Cap("sense.status", "The companion app's state: recording on/off and its settings, permissions granted, location on, batches waiting for Ash, stored rows per kind.") { ctx, args ->
+        Cap("sense.status", "The companion app's state: recording on/off and its settings, permissions granted, location on, each location provider (present, enabled, why unusable), the last location attempt (provider, accuracy, fix age, or each provider's failure), how background recording asks (one provider, or all after repeated failures), batches waiting for Ash, stored rows per kind.") { ctx, args ->
             SenseArgs.only(args, emptySet())
             CapResult.json(AshLink.status(ctx).put("stored", Senses.store.counts()))
         },

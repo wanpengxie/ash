@@ -43,9 +43,10 @@ class SetupActivity : Activity() {
         Senses.init(this)
         rows = listOf(
             Row("位置", "取当前位置、记录轨迹；没有它就没有任何位置数据", "授权", {
+                val note = LocationPolicy.ownerNote(LocationReader.providers(this))?.let { "\n$it" } ?: ""
                 when {
-                    Senses.preciseLocation(this) -> true to "已授权（精确）"
-                    Senses.locationPermission(this) -> true to "已授权（大致位置）"
+                    Senses.preciseLocation(this) -> true to "已授权（精确）$note"
+                    Senses.locationPermission(this) -> true to "已授权（大致位置）$note"
                     else -> false to "未授权"
                 }
             }) { requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), REQ_PERMS) },
