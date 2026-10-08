@@ -50,6 +50,16 @@ data class VNode(
     override fun equals(other: Any?) = other is VNode && toString() == other.toString()
     override fun hashCode() = toString().hashCode()
 
+    /**
+     * This node's own look and behaviour, leaving out what is inside it (its children and a List's items), as a number
+     * that is the same whenever the node is drawn the same way again. On Android 12+ a view added under this number is
+     * reused when the card is drawn again rather than made anew, so a scrolling list keeps its place when only its
+     * rows changed (a box ticked in it). Built from contents, never object identities, so it holds across processes.
+     */
+    val stableKey: Int get() = listOf(lay.name, id, width, height, weight, gravity, padding?.toList(), margin?.toList(), bg, radius, alpha, visible,
+        a11y, text, textSize, textColor, maxLines, lineHeight, letterSpacing, justifyText, tap, checked, tint, image, progress, columns, minSize,
+        clockFormat, timeZone, chronoSince, countDown).joinToString("\u0001").hashCode()
+
     /** Every node, depth first (a List's items too). */
     fun walk(): Sequence<VNode> = sequence { yield(this@VNode); for (c in children) yieldAll(c.walk()); items?.forEach { yieldAll(it.walk()) } }
     /** Nested RemoteViews below and including this one (a List's items not counted: they start afresh). */

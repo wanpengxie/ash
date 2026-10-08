@@ -82,7 +82,7 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
                 rv.setViewPadding(R.id.card_root, 0, 0, 0, 0)
             }
             rv.removeAllViews(R.id.card_body)
-            rv.addView(R.id.card_body, build(plan, false, if (f.ownBackground) widthPx else widthPx - px(28f)))
+            add(rv, R.id.card_body, plan, build(plan, false, if (f.ownBackground) widthPx else widthPx - px(28f)))
             // Android applies setRemoteAdapter only from the widget's top-level RemoteViews: in a nested one (added with
             // addView) a launcher that applies asynchronously, as ColorOS's does, drops it and the list stays empty.
             for (p in pendingLists) { collection(rv, p.viewId, p.items, p.listId, p.availW); lists[p.viewId] = p.items.size }
@@ -236,13 +236,26 @@ class CardViews(private val ctx: Context, private val widgetId: Int, private val
         }
         v.image?.let { image(rv, v, it, availW) }
         v.tap?.let { tap(rv, v, it, inItem) }
-        for (child in v.children) rv.addView(id, build(child, inItem, availW))
+        // Android 12+ recycles children added with a stable id when the card is drawn again, which needs this first.
+        // (Only boxes get children here; the list and progress layouts keep the children their XML gives them.)
+        if (api31 && v.children.isNotEmpty()) rv.removeAllViews(id)
+        for (child in v.children) add(rv, id, child, build(child, inItem, availW))
         v.items?.let { items ->
             val listId = listIds[pendingLists.size]
             if (v.lay == Lay.GRID) rv.setInt(listId, "setNumColumns", v.columns)
             pendingLists.add(PendingList(listId, items, v.id, if (v.lay == Lay.GRID) availW / v.columns.coerceAtLeast(1) else availW))
         }
         return rv
+    }
+
+    /**
+     * Add [child]'s views under [parent]. On Android 12+ under its [VNode.stableKey]: when the widget is drawn again (a
+     * toggle, a new version from the core) the launcher reapplies onto the views it has instead of making new ones,
+     * as long as the node looks the same. A scrolling list inside then keeps its view, and its new rows go into the
+     * same adapter, so it stays where the owner had scrolled instead of jumping back to the top.
+     */
+    private fun add(rv: RemoteViews, parent: Int, child: VNode, views: RemoteViews) {
+        if (api31) rv.addStableView(parent, views, child.stableKey) else rv.addView(parent, views)
     }
 
     private fun image(rv: RemoteViews, v: VNode, img: Img, availW: Int) {

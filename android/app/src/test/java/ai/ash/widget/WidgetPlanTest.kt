@@ -132,6 +132,31 @@ class WidgetPlanTest {
         assertEquals(Lay.TEXT, old.lay); assertEquals("☐ 买牛奶", old.text!!.text); assertEquals(Tap.Toggle("check@0", false), old.tap)
     }
 
+    @Test fun tickingABoxInAListKeepsTheListAndEverythingAroundItTheSame() {
+        val render = render("a to-do list")
+        val before = CardPlan.plan(render)
+        val after = CardPlan.plan(render, local = Local(checked = mapOf("check@0" to true)))
+        // Drawn twice the same way, every node keeps its key (contents, not identities: padding arrays included).
+        assertEquals(before.walk().map { it.stableKey }.toList(), CardPlan.plan(render).walk().map { it.stableKey }.toList())
+        // A tick changes the list's rows but not the list itself, nor anything it sits in: the launcher reuses those
+        // views, so the scrolling list keeps its place and only its rows are replaced.
+        val list = before.find("list")
+        assertNotEquals(list.items, after.find("list").items)
+        assertEquals(list.stableKey, after.find("list").stableKey)
+        fun path(root: VNode, id: String): List<VNode> {
+            fun go(n: VNode): List<VNode>? = if (n.id == id) listOf(n) else n.children.firstNotNullOfOrNull { go(it) }?.let { listOf(n) + it }
+            return go(root)!!
+        }
+        assertEquals(path(before, "list").map { it.stableKey }, path(after, "list").map { it.stableKey })
+        // The ticked box itself is drawn anew.
+        val box = { p: VNode -> p.find("list").items!![0].walk().first { it.lay == Lay.CHECK } }
+        assertNotEquals(box(before).stableKey, box(after).stableKey)
+        // A node that looks different is never reused, so no old setting can linger on it.
+        assertNotEquals(list.stableKey, list.copy(visible = false).stableKey)
+        assertNotEquals(list.stableKey, list.copy(padding = floatArrayOf(1f, 2f, 3f, 4f)).stableKey)
+        assertEquals(list.copy(padding = floatArrayOf(1f, 2f, 3f, 4f)).stableKey, list.copy(padding = floatArrayOf(1f, 2f, 3f, 4f)).stableKey)
+    }
+
     @Test fun imagesIconsAndOpenActions() {
         val plan = CardPlan.plan(render("images, icons and actions"))
         val pic = plan.find("pic")
