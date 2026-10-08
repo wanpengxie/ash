@@ -117,6 +117,7 @@ test("scaffold → validate → install (the owner sees an app written by ash) �
     assert.deepEqual(made.result.files, ["app.json", "icon.png", "server.mjs", "ui/app.css", "ui/app.js", "ui/home.html", "ui/new.html"]);
     const manifest = JSON.parse(readFileSync(join(w.root, "notes/app.json"), "utf8"));
     assert.equal(manifest.publisher, "agent:main");
+    assert.equal(manifest.role, "记几句话", "role starts as the summary");
     assert.equal((await w.call("apps.scaffold", { id: "notes", name: "又一个" })).error?.code, "bad_request", "never overwrites an app");
 
     const report = await w.call("apps.validate", { id: "notes" });
@@ -201,7 +202,7 @@ test("validate says exactly what is wrong, and install refuses a broken app with
     assert.ok(said.includes("app.json /: 缺少必填字段 summary"), said.join("\n"));
     assert.ok(said.includes("app.json /: 不认识的字段 colour（ash-app/1 不允许多余字段）"), said.join("\n"));
     assert.ok(said.includes("app.json /needs/0: 这一项不是合法的 need"), said.join("\n"));
-    assert.ok(said.includes("app.json /events/0: app.card 是内置事件，不用在 events 里声明"), said.join("\n"));
+    assert.ok(said.includes("app.json /events/0: app.card、app.activity 是 Ash 内置的事件，不用也不能在 events 里声明"), said.join("\n"));
     assert.equal(said.length, 4, said.join("\n"));
     assert.match(checkManifest("{ nope", "broken").problems[0]!.problem, /不是合法的 JSON/);
     assert.match(checkManifest(JSON.stringify(base), "other").problems[0]!.problem, /id 是 broken，但文件夹叫 other/);
@@ -275,4 +276,35 @@ test("when the phone cannot answer, an app gets a plain sentence for the owner a
   assert.equal(ownerText("device:phone", "screen.tap", "failed", "the phone has no capability screen.tap"), "手机上的这项功能暂时不在线，稍后再试");
   assert.equal(ownerText("app:notes", "notes.add", "offline", "笔记 is not running"), "这个应用暂时不在线，稍后再试");
   assert.equal(ownerText("device:phone", "health.read", "pending", "still running"), "还在处理，或在等你在 Ash 里确认");
+});
+
+test("every app is an organ: pages without tools do not install; read-only tools or data kept in the page are warned about", async () => {
+  const w = await world();
+  try {
+    const where = (report: { problems: { level: string; where: string; problem: string }[] }) => report.problems.map((item) => `${item.level} ${item.where}: ${item.problem}`);
+    // Pages only: the agent could do nothing with the app's data. That is an error, and install refuses it.
+    const files = scaffoldFiles({ id: "pageonly", name: "只有页面", publisher: "agent:main" });
+    write(join(w.root, "pageonly"), { ...Object.fromEntries(Object.entries(files).filter(([, text]) => typeof text === "string")) as Record<string, string>,
+      "server.mjs": String(files["server.mjs"]).replace(/const TOOLS = \[[\s\S]*?\n\];/, "const TOOLS = [];") });
+    let report = (await w.call("apps.validate", { id: "pageonly" })).result;
+    assert.equal(report.ok, false);
+    assert.ok(where(report).includes("error server tools/list: 只有页面、没有可用的工具：Agent 没法通过 app:pageonly 看或改它的数据"), where(report).join("\n"));
+    const refused = await install(w, "pageonly");
+    assert.equal(refused.ask, null, "the owner is never asked");
+    assert.match(String((refused.reply.body as { error: { message: string } }).error.message), /只有页面、没有可用的工具/);
+
+    // Read-only tools behind pages that can change things, and the owner's data kept in the page: warnings.
+    const viewer = scaffoldFiles({ id: "viewer", name: "只能看", publisher: "agent:main", tools: [{ name: "viewer.list", title: "看", read_only: true }] });
+    write(join(w.root, "viewer"), { ...Object.fromEntries(Object.entries(viewer).filter(([, text]) => typeof text === "string")) as Record<string, string>,
+      "ui/home.html": `${String(viewer["ui/home.html"])}<script>localStorage.setItem("items", "[]")</script>` });
+    report = (await w.call("apps.validate", { id: "viewer" })).result;
+    assert.equal(report.ok, true, "warnings do not block");
+    assert.ok(where(report).includes("warning server tools/list: 只有只读工具：页面上能改的数据，Agent 改不了"), where(report).join("\n"));
+    assert.ok(where(report).some((line) => line.startsWith("warning 页面 home") && line.includes("localStorage")), where(report).join("\n"));
+
+    // A scaffold with a tool that writes is an organ as it is.
+    assert.equal((await w.call("apps.scaffold", { id: "todo", name: "待办", summary: "主人和 Ash 的待办", tools: [{ name: "todo.list", title: "看待办", read_only: true }, { name: "todo.add", title: "记一条待办" }] })).ok, true);
+    report = (await w.call("apps.validate", { id: "todo" })).result;
+    assert.deepEqual(where(report).filter((line) => line.includes("tools/list") || line.includes("role")), []);
+  } finally { await w.close(); }
 });

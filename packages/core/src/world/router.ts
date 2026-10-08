@@ -107,6 +107,16 @@ const deviceCaller = (from: string): boolean => from === "person:owner" || AGENT
 const APP = /^app:[a-z][a-z0-9-]{0,47}$/;
 /** What lives outside ash and is judged by the gate when an agent or an app asks: devices and apps. */
 const external = (to: string | null | undefined): boolean => Boolean(to?.startsWith("device:") || to?.startsWith("app:"));
+/**
+ * An agent using an installed app's own tools. The app is an organ of ash: the owner approved it, and everything it may
+ * reach outside itself (its needs), when installing it; those reaches are still checked against its grants. So its own
+ * tools take no card, reads and writes alike. A recognised payment still asks, as everywhere.
+ */
+const ownAppWord = (request: Pick<Message, "from" | "to" | "word" | "body">, label: string | undefined): boolean =>
+  AGENT.test(request.from) && APP.test(request.to ?? "") && !isPayment(request.word, label, request.body);
+/** Judged by the gate when someone other than the owner asks. */
+const gated = (request: Pick<Message, "from" | "to" | "word" | "body">, label: string | undefined): boolean =>
+  external(request.to) && !ownAppWord(request, label);
 /** ash's own words that widen what an app may do: an agent's request always asks the owner. */
 const GATED_SERVICE_WORDS = new Set(["service:apps/apps.install", "service:apps/apps.enable"]);
 const CARRY_MS = 5 * 60_000;
@@ -483,8 +493,12 @@ export class WorldRouter {
     if (deviceCaller(from)) return true;
     try { return APP.test(from) && Boolean(this.appGrant?.(from, to, word)); } catch { return false; }
   }
-  /** Record an event an app emitted (its declared events and entry cards); the ledger keeps who said it. */
-  recordAppEvent(app: string, word: string, body: Record<string, unknown>, to: "person:owner" | null): Message {
+  /**
+   * Record an event an app emitted (its declared events and entry cards), or that the owner changed its data
+   * (app.activity); the ledger keeps who said it. To the owner it shows in the conversation; to agent:main it is for
+   * the main agent, which sees it in its context.
+   */
+  recordAppEvent(app: string, word: string, body: Record<string, unknown>, to: "person:owner" | "agent:main" | null): Message {
     if (!APP.test(app) || !/^[a-z][a-z0-9._-]{0,63}$/.test(word) || !plainObject(body)) throw new TypeError("invalid app event");
     const stored = this.ledger.append({ from: app, to, kind: "event", word, body });
     this.publish(stored.message);
@@ -671,7 +685,7 @@ export class WorldRouter {
       fail("forbidden", "gate change requires current local owner");
     const toAgent = typeof request.to === "string" && AGENT_ID.test(request.to);
     if (toAgent && request.word === "cancel_turn" && !["service:reflex", "service:admin"].includes(from)) fail("forbidden", "cancel_turn is internal only");
-    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work"].includes(from)) fail("forbidden", "wake is internal only");
+    if (toAgent && request.word === "wake" && !["service:clock", "service:senses", "service:work", "service:apps"].includes(from)) fail("forbidden", "wake is internal only");
     // The owner talks with the main agent. Agents speak to each other only through the Agent system; a declared agent
     // otherwise hears only its own timers and its schedule.
     const service = ctx.transport === "service" && ctx.local && !ctx.remote;
@@ -736,7 +750,7 @@ export class WorldRouter {
     // Owner-wait TTL is independent of the capability execution timeout, restored at dispatch.
     if (ctx.approval && (ctx.transport !== "agent" || !Number.isInteger(ctx.approval.ttlMinutes) || ctx.approval.ttlMinutes < 1 || ctx.approval.ttlMinutes > 10080))
       fail("bad_request", "invalid approval context");
-    const timeoutMs = ctx.approval && endpoint && wordEffect(endpoint.spec) !== "read" && (external(request.to) || this.forcedApproval(request))
+    const timeoutMs = ctx.approval && endpoint && wordEffect(endpoint.spec) !== "read" && (gated({ ...request, from }, endpoint.spec.label) || this.forcedApproval(request))
       ? ctx.approval.ttlMinutes * 60000 : endpoint?.spec.timeout_ms ?? (request.kind === "request" && endpoint && wordEffect(endpoint.spec) !== "read" ? 600_000 : 60_000);
     if (request.kind === "request" && request.to === "person:owner" && request.word === "ask" && askExpiry(request) === null) fail("bad_request", "ask requires a finite expiry");
     const deadlineAt = Math.min(Date.now() + timeoutMs, request.kind === "request" ? askExpiry(request) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
@@ -1116,10 +1130,11 @@ export class WorldRouter {
     try {
       const constraint = this.screenConstraint(request);
       if (constraint) { this.finish(pending, errors("forbidden", constraint), request.to!, false); return; }
-      // Only what reaches outside ash is judged: a capability of the phone or another device. ash's own system, human
-      // and agent words (agents, timers, the owner's files, talking to the owner) are internal and never asked about.
+      // Only what reaches outside ash is judged: a capability of the phone or another device, or an app asking for one.
+      // ash's own system, human and agent words (agents, timers, the owner's files, talking to the owner) are internal and
+      // never asked about; so are an agent's calls of an installed app's own tools (see ownAppWord).
       const forced = AGENT.test(request.from) && this.forcedApproval(request);
-      const gateBypass = request.from === "person:owner" || (!external(request.to) && !forced && !GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
+      const gateBypass = request.from === "person:owner" || (!gated(request, endpoint.spec.label) && !forced && !GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
       const effect = wordEffect(endpoint.spec);
       if (this.gatePrecheck && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
         let refused: ResponseBody | null;

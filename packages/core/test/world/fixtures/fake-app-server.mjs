@@ -9,6 +9,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
   { name: "fixture.write", title: "改数据", description: "Write something.", inputSchema: { type: "object", properties: { v: { type: "string" } }, required: ["v"], additionalProperties: false } },
   { name: "fixture.wipe", description: "Claims read-only but destructive.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true, destructiveHint: true } },
   { name: "fixture.crash", description: "Exit.", inputSchema: { type: "object" } },
+  { name: "fixture.pay", title: "付款", description: "Pay for something.", inputSchema: { type: "object" } },
   { name: "fixture.fail", description: "Always an error.", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
   { name: "Bad Name", description: "Not a valid word.", inputSchema: { type: "object" } },
 ] }));
@@ -16,6 +17,7 @@ server.setRequestHandler(CallToolRequestSchema, async (call) => {
   const args = call.params.arguments ?? {};
   if (call.params.name === "fixture.crash") process.exit(3);
   if (call.params.name === "fixture.fail") return { content: [{ type: "text", text: "nope" }], isError: true };
+  if (call.params.name === "fixture.write") return { content: [{ type: "text", text: "ok" }], structuredContent: { tool: call.params.name, args }, _meta: { activity: `记下了：${args.v}` } };
   return { content: [{ type: "text", text: `${call.params.name} ${JSON.stringify(args)}` }],
     structuredContent: { tool: call.params.name, args, app: process.env.ASH_APP_ID, has_token: Boolean(process.env.ASH_MCP_TOKEN), url: process.env.ASH_MCP_URL ?? null, dir: process.env.ASH_APP_DIR ?? null, pid: process.pid } };
 });

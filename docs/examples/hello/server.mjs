@@ -39,7 +39,7 @@ async function ash(tool, args) {
 }
 
 // ---- 工具：Agent 用 capability_call {member: "app:hello", word: 工具名} 调用，页面用 app.call(工具名) 调用 ----
-// readOnlyHint: true 只读，随时可用；其余都算「改数据」，Agent 调用要经过 Ash 的审批（主人在页面里点的不用）。
+// readOnlyHint: true 是只读，其余都算「改数据」。Agent 和主人（页面里点）都直接用，不弹审批卡：主人安装时已经批准了这个应用。
 const TOOLS = [
   {
     name: "hello.greet", title: "打招呼",

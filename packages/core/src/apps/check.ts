@@ -36,7 +36,7 @@ function schemaProblem(item: ErrorObject): AppProblem | null {
     case "maxItems": return error(at, `最多 ${p.limit} 项`);
     case "maxProperties": return error(at, `最多 ${p.limit} 个`);
     case "not": return /\/server\/env/.test(item.instancePath) || item.schemaPath.includes("propertyNames")
-      ? error(at, "环境变量名不能以 ASH_ 开头（那是 Ash 给的）") : error(at, "app.card 是内置事件，不用在 events 里声明");
+      ? error(at, "环境变量名不能以 ASH_ 开头（那是 Ash 给的）") : error(at, "app.card、app.activity 是 Ash 内置的事件，不用也不能在 events 里声明");
     case "propertyNames": return null;
     case "oneOf": return /^\/needs\/\d+$/.test(item.instancePath)
       ? error(at, "这一项不是合法的 need", '每项是 {"member":"device:phone","words":["…"],"why":"…"}、{"notify":true,"why":"…"}、{"card":true,"why":"…"} 或 {"widgets":true,"why":"…"} 之一，why 必填')
@@ -67,6 +67,8 @@ export function checkManifest(text: string, folder: string): { manifest: AppMani
   if (!ID.test(folder)) problems.push(error("文件夹", `文件夹名 ${folder} 不是合法的应用 id（${APP_ID_PATTERN}）`));
   if (problems.length) return { manifest: null, problems };
   const checked = validateManifest(raw);
+  const wake = !checked.ok && /^wake_events (\S+) is not in events$/.exec(checked.error);
+  if (wake) return { manifest: null, problems: [error("app.json /wake_events", `${wake[1]} 没有写在 events 里`, "wake_events 里的每个事件都要先在 events 里声明")] };
   if (!checked.ok) return { manifest: null, problems: [error("app.json", ({ "duplicate surface id": "surfaces 里有重复的 id", "each member or kind of need appears once": "needs 里同一个成员（或 notify/card/widgets）只能出现一次", "an app does not need itself": "needs 里不能写自己（app:<自己的 id>）" } as Record<string, string>)[checked.error] ?? checked.error)] };
   const manifest = checked.manifest;
   for (const surface of manifest.surfaces ?? []) if (!surface.resource.startsWith(`ui://${manifest.id}/`))
@@ -80,6 +82,8 @@ export function checkFolder(dir: string, folder: string): { manifest: AppManifes
   if (!existsSync(join(dir, "app.json"))) return { manifest: null, problems: [error("app.json", "文件夹里没有 app.json", "看 apps.contract 第 1 节，或用 apps.scaffold 生成")] };
   const { manifest, problems } = checkManifest(readFileSync(join(dir, "app.json"), "utf8"), folder);
   if (!manifest) return { manifest, problems };
+  if (!manifest.role) problems.push(warning("app.json /role", "没写 role：Ash 只能拿 summary 猜什么时候该用它",
+    "写一句它管什么、什么时候用，例如「主人和 Ash 的待办：说到要做的事就记进来」"));
   if (!manifest.icon) problems.push(warning("app.json /icon", "没有图标：会显示默认图标", "放一个正方形 PNG（192×192 或更大）在文件夹里，icon 写它的文件名"));
   else {
     const file = join(dir, manifest.icon);
@@ -125,6 +129,7 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
     try { listed = (await client.listTools(undefined, { timeout: timeoutMs })).tools as typeof listed; }
     catch (cause) { problems.push(error("server tools/list", `tools/list 失败：${short(cause)}${output()}`, capabilities.tools ? undefined : "initialize 的回答里 capabilities 要有 tools: {}")); }
     const seen = new Set<string>();
+    let writes = 0;
     for (const tool of listed) {
       const where = `工具 ${short(tool.name, 80)}`;
       if (typeof tool.name !== "string" || !TOOL_NAME.test(tool.name)) { problems.push(warning(where, "名字不合规，不会登记成能力", "名字要匹配 ^[a-z][a-z0-9_.-]{0,63}$，例如 notes.add")); continue; }
@@ -138,15 +143,22 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
       try { deviceWordSpec({ name: tool.name, description: tool.description || tool.name, label: tool.title || tool.name, risk: "none", input_schema: schema as never }); ajvFor(schema); }
       catch (cause) { problems.push(warning(where, `inputSchema 编译不过（Ajv 严格模式），不会登记：${short(cause)}`)); continue; }
       tools.push(tool.name);
+      if (!(tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true)) writes++;
       if (!tool.title) problems.push(warning(where, "没有 title：审批卡上会直接显示工具名", "写一个中文动宾短语，如「记一笔」"));
       if (!tool.description) problems.push(warning(where, "没有 description：Agent 不知道它做什么"));
       if (!tool.annotations || typeof tool.annotations.readOnlyHint !== "boolean")
-        problems.push(warning(where, "没写 annotations.readOnlyHint：会当作「改数据」，Agent 每次调用都要过审批", "只读的工具写 annotations: {readOnlyHint: true}"));
+        problems.push(warning(where, "没写 annotations.readOnlyHint：会当作「改数据」记账", "只读的工具写 annotations: {readOnlyHint: true}，改数据的写 false"));
       const linked = (tool._meta?.ui as { resourceUri?: unknown } | undefined)?.resourceUri;
       if (typeof linked === "string" && !(manifest.surfaces ?? []).some((item) => item.resource === linked))
         problems.push(warning(where, `_meta.ui.resourceUri 指向 ${short(linked, 120)}，但 app.json 的 surfaces 里没有这个页面`));
     }
-    if (!listed.length && !problems.some((item) => item.where === "server tools/list")) problems.push(warning("server tools/list", "一个工具都没有：Agent 没法通过 app:" + manifest.id + " 用它"));
+    // Every app is an organ of ash: what the owner can do with its data on a page, the agent can do through its tools.
+    const pages = (manifest.surfaces ?? []).length > 0;
+    if (!tools.length && !problems.some((item) => item.where === "server tools/list"))
+      problems.push((pages ? error : warning)("server tools/list", pages ? `只有页面、没有可用的工具：Agent 没法通过 app:${manifest.id} 看或改它的数据`
+        : `一个工具都没有：Agent 没法通过 app:${manifest.id} 用它`, "每个应用都要有给 Agent 用的工具：读数据的（readOnlyHint: true）和改数据的（readOnlyHint: false），页面也通过它们读写"));
+    else if (pages && tools.length && !writes)
+      problems.push(warning("server tools/list", "只有只读工具：页面上能改的数据，Agent 改不了", "页面上每种改数据的操作都写成一个工具（readOnlyHint: false），页面用 app.call 调它，Agent 用同一个"));
     for (const surface of manifest.surfaces ?? []) {
       const where = `页面 ${surface.id}（${surface.resource}）`;
       let read: Awaited<ReturnType<Client["readResource"]>>;
@@ -158,6 +170,8 @@ export async function trialRun(manifest: AppManifest, spec: AppSpawnSpec, timeou
       if (!content || !html.trim()) { problems.push(error(where, "返回的内容是空的", "contents[0].text 放整页 HTML")); continue; }
       surfaces.push(surface.id);
       if (content.mimeType !== UI_MIME) problems.push(warning(where, `mimeType 是 ${short(content.mimeType ?? "（没写）", 80)}`, `写 ${UI_MIME}`));
+      if (/localStorage\.setItem|indexedDB\.open/.test(html)) problems.push(warning(where, "页面把数据存在浏览器里（localStorage / IndexedDB）：Agent 看不到也改不了",
+        "主人的数据放在服务里（如 data.json），页面和 Agent 都通过工具读写；浏览器里只放页面自己的小状态"));
       if (!/ui\/initialize/.test(html)) problems.push(warning(where, "页面没有发 ui/initialize：调不了工具，也跟不上深浅色", "用 apps.scaffold 生成的 ui/app.js（window.app.call）"));
     }
   } finally {

@@ -142,10 +142,10 @@ function appLauncher(container: ContainerConfig | undefined): AppLauncher | null
 }
 
 /** No old Store/Core is instantiated here; Ledger.open owns the one-way migration. */
-/** One line per device for the agent's turn context: online state and capability names, bounded. */
+/** One line per device for the agent's turn context: online state and capability names, bounded. Apps have their own lines. */
 function deviceSummary(members: WorldMembers): string {
   const summary = members.describe("agent") as { members?: { id: string; kind?: string; name?: string; online?: boolean; words?: (string | { word: string })[] }[] };
-  return (summary.members ?? []).filter((member) => member.id.startsWith("device:") || member.id.startsWith("app:")).map((member) => {
+  return (summary.members ?? []).filter((member) => member.id.startsWith("device:")).map((member) => {
     const words = (member.words ?? []).map((word) => typeof word === "string" ? word : word.word).join(", ");
     return `- ${member.id} (${member.name ?? member.id}, ${member.online ? "online" : "offline"}): ${words || "no capabilities"}`;
   }).join("\n").slice(0, 2000);
@@ -240,6 +240,9 @@ export async function startOwner(config: Config): Promise<Running> {
         return Boolean(work?.ownsRequestTurn(request));
       if (caller.transportPrincipal === "service:senses" && caller.member === "service:senses" && caller.local && !caller.remote &&
         request.from === "service:senses" && request.to === "agent:main" && request.word === "wake") return true;
+      // An app's wake-worthy event (wake_events), sent by ash's app runtime.
+      if (caller.transportPrincipal === "service:apps" && caller.member === "service:apps" && caller.local && !caller.remote &&
+        request.from === "service:apps" && request.to === "agent:main" && request.word === "wake") return true;
       if (caller.transportPrincipal === "service:gate" && caller.member === "service:gate" && caller.local && !caller.remote &&
         request.from === "service:gate" && (request.to === "person:owner" && request.word === "ask" ||
           request.to?.startsWith("agent:") && request.word === "say")) return true;
@@ -329,14 +332,16 @@ export async function startOwner(config: Config): Promise<Running> {
     }
     if (agents[0].runtime === "dsh") dsh = new DshHost({ root: config.dsh!.root, home: config.dsh!.home ?? join(config.stateDir, "dsh-home"), skillsRoot: config.dsh!.skillsRoot, costRoot: config.dsh!.costRoot, vaultRoot: config.dsh!.vaultRoot, env: config.dsh!.env });
     const keyMissing = () => !vaultStore.has("DEEPSEEK_API_KEY");
+    // Given to the main agent every turn: devices, its apps (organs) with what changed in them lately, the owner's screens.
+    const turnContext = () => [deviceSummary(members), apps?.context() ?? "", screensNow()].filter(Boolean).join("\n");
     const containerRunner = container ? new ContainerTurnRunner({ host: container, binding: mainBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
       summarizeProgress: progressSummarizer(() => vaultStore.get("DEEPSEEK_API_KEY"), (usage) => {
         for (const listener of reviewUsage) listener({ at: Date.now() - usage.ms, ms: usage.ms, scope: "progress", provider: "deepseek-official",
           model: usage.model, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: 0, ok: true });
       }),
       mcp: () => ({ url: agentTools!.url, token: mainBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope),
-      devices: () => `${deviceSummary(members)}\n${screensNow()}`, onActive: (active) => { running.chat += active ? 1 : -1; } }) : null;
-    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, () => `${deviceSummary(members)}\n${screensNow()}`)
+      devices: turnContext, onActive: (active) => { running.chat += active ? 1 : -1; } }) : null;
+    const runner = dsh ? new DshTurnRunner(dsh, join(config.stateDir, "attachments", "inbox"), config.workspaces!.home, world, turnContext)
       : containerRunner ?? new EchoTurnRunner();
     const mindRunner = dsh ? new DshMindRunner(dsh) : container ? new ContainerMindRunner({ host: container, binding: mindBinding!, router: world, keyMissing, stateDir: config.stateDir, log,
       mcp: () => ({ url: agentTools!.url, token: mindBinding!.token }), failuresSince: (at, sessionId) => egress!.failuresSince(at, sessionId), labelSession: (sessionId, scope) => egress!.label(sessionId, scope), onActive: (active) => { running.mind += active ? 1 : -1; } }) : null;

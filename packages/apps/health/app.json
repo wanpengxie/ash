@@ -2,9 +2,10 @@
   "contract": "ash-app/1",
   "id": "health",
   "name": "健康",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "icon": "icon.svg",
   "summary": "体重、步数、睡眠、心率的每日概览和趋势",
+  "role": "主人的健康记录：说到体重、睡眠、步数、心率或健康目标时用它，查看用 health.today/health.trend，记下用 health.log，设目标用 health.goal.set",
   "publisher": "ash",
   "server": { "command": "node", "args": ["server.mjs"] },
   "surfaces": [

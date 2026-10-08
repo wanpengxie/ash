@@ -20,6 +20,7 @@ export const APP_SCHEMA = {
     version: { type: "string", pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
     icon: { type: "string", pattern: "^[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.(?:png|svg|webp)$", description: "A file next to app.json." },
     summary: { type: "string", minLength: 1, maxLength: 200 },
+    role: { type: "string", minLength: 1, maxLength: 200, description: "What this organ of ash is for and when Ash should use it, in one sentence; shown to the agent in every conversation." },
     publisher: { type: "string", minLength: 1, maxLength: 80 },
     server: {
       type: "object",
@@ -46,7 +47,9 @@ export const APP_SCHEMA = {
         },
       },
     },
-    events: { type: "array", maxItems: 32, items: { type: "string", pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$", not: { const: "app.card" } } },
+    events: { type: "array", maxItems: 32, items: { type: "string", pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$", not: { enum: ["app.card", "app.activity"] } } },
+    wake_events: { type: "array", maxItems: 32, items: { type: "string", pattern: "^[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$" },
+      description: "Events (each also in events) that should wake Ash at once rather than wait for the next conversation; a few a day at most." },
     needs: {
       type: "array",
       maxItems: 16,
@@ -74,10 +77,14 @@ export interface AppManifest {
   version: string;
   icon?: string;
   summary: string;
+  /** What the app is for and when to use it: one sentence the agent always sees. */
+  role?: string;
   publisher: string;
   server: { command: string; args?: string[]; env?: Record<string, string> };
   surfaces?: { id: string; title: string; resource: string }[];
   events?: string[];
+  /** Declared events that wake the main agent at once. */
+  wake_events?: string[];
   needs?: AppNeed[];
 }
 
@@ -94,6 +101,8 @@ export function validateManifest(raw: unknown): { ok: true; manifest: AppManifes
   const keys = (manifest.needs ?? []).map(needKey);
   if (new Set(keys).size !== keys.length) return { ok: false, error: "each member or kind of need appears once" };
   if ((manifest.needs ?? []).some((need) => "member" in need && need.member === `app:${manifest.id}`)) return { ok: false, error: "an app does not need itself" };
+  const undeclared = (manifest.wake_events ?? []).find((name) => !(manifest.events ?? []).includes(name));
+  if (undeclared) return { ok: false, error: `wake_events ${undeclared} is not in events` };
   return { ok: true, manifest };
 }
 
