@@ -61,6 +61,15 @@ their fixed approval choices. Host socket disconnects are contained within a cli
 Both main and helper prompts include `prompts/rules/approvals.md`. Regression coverage lives in
 `world/human-pending.test.ts`, the Chromium `human-pending.spec.js`, and Android notification-route tests.
 
+## Guidance for the main agent: two layers
+
+Every capability domain (widgets, apps, phone operation, media, reminders, senses, the browser, delegating development) is explained in two places and the two are delivered together.
+
+- **Layer 1, an introduction** in the system prompt (`packages/core/src/prompts/rules/<domain>.md`): a short paragraph saying what the capability is, what it can do and when to use it, and naming the skill to read first. No steps, examples or parameter lists.
+- **Layer 2, the skill** (`packages/ash-skills/skills/<name>/SKILL.md`, loaded by the skills plugin): when to use it, how, what good looks like (worked examples), common mistakes, how to check the result. Sample cards, templates and example apps sit beside it in the skill folder.
+
+Rules about how the world works (approvals, data versus instructions, voice, the agent's own files) stay in the system prompt as ordinary rules. `packages/ash-skills/test/standard.test.ts` enforces the layout: every skill has valid frontmatter, every introduction is a few sentences that name an existing skill, no skill goes unnamed, and the system prompt does not grow. Adding a capability domain means adding both layers.
+
 ## Processes and transport
 
 ```text
