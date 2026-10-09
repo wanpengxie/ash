@@ -17,7 +17,7 @@ class CapabilityPolicyTest {
     @Test fun lookingIsRead() {
         for (n in listOf(
             "device.status", "apps.list", "apps.info", "apps.usage", "settings.get", "screen.read", "screen.see",
-            "screen.screenshot", "screen.touch_status", "shell.status", "vscreen.status", "vscreen.see", "calendar.search", "clipboard.get",
+            "screen.screenshot", "screen.touch_status", "shell.status", "vscreen.status", "vscreen.see", "calendar.search", "calendar.list", "clipboard.get",
             "browser.read", "browser.open", "browser.scroll", "browser.back", "browser.screenshot", "browser.show", "browser.close",
             "browser.spaces",
         )) assertEquals(n, "read", effect(n))

@@ -37,6 +37,21 @@ object CalendarArguments {
         return provider(CalendarSearchArgs(start, end, query?.trim()?.lowercase() ?: "", limit.toInt()))
     }
 
+    /** calendar.list takes no arguments: anything given is refused rather than ignored. */
+    fun <T> list(input: JSONObject, provider: () -> T, invalid: (String) -> T): T =
+        if (input.length() == 0) provider() else invalid("calendar.list takes no arguments")
+
+    /**
+     * One calendar as calendar.list returns it. [accessLevel] is the provider's CALENDAR_ACCESS_LEVEL: contributor (500)
+     * and above may add events, which is what calendar.create needs.
+     */
+    fun calendar(id: Long, name: String?, account: String?, accessLevel: Int, visible: Boolean, primary: Boolean): JSONObject =
+        JSONObject().put("id", id).put("name", name.orEmpty()).put("account", account.orEmpty())
+            .put("writable", accessLevel >= CONTRIBUTOR).put("visible", visible).put("primary", primary)
+
+    /** CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR. */
+    const val CONTRIBUTOR = 500
+
     fun <T> create(input: JSONObject, provider: (CalendarCreateArgs) -> T, invalid: (String) -> T): T {
         if (!keysOnly(input, setOf("calendar_id", "title", "start_ms", "end_ms", "description", "location", "time_zone")))
             return invalid("calendar.create has unsupported fields")

@@ -1,7 +1,7 @@
 ---
 name: reminders
 description: 给主人设提醒和查看、添加日历事件：怎么挑时间、一次性和重复提醒、提醒的措辞、后台任务里的审批有效期、日历没授权时怎么办。
-whenToUse: 主人说「提醒我」「到点叫我」「每天/每周……」「帮我看看日程」「加到日历」，或你自己需要在以后某个时间被叫醒去做事；用 timer_set、calendar.search、calendar.create 之前。
+whenToUse: 主人说「提醒我」「到点叫我」「每天/每周……」「帮我看看日程」「加到日历」，或你自己需要在以后某个时间被叫醒去做事；用 timer_set、calendar.search、calendar.list、calendar.create 之前。
 ---
 
 # 提醒与日历
@@ -14,6 +14,7 @@ whenToUse: 主人说「提醒我」「到点叫我」「每天/每周……」�
 | 到点你自己要去查或做点什么，再决定要不要告诉他 | `timer_set` 且 `deliver: "self"` |
 | 一件有起止时间、要出现在他日历里的事（会议、航班、约好的饭） | `calendar.create`（要主人批准），重要的再加一个提前的 `timer_set` |
 | 看他的日程 | `calendar.search` |
+| 看他有哪些日历、选往哪个日历里加 | `calendar.list` |
 
 纯提醒不要写进日历：日历是他所有设备共用的，别塞满你的提醒。
 
@@ -48,7 +49,8 @@ whenToUse: 主人说「提醒我」「到点叫我」「每天/每周……」�
 
 - `calendar.search {start_ms?, end_ms?, query?, limit?}`：默认从现在起 7 天，最多 50 条；返回标题、起止时间、地点和 `calendar_id`。需要主人给了日历读权限，没给时 `capability_describe` 里就没有这个词。
   这种情况**不要声称已经读到了日历，也不要反复试**：用 `human_show` 发一张权限卡 `{type: "permission", permission: "calendar", why: "读取手机日历需要你授权"}`，让他自己点「去授权」。授权后看到能力出现再查；他没授权就用他对话里说的信息继续帮忙。
-- `calendar.create {calendar_id, title, start_ms, end_ms, description?, location?, time_zone?}`：改主人的日历，**每次都要他批准**，也要日历写权限。没有列出日历的能力：`calendar_id` 取自 `calendar.search` 里他已有事件的 `calendar_id`，有多个就用 `human_ask` 让他选，别猜。审批用 `purpose` 写清楚（「把周五 15:00 的牙医加到你的日历」）。批准回来后先想想事情有没有变，再 `human_pending_redeem`。
+- `calendar.list {}`：他手机上的日历，每个带 `id`、`name`、`account`、`writable`（能不能往里加）、`visible`、`primary`。只读，权限同 `calendar.search`。
+- `calendar.create {calendar_id, title, start_ms, end_ms, description?, location?, time_zone?}`：改主人的日历，**每次都要他批准**，也要日历写权限。`calendar_id` 用 `calendar.list` 里 `writable: true` 的日历；只有一个就用它，有多个（比如工作和个人）先看他已有的同类事件在哪个日历（`calendar.search` 返回的 `calendar_id`），还拿不准就用 `human_ask` 让他选，别猜。审批用 `purpose` 写清楚（「把周五 15:00 的牙医加到你的日历」）。批准回来后先想想事情有没有变，再 `human_pending_redeem`。
 - 汇报日程时按时间顺序说重点，别倒整个列表；说的时间用他的时区。
 
 ## 好的样子

@@ -56,6 +56,7 @@ object CapabilityPolicies {
         "vscreen.type" to CapabilityPolicy("outward", "act", "在虚拟屏输入"),
         "vscreen.close" to CapabilityPolicy("structure", "act", "关闭虚拟屏"),
         "calendar.search" to CapabilityPolicy("none", "read", "看日历"),
+        "calendar.list" to CapabilityPolicy("none", "read", "看有哪些日历"),
         "calendar.create" to CapabilityPolicy("outward", "write", "添加日历事件"),
         "browser.open" to CapabilityPolicy("none", "read", "打开网页"),
         "browser.read" to CapabilityPolicy("none", "read", "读网页"),

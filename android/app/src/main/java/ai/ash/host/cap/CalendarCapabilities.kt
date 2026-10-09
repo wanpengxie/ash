@@ -47,6 +47,27 @@ object CalendarCapabilities {
         }, CapResult::fail)
     }
 
+    private val calendars = Cap(
+        name = "calendar.list",
+        description = "List the owner's phone calendars: ID, name, account, whether events can be added to it (writable), shown, primary. Use an ID from here as calendar.create's calendar_id. Requires calendar read permission; it does not change anything.",
+        schema = schema(),
+        availableIf = ::canRead,
+    ) { ctx, args ->
+        CalendarArguments.list(args, provider@{
+            val columns = arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+                CalendarContract.Calendars.ACCOUNT_NAME, CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
+                CalendarContract.Calendars.VISIBLE, CalendarContract.Calendars.IS_PRIMARY)
+            val found = JSONArray()
+            val cursor = ctx.contentResolver.query(CalendarContract.Calendars.CONTENT_URI, columns, null, null, "${CalendarContract.Calendars._ID} ASC")
+                ?: return@provider CapResult.fail("calendar provider unavailable")
+            cursor.use {
+                while (it.moveToNext() && found.length() < 100)
+                    found.put(CalendarArguments.calendar(it.getLong(0), it.getString(1), it.getString(2), it.getInt(3), it.getInt(4) == 1, !it.isNull(5) && it.getInt(5) == 1))
+            }
+            CapResult.json(JSONObject().put("calendars", found).put("count", found.length()))
+        }, CapResult::fail)
+    }
+
     private val create = Cap(
         name = "calendar.create",
         description = "Add one event to a selected writable phone calendar. This changes the owner's calendar and must be approved before the call. Requires calendar write permission.",
@@ -82,5 +103,5 @@ object CalendarCapabilities {
         }, CapResult::fail)
     }
 
-    val list: List<Capability> = listOf(search, create)
+    val list: List<Capability> = listOf(search, calendars, create)
 }

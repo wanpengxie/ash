@@ -49,4 +49,17 @@ class CalendarArgumentsTest {
             { providerCalls++; "provider" }, { "rejected" }))
         assertEquals(1, providerCalls)
     }
+
+    @Test fun listTakesNoArgumentsAndSaysWhichCalendarsTakeEvents() {
+        var providerCalls = 0
+        assertEquals("rejected", CalendarArguments.list(JSONObject().put("account", "x"), { providerCalls++; "provider" }, { "rejected" }))
+        assertEquals(0, providerCalls)
+        assertEquals("provider", CalendarArguments.list(JSONObject(), { providerCalls++; "provider" }, { "rejected" }))
+        val mine = CalendarArguments.calendar(3, "我的日历", "me@example.com", 700, visible = true, primary = true)
+        assertEquals(3L, mine.getLong("id")); assertEquals("我的日历", mine.getString("name")); assertEquals(true, mine.getBoolean("writable"))
+        assertEquals(true, mine.getBoolean("primary"))
+        val holidays = CalendarArguments.calendar(4, null, null, 200, visible = true, primary = false)
+        assertEquals(false, holidays.getBoolean("writable")); assertEquals("", holidays.getString("name"))
+        assertEquals(true, CalendarArguments.calendar(5, "x", "y", CalendarArguments.CONTRIBUTOR, visible = false, primary = false).getBoolean("writable"))
+    }
 }
