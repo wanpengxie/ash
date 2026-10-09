@@ -119,7 +119,7 @@ object Permissions {
                 { a ->
                     val own = { PhoneMaker.current.openKeepAlive(a, a.packageName, "Ash") }
                     // The helper can turn the switches on for the owner; the written steps are the way back.
-                    if (a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(a.packageName)) KeepAliveFlow.offer(a, own) else own()
+                    if (a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(a.packageName)) KeepAliveFlow.offer(a, guidance = own) else own()
                 },
                 { c ->
                     if (!c.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(c.packageName)) "先完成上一项「不受电池优化限制」"
@@ -287,6 +287,30 @@ object Permissions {
     }
 
     fun grantedCount(ctx: Context): Int = all.count { it.granted(ctx) }
+
+    /**
+     * Once per install change (an upgrade or reinstall), on Ash's first screen: the keep-alive switches are looked at
+     * again (see [KeepAliveRecheck]) and, if one may be off, the usual fix is offered once — the system's question
+     * for the battery exemption, or the helper's one-tap fix, which still waits for the owner's 「确定」.
+     */
+    fun recheckAfterUpgrade(a: Activity, firstStart: Boolean) {
+        val prefs = a.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val info = runCatching { a.packageManager.getPackageInfo(a.packageName, 0) }.getOrNull() ?: return
+        val now = KeepAliveRecheck.Install(if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong(), info.lastUpdateTime)
+        // No record yet: a fresh install (the first-launch guide covers it), or an upgrade from before this was kept.
+        val previous = if (prefs.contains("install:version")) KeepAliveRecheck.Install(prefs.getLong("install:version", 0), prefs.getLong("install:updated", 0))
+            else if (firstStart) null else KeepAliveRecheck.Install(-1, -1)
+        if (previous == now) return
+        prefs.edit().putLong("install:version", now.versionCode).putLong("install:updated", now.updatedAt).apply()
+        val battery = a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(a.packageName)
+        val plan = KeepAliveRecheck.plan(previous, now, battery, PhoneMaker.current.ownSwitches, KeepAliveFlow.available(a))
+        if (plan.forgetWords) prefs.edit().apply { for (k in KeepAliveRecheck.WORD_KEYS) remove("confirmed:$k") }.apply()
+        when (plan.offer) {
+            KeepAliveRecheck.Offer.BATTERY -> all.first { it.key == "battery" }.open(a)
+            KeepAliveRecheck.Offer.SWITCHES -> KeepAliveFlow.offer(a, "Ash 刚更新过，系统可能把它的自启动关掉了。") {}
+            KeepAliveRecheck.Offer.NONE -> {}
+        }
+    }
 
     /** Not installed → download page; installed but not running → the Shizuku app (to start it); running → its permission dialog. */
     private fun openShizuku(a: Activity) {

@@ -17,8 +17,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 「帮我打开」: on ColorOS the screen helper turns on, in the system's settings, the switches that keep Ash's own three
- * apps alive. Only the owner's tap on one of the three keep-alive entries starts it; it is not a tool in the phone's
- * manifest, so no agent can. Anything short of a clean run falls back to the written guidance.
+ * apps alive. Only the owner's tap starts it — on one of the three keep-alive entries, or on 「确定」 when Ash asks once
+ * after an upgrade (Permissions.recheckAfterUpgrade); it is not a tool in the phone's manifest, so no agent can. Anything short of a clean run falls back to the written guidance.
  */
 object KeepAliveFlow {
     private val running = AtomicBoolean(false)
@@ -31,12 +31,15 @@ object KeepAliveFlow {
     fun available(ctx: Context): Boolean = PhoneMaker.current == PhoneMaker.COLOROS && ScreenBridge.accessibility() &&
         ScreenBridge.installedVersion(ctx) >= KeepAliveSwitches.MIN_HELPER_VERSION && !ScreenBridge.needsInstall(ctx)
 
-    /** Asks the owner, then runs; [guidance] is the old way (written steps), used when this cannot be offered or does not finish. */
-    fun offer(a: Activity, guidance: () -> Unit) {
+    /**
+     * Asks the owner, then runs; [guidance] is the old way (written steps), used when this cannot be offered or does not
+     * finish. [why]: a line saying why it is asked now, when Ash brings it up itself (after an upgrade).
+     */
+    fun offer(a: Activity, why: String? = null, guidance: () -> Unit) {
         if (!available(a)) return guidance()
         if (running.get()) { Toast.makeText(a, "正在打开中，请稍等", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(a).setTitle("帮我打开")
-            .setMessage("让屏幕助手替你打开 Ash、Ash 感知、屏幕助手的开机自启动、后台自启动和后台行为？期间请不要操作手机。")
+            .setMessage("${why.orEmpty()}让屏幕助手替你打开 Ash、Ash 感知、屏幕助手的开机自启动、后台自启动和后台行为？已经开着的不会动。期间请不要操作手机。")
             .setPositiveButton("确定") { _, _ -> start(a, guidance) }
             .setNegativeButton("取消", null).show()
     }

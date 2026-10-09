@@ -205,7 +205,9 @@ class HomeActivity : Activity() {
         if (!bridgeSupported) { status.text = "当前 WebView 不支持 Ash 安全通信"; return }
         focusInput = intent?.getBooleanExtra(EXTRA_FOCUS_INPUT, false) == true
         poll()
-        OnboardingActivity.showOnce(this)
+        val firstStart = OnboardingActivity.showOnce(this)
+        // After an upgrade the phone may have put Ash's auto-start back off: look again once the helper has connected.
+        ui.postDelayed({ if (!isFinishing && !isDestroyed) Permissions.recheckAfterUpgrade(this, firstStart) }, 5_000)
     }
 
     private fun poll() {
