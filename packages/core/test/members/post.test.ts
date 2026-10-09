@@ -147,9 +147,16 @@ test("real owner messages route foreground in-app, background due notification, 
   } finally { await f.close(); }
 });
 
-test("an expired risk ask denies the effect and withdraws its notification", async () => {
+test("an expired risk ask denies the effect and withdraws its notification", async (t) => {
   const f = await fixture();
   let effects = 0;
+  // The ask expires on the router's clock, which this test drives: the card is shown first, then time passes, so a slow
+  // machine can never let the expiry overtake the presentation. Progress is waited for in steps, not in time.
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const settled = async (done: () => unknown, what: string) => {
+    for (let step = 0; step < 10_000; step++) { await f.post.tick(); if (done()) return; await new Promise((resolve) => setImmediate(resolve)); }
+    throw new Error(what);
+  };
   try {
     f.router.register({ member: "device:fake", spec: { word: "run", kind: "request", risk: "outward", timeout_ms: 1_000,
       description: "Synthetic outward effect", input_schema: { type: "object", additionalProperties: false } },
@@ -157,16 +164,20 @@ test("an expired risk ask denies the effect and withdraws its notification", asy
     f.router.enableDurableGate();
     const request = await f.router.send(agent, { to: "device:fake", kind: "request", word: "run", body: {} });
     // The case exists before its card: wait for the card itself.
-    const askId = (await eventually(() => f.ledger.gateCase(request.id)?.askId, "the owner was not asked"))!;
-    assert.equal((await f.wait(askId)).channel, "notification");
+    await settled(() => f.ledger.gateCase(request.id)?.askId, "the owner was not asked");
+    const askId = f.ledger.gateCase(request.id)!.askId!;
+    await settled(() => f.post.journal.record(askId), "the ask was not delivered");
+    assert.equal(f.post.journal.record(askId)!.channel, "notification");
     assert.equal(f.presentations.filter((item) => item.id === askId).length, 1);
-    await eventually(() => f.ledger.responseTo(request.id), "the expired ask did not settle the request");
+    assert.equal(f.ledger.responseTo(request.id), null, "nothing expires while the clock stands still");
+    t.mock.timers.tick(1_001);
+    await settled(() => f.ledger.responseTo(request.id), "the expired ask did not settle the request");
     assert.equal(f.ledger.gateCase(request.id)?.decision, "timeout");
     assert.equal((f.ledger.responseTo(request.id)?.body.error as { code?: string } | undefined)?.code, "denied");
-    await eventually(() => f.hides.includes(askId), "the notification was not withdrawn");
+    await settled(() => f.hides.includes(askId), "the notification was not withdrawn");
     assert.deepEqual(f.hides, [askId]);
     assert.equal(effects, 0);
-  } finally { await f.close(); }
+  } finally { t.mock.timers.reset(); await f.close(); }
 });
 
 test("old-page offer gets the latest released state without scanning later ledger pages", async () => {
