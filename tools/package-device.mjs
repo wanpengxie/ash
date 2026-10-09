@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, copyFileSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-const version = '0.1.0', nodeVersion = '22.22.1';
+const version = '0.1.1', nodeVersion = '22.22.1';
 const out = resolve('build/device'); mkdirSync(out, { recursive: true });
 const targets = process.argv.includes('--all') ? [['linux','x64'],['linux','arm64'],['darwin','x64'],['darwin','arm64']] : [[process.platform,process.arch]];
 const sums = [];

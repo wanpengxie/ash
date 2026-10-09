@@ -106,7 +106,7 @@ files readable through workspace tools.
 `npm run package:device -- --all` creates Linux/macOS x64/arm64 archives with a
 pinned, checksum-verified Node runtime, `install.sh`, and `SHA256SUMS` in
 `build/device`. No publishing occurs. The owner's devices page shows the pairing
-code together with the one-line install command for the `device-v0.1.0` release
+code together with the one-line install command for the `device-v0.1.1` release
 (`curl -fsSL …/install.sh | sh -s -- GATEWAY CODE`); the code is never returned to
 an agent or written to the ledger.
 

@@ -27,7 +27,7 @@ export interface PairingView { revision: string; code: null | { state: "active" 
   expires_in_ms: number; ticket?: string; install_command?: string } }
 
 /** The published installer; it takes the gateway and the code and pairs the computer. */
-export const DEVICE_INSTALLER = "https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh";
+export const DEVICE_INSTALLER = "https://github.com/wanpengxie/ash/releases/download/device-v0.1.1/install.sh";
 const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'";
 export const installCommand = (gateway: string, ticket: string): string => `curl -fsSL ${DEVICE_INSTALLER} | sh -s -- ${quote(gateway)} ${quote(ticket)}`;
 /** A name another device chose for itself, safe inside an owner notice. */

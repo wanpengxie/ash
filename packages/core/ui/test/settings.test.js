@@ -297,7 +297,7 @@ test("the pairing code is read from the owner-only route, with the install comma
     const panel = new Element("div");
     const sent = [], answers = [];
     let fail = false, view = { revision: "r1", code: null }, pending = [];
-    const command = "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh | sh -s -- 'https://gw.example' 'pair-XYZ-123'";
+    const command = "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.1/install.sh | sh -s -- 'https://gw.example' 'pair-XYZ-123'";
     const net = { token: "screen-token", screen: "screen:local", currentScope: "owner-scope", localManagement: true,
       async request(path, init) {
         if (path === "/api/devices/pairing") {

@@ -4,7 +4,7 @@ set -eu
 gateway=${1:?Usage: install.sh GATEWAY PAIR_CODE [setup options]}
 pair=${2:?Pairing code required}
 shift 2
-version=${ASH_DEVICE_VERSION:-0.1.0}
+version=${ASH_DEVICE_VERSION:-0.1.1}
 case "$version" in *[!0-9.]*|'') echo "Invalid release version" >&2; exit 1;; esac
 case "$(uname -s)" in Darwin) os=darwin;; Linux) os=linux;; *) echo "macOS or Linux required" >&2; exit 1;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=x64;; *) echo "Unsupported CPU" >&2; exit 1;; esac

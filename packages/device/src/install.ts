@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, readFile, readlink, rename, symlink, writeFile } f
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
-export const DEVICE_VERSION = "0.1.0";
+export const DEVICE_VERSION = "0.1.1";
 export const RELEASE_BASE = "https://github.com/wanpengxie/ash/releases/download";
 export function releaseUrl(version: string, platform = process.platform, arch = process.arch): string {
   if (!/^v?\d+\.\d+\.\d+$/.test(version) || !["linux", "darwin"].includes(platform) || !["arm64", "x64"].includes(arch)) throw new Error("Unsupported version or platform");

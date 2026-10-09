@@ -53,7 +53,7 @@ test("device settings separates browser grants, edits computer grants and confir
 test("the pairing code and install command appear only from the owner route, and the page notices a request by itself", async ({ page }, testInfo) => {
   const running = await startOwner({ stateDir: mkdtempSync(join(tmpdir(), "ash-device-code-")), listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
   const token = Object.entries(running.tokens.api).find(([, member]) => member === "person:owner")[0];
-  const command = "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh | sh -s -- 'https://gw.example' 'pair-code-123'";
+  const command = "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.1/install.sh | sh -s -- 'https://gw.example' 'pair-code-123'";
   let view = { revision: "r1", code: null }, pending = [];
   await page.route("**/api/devices/pairing", route => route.fulfill({ json: view }));
   await page.route("**/api/send", async route => {

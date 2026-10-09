@@ -101,7 +101,7 @@ test("a pairing code never reaches an agent or the ledger; only the local owner'
     assert.ok(w.ledger.list({ limit: 1000 }).some(m => m.from === "service:devices" && m.to === "person:owner" && m.word === "say" && /配对码/.test(String(m.body.text))));
     const view = w.service.pairingView();
     assert.equal(view.code?.state, "active"); assert.equal(view.code?.ticket, "test-ticket");
-    assert.equal(view.code?.install_command, "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.0/install.sh | sh -s -- 'https://test.invalid' 'test-ticket'");
+    assert.equal(view.code?.install_command, "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.1.1/install.sh | sh -s -- 'https://test.invalid' 'test-ticket'");
     const edge = new EdgeRouter(w.ledger, w.router, w.members, { api: { "owner-token": "person:owner" }, mcp: {} }, { authScopeKey: Buffer.alloc(32, 1), pairing: () => w.service.pairingView() });
     const read = async (caller: EdgeCaller) => { const res = await edge.handle({ method: "GET", url: new URL("/api/devices/pairing", "http://ash"), headers: {}, body: null }, caller);
       return { status: res.status, body: JSON.parse(String("body" in res ? res.body : "{}")) }; };
