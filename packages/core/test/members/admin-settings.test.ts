@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { startOwner } from "../../src/main";
+import { eventually } from "../fixtures/wait";
 
 test("local quiet hours and approval mode settings take effect and survive a restart", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ash-admin-quiet-"));
@@ -31,8 +32,8 @@ test("local quiet hours and approval mode settings take effect and survive a res
     const offer = await running.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
       local: true, remote: false, ownerProxy: false }, { to: "person:owner", kind: "request", word: "say",
       body: { kind: "offer", text: "A synthetic offer", dedupe_key: "quiet-test" }, wait: true });
-    for (let i = 0; i < 50 && !running.ledger.list({ limit: 1000 }).some((message) =>
-      message.word === "post.delivery" && message.body.message_id === offer.id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => running!.ledger.list({ limit: 1000 }).some((message) =>
+      message.word === "post.delivery" && message.body.message_id === offer.id), "the offer was not classified");
     assert.equal(running.ledger.list({ limit: 1000 }).find((message) =>
       message.word === "post.delivery" && message.body.message_id === offer.id)?.body.state, "held");
     assert.equal((await call("settings.get", {})).reply?.body.result?.approval?.mode, "auto");
@@ -48,7 +49,7 @@ test("local quiet hours and approval mode settings take effect and survive a res
     running.world.setReviewer(async () => { reviewed++; return { decision: "allow", reason: "可撤回" }; });
     const opened = await running.world.send({ member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
       local: true, remote: false, ownerProxy: false }, { to: "device:fake", kind: "request", word: "open", body: {} });
-    for (let i = 0; i < 50 && !running.ledger.gateCase(opened.id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => running!.ledger.gateCase(opened.id), "the gate did not take the call");
     assert.ok(running.ledger.gateCase(opened.id));
     assert.equal(reviewed, 0);
     running.world.cancel([opened.id]);

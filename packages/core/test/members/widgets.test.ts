@@ -7,6 +7,7 @@ import { validateA2ui, WidgetsMember, type WidgetState } from "../../src/members
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { eventually } from "../fixtures/wait";
 
 const owner: TrustedRouteContext = { member: "person:owner", transport: "api", transportPrincipal: "owner:synthetic", local: true, remote: false, ownerProxy: true };
 const phone: TrustedRouteContext = { member: "device:phone", transport: "phone", transportPrincipal: "phone:synthetic", local: true, remote: false, ownerProxy: true };
@@ -140,7 +141,7 @@ test("a button tap from the phone becomes widget.action for the card's creator, 
     assert.equal((await f.call(phone, "widget.tap", { card: "weather", action: "refresh" })).ok, true);
     const tapRequest = f.ledger.list({ limit: 100 }).find((m) => m.word === "widget.tap")!;
     assert.equal(tapRequest.from, "person:owner");
-    for (let i = 0; i < 20 && !heard.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => heard.length > 0, "the tap was not heard");
     assert.match(heard[0], /refresh/);
     // Agents cannot fake a tap, and a button the card does not have is refused.
     assert.equal((await f.call(agent("agent:main"), "widget.tap", { card: "weather", action: "refresh" })).error.code, "forbidden");
@@ -185,7 +186,7 @@ test("a toggle on the phone is written into the card's data and told to its crea
     assert.equal(drawn.checked, true);
     const event = f.ledger.list({ limit: 100 }).find((m) => m.word === "widget.action")!;
     assert.deepEqual(event.body, { card: "todo", action: "toggle", owner: "agent:main", title: "待办", component: "row", item: "mail", checked: true });
-    for (let i = 0; i < 20 && !heard.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => heard.length > 0, "the tap was not heard");
     assert.match(heard[0], /item mail; now checked/);
     // A restart keeps the owner's choice.
     const again = new WidgetsMember({ router: new WorldRouter(f.ledger, async () => true), file: f.file });
@@ -219,7 +220,7 @@ test("widget.card.validate checks without saving; put reports whether the phone 
     assert.equal((await f.call(agent("agent:main"), "widget.list", {})).result.cards[0].problem, "这张卡片画出来是空白的");
     const event = f.ledger.list({ limit: 100 }).find((m) => m.word === "widget.problem")!;
     assert.deepEqual(event.body, { card: "w", owner: "agent:main", title: "天气", problem: "这张卡片画出来是空白的" });
-    for (let i = 0; i < 20 && !heard.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => heard.length > 0, "the tap was not heard");
     assert.match(heard[0], /could not fully draw/);
     // A later problem (an image that failed to load) comes with widget.placed; an older version's report is ignored.
     const card = (await f.call(agent("agent:main"), "widget.list", {})).result.cards[0];

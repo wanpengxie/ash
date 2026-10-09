@@ -8,6 +8,7 @@ import { wordContract } from "../../../sdk/src/words";
 import type { ReviewFacts, Reviewer, ReviewVerdict } from "../../src/review/reviewer";
 import { Ledger } from "../../src/world/ledger";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { eventually } from "../fixtures/wait";
 
 const agent: TrustedRouteContext = { transport: "agent", member: "agent:main", transportPrincipal: "agent:main",
   local: true, remote: false, ownerProxy: false, turn: "t_review" };
@@ -181,7 +182,7 @@ for (const [name, reviewer, timeoutMs] of [
   const world = await setup(reviewer, timeoutMs ? { timeoutMs } : {});
   try {
     const id = await world.send("browser.click", { site: "x.com", label: "下一页", ref: 2 });
-    if (timeoutMs) for (let i = 0; i < 40 && !world.card(id); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    if (timeoutMs) await eventually(() => world.card(id), "the owner was not asked after the stalled review");
     const shown = world.card(id)!;
     assert.ok(shown, "the owner is asked");
     assert.equal(shown.ask.body.title, "需要你确认");
