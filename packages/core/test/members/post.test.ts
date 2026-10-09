@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { eventually } from "../fixtures/wait";
 import type { Message } from "../../../sdk/src/api";
 import type { HostPresentationV2 } from "../../../sdk/src/host";
 import { PostMember, isQuiet, quietEnd } from "../../src/members/post-delivery";
@@ -36,15 +37,7 @@ async function fixture(at = local(1, 12), autoStart = true) {
   post.prepareRecovery();
   await router.recover();
   if (autoStart) await post.start();
-  const wait = async (id: string) => {
-    for (let i = 0; i < 40; i++) {
-      await post.tick();
-      const record = post.journal.record(id);
-      if (record) return record;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error("delivery did not settle");
-  };
+  const wait = (id: string) => eventually(async () => { await post.tick(); return post.journal.record(id); }, "delivery did not settle");
   return { dir, ledger, router, members, post, presentations, hides, alerts, wait,
     setIsland(value: boolean) { island = value; },
     setTime(value: number) { time = value; }, setForeground(value: boolean) { foreground = value; }, setAck(value: boolean) { ack = value; },
@@ -116,9 +109,7 @@ test("first installation never republishes preexisting owner history as fresh no
     assert.equal(post.journal.record(historical.id), null);
     assert.equal(presented, 0);
     const fresh = await router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "new synthetic", kind: "due" }, wait: true });
-    for (let i = 0; i < 40 && post.journal.record(fresh.id)?.state !== "done"; i++) {
-      await post.tick(); await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await eventually(async () => { await post.tick(); return post.journal.record(fresh.id)?.state === "done"; }, "fresh say not delivered");
     assert.equal(post.journal.record(fresh.id)?.state, "done");
     assert.equal(presented, 1);
   } finally { await post.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); }
@@ -165,14 +156,14 @@ test("an expired risk ask denies the effect and withdraws its notification", asy
     handle: () => { effects++; return { ok: true, result: {} }; } });
     f.router.enableDurableGate();
     const request = await f.router.send(agent, { to: "device:fake", kind: "request", word: "run", body: {} });
-    for (let i = 0; i < 40 && !f.ledger.gateCase(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 5));
-    const askId = f.ledger.gateCase(request.id)!.askId;
+    // The case exists before its card: wait for the card itself.
+    const askId = (await eventually(() => f.ledger.gateCase(request.id)?.askId, "the owner was not asked"))!;
     assert.equal((await f.wait(askId)).channel, "notification");
     assert.equal(f.presentations.filter((item) => item.id === askId).length, 1);
-    for (let i = 0; i < 300 && !f.ledger.responseTo(request.id); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => f.ledger.responseTo(request.id), "the expired ask did not settle the request");
     assert.equal(f.ledger.gateCase(request.id)?.decision, "timeout");
     assert.equal((f.ledger.responseTo(request.id)?.body.error as { code?: string } | undefined)?.code, "denied");
-    for (let i = 0; i < 200 && !f.hides.includes(askId); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await eventually(() => f.hides.includes(askId), "the notification was not withdrawn");
     assert.deepEqual(f.hides, [askId]);
     assert.equal(effects, 0);
   } finally { await f.close(); }
@@ -382,9 +373,7 @@ test("lost host acknowledgement is recorded unknown and never claimed as notific
   try {
     f.setAck(false);
     const source = await f.router.send(agent, { to: "person:owner", kind: "request", word: "say", body: { text: "synthetic due", kind: "due" }, wait: true });
-    for (let i = 0; i < 40 && f.post.journal.record(source.id)?.state !== "unknown"; i++) {
-      await f.post.tick(); await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await eventually(async () => { await f.post.tick(); return f.post.journal.record(source.id)?.state === "unknown"; }, "lost acknowledgement not recorded");
     assert.equal(f.post.journal.record(source.id)?.state, "unknown");
     assert.equal(f.presentations.length, 1);
     await f.post.tick();
@@ -399,17 +388,17 @@ test("approval forwards exact options and reply target; missing deny fails close
       { to: "person:owner", kind: "request", word: "ask", body: { title: "Synthetic approval", detail: "Only this test action",
         options, expires_at: Date.now() + 10_000, source: { word: "write", to: "service:self", body_preview: "synthetic" } } });
     const valid = await ask([{ id: "once", label: "Once" }, { id: "deny", label: "No" }]);
-    for (let i = 0; i < 40 && f.presentations.length === 0; i++) { await f.post.tick(); await new Promise((resolve) => setTimeout(resolve, 10)); }
+    await eventually(async () => { await f.post.tick(); return f.presentations.length > 0; }, "approval not presented");
     assert.equal(f.presentations.length, 1);
     assert.deepEqual(f.presentations[0], { id: valid.id, kind: "approval", title: "Synthetic approval", text: "Only this test action",
       reply_to: valid.id, reply_target: "service:work", expires_at: (f.ledger.byId(valid.id)!).body.expires_at,
       options: [{ id: "once", label: "Once" }, { id: "deny", label: "No" }] });
     const invalid = await ask([{ id: "once", label: "Once" }]);
-    for (let i = 0; i < 40 && f.post.journal.record(invalid.id)?.state !== "failed"; i++) { await f.post.tick(); await new Promise((resolve) => setTimeout(resolve, 10)); }
+    await eventually(async () => { await f.post.tick(); return f.post.journal.record(invalid.id)?.state === "failed"; }, "invalid approval not refused");
     assert.equal(f.post.journal.record(invalid.id)?.error, "presentation_contract_rejected");
     assert.equal(f.presentations.length, 1);
     f.router.cancel([valid.id, invalid.id]);
-    for (let i = 0; i < 40 && f.hides.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    await eventually(() => f.hides.length > 0, "cancelled approval not hidden");
     assert.deepEqual(f.hides, [valid.id]);
   } finally { await f.close(); }
 });
@@ -428,7 +417,8 @@ test("replies notify quietly while their task runs, and the task's end rings str
     await f.wait(first.id); await f.wait(last.id);
     assert.deepEqual(f.presentations.map((item) => item.kind === "reply" ? item.alert : null), ["quiet", "quiet"]);
     assert.deepEqual(f.alerts, []);
-    await endTurn(f, "turn-a"); await settle(f);
+    await endTurn(f, "turn-a");
+    await eventually(async () => { await f.post.tick(); return f.alerts.length > 0; }, "the task's end did not ring"); await settle(f);
     assert.deepEqual(f.alerts, [last.id], "only the result rings, once");
     const after = await reply(f, "turn-a", "a late word");
     await f.wait(after.id);

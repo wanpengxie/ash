@@ -7,6 +7,7 @@ import { startOwner } from "../../src/main";
 import { AgentMember } from "../../src/members/agent";
 import { EchoTurnRunner } from "../../src/runtimes/echo";
 import type { TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const [mode, root] = process.argv.slice(2);
 if (!root || !["victim", "recover"].includes(mode)) throw new Error("invalid isolated stale-cancel mode");
@@ -29,7 +30,7 @@ const owner: TrustedRouteContext = { member: "person:owner", transport: "api", t
   local: true, remote: false, ownerProxy: true };
 const rows = () => running.ledger.list({ limit: 1000 });
 const until = async (check: () => boolean) => {
-  const end = Date.now() + 5000;
+  const end = Date.now() + STUCK_MS;
   while (Date.now() < end) { if (check()) return; await delay(20); }
   throw new Error("isolated stale-cancel state did not arrive");
 };

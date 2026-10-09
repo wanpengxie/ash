@@ -9,11 +9,12 @@ import type { Message } from "../../../sdk/src/api";
 import type { TrustedRouteContext } from "../../src/world/router";
 import { FakeHost } from "../fixtures/fake-host";
 import { auditEffectLedger, type ObservedEffect } from "./effect-audit";
+import { STUCK_MS } from "../fixtures/wait";
 
 const agent: TrustedRouteContext = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main",
   local: true, remote: false, ownerProxy: false };
 const until = async (condition: () => boolean, label: string) => {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + STUCK_MS;
   while (Date.now() < deadline) {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));

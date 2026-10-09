@@ -10,13 +10,14 @@ import { judgeStopKeyword } from "../../src/members/reflex-keywords";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const owner: TrustedRouteContext = { member: "person:owner", transport: "api", transportPrincipal: "owner:synthetic",
   local: true, remote: false, ownerProxy: true };
 const service: TrustedRouteContext = { member: "service:reflex", transport: "service", transportPrincipal: "service:reflex",
   local: true, remote: false, ownerProxy: false };
 const wait = async (predicate: () => boolean): Promise<void> => {
-  const end = Date.now() + 3000;
+  const end = Date.now() + STUCK_MS;
   while (Date.now() < end) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
   throw new Error("expected ledger state not reached");
 };

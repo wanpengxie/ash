@@ -10,6 +10,7 @@ import { RESTART_ERROR, isRetryText, turnFailureCause, turnFailureNotice } from 
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-api", member: "person:owner", local: true, remote: false, ownerProxy: false };
 const clock: TrustedRouteContext = { transport: "service", transportPrincipal: "service:clock", member: "service:clock", local: true, remote: false, ownerProxy: false };
@@ -26,7 +27,7 @@ async function fixture(runner: AgentTurnRunner, dir = mkdtempSync(join(tmpdir(),
   member.prepareRecovery();
   const rows = () => ledger.list({ after: 0, limit: 1000 });
   const waitFor = async (predicate: (list: Message[]) => boolean) => {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + STUCK_MS;
     while (Date.now() < deadline) { const list = rows(); if (predicate(list)) return list; await sleep(10); }
     throw new Error("message sequence did not appear");
   };

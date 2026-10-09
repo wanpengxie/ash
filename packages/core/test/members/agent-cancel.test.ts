@@ -9,6 +9,7 @@ import { createAgentMember, type AgentTurnInput, type AgentTurnRunner } from "..
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { RouterError, WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const caller = (member: string): TrustedRouteContext => ({ transport: member.startsWith("service:") ? "service" : "api",
   transportPrincipal: member, member, local: true, remote: false, ownerProxy: false });
@@ -28,7 +29,7 @@ async function fixture(runner: AgentTurnRunner) {
   member.prepareRecovery();
   const rows = () => ledger.list({ after: 0, limit: 1000 });
   const waitFor = async (check: () => boolean) => {
-    const deadline = Date.now() + 3_000;
+    const deadline = Date.now() + STUCK_MS;
     while (Date.now() < deadline) { if (check()) return; await sleep(10); }
     throw new Error("expected state was not reached");
   };

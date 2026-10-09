@@ -12,6 +12,7 @@ import { createAgentMember, type AgentTurnInput, type AgentTurnRunner } from "..
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { RouterError, WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner", member: "person:owner", local: true, remote: false, ownerProxy: true };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -146,7 +147,7 @@ async function world(scripts: Record<string, Script>) {
   await main.start();
   await system.start();
   const says = () => ledger.list({ after: 0, limit: 1000 }).filter((m) => m.kind === "request" && m.word === "say");
-  const waitFor = async (check: () => boolean, ms = 4_000) => { const end = Date.now() + ms; while (Date.now() < end) { if (check()) return; await sleep(10); } throw new Error("state not reached"); };
+  const waitFor = async (check: () => boolean, ms = STUCK_MS) => { const end = Date.now() + ms; while (Date.now() < end) { if (check()) return; await sleep(10); } throw new Error("state not reached"); };
   const call = (id: string, name: string, args: Record<string, unknown>) => tools.call(bindings.get(id)!, name, args, new AbortController().signal);
   return { dir, ledger, router, members, main, system, tools, turns, bindings, reopened, says, waitFor, call, runtime,
     async close() { await main.close(); await system.close(); await tools.close(); ledger.close(); } };

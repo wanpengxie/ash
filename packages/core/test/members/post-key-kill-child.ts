@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { startOwner } from "../../src/main";
 import type { TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const [mode, root] = process.argv.slice(2);
 if (!root || !["victim", "recover"].includes(mode)) throw new Error("invalid synthetic post child mode");
@@ -9,7 +10,7 @@ const agent: TrustedRouteContext = { member: "agent:main", transport: "agent", t
 const running = await startOwner({ stateDir: join(root, "state"), listen: "127.0.0.1:0", agents: [{ id: "agent:main", runtime: "echo" }] });
 const rows = () => running.ledger.list({ limit: 1000 });
 const waitRecord = async (id: string) => {
-  const until = Date.now() + 5000;
+  const until = Date.now() + STUCK_MS;
   while (Date.now() < until) {
     if (rows().some((item) => item.word === "post.delivery" && item.body.message_id === id)) return;
     await delay(20);

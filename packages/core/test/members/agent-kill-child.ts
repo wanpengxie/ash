@@ -4,6 +4,7 @@ import { createAgentMember } from "../../src/members/agent";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const [mode, dir] = process.argv.slice(2);
 if (!dir || !["victim", "recover"].includes(mode)) throw new Error("mode and state directory required");
@@ -30,7 +31,8 @@ await router.recover();
 await agent.start();
 if (mode === "victim") await router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "first" }, wait: true });
 else {
-  const deadline = Date.now() + 5_000;
+  // Waits for both turns to end; the bound only stops a stuck run (the parent then reports what is missing).
+  const deadline = Date.now() + STUCK_MS;
   while (Date.now() < deadline) {
     if (ledger.list({ after: 0, limit: 1000 }).filter((message) => message.word === "turn.end").length === 2) break;
     await new Promise((resolve) => setTimeout(resolve, 10));

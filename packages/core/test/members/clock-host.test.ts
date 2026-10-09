@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { startOwner } from "../../src/main";
+import { STUCK_MS } from "../fixtures/wait";
 
 test("production echo bootstrap confirms host alarm on set, restart, and cancel", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-clock-host-"));
@@ -66,7 +67,7 @@ test("production echo bootstrap confirms host alarm on set, restart, and cancel"
       const dueAt = Date.now() + 1200;
       const paused = await send("set", { at: dueAt, to: "agent:main", word: "say", body: { text: "no delivery" }, label: "Synthetic paused" });
       assert.equal(paused.reply.body.ok, true);
-      const deadline = Date.now() + 5000;
+      const deadline = Date.now() + STUCK_MS;
       while (Date.now() < deadline && !running.ledger.list({ limit: 1000 }).some((item) => item.word === "clock.fired" && item.body.outcome === "skipped")) await delay(50);
       assert.equal(running.ledger.list({ limit: 1000 }).filter((item) => item.word === "clock.fired" && item.body.outcome === "skipped").length, 1);
       assert.equal(running.ledger.list({ limit: 1000 }).filter((item) => item.from === "service:clock" && item.word === "say").length, 0);

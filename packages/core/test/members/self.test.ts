@@ -10,6 +10,7 @@ import { Ledger } from "../../src/world/ledger";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
 import { WorldMembers } from "../../src/world/member";
 import { createSelfMember, type SelfStage } from "../../src/members/self";
+import { STUCK_MS } from "../fixtures/wait";
 
 const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owner-test", member: "person:owner", local: true, remote: false, ownerProxy: true };
 const agent: TrustedRouteContext = { transport: "agent", transportPrincipal: "agent:main", member: "agent:main", local: true, remote: false, ownerProxy: false };
@@ -245,7 +246,7 @@ test("guarded rollback recovers once across process termination", async () => {
       await self.prepareRecovery(); await world.recover();
       const request = ledger.list().find((m) => m.word === "rollback" && m.to === "service:self");
       assert.ok(request);
-      const deadline = Date.now() + 2_000;
+      const deadline = Date.now() + STUCK_MS;
       while (!ledger.responseTo(request.id) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
       assert.equal(ledger.responseTo(request.id)?.body.ok, true, stage);
       assert.equal(readFileSync(join(home, "MEMORY.md"), "utf8"), "before\n", stage);
@@ -274,7 +275,7 @@ test("SIGKILL at every durable self-write boundary recovers one file effect and 
       await world.recover();
       const request = ledger.list().find((m) => m.word === "write" && m.to === "service:self");
       assert.ok(request, stage);
-      const until = Date.now() + 2_000;
+      const until = Date.now() + STUCK_MS;
       while (!ledger.responseTo(request.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
       assert.equal(ledger.responseTo(request.id)?.body.ok, true, stage);
       assert.equal(readFileSync(join(home, "MEMORY.md"), "utf8"), "after\n", stage);
@@ -302,7 +303,7 @@ test("legacy USER.md upgrade survives SIGKILL without duplicate version or event
     try {
       await self.prepareRecovery(); await world.recover();
       const request = ledger.list().find((m) => m.to === "service:self" && m.word === "write")!;
-      const until = Date.now() + 2_000;
+      const until = Date.now() + STUCK_MS;
       while (!ledger.responseTo(request.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
       assert.equal(ledger.responseTo(request.id)?.body.ok, true, stage);
       assert.match(readFileSync(join(home, "USER.md"), "utf8"), /^---\nversion: 1\nupdated: .*\n---\nLegacy notes\nUpdated\n$/, stage);
@@ -331,7 +332,7 @@ test("append after SIGKILL never repeats bytes, and external tampering resolves 
     try {
       await self.prepareRecovery(); await world.recover();
       const request = ledger.list().find((m) => m.to === "service:self" && m.word === "append")!;
-      const until = Date.now() + 2_000;
+      const until = Date.now() + STUCK_MS;
       while (!ledger.responseTo(request.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
       assert.equal(ledger.responseTo(request.id)?.body.ok, !conflict);
       assert.equal(readFileSync(file, "utf8"), conflict ? "external\n" : "before\nafter\n");

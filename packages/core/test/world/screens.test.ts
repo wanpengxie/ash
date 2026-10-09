@@ -10,6 +10,7 @@ import { EdgeRouter, startEdgeServer, type EdgeCaller, type EdgeRequest, type Ed
 import { OwnerMember } from "../../src/members/owner";
 import { PostPresenceMember } from "../../src/members/post";
 import { SCREEN_REGISTRATION_TTL_MS, isScreenRegistration } from "../../../sdk/src/api";
+import { STUCK_MS } from "../fixtures/wait";
 
 const owner: EdgeCaller = { member: "person:owner", transportPrincipal: "owner-test", local: true, remote: false, ownerProxy: true, transport: "api" };
 const agent: TrustedRouteContext = { member: "agent:main", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false, transport: "agent" };
@@ -74,7 +75,7 @@ test("an expired live connection is closed, its pending command resolves false, 
     const pending = f.world.send(agent, { to: registration.screen, kind: "request", word: "ui.open", body: { target: "activity", mode: "perform" }, wait: true });
     await new Promise<void>((resolve) => setImmediate(resolve));
     now += SCREEN_REGISTRATION_TTL_MS + 1;
-    const until = Date.now() + 1_000;
+    const until = Date.now() + STUCK_MS;
     while (!ended && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(ended, true);
     const result = await pending;
@@ -106,7 +107,7 @@ test("real HTTP SSE delivers ui.open only to its target tab and rejects the byst
   const b = await live("B");
   try {
     const sent = await f.world.send(agent, { to: a.screen, kind: "request", word: "ui.open", body: { target: "memory", mode: "perform" } });
-    const until = Date.now() + 1000;
+    const until = Date.now() + STUCK_MS;
     while (!a.output().includes(`"id":"${sent.id}"`) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.ok(a.output().includes(`"id":"${sent.id}"`));
     assert.ok(!b.output().includes(`"id":"${sent.id}"`));
@@ -249,7 +250,7 @@ test("expired registration and revoked owner proxy cannot ACK; the original comm
     now += 86_400_001;
     const expired = await f.edge.handle(req("POST", "/api/send", answer, { "ash-screen": a.token }), owner);
     assert.equal(expired.status, 403);
-    const until = Date.now() + 1000;
+    const until = Date.now() + STUCK_MS;
     while (!f.ledger.responseTo(sent.id) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal((f.ledger.responseTo(sent.id)?.body.result as { opened: boolean }).opened, false);
     assert.equal(f.ledger.list().filter((message) => message.reply_to === sent.id).length, 1);

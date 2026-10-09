@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { STUCK_MS } from "../fixtures/wait";
 
 test("SIGKILL after pause commit reconciles active tool cancellation before restart dispatch", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-admin-active-kill-"));
@@ -25,7 +26,7 @@ test("SIGKILL after pause commit reconciles active tool cancellation before rest
   };
   const bounded = async <T>(promise: Promise<T>, label: string): Promise<T> => {
     let timer!: ReturnType<typeof setTimeout>;
-    try { return await Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), 12000); })]); }
+    try { return await Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), STUCK_MS); })]); }
     finally { clearTimeout(timer); }
   };
   let victim: ReturnType<typeof launch> | undefined, recovery: ReturnType<typeof launch> | undefined, reopened: ReturnType<typeof launch> | undefined;

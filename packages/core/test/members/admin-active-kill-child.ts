@@ -7,6 +7,7 @@ import { startOwner } from "../../src/main";
 import { EchoTurnRunner } from "../../src/runtimes/echo";
 import { AdminJournal } from "../../src/world/admin-journal";
 import type { TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const [mode, root] = process.argv.slice(2);
 if (!root || !["victim", "recover", "reopen"].includes(mode)) throw new Error("invalid isolated recovery mode");
@@ -40,7 +41,7 @@ const inspect = () => {
   } finally { db.close(); }
 };
 const until = async (check: () => boolean) => {
-  const end = Date.now() + 5000;
+  const end = Date.now() + STUCK_MS;
   while (Date.now() < end) { if (check()) return; await delay(20); }
   throw new Error("isolated state did not arrive");
 };

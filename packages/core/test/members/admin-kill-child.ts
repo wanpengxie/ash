@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { startOwner } from "../../src/main";
 import { AdminJournal } from "../../src/world/admin-journal";
 import type { TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const [mode, target, root, revoked] = process.argv.slice(2);
 if (!root || !["victim", "recover"].includes(mode) || !["pause", "resume"].includes(target)) throw new Error("invalid synthetic admin kill mode");
@@ -39,7 +40,7 @@ if (mode === "victim") {
   try {
     const request = rows().find((row) => row.to === "service:admin" && row.word === target && row.from === "person:owner");
     if (!request) throw new Error("committed request missing");
-    const until = Date.now() + 5000;
+    const until = Date.now() + STUCK_MS;
     while (!running.ledger.responseTo(request.id) && Date.now() < until) await delay(20);
     const first = running.ledger.responseTo(request.id);
     const caller = target === "pause" ? owner : register();

@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { eventually, STUCK_MS } from "../fixtures/wait";
 import type { Message } from "../../../sdk/src/api";
 import { wordContract } from "../../../sdk/src/words";
 import { AgentMcpServer } from "../../src/agent-mcp/server";
@@ -30,7 +31,10 @@ async function fixture(file = join(mkdtempSync(join(tmpdir(), "ash-human-")), "l
     capabilities: () => [{ name: "clipboard.set", description: "Set clipboard", label: "写剪贴板", risk: "outward", effect: "act",
       input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false } }],
     handle: (m) => { executions.push(m); return holdExecution ? new Promise(() => {}) : { ok: true, result: { written: m.body.text } }; } });
-  const server = new AgentMcpServer({ router, members, ledger, fastPathMs: 500, status: () => ({}) });
+  // A call answers inline when its outcome (a result or the owner's card) comes, however slow the machine is; only a
+  // held execution, whose result never comes, is expected to fall back to a receipt, and that after a short wait.
+  const options = { router, members, ledger, fastPathMs: STUCK_MS, status: () => ({}) };
+  const server = new AgentMcpServer(options);
   const controller = new AbortController();
   const binding = server.bind("agent:main", "main", () => null); binding.begin("t_original", controller.signal);
   const helper = server.bind("agent:helper", "helper", () => null); helper.begin("t_helper", controller.signal);
@@ -45,7 +49,7 @@ async function fixture(file = join(mkdtempSync(join(tmpdir(), "ash-human-")), "l
     return result;
   };
   return { file, ledger, router, members, server, binding, helper, other, controller, call, request, answer, notices, executions,
-    holdExecution: () => { holdExecution = true; },
+    holdExecution: () => { holdExecution = true; options.fastPathMs = 200; },
     close: async () => { router.dispose(); await server.close(); ledger.close(); } };
 }
 
@@ -163,6 +167,7 @@ test("a claimed execution is never replayed after restart, and same-name replace
   const receipt = await w.request(); await w.answer(receipt.pending_id);
   w.holdExecution();
   assert.equal((await w.call("human_pending_redeem", { pending_id: receipt.pending_id })).status, "accepted");
+  await eventually(() => w.executions.length > 0, "the redeemed action was not dispatched");
   assert.equal(w.executions.length, 1);
   await w.close(); w = await fixture(file);
   try {
@@ -185,6 +190,7 @@ test("redemption cannot change parameters and a running redemption belongs to it
     assert.equal((await w.call("human_pending_redeem", { pending_id: receipt.pending_id, body: { text: "changed" } })).error.code, "payload_invalid");
     w.binding.end("t_original"); w.binding.begin("t_new", w.controller.signal); w.holdExecution();
     assert.equal((await w.call("human_pending_redeem", { pending_id: receipt.pending_id })).status, "accepted");
+    await eventually(() => w.executions.length > 0, "the redeemed action was not dispatched");
     w.router.cancelTurn("agent:main", "t_new");
     const result = await w.call("await_result", { request_id: receipt.pending_id, timeout_ms: 0 });
     assert.equal(result.ok, false); assert.equal(w.executions.length, 1);

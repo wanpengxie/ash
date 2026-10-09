@@ -10,6 +10,7 @@ import { AdminJournal } from "../../src/world/admin-journal";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const owner: TrustedRouteContext = { member: "person:owner", transport: "api", transportPrincipal: "token:isolated",
   local: true, remote: false, ownerProxy: true };
@@ -18,7 +19,7 @@ const pause = { to: "service:admin", kind: "request" as const, word: "pause", bo
 const resume = { to: "service:admin", kind: "request" as const, word: "resume", body: { confirmed: true }, wait: true };
 function gate() { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; }
 async function until(check: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + STUCK_MS;
   while (Date.now() < deadline) { if (check()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
   throw new Error("isolated state did not arrive");
 }

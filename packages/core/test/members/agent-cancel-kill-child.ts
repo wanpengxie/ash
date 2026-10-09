@@ -5,6 +5,7 @@ import { createAgentMember } from "../../src/members/agent";
 import { Ledger } from "../../src/world/ledger";
 import { WorldMembers } from "../../src/world/member";
 import { WorldRouter, type TrustedRouteContext } from "../../src/world/router";
+import { STUCK_MS } from "../fixtures/wait";
 
 const [mode, dir] = process.argv.slice(2);
 if (!dir || !["victim", "recover"].includes(mode)) throw new Error("mode and state directory required");
@@ -50,7 +51,7 @@ if (mode === "victim") {
   const unsettledBeforeRouter = ledger.trackedRequests().filter((item) => item.message.word === "hold").length;
   await router.recover();
   await agent.start();
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + STUCK_MS;
   while (Date.now() < deadline && ledger.list({ after: 0, limit: 1000 }).filter((message) => message.word === "turn.end").length < 2) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

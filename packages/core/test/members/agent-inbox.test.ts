@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { eventually, STUCK_MS } from "../fixtures/wait";
 import type { Message } from "../../../sdk/src/api";
 import { wordContract } from "../../../sdk/src/words";
 import { createAgentMember, type AgentTurnInput, type AgentTurnRunner } from "../../src/members/agent";
@@ -17,6 +18,8 @@ const owner: TrustedRouteContext = { transport: "api", transportPrincipal: "owne
 const screen = (label: string, id: string): TrustedRouteContext => ({ transport: "web_ui", transportPrincipal: id, member: "person:owner", local: true,
   remote: false, ownerProxy: true, screenId: `screen:${id}`, screenLabel: label });
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Fails only a stuck test: a signal that must come is waited for this long, however loaded the machine is. */
+const stuck = (what: string) => new Promise<never>((_, reject) => { setTimeout(() => reject(new Error(what)), STUCK_MS).unref(); });
 
 async function fixture(runner: AgentTurnRunner) {
   const dir = mkdtempSync(join(tmpdir(), "agent-inbox-"));
@@ -38,15 +41,7 @@ async function fixture(runner: AgentTurnRunner) {
     }
     return all;
   };
-  const waitFor = async (predicate: (rows: Message[]) => boolean) => {
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const rows = messages();
-      if (predicate(rows)) return rows;
-      await sleep(10);
-    }
-    throw new Error("message sequence did not appear");
-  };
+  const waitFor = (predicate: (rows: Message[]) => boolean) => eventually(() => { const rows = messages(); return predicate(rows) && rows; }, "message sequence did not appear");
   return { dir, ledger, router, member, members, messages, waitFor, async close() { await member.close(); ledger.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -124,8 +119,7 @@ test("extreme origin metadata is explicitly clipped; insufficient budget leaves 
   try {
     for (let index = 0; index < 50; index++) await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: `fact ${index}` }, wait: true });
     await f.member.start();
-    const deadline = Date.now() + 2_000;
-    while (!f.member.lastError && Date.now() < deadline) await sleep(10);
+    await eventually(() => f.member.lastError, "the turn did not fail");
     assert.ok(f.member.lastError instanceof TurnTextBudgetError);
     assert.deepEqual(f.member.counts(), { pending: 50, read: 0, active: 0 });
   } finally { await f.close(); }
@@ -167,7 +161,7 @@ test("close during a persisted lifecycle send cannot touch a closed inbox", asyn
       }
       else await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "before start" }, wait: true });
       if (blockedWord !== "received") await f.member.start();
-      await Promise.race([blocked, sleep(2_000).then(() => { throw new Error(`did not block ${blockedWord}`); })]);
+      await Promise.race([blocked, stuck(`did not block ${blockedWord}`)]);
       await f.member.close();
       release();
       await sleep(30);
@@ -203,7 +197,7 @@ test("close aborts a reply held before its ledger append", async () => {
   try {
     await f.member.start();
     await f.router.send(owner, { to: "agent:main", kind: "request", word: "say", body: { text: "go" }, wait: true });
-    await Promise.race([entered, sleep(2_000).then(() => { throw new Error("reply was not held"); })]);
+    await Promise.race([entered, stuck("reply was not held")]);
     await f.member.close();
     release();
     await sleep(30);
@@ -255,7 +249,7 @@ test("SIGKILL leaves read work interrupted but resumes unread inbox exactly once
         child.on("message", (value: unknown) => { if (value && typeof value === "object" && (value as Record<string, unknown>).phase === phase) resolve(value as Record<string, unknown>); });
         child.once("exit", (code) => reject(new Error(`child exited before ${phase}: ${code}`)));
       }),
-      sleep(7_000).then(() => { throw new Error(`timeout waiting for ${phase}`); }),
+      stuck(`timeout waiting for ${phase}`),
     ]);
   };
   let victim: ReturnType<typeof launch> | undefined;

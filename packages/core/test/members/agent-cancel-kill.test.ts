@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { STUCK_MS } from "../fixtures/wait";
 
 async function bounded<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer!: ReturnType<typeof setTimeout>;
@@ -32,13 +33,13 @@ test("SIGKILL between durable cancel intent and router settlement cannot replay 
   let recovery: ReturnType<typeof launch> | undefined;
   try {
     victim = launch("victim");
-    assert.equal(await bounded(victim.line("INTENT_READY"), 5_000, "intent wait"), "INTENT_READY");
+    assert.equal(await bounded(victim.line("INTENT_READY"), STUCK_MS, "intent wait"), "INTENT_READY");
     victim.child.kill("SIGKILL");
     const [, signal] = await once(victim.child, "exit");
     assert.equal(signal, "SIGKILL");
 
     recovery = launch("recover");
-    const resultLine = await bounded(recovery.line("RESULT "), 7_000, "recovery wait");
+    const resultLine = await bounded(recovery.line("RESULT "), STUCK_MS, "recovery wait");
     const result = JSON.parse(resultLine.slice("RESULT ".length)) as { deviceCalls: number; unsettledBeforeRouter: number;
       batches: { texts: string[]; facts: string[] }[]; holdResponses: { ok: boolean; error?: { code: string } }[]; endReasons: string[] };
     const [code] = await once(recovery.child, "exit");

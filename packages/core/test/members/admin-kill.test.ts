@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { STUCK_MS } from "../fixtures/wait";
 
 for (const [target, revoked] of [["pause", false], ["resume", false], ["pause", true], ["resume", true]] as const)
   test(`SIGKILL after committed ${target} with old owner credential ${revoked ? "revoked" : "current"} preserves the fact`, async () => {
@@ -26,7 +27,7 @@ for (const [target, revoked] of [["pause", false], ["resume", false], ["pause", 
   };
   const bounded = async <T>(promise: Promise<T>, label: string): Promise<T> => {
     let timer!: ReturnType<typeof setTimeout>;
-    try { return await Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), 12000); })]); }
+    try { return await Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out`)), STUCK_MS); })]); }
     finally { clearTimeout(timer); }
   };
   let victim: ReturnType<typeof launch> | undefined, recovery: ReturnType<typeof launch> | undefined;

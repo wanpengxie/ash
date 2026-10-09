@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import type { ResponseBody } from "../../../sdk/src/api";
 import { startOwner } from "../../src/main";
+import { STUCK_MS } from "../fixtures/wait";
 
 test("production pause queues a new owner message until verified local screen confirmation resumes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ash-admin-host-"));
@@ -52,7 +53,7 @@ test("production pause queues a new owner message until verified local screen co
     assert.equal(stream.status, 200);
     const reader = stream.body!.getReader();
     let frames = "";
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + STUCK_MS;
     while (!frames.includes("event: screen.registered") && Date.now() < deadline) {
       const next = await reader.read();
       if (next.done) break;
@@ -64,7 +65,7 @@ test("production pause queues a new owner message until verified local screen co
     const resume = await send("resume", { confirmed: true }, screenToken);
     assert.equal(resume.status, 200);
     assert.deepEqual((await resume.json() as { reply: { body: unknown } }).reply.body, { ok: true, result: { paused: false } });
-    const until = Date.now() + 5000;
+    const until = Date.now() + STUCK_MS;
     while (Date.now() < until && queuedTurnCount() === 0)
       await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(queuedTurnCount(), 1);

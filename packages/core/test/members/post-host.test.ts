@@ -6,6 +6,7 @@ import test from "node:test";
 import { startOwner } from "../../src/main";
 import type { TrustedRouteContext } from "../../src/world/router";
 import { FakeHost } from "../fixtures/fake-host";
+import { STUCK_MS } from "../fixtures/wait";
 
 const agent: TrustedRouteContext = { member: "agent:main", transport: "agent", transportPrincipal: "agent:main", local: true, remote: false, ownerProxy: false };
 test("production owner entrypoint presents a due message through authenticated host /present", async () => {
@@ -18,7 +19,7 @@ test("production owner entrypoint presents a due message through authenticated h
       host: { url: host.url, token: host.token } });
     const source = await running.world.send(agent, { to: "person:owner", kind: "request", word: "say",
       body: { text: "synthetic due notification", kind: "due" }, wait: true });
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + STUCK_MS;
     let delivered = running.ledger.list({ limit: 1000 }).filter((item) => item.to === "service:post" && item.kind === "request" && item.word === "deliver");
     while (Date.now() < deadline && (!host.calls.some((item) => item.path === "/present") ||
       delivered.length !== 1 || !running.ledger.responseTo(delivered[0].id))) {
