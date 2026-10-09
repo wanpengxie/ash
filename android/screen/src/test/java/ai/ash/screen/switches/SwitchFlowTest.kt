@@ -262,4 +262,55 @@ class SwitchFlowTest {
             assertEquals("leftAt=$leftAt", State.TURNED_ON, r.state("ai.ash.agent", Kind.BACKGROUND))
         }
     }
+
+    // ---- 耗电管理 → 「允许应用后台行为」 ----
+
+    @Test fun theBehaviourSwitchIsFoundBelowTheFoldPastAChartThatAlsoScrolls() {
+        // Ash 感知's page: a chart scrolls first, and its 「后台行为」 heading must not stand in for the switch.
+        val p = FakePhone(behavior = mutableMapOf("Ash 感知" to true), longPower = setOf("Ash 感知"))
+        val r = run(p)
+        assertEquals(r.stoppedAt, Outcome.DONE, r.outcome)
+        assertEquals(State.WAS_ON, r.state("ai.ash.senses", Kind.BEHAVIOR))
+        // Only Ash's and the screen helper's switches (off) were tapped; Ash 感知's, on, was left alone.
+        assertEquals(2, p.clickedLabels.count { it == "允许应用后台行为" })
+        val off = FakePhone(longPower = setOf("Ash 感知"))
+        val turned = run(off)
+        assertEquals(State.TURNED_ON, turned.state("ai.ash.senses", Kind.BEHAVIOR))
+        assertTrue(off.behavior["Ash 感知"] == true)
+    }
+
+    @Test fun theBehaviourSwitchIsFoundByTheOtherNamesItGoesBy() {
+        for (name in listOf("允许后台行为", "允许应用后台活动", "后台行为")) {
+            val p = FakePhone(behavior = mutableMapOf("Ash 感知" to true), behaviorLabel = mapOf("Ash 感知" to name), longPower = if (name == "后台行为") emptySet() else setOf("Ash 感知"))
+            val r = run(p)
+            assertEquals(name, State.WAS_ON, r.state("ai.ash.senses", Kind.BEHAVIOR))
+            assertTrue(name, r.verified("ai.ash.agent"))
+        }
+        val p = FakePhone(behaviorLabel = mapOf("Ash 感知" to "允许后台行为"))
+        assertEquals(State.TURNED_ON, run(p).state("ai.ash.senses", Kind.BEHAVIOR))
+        assertTrue(p.behavior["Ash 感知"] == true)
+    }
+
+    @Test fun aSlowBehaviourPageIsWaitedForNotReportedMissing() {
+        val p = FakePhone(behavior = mutableMapOf("Ash 感知" to true), powerLoadMs = mapOf("Ash 感知" to 7_000L), longPower = setOf("Ash 感知"))
+        val r = run(p)
+        assertEquals(r.stoppedAt, Outcome.DONE, r.outcome)
+        assertEquals(State.WAS_ON, r.state("ai.ash.senses", Kind.BEHAVIOR))
+    }
+
+    @Test fun aSwitchThatReadsOffWhileThePageFillsInIsNotTappedOff() {
+        val p = FakePhone(behavior = mutableMapOf("Ash 感知" to true), lateSwitchMs = mapOf("Ash 感知" to 300L))
+        val r = run(p)
+        assertEquals(State.WAS_ON, r.state("ai.ash.senses", Kind.BEHAVIOR))
+        assertTrue(p.behavior["Ash 感知"] == true)
+        assertEquals(2, p.clickedLabels.count { it == "允许应用后台行为" })
+    }
+
+    @Test fun aBehaviourSwitchThatIsNotThereIsStillNotFound() {
+        val p = FakePhone(behaviorLabel = mapOf("Ash 感知" to "耗电保护"))
+        val r = run(p)
+        assertEquals(r.stoppedAt, Outcome.DONE, r.outcome)
+        assertEquals(State.NOT_FOUND, r.state("ai.ash.senses", Kind.BEHAVIOR))
+        assertTrue(r.verified("ai.ash.agent")); assertTrue(r.verified("ai.ash.screen"))
+    }
 }

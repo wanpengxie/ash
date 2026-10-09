@@ -19,7 +19,9 @@ import ai.ash.bridge.KeepAliveSwitches.Target
  *       says which of 开机自启动 / 后台自启动 it turned on.
  *     - older versions: the row opens the app's page → 「开机自启动」 and 「后台自启动」, each turned on if off.
  *     A confirmation dialog is answered with 「允许」/「确定」/「仍然允许」.
- *  3. For each app: its info page → 「耗电管理」 → 「允许应用后台行为」, the same way.
+ *  3. For each app: its info page → 「耗电管理」 → 「允许应用后台行为」, the same way. That page is slow to fill in (it
+ *     works out the app's battery use first) and may need scrolling, and the switch goes by other names on some
+ *     versions (「允许后台行为」, 「允许应用后台活动」…): every name is looked for, for longer.
  *  4. Back to Ash.
  *
  * It only ever acts on windows of the system's settings and the maker's own settings apps ([allowedPackage]); the first
@@ -139,7 +141,7 @@ class SwitchFlow(
             if (power == null) { missing(t, Kind.BEHAVIOR); continue }
             press(power, "耗电管理")
             begin("「${t.label}」的「${Kind.BEHAVIOR.label}」")
-            toggle(t, Kind.BEHAVIOR, stepMs)
+            toggle(t, Kind.BEHAVIOR, stepMs * 2, BEHAVIOR_LABELS)
             ui.back(); ui.settle(); ui.back(); ui.settle()
         }
     }
@@ -219,17 +221,23 @@ class SwitchFlow(
 
     // ---- a labelled switch on its own (the older app page, 耗电管理) ----
 
-    /** Turns one switch on, and reads it again to be sure. */
-    private fun toggle(t: Target, kind: Kind, appearMs: Long) {
-        val label = locate(kind.label, appearMs)
+    /** Turns one switch on, and reads it again to be sure. [labels]: the names it goes by, the usual one first. */
+    private fun toggle(t: Target, kind: Kind, appearMs: Long, labels: List<String> = listOf(kind.label)) {
+        // Among several names, only one beside its own switch counts: a section heading may read the same.
+        val label = locate(labels, appearMs) { labels.size == 1 || rowOf(it) != null }
         if (label == null) { items += Item(t.pkg, kind, State.NOT_FOUND); return }
-        val found = rowOf(label)
+        var found = rowOf(label)
         if (found == null) { items += Item(t.pkg, kind, State.FAILED); return }
+        if (!found.box.checked) {
+            // A page still filling in may show a switch off before it reads its state: look again before tapping it.
+            ui.settle(); ui.sleep(POLL_MS * 2)
+            found = rowOnScreen(found.title.label) ?: found
+        }
         if (found.box.checked) { items += Item(t.pkg, kind, State.WAS_ON); return }
-        items += Item(t.pkg, kind, turnOn(kind, found))
+        items += Item(t.pkg, kind, turnOn(found))
     }
 
-    private fun turnOn(kind: Kind, row: Row): State {
+    private fun turnOn(row: Row): State {
         if (!pressSwitch(row)) return State.FAILED
         val end = minOf(ui.now() + stepMs, deadline)
         var dialogs = 0
@@ -237,7 +245,7 @@ class SwitchFlow(
             ui.settle()
             val root = allowedRoot()
             if (root != null) {
-                val now = exact(root, kind.label).firstNotNullOfOrNull { rowOf(it) }?.box
+                val now = exact(root, row.title.label).firstNotNullOfOrNull { rowOf(it) }?.box
                 if (now?.checked == true) return State.TURNED_ON
                 if (dialogs < 2 && answerDialog(root)) { dialogs++; continue }
             }
@@ -334,8 +342,14 @@ class SwitchFlow(
      * end and then back up to its top, at most [maxScrolls] each way. The end is where a scroll is refused or leaves
      * the list showing the same texts.
      */
-    private fun locate(label: String, appearMs: Long): UiNode? {
-        poll(appearMs) { exact(it, label).firstOrNull() }?.let { return it }
+    private fun locate(label: String, appearMs: Long): UiNode? = locate(listOf(label), appearMs)
+
+    /** The first of [labels] (in their order) on the screen that [accept] takes. */
+    private fun anyOf(root: UiNode, labels: List<String>, accept: (UiNode) -> Boolean): UiNode? =
+        labels.firstNotNullOfOrNull { l -> exact(root, l).firstOrNull(accept) }
+
+    private fun locate(labels: List<String>, appearMs: Long, accept: (UiNode) -> Boolean = { true }): UiNode? {
+        poll(appearMs) { anyOf(it, labels, accept) }?.let { return it }
         foreign()
         for (forward in listOf(true, false)) {
             var shown = allowedRoot()?.let { r -> scroller(r)?.let { texts(it) } }
@@ -348,13 +362,13 @@ class SwitchFlow(
                 if (!list.scroll(forward)) break
                 ui.settle()
                 val after = allowedRoot() ?: continue
-                exact(after, label).firstOrNull()?.let { return it }
+                anyOf(after, labels, accept)?.let { return it }
                 var now = scroller(after)?.let { texts(it) }
                 if (now == shown) {
                     // A smooth scroll can still be moving when the screen reads idle: look once more before calling it the end.
                     ui.sleep(SCROLL_SETTLE_MS)
                     val again = allowedRoot() ?: continue
-                    exact(again, label).firstOrNull()?.let { return it }
+                    anyOf(again, labels, accept)?.let { return it }
                     now = scroller(again)?.let { texts(it) }
                     if (now == shown) break
                 }
@@ -364,11 +378,14 @@ class SwitchFlow(
         return null
     }
 
-    private fun scroller(node: UiNode): UiNode? {
-        if (node.scrollable && node.enabled) return node
-        for (c in node.children()) scroller(c)?.let { return it }
-        return null
-    }
+    /**
+     * The page's list: of the scrollable elements, the one holding the most texts. A page may have others before it (a
+     * battery chart, a row of tabs) that scroll without ever bringing the wanted row into view.
+     */
+    private fun scroller(node: UiNode): UiNode? = scrollers(node).maxByOrNull { texts(it).size }
+
+    private fun scrollers(node: UiNode): List<UiNode> =
+        if (node.scrollable && node.enabled) listOf(node) else node.children().flatMap { scrollers(it) }
 
     companion object {
         private const val POLL_MS = 250L
@@ -377,6 +394,8 @@ class SwitchFlow(
         private const val MAX_BACKS = 4
         private const val SCROLL_SETTLE_MS = 600L
         private val AUTOSTART = listOf(Kind.BOOT, Kind.BACKGROUND)
+        /** 「允许应用后台行为」 and the other names the same switch has on 耗电管理, most exact first. */
+        private val BEHAVIOR_LABELS = listOf(Kind.BEHAVIOR.label, "允许后台行为", "允许应用后台活动", "允许后台活动", "后台行为")
         /** What a subtitle says when the switch is off. */
         private val OFF_WORDS = listOf("已禁止", "已关闭")
         /** The positive buttons of the dialogs the switches may bring up. */

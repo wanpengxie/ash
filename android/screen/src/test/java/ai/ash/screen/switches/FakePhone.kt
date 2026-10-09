@@ -26,6 +26,7 @@ class FakeNode(
     init { for (r in rows) r.up = this }
 
     fun add(vararg n: FakeNode): FakeNode { for (r in n) { r.up = this; rows += r }; return this }
+    fun replaceAll(vararg n: FakeNode) { rows.clear(); offset = 0; add(*n) }
     override fun parent(): UiNode? = up
     override fun children(): List<UiNode> = if (window > 0) rows.drop(offset).take(window) else rows
     override fun findByText(text: String): List<UiNode> =
@@ -69,6 +70,17 @@ class FakePhone(
     var foreignAfter: Int = -1,
     /** Settings comes back where it was last left (ColorOS ignores CLEAR_TASK): 1 = the 应用 page, 2 = the 自启动 list. */
     val leftAt: Int = 0,
+    /** Per app: the name 耗电管理 gives the behaviour switch (default 「允许应用后台行为」). */
+    val behaviorLabel: Map<String, String> = emptyMap(),
+    /**
+     * Per app: a long 耗电管理 page, as ColorOS 15 shows for an app that uses location: a battery chart that scrolls
+     * sideways comes first, then the list, with a 「后台行为」 heading and the switch below the fold.
+     */
+    val longPower: Set<String> = emptySet(),
+    /** Per app: how long 耗电管理 shows only 「正在加载」 before its rows come. */
+    val powerLoadMs: Map<String, Long> = emptyMap(),
+    /** Per app: on 耗电管理 the switch first reads off for this long, then shows its real state. */
+    val lateSwitchMs: Map<String, Long> = emptyMap(),
 ) : SwitchUi {
     var time = 0L
     val pages = ArrayDeque<FakeNode>()
@@ -76,6 +88,7 @@ class FakePhone(
     var openedSettings = 0
     val clickedLabels = mutableListOf<String>()
     private var dialog: FakeNode? = null
+    private val due = mutableListOf<Pair<Long, () -> Unit>>()
     private var frames = 0
     private val pkgOf = mapOf("Ash" to "ai.ash.agent", "Ash 感知" to "ai.ash.senses", "Ash 屏幕助手" to "ai.ash.screen")
     private val labelOf = pkgOf.entries.associate { it.value to it.key }
@@ -128,9 +141,26 @@ class FakePhone(
         add(switchRow(app, "后台自启动", background))
     }
     private fun details(pkg: String) = FakeNode(window = 4).add(row("通知管理") {}, row("耗电管理") { pages += power(labelOf.getValue(pkg)) }, row("存储") {})
-    private fun power(app: String) = FakeNode().add(switchRow(app, "允许应用后台行为", behavior), row("耗电异常优化") {})
+    private fun power(app: String): FakeNode {
+        val switch = switchRow(app, behaviorLabel[app] ?: "允许应用后台行为", behavior)
+        lateSwitchMs[app]?.let { ms ->
+            val box = switch.children()[1] as FakeNode
+            box.checked = false; due += (time + ms) to { box.checked = behavior[app] == true }
+        }
+        val rows = if (app in longPower) listOf(
+            FakeNode(window = 2).add(FakeNode(text = "0 时"), FakeNode(text = "6 时"), FakeNode(text = "12 时"), FakeNode(text = "18 时"), FakeNode(text = "24 时")),
+            FakeNode(window = 3).add(FakeNode(text = "耗电详情"), row("前台耗电") {}, row("后台耗电") {}, FakeNode(text = "后台行为"),
+                row("耗电异常优化") {}, row("后台定位耗电") {}, switch, row("省电建议") {}),
+        ) else listOf(switch, row("耗电异常优化") {})
+        val page = FakeNode()
+        val wait = powerLoadMs[app]
+        if (wait == null) page.add(*rows.toTypedArray())
+        else { page.add(FakeNode(text = "正在加载")); due += (time + wait) to { page.replaceAll(*rows.toTypedArray()) } }
+        return page
+    }
 
     override fun root(): UiNode? {
+        due.filter { it.first <= time }.forEach { due.remove(it); it.second() }
         if (foreignAfter in 0..frames) { frames++; return FakeNode(packageName = "com.tencent.mm").add(FakeNode(text = "后台自启动", clickable = true)) }
         frames++
         val d = dialog
