@@ -125,3 +125,56 @@ test("a pairing code never reaches an agent or the ledger; only the local owner'
     assert.equal(w.service.pairingView().code?.install_command, undefined, "a browser gets the code, not a computer installer");
   } finally { await w.close(); }
 });
+
+test("a computer's write asks the owner unless the device itself declares this exact call riskless", async () => {
+  const w = await fixture(); try {
+    await w.direct("pair_approve", { request_id: "pair-1", kind: "laptop" });
+    const asked: string[] = [], contexts: (string | undefined)[] = [];
+    let answer: () => Promise<"none" | null> = async () => "none";
+    w.router.replaceDeviceBatch("device:pc", [
+      { name: "workspace.write", label: "Write file", description: "Write file", risk: "structure", effect: "write", per_call_risk: true, input_schema: { type: "object" } },
+      { name: "workspace.bash", label: "Run command", description: "Run command", risk: "structure", effect: "execute", input_schema: { type: "object" } },
+    ], (m, context) => { w.executions.push(`${m.to}/${m.word}`); contexts.push(context.declaredRisk); return { ok: true, result: {} }; },
+    { assess: async (m) => { asked.push(String(m.body.path)); return answer(); } });
+    w.router.setReviewer(async () => ({ decision: "ask", reason: "not asked for" }));
+    const settled = async (id: string) => { // Waits on the outcome itself (a card or an answer), never on a fixed time.
+      while (!w.ledger.gateCase(id)?.decision && !w.ledger.responseTo(id)) await new Promise(r => setTimeout(r, 5)); return id; };
+    const write = async (path: string) => settled((await w.router.send(agent, { to: "device:pc", kind: "request", word: "workspace.write", body: { path, content: "brief" } })).id);
+    // Inside the work directory: the device says "none", so it runs with no card and the device is told why it ran.
+    const inside = await write("brief.md");
+    assert.deepEqual(w.executions, ["device:pc/workspace.write"]); assert.deepEqual(contexts, ["none"]);
+    assert.equal(w.ledger.gateCase(inside), null); assert.equal(w.ledger.humanPending(inside), null);
+    // Anything else — outside, a failed or silent device — keeps the declared risk: the owner is asked, as before.
+    answer = async () => null;
+    assert.equal(w.ledger.gateCase(await write("/etc/hosts"))?.decision, "waiting");
+    answer = async () => { throw new Error("device offline"); };
+    assert.equal(w.ledger.gateCase(await write("brief.md"))?.decision, "waiting");
+    assert.equal(w.executions.length, 1);
+    // Commands are untouched by it.
+    answer = async () => "none";
+    const command = await settled((await w.router.send(agent, { to: "device:pc", kind: "request", word: "workspace.bash", body: { command: "ls" } })).id);
+    assert.equal(w.ledger.gateCase(command)?.decision, "waiting");
+    assert.deepEqual(asked.slice(0, 3), ["brief.md", "/etc/hosts", "brief.md"]);
+  } finally { await w.close(); }
+});
+
+test("only a capability the device marked per_call_risk is ever assessed", async () => {
+  const { DeviceMember } = await import("../../src/members/device");
+  const calls: string[] = [];
+  const device = new DeviceMember("device:pc", "PC", [
+    { name: "workspace.write", label: "w", description: "w", risk: "structure", effect: "write", per_call_risk: true, input_schema: { type: "object" } },
+    { name: "workspace.bash", label: "b", description: "b", risk: "structure", effect: "execute", input_schema: { type: "object" } },
+  ], () => ({ ok: true, result: {} }), true, undefined, async (m) => { calls.push(m.word); return "none"; });
+  const message = (word: string) => ({ word, body: {} }) as never, signal = new AbortController().signal;
+  assert.equal(await device.assess(message("workspace.write"), signal), "none");
+  assert.equal(await device.assess(message("workspace.bash"), signal), null);
+  device.setOnline(false); assert.equal(await device.assess(message("workspace.write"), signal), null);
+  assert.deepEqual(calls, ["workspace.write"]);
+  const { borrowedCapabilities } = await import("../../src/gateway/link");
+  const caps = borrowedCapabilities([
+    { name: "workspace.write", description: "w", input_schema: { type: "object" }, risk: "structure", effect: "write", per_call_risk: true },
+    { name: "workspace.read", description: "r", input_schema: { type: "object" }, risk: "none", per_call_risk: true },
+    { name: "x.y", description: "x", input_schema: { type: "object" }, risk: "structure", per_call_risk: "yes" },
+  ], "Mac");
+  assert.deepEqual(caps.map((cap) => cap.per_call_risk), [true, undefined, undefined]);
+});

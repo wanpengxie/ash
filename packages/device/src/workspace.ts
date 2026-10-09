@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createReadStream, closeSync, openSync, writeSync } from "node:fs";
-import { glob, mkdir, open, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { glob, lstat, mkdir, open, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import Ajv from "ajv";
 import type { CallResult, CapabilitySpec, WordEffect } from "../../sdk/src/api";
@@ -17,6 +17,9 @@ const base = { workdir: path };
 type Spec = CapabilitySpec & { effect: WordEffect; label: string };
 const spec = (name: string, description: string, input: Record<string, unknown>, effect: WordEffect = "read"): Spec =>
   ({ name: `workspace.${name}`, label: description, description, input_schema: input, effect, risk: effect === "read" ? "none" : "structure" });
+/** Writes whose risk depends on where they land: inside the work directory they need nobody's approval (see assess). */
+const PER_CALL = new Set(["workspace.write", "workspace.edit"]);
+const within = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel.split(sep)[0] !== ".."); };
 export const WORKSPACE_CAPABILITIES: Spec[] = [
   spec("ls", "列出电脑目录", schema({ ...base, path, limit: count(1000) })),
   spec("read", "读取电脑文件或图片", schema({ ...base, path, offset: count(Number.MAX_SAFE_INTEGER), limit: count(100_000) }, ["path"])),
@@ -27,7 +30,7 @@ export const WORKSPACE_CAPABILITIES: Spec[] = [
   spec("bash", "在电脑上执行命令", schema({ ...base, command: path, timeout: count(86400), yield_ms: { type: "integer", minimum: 0, maximum: 30000 } }, ["command"]), "execute"),
   spec("poll", "读取命令的新输出", schema({ process: path, yield_ms: { type: "integer", minimum: 0, maximum: 30000 } }, ["process"])),
   spec("signal", "停止电脑上的命令", schema({ process: path, signal: { enum: ["INT", "TERM"] } }, ["process", "signal"]), "act"),
-];
+].map(s => PER_CALL.has(s.name) ? { ...s, per_call_risk: true } : s);
 const ajv = new Ajv();
 const validators = new Map(WORKSPACE_CAPABILITIES.map(s => [s.name, ajv.compile(s.input_schema)]));
 class Failure extends Error { constructor(readonly code: string, message: string) { super(message); } }
@@ -52,10 +55,40 @@ export class Workspace {
     const file = join(folder, `${randomUUID()}.txt`); await writeFile(file, text, { mode: 0o600 });
     return { path: file, preview: text.slice(0, PREVIEW / 4) + "\n…\n" + text.slice(-PREVIEW / 4), truncated: true };
   }
-  async call(name: string, args: Record<string, any>, signal?: AbortSignal): Promise<CallResult> {
+  /**
+   * This call's risk, stated by the tool itself. A write or edit that lands inside the work directory the owner set up for
+   * Ash on this computer changes only that shared folder: it needs nobody's approval. Everything else keeps its declared risk.
+   */
+  async assess(name: string, args: Record<string, any>): Promise<{ risk: "none" | "structure"; effect: WordEffect } | null> {
+    const declared = WORKSPACE_CAPABILITIES.find(s => s.name === name);
+    if (!declared) return null;
+    const inside = PER_CALL.has(name) && validators.get(name)!(args) && await this.insideWorkdir(this.path(args));
+    return inside ? { risk: "none", effect: "write" } : { risk: declared.risk === "none" ? "none" : "structure", effect: declared.effect };
+  }
+  /** Where a write really lands, links followed; null when that cannot be known (a dangling link, an unreadable folder). */
+  private async landing(file: string): Promise<string | null> {
+    try { return await realpath(file); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return null; }
+    if (await lstat(file).then(() => true, () => false)) return null;
+    const parent = dirname(file);
+    if (parent === file) return null;
+    const base = await this.landing(parent);
+    return base && join(base, basename(file));
+  }
+  private async insideWorkdir(file: string): Promise<boolean> {
+    const root = await realpath(this.expand(this.workdir)).catch(() => null);
+    if (!root) return false;
+    // A work directory that is, or holds, the home folder or this device's own state lends nothing for free.
+    for (const guarded of [homedir(), this.stateDir]) if (within(root, await realpath(guarded).catch(() => resolve(guarded)))) return false;
+    const target = await this.landing(file);
+    return !!target && target !== root && within(root, target);
+  }
+  /** declared: the phone let this call through on assess's "none"; it runs only if that still holds. */
+  async call(name: string, args: Record<string, any>, signal?: AbortSignal, declared?: "none"): Promise<CallResult> {
     try {
       const validate = validators.get(name);
       if (!validate || !validate(args)) throw new Failure("bad_args", "Arguments do not match the capability schema");
+      if (declared === "none" && (await this.assess(name, args))?.risk !== "none")
+        throw new Failure("forbidden", "This call is no longer inside the work directory; ask again so the owner can approve it");
       signal?.throwIfAborted();
       const value = await this.execute(name.slice(10), args, signal);
       if (value && typeof value === "object" && "content" in value) return value as CallResult;

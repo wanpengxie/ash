@@ -1,5 +1,5 @@
 import type { DescribeDetail, DescribeSummary, MemberInfo, Message, ResponseBody, WordSpec } from "../../../sdk/src/api";
-import { RouterError, WorldRouter, type DeviceCapability, type RouteHandlerContext, type RouteEndpoint } from "./router";
+import { RouterError, WorldRouter, type DeviceCapability, type DeviceEndpointOptions, type RouteHandlerContext, type RouteEndpoint } from "./router";
 
 /** One member owns its words and handles only messages addressed to itself. */
 export interface Member extends MemberInfo {
@@ -17,6 +17,8 @@ export interface DeviceMemberLike extends MemberInfo {
   capabilities(): readonly DeviceCapability[];
   handle(message: Message, context: RouteHandlerContext): Promise<ResponseBody | void> | ResponseBody | void;
   cancel?(requestId: string): void;
+  /** The device's own risk for one call of a word whose risk depends on its arguments (RouteEndpoint.assess). */
+  assess?(message: Message, signal: AbortSignal): Promise<"none" | null>;
 }
 
 /** An app's tools, mapped by the app runtime to capabilities with ash's own risk and label. */
@@ -33,6 +35,8 @@ interface RegisteredMember {
   words: readonly WordSpec[];
 }
 
+const deviceOptions = (member: DeviceMemberLike): DeviceEndpointOptions =>
+  ({ ...(member.cancel ? { cancel: member.cancel.bind(member) } : {}), ...(member.assess ? { assess: member.assess.bind(member) } : {}) });
 const memberIdPattern = /^(person|screen|agent|device|service|worker|app):[A-Za-z0-9_-]+$/;
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -89,9 +93,7 @@ export class WorldMembers {
     if (info.kind !== "device" || this.members.has(info.id)) throw new TypeError("duplicate or invalid device member");
     const capabilities = member.capabilities();
     if (!Array.isArray(capabilities)) throw new TypeError("invalid device capabilities");
-    const handle = member.handle.bind(member);
-    const cancel = member.cancel?.bind(member);
-    const validated = this.router.registerDeviceBatch(info.id, capabilities, handle, cancel ? { cancel } : {});
+    const validated = this.router.registerDeviceBatch(info.id, capabilities, member.handle.bind(member), deviceOptions(member));
     this.members.set(info.id, { info, online: () => member.online, words: validated });
   }
 
@@ -102,9 +104,7 @@ export class WorldMembers {
     if (!this.members.has(info.id)) { this.registerDevice(member); return; }
     const capabilities = member.capabilities();
     if (!Array.isArray(capabilities)) throw new TypeError("invalid device capabilities");
-    const handle = member.handle.bind(member);
-    const cancel = member.cancel?.bind(member);
-    const validated = this.router.replaceDeviceBatch(info.id, capabilities, handle, cancel ? { cancel } : {});
+    const validated = this.router.replaceDeviceBatch(info.id, capabilities, member.handle.bind(member), deviceOptions(member));
     this.members.set(info.id, { info, online: () => member.online, words: validated });
     this.router.cancelMember(info.id);
   }

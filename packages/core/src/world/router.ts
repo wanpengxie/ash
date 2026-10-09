@@ -21,7 +21,9 @@ export interface TrustedRouteContext extends AuthenticatedCallerContext {
   thread?: string;
   approval?: RequestContextSnapshot["approval"];
 }
-export interface RouteHandlerContext { signal: AbortSignal; recovered: boolean; /** Server-stamped acceptance context; never supplied by a word body. */ caller?: Readonly<RequestContextSnapshot> }
+export interface RouteHandlerContext { signal: AbortSignal; recovered: boolean; /** Server-stamped acceptance context; never supplied by a word body. */ caller?: Readonly<RequestContextSnapshot>;
+  /** Set when the call went ahead unasked because the tool itself declared this exact call riskless (see RouteEndpoint.assess); the tool must hold it to that. */
+  declaredRisk?: "none" }
 export interface RouteEndpoint {
   member: string;
   spec: WordSpec;
@@ -30,6 +32,12 @@ export interface RouteEndpoint {
   /** Only handlers with durable, message-id deduplicated intake may opt in. */
   idempotentRecovery?: boolean;
   direction?: "in" | "out";
+  /**
+   * The tool's own answer for one call whose risk depends on its arguments: "none" means this exact call needs nobody's
+   * approval (for example a computer writing inside the folder its owner gave Ash). Anything else, a failure or no answer
+   * keeps the word's declared risk. Only the tool declares this; who is calling never changes it.
+   */
+  assess?: (message: Message, signal: AbortSignal) => Promise<"none" | null>;
 }
 export interface DeviceCapability {
   name: string;
@@ -39,6 +47,8 @@ export interface DeviceCapability {
   risk: "none" | "outward" | "structure";
   effect?: WordEffect;
   label: string;
+  /** The device states each call's risk from its arguments (RouteEndpoint.assess); risk and effect above are its most cautious answer. */
+  per_call_risk?: boolean;
 }
 export interface GateDecision { allow: boolean; by?: "rule" | "answer" | "timeout"; reason?: string }
 export type ApprovalMode = "auto" | "always";
@@ -61,6 +71,7 @@ export interface InternalApprovalIngress {
 }
 export type InternalApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 type Subscriber = (message: Message) => void;
+export type DeviceEndpointOptions = Pick<RouteEndpoint, "cancel" | "idempotentRecovery" | "assess">;
 interface Registered extends RouteEndpoint { validateInput: (value: unknown) => boolean; validateResult?: (value: unknown) => boolean }
 interface Pending {
   redemption?: { turn: string; deadlineAt: number; stillValid: () => boolean };
@@ -120,6 +131,8 @@ const gated = (request: Pick<Message, "from" | "to" | "word" | "body">, label: s
 /** ash's own words that widen what an app may do: an agent's request always asks the owner. */
 const GATED_SERVICE_WORDS = new Set(["service:apps/apps.install", "service:apps/apps.enable"]);
 const CARRY_MS = 5 * 60_000;
+/** How long a tool may take to state one call's risk before the declared risk stands. */
+const ASSESS_MS = 10_000;
 const PAYMENT = /\b(pay|payment|purchase|checkout|transfer)\b|支付|付款|购买|下单|转账|充值|买单/i;
 /** Payments always reach the owner: no reviewer pass, no carry-over and no "always". */
 const isPayment = (word: string, label: string | undefined, body: Record<string, unknown>): boolean =>
@@ -420,12 +433,12 @@ export class WorldRouter {
     return [...prepared.values()].map((endpoint) => detached(endpoint.spec));
   }
 
-  registerDevice(member: string, capability: DeviceCapability, handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): void {
+  registerDevice(member: string, capability: DeviceCapability, handle: RouteEndpoint["handle"], options: DeviceEndpointOptions = {}): void {
     this.registerDeviceBatch(member, [capability], handle, options);
   }
 
   /** Compile all external schemas with Ajv before any capability becomes callable. */
-  registerDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
+  registerDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: DeviceEndpointOptions = {}): WordSpec[] {
     const prepared = this.prepareDeviceBatch(member, capabilities, handle, options);
     for (const key of prepared.keys()) if (this.endpoints.has(key)) throw new TypeError("duplicate endpoint");
     for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
@@ -433,7 +446,7 @@ export class WorldRouter {
   }
 
   /** Recompile the complete manifest before a synchronous, all-or-nothing route switch. */
-  replaceDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery"> = {}): WordSpec[] {
+  replaceDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: DeviceEndpointOptions = {}): WordSpec[] {
     const prepared = this.prepareDeviceBatch(member, capabilities, handle, options);
     this.unregisterDevice(member);
     for (const [key, endpoint] of prepared) this.endpoints.set(key, endpoint);
@@ -455,7 +468,7 @@ export class WorldRouter {
     return this.cancel([...this.pending.values()].filter((item) => item.request.to === member).map((item) => item.request.id));
   }
 
-  private prepareDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: Pick<RouteEndpoint, "cancel" | "idempotentRecovery">): Map<string, Registered> {
+  private prepareDeviceBatch(member: string, capabilities: readonly DeviceCapability[], handle: RouteEndpoint["handle"], options: DeviceEndpointOptions): Map<string, Registered> {
     // An app's tools are external capabilities exactly like a device's: compiled the same way, judged the same way.
     if (!/^device:[A-Za-z0-9_-]+$/.test(member) && !APP.test(member)) throw new TypeError("device member required");
     const prepared = new Map<string, Registered>();
@@ -466,7 +479,9 @@ export class WorldRouter {
       if (prepared.has(key)) throw new TypeError("duplicate endpoint");
       const validateInput = ajvFor(safeCapability.input_schema);
       const validateResult = ajvFor(spec.result_schema);
-      prepared.set(key, { member, spec, handle, ...options, validateInput, validateResult });
+      // Only a word that declared its risk per call is ever asked for it; every other word keeps its one declared risk.
+      const { assess, ...rest } = options;
+      prepared.set(key, { member, spec, handle, ...rest, ...(assess && safeCapability.per_call_risk === true ? { assess } : {}), validateInput, validateResult });
     }
     return prepared;
   }
@@ -1136,6 +1151,18 @@ export class WorldRouter {
     if (this.ledger.humanPending(request.id)) this.humanEvent(request.id, "waiting", "", false, true);
   }
 
+  /** The tool's per-call answer (RouteEndpoint.assess). Silence, a failure or a stall keeps the declared risk. */
+  private async declaredRiskless(pending: Pending): Promise<boolean> {
+    const controller = new AbortController(), stop = () => controller.abort();
+    pending.controller.signal.addEventListener("abort", stop, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answer = await Promise.race([pending.endpoint.assess!(detached(pending.request), controller.signal),
+        new Promise<null>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(null); }, ASSESS_MS); })]);
+      return answer === "none";
+    } catch { return false; } finally { if (timer) clearTimeout(timer); pending.controller.signal.removeEventListener("abort", stop); }
+  }
+
   private async dispatch(pending: Pending, recovered: boolean): Promise<void> {
     const { request, endpoint } = pending;
     if (pending.settled) return;
@@ -1148,13 +1175,18 @@ export class WorldRouter {
       const forced = AGENT.test(request.from) && this.forcedApproval(request);
       const gateBypass = request.from === "person:owner" || (!gated(request, endpoint.spec.label) && !forced && !GATED_SERVICE_WORDS.has(`${request.to}/${request.word}`));
       const effect = wordEffect(endpoint.spec);
-      if (this.gatePrecheck && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
+      // A word whose risk depends on its arguments answers for this exact call first; its "none" means nobody is asked.
+      const declaredNone = !gateBypass && !forced && effect !== "read" && pending.phase === "accepted" && !!endpoint.assess &&
+        !isPayment(request.word, endpoint.spec.label, request.body) && await this.declaredRiskless(pending);
+      if (pending.settled) return;
+      const ungated = gateBypass || declaredNone;
+      if (this.gatePrecheck && pending.phase === "accepted" && effect !== "read" && !ungated) {
         let refused: ResponseBody | null;
         try { refused = await this.gatePrecheck(detached(request)); } catch { refused = null; }
         if (pending.settled) return;
         if (refused && !refused.ok) { this.finish(pending, refused, request.to!, false); return; }
       }
-      if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !gateBypass) {
+      if (this.durableGate && pending.phase === "accepted" && effect !== "read" && !ungated) {
         const currentAuthority = await this.currentlyAuthorized(request, pending.context);
         if (pending.settled) return;
         if (!currentAuthority || this.endpoint(request.to!, request.word) !== endpoint || !endpoint.validateInput(request.body) ||
@@ -1186,7 +1218,7 @@ export class WorldRouter {
           }
         }
       }
-      if (!this.durableGate && !gateBypass && pending.phase === "accepted" && effect !== "read") {
+      if (!this.durableGate && !ungated && pending.phase === "accepted" && effect !== "read") {
         if (!this.gate) { this.finish(pending, errors("failed", "gate unavailable"), request.to!, false); return; }
         if (!this.ledger.advanceRequest(request.id, "accepted", "gate_waiting")) return;
         pending.phase = "gate_waiting";
@@ -1228,7 +1260,7 @@ export class WorldRouter {
         if (!this.ledger.advanceRequest(request.id, pending.phase, "dispatching")) return;
         pending.phase = "dispatching";
       }
-      if (pending.context.approval && effect !== "read" && !gateBypass && !this.ledger.humanPending(request.id)) {
+      if (pending.context.approval && effect !== "read" && !ungated && !this.ledger.humanPending(request.id)) {
         // Auto-approved actions never consumed a human card, but still use the normal runtime timeout.
         const executionDeadline = Date.now() + (endpoint.spec.timeout_ms ?? 600_000);
         if (!this.ledger.executionDeadline(request.id, executionDeadline)) return;
@@ -1236,7 +1268,8 @@ export class WorldRouter {
         pending.deadlineAt = executionDeadline;
         this.armTimeout(pending);
       }
-      const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered, caller: Object.freeze(detached(pending.context)) });
+      const result = await endpoint.handle(detached(request), { signal: pending.controller.signal, recovered, caller: Object.freeze(detached(pending.context)),
+        ...(declaredNone ? { declaredRisk: "none" as const } : {}) });
       if (pending.settled) return; // a cancellation/timeout already published its sole terminal
       const committed = this.ledger.responseTo(request.id);
       if (committed) { this.adoptGateTerminal(pending, committed, false); this.publish(committed); return; }

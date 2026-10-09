@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Workspace, WORKSPACE_CAPABILITIES } from "../src/workspace";
@@ -91,4 +91,63 @@ test("text results redact common credentials without changing files", async t =>
   const result = await call("read", { path: "config.txt" });
   assert.equal(result.redacted, true); assert.doesNotMatch(result.text, /fixture-secret-value|fixture-bearer-value/);
   assert.match(result.text, /normal text/); assert.equal(await readFile(join(dir, "config.txt"), "utf8"), original);
+});
+test("writes inside the work directory declare no risk; outside, links out, commands and deletes keep theirs", async t => {
+  const base = await mkdtemp(join(tmpdir(), "ash-workspace-risk-"));
+  const shared = join(base, "shared"), outside = join(base, "elsewhere");
+  await mkdir(shared); await mkdir(outside); await writeFile(join(shared, "notes.md"), "old");
+  await symlink(outside, join(shared, "escape"));
+  const workspace = new Workspace(shared, join(base, "state"));
+  t.after(async () => { await workspace.close(); await rm(base, { recursive: true, force: true }); });
+  const free = { risk: "none", effect: "write" }, asks = { risk: "structure", effect: "write" };
+  for (const name of ["workspace.write", "workspace.edit"]) assert.equal(WORKSPACE_CAPABILITIES.find(c => c.name === name)?.per_call_risk, true);
+  assert.deepEqual(await workspace.assess("workspace.write", { path: "brief.md", content: "x" }), free);
+  assert.deepEqual(await workspace.assess("workspace.write", { path: join(shared, "tasks/new/brief.md"), content: "x" }), free, "new folders inside count as inside");
+  assert.deepEqual(await workspace.assess("workspace.edit", { path: "notes.md", edits: [{ oldText: "old", newText: "new" }] }), free);
+  assert.deepEqual(await workspace.assess("workspace.write", { path: "../elsewhere/x.md", content: "x" }), asks);
+  assert.deepEqual(await workspace.assess("workspace.write", { path: "x.md", workdir: outside, content: "x" }), asks);
+  assert.deepEqual(await workspace.assess("workspace.write", { path: "escape/x.md", content: "x" }), asks, "a link out of the folder is outside");
+  assert.deepEqual(await workspace.assess("workspace.write", { path: "/etc/hosts", content: "x" }), asks);
+  assert.deepEqual(await workspace.assess("workspace.bash", { command: "rm -rf notes.md" }), { risk: "structure", effect: "execute" });
+  assert.deepEqual(await workspace.assess("workspace.signal", { process: "p", signal: "INT" }), { risk: "structure", effect: "act" });
+  assert.deepEqual(await workspace.assess("workspace.read", { path: "notes.md" }), { risk: "none", effect: "read" });
+  // Let through on "none", a write that now lands outside is refused; inside it runs.
+  const refused = await workspace.call("workspace.write", { path: "escape/x.md", content: "x" }, undefined, "none");
+  assert.equal(refused.ok, false); assert.equal((refused.data as any).code, "forbidden");
+  await assert.rejects(readFile(join(outside, "x.md")));
+  assert.equal((await workspace.call("workspace.write", { path: "brief.md", content: "brief" }, undefined, "none")).ok, true);
+  assert.equal(await readFile(join(shared, "brief.md"), "utf8"), "brief");
+  // Without that mark (the owner approved it) the same outside write goes ahead.
+  assert.equal((await workspace.call("workspace.write", { path: "escape/x.md", content: "x" })).ok, true);
+});
+test("a work directory that is the home folder or holds the device state lends no free writes", async t => {
+  const base = await mkdtemp(join(tmpdir(), "ash-workspace-guard-"));
+  t.after(async () => { await rm(base, { recursive: true, force: true }); });
+  const holdsState = new Workspace(base, join(base, ".state"));
+  assert.equal((await holdsState.assess("workspace.write", { path: "x.md", content: "x" }))?.risk, "structure");
+  const home = new Workspace("~", join(base, "state"));
+  assert.equal((await home.assess("workspace.write", { path: "x.md", content: "x" }))?.risk, "structure");
+});
+test("the device answers a call's risk over the link and passes the phone's mark to the call", async () => {
+  const { ClientLink } = await import("../src/link");
+  const seen: unknown[] = [];
+  const link = new ClientLink("http://127.0.0.1:1", { id: "x", publicKey: "synthetic", sign: async () => "" }, {
+    manifest: async () => ({ name: "Mac", kind: "laptop", capabilities: WORKSPACE_CAPABILITIES }),
+    call: async (_name, _args, _caller, _signal, declared) => { seen.push(declared); return { ok: true, content: [] }; },
+    assess: async (name) => name === "workspace.write" ? { risk: "none", effect: "write" } : null,
+  }, () => {});
+  const replies: { status: number; body: string }[] = [];
+  (link as unknown as { reply(sid: string, result: { status: number; body?: string }): void }).reply = (_sid, result) => { replies.push({ status: result.status, body: String(result.body ?? "") }); };
+  const serve = (path: string, body: unknown) => (link as unknown as { serve(sid: string, inbound: object, signal: AbortSignal): Promise<void> })
+    .serve("s", { method: path === "/ash/manifest" ? "GET" : "POST", path, headers: [], body: [Buffer.from(JSON.stringify(body))] }, new AbortController().signal);
+  await serve("/ash/manifest", {});
+  const manifest = JSON.parse(replies[0].body) as { capabilities: { name: string; per_call_risk?: boolean }[] };
+  assert.equal(manifest.capabilities.find(c => c.name === "workspace.write")?.per_call_risk, true);
+  await serve("/ash/assess", { capability: "workspace.write", args: { path: "a", content: "b" } });
+  assert.deepEqual(JSON.parse(replies[1].body), { risk: "none", effect: "write" });
+  await serve("/ash/assess", { capability: "workspace.bash", args: { command: "ls" } });
+  assert.equal(replies[2].status, 404);
+  await serve("/ash/call", { capability: "workspace.write", args: {}, caller: "agent:main", declared_risk: "none" });
+  await serve("/ash/call", { capability: "workspace.write", args: {}, caller: "agent:main", declared_risk: "anything" });
+  assert.deepEqual(seen, ["none", undefined]);
 });

@@ -16,8 +16,8 @@ whenToUse: 主人要做一个需要在电脑上写代码、跑测试或编译的
 ## 做法
 
 1. **找电脑。** `agent_runtimes`：列出在线、且主人已允许使用本地 Agent 的电脑，以及上面装了什么 runtime、能选哪些模型。是空的就 `device_list` 看看：电脑没连上，或还没授权「使用本地 Agent」。授权要主人点头（`device_access_set` 会弹卡），告诉他去做，**不要绕开**；`logged_in: false` 就请主人先在电脑上登录那个 runtime。
-2. **找或建 Agent。** 先 `agent_list`，有合适的、空闲的（`idle`）就复用。没有就 `agent_create`：`id`（`agent:` 加小写名字）、`name`、`summary`（一句话擅长什么）、`brief`（长期的职责和规矩，见 `brief-template.md` 上半）、`runtime: {device, kind, cwd, model?, effort?}`。`cwd` 用一个专门给这件事建的目录，别用主人的主目录。
-3. **备料。** 开发 Agent 看不到你的容器，所以把要它读的东西写到它的 `cwd`：用 `capability_call {member: "device:<编号>", word: "workspace.write", body: {workdir: <cwd>, path: "SPEC.md", content}}` 写 `SPEC.md`（要什么）、`ACCEPTANCE.md`（验收清单）；要写 Ash 应用就把 `apps.contract` 返回的契约存成 `APP-CONTRACT.md` 一并写过去，并说明模板在契约里。写文件在审批模式下可能要主人批，照审批流程来。
+2. **找或建 Agent。** 先 `agent_list`，有合适的、空闲的（`idle`）就复用。没有就 `agent_create`：`id`（`agent:` 加小写名字）、`name`、`summary`（一句话擅长什么）、`brief`（长期的职责和规矩，见 `brief-template.md` 上半）、`runtime: {device, kind, cwd, model?, effort?}`。`cwd` 用一个专门给这件事建的目录，建在这台电脑的工作目录（`device_list` 里的 `workdir`，默认 `~/ash-shared`）下面，例如 `<workdir>/ledger`；别用主人的主目录。
+3. **备料。** 开发 Agent 看不到你的容器，所以把要它读的东西写到它的 `cwd`：用 `capability_call {member: "device:<编号>", word: "workspace.write", body: {workdir: <cwd>, path: "SPEC.md", content}}` 写 `SPEC.md`（要什么）、`ACCEPTANCE.md`（验收清单）；要写 Ash 应用就把 `apps.contract` 返回的契约存成 `APP-CONTRACT.md` 一并写过去，并说明模板在契约里。写进工作目录里面不用主人批；写到工作目录外面，在审批模式下要主人批，照审批流程来。
 4. **交办。** 用 `agent_tell` 发任务（它做多久都行，回话会作为一条消息回到你这里）。不要用 `agent_ask` 等：它只等 50 秒，之后只给回执，要一次次 `await_result` 去收，开发活不合适。任务正文按 `brief-template.md` 下半写：目标、背景、约束、验收清单、要交回哪些文件、怎么汇报。**同一个 Agent 同一时间只能做一件事**，上一件没完发新的会失败（「Previous remote task is still running」）；要换方向先 `agent_stop`。
 5. **等。** 发出去就告诉主人「交给了谁、大概要做什么」，然后做别的事或结束这一轮，**不要轮询**。想知道它还忙不忙看 `agent_list` 的 `state`。
 6. **验收。** 它回话了先别信，自己查：
@@ -37,7 +37,7 @@ whenToUse: 主人要做一个需要在电脑上写代码、跑测试或编译的
 
 主人说：「做一个能记账的应用，要能按月出图表，用 Mac 上的 Codex 来做。」
 
-1. `agent_runtimes`：Mac 在线，Codex 已登录。`agent_create {id: "agent:coder", name: "写代码的", summary: "在 Mac 上写和测试代码", brief: …, runtime: {device: "device:mac", kind: "codex", cwd: "/Users/…/ash-work/ledger"}}`。
+1. `agent_runtimes`：Mac 在线，Codex 已登录。`agent_create {id: "agent:coder", name: "写代码的", summary: "在 Mac 上写和测试代码", brief: …, runtime: {device: "device:mac", kind: "codex", cwd: "/Users/…/ash-shared/ledger"}}`。
 2. 把契约写成 `APP-CONTRACT.md`，把需求写成 `SPEC.md`，把验收写成 `ACCEPTANCE.md`：①文件夹里有 `app.json`、`server.mjs`、`ui/`；②读写工具齐全（`ledger.list/add/remove/summary`）；③`node server.mjs` 能按 MCP 回答 `tools/list`；④它自己写的测试全过；⑤不用任何要联网下载的运行时依赖。
 3. `agent_tell` 交办，回主人：「交给 Mac 上的 Codex 了，做完我会验一遍再给你。」
 4. 回话到了：`workspace.bash` 跑 `node --test`，读 `app.json` 和 `server.mjs`，发现第②条少了 `summary` 工具。`agent_tell`：「验收第②条没过：缺 ledger.summary，补上并跑测试。」

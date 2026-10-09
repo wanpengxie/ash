@@ -40,6 +40,11 @@ export interface CapabilitySpec {
   timeout_ms?: number;
   /** "none" only for a tool its server marks read-only and non-destructive; anything else asks first. */
   risk?: "none" | "structure";
+  /**
+   * The tool states each call's risk from its arguments when asked before the call (POST /ash/assess); risk above stays
+   * its most cautious answer. A call let through on that answer arrives marked, and the tool must refuse it if it no longer holds.
+   */
+  per_call_risk?: boolean;
 }
 
 export type DeviceKind = "phone" | "laptop" | "browser" | "server" | "other";

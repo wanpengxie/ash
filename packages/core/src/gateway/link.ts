@@ -31,7 +31,10 @@ export function borrowedCapabilities(raw: unknown[], deviceName: unknown): Devic
     const name = cap.name.replace(/[\p{C}\s]+/gu, " ").trim().slice(0, 80);
     // A lent effect is believed only when it is not a read: another device can never make a call look harmless.
     const effect = cap.risk === "none" ? "read" as const : isWordEffect(cap.effect) && cap.effect !== "read" ? cap.effect : "write" as const;
-    return { ...cap, risk: cap.risk === "none" ? "none" as const : "structure" as const, effect, label: `在${device}上用 ${name}` };
+    const { per_call_risk: perCall, ...rest } = cap;
+    // A per-call answer can only ever be asked about a word that otherwise asks the owner.
+    return { ...rest, risk: cap.risk === "none" ? "none" as const : "structure" as const, effect, label: `在${device}上用 ${name}`,
+      ...(perCall === true && cap.risk !== "none" ? { per_call_risk: true } : {}) };
   });
 }
 
@@ -284,7 +287,8 @@ export class OwnerLink extends Link {
         if (previous?.manifest === manifest) { previous.member.setOnline(true); continue; }
         const member = new DeviceMember(memberId, item.name, capabilities, async (message, context) => {
           try {
-            const called = await this.requestDevice(item.id, "POST", "/ash/call", { capability: message.word, args: message.body, caller: message.from }, 150_000, context.signal);
+            const called = await this.requestDevice(item.id, "POST", "/ash/call", { capability: message.word, args: message.body, caller: message.from,
+              ...(context.declaredRisk ? { declared_risk: context.declaredRisk } : {}) }, 150_000, context.signal);
             if (called.status !== 200) throw new Error("remote device returned an HTTP error");
             const answer = JSON.parse(called.body.toString("utf8")) as CallResult;
             if (!answer || typeof answer.ok !== "boolean") throw new Error("invalid remote result");
@@ -294,6 +298,11 @@ export class OwnerLink extends Link {
             const message = e instanceof Error ? e.message : "remote device unavailable";
             return { ok: false, error: { code: /offline/.test(message) ? "offline" : /timeout/.test(message) ? "timeout" : /cancelled/.test(message) ? "cancelled" : "failed", message } };
           }
+        }, true, undefined, async (message, signal) => {
+          // The device states this call's risk itself; anything but a clear "none" keeps the declared risk.
+          const assessed = await this.requestDevice(item.id, "POST", "/ash/assess", { capability: message.word, args: message.body }, 10_000, signal);
+          if (assessed.status !== 200) return null;
+          return (JSON.parse(assessed.body.toString("utf8")) as { risk?: unknown })?.risk === "none" ? "none" : null;
         });
         this.edge.members.replaceDevice(member);
         this.remoteDevices.set(item.id, { member, manifest, details });

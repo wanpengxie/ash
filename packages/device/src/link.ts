@@ -108,7 +108,10 @@ export abstract class Link {
 
 export interface LocalCapabilities {
   manifest(): Promise<{ protocol?: string; version?: string; name: string; kind: DeviceKind; capabilities: CapabilitySpec[]; agents?: unknown[] }>;
-  call(capability: string, args: Record<string, unknown>, caller: string, signal?: AbortSignal): Promise<CallResult>;
+  /** declared: the phone let this call through without asking because assess answered "none"; hold it to that. */
+  call(capability: string, args: Record<string, unknown>, caller: string, signal?: AbortSignal, declared?: "none"): Promise<CallResult>;
+  /** This call's risk, for a capability marked per_call_risk; null when the capability states none per call. */
+  assess?(capability: string, args: Record<string, unknown>): Promise<{ risk: "none" | "structure"; effect: string } | null>;
   stream?(stream: import("ash-gateway/client/client").DeviceStream): void;
   update?(version: string, sha256: string): Promise<unknown>;
 }
@@ -185,10 +188,15 @@ export class ClientLink extends Link {
         ...capability, risk: capability.risk === "none" ? "none" : "structure", label: `Use ${capability.name}`,
       })) }));
     }
+    if (inbound.method === "POST" && path === "/ash/assess") {
+      const input = JSON.parse(Buffer.concat(inbound.body).toString("utf8") || "{}") as { capability?: string; args?: Record<string, unknown> };
+      const answer = this.local.assess ? await this.local.assess(String(input.capability ?? ""), input.args ?? {}) : null;
+      return this.reply(sid, answer ? json(200, answer) : json(404, { error: "not_found" }));
+    }
     if (inbound.method === "POST" && path === "/ash/call") {
-      const input = JSON.parse(Buffer.concat(inbound.body).toString("utf8") || "{}") as { capability?: string; args?: Record<string, unknown>; caller?: string };
+      const input = JSON.parse(Buffer.concat(inbound.body).toString("utf8") || "{}") as { capability?: string; args?: Record<string, unknown>; caller?: string; declared_risk?: unknown };
       if (typeof input.caller !== "string" || !/^(agent:[a-z][a-z0-9_-]{0,31}|person:owner)$/.test(input.caller)) return this.reply(sid, json(403, { error: "Invalid caller" }));
-      const answer = await this.local.call(String(input.capability ?? ""), input.args ?? {}, input.caller, signal);
+      const answer = await this.local.call(String(input.capability ?? ""), input.args ?? {}, input.caller, signal, input.declared_risk === "none" ? "none" : undefined);
       if (!signal.aborted) this.reply(sid, json(200, answer));
       return;
     }

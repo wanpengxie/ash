@@ -23,7 +23,8 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
   let updating = false;
   const link = new ClientLink(config.gateway, await fileSigner(config.stateDir), {
     manifest: async () => ({ protocol: "ash-dev/1", version: DEVICE_VERSION, kind: config.kind ?? "laptop", name: config.name, workdir: resolve(config.workdir), capabilities: [...WORKSPACE_CAPABILITIES, ...(browser ? [EGO_CAPABILITY] : []), ...(kimi.online ? KIMI_CAPABILITIES : [])], agents: runtimes.get() }),
-    call: (name, args, caller, signal) => updating ? Promise.resolve({ ok: false, error: "Device update is in progress", content: [] }) : name === "browser.script" && browser ? browser.call(args, caller, signal) : name.startsWith("browser.") ? kimi.call(name, args, caller, signal) : workspace.call(name, args, signal),
+    call: (name, args, caller, signal, declared) => updating ? Promise.resolve({ ok: false, error: "Device update is in progress", content: [] }) : name === "browser.script" && browser ? browser.call(args, caller, signal) : name.startsWith("browser.") ? kimi.call(name, args, caller, signal) : workspace.call(name, args, signal, declared),
+    assess: (name, args) => name.startsWith("workspace.") ? workspace.assess(name, args) : Promise.resolve(null),
     stream: stream => agents.attach(stream),
     update: async (version, sha256) => {
       if (!config.installRoot || !dependencies.restart) throw new Error("This device was not installed with the service installer");
