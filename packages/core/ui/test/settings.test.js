@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SettingsControls } from "../js/settings.js";
+import { readFileSync } from "node:fs";
+import { deviceDiagnosis, SettingsControls } from "../js/settings.js";
 
 class Element {
   constructor(tag) { this.tag = tag; this.children = []; this.hidden = false; this.listeners = new Map(); }
@@ -319,6 +320,9 @@ test("the pairing code is read from the owner-only route, with the install comma
     panel.find("settingsGatewayRow").click();
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(panel.find("settingsGatewayPairCode").hidden, true);
+    // No code: no empty box holding only a copy button — and the page's styles really hide a hidden card.
+    assert.equal(panel.find("settingsGatewayPairCopy").hidden, true); assert.equal(panel.find("settingsGatewayPairCommand").hidden, true);
+    assert.match(readFileSync(new URL("../index.html", import.meta.url), "utf8"), /[,}]\.set-card\[hidden\][,{][^}]*display:none/);
     panel.find("settingsGatewayPair").click();
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(sent.filter((item) => item.word === "pair_start").map((item) => item.body), [{ kind: "laptop" }]);
@@ -343,6 +347,12 @@ test("the pairing code is read from the owner-only route, with the install comma
     assert.equal(panel.find("settingsGatewayPairCommand").hidden, true);
     assert.ok(sent.filter((item) => item.word === "gateway_status").length > statusReads, "a new revision reads the list again");
     assert.ok(panel.find("settingsPending-request-9Approve"), "the new request is shown without reopening the page");
+    assert.equal(panel.find("settingsGatewayPairCode").hidden, false);
+    // Once that request is settled, the spent code no longer hangs on the page.
+    pending = [];
+    panel.find("settingsPending-request-9Approve").click();
+    for (let i = 0; i < 40 && !panel.find("settingsGatewayPairCode").hidden; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(panel.find("settingsGatewayPairCode").hidden, true);
     fail = true;
     panel.find("settingsGatewayPair").click();
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -558,4 +568,13 @@ test("re-opening the drawer starts at the settings root and takes back a half-do
     delete Element.prototype.querySelectorAll;
     delete globalThis.document; delete globalThis.location; delete globalThis.__ashBrowserLogins;
   }
+});
+
+test("a device's diagnosis reads as plain words, not a raw record", () => {
+  const text = deviceDiagnosis({ id: "device:pc", online: true, version: "0.1.0", gateway_connected: true, capabilities: 9, workdir: "/Users/me/ash-shared",
+    recent_calls: [{ id: "m1", at: new Date(2026, 9, 9, 18, 5).getTime(), from: "agent:main", word: "workspace.write", status: "ok" },
+      { id: "m2", at: new Date(2026, 9, 9, 18, 6).getTime(), from: "agent:main", word: "workspace.bash", status: "denied" }] });
+  assert.equal(text, "在线，设备端版本 0.1.0。\n网关已连接。\n借出 9 项能力。\n工作目录：/Users/me/ash-shared\n最近的调用：\n10月9日 18:05 workspace.write · 成功\n10月9日 18:06 workspace.bash · 被拒绝");
+  assert.doesNotMatch(deviceDiagnosis({ online: false }), /[{}"]|undefined/);
+  assert.match(deviceDiagnosis({ online: false }), /^离线。\n网关没有连上。\n最近没有调用。$/);
 });

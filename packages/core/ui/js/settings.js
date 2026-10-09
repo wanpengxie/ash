@@ -72,6 +72,22 @@ const GATEWAY_PROBLEMS = {
   unsupported: "网关的版本和 Ash 对不上，需要先更新网关。",
   unreachable: "连不上网关，Ash 会自动重试。请检查网络和网关地址。",
 };
+const RUNTIMES = { codex: "Codex", claude: "Claude Code", workbuddy: "WorkBuddy" };
+const CALL_STATUS = { ok: "成功", pending: "进行中", denied: "被拒绝", forbidden: "不允许", offline: "设备离线", timeout: "超时", cancelled: "已取消" };
+/** A device's diagnosis in plain words for the owner, not the raw record. */
+export function deviceDiagnosis(result) {
+  const r = result && typeof result === "object" ? result : {};
+  const count = Number(r.capabilities) || (Array.isArray(r.capability_specs) ? r.capability_specs.length : 0);
+  const calls = Array.isArray(r.recent_calls) ? r.recent_calls : [];
+  const time = (at) => { const d = new Date(Number(at)); return Number.isFinite(d.getTime()) ? `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : ""; };
+  return [
+    `${r.online ? "在线" : "离线"}${r.version ? `，设备端版本 ${r.version}` : ""}。`,
+    r.gateway_connected ? "网关已连接。" : "网关没有连上。",
+    count ? `借出 ${count} 项能力。` : "",
+    r.workdir ? `工作目录：${r.workdir}` : "",
+    calls.length ? `最近的调用：\n${calls.map((c) => `${time(c.at)} ${c.word ?? ""} · ${CALL_STATUS[c.status] ?? "失败"}`).join("\n")}` : "最近没有调用。",
+  ].filter(Boolean).join("\n");
+}
 const tokens = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 
 /** Usage as two lists: how much per period, then where the last week went. */
@@ -457,13 +473,15 @@ export class SettingsControls {
       catch { pairCopy.textContent = "长按上面的命令复制"; }
     })(); });
     const countdown = (ms) => { const seconds = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; };
+    let waiting = 0;
     const showCode = () => {
       const code = shownCode;
-      pairBox.hidden = !code;
+      const left = code ? codeDeadline - Date.now() : 0;
+      const state = code?.state === "active" && left <= 0 ? "expired" : code?.state;
+      // A spent code stays on the page only while the request it brought still waits for the owner.
+      pairBox.hidden = !code || (state === "used" && waiting === 0);
+      pairCommand.hidden = pairCopy.hidden = state !== "active" || !code?.install_command;
       if (!code) return;
-      const left = codeDeadline - Date.now();
-      const state = code.state === "active" && left <= 0 ? "expired" : code.state;
-      pairCommand.hidden = pairCopy.hidden = state !== "active" || !code.install_command;
       if (state === "used") { pairText.textContent = "配对码已使用。新设备发来的连接请求在上面，确认是你的设备再批准。"; return; }
       if (state === "expired") { pairText.textContent = "配对码已过期。需要时再点「添加设备」。"; return; }
       const where = typeof code.gateway === "string" ? code.gateway : "网关地址";
@@ -531,6 +549,7 @@ export class SettingsControls {
       gatewayList.hidden = true;
       if (state?.configured !== true) { gatewayStatus.textContent = "还没有设置网关，其他设备暂时连不上。"; return state; }
       gatewayStatus.textContent = state.connected ? "网关已连接。" : GATEWAY_PROBLEMS[state.error] ?? "网关暂时离线。";
+      waiting = Array.isArray(state.pending) ? state.pending.length : 0; showCode();
       const act = async (word, body) => {
         const result = await deviceRequest(word, body);
         if (result?.ok !== true) throw new Error("gateway operation failed");
@@ -568,7 +587,7 @@ export class SettingsControls {
         row.append(revoke);
         const details = node("details"); details.append(node("summary", "名称、权限与诊断"));
         if (device.workdir) details.append(node("p", `工作目录：${device.workdir}`, "set-sub"));
-        if (Array.isArray(device.agents) && device.agents.length) details.append(node("p", `本地运行时：${device.agents.map(a => `${a.kind}${a.installed ? "" : "（未安装）"}`).join("、")}`, "set-sub"));
+        if (Array.isArray(device.agents) && device.agents.length) details.append(node("p", `本地 Agent：${device.agents.map(a => `${RUNTIMES[a.kind] ?? a.kind}${a.installed ? "" : "（未安装）"}`).join("、")}`, "set-sub"));
         const nameInput = document.createElement("input"); nameInput.value = device.name; nameInput.setAttribute("aria-label", "设备名称");
         const rename = button("保存名称", "btn gray");
         rename.addEventListener("click", () => { void act("rename", { device: device.id, name: nameInput.value }).catch(failed("名称未保存。")); });
@@ -577,7 +596,7 @@ export class SettingsControls {
         save.addEventListener("click", () => { void act("access_set", { device: device.id, ...grant.read() }).catch(failed("权限未确认，请刷新状态后检查。")); });
         const diagnose = button("诊断", "btn gray"); const info = node("pre", "", "set-status");
         diagnose.addEventListener("click", () => { void deviceRequest("diagnose", { device: device.id }).then(reply => {
-          info.textContent = reply?.ok ? JSON.stringify(reply.result, null, 2) : "诊断失败，请刷新状态。";
+          info.textContent = reply?.ok ? deviceDiagnosis(reply.result) : "诊断失败，请刷新状态。";
         }).catch(() => { info.textContent = "诊断失败。"; }); });
         details.append(nameInput, rename, grant.box, save, diagnose, info); row.append(details);
         gatewayList.append(row);

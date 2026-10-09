@@ -69,6 +69,10 @@ test("the pairing code and install command appear only from the owner route, and
     await page.goto(`${running.url}/?token=${token}`);
     await expect(page.locator("#connection")).toContainText("已连接");
     await page.locator("#menu").click(); await page.locator("#settingsGatewayRow").click();
+    await expect(page.locator("#settingsGatewayStatus")).toContainText("网关已连接");
+    // No code yet: no empty card with a lone copy button.
+    await expect(page.locator("#settingsGatewayPairCode")).toBeHidden();
+    await expect(page.locator("#settingsGatewayPairCopy")).toBeHidden();
     await page.locator("#settingsGatewayPair").click();
     await expect(page.locator("#settingsGatewayPairCodeText")).toContainText("pair-code-123");
     await expect(page.locator("#settingsGatewayPairCommand")).toHaveText(command);
