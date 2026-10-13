@@ -9,7 +9,6 @@
 // The token goes where pi keeps it (`$PI_CODING_AGENT_DIR/auth.json`, default ~/.pi/agent) and pi refreshes it itself afterwards.
 // The requests of the login go through HTTPS_PROXY when the driver sets it (pi's own processes do the same).
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,6 +30,12 @@ function storeInfo() {
   } catch { return null; }
 }
 
+/** pi's own HTTP set-up, as pi does it at start (its proxy agent from HTTP(S)_PROXY, its timeouts, fetch on the same undici): the login and the catalog go out exactly as pi's requests do. */
+async function piHttp() {
+  const { configureHttpDispatcher } = await import(pathToFileURL(join(PI, "dist", "core", "http-dispatcher.js")).href);
+  configureHttpDispatcher();
+}
+
 const CATALOG_URL = process.env.ASH_PI_CATALOG_URL || "https://pi.dev";
 
 function parseCatalog(id, value) {
@@ -46,9 +51,7 @@ function parseCatalog(id, value) {
  * request is made here. Goes through HTTPS_PROXY when the driver sets it.
  */
 async function refresh() {
-  const undici = createRequire(join(PI, "package.json"))("undici");
-  undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent());
-  undici.install?.();
+  await piHttp();
   const file = join(agentDir, "models-store.json");
   const read = () => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return {}; } };
   const errors = {};
@@ -92,9 +95,7 @@ function status() {
 
 async function login() {
   process.env.PI_OFFLINE = "1";
-  const undici = createRequire(join(PI, "package.json"))("undici");
-  undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent());
-  undici.install?.();
+  await piHttp();
   const { ModelRuntime } = await import(pathToFileURL(join(PI, "dist", "index.js")).href);
   const runtime = await ModelRuntime.create();
   const abort = new AbortController();
