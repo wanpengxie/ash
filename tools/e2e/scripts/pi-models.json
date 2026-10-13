@@ -1,6 +1,6 @@
 {
-  "name": "pi models: an agent reads the catalog, is refused a wrong model and effort, saves a model with an effort per model, reads back what is in force and what is saved, and tries an effort temporarily",
-  "timeout_s": 120,
+  "name": "pi models: an agent reads the catalog, is refused a wrong model and effort, saves a model with an effort per model, reads back what is in force and what is saved, and tries an effort temporarily; the model tables are fetched from upstream by themselves",
+  "timeout_s": 180,
   "steps": [
     {
       "id": "declare",
@@ -31,6 +31,24 @@
         },
         "purpose": "device verification: model catalog"
       }
+    },
+    {
+      "id": "fresh",
+      "until": {
+        "call": {
+          "member": "service:agents",
+          "word": "runtime.catalog",
+          "body": {
+            "agent": "agent:pi-models",
+            "provider": "deepseek"
+          },
+          "purpose": "device verification: model catalog"
+        },
+        "path": "data.catalog.checked_at",
+        "exists": true
+      },
+      "timeout_ms": 90000,
+      "every_ms": 2000
     },
     {
       "id": "bad_model",
@@ -188,6 +206,10 @@
           "model": "deepseek/deepseek-flash"
         }
       }
+    },
+    {
+      "step": "fresh",
+      "ok": true
     },
     {
       "step": "bad_model",
