@@ -34,6 +34,7 @@ export interface AgentChannelOptions {
 type Frame = Record<string, any>;
 const BACKLOG_MAX = 2000;
 const OUTBOUND_MS = 600_000;
+const ATTACHED_MS = 120_000;
 
 const text = (frame: Frame, field: string): string => {
   if (typeof frame[field] !== "string" || !frame[field]) throw new WordError("bad_request", `${field} is required`);
@@ -138,6 +139,21 @@ export class AgentChannel {
       const settle = (error?: Error, value?: unknown) => { clearTimeout(timer); this.pending.delete(id); error ? reject(error) : resolve(value); };
       this.pending.set(id, { agent: call.agent, key: call.key, turn: call.turn, settle });
       if (!this.o.send({ t: "agent", id, outbound: call.tool, agent: call.agent, key: call.key, turn: call.turn, args: call.args } as AgentFrame)) settle(new Error("Ash communication unavailable"));
+    });
+  }
+
+  /**
+   * A call of the app attached to this computer (the Codex App, through `ash-device mcp`): it is no agent of ours and has no
+   * turn. `tool` is a tool of the hub's tool surface, or `tools/list`; the answer is the tool's result as the hub shaped it.
+   */
+  attached(tool: string, args: unknown, session?: string): Promise<unknown> {
+    if (!this.open) return Promise.reject(new Error("Ash communication unavailable: this computer is not connected to Ash right now (ash-device is starting, offline or not paired)"));
+    const id = `o_${randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => settle(new Error("Ash communication timed out")), ATTACHED_MS);
+      const settle = (error?: Error, value?: unknown) => { clearTimeout(timer); this.pending.delete(id); error ? reject(error) : resolve(value); };
+      this.pending.set(id, { agent: "", key: "", turn: "", settle });
+      if (!this.o.send({ t: "agent", id, outbound: tool, attached: { ...(session ? { session } : {}) }, args: args ?? {} } as AgentFrame)) settle(new Error("Ash communication unavailable"));
     });
   }
 

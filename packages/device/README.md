@@ -86,6 +86,24 @@ are offered (SPEC-08 §2.7). Calls not answered when the turn ends or the connec
   reports each lane's handle and re-sends `turn.started` for a turn still running, so the hub may see `turn.started`
   twice and de-duplicates by turn. After ten minutes without the hub they are stopped.
 
+## The Codex App uses Ash
+
+The Codex App and Ash are two products of one user. `ash-device mcp` is the MCP server (stdio) the Codex App starts: the
+tools of the hub's tool surface that matter to an outside app (`capability_list`, `capability_describe`, `capability_call`,
+`await_result`, `list_pending`, `cancel`, `agent_list`, `agent_ask`, `agent_tell`). It holds nothing: each call goes through
+the unix socket `<state>/mcp.sock` (`src/local.ts`, mode 0600) of the running ash-device and on its agent channel as
+`{t:"agent", id, outbound: <tool>, attached: {session?}, args}`, with no `agent` and no `turn`. The hub answers
+`outbound_result` (`tools/list` answers the tools and the caller's name). On the hub the caller is `agent:codex-<computer>`
+(`edges/agents/attached.ts`): judged by the router as an agent with the default declaration, never started or woken,
+recorded in the ledger with the Codex session as its turn. `src/mcp.ts` says plainly when ash-device is not running or not
+connected.
+
+`ash-device codex install` registers the MCP server in `$CODEX_HOME/config.toml` (default `~/.codex`; one marked block,
+the file is backed up first) and puts the skill `ash` (`skill/SKILL.md`, embedded by `tools/gen-rules.mjs`) in
+`<codex home>/skills/ash/`. It can run again; `codex uninstall` takes both out; `codex status` shows what is there.
+Codex's plugin format can carry a skill and an MCP server together, but a plugin has to come in through a marketplace and
+the app's plugin cache, so the install writes the two places directly.
+
 ## Install and update
 
 `install.sh GATEWAY CODE` downloads the release `device-v<version>` for the platform, verifies its SHA-256, installs it

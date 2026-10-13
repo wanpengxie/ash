@@ -13,6 +13,7 @@ import type { Router } from "../../../kernel/types";
 import type { ChannelAttach } from "../../link-server";
 import { glob } from "../../../kernel/router";
 import { Computer, type Frame } from "./computer";
+import { attachedTurn } from "../attached";
 
 export interface Entry {
   agent: string;
@@ -32,8 +33,20 @@ export interface Entry {
 }
 
 
+/** What the hub gives for the callers attached through a computer: the Codex App on it. */
+export interface AttachedPort {
+  /** The caller of that computer, made on first use. */
+  declare(computer: string, computerName: string): { id: string; name: string };
+  /** The computer's connection ended. */
+  drop(computer: string): void;
+  tools(agent: string): { name: string; description: string; inputSchema: Record<string, unknown> }[];
+  call(agent: string, turn: string, tool: string, args: unknown, signal: AbortSignal): Promise<unknown>;
+}
+
 export interface RemoteOptions {
   router: Pick<Router, "send">;
+  /** Without it the computers' attached callers are refused. */
+  attached?: AttachedPort;
   /** The runtime kinds to offer a driver for (default `codex`, `claude`, `workbuddy`). */
   kinds?: string[];
   /** How long an operation may take (ms). */
@@ -101,7 +114,7 @@ export class Directory {
 
   /** The connection ended: every agent that lived on it is gone as far as the hub can tell. */
   private closed(computer: Computer): void {
-    if (this.computers.get(computer.handId) === computer) this.computers.delete(computer.handId);
+    if (this.computers.get(computer.handId) === computer) { this.computers.delete(computer.handId); this.o.attached?.drop(computer.handId); }
     computer.shutdown();
     for (const entry of [...this.entries.values()]) {
       if (entry.conn !== computer || entry.state === "failed" || entry.state === "exited") continue;
@@ -223,6 +236,7 @@ export class Directory {
     let answered = false;
     const answer = (body: Frame) => { if (answered) return; answered = true; computer.send({ id: f.id, outbound_result: tool, ...body }); };
     const refuse = (code: string, text: string) => answer({ ok: false, error: { code, message: text } });
+    if (isObject(f.attached)) return this.attachedCall(computer, f, tool, answer, refuse);
     const entry = typeof f.agent === "string" ? this.entries.get(f.agent) : undefined;
     if (!entry || !this.live(entry, computer)) return refuse("forbidden", "that agent does not run on this computer");
     const spec = TOOLS[tool];
@@ -247,7 +261,28 @@ export class Directory {
       refuse("failed", message(error));
     } finally { computer.outbounds.delete(call); }
   }
+
+  /**
+   * A call of the app attached to this computer (the Codex App, through `ash-device mcp`): no agent of the hub's, no turn.
+   * `outbound` is the tool's name, or `tools/list`; `attached.session` is the app's own session, kept in the turn the ledger records.
+   */
+  private async attachedCall(computer: Computer, f: Frame, tool: string, answer: (body: Frame) => void, refuse: (code: string, text: string) => void): Promise<void> {
+    const port = this.o.attached;
+    if (!port) return refuse("unavailable", "this hub does not take calls from the apps attached to a computer");
+    const caller = port.declare(computer.handId, computer.name);
+    if (tool === "tools/list") return answer({ ok: true, result: { tools: port.tools(caller.id), caller: { id: caller.id, name: caller.name } } });
+    const args = isObject(f.args) ? f.args : {};
+    const call = { controller: new AbortController(), agent: caller.id, key: "attached", turn: undefined, answer };
+    computer.outbounds.add(call);
+    try {
+      answer({ ok: true, result: await port.call(caller.id, attachedTurn(f.attached.session), tool, args, call.controller.signal) });
+    } catch (error) {
+      refuse("failed", message(error));
+    } finally { computer.outbounds.delete(call); }
+  }
 }
+
+const isObject = (v: unknown): v is Frame => !!v && typeof v === "object" && !Array.isArray(v);
 
 const textOf = (content: unknown): string | undefined => {
   if (!Array.isArray(content)) return undefined;

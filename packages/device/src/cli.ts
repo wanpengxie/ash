@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 import { DEVICE_VERSION, installRelease, serviceDefinition } from "./install";
 import type { startDevice, DeviceConfig } from "./main";
 import { deviceLogger } from "./log";
+import { callLocal } from "./local";
+import { serveMcp } from "./mcp";
+import { codexHome, codexStatus, installCodex, uninstallCodex } from "./codex-install";
 const exec = promisify(execFile);
 export async function deviceCli(start: typeof startDevice, args = process.argv.slice(2)): Promise<void> {
   const option = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
@@ -37,6 +40,24 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
     }
     console.log("Ash device is paired and its user service is running."); return;
   }
+  if (command === "mcp") {
+    // The Codex App starts this; stdout is the protocol, so nothing else is printed here.
+    const socket = await readFile(configPath, "utf8").then((text) => join(JSON.parse(text).stateDir, "mcp.sock"), () => null);
+    await serveMcp({ call: (tool, toolArgs, session) => socket ? callLocal(socket, tool, toolArgs, session) : Promise.reject(new Error(`ash-device is not set up on this computer (no ${configPath}); run ash-device setup first`)) });
+    return;
+  }
+  if (command === "codex") {
+    const action = args[1], home = option("--codex-home") ?? codexHome();
+    if (action === "install") {
+      const program = option("--command") ?? join(root, "current", "bin", "ash-device");
+      if (!option("--command") && !(await access(program).then(() => true, () => false))) throw new Error(`${program} does not exist; give the ash-device program with --command PATH`);
+      for (const line of await installCodex({ codexHome: home, command: resolve(program), args: ["mcp", "--config", configPath] })) console.log(line);
+      return;
+    }
+    if (action === "uninstall") { for (const line of await uninstallCodex({ codexHome: home })) console.log(line); return; }
+    if (action === "status") { console.log(JSON.stringify(await codexStatus({ codexHome: home, command: "", args: [] }))); return; }
+    console.log("ash-device codex install [--command PATH] [--codex-home DIR] | uninstall | status"); return;
+  }
   if (command === "status") {
     const config = JSON.parse(await readFile(configPath, "utf8"));
     const pairing = JSON.parse(await readFile(join(config.stateDir, "paired.json"), "utf8").catch(() => "{}"));
@@ -53,7 +74,7 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
     console.log(await installRelease(root, version, hash));
     console.log("Restart the ash-device user service to use the update."); return;
   }
-  if (command !== "run") { console.log("ash-device setup --gateway URL --pair CODE [--name NAME] [--workdir PATH]\nash-device run | status | update --version-to VERSION --sha256 HASH | uninstall"); return; }
+  if (command !== "run") { console.log("ash-device setup --gateway URL --pair CODE [--name NAME] [--workdir PATH]\nash-device run | status | update --version-to VERSION --sha256 HASH | uninstall\nash-device codex install | uninstall | status   (let the Codex App use Ash)\nash-device mcp   (the MCP server the Codex App starts)"); return; }
   const config = JSON.parse(await readFile(configPath, "utf8"));
   const running = await start(config, option("--pair"), { restart: () => { void running.close().then(() => process.exit(0)); } });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void running.close().then(() => process.exit(0)); });
