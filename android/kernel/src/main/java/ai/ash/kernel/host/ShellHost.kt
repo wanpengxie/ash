@@ -15,6 +15,7 @@ import ai.ash.kernel.Provisioner
 import ai.ash.kernel.SystemClock
 import ai.ash.kernel.SystemEnv
 import ai.ash.kernel.WakeManager
+import ai.ash.kernel.host.ctx.ContextProbeLauncher
 import android.os.Looper
 import android.os.Process
 import android.util.Log
@@ -124,6 +125,8 @@ object ShellHost {
                 System.exit(1)
             }
         }, "ash-kernel-host").start()
+        // A one-day probe of what the owner does on the phone and what recording it costs (/data/local/tmp/ash-ctx).
+        ContextProbeLauncher(ShellPhone.kernelApk(ctx, pkg)) { Log.i(TAG, it) }.start()
         Log.i(TAG, "started for $pkg (uid $kernelUid)")
     }
 
