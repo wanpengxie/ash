@@ -172,7 +172,7 @@ export function createAgentsService(manager: AgentManager): Member {
     if (only && !providers.length) throw new WordError("bad_request", `${saved.kind} has no provider ${only}; providers: ${catalog.providers.map((p) => p.id).join(", ")}`);
     const notes = providers.filter((p) => !p.ready).map((p) => `${p.name}: ${p.how ?? "not ready"}`);
     return data({
-      agent: run.id, runtime: saved.kind, saved, ...(catalog.effective ? { effective: catalog.effective } : {}), providers, ...(notes.length ? { notes } : {}),
+      agent: run.id, runtime: saved.kind, saved, ...(catalog.effective ? { effective: catalog.effective } : {}), ...(catalog.source ? { catalog: catalog.source } : {}), providers, ...(notes.length ? { notes } : {}),
       usage: 'Choose with service:agents/update {agent, runtime: {model: "provider/model", models: {"provider/model": {effort: "<one of the model\'s efforts>"}}}}; only ready providers work now.',
     });
   }

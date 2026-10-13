@@ -166,6 +166,8 @@ export interface CatalogOptions {
 /** What a driver knows of the runtime now (its live choices), and what it can use. */
 export interface RuntimeCatalog {
   providers: CatalogProvider[];
+  /** Where the lists come from and how new they are: the tables the runtime shipped with, or newer ones it fetched from upstream. */
+  source?: { checked_at?: number | null; upstream_at?: number | null; refreshing?: boolean };
   /** What is in force now, which may differ from the declaration (a temporary `configure`, a fallback). */
   effective?: Record<string, unknown>;
 }

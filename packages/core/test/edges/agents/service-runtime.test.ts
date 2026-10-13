@@ -28,7 +28,7 @@ class CatalogDriver extends FakeDriver {
       { id: "codex", name: "Codex", needs_proxy: true, auth: { kind: "login", method: "device_code", state: this.login, how: "Ask the owner to log in." }, models: [model("codex/gpt", ["low", "medium", "high"])] },
       { id: "openrouter", name: "OpenRouter", needs_proxy: false, auth: { kind: "key", ref: "OPENROUTER_API_KEY" }, models: many },
     ];
-    return { providers, effective: { model: "deepseek/flash" } };
+    return { providers, effective: { model: "deepseek/flash" }, source: { checked_at: 1_700_000_100_000, upstream_at: 1_700_000_000_000, refreshing: false } };
   }
 }
 
@@ -46,6 +46,7 @@ test("runtime.catalog: providers with ready flag, auth, what to do when not read
   assert.equal(out.runtime, "dsh");
   assert.deepEqual(out.saved, { kind: "dsh" });
   assert.deepEqual(out.effective, { model: "deepseek/flash" });
+  assert.deepEqual(out.catalog, { checked_at: 1_700_000_100_000, upstream_at: 1_700_000_000_000, refreshing: false }, "how new the lists are");
   const by = Object.fromEntries(out.providers.map((p: any) => [p.id, p]));
   assert.equal(by.deepseek.ready, true);
   assert.deepEqual(by.deepseek.auth, { kind: "key", ref: "DEEPSEEK_API_KEY", configured: true });

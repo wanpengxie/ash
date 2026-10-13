@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn as nodeSpawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -27,11 +27,13 @@ const waitFor = async (pred: () => boolean, what = "condition") => {
 };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-interface Opts { env?: Record<string, string>; hotMs?: number; recoverMs?: number; probe?: (route: "proxy" | "direct") => Promise<boolean> }
+interface Opts { env?: Record<string, string>; hotMs?: number; recoverMs?: number; store?: { checked_at: number; upstream_at: number } | null; catalogRefreshMs?: number; catalogRetryMs?: number; catalogStartDelayMs?: number; probe?: (route: "proxy" | "direct") => Promise<boolean> }
 function setup(o: Opts = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pi-driver-"));
   dirs.push(dir);
   const logFile = join(dir, "pi.log");
+  // The model tables were checked a moment ago unless the test says otherwise (null: never).
+  if (o.store !== null) writeFileSync(`${logFile}.store`, JSON.stringify(o.store ?? { checked_at: Date.now(), upstream_at: 1_700_000_000_000 }));
   const events: AgentEvent[] = [];
   const written: Record<string, string> = {};
   const open = { proxy: false, direct: false };
@@ -54,6 +56,7 @@ function setup(o: Opts = {}) {
     hotMs: o.hotMs ?? 60_000,
     recoverMs: o.recoverMs ?? 60_000,
     routeTtlMs: 0,
+    catalogRefreshMs: o.catalogRefreshMs ?? 24 * 3600_000, catalogRetryMs: o.catalogRetryMs ?? 3600_000, catalogStartDelayMs: o.catalogStartDelayMs ?? 3600_000,
   });
   live.push(driver);
   const log = () => (existsSync(logFile) ? readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []) as Record<string, any>[];
@@ -483,4 +486,61 @@ test("the agents module passes a notice on to the owner as a heads-up that does 
   const said = f.router.to("person:owner", "say");
   assert.equal(said.length, 1);
   assert.deepEqual(said[0]!.msg.body, { text: "连不上 Codex，先用 DeepSeek。", kind: "heads_up" });
+});
+
+const refreshes = (t: ReturnType<typeof setup>) => t.log().filter((l) => l.login_helper === "refresh");
+
+test("the catalog says how new its tables are; fresh ones are not asked for again", async () => {
+  const t = setup();
+  await t.driver.start("agent:main", spec());
+  const c = await t.driver.catalog!("agent:main", { kind: "pi" });
+  assert.equal(typeof c.source!.checked_at, "number");
+  assert.equal(c.source!.upstream_at, 1_700_000_000_000);
+  assert.equal(c.source!.refreshing, false);
+  assert.equal(refreshes(t).length, 0, "checked a moment ago: nothing to fetch");
+});
+
+test("stale tables are refreshed in the background when the catalog is read; the next read has the new date and the tables are read again", async () => {
+  const t = setup({ store: null });
+  await t.driver.start("agent:main", spec());
+  const first = await t.driver.catalog!("agent:main", { kind: "pi" });
+  assert.equal(first.source!.checked_at, null, "nothing was ever fetched");
+  assert.equal(first.source!.refreshing, true);
+  assert.equal(first.providers.length, 3, "the held tables are given at once, not after the fetch");
+  await waitFor(() => refreshes(t).length === 1, "the refresh");
+  await new Promise((r) => setTimeout(r, 300));
+  const second = await t.driver.catalog!("agent:main", { kind: "pi" });
+  assert.equal(typeof second.source!.checked_at, "number");
+  assert.equal(t.log().filter((l) => l.login_helper === "catalog").length, 2, "the new tables are read");
+  assert.equal(refreshes(t).length, 1, "and not fetched again");
+  assert.equal(refreshes(t)[0]!.env.HTTPS_PROXY, "", "direct first, and nothing of the phone's own proxy");
+});
+
+test("upstream out of reach direct is tried through v2rayA when it answers (it is not started for this); out of reach both ways, the held tables stay and nothing fails", async () => {
+  const t = setup({ store: null, env: { FAKE_REFRESH: "proxy-only" }, catalogRetryMs: 50 });
+  t.open.proxy = true;
+  await t.driver.start("agent:main", spec());
+  await t.driver.catalog!("agent:main", { kind: "pi" });
+  await waitFor(() => refreshes(t).length === 2, "direct, then the proxy");
+  assert.deepEqual(refreshes(t).map((r) => r.env.HTTPS_PROXY), ["", "http://127.0.0.1:20171"]);
+  assert.equal(t.proxyStarts.n, 0, "v2rayA is not started for the tables");
+
+  const none = setup({ store: null, env: { FAKE_REFRESH: "fail" }, catalogRetryMs: 150 });
+  await none.driver.start("agent:main", spec());
+  await none.driver.catalog!("agent:main", { kind: "pi" });
+  await waitFor(() => refreshes(none).length === 1, "the attempt");
+  const c = await none.driver.catalog!("agent:main", { kind: "pi" });
+  assert.equal(c.providers.length, 3, "the held tables are used");
+  assert.equal(c.source!.checked_at, null);
+  assert.equal(refreshes(none).length, 1, "not again before the retry time");
+  await new Promise((r) => setTimeout(r, 200));
+  await none.driver.catalog!("agent:main", { kind: "pi" });
+  await waitFor(() => refreshes(none).length === 2, "tried again after the retry time");
+});
+
+test("once a day (and a little after the first agent starts, when the tables are stale) the tables are asked for again", async () => {
+  const t = setup({ store: null, catalogStartDelayMs: 30, catalogRefreshMs: 120, catalogRetryMs: 10_000 });
+  await t.driver.start("agent:main", spec());
+  await waitFor(() => refreshes(t).length >= 1, "the first look after the start");
+  await waitFor(() => refreshes(t).length >= 2, "the daily one");
 });

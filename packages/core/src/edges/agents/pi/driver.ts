@@ -90,6 +90,12 @@ export interface PiDriverDeps {
   recoverMs?: number;
   /** How long a probe's answer is trusted. */
   routeTtlMs?: number;
+  /** How old the model tables may get before they are asked for again from upstream (pi.dev), and how often while the hub runs. */
+  catalogRefreshMs?: number;
+  /** After a refresh that got nothing, how long before a read of the catalog tries again. */
+  catalogRetryMs?: number;
+  /** How long after an agent starts the tables are first looked at (so a start does not wait for it). */
+  catalogStartDelayMs?: number;
 }
 
 type Fallback = { reason: "network" | "login" | "key" };
@@ -141,6 +147,9 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
   const hotMs = deps.hotMs ?? 60_000;
   const recoverMs = deps.recoverMs ?? 60_000;
   const routeTtlMs = deps.routeTtlMs ?? 15_000;
+  const catalogRefreshMs = deps.catalogRefreshMs ?? 24 * 60 * 60 * 1000;
+  const catalogRetryMs = deps.catalogRetryMs ?? 30 * 60 * 1000;
+  const catalogStartDelayMs = deps.catalogStartDelayMs ?? 20_000;
   const probe = deps.probe ?? ((route: "proxy" | "direct") => (route === "proxy" ? probeProxy(proxyUrl) : probeDirect()));
   const runtimeDir = () => deps.runtimePath?.("/root/.pi/agent") ?? "/root/.pi/agent";
 
@@ -615,12 +624,17 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
 
   const LOGIN_HOW = "Codex needs the owner's login (ChatGPT subscription). Ask the owner to turn on the phone's VPN for a minute, then call service:agents/configure {agent, config: {login: \"openai-codex\"}}: it returns a link and a code. Send both to the owner with human_say and ask them to open the link in the phone's browser and type the code. You are told when it is done; do not poll. The VPN can be turned off afterwards.";
   let tables: Promise<Array<{ id: string; name: string; models: CatalogModel[] }>> | null = null;
+  /** What pi's store says of the tables it holds: when upstream was last asked and the date of the newest list received. Null: never asked. */
+  let tableStore: { checked_at?: number | null; upstream_at?: number | null } | null = null;
+  let refreshing: Promise<void> | null = null;
+  let lastRefreshTry = 0;
+  let dailyTimer: NodeJS.Timeout | undefined;
 
   /** pi's own model tables, read once by the helper in the container; a short built-in list when that cannot be done. */
   function modelTables(): Promise<Array<{ id: string; name: string; models: CatalogModel[] }>> {
     tables ??= runHelper(["catalog"], { PI_OFFLINE: "1", PI_CODING_AGENT_DIR: runtimeDir() }, "/root", 90_000).then((got) => {
       const providers = Array.isArray(got?.providers) ? (got!.providers as Array<{ id: string; name: string; models: CatalogModel[] }>) : null;
-      if (providers && providers.length) return providers;
+      if (providers && providers.length) { tableStore = (got!.store as typeof tableStore) ?? null; return providers; }
       tables = null; // try again next time
       log("pi: the model tables could not be read; a short list is used");
       const byProvider = new Map<string, CatalogModel[]>();
@@ -633,6 +647,48 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
     return tables;
   }
 
+  // -- keeping the tables up with upstream ------------------------------------------------------------------------
+
+  const tablesStale = () => !tableStore?.checked_at || Date.now() - tableStore.checked_at > catalogRefreshMs;
+
+  /** The helper's environment for asking upstream: the proxy when it is the way, nothing of the phone's own proxy otherwise. pi must not be offline for it. */
+  function refreshEnv(viaProxy: boolean): Record<string, string> {
+    const proxy = viaProxy ? proxyUrl : "";
+    return { PI_CODING_AGENT_DIR: runtimeDir(), HTTP_PROXY: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, https_proxy: proxy, NO_PROXY: LOOPBACK, no_proxy: LOOPBACK };
+  }
+
+  /**
+   * Ask upstream (pi.dev) for newer model tables. Direct first; when that does not get through, through v2rayA if it answers (it is not
+   * started for this); when neither does, nothing happens and the tables stay as they are: no error anywhere. One at a time.
+   */
+  function refreshTables(): Promise<void> {
+    if (refreshing) return refreshing;
+    lastRefreshTry = Date.now();
+    refreshing = (async () => {
+      let got = await runHelper(["refresh"], refreshEnv(false), "/root", 120_000);
+      let ok = got?.ok === true;
+      if (!ok && (await (probe("proxy").catch(() => false)))) { got = await runHelper(["refresh"], refreshEnv(true), "/root", 120_000); ok = got?.ok === true; }
+      const store = (got?.store as typeof tableStore) ?? null;
+      if (store?.checked_at && store.checked_at !== tableStore?.checked_at) { tables = null; tableStore = store; }
+      if (!ok) log("pi: the model tables could not be refreshed from upstream; the ones held are used");
+    })().catch((error) => log(`pi: refreshing the model tables: ${errorText(error)}`)).finally(() => { refreshing = null; });
+    return refreshing;
+  }
+
+  /** A stale table is asked for again, in the background, at most once in `catalogRetryMs`. */
+  function refreshIfStale(): void {
+    if (tablesStale() && !refreshing && Date.now() - lastRefreshTry >= catalogRetryMs) void refreshTables();
+  }
+
+  /** On the first agent: look at the tables a little later (refresh when stale), and once a day after that. */
+  function watchTables(): void {
+    if (dailyTimer) return;
+    const first = setTimeout(() => { modelTables().then(refreshIfStale).catch(() => {}); }, catalogStartDelayMs);
+    first.unref();
+    dailyTimer = setInterval(() => { void refreshTables(); }, catalogRefreshMs);
+    dailyTimer.unref();
+  }
+
   // -- the driver --------------------------------------------------------------------------------------------------
 
   const driver: AgentDriver = {
@@ -640,6 +696,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
 
     async start(id, spec) {
       if (agents.has(id)) return;
+      watchTables();
       const cwd = spec.native?.cwd ?? `/root/agents/${id.slice("agent:".length)}`;
       const ag: Agent = { id, spec, cwd, lanes: new Map(), saved: spec.runtime, temp: { efforts: {} }, fallback: null };
       for (const key of spec.lanes) ag.lanes.set(key, { key, session: spec.sessions[key] ?? sessionId(), followups: [], held: [] });
@@ -744,7 +801,8 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
           auth: info.login ? { kind: "login", method: "device_code", state: loginState, how: loginState === "pending" ? "A login is under way: wait for the owner to finish it (the link and code were given when it started)." : LOGIN_HOW } : { kind: "key", ref: info.key! },
         } as CatalogProvider;
       });
-      return { providers, ...(ag ? { effective: readBack(ag).effective as Record<string, unknown> } : {}) };
+      refreshIfStale();
+      return { providers, source: { checked_at: tableStore?.checked_at ?? null, upstream_at: tableStore?.upstream_at ?? null, refreshing: !!refreshing }, ...(ag ? { effective: readBack(ag).effective as Record<string, unknown> } : {}) };
     },
 
     async configure(id, _key, config) {

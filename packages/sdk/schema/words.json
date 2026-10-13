@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "d1312e13be0407e41552768bdc32b32055a5b4eda1f3b5966e1c5757136f9c33",
+ "hash": "f596d890fe02f7c6dbd3d99dbc73ac6efb9236864f2586a5b1509a4a29965bfc",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -6015,7 +6015,7 @@
    "word": "runtime.catalog",
    "kind": "request",
    "direction": "in",
-   "description": "Which providers and models an agent's runtime can use, and whether each is usable now: for every provider its `ready` flag, what it needs (`auth`: a key in the vault, or a login), `how` to make it ready when it is not (including what to ask the owner), and its models with context length, image and reasoning support and the `efforts` each takes. Also `saved` (the lasting settings in the declaration) and `effective` (what is in force now, which a temporary configure or a fallback can make differ). A provider with many models lists none until you ask for it with `provider`; `search` keeps the models whose id or name contains the text. Read this before choosing a model with update, and again after the owner has logged in or saved a key.",
+   "description": "Which providers and models an agent's runtime can use, and whether each is usable now: for every provider its `ready` flag, what it needs (`auth`: a key in the vault, or a login), `how` to make it ready when it is not (including what to ask the owner), and its models with context length, image and reasoning support and the `efforts` each takes. Also `saved` (the lasting settings in the declaration) and `effective` (what is in force now, which a temporary configure or a fallback can make differ), and `catalog`: how new the model lists are (`checked_at`: when upstream was last asked; `upstream_at`: the date of the newest list received; `refreshing`: a refresh is under way). The lists keep up with upstream by themselves, about once a day, and a stale one is refreshed in the background when you read it; when upstream cannot be reached the last lists are used without any error. A provider with many models lists none until you ask for it with `provider`; `search` keeps the models whose id or name contains the text. Read this before choosing a model with update, and again after the owner has logged in or saved a key.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -6055,6 +6055,12 @@
       "additionalProperties": true
      },
      "effective": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     },
+     "catalog": {
       "type": "object",
       "properties": {},
       "required": [],

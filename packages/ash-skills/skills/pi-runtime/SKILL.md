@@ -13,6 +13,7 @@ whenToUse: 主人想换模型或换运行时、要用 Codex、问为什么被切
 1. **看现状和能用的**：`capability_call {member: "service:agents", word: "runtime.catalog", body: {agent}}`。返回：
    - `saved`：声明里长期保存的（`kind`、`model`、`effort`、每个模型自己的 `models`）；`effective`：现在真正生效的（可能因为临时改过、或连不上被换成 DeepSeek 而不同）。
    - `providers[]`：每个供应商有 `ready`（现在能不能用）、`auth`（要密钥还是要登录）、`how`（不能用时怎么补齐）、`needs_proxy`、`models[]`。模型有 `id`（写成 `提供方/模型`）、`context_window`、`images`（能不能看图）、`reasoning`、`efforts`（它接受的思考强度，`off` 是不思考；空表示不思考，不能设）。
+   - `catalog`：模型清单有多新（`checked_at` 上次问上游是什么时候，`upstream_at` 收到的最新清单的日期，`refreshing` 正在更新）。清单自己跟着上游走（每天一次，读目录时发现过旧也会在后台更新），连不上就用上次的，不会报错；新模型出来了但目录里还没有，隔一阵再读，或者主人说马上要用就直接写 `提供方/模型`（OpenRouter 的未知模型会放行）。
    - 模型很多的供应商（OpenRouter）不列模型：加 `provider: "openrouter"`，再用 `search` 按名字找。
 2. **选**：只在 `ready` 的供应商里挑；要看图的任务别选 `images: false` 的；资料特别长看 `context_window`；简单日常用 `deepseek/deepseek-flash` 配低强度，难的推理再升到 `high` 或 `max`；`effort` 只能取该模型 `efforts` 里的值，写错会被拒绝并告诉你可选项。
 3. **长期保存**：`service:agents/update {agent, runtime: {...}}`。`runtime` 是补丁，可以不写 `kind`，`models` 按模型合并（写 `null` 忘掉某个模型的设置）：
