@@ -1,7 +1,7 @@
 // A stand-in for `pi --mode rpc` for the pi driver tests. It speaks pi's JSON-lines protocol on stdio and appends everything it is
 // told (its start, each command) to the file FAKE_LOG as JSON lines, so a test can see what pi saw.
 //   a prompt containing  SLOW   waits (400 ms, or until aborted)       CRASH  the process exits at once
-//   TOOL   one tool call        THINK  a thinking block                 FAKE_CODEX=fail|auth   the Codex model answers with a network / login error
+//   TOOL   one tool call        THINK  a thinking block                 FAKE_CODEX=fail|auth|other|flaky   the Codex model answers with a network / login error
 import { appendFileSync } from "node:fs";
 
 const log = (entry) => process.env.FAKE_LOG && appendFileSync(process.env.FAKE_LOG, JSON.stringify(entry) + "\n");
@@ -10,6 +10,7 @@ let provider = arg("--provider") ?? "deepseek";
 let modelId = arg("--model") ?? "deepseek-flash";
 const session = arg("--session-id");
 let aborted = false;
+let codexCalls = 0;
 let release = null;
 let steered = [];
 const env = process.env;
@@ -31,8 +32,8 @@ async function prompt(cmd) {
     out({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: { content: [] }, isError: false });
   }
   if (text.includes("SLOW")) await new Promise((resolve) => { release = resolve; setTimeout(resolve, 400); });
-  if (provider === "openai-codex" && (env.FAKE_CODEX === "fail" || env.FAKE_CODEX === "auth")) {
-    const errorMessage = env.FAKE_CODEX === "fail" ? "fetch failed" : "Could not parse your authentication token. Please try signing in again.";
+  if (provider === "openai-codex" && (env.FAKE_CODEX === "fail" || env.FAKE_CODEX === "auth" || env.FAKE_CODEX === "other" || (env.FAKE_CODEX === "flaky" && ++codexCalls === 1))) {
+    const errorMessage = env.FAKE_CODEX === "auth" ? "Could not parse your authentication token. Please try signing in again." : env.FAKE_CODEX === "other" ? "context length exceeded" : "fetch failed";
     out({ type: "message_end", message: assistant([], { stopReason: "error", errorMessage }) });
   } else if (aborted) {
     out({ type: "message_end", message: assistant([], { stopReason: "aborted" }) });

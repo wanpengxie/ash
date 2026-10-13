@@ -274,9 +274,9 @@ test("while on the fallback the way is tried again every recoverMs, and the sess
   assert.equal((await t.driver.configure("agent:main", undefined)).fallback, null);
 });
 
-test("a network error in a turn is checked, and when the way is shut the same session goes on with DeepSeek (history kept: set_model, same process and session) and the owner is told", async () => {
-  let calls = 0;
-  const t = setup({ env: { FAKE_CODEX: "fail" }, probe: async (route) => (route === "proxy" ? calls++ === 0 : false) });
+test("a network error in a turn is tried once more with the same prompt; when that fails too the same session goes on with DeepSeek (history kept: set_model, same process and session) and the owner is told", async () => {
+  const t = setup({ env: { FAKE_CODEX: "fail" } });
+  t.open.proxy = true;
   await t.driver.start("agent:main", spec({ runtime: { kind: "pi", model: "openai-codex/gpt-5.5" } }));
   await t.driver.send("agent:main", "front", [msg("do it")]);
   await waitFor(() => t.ended().length === 1);
@@ -284,22 +284,47 @@ test("a network error in a turn is checked, and when the way is shut the same se
   assert.equal(t.starts().length, 1, "the same process");
   const set = t.log().find((l) => l.cmd === "set_model")!;
   assert.deepEqual([set.provider, set.modelId], ["deepseek", "deepseek-flash"]);
-  assert.equal(t.prompts().length, 2);
-  assert.match(t.prompts()[1]!.prompt, /could not be reached.*deepseek\/deepseek-flash/);
+  assert.equal(t.prompts().length, 3, "the prompt, the retry, the fallback");
+  assert.match(t.prompts()[1]!.prompt, /failed on the network/);
+  assert.match(t.prompts()[2]!.prompt, /could not be reached.*deepseek\/deepseek-flash/);
   assert.equal(t.of("output").at(-1)!.text.startsWith("echo[deepseek/"), true);
   assert.equal(t.of("notice").length, 1);
+  assert.deepEqual(t.probed.slice(1), [], "the line is not probed to judge the error: the retry is what decides");
 });
 
-test("an error that is not the network's (the way is open) is the turn's error and nothing is switched", async () => {
-  const t = setup({ env: { FAKE_CODEX: "fail" } });
+test("a network error that goes away on the retry is not seen by the owner: no notice, no switch", async () => {
+  const t = setup({ env: { FAKE_CODEX: "flaky" } });
+  t.open.proxy = true;
+  await t.driver.start("agent:main", spec({ runtime: { kind: "pi", model: "openai-codex/gpt-5.5" } }));
+  await t.driver.send("agent:main", "front", [msg("do it")]);
+  await waitFor(() => t.ended().length === 1);
+  assert.equal(t.ended()[0]!.outcome, "completed");
+  assert.equal(t.prompts().length, 2);
+  assert.equal(t.of("output").at(-1)!.text.startsWith("echo[openai-codex/"), true);
+  assert.equal(t.of("notice").length, 0);
+  assert.equal(t.log().filter((l) => l.cmd === "set_model").length, 0);
+});
+
+test("an error that is not the network's nor the login's is the turn's error and nothing is switched or retried", async () => {
+  const t = setup({ env: { FAKE_CODEX: "other" } });
   t.open.proxy = true;
   await t.driver.start("agent:main", spec({ runtime: { kind: "pi", model: "openai-codex/gpt-5.5" } }));
   await t.driver.send("agent:main", "front", [msg("do it")]);
   await waitFor(() => t.ended().length === 1);
   assert.equal(t.ended()[0]!.outcome, "error");
-  assert.equal(t.ended()[0]!.error, "fetch failed");
+  assert.equal(t.ended()[0]!.error, "context length exceeded");
+  assert.equal(t.prompts().length, 1);
   assert.equal(t.of("notice").length, 0);
   assert.equal(t.log().filter((l) => l.cmd === "set_model").length, 0);
+});
+
+test("pi's Codex provider is pointed at the gateway: models.json carries its address, and the gateway answers there", async () => {
+  const t = setup();
+  await t.driver.start("agent:main", spec());
+  const models = JSON.parse(t.written["/root/.pi/agent/models.json"]!);
+  const base = models.providers["openai-codex"].baseUrl as string;
+  assert.match(base, /^http:\/\/127\.0\.0\.1:\d+\/backend-api$/);
+  assert.equal((await fetch(base + "/nothing")).status, 404);
 });
 
 test("a Codex model before the owner has logged in runs on DeepSeek (told once); `configure login` gives the owner a link and a code, and when it is done the session goes to Codex", async () => {

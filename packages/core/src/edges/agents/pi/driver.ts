@@ -16,10 +16,14 @@
  *
  * DeepSeek is the default model and needs nothing: no login, no proxy, no probe (the key is the one DSH uses). A Codex model is used only
  * once the owner has logged in; the way to it is chosen when a process is taken (`route.ts`): v2rayA's proxy if it answers, else straight out
- * (the phone's VPN is on), else nothing, and then this turn goes to DeepSeek, which is always direct. A network error in a turn is checked the
- * same way and, when the way is really shut, the session goes on with DeepSeek (`set_model`: the history stays) and the owner is told;
- * while it is on DeepSeek the way is tried again every minute, and the session goes back when it is open. Codex's login is a
- * `configure` of the driver (see `configure`).
+ * (the phone's VPN is on), else nothing, and then this turn goes to DeepSeek, which is always direct.
+ *
+ * pi does not connect to Codex itself: `models.json` points its `openai-codex` provider at the Codex gateway (`codex-gateway.ts`), which
+ * lives as long as the hub does. It keeps an upstream WebSocket per session between turns (through the way above), so a new pi process
+ * does not pay for the proxy hop, TLS and the upgrade again nor upload the whole context again, and it tries a request twice (the second
+ * time on a new connection) before it gives up. A network error that still reaches a turn is tried once more with the same prompt, and then
+ * the session goes on with DeepSeek (`set_model`: the history stays) and the owner is told; while it is on DeepSeek the way is tried again
+ * every minute, and the session goes back when it is open. Codex's login is a `configure` of the driver (see `configure`).
  *
  * How the contract's operations map:
  *   send / followup   prompt (a followup waits in the driver until the turn ends)   steer      steer
@@ -33,6 +37,7 @@ import type { AgentDriver, AgentEvent, AgentStartSpec, AgentStatus, CatalogModel
 import type { DriverProcess, SpawnFn } from "../dsh/acp";
 import { toolSummary } from "../dsh/tool-label";
 import { PiRpc, type PiRecord } from "./rpc";
+import { CodexGateway } from "./codex-gateway";
 import { AUTH_ERROR, DEFAULT_PROXY_URL, NETWORK_ERROR, chooseRoute, probeDirect, probeProxy, type Route } from "./route";
 
 /** `pi` is a name the main body resolves: /opt/pi/... in the container, the machine's own pi in development. */
@@ -77,6 +82,8 @@ export interface PiDriverDeps {
   log?(...args: unknown[]): void;
   /** v2rayA's HTTP proxy. */
   proxyUrl?: string;
+  /** The Codex gateway (`codex-gateway.ts`) pi's `openai-codex` provider is pointed at. Absent: the driver's own; `false`: pi goes to Codex itself. */
+  gateway?: { baseUrl(): Promise<string> } | false;
   /** Is this way open? (tests give their own; the default knocks on the proxy and on OpenAI's host). */
   probe?(route: "proxy" | "direct"): Promise<boolean>;
   /** The model a shut way falls back to. */
@@ -155,6 +162,9 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
   /** The keys the hub gave (by name): they go to a process through its environment and are never written to a file. */
   const keys = new Map<string, string>();
   let routeCache: { at: number; route: Route } | null = null;
+  /** The proxy Codex requests go through now (the gateway asks for it when it connects): the one the last probe found open. */
+  let codexProxy: string | undefined;
+  const gateway = deps.gateway === false ? null : (deps.gateway ?? new CodexGateway({ proxy: () => codexProxy, log }));
   let routeProbe: Promise<Route> | null = null;
   const login: { state: "none" | "pending" | "ready" | "unknown"; info?: Record<string, unknown>; child?: DriverProcess } = { state: "unknown" };
 
@@ -164,7 +174,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
   function routeNow(fresh = false): Promise<Route> {
     if (!fresh && routeCache && Date.now() - routeCache.at < routeTtlMs) return Promise.resolve(routeCache.route);
     if (!routeProbe) {
-      routeProbe = chooseRoute(probe).then((route) => { routeCache = { at: Date.now(), route }; return route; }).finally(() => { routeProbe = null; });
+      routeProbe = chooseRoute(probe).then((route) => { routeCache = { at: Date.now(), route }; codexProxy = route === "proxy" ? proxyUrl : undefined; return route; }).finally(() => { routeProbe = null; });
     }
     return routeProbe;
   }
@@ -403,22 +413,32 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
 
   function finishLane(t: Turn): void { if (t.lane.turn === t) t.lane.turn = undefined; }
 
-  /** One prompt, to its settling. A network error that is real (the way is shut) is answered by a switch to the fallback and one more try. */
+  /**
+   * One prompt, to its settling. A network error (the gateway has already tried a second connection) is answered by one more try of the
+   * same prompt, and when that fails too by a switch to the fallback model and one more try there.
+   */
   async function drive(slot: Slot, t: Turn, p: Proc): Promise<{ outcome: "completed" | "cancelled" | "error"; error?: string }> {
     const { ag, lane } = t;
     let { message, images } = promptOf(lane, t.batch);
     let switched = false;
+    let retried = false;
     for (;;) {
       const run = await promptOnce(t, p, message, images);
       if (run.outcome !== "error" || switched || !alive(t)) return run;
-      // Which kind of failure was it? Only a Codex model's own trouble is answered with a switch.
+      // Which kind of failure was it? Only a Codex model's own trouble is answered with a retry or a switch.
       const reason = run.error ?? "";
       const model = p.model;
       if (model === fallbackModel || !providerOf(model)) return run;
       const login = AUTH_ERROR.test(reason);
       const net = !login && needsRoute(model) && NETWORK_ERROR.test(reason);
       if (!login && !net) return run;
-      if (net && (await routeNow(true)) !== "none") return run; // the way is open: this was something else
+      if (net && !retried) {
+        retried = true;
+        log(`pi: ${ag.id}/${lane.key}: network error (${reason.slice(0, 80)}); trying once more`);
+        message = "[ash] The request to the model failed on the network. Carry on with the message above where it stopped.";
+        images = [];
+        continue;
+      }
       enterFallback(ag, login ? (providerOf(model)!.login ? "login" : "key") : "network");
       try { await switchModel(p, fallbackModel); await applyEffort(p, ag, fallbackModel); } catch (e) { return { outcome: "error", error: errorText(e) }; }
       switched = true;
@@ -517,6 +537,8 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
     // The tool surface: one server, `ash`. Each process puts its lane's token into ASH_TOKEN, and pi expands it in the header.
     const config = { mcpServers: { ash: { url: ag.spec.tools.mcp_url, headers: { Authorization: "Bearer ${ASH_TOKEN}" }, exposure: "direct", timeout: 900 } } };
     await deps.writeFile(`/root/.pi/agent/mcp.json`, JSON.stringify(config, null, 2) + "\n");
+    // Codex goes through the gateway, which holds the connection to it between turns (pi adds /codex/responses, for the WebSocket and for SSE).
+    if (gateway) await deps.writeFile(`/root/.pi/agent/models.json`, JSON.stringify({ providers: { [CODEX_PROVIDER]: { baseUrl: await gateway.baseUrl() } } }, null, 2) + "\n");
   }
 
   // -- Codex's login -----------------------------------------------------------------------------------------------
