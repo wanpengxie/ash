@@ -617,6 +617,7 @@ export class AgentManager {
   /** A request or event addressed to an agent. */
   async accept(id: string, msg: Message, raw: unknown, signal?: AbortSignal): Promise<{ data: unknown }> {
     if (msg.word === "typing") { this.typingUntil.set(id, this.now() + TYPING_MS); return { data: undefined }; }
+    if (msg.word === "say" && msg.from === OWNER_ID) this.typingUntil.delete(id); // they sent it: they are done typing
     const body = (raw && typeof raw === "object" ? raw : msg.body) as Record<string, any>;
     const decl = this.run(id).spec.decl;
     const attachments = this.storeAttachments(body.attachments);

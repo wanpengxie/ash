@@ -322,31 +322,20 @@ test("an ask whose turn is cancelled fails; asking a stopped agent is offline", 
   await assert.rejects(f.service("ask", { agent: M, text: "q" }, caller("agent:other")), (e: any) => e.code === "offline");
 });
 
-test("a lane that takes the owner's words waits while the owner is typing, and opens when they have had time to finish; other lanes do not wait", async () => {
+test("a lane that takes the owner's words waits while the owner is typing; their message ends the typing, so it goes at once; other lanes never wait", async () => {
   const f = fixture();
   await f.start();
   const d = f.driver();
+  // typing holds only the owner's lane: a wake on the back lane goes at once
   await f.call(M, "typing", {});
-  await f.call(M, "say", { text: "half a thought" });
   await f.call(M, "wake", { reason: "pulse" }, caller("service:pulse", "service"));
   await waitFor(() => sends(d, "back").length === 1);
-  await settle();
-  assert.equal(sends(d, "front").length, 0);
-  const timer = f.timers.afters.filter((t) => !t.cancelled);
-  assert.equal(timer.length, 1);
-  assert.equal(timer[0]!.ms, 5000);
-  // still typing when the time comes: it waits again, for the rest
-  f.clock.t += 3000;
-  await f.call(M, "typing", {});
-  timer[0]!.fn();
-  await settle();
-  assert.equal(sends(d, "front").length, 0);
-  const again = f.timers.afters.filter((t) => !t.cancelled).at(-1)!;
-  assert.equal(again.ms, 5000);
-  f.clock.t += 5000;
-  again.fn();
+  // their message is the end of the typing: no wait for the rest of it
+  f.clock.t += 1000;
+  await f.call(M, "say", { text: "a whole thought" });
   await waitFor(() => sends(d, "front").length === 1);
-  assert.deepEqual(texts(sends(d, "front")[0]!), ["half a thought"]);
+  assert.deepEqual(texts(sends(d, "front")[0]!), ["a whole thought"]);
+  assert.equal(f.timers.afters.filter((t) => !t.cancelled && t.ms === 5000).length, 0);
 });
 
 test("a pause (read from service:admin at start and on settings.changed) stops turns, not the inbox; resuming delivers", async () => {
