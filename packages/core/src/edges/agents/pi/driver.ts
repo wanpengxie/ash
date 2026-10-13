@@ -564,14 +564,14 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       let buffer = "";
       let first = true;
-      const wait = setTimeout(() => { if (first) { first = false; try { child.kill("SIGKILL"); } catch { /* gone */ } login.state = "unknown"; reject(new WordError("failed", "the login did not give a code in time")); } }, 45_000);
+      const wait = setTimeout(() => { if (first) { first = false; try { child.kill("SIGKILL"); } catch { /* gone */ } login.state = "unknown"; reject(new WordError("failed", "the login did not give its link in time")); } }, 45_000);
       wait.unref();
       const finish = (ev: Record<string, any>) => {
-        if (ev.event === "device_code" && first) {
+        if (ev.event === "auth_url" && first) {
           first = false;
           clearTimeout(wait);
           login.state = "pending";
-          login.info = { verification_uri: ev.verification_uri, user_code: ev.user_code, expires_in: ev.expires_in, note: "The owner opens the link in the phone's browser and types the code; the browser must be able to reach OpenAI (the phone's VPN on). Read the state back with configure." };
+          login.info = { url: ev.url, note: "pi's browser login: the owner opens url in the phone's browser and signs in with the ChatGPT account (the browser must reach OpenAI: the phone's VPN on); OpenAI sends the browser back to localhost:1455, where the login waits. Read the state back with configure." };
           resolve(login.info);
         } else if (ev.event === "done") {
           login.state = "ready"; login.info = undefined;
@@ -591,7 +591,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
       });
       child.on("exit", () => {
         if (login.child === child) login.child = undefined;
-        if (first) { first = false; clearTimeout(wait); login.state = "none"; reject(new WordError("failed", "the login helper ended before it gave a code")); }
+        if (first) { first = false; clearTimeout(wait); login.state = "none"; reject(new WordError("failed", "the login helper ended before it gave its link")); }
         else if (login.state === "pending") { login.state = "none"; login.info = undefined; notice(ag, "Codex 登录没有完成（码过期或被中断）。需要的话再发起一次。"); }
       });
     });
@@ -792,7 +792,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
         const info = PROVIDERS[t.id]!;
         return {
           id: t.id, name: info.name, needs_proxy: info.proxy === true, models: t.models,
-          auth: info.login ? { kind: "login", method: "device_code", state: loginState, how: loginState === "pending" ? "A login is under way: wait for the owner to finish it (the link and code were given when it started)." : LOGIN_HOW } : { kind: "key", ref: info.key! },
+          auth: info.login ? { kind: "login", method: "browser", state: loginState, how: loginState === "pending" ? "A login is under way: wait for the owner to finish it (the link and code were given when it started)." : LOGIN_HOW } : { kind: "key", ref: info.key! },
         } as CatalogProvider;
       });
       refreshIfStale();

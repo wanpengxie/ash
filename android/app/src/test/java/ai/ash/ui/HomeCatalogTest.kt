@@ -11,8 +11,8 @@ class HomeCatalogTest {
       {"id":"deepseek","name":"DeepSeek","ready":true,"auth":{"kind":"key","ref":"DEEPSEEK_API_KEY","configured":true},"models":[
         {"id":"deepseek/deepseek-flash","name":"DeepSeek Flash","context_window":1000000,"images":true,"reasoning":true,"efforts":["off","low","high","max"]},
         {"id":"deepseek/plain","name":"Plain","context_window":128000,"images":false,"reasoning":false,"efforts":[]}]},
-      {"id":"openai-codex","name":"OpenAI Codex","ready":false,"auth":{"kind":"login","method":"device_code","state":"none"},"models":[]},
-      {"id":"pending","name":"P","ready":false,"auth":{"kind":"login","method":"device_code","state":"pending"},"models":[]},
+      {"id":"openai-codex","name":"OpenAI Codex","ready":false,"auth":{"kind":"login","method":"browser","state":"none"},"models":[]},
+      {"id":"pending","name":"P","ready":false,"auth":{"kind":"login","method":"browser","state":"pending"},"models":[]},
       {"id":"openrouter","name":"OpenRouter","ready":false,"auth":{"kind":"key","ref":"OPENROUTER_API_KEY","configured":false},"models":[],"models_hidden":"393 models: ask with provider"}]}""")
 
     @Test fun providersShowWhetherTheyCanBeUsedAndWhatToDoOtherwise() {
@@ -50,10 +50,9 @@ class HomeCatalogTest {
         same("""{"agent":"agent:main","runtime":{"kind":"pi"}}""", HomeCatalog.switchBody("agent:main", "pi"))
     }
 
-    @Test fun theLoginCardTellsTheOwnerToTurnOnTheVpnAndGivesTheCode() {
-        val text = HomeCatalog.loginText(JSONObject("""{"user_code":"ABCD-1234","expires_in":900}"""))
+    @Test fun theLoginCardTellsTheOwnerToTurnOnTheVpnAndSignIn() {
+        val text = HomeCatalog.LOGIN_TEXT
         assertTrue(text.contains("VPN"))
-        assertTrue(text.contains("ABCD-1234"))
-        assertTrue(text.contains("15 分钟"))
+        assertTrue(text.contains("ChatGPT"))
     }
 }

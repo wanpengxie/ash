@@ -314,8 +314,8 @@ class HmModel(env: HomeEnv, arg: String?) : HomePage(env, arg) {
                 }
                 if (p.id == "openai-codex") loginNote?.let { addView(Hk.note(ctx, it, if (loginCard == null && it != LOGIN_ASKING) "warn" else null)) }
                 if (p.id == "openai-codex" && loginCard != null) {
-                    addView(Hk.pre(ctx, HomeCatalog.loginText(loginCard!!)))
-                    addView(AshUi.button(ctx, "打开登录页", Kind.PRIMARY, AshUi.BtnSize.SM) { loginCard?.str("verification_uri")?.let { open(it) } })
+                    addView(Hk.pre(ctx, HomeCatalog.LOGIN_TEXT))
+                    addView(AshUi.button(ctx, "打开登录页", Kind.PRIMARY, AshUi.BtnSize.SM) { loginCard?.str("url")?.let { open(it) } })
                 }
                 p.hidden?.let { addView(AshUi.text(ctx, "模型很多，没有在这里列出；让她帮你选，或者写在对话里。", AshTokens.Type.sub)) }
                 for (m in p.models) {
@@ -351,7 +351,7 @@ class HmModel(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         loginNote = LOGIN_ASKING; loginCard = null; drawPi()
         call("service:agents", "configure", JSONObject().put("agent", a).put("config", JSONObject().put("login", "openai-codex"))) { r ->
             val card = r.data.optJSONObject("config")
-            if (!r.ok || card?.str("user_code") == null) {
+            if (!r.ok || card?.str("url") == null) {
                 loginNote = if (r.code == "unavailable") "连不上 OpenAI：先打开手机的全局 VPN（或让 v2rayA 跑起来），再点登录。" else "没能申请到登录码：${r.failure?.message ?: "请再试一次。"}"
                 drawPi(); return@call
             }

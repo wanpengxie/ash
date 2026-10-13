@@ -315,9 +315,7 @@ test("a Codex model before the owner has logged in runs on DeepSeek (told once);
   assert.equal((await t.driver.configure("agent:main", undefined)).fallback, "login");
 
   const card = await t.driver.configure("agent:main", undefined, { login: "openai-codex" });
-  assert.equal(card.verification_uri, "https://auth.example/codex/device");
-  assert.equal(card.user_code, "ABCD-1234");
-  assert.equal(card.expires_in, 900);
+  assert.equal(card.url, "https://auth.example/oauth/authorize?x=1");
   assert.equal(card.codex_login, "pending");
   assert.equal(t.log().find((l) => l.login_helper === "login")!.env.HTTPS_PROXY, "http://127.0.0.1:20171", "the login goes the same way as the model");
   await waitFor(() => t.of("notice").some((n) => /登录成功/.test(n.text)), "the login to finish");

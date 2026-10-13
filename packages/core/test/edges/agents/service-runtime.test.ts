@@ -25,7 +25,7 @@ class CatalogDriver extends FakeDriver {
     this.calls.push(["catalog", agent, saved, options]);
     const providers: CatalogProvider[] = [
       { id: "deepseek", name: "DeepSeek", needs_proxy: false, auth: { kind: "key", ref: "DEEPSEEK_API_KEY" }, models: [model("deepseek/flash", ["off", "low", "high"]), model("deepseek/plain", [])] },
-      { id: "codex", name: "Codex", needs_proxy: true, auth: { kind: "login", method: "device_code", state: this.login, how: "Ask the owner to log in." }, models: [model("codex/gpt", ["low", "medium", "high"])] },
+      { id: "codex", name: "Codex", needs_proxy: true, auth: { kind: "login", method: "browser", state: this.login, how: "Ask the owner to log in." }, models: [model("codex/gpt", ["low", "medium", "high"])] },
       { id: "openrouter", name: "OpenRouter", needs_proxy: false, auth: { kind: "key", ref: "OPENROUTER_API_KEY" }, models: many },
     ];
     return { providers, effective: { model: "deepseek/flash" }, source: { checked_at: 1_700_000_100_000, upstream_at: 1_700_000_000_000, refreshing: false } };
@@ -55,7 +55,7 @@ test("runtime.catalog: providers with ready flag, auth, what to do when not read
   assert.deepEqual(by.deepseek.models[0].efforts, ["off", "low", "high"]);
   assert.equal(by.codex.ready, false);
   assert.equal(by.codex.needs_proxy, true);
-  assert.deepEqual(by.codex.auth, { kind: "login", method: "device_code", state: "none" });
+  assert.deepEqual(by.codex.auth, { kind: "login", method: "browser", state: "none" });
   assert.equal(by.codex.how, "Ask the owner to log in.");
   assert.equal(by.openrouter.ready, false);
   assert.match(by.openrouter.how, /Only the owner can save it.*幕后 → 密钥/);

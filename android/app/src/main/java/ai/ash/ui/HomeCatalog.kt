@@ -55,9 +55,7 @@ internal object HomeCatalog {
     fun switchBody(agent: String, kind: String): JSONObject = JSONObject().put("agent", agent).put("runtime", JSONObject().put("kind", kind))
 
     /** The login card for the owner: the link, the code, and what to do first. */
-    fun loginText(card: JSONObject): String {
-        val code = card.str("user_code").orEmpty()
-        val minutes = ((card.dbl("expires_in") ?: 900.0) / 60).toInt().coerceAtLeast(1)
-        return "先打开手机的全局 VPN（要能打开 OpenAI 的页面），再点下面的链接，在页面里输入这个码（$minutes 分钟内有效）：\n$code\n登录成功后会通知你，那时可以关掉 VPN。"
-    }
+    /** What the Codex card says while a login is under way (pi's browser login). */
+    const val LOGIN_TEXT =
+        "先打开手机的全局 VPN（要能打开 OpenAI 的页面），再点「打开登录页」，用 ChatGPT 账号登录。登录完页面会跳回手机本机，成功后会通知你，那时可以关掉 VPN。"
 }

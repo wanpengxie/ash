@@ -26,5 +26,5 @@ if (mode === "catalog") {
   process.exit(0);
 }
 if (mode === "status") { out({ ready: process.env.FAKE_LOGIN_READY === "1" || (!!marker && existsSync(marker)) }); process.exit(0); }
-out({ event: "device_code", verification_uri: "https://auth.example/codex/device", user_code: "ABCD-1234", expires_in: 900 });
+out({ event: "auth_url", url: "https://auth.example/oauth/authorize?x=1" });
 setTimeout(() => { if (process.env.FAKE_LOGIN !== "error" && marker) writeFileSync(marker, "1"); out(process.env.FAKE_LOGIN === "error" ? { event: "error", message: "expired" } : { event: "done" }); process.exit(0); }, Number(process.env.FAKE_LOGIN_MS ?? 300));

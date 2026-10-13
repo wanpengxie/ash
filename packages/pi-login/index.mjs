@@ -4,7 +4,9 @@
 //                               for the providers Ash can use (deepseek, openai-codex, openrouter), so the list is never a copy that goes stale
 //   node index.mjs refresh  ->  {"ok": bool, "errors": {provider: message}, "store": {checked_at, upstream_at}}: asks pi.dev for newer model tables (what
 //                               `pi update --models` does; pi keeps them in $PI_CODING_AGENT_DIR/models-store.json and reads them offline afterwards)
-//   node index.mjs login    ->  {"event":"device_code","verification_uri","user_code","expires_in"}   (the owner types the code in the phone's browser)
+//   node index.mjs login    ->  {"event":"auth_url","url"}   pi's standard browser login: the owner opens the url in the phone's browser and signs
+//                               in; OpenAI sends the browser back to http://localhost:1455/auth/callback, which pi listens on here (the
+//                               container shares the phone's network, so the phone's browser reaches it)
 //                               then {"event":"done"} when the token is stored, or {"event":"error","message"}
 // The token goes where pi keeps it (`$PI_CODING_AGENT_DIR/auth.json`, default ~/.pi/agent) and pi refreshes it itself afterwards.
 // The requests of the login go through HTTPS_PROXY when the driver sets it (pi's own processes do the same).
@@ -104,11 +106,11 @@ async function login() {
     await runtime.login(PROVIDER, "oauth", {
       signal: abort.signal,
       prompt: async (p) => {
-        if (p.type === "select") return "device_code";
-        return new Promise(() => {}); // nothing else is asked in the device-code flow
+        if (p.type === "select") return "browser";
+        return new Promise(() => {}); // the code comes back through pi's callback on port 1455, never typed in
       },
       notify: (event) => {
-        if (event.type === "device_code") out({ event: "device_code", verification_uri: event.verificationUri, user_code: event.userCode, expires_in: event.expiresInSeconds });
+        if (event.type === "auth_url") out({ event: "auth_url", url: event.url });
       },
     });
     out({ event: "done" });

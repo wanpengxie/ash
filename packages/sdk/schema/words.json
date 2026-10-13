@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "f596d890fe02f7c6dbd3d99dbc73ac6efb9236864f2586a5b1509a4a29965bfc",
+ "hash": "2e9400915f6ec823d7782bb81bec9ee1c1edf18e0585ef7ab49711e95c699feb",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -7774,7 +7774,7 @@
    "word": "configure",
    "kind": "request",
    "direction": "in",
-   "description": "Set the runtime's own configuration for an agent (model, effort level, other options the runtime reports it supports), or read it when config is left out. This is the temporary way: it changes what is in force now and is forgotten when the hub restarts; the lasting way is `update` with `runtime`. On the pi runtime: `config: {model: \"deepseek/deepseek-flash\", effort: \"high\"}` takes effect from the next turn; `config: {login: \"openai-codex\"}` starts Codex's device-code login and returns {verification_uri, user_code, expires_in} (the owner opens the link in the phone's browser, with the phone's VPN on, and types the code; you are told when it is done). The read-back gives `effective` (in force now: model, effort, whether it fell back to DeepSeek and why, the route to the model, the login state) and `saved` (the declaration's lasting settings).",
+   "description": "Set the runtime's own configuration for an agent (model, effort level, other options the runtime reports it supports), or read it when config is left out. This is the temporary way: it changes what is in force now and is forgotten when the hub restarts; the lasting way is `update` with `runtime`. On the pi runtime: `config: {model: \"deepseek/deepseek-flash\", effort: \"high\"}` takes effect from the next turn; `config: {login: \"openai-codex\"}` starts Codex's browser login (pi's standard one) and returns {url} (the owner opens it in the phone's browser, with the phone's VPN on, and signs in; the browser comes back to the phone itself and you are told when it is done). The read-back gives `effective` (in force now: model, effort, whether it fell back to DeepSeek and why, the route to the model, the login state) and `saved` (the declaration's lasting settings).",
    "input_schema": {
     "type": "object",
     "properties": {
