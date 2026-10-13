@@ -9,7 +9,7 @@
 import { dirname } from "node:path";
 import type { AgentDriverFactory } from "../../../../sdk/src/driver";
 import { createDshDriver, type DshDriverDeps } from "./dsh";
-import { readDecl, type Runs } from "./runs";
+import type { Runs } from "./runs";
 import { SCRIPT_AGENT_SOURCE } from "./script-agent.generated";
 
 export const SCRIPT_AGENT_ID = "agent:script";
@@ -24,13 +24,17 @@ export function scriptDriver(deps: Pick<DshDriverDeps, "spawn" | "writeFile" | "
   });
 }
 
-/** Declares `agent:script` when there is none yet (only called for a host that said `dev.script_agent`). */
-export function declareScriptAgent(runs: Pick<Runs, "get" | "put">): void {
-  if (runs.get(SCRIPT_AGENT_ID)) return;
-  const decl = readDecl({
-    id: SCRIPT_AGENT_ID, name: "script", runtime: { kind: SCRIPT_RUNTIME },
-    summary: "A debug agent that carries out the script it is sent.",
-    brief: "You are the script agent of a debug build: a message to you is a script, and you do what it lists, step by step. You do not think or choose.",
-  }, "service:agents", 0);
-  runs.put({ id: decl.id, spec: { decl, sessions: {}, static_hash: {}, usage_since: 0 } });
+/**
+ * The script agent is not declared by itself: the owner's command line declares it for a run and removes it after, so the owner's
+ * screens never list it. At start (a debug hub only) one an earlier run or an older build left behind is forgotten.
+ */
+export function forgetScriptAgent(runs: Pick<Runs, "get" | "remove">): void {
+  if (runs.get(SCRIPT_AGENT_ID)) runs.remove(SCRIPT_AGENT_ID);
 }
+
+/** What the command line declares for a run (`service:agents/declare`). */
+export const SCRIPT_AGENT_DECL = {
+  id: SCRIPT_AGENT_ID, name: "script", runtime: { kind: SCRIPT_RUNTIME },
+  summary: "A debug agent that carries out the script it is sent.",
+  brief: "You are the script agent of a debug build: a message to you is a script, and you do what it lists, step by step. You do not think or choose.",
+};

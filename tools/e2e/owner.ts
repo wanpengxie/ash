@@ -466,12 +466,21 @@ function runProgram(argv: string[], timeoutMs = 30_000): Promise<{ exit: number 
 /** `${env.NAME}` in an argument of a script's `exec` is that environment variable; `${run}` is the run's id (for a file of the run's own). */
 const expandEnv = (arg: string, run: string): string => arg.replace(/\$\{env\.([A-Za-z0-9_]+)\}/g, (_, name: string) => process.env[name] ?? "").replace(/\$\{run\}/g, run);
 
+const SCRIPT_AGENT = "agent:script";
+/** The script agent as a run declares it (packages/core/src/edges/agents/script.ts SCRIPT_AGENT_DECL). */
+const SCRIPT_DECL = {
+  id: SCRIPT_AGENT, name: "script", runtime: { kind: "script" },
+  summary: "A debug agent that carries out the script it is sent.",
+  brief: "You are the script agent of a debug build: a message to you is a script, and you do what it lists, step by step. You do not think or choose.",
+};
+
 async function script(o: Options): Promise<number> {
   const file = o.rest[1];
   if (!file) throw new UsageError("script needs a file: owner.mjs script <file.json>");
   let sc: ScriptFile;
   try { sc = parseScript(readFileSync(resolve(file), "utf8")); } catch (e) { throw new UsageError(`${file}: ${(e as Error).message}`); }
-  const agent = (o.flags.get("to") as string | undefined) ?? "agent:script";
+  const agent = (o.flags.get("to") as string | undefined) ?? SCRIPT_AGENT;
+  let declaredHere = false;
   const run = sc.run ?? `run-${Date.now().toString(36)}`;
   const name = sc.name ?? file;
   const owner = await connect(o, surfacesOf(o, "chat"));
@@ -567,6 +576,25 @@ async function script(o: Options): Promise<number> {
       if (r.delay_ms) await sleepMs(r.delay_ms);
       for (const a of r.do ?? []) await doAction(a, {});
     }
+    // The script agent exists only for the run: declared now, removed in the finally below (the owner's screens never list it).
+    if (agent === SCRIPT_AGENT) {
+      const made = await call("service:agents", "declare", SCRIPT_DECL).catch((e) => {
+        const why = String((e as Error).message);
+        if (!why.includes("conflict")) throw new Failure(`the hub has no script agent: ${why} (agent:script is there only in a debug build)`, 3);
+        return null;
+      });
+      if (made) declaredHere = true;
+      // A hub that is not a debug one takes the declaration but has no driver for it.
+      if (made?.available === false) throw new Failure("the hub has no script agent: no driver for runtime script (agent:script is there only in a debug build)", 3);
+      // It starts on its own after the declaration: the script goes once it is idle.
+      const up = Date.now();
+      for (;;) {
+        const d = await call("service:agents", "describe", { agent }).catch(() => ({} as Record<string, any>)); // eslint-disable-line @typescript-eslint/no-explicit-any
+        if (d.state === "idle") break;
+        if (Date.now() - up > 60_000) throw new Failure(`${agent} did not come up within 60 s (state ${d.state ?? "unknown"})`, 2);
+        await sleepMs(300);
+      }
+    }
     const text = JSON.stringify({ run, steps: sc.steps, ...(sc.on_message ? { on_message: sc.on_message.map((h) => ({ ...h, run })) } : {}) });
     const sent = await owner.send({ to: agent, kind: "request", word: "say", body: { text } });
     if (!sent.ok) throw new Failure(`the hub refused the script: ${sendError(sent)}${sent.error.code === "offline" ? " (agent:script is there only in a debug build)" : ""}`, 3);
@@ -592,6 +620,7 @@ async function script(o: Options): Promise<number> {
     if (timedOut) return 2;
     return failed === 0 ? 0 : 4;
   } finally {
+    if (declaredHere) await call("service:agents", "remove", { agent }).catch((e) => line("error", { message: `could not remove ${agent}: ${(e as Error).message}` }));
     for (const a of sc.cleanup ?? []) await doAction(a, {}).catch((e) => line("error", { message: `cleanup: ${e instanceof Error ? e.message : String(e)}` }));
     for (const key of settingKeys) {
       const back = Object.hasOwn(previous, key) ? previous[key] : null;

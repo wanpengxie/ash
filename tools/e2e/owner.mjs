@@ -12646,6 +12646,14 @@ function runProgram(argv, timeoutMs = 3e4) {
   });
 }
 var expandEnv = (arg, run) => arg.replace(/\$\{env\.([A-Za-z0-9_]+)\}/g, (_, name) => process.env[name] ?? "").replace(/\$\{run\}/g, run);
+var SCRIPT_AGENT = "agent:script";
+var SCRIPT_DECL = {
+  id: SCRIPT_AGENT,
+  name: "script",
+  runtime: { kind: "script" },
+  summary: "A debug agent that carries out the script it is sent.",
+  brief: "You are the script agent of a debug build: a message to you is a script, and you do what it lists, step by step. You do not think or choose."
+};
 async function script(o) {
   const file = o.rest[1];
   if (!file) throw new UsageError("script needs a file: owner.mjs script <file.json>");
@@ -12655,7 +12663,8 @@ async function script(o) {
   } catch (e) {
     throw new UsageError(`${file}: ${e.message}`);
   }
-  const agent2 = o.flags.get("to") ?? "agent:script";
+  const agent2 = o.flags.get("to") ?? SCRIPT_AGENT;
+  let declaredHere = false;
   const run = sc.run ?? `run-${Date.now().toString(36)}`;
   const name = sc.name ?? file;
   const owner = await connect(o, surfacesOf(o, "chat"));
@@ -12770,6 +12779,22 @@ async function script(o) {
       if (r.delay_ms) await sleepMs(r.delay_ms);
       for (const a of r.do ?? []) await doAction(a, {});
     }
+    if (agent2 === SCRIPT_AGENT) {
+      const made = await call2("service:agents", "declare", SCRIPT_DECL).catch((e) => {
+        const why = String(e.message);
+        if (!why.includes("conflict")) throw new Failure(`the hub has no script agent: ${why} (agent:script is there only in a debug build)`, 3);
+        return null;
+      });
+      if (made) declaredHere = true;
+      if (made?.available === false) throw new Failure("the hub has no script agent: no driver for runtime script (agent:script is there only in a debug build)", 3);
+      const up = Date.now();
+      for (; ; ) {
+        const d = await call2("service:agents", "describe", { agent: agent2 }).catch(() => ({}));
+        if (d.state === "idle") break;
+        if (Date.now() - up > 6e4) throw new Failure(`${agent2} did not come up within 60 s (state ${d.state ?? "unknown"})`, 2);
+        await sleepMs(300);
+      }
+    }
     const text = JSON.stringify({ run, steps: sc.steps, ...sc.on_message ? { on_message: sc.on_message.map((h) => ({ ...h, run })) } : {} });
     const sent = await owner.send({ to: agent2, kind: "request", word: "say", body: { text } });
     if (!sent.ok) throw new Failure(`the hub refused the script: ${sendError(sent)}${sent.error.code === "offline" ? " (agent:script is there only in a debug build)" : ""}`, 3);
@@ -12800,6 +12825,7 @@ async function script(o) {
     if (timedOut) return 2;
     return failed === 0 ? 0 : 4;
   } finally {
+    if (declaredHere) await call2("service:agents", "remove", { agent: agent2 }).catch((e) => line("error", { message: `could not remove ${agent2}: ${e.message}` }));
     for (const a of sc.cleanup ?? []) await doAction(a, {}).catch((e) => line("error", { message: `cleanup: ${e instanceof Error ? e.message : String(e)}` }));
     for (const key of settingKeys) {
       const back = Object.hasOwn(previous, key) ? previous[key] : null;

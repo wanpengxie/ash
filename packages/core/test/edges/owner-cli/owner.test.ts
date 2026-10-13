@@ -267,7 +267,8 @@ const scriptFile = (body: unknown): string => { const f = join(work, `script-${M
 test("script: the agent makes the calls, the owner answers the card as the script says, and every expectation is judged; the settings are put back", async (t: TestContext) => {
   const s = await startScenario(t, { scriptAgent: true, fastApproval: true });
   const human = await s.human();
-  await eventually(async () => { const r = await human.call("service:agents", "list"); return r.ok && JSON.stringify(r.result?.data).includes('"agent:script"') && JSON.stringify(r.result?.data).includes('"idle"'); }, "agent:script up");
+  const before = await human.call("service:agents", "list");
+  assert.ok(before.ok && !JSON.stringify(before.result?.data).includes('"agent:script"'), "the script agent is not there before a run (the owner's screens never list it)");
   const file = scriptFile({
     name: "approval, in time", settings: { "approval.fast_seconds": 20 },
     steps: [{ id: "a1", call: { member: "service:gate", word: "mode.set", body: { mode: "auto" }, purpose: "test" } }],
@@ -287,12 +288,13 @@ test("script: the agent makes the calls, the owner answers the card as the scrip
   assert.equal(fields(run.out, "step").ok, "true");
   const settings = await human.call("service:admin", "settings.get", { keys: ["approval.fast_seconds"] });
   assert.deepEqual((settings.ok && settings.result?.data) as unknown, { settings: {} }, "what the run set is removed again");
+  const after = await human.call("service:agents", "list");
+  assert.ok(after.ok && !JSON.stringify(after.result?.data).includes('"agent:script"'), "the run removes the script agent it declared");
 });
 
 test("script: an expectation that does not hold ends with exit 4 and says which", async (t: TestContext) => {
   const s = await startScenario(t, { scriptAgent: true, fastApproval: true });
   const human = await s.human();
-  await eventually(async () => { const r = await human.call("service:agents", "list"); return r.ok && JSON.stringify(r.result?.data).includes('"agent:script"') && JSON.stringify(r.result?.data).includes('"idle"'); }, "agent:script up");
   const file = scriptFile({
     steps: [{ id: "a1", call: { member: "service:gate", word: "mode.set", body: { mode: "auto" }, purpose: "test" } }],
     owner: [{ when: { approval: {} }, do: [{ answer: "once" }] }, { name: "never", when: { checkpoint: "nowhere" } }],
