@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.4.0",
   "type": "module",
-  "description": "ash — the personal-agent layer on top of DeepSeek Harness (DSH)",
+  "description": "ash \u2014 the personal-agent layer on top of DeepSeek Harness (DSH)",
   "license": "MIT",
   "scripts": {
     "gen:ui": "node tools/gen-ui.mjs",
@@ -25,9 +25,10 @@
     "build:core": "npm run -s gen:ui && npm run -s gen:rules && esbuild packages/core/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/core/dist/ash-core.mjs \"--define:__ASH_VERSION__=\\\"$npm_package_version\\\"\" --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "build:payload": "npm run -s build:core && node payload/assemble.mjs --out build/payload",
     "build:container": "node tools/build-container-rootfs.mjs",
-    "build:device": "esbuild packages/device/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/device/dist/ash-device.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "build:device": "node tools/build-device-state-lock.mjs && node tools/build-device-listener-evidence.mjs && esbuild packages/device/src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=packages/device/dist/ash-device.mjs --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "package:device": "npm run build:device && node tools/package-device.mjs",
-    "check:container": "node tools/container-sources.mjs --check build/container"
+    "check:container": "node tools/container-sources.mjs --check build/container",
+    "test:phone-ui": "node --test packages/web/test/desktop-control-submit.test.js packages/web/test/desktop-image-composer.test.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

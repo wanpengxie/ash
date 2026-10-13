@@ -87,9 +87,9 @@
         "sha256": "c378de833aae3cf41f3028491ea11836479d9833ab653edc27d0c0e0e691d5c5"
       },
       "git": {
-        "version": "2.55.0",
-        "file": "pool/main/g/git/git_2.55.0_aarch64.deb",
-        "sha256": "21b16fa06837e5bf94ad257da532c40eb049c120d21f6cb60a6411c0bcee7197"
+        "version": "2.56.0",
+        "file": "pool/main/g/git/git_2.56.0_aarch64.deb",
+        "sha256": "dcdd22c5fdf7bdb5b825a03a17441d43858ed8515fea57fbb37eb42e733ca82f"
       },
       "less": {
         "version": "710",
@@ -197,9 +197,9 @@
         "sha256": "a2775653a0626749138ccd6e37a7b63239f36a9e3c62a9e6740818ca4b2d088b"
       },
       "openssl": {
-        "version": "1:3.6.3",
-        "file": "pool/main/o/openssl/openssl_1:3.6.3_aarch64.deb",
-        "sha256": "86760e9ce736f463236f2c15b1eb3a3fdcfc5778d0fd7077a917448dcc90f3aa"
+        "version": "1:3.6.5",
+        "file": "pool/main/o/openssl/openssl_1:3.6.5_aarch64.deb",
+        "sha256": "a2fb7856875e63ef6b90442752e05974813372c3ca86d2513a78ea43c67a0f8b"
       },
       "pcre2": {
         "version": "10.49",
@@ -207,9 +207,9 @@
         "sha256": "c27995e5f52b8ecc9b8b3e662eb08e49f82a18bfd3f34343936acc7b23964724"
       },
       "pnpm": {
-        "version": "12.8.1",
-        "file": "pool/main/p/pnpm/pnpm_12.8.1_aarch64.deb",
-        "sha256": "986c25a95e6261fc08d88b69c9031281e13ce2e327eb9b33e84344b57a7f8728"
+        "version": "12.9.1",
+        "file": "pool/main/p/pnpm/pnpm_12.9.1_aarch64.deb",
+        "sha256": "331e7b5f707583cf6469fa88e4c6b5300ea445364c1838fdab37618da6bbe06b"
       },
       "python": {
         "version": "3.14.6-1",

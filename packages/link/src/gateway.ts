@@ -8,7 +8,9 @@
  * Everything that reaches the caller is a [LinkSocket], so the link server does not know where it came from.
  */
 import { Connection, DeviceStream, GatewayClient, GatewayError, type DeviceKey } from "ash-gateway/client/client";
-import { derToRaw, shortFingerprint, type Permission } from "ash-gateway/src/protocol";
+import { derToRaw, shortFingerprint, type Permission, type Envelope } from "ash-gateway/src/protocol";
+import type { MaterialRelayPeer, MaterialRelayTransport } from "./material/material-client";
+import { MaterialProtocolError } from "../../sdk/src/collaboration/material-types";
 import type { LinkSocket } from "./socket";
 
 /** The owner's key. It signs by asking the host (the private key never leaves the keystore), so it is not a `DeviceKey` that holds one. */
@@ -183,6 +185,9 @@ export class Relay {
   private readonly client: GatewayClient;
   private readonly o: RelayOptions;
   private conn: Connection | null = null;
+  private materialEpoch = 0;
+  private materialGrants = "";
+  private readonly materialListeners = new Set<(frame: Record<string,unknown>)=>void>();
   private stopped = true;
   private ready = false;
   private claimedByOwner: boolean | null = null;
@@ -220,6 +225,18 @@ export class Relay {
   /** The HTTP status the relay answered with in the last failure, when it answered. */
   get lastStatus(): number | null { return this.lastErrorStatus; }
   devices(): RelayDevice[] { return this.list.map((d) => ({ ...d, permissions: [...d.permissions] })); }
+
+  /** Only the existing, signed coworker material protocol may use the side channel. */
+  material(id:string, publicKey:string): { gateway:Pick<GatewayClient,"envelope">; transport:MaterialRelayTransport; observe(listener:(frame:Record<string,unknown>)=>void):()=>void } {
+    const allowed = (type:string) => ["ash.material.identity.v1","ash.material.request.v1","ash.material.response.v1","ash.material.provider.request.v1","ash.material.provider.response.v1"].includes(type);
+    const currentDevice = () => { const device=this.list.find(d=>d.id===id); if(!this.connected||!this.conn||!device||device.revoked||!device.online||!device.permissions.includes("expose_capability"))throw new MaterialProtocolError("permission_denied"); };
+    const transport:MaterialRelayTransport={
+      capture:async()=>{currentDevice();return Object.freeze({local_id:this.o.owner.id,peer_id:id,public_key:publicKey,pairing_id:`material:${this.o.owner.id}:${id}`,generation:String(this.materialEpoch)});},
+      current:peer=>{currentDevice();if(peer.local_id!==this.o.owner.id||peer.peer_id!==id||peer.public_key!==publicKey||peer.generation!==String(this.materialEpoch)||peer.pairing_id!==`material:${this.o.owner.id}:${id}`)throw new MaterialProtocolError("permission_denied");return undefined;},
+      send:envelope=>{currentDevice();if(!allowed(envelope.type)||envelope.from!==this.o.owner.id||envelope.to!==id)throw new MaterialProtocolError("permission_denied");this.conn!.send(envelope);return undefined;},
+    };
+    return {gateway:{envelope:async(type,to,payload,opts)=>{currentDevice();if(!allowed(type)||to!==id)throw new MaterialProtocolError("permission_denied");return this.client.envelope(type,to,payload,opts);}},transport,observe:listener=>{const selected=(frame:Record<string,unknown>)=>{if(frame.from===id&&frame.to===this.o.owner.id)listener(frame);};this.materialListeners.add(selected);return ()=>{this.materialListeners.delete(selected);};}};
+  }
 
   // ---- reaching the relay ----------------------------------------------------------------------------------------------
 
@@ -304,6 +321,7 @@ export class Relay {
   /** One connection's life: read the state, relay its events, return when it ends. */
   private async serve(conn: Connection): Promise<void> {
     this.conn = conn;
+    this.materialEpoch++;
     conn.onUnmatched = (frame) => this.onFrame(conn, frame);
     const timers: ReturnType<typeof setInterval>[] = [];
     try {
@@ -321,6 +339,7 @@ export class Relay {
       for (const timer of timers) clearInterval(timer);
       const was = this.ready;
       this.ready = false;
+      this.materialEpoch++;
       if (this.conn === conn) this.conn = null;
       for (const stream of [...this.browsers.values()]) stream.finish({ code: 1006, reason: "the relay connection ended" });
       this.browsers.clear();
@@ -334,6 +353,7 @@ export class Relay {
 
   private onFrame(conn: Connection, frame: Record<string, unknown>): void {
     if (this.conn !== conn) return;
+    if (["ash.material.identity.v1","ash.material.request.v1","ash.material.response.v1","ash.material.provider.request.v1","ash.material.provider.response.v1"].includes(String(frame.type))) { for (const listener of this.materialListeners) listener(structuredClone(frame)); return; }
     if (frame.t === "gw") {
       if (frame.op === "device.presence") void this.refreshDevices().catch((e) => this.log("device list failed", e));
       else if (frame.op === "pair.request") void this.addRequest(frame as Record<string, string>);
@@ -442,10 +462,13 @@ export class Relay {
       const answer = await conn.request({ op: "device.list" });
       const devices = answer.devices;
       if (!Array.isArray(devices)) throw new Error("the relay's device list is unavailable");
+      if (this.conn !== conn) return this.devices();
       this.list = devices.filter((d: { id?: unknown }) => typeof d.id === "string" && /^[A-Za-z0-9_-]+$/.test(d.id as string)).map((d: Record<string, unknown>) => ({
         id: d.id as string, name: String(d.name ?? d.id), permissions: Array.isArray(d.permissions) ? d.permissions.map(String) : [],
         online: Boolean(d.online), revoked: Boolean(d.revoked),
       }));
+      const grants = JSON.stringify([answer.grant_version,this.list.map(d=>[d.id,d.permissions,d.online,d.revoked])]);
+      if (grants !== this.materialGrants) { this.materialGrants=grants; this.materialEpoch++; }
       if (this.conn === conn) this.o.handlers?.devices?.(this.devices());
       return this.devices();
     });

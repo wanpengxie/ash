@@ -1,3 +1,5 @@
+import { DeviceKey, GatewayClient } from "ash-gateway/client/client";
+import { MaterialTargetProvider, currentMaterialTargetProof } from "../src/material/material-target-provider";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign as signBytes } from "node:crypto";
 import test from "node:test";
@@ -224,4 +226,29 @@ test("a browser that goes away mid-request stops the work", async (t) => {
   void aborted;
   const tooBig = await gw.browserHttp("browser1", { method: "POST", body: Buffer.alloc(9 * 1024 * 1024) });
   assert.match(tooBig.error!, /too large/);
+});
+
+
+test("signed material side channel fences grants and reconnect epochs and rejects a forged provider answer", async t => {
+  const {gw,relay,owner}=await setup(t,{claimed:true});
+  const device=await DeviceKey.generate();gw.setDevice(device.id,{permissions:["expose_capability"],online:true});
+  relay.start();assert.ok(await relay.waitConnected(5000));
+  const side=relay.material(device.id,device.publicKey),peer=await side.transport.capture();
+  const signed=await side.gateway.envelope("ash.material.provider.request.v1",device.id,{test:true},{ttlMs:1000});
+  assert.ok(await GatewayClient.verifyEnvelope(signed,owner.publicKey));
+  await assert.rejects(side.gateway.envelope("other.protocol",device.id,{},{}));
+  assert.throws(()=>side.transport.send({...signed,type:"other.protocol"}));
+  const target=new MaterialTargetProvider({gateway:side.gateway,transport:side.transport,observeUnfinished:()=>undefined,budgetMs:1000});
+  const stop=side.observe(frame=>{void target.acceptFrame(frame);});t.after(()=>{stop();target.close();});
+  const remote=new GatewayClient(gw.url,device);let forged=false;
+  gw.onMaterial=frame=>{void(async()=>{const request=JSON.parse(String(frame.payload));const input=request.input;
+    const answer=await remote.envelope("ash.material.provider.response.v1",owner.id,{version:1,call_id:request.call_id,result:{...input,cwd:"/work",generation:"generation",target_known:true,send_authorized:true,expires_at:Number(frame.expires_at)-1,authorized_until:null}},{replyTo:String(frame.message_id),ttlMs:Math.max(1,Number(frame.expires_at)-Date.now()-2)});
+    gw.sendMaterial({...answer,...(forged?{sig:"invalid"}:{})});
+  })();};
+  const binding={work:{node_id:device.id,endpoint_id:device.id,kind:"conversation" as const,native_id:"thread"},authorization_revision:"a".repeat(64),action:"send_input" as const};
+  const proof=await target.captureTarget(binding);assert.equal(currentMaterialTargetProof(proof).facts.cwd,"/work");
+  forged=true;await assert.rejects(target.captureTarget(binding),{code:"permission_denied"});
+  gw.setDevice(device.id,{permissions:[]});await relay.refreshDevices();assert.throws(()=>side.transport.current(peer));
+  gw.setDevice(device.id,{permissions:["expose_capability"]});await relay.refreshDevices();assert.throws(()=>side.transport.current(peer),"restoring a permission cannot restore an old lease");
+  const restored=await side.transport.capture();relay.reconnect();await eventually(()=>!relay.connected,"relay disconnect");assert.throws(()=>side.transport.current(restored));assert.ok(await relay.waitConnected(5000));assert.throws(()=>side.transport.current(restored));
 });

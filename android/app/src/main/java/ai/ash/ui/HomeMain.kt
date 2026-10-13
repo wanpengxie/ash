@@ -277,6 +277,7 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         cells.add(cell("laptop", if (live.size == 1) live[0].str("name") ?: "电脑" else "电脑",
             if (pairsWaiting > 0) "$pairsWaiting 台等你批准" else if (live.isNotEmpty()) (if (online > 0) "$online 台在线" else "都不在线") else "还没有连接",
             if (pairsWaiting > 0) "warn" else null, if (pairsWaiting > 0) "warn" else if (online > 0) "ok" else null) { env.nav.go("hands") })
+        cells.add(cell("laptop", "电脑会话", "读取、回复或新建") { env.nav.go("coworker") })
         cells.add(cell("globe", "她的浏览器", "登录过的网站") { env.nav.go("browser") })
         cells.add(cell("grid", "应用", apps?.let { HomeModel.appsSummary(it).replace(Regex("^\\d+ 个应用 · "), "") } ?: "—") { env.nav.apps() })
         val tag: View? = if (todo > 0) AshUi.tag(ctx, "$todo 项要处理", Tone.WARN) else if (pairsWaiting > 0) AshUi.tag(ctx, "$pairsWaiting 个等你批准", Tone.WARN) else null

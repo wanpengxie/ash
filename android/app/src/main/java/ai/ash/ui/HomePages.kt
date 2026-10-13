@@ -19,7 +19,7 @@ import ai.ash.ui.design.AshUi
  * What the chat gives it: [composeHook] (put words in the message box; also the page-level 「问问她这件事」), [jumpHook] (show a message
  * in the conversation). [name] follows her IDENTITY.md; [onName] tells the chat's bar.
  */
-class HomePages(private val activity: Activity, private val port: HumanPort) : ChatHooks.Home, HomeNav {
+class HomePages(private val activity: Activity, private val port: HumanPort, private val files: ChatFiles? = null) : ChatHooks.Home, HomeNav {
     private val c = AshUi.p(activity)
     private val main = Handler(Looper.getMainLooper())
     private val root = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(c.bg); visibility = View.GONE; isClickable = true }
@@ -114,11 +114,12 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
     override fun apps() { close(); activity.startActivity(HomeRoute.appsIntent(activity)) }
 
     // ---- the stack
-    private fun env() = HomeEnv(activity, port, this, names, intents, agent)
+    private fun env() = HomeEnv(activity, port, this, names, intents, agent, files)
 
     private fun make(id: String, arg: String?): HomePage? = env().let { e ->
         when (id) {
             "home" -> HmHome(e, arg)
+            "coworker" -> HmCoworker(e, arg)
             "waiting", "approvals" -> HmWaiting(e, arg)
             "settled" -> HmSettled(e, arg)
             "activity" -> HmActivity(e, arg)

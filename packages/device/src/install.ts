@@ -33,6 +33,17 @@ export async function installRelease(root: string, version: string, sha256: stri
   await chmod(join(staging, "node"), 0o755); await chmod(join(staging, "bin/ash-device"), 0o755);
   const manifest = JSON.parse(await readFile(join(staging, "release.json"), "utf8"));
   if (manifest.version !== version.replace(/^v/, "") || manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error("Release manifest mismatch");
+  // Legacy archives without a helper remain installable; their grant writers are not upgraded.
+  // New archives declare the helper and must contain a verified complete pair of artifacts.
+  const helper = await lstat(join(staging, "ash-state-lock")).catch(() => null);
+  const metadata = await lstat(join(staging, "native-helper.json")).catch(() => null);
+  if (manifest.native_state_lock !== undefined && manifest.native_state_lock !== 1) throw new Error("Unsupported native state lock");
+  if (manifest.native_state_lock === 1 || helper || metadata) {
+    if (!helper?.isFile() || helper.isSymbolicLink() || helper.nlink !== 1 || !metadata?.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 || helper.size < 1 || helper.size > 256 * 1024 || metadata.size > 4096) throw new Error("Invalid native helper files");
+    const native = JSON.parse(await readFile(join(staging, "native-helper.json"), "utf8"));
+    if (!native || typeof native !== "object" || Array.isArray(native) || Object.keys(native).some(key => !["version", "name", "platform", "arch", "sha256"].includes(key)) || native.version !== 1 || native.name !== "ash-state-lock" || native.platform !== process.platform || native.arch !== process.arch || typeof native.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(native.sha256) || createHash("sha256").update(await readFile(join(staging, "ash-state-lock"))).digest("hex") !== native.sha256) throw new Error("Native helper checksum mismatch");
+    await chmod(join(staging, "ash-state-lock"), 0o755); await chmod(join(staging, "native-helper.json"), 0o644);
+  }
   if (dependencies.check) await dependencies.check(staging);
   else {
     const { stdout } = await exec(join(staging, "node"), [join(staging, "ash-device.mjs"), "--version"], { timeout: 15_000 });

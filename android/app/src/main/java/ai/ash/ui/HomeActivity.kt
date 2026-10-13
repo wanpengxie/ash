@@ -44,7 +44,7 @@ class HomeActivity : Activity() {
         ai.ash.apps.Ui.systemBars(this)
         port = HumanPort(Link.get(this).chat)
         files = ChatFiles(this, port)
-        home = HomePages(this, port)
+        home = HomePages(this, port, files)
         chatScreen = ChatScreen(this, port, files, home) { showTab(HomeTab.APPS) }
         home.composeHook = { text, _ -> showTab(HomeTab.CHAT); chatScreen.compose(text) }
         home.jumpHook = { id -> showTab(HomeTab.CHAT); chatScreen.jumpTo(id) }
@@ -64,6 +64,7 @@ class HomeActivity : Activity() {
         ai.ash.host.AppState.homePageLive = true
         if (focus) ui.postDelayed({ chatScreen.focusInput() }, 300)
         openHomePageFrom(intent)
+        receiveSharedText(intent)
         val firstStart = OnboardingActivity.showOnce(this)
         // After an upgrade the phone may have put Ash's auto-start back off: look again once the link to the kernel is up.
         ui.postDelayed({ if (!isFinishing && !isDestroyed) Permissions.recheckAfterUpgrade(this, firstStart) }, 5_000)
@@ -77,6 +78,7 @@ class HomeActivity : Activity() {
         showTab(HomeRoute.tabFor(intent.getStringExtra(HomeRoute.EXTRA_TAB), focus, fromLauncher(intent), tab))
         if (focus) chatScreen.focusInput()
         openHomePageFrom(intent)
+        receiveSharedText(intent)
     }
 
     /** An app (her status) pointed the owner to a page of her home. */
@@ -87,6 +89,20 @@ class HomeActivity : Activity() {
     }
 
     private fun fromLauncher(i: Intent?) = HomeRoute.isLauncher(i?.action, i?.categories)
+
+    /** A shared link becomes a durable draft; choosing a computer never sends it. */
+    private fun receiveSharedText(source: Intent?) {
+        if (source?.action != Intent.ACTION_SEND) return
+        val prefs = getSharedPreferences("ash.coworker", 0)
+        val inbox = SharedTextInbox()
+        val text = source.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+        val error = inbox.receive(source.action, source.type, text)
+        val pending = inbox.pending
+        val saved = error == null && pending != null && !prefs.contains("shared_text") && prefs.edit().putString("shared_text", pending.text).commit()
+        if (saved) { showTab(HomeTab.CHAT); home.openPage("coworker", null) }
+        else android.widget.Toast.makeText(this, if (prefs.contains("shared_text")) "请先处理已有的分享草稿" else "暂时无法接收此分享", android.widget.Toast.LENGTH_LONG).show()
+        source.action = null // rotation must not import the same share again
+    }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)

@@ -68,7 +68,7 @@ class HomeIntents {
     fun drop(key: String) { ids.remove(key) }
 }
 
-class HomeEnv(val activity: Activity, val port: HumanPort, val nav: HomeNav, val names: HomeNames, val intents: HomeIntents, val agent: String?)
+class HomeEnv(val activity: Activity, val port: HumanPort, val nav: HomeNav, val names: HomeNames, val intents: HomeIntents, val agent: String?, val files: ChatFiles? = null)
 
 /** An answer to a word: its data, the whole `result` (for files), or why not. */
 class Reply(val ok: Boolean, val data: JSONObject, val result: JSONObject?, val failure: HumanPort.Failure?) {

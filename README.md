@@ -36,6 +36,12 @@ Android WebView 从 APK 加载静态界面，通过原生桥访问 Core；远程
 | `android/` | Android 宿主（Gradle/Kotlin） |
 | `tools/` | 构建、验证和回归脚本 |
 
+## 跨端项目协作（coworker）
+
+本分支通过新的 `ash-link/1` 架构提供 Codex 项目协作。已配对电脑在项目目录运行 `ash-device connect codex --collaborate`，按提示授权读取、新建、发送/追加以及主动分享材料；材料授权默认 24 小时，续期运行同一命令。其他项目不自动开放。
+
+手机从「电脑会话」选择电脑与会话。新版基础通道、图片集成、浏览器流程和 Android 关联测试已通过本地验证；新版正式 APK 和真机整体流程仍待验收，旧版 APK 的测试结论不适用于新版。完整进度见 [跨端开发状态](docs/CROSS-END-DEVELOPMENT-STATUS.md)。
+
 ## 本地构建与验证
 
 需要 Node 22+、npm、`ar`/`tar`/`zip`、`patchelf`、Android SDK 与 JDK 17+。构建 payload 还需要 `payload/manifest.json` 指定的外部软件包可获取。

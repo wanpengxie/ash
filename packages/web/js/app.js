@@ -5,6 +5,10 @@ import { FullTexts } from "./full-texts.js";
 import { IdleExpansion } from "./idle-expansion.js";
 import { connectHome } from "./home.js";
 import { Net } from "./net.js";
+import { installCoworkerNet } from "./coworker-net.js";
+import { DesktopWork } from "./desktop-work.js";
+import { mountDesktopMaterials } from "./desktop-materials-mount.js";
+import { createDesktopMaterialsPort, browserMaterialPicker } from "./desktop-materials-port.js";
 import { WindowView } from "./window-view.js";
 import { renderProgress } from "./progress.js";
 import { presentUiOpen } from "./suggestions.js";
@@ -69,6 +73,7 @@ export function boot() {
   const form = document.querySelector("#f");
   const input = document.querySelector("#t");
   let identityName;
+  let desktopWork;
   const presenceBar = new PresenceBar(document, { onOpen: () => openHome({ agent: recipient?.picked() }) });
   const connection = document.querySelector("#connection");
   const progressRoot = document.querySelector("#progress");
@@ -287,6 +292,8 @@ export function boot() {
       return { ok: true, data: { opened } };
     },
     onState: (status, detail) => {
+      desktopWork?.network(status);
+      if (status === "closed") { net.acceptScope?.(null); desktopWork?.reset(); }
       if (["connecting", "offline", "closed"].includes(status)) timeline?.clearCurrentRefresh();
       window.dispatchEvent(new CustomEvent("ash:net-state", { detail: { net, event: "onState" } }));
       if (status !== "online") identityName?.reset();
@@ -295,6 +302,7 @@ export function boot() {
       if (status === "online" || status === "connecting") sendable();
     },
     onOpen: () => {
+      void net.refreshCoworkerScope?.().then(() => desktopWork?.network("online")).catch(() => {});
       timeline?.clearCurrentRefresh();
       homeFeed.reset();
       window.dispatchEvent(new CustomEvent("ash:net-state", { detail: { net, event: "onOpen" } }));
@@ -308,6 +316,21 @@ export function boot() {
       if (timeline) paintView(timeline.view, true, new Set(outbox.map(item => item.in_reply_to).filter(Boolean)));
     },
   });
+  installCoworkerNet(net);
+  const desktopRoot = document.createElement("section");
+  desktopRoot.id = "desktopWork"; desktopRoot.hidden = true;
+  desktopRoot.setAttribute("aria-label", "电脑会话"); document.body.append(desktopRoot);
+  const materialsPanel = document.createElement("section"); materialsPanel.id = "desktopMaterials"; materialsPanel.hidden = true; materialsPanel.setAttribute("aria-label", "材料与回答");
+  const materialsClose = document.createElement("button"); materialsClose.id = "desktopMaterialsClose"; materialsClose.type = "button"; materialsClose.textContent = "关闭";
+  const materialsBody = document.createElement("div"); materialsBody.id = "desktopMaterialsBody"; materialsPanel.append(materialsClose, materialsBody); document.body.append(materialsPanel);
+  const materialsButton = document.createElement("button"); materialsButton.id = "desktopMaterialsOpen"; materialsButton.type = "button"; materialsButton.textContent = "材料"; materialsButton.className = "btn ghost"; appsButton.before(materialsButton);
+  const materials = mountDesktopMaterials({ document, net, picker: browserMaterialPicker(net) });
+  desktopWork = new DesktopWork(desktopRoot, net, { onMaterials: work => materials.open(work), imagePortFactory: () => createDesktopMaterialsPort(net, { picker: browserMaterialPicker(net) }) });
+  const desktopButton = document.createElement("button");
+  desktopButton.type = "button"; desktopButton.textContent = "电脑";
+  desktopButton.className = "btn ghost";
+  desktopButton.onclick = () => desktopWork.open();
+  appsButton.before(desktopButton);
   connectHome(net, homeFeed);
   files = new Files(net);
   // Visible-item pages cannot be drowned by background ledger events; fill a short viewport from finite older pages.

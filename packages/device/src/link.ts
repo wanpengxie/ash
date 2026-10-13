@@ -8,12 +8,16 @@
  */
 import { createPrivateKey, sign as signBytes, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Connection, DeviceKey, DeviceStream, GatewayClient, GatewayError } from "ash-gateway/client/client";
 import { shortFingerprint } from "ash-gateway/src/protocol";
 import { base64url } from "../../sdk/src/ids";
 import type { Connector, SocketEvents } from "../../link/src/hand";
 import type { RawSocket } from "../../link/src/socket";
+import { readLocalStateFile } from "./collaboration/local-state";
+import { LocalStateTransaction } from "./collaboration/local-state-transaction";
+import { MAX_PAIR_BYTES, parseCurrentPairing, loadCurrentPairing } from "./collaboration/pairing";
+import type { TrustedCallContext } from "./collaboration/authorization";
 import { bounded, STEP_MS } from "./bounded";
 
 export { bounded, STEP_MS } from "./bounded";
@@ -24,6 +28,22 @@ export const LINK_PATH = "/link";
 // ---------------------------------------------------------------------------------------------------------------------
 // who this computer is
 // ---------------------------------------------------------------------------------------------------------------------
+
+export interface Signer { readonly id: string; readonly publicKey: string; sign(data: Uint8Array): Promise<string> }
+
+export interface SetupConnectionProof { readonly kind: "setup-current-connection" }
+const setupConnections = new WeakMap<SetupConnectionProof, () => undefined>();
+export function currentSetupConnectionProof(proof: SetupConnectionProof): undefined {
+  const check = setupConnections.get(proof);
+  if (!check) throw new Error("Setup connection is unavailable");
+  return check();
+}
+export function captureSetupConnectionProof(context: TrustedCallContext): SetupConnectionProof {
+  if (!context.isCurrent()) throw new Error("Setup connection is unavailable");
+  const proof = Object.freeze({kind: "setup-current-connection" as const});
+  setupConnections.set(proof, () => { if (!context.isCurrent()) throw new Error("Setup connection is stale"); return undefined; });
+  return proof;
+}
 
 export interface Identity {
   /** The relay's key object (it signs the relay's challenges). */
@@ -57,6 +77,9 @@ export async function loadIdentity(stateDir: string): Promise<Identity> {
   };
 }
 
+/** Existing Codex helpers use the same persisted relay key, without a second identity. */
+export async function fileSigner(stateDir: string): Promise<Signer> { return (await loadIdentity(stateDir)).key; }
+
 /** What `hello.hand` says about this program. */
 export function helloHand(identity: Identity, o: { name: string; version: string }) {
   return { kind: "computer" as const, name: o.name, version: o.version, platform: `${process.platform}-${process.arch}`, public_key: identity.publicKey };
@@ -87,6 +110,7 @@ class Tunnel {
 class TunnelSocket implements RawSocket {
   private tunnel: Tunnel | null = null;
   constructor(private readonly events: SocketEvents, private readonly gone: (socket: TunnelSocket) => void) {}
+  get peer(): string | null { return this.tunnel?.stream.peer ?? null; }
   bind(tunnel: Tunnel): void {
     this.tunnel = tunnel;
     this.events.open();
@@ -146,6 +170,20 @@ export class TunnelPort {
     else this.onIdleTunnel();
   }
 
+  /** Relay authenticated peer plus current local pairing, never request-supplied identity. */
+  captureContext(stateDir: string, ready: () => boolean): TrustedCallContext {
+    const pairPath = join(stateDir, "paired.json"), held = readLocalStateFile(pairPath, MAX_PAIR_BYTES);
+    const socket = this.active, pairing = loadCurrentPairing(pairPath);
+    if (!held || !socket || !pairing || pairing.fingerprint !== held.raw || pairing.revoked || socket.peer !== pairing.ownerId || !ready()) throw new Error("Hub connection is unavailable");
+    const context = Object.freeze({ transportOwnerId: pairing.ownerId, isCurrent: () => {
+      try {
+        const current = readLocalStateFile(pairPath, MAX_PAIR_BYTES);
+        return this.active === socket && socket.peer === pairing.ownerId && ready() && current?.identity === held.identity;
+      } catch { return false; }
+    } });
+    return context;
+  }
+
   /** The relay connection went away, or the program is stopping. */
   close(): void {
     this.stash?.close(1000, "closing");
@@ -166,11 +204,16 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * This is only the road; what travels on it is `ash-link/1`.
  */
 export class GatewayLine {
-  private readonly gateway: GatewayClient;
+  protected readonly gateway: GatewayClient;
   private conn: Connection | null = null;
   private stopped = false;
   private pairFile?: string;
+  private pairedIdentity?: string;
   private readonly tunnels = new Map<string, DeviceStream>();
+  /** Side protocols use authenticated relay envelopes, outside ash-link/1. */
+  onConnected: (connection: Connection) => void = () => {};
+  onFrame: (frame: Record<string, unknown>) => void = () => {};
+  onDisconnected: () => void = () => {};
   connected = false;
   lastError = "";
 
@@ -180,26 +223,40 @@ export class GatewayLine {
 
   /** Pairs on the first run (the owner approves on their side); later runs only check that the pairing was not revoked. */
   async pair(stateDir: string, code: string | undefined, name: string): Promise<void> {
-    const file = join(stateDir, "paired.json");
-    this.pairFile = file;
-    if (existsSync(file) && !code) {
-      if (JSON.parse(readFileSync(file, "utf8")).revoked) throw new Error("Device revoked; explicitly pair again to reconnect");
-      return;
-    }
-    if (!code) throw new Error("not paired: use --pair once");
-    const request = await this.gateway.requestPairing(code, name);
-    this.log("pairing requested", await shortFingerprint(this.identity.publicKey), request.owner_fingerprint);
-    const grant = await this.gateway.waitForApproval(request.request_id, request.owner_key, 10 * 60_000);
-    writeFileSync(file, JSON.stringify({ owner_key: request.owner_key, ...grant }), { mode: 0o600 });
+    const state = new LocalStateTransaction(stateDir);
+    const file = join(state.stateDir, "paired.json"); this.pairFile = file;
+    try {
+      const before = state.capture(), original = before.files["paired.json"];
+      if (!code) {
+        const pair = original ? parseCurrentPairing(original.raw) : null;
+        if (!pair) throw new Error("not paired: use --pair once");
+        if (pair.revoked) throw new Error("Device revoked; explicitly pair again to reconnect");
+        this.pairedIdentity = original!.identity; return;
+      }
+      const request = await this.gateway.requestPairing(code, name);
+      state.assertCurrent(before);
+      this.log("pairing requested", await shortFingerprint(this.identity.publicKey), request.owner_fingerprint);
+      state.assertCurrent(before);
+      const grant = await this.gateway.waitForApproval(request.request_id, request.owner_key, 10 * 60_000);
+      if (this.stopped) throw new Error("Pairing stopped");
+      const raw = JSON.stringify({owner_key: request.owner_key, ...grant});
+      if (!parseCurrentPairing(raw)) throw new Error("Invalid approved pairing");
+      const committed = state.write("paired.json", raw, before); this.pairedIdentity = committed.files["paired.json"]!.identity;
+    } finally { state.close(); }
   }
 
-  /** Remember that the owner revoked this computer: it will not reconnect until it is paired again. */
+  /** A late revoke cannot alter a replacement owner's pairing. */
   markRevoked(): void {
     this.stopped = true;
-    if (this.pairFile && existsSync(this.pairFile)) {
-      const old = JSON.parse(readFileSync(this.pairFile, "utf8"));
-      writeFileSync(this.pairFile, JSON.stringify({ ...old, revoked: true }), { mode: 0o600 });
-    }
+    if (!this.pairFile || !this.pairedIdentity) return;
+    const state = new LocalStateTransaction(resolve(this.pairFile, ".."));
+    try {
+      const before = state.capture(), file = before.files["paired.json"];
+      const pair = file ? parseCurrentPairing(file.raw) : null;
+      if (!file || file.identity !== this.pairedIdentity || !pair || pair.revoked) return;
+      state.write("paired.json", JSON.stringify({...JSON.parse(file.raw), revoked:true}), before);
+    } catch { /* A changed or unprovable pairing remains untouched. */ }
+    finally {state.close();}
   }
 
   async run(): Promise<void> {
@@ -212,7 +269,8 @@ export class GatewayLine {
         const session = await bounded(this.gateway.authenticate(), STEP_MS, "gateway sign-in");
         const conn = await bounded(this.gateway.connect(session), STEP_MS, "gateway connection", (late) => late.close());
         this.conn = conn; this.connected = true; this.lastError = ""; delay = 1000;
-        conn.onUnmatched = (frame) => this.tunnelFrame(conn, frame);
+        conn.onUnmatched = (frame) => { if (this.conn !== conn || conn.ws.readyState !== WebSocket.OPEN) return; this.tunnelFrame(conn, frame); this.onFrame(frame); };
+        this.onConnected(conn);
         let lastHeard = Date.now();
         let expired!: () => void;
         const silent = new Promise<void>((resolve) => { expired = resolve; });
@@ -230,7 +288,7 @@ export class GatewayLine {
         if (error instanceof GatewayError && /revoked/i.test(error.message)) this.markRevoked();
         this.log("gateway connection failed", this.lastError);
       } finally { if (beat) clearInterval(beat); }
-      this.connected = false; this.conn = null;
+      this.connected = false; this.conn = null; this.onDisconnected();
       for (const stream of this.tunnels.values()) stream.finish({ code: 1006, reason: "relay connection lost" });
       this.tunnels.clear();
       if (this.stopped) break;
@@ -238,7 +296,7 @@ export class GatewayLine {
     }
   }
 
-  stop(): void { this.stopped = true; this.conn?.close(); this.port.close(); }
+  stop(): void { this.stopped = true; this.conn?.close(); this.port.close(); this.onDisconnected(); }
 
   /** The relay's tunnel frames that its client library did not route. */
   private tunnelFrame(conn: Connection, frame: Record<string, unknown>): void {

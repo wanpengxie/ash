@@ -1,0 +1,13 @@
+import { appendFileSync } from 'node:fs';
+import { CreateOperationStore } from '../../src/collaboration/create-operation-store.ts';
+import { CreateDeliveryJournal } from '../../src/collaboration/create-delivery.ts';
+const [file, calls, phase, window, hold] = process.argv.slice(2);
+const request = { version:1,request_id:'r',operation_id:'op',authorization_revision:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',target:{node_id:'node',endpoint_id:'ep',project_id:'project',cwd:'/workspace'},title:'Private title',input:{text:'PRIVATE BODY'},expires_at:4102444800000 };
+const work = {node_id:'node',endpoint_id:'ep',kind:'conversation',native_id:'thread'};
+const lease = { principal:{principal_id:'owner'},authorized_scope:Object.freeze({node_id:'node',endpoint_id:'ep',cwd:'/workspace'}),target:request.target,authorization_revision:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',connector_epoch:'epoch',native_interface_version:'v1',authorize:async()=>true,run:async(_purpose,fn)=>fn() };
+const accept = stage => ({status:'accepted',receipt:{stage,accepted_by:'native',work,...(stage==='first_input'?{native_turn_id:'turn',native_message_id:null,correlation:'uncertain'}:{})}});
+const invoke = async stage => { appendFileSync(calls,stage+'\n'); if (hold===stage) { process.stdout.write('invoking\n'); await new Promise(()=>{}); } return accept(stage); };
+const store = new CreateOperationStore(file);
+const adapter = {connector_epoch:'epoch',native_interface_version:'v1',resolveProject:async t=>t,metadata:async()=>({work,cwd:'/workspace'}),createThread:()=>invoke('create'),nameThread:()=>invoke('name'),startFirstInput:()=>invoke('first_input')};
+const journal = new CreateDeliveryJournal({store,adapter,failpoint:(w,s)=>{if(s===phase && w===window)process.exit(70);}});
+await journal.apply(lease,request); journal.close();

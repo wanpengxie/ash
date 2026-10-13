@@ -1,0 +1,9 @@
+// Isolated Android package only. CoreService starts this existing Node runtime
+// process; actual routes/services run at the loopback Mac fixture through adb reverse.
+import {createServer,request} from 'node:http';import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';import {createHash} from 'node:crypto';
+const cfg=JSON.parse(readFileSync(process.argv[process.argv.indexOf('--config')+1],'utf8'));if(cfg.listen!=='127.0.0.1:14763'||!cfg.stateDir.includes('/ai.ash.agent.probe/'))throw Error('isolated probe required');
+// Keep the existing private bearer when attaching after the original Core has
+// booted; the real native page transport already holds that same credential.
+let token='isolated_android_project_owner_20261012';try{const record=new URL(readFileSync(`${cfg.stateDir}/ui-url`,'utf8').trim()),existing=record.searchParams.get('token');if(record.origin==='http://127.0.0.1:14763'&&existing&&/^[A-Za-z0-9_-]{16,256}$/.test(existing))token=existing;}catch{}
+const proof=createHash('sha256').update(`${cfg.host.token}:home`).digest('hex');mkdirSync(cfg.stateDir,{recursive:true});writeFileSync(`${cfg.stateDir}/ui-url`,`http://127.0.0.1:14763/?token=${token}`);
+createServer((req,res)=>{if(req.headers.authorization!==`Bearer ${token}`||req.headers['x-ash-native-ui']!==proof||!req.url?.startsWith('/api/')){res.writeHead(403);res.end();return;}const headers={...req.headers,'x-project-probe-native':'verified'};delete headers['x-ash-native-ui'];delete headers.authorization;delete headers.host;const upstream=request({hostname:'127.0.0.1',port:14765,path:req.url,method:req.method,headers},reply=>{res.writeHead(reply.statusCode??503,reply.headers);reply.pipe(res);});upstream.on('error',()=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({ok:false,error:{code:'offline'}}));});req.pipe(upstream);res.on('close',()=>upstream.destroy());}).listen(14763,'127.0.0.1');

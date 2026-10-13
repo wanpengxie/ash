@@ -81,6 +81,15 @@ export class GatewayControl {
     d.db.exec(SCHEMA);
   }
 
+  /** Captures the real relay instance and current kernel pairing, never page-supplied keys. */
+  material(id:string) {
+    const relay=this.relay,hand=this.d.hands.get(id);
+    if(!relay||!hand||hand.revoked_at||!hand.lend||!hand.public_key)throw new WordError("forbidden","Coworker material permission_denied");
+    const stamp=JSON.stringify([hand.public_key,hand.paired_at]),peer=relay.material(id,hand.public_key);
+    const current=()=>{const now=this.d.hands.get(id);if(this.relay!==relay||!now||now.revoked_at||!now.lend||JSON.stringify([now.public_key,now.paired_at])!==stamp)throw new WordError("forbidden","Coworker material permission_denied");};
+    return {...peer,current,transport:{capture:async()=>{current();const value=await peer.transport.capture();current();return value;},current:(value:Parameters<typeof peer.transport.current>[0])=>{current();return peer.transport.current(value);},send:(value:Parameters<typeof peer.transport.send>[0])=>{current();return peer.transport.send(value);}}};
+  }
+
   // ---- settings ------------------------------------------------------------------------------------------------------------
 
   private get(key: string): string | undefined {

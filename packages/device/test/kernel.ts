@@ -128,17 +128,17 @@ let tunnels = 0;
  * The relay opens a tunnel for the hub: the kernel accepts one end as it does a relay tunnel for device [from], and the
  * other end is a `DeviceStream` handed to the program. Returns a way to cut the tunnel from the relay's side.
  */
-export function openTunnel(kernel: Pick<Kernel, "server">, device: Pick<RunningDevice, "port">, from: string): { cut(code?: number, reason?: string): void } {
+export function openTunnel(kernel: Pick<Kernel, "server">, device: Pick<RunningDevice, "port">, from: string, peer = "kernel"): { cut(code?: number, reason?: string): void } {
   const pair = memoryPair();
   const sid = `o-test-tunnel-${++tunnels}-xxxxxxxxxxxxxxxx`;
   let parts: string[] = [];
-  const stream = new DeviceStream(sid, "kernel", "/link", (frame) => {
+  const stream = new DeviceStream(sid, peer, "/link", (frame) => {
     if (frame.op === "ws.msg") {
       parts.push(String(frame.text));
       if (frame.more !== true) { const text = parts.join(""); parts = []; pair.hand.send(text); }
     } else if (frame.op === "ws.close") pair.hand.close(Number(frame.code), String(frame.reason));
   }, () => {});
-  pair.hand.on("message", (data: string) => stream.accept({ op: "ws.msg", text: data, more: false, from: "kernel" }));
+  pair.hand.on("message", (data: string) => stream.accept({ op: "ws.msg", text: data, more: false, from: peer }));
   pair.hand.on("close", (code: number, reason: Buffer) => stream.finish({ code, reason: reason.toString() }));
   kernel.server.acceptGateway(pair.server, from);
   device.port.adopt(stream);

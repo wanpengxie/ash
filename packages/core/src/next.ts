@@ -49,6 +49,8 @@ import { createAdminService, tailFile } from "./services/admin";
 import { createHealthService } from "./services/health";
 import { createBlobsService } from "./services/blobs";
 import { createClockService } from "./services/clock";
+import { CoworkerMaterials } from "./edges/link-server/collaboration/materials";
+import { createCollaborationService } from "./services/collaboration/service";
 import { createCostService } from "./services/cost";
 import { createDirectoryService } from "./services/directory";
 import { createNameOf } from "./services/gate/names";
@@ -292,6 +294,8 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
     summarize: createSummarizer({ llm }),
   });
+  const materials = new CoworkerMaterials({ ledger, router, gateway: linkControl.gateway, identity: () => host.identityKey() });
+  const collaboration = createCollaborationService({ materials, router, registry, hands, currentClient: (client) => human.clients().some(c => c.client === client), openStream: (client, bytes, mime) => human.openStream(client, bytes, mime), now });
   const hostService = createHostService({ client: host, router, registry, virtual, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (network) => body.setNetwork(network), log });
   link.onChannel("human", human.attach);
   link.mount("/mcp", tools.handler);
@@ -299,7 +303,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
 
   // 7. everybody into the registry
   for (const member of [
-    blobs, gateService, clock, senses, cost, reflex, history, admin, health, widgets, directory, vaultService, ...semantic.members,
+    collaboration, blobs, gateService, clock, senses, cost, reflex, history, admin, health, widgets, directory, vaultService, ...semantic.members,
     body, devices, bodies, linkControl.member, human.member, agents.service, apps.service, createLlmService(llm), hostService.member,
   ]) registry.add(member);
 
@@ -322,6 +326,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     gateService.stop();
     await agents.stopAll();
     await apps.stopAll(deadline);
+    await materials.close();
     human.close();
     tools.close();
     await body.close();

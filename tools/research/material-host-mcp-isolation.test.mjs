@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {run,hashArgs} from './material-host-mcp-isolation.mjs';
+import {validateArgs,responses,TOOL} from './material-host-mcp-fixture.mjs';
+import {isolatedEnv} from './material-host-isolation.mjs';
+test('only synthetic nonce arguments admitted, identities rejected',()=>{assert.doesNotThrow(()=>validateArgs({nonce:'synthetic_1'}));for(const a of [{nonce:'ok',threadId:'x'},{nonce:'../x'},{},{nonce:1}])assert.throws(()=>validateArgs(a));assert.deepEqual(Object.keys(TOOL.inputSchema.properties),['nonce']);});
+test('argument hash canonicalizes key order',()=>{assert.equal(hashArgs({b:2,a:1}),hashArgs({a:1,b:2}));assert.notEqual(hashArgs({nonce:'a'}),hashArgs({nonce:'b'}));});
+test('wrong binary rejected before output mutation',async()=>{await assert.rejects(run({codex:'/usr/bin/true',output:'/unused'}),/bundled/);});
+test('fixture MCP stdout is JSON only and metadata logged without authority inference',async()=>{const root=await fs.mkdtemp(path.join(os.tmpdir(),'ash-h1-test-'));const child=spawn(process.execPath,[fileURLToPath(new URL('./material-host-mcp-fixture.mjs',import.meta.url)),root],{env:isolatedEnv(root),shell:false});let stdout='';child.stdout.on('data',b=>stdout+=b);const messages=[{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26'}},{jsonrpc:'2.0',method:'notifications/initialized'},{jsonrpc:'2.0',id:2,method:'tools/list'},{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:TOOL.name,arguments:{nonce:'test'},_meta:{threadId:'synthetic',callId:'caller_controlled'}}}];for(const m of messages)child.stdin.write(JSON.stringify(m)+'\n');await new Promise(r=>setTimeout(r,100));child.stdin.end();await new Promise(r=>child.once('exit',r));try{const out=stdout.trim().split('\n').map(JSON.parse);assert.equal(out.length,3);assert.equal(out[2].result.isError,false);const log=(await fs.readFile(path.join(root,'mcp.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);assert.equal(log.find(e=>e.message?.method==='tools/call').message.params._meta.callId,'caller_controlled');}finally{await fs.rm(root,{recursive:true,force:true})}});
+test('local responses mock maps exact declared native MCP name, bound requests and route',async()=>{const events=[],m=await responses(e=>events.push(e));try{m.arm('model');const body={model:'fixture',tools:[{type:'function',name:'mcp__probe__ash_material_probe',parameters:TOOL.inputSchema}],input:[]};const post=(url,b)=>fetch(`http://127.0.0.1:${m.port}${url}`,{method:'POST',body:JSON.stringify(b)});assert.equal((await post('/login',body)).status,400);const text=await(await post('/v1/responses',body)).text();assert.match(text,/mcp__probe__ash_material_probe/);assert.match(text,/model_call/);await post('/v1/responses',body);await post('/v1/responses',body);assert.equal((await post('/v1/responses',body)).status,400);assert.equal(events.filter(e=>e.kind==='mock').length,3)}finally{await m.close()}});

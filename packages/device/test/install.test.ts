@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, readlink, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readlink, symlink, copyFile, stat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { closeSync, constants, openSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { installRelease, releaseUrl, serviceDefinition } from "../src/install";
 
@@ -36,4 +38,42 @@ test("release names and user service definitions do not inject shell, XML or sys
   assert.match(mac, /A&amp;B/); assert.match(mac, /KeepAlive/);
   const linux = serviceDefinition('/home/test/50% "app"', "linux", "/usr/bin");
   assert.match(linux, /50%%/); assert.match(linux, /Restart=always/); assert.doesNotMatch(linux, /User=root/);
+});
+
+test("native helper archive validates hash/mode, runs only inherited fd, and tampering preserves current", async t => {
+  const root = await mkdtemp(join(tmpdir(), "ash-install-native-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, "source", "ash-device"), archive = join(root, "native.tar.gz");
+  await mkdir(join(source, "bin"), { recursive: true });
+  for (const path of ["node", "ash-device.mjs", "bin/ash-device"]) await writeFile(join(source, path), "fixture");
+  const dist = fileURLToPath(new URL("../dist/", import.meta.url));
+  await copyFile(join(dist, "ash-state-lock"), join(source, "ash-state-lock"));
+  await copyFile(join(dist, "native-helper.json"), join(source, "native-helper.json"));
+  await writeFile(join(source, "release.json"), JSON.stringify({ version: "0.1.0", platform: process.platform, arch: process.arch, native_state_lock: 1 }));
+  const bundle = async () => {
+    execFileSync("tar", ["-czf", archive, "-C", join(root, "source"), "ash-device"]);
+    const bytes = await readFile(archive); return { bytes, hash: createHash("sha256").update(bytes).digest("hex") };
+  };
+  const valid = await bundle();
+  const result = await installRelease(root, "0.1.0", valid.hash, { fetch: (async () => new Response(valid.bytes)) as typeof fetch, check: async stage => {
+    assert.equal((await stat(join(stage, "ash-state-lock"))).mode & 0o777, 0o755);
+    assert.equal((await stat(join(stage, "native-helper.json"))).mode & 0o777, 0o644);
+    const lockPath = join(root, "temporary-native-lock");
+    const fd = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+    try {
+      const child = spawnSync(join(stage, "ash-state-lock"), [], { stdio: ["ignore", "pipe", "pipe", fd], timeout: 5000 });
+      assert.equal(child.status, 0); assert.equal(String(child.stdout), "ash-state-lock/1 acquired\n");
+      const other = openSync(lockPath, constants.O_RDWR | constants.O_NOFOLLOW);
+      try { assert.equal(spawnSync(join(stage, "ash-state-lock"), [], { stdio: ["ignore", "pipe", "pipe", other], timeout: 5000 }).status, 2); }
+      finally { closeSync(other); }
+    } finally { closeSync(fd); }
+  } });
+  assert.equal(result.previous, null);
+  const current = await readlink(join(root, "current"));
+  const metadata = JSON.parse(await readFile(join(current, "native-helper.json"), "utf8"));
+  assert.equal(createHash("sha256").update(await readFile(join(current, "ash-state-lock"))).digest("hex"), metadata.sha256);
+  await writeFile(join(source, "ash-state-lock"), Buffer.concat([await readFile(join(source, "ash-state-lock")), Buffer.from("corrupt")]));
+  const corrupt = await bundle();
+  await assert.rejects(installRelease(root, "0.1.0", corrupt.hash, { fetch: (async () => new Response(corrupt.bytes)) as typeof fetch, check: async () => { throw new Error("must fail hash before startup"); } }), /Native helper checksum/);
+  assert.equal(await readlink(join(root, "current")), current);
 });

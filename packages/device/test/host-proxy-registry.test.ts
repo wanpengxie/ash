@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { writeFile, chmod } from "node:fs/promises";
+import { fixture } from "./fixtures/host-proxy-fixture";
+test("actual private config aliases and synchronous ABA invalidate monotonic epoch", async()=>{ const f=await fixture(); try { assert.equal(f.registry.resolve("plugin/ASH-MATERIAL"),"protected"); assert.equal(f.registry.resolve("ordinary"),"nonprotected"); assert.equal(f.registry.resolve("unknown"),"unknown"); const epoch=f.registry.epoch(); await writeFile(f.path,JSON.stringify({...f.manifest,version:"wrong"})); assert.equal(f.registry.current(),false); const changed=f.registry.epoch(); assert.ok(changed>epoch); await writeFile(f.path,JSON.stringify(f.manifest)); f.registry.reload(); assert.equal(f.registry.current(),true); assert.ok(f.registry.epoch()>changed); await chmod(f.path,0o644); assert.equal(f.registry.current(),false); assert.equal(f.registry.resolve("ordinary"),"unknown"); } finally {await f.close();} });
+
+test("watch failure cannot resume admission through subsequent refresh events",async()=>{const f=await fixture();try{const watcher=(f.registry as unknown as {watcher:import("node:fs").FSWatcher}).watcher;watcher.emit("error",Error("fixture watch failure"));assert.equal(f.registry.current(),false);watcher.emit("change","change","registry.json");assert.throws(()=>f.registry.reload(),/closed/);assert.equal(f.registry.current(),false);}finally{await f.close();}});

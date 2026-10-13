@@ -44,6 +44,8 @@ export const connectorOver = (endpoint: Endpoint): Connector => (_url, _headers,
 };
 
 export class FakeGateway {
+  onMaterial?: (frame:Record<string,unknown>)=>void;
+  sendMaterial(frame:Record<string,unknown>):void { this.toOwner(frame); }
   readonly url: string;
   /** The claim secret the deployed relay was given. */
   secret: string | null;
@@ -152,6 +154,7 @@ export class FakeGateway {
     if (text === "ping") return void ws.send("pong");
     let f: Frame;
     try { f = JSON.parse(text); } catch { return; }
+    if (f.v === 1 && typeof f.type === "string" && f.type.startsWith("ash.material.")) { this.onMaterial?.(f); return; }
     if (f.t === "tun") return this.onTunnel(f);
     if (f.t !== "gw") return;
     this.ops.push(f);

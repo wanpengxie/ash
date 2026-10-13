@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { evidenceFixture } from "./fixtures/host-supervisor-evidence";
+test("native evidence binds private executable version schema PID listener config home generation",async()=>{const f=await evidenceFixture();try{const identity=f.evidence.attest();assert.equal(identity.version,"0.162.0-alpha.17.2");assert.equal(f.evidence.current(identity),true);assert.equal(JSON.stringify(identity).includes(f.token),false);await writeFile(f.config,"changed");assert.equal(f.evidence.current(identity),false);await writeFile(f.config,"config-fixed");assert.equal(f.evidence.current(identity),false);}finally{await f.close();}});
+for(const mode of ["version","listener"])test(`mismatched synthetic ${mode} evidence fails closed`,async()=>{const f=await evidenceFixture();try{f.mode(mode);assert.throws(()=>f.evidence.attest(),/unavailable/);}finally{await f.close();}});
+test("factory uses actual authenticated fixture WS without exposing token and refuses stale or aborted lease",async()=>{const f=await evidenceFixture();try{const identity=f.factory.identity();const ws=await f.factory.connect(identity,new AbortController().signal);assert.equal(ws.readyState,1);ws.terminate();const aborted=new AbortController();aborted.abort();await assert.rejects(f.factory.connect(identity,aborted.signal),/unavailable/);f.invalidate();await assert.rejects(f.factory.connect(identity,new AbortController().signal),/unavailable/);}finally{await f.close();}});
