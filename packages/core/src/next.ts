@@ -20,6 +20,7 @@ import { createDshDriver, type DriverProcess } from "./edges/agents/dsh";
 import { createPiDriver } from "./edges/agents/pi";
 import { forgetScriptAgent, SCRIPT_RUNTIME, scriptDriver } from "./edges/agents/script";
 import { createRemoteDrivers } from "./edges/agents/remote";
+import { AttachedCallers } from "./edges/agents/attached";
 import { createApps, installBuiltinOrgans, installContractDoc, newBuiltinReport } from "./edges/apps";
 import { createLocalBody, mainBodyKind } from "./edges/body/local";
 import { createHostPipe, createHostService, createVirtualScreen, HostClient, loadHostBoot } from "./edges/host";
@@ -164,6 +165,9 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     assess: (req) => (req.to === MAIN_BODY_ID ? late.body!.assess(req) : late.hands!.assess(req)),
     review,
   }, store, { now });
+  // The Codex App on a computer calls as an agent that Ash does not run (edges/agents/attached.ts).
+  const attached = new AttachedCallers();
+  const policyOf = (id: string) => late.agents?.policyOf(id) ?? attached.policyOf(id);
   const router = createRouter({
     ledger, registry, gate, redact, store, now,
     // The hub setting `approval.fast_seconds`: how long an agent's call that needs the owner waits for their answer (default 30; 0 turns the fast path off).
@@ -171,7 +175,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     onParked: (pending) => late.gateService!.issueCard(pending),
     onError: (where, error) => { late.health?.noteError(where); log(where, error); },
     tap: (traffic) => late.health?.tap(traffic),
-    agentPolicy: (id) => late.agents?.policyOf(id) ?? null, toolWords,
+    agentPolicy: policyOf, toolWords,
     mayTalkToOwner: (caller, word) => late.agents?.mayTalkToOwner(caller, word) ?? true,
     mayAnswer: (caller, body) => late.agents?.mayAnswer(caller, body) ?? true,
     appGranted: (app, to, word) => late.apps!.runtime.granted(app, to, word),
@@ -206,7 +210,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   });
   const health = late.health = createHealthService({ ledger, router, registry, now, log: (message) => log(`health: ${message}`), viewing: () => late.human?.viewing() ?? false, ...(opts.healthTickMs ? { tickMs: opts.healthTickMs } : {}) });
   const widgets = createWidgetsService({ ledger, router, now });
-  const directory = createDirectoryService({ registry, agentPolicy: (id) => late.agents?.policyOf(id) ?? null, toolWords, appGranted: (app, member, word) => late.apps!.runtime.granted(app, member, word) });
+  const directory = createDirectoryService({ registry, agentPolicy: policyOf, toolWords, appGranted: (app, member, word) => late.apps!.runtime.granted(app, member, word) });
   const vaultService = createVaultService({ vault, ledger, router });
   const semantic = createSemantic({
     ledger, router, now, log,
@@ -245,11 +249,14 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   });
   const devices = new Devices({ hands, router, bodies, gateway: linkControl.pairing, now });
   linkControl.bindDevices(devices);
-  const remote = createRemoteDrivers({ router, log });
+  const remote = createRemoteDrivers({ router, log, attached: {
+    declare: (computer, name) => attached.declare(computer, name), drop: (computer) => attached.drop(computer),
+    tools: (agent) => tools.attachedTools(agent), call: (agent, turn, tool, args, signal) => tools.callAttached(agent, turn, tool, args, signal),
+  } });
   link.onChannel("agent", remote.attach);
 
   let url = "";
-  const tools = createToolsEdge({ router, registry, ledger, now, log, agentPolicy: (id) => late.agents?.policyOf(id) ?? null, currentTurn: (id, lane) => late.agents?.currentTurn(id, lane) ?? null,
+  const tools = createToolsEdge({ router, registry, ledger, now, log, agentPolicy: policyOf, attached, currentTurn: (id, lane) => late.agents?.currentTurn(id, lane) ?? null,
     turnActive: (id, turn) => late.agents?.turnActive(id, turn) ?? false });
   const drivers: Record<string, AgentDriverFactory> = {
     dsh: (report) => createDshDriver({ report, spawn: (argv, o) => body.spawn(argv, o) as DriverProcess, writeFile: bodyFileWriter(router), runtimePath: (cwd) => body.runtimePath(cwd), readBlob: (ref) => ledger.blob.get(ref) }),

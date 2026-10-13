@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { HelloChannels } from "../../sdk/src/link";
 import { HandClient } from "../../link/src/hand";
 import { createWorkspace } from "./workspace";
@@ -18,6 +18,7 @@ import { deviceCli } from "./cli";
 import { DEVICE_VERSION, installRelease } from "./install";
 import { Browser, detectEgo } from "./browser";
 import { KimiBridge, KimiBrowser } from "./kimi";
+import { serveLocal } from "./local";
 
 export interface DeviceConfig { gateway: string; name: string; stateDir: string; workdir: string; installRoot?: string }
 
@@ -128,7 +129,12 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
   const declare = () => void client.setManifest(hand.manifest()).then((ack) => { if (ack.rejected.length) log("the hub did not take some capabilities", JSON.stringify(ack.rejected)); }, () => {});
   bridge.onChange(declare);
 
+  // The Codex App's `ash-device mcp` comes in here and goes to the hub on the connection above.
+  const local = await serveLocal(join(stateDir, "mcp.sock"), (tool, args, session) => agents.attached(tool, args, session), (message, error) => log(message, error ?? ""))
+    .catch((error) => { log("the local door for `ash-device mcp` is not open:", error instanceof Error ? error.message : error); return null; });
+
   const stopAll = async () => {
+    local?.close();
     client.stop(); line?.stop(); port.close();
     await agents.close(); await workspace.close(); await bridge.close(); await runtimes.close();
     finish();

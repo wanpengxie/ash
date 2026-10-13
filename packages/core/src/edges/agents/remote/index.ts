@@ -31,4 +31,4 @@ export function createRemoteDrivers(options: RemoteOptions): RemoteDrivers {
   };
 }
 
-export type { RemoteOptions } from "./directory";
+export type { AttachedPort, RemoteOptions } from "./directory";

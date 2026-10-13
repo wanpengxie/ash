@@ -52,6 +52,8 @@ export interface ToolsEdgeOptions {
   currentTurn(agentId: string, lane: string): string | null;
   /** Whether that turn of the agent is still running, on any of its lanes (the lane a turn belongs to is not known to a result). */
   turnActive(agentId: string, turn: string): boolean;
+  /** Callers of outside apps attached through a computer: they have no turns of their own, and are never woken. */
+  attached?: { has(agentId: string): boolean };
   now?: () => number;
   /** How long a call is waited for before a receipt (default 15 s). */
   fastPathMs?: number;
@@ -76,9 +78,17 @@ export interface ToolsEdge {
   recover(): void;
   /** Call when the agent is up (registered) after any start of its process: what is owed to it, because its turn ended without `turn.ended` (a crash, a restart) or a wake could not be sent, is told now. */
   catchUp(agentId: string): void;
+  /** The tools an attached caller may use, with their descriptions, for its `tools/list`. */
+  attachedTools(agent: string): { name: string; description: string; inputSchema: Record<string, unknown> }[];
+  /** One tool call of an attached caller, in the `turn` its app's session names. Not tied to any agent turn. */
+  callAttached(agent: string, turn: string, name: string, args: unknown, signal: AbortSignal): Promise<Shaped>;
   /** Stop every running call and forget all tokens. */
   close(): void;
 }
+
+/** What an attached caller is given: the way to every word, the receipts, and Ash's agents. Nothing is added by its identity. */
+export const ATTACHED_TOOLS: readonly string[] = Object.freeze(["capability_list", "capability_describe", "capability_call", "await_result", "list_pending", "cancel", "agent_list", "agent_ask", "agent_tell"]);
+const ATTACHED_CALL_NOTE = " You are an app outside Ash, not one of its agents: when the owner has been asked (status waiting_owner, with a pending_id) their answer does not come to you as a message. Do not poll in a loop: tell the user to answer on the phone, then read it with capability_call {member: \"service:gate\", word: \"pending.get\", body: {id: pending_id}}; if the answer is yes, run it with word pending.redeem, otherwise leave it.";
 
 export const FAST_PATH_MS = 15_000;
 export const MAX_WAIT_MS = 50_000;
@@ -211,7 +221,7 @@ export function createToolsEdge(options: ToolsEdgeOptions): ToolsEdge {
 
   // ---- the result comes back by itself (SPEC-02 §3.4): a receipt's answer is told to its agent in a wake, once, when the
   // turn that made the call is over and the agent has not fetched the answer.
-  const turnActive = (agent: string, turn: string | null): boolean => turn !== null && options.turnActive(agent, turn);
+  const turnActive = (agent: string, turn: string | null): boolean => turn !== null && (options.attached?.has(agent) === true || options.turnActive(agent, turn));
 
   function wakeAgent(row: JobRow): void {
     const outcome = row.outcome ?? failure("result_unknown", "Ash restarted while this call was running; whether it was done is not known.");
@@ -298,11 +308,11 @@ export function createToolsEdge(options: ToolsEdgeOptions): ToolsEdge {
     } finally { signal.removeEventListener("abort", abort); }
   }
 
-  async function awaitResult(agent: string, lane: string, id: string, timeoutMs: number, signal: AbortSignal): Promise<Shaped> {
+  async function awaitResult(agent: string, lane: string, id: string, timeoutMs: number, signal: AbortSignal, fixedTurn?: string): Promise<Shaped> {
     const job = live.get(id);
     if (job && job.agent === agent) {
       if (!job.shaped) {
-        const callerTurn = options.currentTurn(agent, lane);
+        const callerTurn = fixedTurn ?? options.currentTurn(agent, lane);
         job.awaiting++;
         try { await within(Promise.race([job.done, new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))]), timeoutMs); }
         finally { job.awaiting--; }
@@ -344,7 +354,7 @@ export function createToolsEdge(options: ToolsEdgeOptions): ToolsEdge {
   }
   const refused = (value: object): value is Shaped => !("rest" in value);
 
-  async function callTool(agent: string, lane: string, name: string, rawArgs: unknown, signal: AbortSignal): Promise<Shaped> {
+  async function callTool(agent: string, lane: string, name: string, rawArgs: unknown, signal: AbortSignal, fixedTurn?: string): Promise<Shaped> {
     const args = rawArgs === undefined || rawArgs === null ? {} : rawArgs;
     if (!isObject(args)) return failure("bad_request", "the arguments must be an object");
     if (!TOOL_NAMES.includes(name)) return failure("not_found", `no tool ${name}`, { recovery_hint: "Use one of the tools you were given." });
@@ -371,11 +381,11 @@ export function createToolsEdge(options: ToolsEdgeOptions): ToolsEdge {
       }
       const problem = num(args.timeout_ms, "timeout_ms", 0, maxWaitMs);
       if (problem) return failure("bad_request", problem);
-      return awaitResult(agent, lane, args.request_id, (args.timeout_ms as number | undefined) ?? maxWaitMs, signal);
+      return awaitResult(agent, lane, args.request_id, (args.timeout_ms as number | undefined) ?? maxWaitMs, signal, fixedTurn);
     }
 
     if (!toolAllowed(policy, name)) return failure("forbidden", `${name} is not one of your tools`, { recovery_hint: "Your declaration does not include this tool; use another way or ask the owner." });
-    const turn = options.currentTurn(agent, lane);
+    const turn = fixedTurn ?? options.currentTurn(agent, lane);
     if (!turn) return failure("forbidden", "no turn is running for you; Ash tools work only while you are handling a message or a wake", { recovery_hint: "Do this inside a turn." });
 
     try {
@@ -470,6 +480,17 @@ export function createToolsEdge(options: ToolsEdgeOptions): ToolsEdge {
     },
     issueTokens,
     revoke,
+    attachedTools(agent) {
+      const policy = options.agentPolicy(agent);
+      if (!policy || !options.attached?.has(agent)) return [];
+      return toolDefinitions().filter((tool) => ATTACHED_TOOLS.includes(tool.name) && toolAllowed(policy, tool.name))
+        .map((tool) => ({ ...tool, ...(tool.name === "capability_call" ? { description: tool.description + ATTACHED_CALL_NOTE } : {}) }));
+    },
+    async callAttached(agent, turn, name, args, signal) {
+      if (!options.attached?.has(agent)) return failure("forbidden", `${agent} is not an attached caller`);
+      if (!ATTACHED_TOOLS.includes(name)) return failure("not_found", `no tool ${name}`, { recovery_hint: `Use one of: ${ATTACHED_TOOLS.join(", ")}.` });
+      return callTool(agent, "attached", name, args, signal, turn);
+    },
     recover() {
       // Whatever is owed, from any turn: a turn the last process was in is not running now.
       sweep(table.owed());

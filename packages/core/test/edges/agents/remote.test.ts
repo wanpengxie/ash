@@ -507,3 +507,79 @@ test("through the agents module: declared on a computer, a message becomes a tur
   assert.equal(c.agents.size, 1, "the agent was never started over on the computer");
   assert.ok(f.logs.every((l) => !/did not start/.test(String(l[0]))));
 });
+
+// -- the app attached to a computer (the Codex App, through `ash-device mcp`) ---------------------------------------------------
+
+/** What the hub gives the attached callers: a stub that records. */
+function attachedPort() {
+  const calls: { agent: string; turn: string; tool: string; args: unknown; signal: AbortSignal }[] = [];
+  const dropped: string[] = [];
+  let hold: ((value: unknown) => void) | null = null;
+  const port = {
+    declare: (computer: string, name: string) => ({ id: `agent:codex-${name.length}`, name: `${name} 上的 Codex`, computer }),
+    drop: (computer: string) => { dropped.push(computer); },
+    tools: (agent: string) => [{ name: "agent_list", description: `for ${agent}`, inputSchema: { type: "object" } }],
+    call: (agent: string, turn: string, tool: string, args: unknown, signal: AbortSignal): Promise<unknown> => {
+      calls.push({ agent, turn, tool, args, signal });
+      if (tool === "slow") return new Promise((resolve, reject) => { hold = resolve; signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }); });
+      if (tool === "boom") return Promise.reject(new Error("the hub could not do it"));
+      return Promise.resolve({ content: [{ type: "text", text: "ok" }], structuredContent: { tool } });
+    },
+  };
+  return { port, calls, dropped, release: () => hold?.({ content: [] }) };
+}
+
+/** The computer sends an attached frame (no agent, no turn) and waits for the answer. */
+async function attachedCall(c: Computer, tool: string, args: Frame = {}, session?: string): Promise<Frame> {
+  const id = `a_${++c.n}`;
+  c.out({ id, outbound: tool, attached: session ? { session } : {}, args });
+  return eventually(() => c.results.find((r) => r.id === id), `outbound_result of ${tool}`, 5000);
+}
+
+test("attached: a call with no agent and no turn goes to the hub's port as the computer's own caller, and the answer goes back", async (t) => {
+  const stub = attachedPort();
+  const w = await world(t, { attached: stub.port });
+  const c = await w.computer();
+  const list = await attachedCall(c, "tools/list");
+  assert.deepEqual([list.ok, list.outbound_result], [true, "tools/list"]);
+  assert.deepEqual(list.result.tools.map((x: any) => x.name), ["agent_list"]);
+  assert.equal(list.result.caller.name, "书房电脑 上的 Codex");
+  assert.equal(stub.calls.length, 0, "the list is not a call");
+
+  const done = await attachedCall(c, "agent_list", { x: 1 }, "sess-1");
+  assert.deepEqual([done.ok, done.result.structuredContent], [true, { tool: "agent_list" }]);
+  assert.deepEqual([stub.calls[0]!.agent, stub.calls[0]!.turn, stub.calls[0]!.tool, stub.calls[0]!.args], ["agent:codex-4", "codex-sess-1", "agent_list", { x: 1 }]);
+  const noSession = await attachedCall(c, "agent_list");
+  assert.equal(noSession.ok, true);
+  assert.equal(stub.calls[1]!.turn, "codex-session");
+  assert.equal(w.sent.length, 0, "the directory itself sent nothing to the router: the port does");
+  assert.equal(w.codex.status("agent:codex-4").state, "exited", "nothing was started: Ash does not run it");
+});
+
+test("attached: an error of the hub comes back as the call's error; a hub without the port refuses; a frame with no `attached` is still an agent's", async (t) => {
+  const stub = attachedPort();
+  const w = await world(t, { attached: stub.port });
+  const c = await w.computer();
+  const boom = await attachedCall(c, "boom");
+  assert.deepEqual([boom.ok, boom.error.code, boom.error.message], [false, "failed", "the hub could not do it"]);
+  const agentStyle = await c.tool({ tool: "agent_list", agent: "agent:nobody", args: {} });
+  assert.equal(agentStyle.error.code, "forbidden", "the agent's own path is as before");
+
+  const bare = await world(t);
+  const d = await bare.computer();
+  const refused = await attachedCall(d, "agent_list");
+  assert.deepEqual([refused.ok, refused.error.code], [false, "unavailable"]);
+});
+
+test("attached: a call in flight is cancelled with the connection, and the caller is dropped", async (t) => {
+  const stub = attachedPort();
+  const w = await world(t, { attached: stub.port });
+  const c = await w.computer();
+  const id = `a_${++c.n}`;
+  c.out({ id, outbound: "slow", attached: {}, args: {} });
+  await eventually(() => stub.calls.length === 1, "the call reached the port");
+  c.drop();
+  await eventually(() => stub.calls[0]!.signal.aborted, "the call was cancelled");
+  await eventually(() => stub.dropped.length === 1, "the caller was dropped");
+  assert.equal(stub.dropped[0], c.id);
+});
