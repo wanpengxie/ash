@@ -259,6 +259,8 @@ class HmModel(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private var pick: String? = null
     private var effort: String? = null
     private var loginCard: JSONObject? = null
+    /** What the Codex login is doing, shown in the Codex card itself (next to its button, not at the bottom of the page). */
+    private var loginNote: String? = null
 
     init {
         body.addView(Hk.note(ctx, "她的脑子由运行时和模型决定。她自己也能改，这里是你想亲自动手时用的。改错了可能让她无法正常工作。"))
@@ -310,6 +312,7 @@ class HmModel(env: HomeEnv, arg: String?) : HomePage(env, arg) {
                     HomeCatalog.Action.LOGIN -> addView(AshUi.button(ctx, "登录", Kind.PRIMARY, AshUi.BtnSize.SM) { login() })
                     null -> {}
                 }
+                if (p.id == "openai-codex") loginNote?.let { addView(Hk.note(ctx, it, if (loginCard == null && it != LOGIN_ASKING) "warn" else null)) }
                 if (p.id == "openai-codex" && loginCard != null) {
                     addView(Hk.pre(ctx, HomeCatalog.loginText(loginCard!!)))
                     addView(AshUi.button(ctx, "打开登录页", Kind.PRIMARY, AshUi.BtnSize.SM) { loginCard?.str("verification_uri")?.let { open(it) } })
@@ -344,11 +347,15 @@ class HmModel(env: HomeEnv, arg: String?) : HomePage(env, arg) {
 
     private fun login() {
         val a = agent ?: return
-        status.text = "正在申请登录码…"
+        if (loginNote == LOGIN_ASKING) return
+        loginNote = LOGIN_ASKING; loginCard = null; drawPi()
         call("service:agents", "configure", JSONObject().put("agent", a).put("config", JSONObject().put("login", "openai-codex"))) { r ->
             val card = r.data.optJSONObject("config")
-            if (!r.ok || card?.str("user_code") == null) { status.text = r.failure?.message ?: "没能申请到登录码，请确认手机的 VPN 开了，再试。"; return@call }
-            loginCard = card; status.text = ""; drawPi()
+            if (!r.ok || card?.str("user_code") == null) {
+                loginNote = if (r.code == "unavailable") "连不上 OpenAI：先打开手机的全局 VPN（或让 v2rayA 跑起来），再点登录。" else "没能申请到登录码：${r.failure?.message ?: "请再试一次。"}"
+                drawPi(); return@call
+            }
+            loginCard = card; loginNote = null; drawPi()
         }
     }
 
@@ -425,3 +432,6 @@ class HmAdvanced(env: HomeEnv, arg: String?) : HomePage(env, arg) {
 
     override fun refresh() = read()
 }
+
+/** What the Codex card shows while its login code is being asked for. */
+private const val LOGIN_ASKING = "正在申请登录码…（最多一分钟）"
