@@ -344,8 +344,10 @@ object ContextProbe {
             when {
                 type == "EV_KEY" && code == "BTN_TOUCH" -> { f.btn = true; if (value == "DOWN") down(f, tk) else if (value == "UP") up(f, tk, dev) }
                 type == "EV_ABS" && code == "ABS_MT_TRACKING_ID" && !f.btn -> { if (value == "ffffffff") up(f, tk, dev) else if (!f.down) down(f, tk) }
-                type == "EV_ABS" && code == "ABS_MT_POSITION_X" -> { f.x = value.toLong(16).toInt(); if (f.down && f.x0 < 0) f.x0 = f.x }
-                type == "EV_ABS" && code == "ABS_MT_POSITION_Y" -> { f.y = value.toLong(16).toInt(); if (f.down && f.y0 < 0) f.y0 = f.y }
+                type == "EV_ABS" && code == "ABS_MT_POSITION_X" -> f.x = value.toLong(16).toInt()
+                type == "EV_ABS" && code == "ABS_MT_POSITION_Y" -> f.y = value.toLong(16).toInt()
+                // The first frame of a touch ends here: its position is the start, whichever order the frame came in.
+                type == "EV_SYN" && code == "SYN_REPORT" -> if (f.down && f.x0 < 0) { f.x0 = f.x; f.y0 = f.y }
                 type == "EV_KEY" && value == "DOWN" && !code.startsWith("BTN_") -> {
                     keys++
                     write("touch", JSONObject().put("t", wall(tk)).put("ev", "key").put("key", code).put("dev", dev))
@@ -353,7 +355,7 @@ object ContextProbe {
             }
         }
 
-        private fun down(f: Finger, tk: Long) { f.down = true; f.t0 = tk; f.x0 = f.x; f.y0 = f.y }
+        private fun down(f: Finger, tk: Long) { f.down = true; f.t0 = tk; f.x0 = -1; f.y0 = -1 }
 
         private fun up(f: Finger, tk: Long, dev: String) {
             if (!f.down) return
