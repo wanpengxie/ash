@@ -1,11 +1,8 @@
-/** The pieces the pi driver stands on: the proxy probe (against a local stand-in proxy), the route order, the error classes, and the v2rayA keeper. */
+/** The pieces the pi driver stands on: the proxy probe (against a local stand-in proxy), the route order, the error classes. */
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
-import { PassThrough } from "node:stream";
 import test from "node:test";
 import { AUTH_ERROR, NETWORK_ERROR, chooseRoute, probeProxy } from "../../../src/edges/agents/pi/route";
-import { createV2raya } from "../../../src/edges/agents/pi/v2raya";
 import { normalizeModel } from "../../../src/edges/agents/pi";
 
 function proxy(answer: string | null): Promise<{ url: string; close(): void }> {
@@ -49,28 +46,3 @@ test("model names: provider/id as given, a bare deepseek-* is DeepSeek's, any ot
   assert.equal(normalizeModel(undefined), "deepseek/deepseek-flash");
 });
 
-function fakeChild() {
-  const child = new EventEmitter() as any;
-  child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.pid = undefined; child.kill = () => true;
-  return child;
-}
-
-test("v2rayA is started once, started again after a pause when it ends, and given up on when it keeps ending at once", async () => {
-  const children: any[] = [];
-  const argvs: string[][] = [];
-  const keeper = createV2raya({ spawn: (argv) => { argvs.push(argv); const c = fakeChild(); children.push(c); return c; }, restartMs: 20, quickLimit: 3, quickMs: 10_000 });
-  keeper.ensure(); keeper.ensure();
-  assert.equal(children.length, 1, "ensure twice is one process");
-  assert.equal(argvs[0]![0], "/opt/v2/v2raya");
-  assert.ok(argvs[0]!.includes("--lite"));
-  children[0].emit("exit", 1, null);
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(children.length, 2, "started again after the pause");
-  children[1].emit("exit", 1, null);
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(children.length, 3);
-  children[2].emit("exit", 1, null);
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(children.length, 3, "three quick endings in a row: it is left alone");
-  keeper.stop();
-});

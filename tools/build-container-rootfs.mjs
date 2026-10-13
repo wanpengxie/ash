@@ -17,7 +17,7 @@
 //     opt/node/                      node 22 linux-arm64
 //     opt/dsh/                       `npm install @deepseek-ai/dsh` for linux-arm64 (glibc)
 //     opt/pi/                        `npm install @earendil-works/pi-coding-agent` for linux-arm64 (the pi runtime)
-//     opt/v2/                        v2rayA (--lite) and its core, with the geo data: the proxy pi reaches OpenAI through
+//     opt/v2/                        v2rayA (--lite) and its core, with the geo data: the proxy of the container, run by the built-in app v2raya
 //     opt/ash/dsh-ash-control/       ash's DSH plugin (packages/dsh-ash-control)
 //     opt/ash/ash-cost/              the cost collector plugin (packages/ash-cost)
 //     opt/ash/ash-skills/            ash's skills plugin and persona templates (packages/ash-skills)
@@ -259,7 +259,7 @@ async function build() {
   }
   verifyDsh(nm, prune);
 
-  // 4b. pi and v2rayA, the second agent runtime and the proxy it reaches OpenAI through (the pi driver starts both).
+  // 4b. pi and v2rayA, the second agent runtime, and the proxy of the container (run by the built-in app v2raya, not by pi).
   const piDir = path.join(ubuntu, "opt/pi");
   const piSpec = `${INPUTS.pi.package}@${INPUTS.pi.version}`;
   const piCache = fs.mkdtempSync(path.join(os.tmpdir(), "ash-container-npm-"));

@@ -17,7 +17,7 @@ import { WordError, type Caller } from "../../sdk/src/message";
 import { createAgents, bodyFileWriter } from "./edges/agents";
 import { DEFAULT_CREDENTIAL_REFS } from "./edges/agents/manager";
 import { createDshDriver, type DriverProcess } from "./edges/agents/dsh";
-import { createPiDriver, createV2raya } from "./edges/agents/pi";
+import { createPiDriver } from "./edges/agents/pi";
 import { forgetScriptAgent, SCRIPT_RUNTIME, scriptDriver } from "./edges/agents/script";
 import { createRemoteDrivers } from "./edges/agents/remote";
 import { createApps, installBuiltinOrgans, installContractDoc, newBuiltinReport } from "./edges/apps";
@@ -253,10 +253,10 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     turnActive: (id, turn) => late.agents?.turnActive(id, turn) ?? false });
   const drivers: Record<string, AgentDriverFactory> = {
     dsh: (report) => createDshDriver({ report, spawn: (argv, o) => body.spawn(argv, o) as DriverProcess, writeFile: bodyFileWriter(router), runtimePath: (cwd) => body.runtimePath(cwd), readBlob: (ref) => ledger.blob.get(ref) }),
-    // pi, the other agent runtime: it works through the same body, and brings v2rayA up with its first agent.
+    // pi, the other agent runtime: it works through the same body.
     pi: (report) => {
       const spawn = (argv: string[], o?: { env?: Record<string, string>; cwd?: string }) => body.spawn(argv, o) as DriverProcess;
-      return createPiDriver({ report, spawn, writeFile: bodyFileWriter(router), runtimePath: (cwd) => body.runtimePath(cwd), readBlob: (ref) => ledger.blob.get(ref), log, proxyService: createV2raya({ spawn, log }) });
+      return createPiDriver({ report, spawn, writeFile: bodyFileWriter(router), runtimePath: (cwd) => body.runtimePath(cwd), readBlob: (ref) => ledger.blob.get(ref), log });
     },
     // The script agent exists only for a host that says it is a debug build (host.json `dev.script_agent`).
     ...(spec.dev?.script_agent === true ? { [SCRIPT_RUNTIME]: scriptDriver({ spawn: (argv, o) => body.spawn(argv, o) as DriverProcess, writeFile: bodyFileWriter(router), runtimePath: (cwd) => body.runtimePath(cwd), readBlob: (ref) => ledger.blob.get(ref) }) } : {}),

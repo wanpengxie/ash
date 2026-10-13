@@ -38,7 +38,6 @@ function setup(o: Opts = {}) {
   const written: Record<string, string> = {};
   const open = { proxy: false, direct: false };
   const probed: string[] = [];
-  const proxyStarts = { n: 0 };
   const driver = createPiDriver({
     report: (e) => events.push(e),
     spawn: (argv, opts) => {
@@ -51,7 +50,6 @@ function setup(o: Opts = {}) {
     loginArgv: ["login-helper"],
     timeZone: () => "Asia/Shanghai",
     proxyUrl: "http://127.0.0.1:20171",
-    proxyService: { ensure: () => { proxyStarts.n++; }, stop: () => {} },
     probe: o.probe ?? (async (route) => { probed.push(route); return open[route]; }),
     hotMs: o.hotMs ?? 60_000,
     recoverMs: o.recoverMs ?? 60_000,
@@ -64,7 +62,7 @@ function setup(o: Opts = {}) {
   const prompts = () => log().filter((l) => l.prompt !== undefined);
   const of = <T extends AgentEvent["event"]>(name: T) => events.filter((e) => e.event === name) as Extract<AgentEvent, { event: T }>[];
   const ended = (agent = "agent:main", key = "front") => of("turn.ended").filter((e) => e.agent === agent && e.key === key);
-  return { driver, events, log, starts, prompts, of, ended, written, open, probed, proxyStarts };
+  return { driver, events, log, starts, prompts, of, ended, written, open, probed };
 }
 
 const spec = (over: Partial<AgentStartSpec> = {}): AgentStartSpec => ({
@@ -349,19 +347,17 @@ test("a login that turns out stale in a turn switches that session to DeepSeek a
   assert.equal((await t.driver.configure("agent:main", undefined)).fallback, null, "choosing the model again is a fresh start");
 });
 
-test("DeepSeek, the default, needs nothing: no probe of any way, no v2rayA, no proxy in the environment; Codex starts v2rayA", async () => {
+test("DeepSeek, the default, needs nothing: no probe of any way, no proxy in the environment; Codex probes the proxy", async () => {
   const t = setup();
   await t.driver.start("agent:main", spec());
   await t.driver.send("agent:main", "front", [msg("one")]);
   await waitFor(() => t.ended().length === 1);
   assert.deepEqual(t.probed, []);
-  assert.equal(t.proxyStarts.n, 0);
   assert.equal(t.starts()[0]!.env.HTTPS_PROXY, "");
   t.open.proxy = true;
   await t.driver.configure("agent:main", undefined, { model: "openai-codex/gpt-5.5" });
   await t.driver.send("agent:main", "front", [msg("two")]);
   await waitFor(() => t.ended().length === 2);
-  assert.equal(t.proxyStarts.n >= 1, true);
   assert.deepEqual(t.probed.slice(0, 1), ["proxy"]);
 });
 
@@ -523,7 +519,6 @@ test("upstream out of reach direct is tried through v2rayA when it answers (it i
   await t.driver.catalog!("agent:main", { kind: "pi" });
   await waitFor(() => refreshes(t).length === 2, "direct, then the proxy");
   assert.deepEqual(refreshes(t).map((r) => r.env.HTTPS_PROXY), ["", "http://127.0.0.1:20171"]);
-  assert.equal(t.proxyStarts.n, 0, "v2rayA is not started for the tables");
 
   const none = setup({ store: null, env: { FAKE_REFRESH: "fail" }, catalogRetryMs: 150 });
   await none.driver.start("agent:main", spec());

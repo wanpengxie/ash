@@ -16,7 +16,7 @@
  *
  * DeepSeek is the default model and needs nothing: no login, no proxy, no probe (the key is the one DSH uses). A Codex model is used only
  * once the owner has logged in; the way to it is chosen when a process is taken (`route.ts`): v2rayA's proxy if it answers, else straight out
- * (the phone's VPN is on), else nothing, and then this turn goes to DeepSeek, which is always direct. v2rayA is started only when Codex is in play. A network error in a turn is checked the
+ * (the phone's VPN is on), else nothing, and then this turn goes to DeepSeek, which is always direct. A network error in a turn is checked the
  * same way and, when the way is really shut, the session goes on with DeepSeek (`set_model`: the history stays) and the owner is told;
  * while it is on DeepSeek the way is tried again every minute, and the session goes back when it is open. Codex's login is a
  * `configure` of the driver (see `configure`).
@@ -34,7 +34,6 @@ import type { DriverProcess, SpawnFn } from "../dsh/acp";
 import { toolSummary } from "../dsh/tool-label";
 import { PiRpc, type PiRecord } from "./rpc";
 import { AUTH_ERROR, DEFAULT_PROXY_URL, NETWORK_ERROR, chooseRoute, probeDirect, probeProxy, type Route } from "./route";
-import type { ProxyService } from "./v2raya";
 
 /** `pi` is a name the main body resolves: /opt/pi/... in the container, the machine's own pi in development. */
 export const PI_ARGV = ["pi", "--mode", "rpc", "--no-approve"];
@@ -78,8 +77,6 @@ export interface PiDriverDeps {
   log?(...args: unknown[]): void;
   /** v2rayA's HTTP proxy. */
   proxyUrl?: string;
-  /** The proxy service to start with the first agent (v2rayA). */
-  proxyService?: ProxyService;
   /** Is this way open? (tests give their own; the default knocks on the proxy and on OpenAI's host). */
   probe?(route: "proxy" | "direct"): Promise<boolean>;
   /** The model a shut way falls back to. */
@@ -213,7 +210,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
 
   /**
    * The model this agent's next turn runs on, and the way to it. A DeepSeek model needs neither a login nor a way: it is direct, and
-   * v2rayA is not even started. A Codex model is used once the owner has logged in; before that the turn goes to DeepSeek (told once).
+   * v2rayA is not involved. A Codex model is used once the owner has logged in; before that the turn goes to DeepSeek (told once).
    * From then on the way is chosen as above, and a shut way sends the turn to DeepSeek.
    */
   async function plan(ag: Agent): Promise<{ model: string; route: Route }> {
@@ -225,12 +222,10 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
         const state = login.state === "ready" ? "ready" : await loginStatus(ag);
         if (state === "none" || state === "pending") enterFallback(ag, "login");
         else {
-          deps.proxyService?.ensure();
           route = await routeNow();
           if (route === "none") enterFallback(ag, "network");
         }
       } else if (ag.fallback.reason === "network") {
-        deps.proxyService?.ensure();
         route = await routeNow();
         if (route !== "none") leaveFallback(ag, "Codex 又连上了，已切回。");
       }
@@ -558,9 +553,8 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
   async function startLogin(ag: Agent, provider: string): Promise<Record<string, unknown>> {
     if (provider !== CODEX_PROVIDER) throw new WordError("bad_request", `only ${CODEX_PROVIDER} has a login here`);
     if (login.state === "pending" && login.info) return login.info;
-    deps.proxyService?.ensure();
     const route = await routeNow(true);
-    if (route === "none") throw new WordError("unavailable", "OpenAI cannot be reached: turn on the phone's VPN for the time of the login, or set up v2rayA (open http://127.0.0.1:2017 on the phone)");
+    if (route === "none") throw new WordError("unavailable", "OpenAI cannot be reached: turn on the phone's VPN for the time of the login, or set up the v2rayA app (see apps.describe v2raya and v2raya.status; its page is http://127.0.0.1:2017 on the phone)");
     const child = deps.spawn([...loginArgv, "login"], { env: envFor(ag, "front", route), cwd: ag.cwd });
     login.child = child;
     child.stdin.on("error", () => {});

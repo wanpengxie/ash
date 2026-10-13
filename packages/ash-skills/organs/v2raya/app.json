@@ -1,0 +1,16 @@
+{
+  "contract": "ash-app/1",
+  "id": "v2raya",
+  "name": "代理 v2rayA",
+  "version": "1.0.0",
+  "summary": "容器里常驻的代理 v2rayA：谁要访问外网（比如 OpenAI）就经它的 HTTP 端口 20171；管理页在 2017。",
+  "role": "容器里常驻的代理：要访问外网（如 OpenAI）就走 http://127.0.0.1:20171。主人在手机浏览器开 http://127.0.0.1:2017 导订阅、选节点，订阅是私有的，别问他要。状态 v2raya.status，重启 apps.restart v2raya。",
+  "publisher": "ash",
+  "server": {
+    "command": "node",
+    "args": [
+      "server.mjs"
+    ]
+  },
+  "needs": []
+}

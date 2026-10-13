@@ -27,8 +27,8 @@ whenToUse: 主人想换模型或换运行时、要用 Codex、问为什么被切
 ## 供应商不能用时，引导主人
 
 - **要密钥**（DeepSeek、OpenRouter）：`ready: false` 且 `auth.kind` 是 `key`。密钥只有主人能存，你代存不了，也不要让他把密钥发给你：告诉他「请打开 App 的 幕后 → 密钥，粘贴 XX 的 Key」。他说好了，再读一次目录确认 `ready`。
-- **要登录**（Codex，用 ChatGPT 订阅）：`auth.kind` 是 `login`。先请主人**临时打开手机的全局 VPN**（他的浏览器要能打开 OpenAI 的页面，你开不了），然后 `configure {agent, config: {login: "openai-codex"}}`，返回 `verification_uri` 和 `user_code`（`expires_in` 秒内有效）。用 `human_say` 把链接和码一起发给他（码单独成一行），请他点链接、输码。不要轮询，登录好了你会收到一条「Codex 登录成功」，那时才告诉他可以关 VPN。返回 `unavailable` 说明现在到不了 OpenAI（VPN 没开，或 v2rayA 没配）。
-- **日常出去的路 v2rayA**（只有用 Codex 才需要，DeepSeek 不用）：容器里的代理。主人在手机浏览器打开 `http://127.0.0.1:2017`，第一次建账号，导入订阅、选节点、启动，HTTP 端口保持 20171。订阅是主人的私有东西，不要问他要。
+- **要登录**（Codex，用 ChatGPT 订阅）：`auth.kind` 是 `login`。先请主人**临时打开手机的全局 VPN**（他的浏览器要能打开 OpenAI 的页面，你开不了），然后 `configure {agent, config: {login: "openai-codex"}}`，返回 `verification_uri` 和 `user_code`（`expires_in` 秒内有效）。用 `human_say` 把链接和码一起发给他（码单独成一行），请他点链接、输码。不要轮询，登录好了你会收到一条「Codex 登录成功」，那时才告诉他可以关 VPN。返回 `unavailable` 说明现在到不了 OpenAI（VPN 没开，或 v2rayA 应用里的订阅没配好，先看 `v2raya.status`）。
+- **日常出去的路**（只有用 Codex 才需要，DeepSeek 不用）：Codex 要经容器里的代理，代理见 v2rayA 应用（`v2raya.status`）。
 
 ## 自动切到 DeepSeek
 
