@@ -5,7 +5,7 @@ relay, and has two channels:
 
 - **`device`**: the computer is a hand. It declares `workspace.*` and `body.info` (always; the hub registers them as
   `body:<id>` only while the owner has bound this computer as a body, SPEC-09), the standard `browser.*` while the Kimi
-  browser extension is connected, `x.kimi.browser.upload|network`, `x.ego.browser.script` when ego-browser is installed,
+  browser extension is connected, `x.kimi.browser.upload|network`, `x.ego.browser.script` when ego-browser is installed, `x.codex.sessions|session|approvals|send|stop|approve` while the Codex desktop app is running here (`src/codex-app.ts`: it joins the app's local channel as a follower; sessions stay with the app; events `codex.turn_ended` and `codex.approval_pending` go to the hub),
   and `x.ash.update` (only the hub's device service may call it). It answers `call`, `cancel` and `assess`.
 - **`agent`**: the computer runs Codex, Claude Code and WorkBuddy for the hub (SPEC-08). Only asked for while one of them
   is installed and signed in; the hub grants it per computer ("run local agents").

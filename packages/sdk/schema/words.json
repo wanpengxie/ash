@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "c3ea7605ebf3e59b84f2ba7f4c88639cb088b1d04588e9649f3f4d7eed6d198f",
+ "hash": "e39ce90decf0e865025acb14cf5f40176d222ccca061dbfe7cc0d4c9f644a19f",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -3600,6 +3600,85 @@
    ],
    "label": {
     "doing": "在记下手机设置变化"
+   }
+  },
+  {
+   "member": "service:devices",
+   "word": "codex.turn_ended",
+   "kind": "event",
+   "direction": "in",
+   "description": "A computer reports that a session of its Codex app finished a turn. The owner is told in a short message; not recorded.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "thread": {
+      "type": "string",
+      "minLength": 1
+     },
+     "title": {
+      "type": "string"
+     },
+     "outcome": {
+      "type": "string"
+     },
+     "said": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "thread"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "label": {
+    "doing": "在记下 Codex 做完一轮"
+   }
+  },
+  {
+   "member": "service:devices",
+   "word": "codex.approval_pending",
+   "kind": "event",
+   "direction": "in",
+   "description": "A computer reports that a session of its Codex app is waiting for an approval. The owner is told in a short message; not recorded.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "thread": {
+      "type": "string",
+      "minLength": 1
+     },
+     "title": {
+      "type": "string"
+     },
+     "request_id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "kind": {
+      "type": "string"
+     },
+     "summary": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "thread",
+     "request_id"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "label": {
+    "doing": "在记下 Codex 等批准"
    }
   },
   {

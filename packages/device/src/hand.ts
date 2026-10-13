@@ -12,6 +12,7 @@ import type { Workspace } from "../../workspace/src";
 import type { Browser } from "./browser";
 import { EGO_CAPABILITY } from "./browser";
 import type { KimiBrowser } from "./kimi";
+import type { CodexApp } from "./codex-app";
 import { redactText } from "./redact";
 import { expandHome, isBodyCapability, workspaceCapabilities } from "./workspace";
 
@@ -33,6 +34,8 @@ export interface HandParts {
   /** ego-browser, when installed. */
   ego?: Browser | null;
   kimi?: KimiBrowser | null;
+  /** The Codex desktop app's channel; its capabilities are declared while the app is running. */
+  codex?: CodexApp | null;
   /** Installs the release and restarts; absent when this copy was not installed by the service installer. */
   update?: ((version: string, sha256: string) => Promise<unknown>) | null;
   /** Something is running that an update must not interrupt (agent turns). */
@@ -58,6 +61,7 @@ export function createHand(parts: HandParts): Hand {
   const manifest = (): CapabilitySpec[] => [
     ...workspaceCapabilities(),
     ...(parts.kimi?.capabilities() ?? []),
+    ...(parts.codex?.capabilities() ?? []),
     ...(parts.ego ? [EGO_CAPABILITY] : []),
     ...(parts.update ? [UPDATE_CAPABILITY] : []),
   ];
@@ -80,6 +84,10 @@ export function createHand(parts: HandParts): Hand {
       if (inflight > 1 || parts.busy?.()) throw new WordError("conflict", "Finish or stop active tasks before updating");
       const result = await parts.update(version, sha256);
       return { ok: true, content: [{ type: "text", text: JSON.stringify(result ?? {}) }], data: (result ?? {}) as Record<string, unknown> };
+    }
+    if (name.startsWith("x.codex.")) {
+      if (!parts.codex?.online) throw new WordError("unavailable", "The Codex app is not running on this computer");
+      return parts.codex.call(name, frame.args, signal);
     }
     if (name.startsWith("browser.") || name.startsWith("x.kimi.")) {
       if (!parts.kimi?.online) throw new WordError("unavailable", "The browser extension is not connected");

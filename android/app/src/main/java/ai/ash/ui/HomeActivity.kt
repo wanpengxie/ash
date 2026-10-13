@@ -31,6 +31,7 @@ class HomeActivity : Activity() {
     private lateinit var files: ChatFiles
     private lateinit var home: HomePages
     private var appsPane: AppsPane? = null
+    private var codexPane: CodexPane? = null
     private var tab = HomeTab.CHAT
     private var resumed = false
     private val ui = Handler(Looper.getMainLooper())
@@ -45,7 +46,7 @@ class HomeActivity : Activity() {
         port = HumanPort(Link.get(this).chat)
         files = ChatFiles(this, port)
         home = HomePages(this, port)
-        chatScreen = ChatScreen(this, port, files, home) { showTab(HomeTab.APPS) }
+        chatScreen = ChatScreen(this, port, files, home, { showTab(HomeTab.APPS) }, { showTab(HomeTab.CODEX) })
         home.composeHook = { text, _ -> showTab(HomeTab.CHAT); chatScreen.compose(text) }
         home.jumpHook = { id -> showTab(HomeTab.CHAT); chatScreen.jumpTo(id) }
         home.onName = { name -> chatScreen.setName(name) }
@@ -100,8 +101,14 @@ class HomeActivity : Activity() {
             appsPane = AppsPane(this, Ash(this, null, inProcess = true)) { showTab(HomeTab.CHAT) }
                 .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)) }
         }
+        if (next == HomeTab.CODEX && codexPane == null) {
+            codexPane = CodexPane(this, port) { showTab(HomeTab.CHAT) }
+                .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)) }
+        }
         chatScreen.view.visibility = if (next == HomeTab.CHAT) View.VISIBLE else View.GONE
         appsPane?.view?.visibility = if (next == HomeTab.APPS) View.VISIBLE else View.GONE
+        codexPane?.view?.visibility = if (next == HomeTab.CODEX) View.VISIBLE else View.GONE
+        codexPane?.shown(next == HomeTab.CODEX && resumed)
         if (next == HomeTab.APPS && resumed) appsPane?.refresh()
         syncFront()
     }
@@ -124,6 +131,7 @@ class HomeActivity : Activity() {
         Link.get(this).presence.tell()
         chatScreen.shown(true)
         if (tab == HomeTab.APPS) appsPane?.refresh()
+        codexPane?.shown(tab == HomeTab.CODEX)
         // The kernel package: not installed, the guide's first step offers to install it (once); not running, it is started from here (in front, the app may).
         when (KernelGate.action(KernelLauncher.state(this), 0)) {
             KernelGate.Action.INSTALL -> OnboardingActivity.offerKernel(this)
@@ -139,6 +147,7 @@ class HomeActivity : Activity() {
         HandRuntime.appLeft()
         Link.get(this).presence.tell()
         chatScreen.shown(false)
+        codexPane?.shown(false)
         super.onPause()
     }
 
@@ -157,6 +166,7 @@ class HomeActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (tab == HomeTab.APPS) { if (appsPane?.back() != true) showTab(HomeTab.CHAT); return }
+        if (tab == HomeTab.CODEX) { if (codexPane?.back() != true) showTab(HomeTab.CHAT); return }
         if (home.back()) return
         moveTaskToBack(true)
     }
@@ -167,6 +177,7 @@ class HomeActivity : Activity() {
         chatScreen.close()
         port.stop()
         appsPane?.close()
+        codexPane?.close()
         super.onDestroy()
     }
 

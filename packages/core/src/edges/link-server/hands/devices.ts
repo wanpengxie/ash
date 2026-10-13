@@ -6,7 +6,7 @@
  * change of a pairing is an event `pair.changed`, and its initiator, if an agent, is told by `tell`.
  */
 import { randomBytes } from "node:crypto";
-import { bodyId, deviceId } from "../../../../../sdk/src/ids";
+import { OWNER_ID, bodyId, deviceId } from "../../../../../sdk/src/ids";
 import type { HandKind } from "../../../../../sdk/src/link";
 import { WordError, type Caller, type ErrorBody, type HandleContext, type Message, type WordResult } from "../../../../../sdk/src/message";
 import type { Member, WordContract } from "../../../../../sdk/src/word";
@@ -152,6 +152,17 @@ export class Devices implements Member {
       case "config.changed": {
         const hand = msg.from.startsWith("device:") ? msg.from.slice("device:".length) : null;
         if (hand) this.config.set(hand, { ...this.config.get(hand), [String(input.item)]: String(input.state) });
+        return;
+      }
+      case "codex.turn_ended":
+      case "codex.approval_pending": {
+        // A computer's Codex app needs the owner: a short message, once per event (the hand's event id is the key).
+        const title = typeof input.title === "string" && input.title ? `「${input.title}」` : "";
+        const text = msg.word === "codex.turn_ended"
+          ? `Codex ${title}做完了一轮${input.said ? `：${input.said}` : ""}`
+          : `Codex ${title}在等你批准${input.summary ? `：${input.summary}` : ""}`;
+        const key = `codex-${msg.word === "codex.turn_ended" ? "end" : "ask"}-${String(msg.id).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80)}`;
+        await this.d.router.send({ to: OWNER_ID, kind: "request", word: "say", body: { text, kind: "heads_up", dedupe_key: key } }, SERVICE);
         return;
       }
       default: throw new WordError("not_found", `${DEVICES_ID} has no word ${msg.word}`);

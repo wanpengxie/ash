@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `c3ea7605ebf3e59b`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `e39ce90decf0e865`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -11,7 +11,7 @@
 - [`service:health`](#servicehealth) (2)
 - [`service:gate`](#servicegate) (17)
 - [`service:vault`](#servicevault) (5)
-- [`service:devices`](#servicedevices) (15)
+- [`service:devices`](#servicedevices) (17)
 - [`service:link`](#servicelink) (16)
 - [`service:agents`](#serviceagents) (32)
 - [`service:apps`](#serviceapps) (17)
@@ -128,6 +128,8 @@
 | `pair_code` | owner | read / none | local_only | pair_id* | 在看配对码 | Show the pairing code of a pairing the owner started, with the address to open on the new computer. Only the owner, from a channel on this machine. |
 | `pair.changed` | kernel | read / none | event out, record | pair_id*, state*, device | 在记下配对进展 | A pairing moved on (requested, approved, rejected, connected, expired). The one who started it is told by a background message. |
 | `config.changed` | kernel | read / none | event in | item*, state* | 在记下手机设置变化 | A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded. |
+| `codex.turn_ended` | kernel | read / none | event in | thread*, title, outcome, said | 在记下 Codex 做完一轮 | A computer reports that a session of its Codex app finished a turn. The owner is told in a short message; not recorded. |
+| `codex.approval_pending` | kernel | read / none | event in | thread*, title, request_id*, kind, summary | 在记下 Codex 等批准 | A computer reports that a session of its Codex app is waiting for an approval. The owner is told in a short message; not recorded. |
 
 ## `service:link`
 

@@ -268,6 +268,10 @@ add("service:devices", "pair.changed", "event", obj({ pair_id: id, state: pairSt
   { record: true, label: "在记下配对进展", description: "A pairing moved on (requested, approved, rejected, connected, expired). The one who started it is told by a background message." });
 add("service:devices", "config.changed", "event", obj({ item: nonempty, state: nonempty }, ["item", "state"]), undefined,
   { direction: "in", label: "在记下手机设置变化", description: "A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded." });
+add("service:devices", "codex.turn_ended", "event", obj({ thread: nonempty, title: str, outcome: str, said: str }, ["thread"]), undefined,
+  { direction: "in", label: "在记下 Codex 做完一轮", description: "A computer reports that a session of its Codex app finished a turn. The owner is told in a short message; not recorded." });
+add("service:devices", "codex.approval_pending", "event", obj({ thread: nonempty, title: str, request_id: nonempty, kind: str, summary: str }, ["thread", "request_id"]), undefined,
+  { direction: "in", label: "在记下 Codex 等批准", description: "A computer reports that a session of its Codex app is waiting for an approval. The owner is told in a short message; not recorded." });
 
 // ===================================================================================================================
 // service:link: how things connect (the connection layer itself)

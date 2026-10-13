@@ -9,7 +9,7 @@ const owner: HandleContext = { signal: new AbortController().signal, caller: { m
 const agent: HandleContext = { ...owner, caller: { member: "agent:main", via: "agent", local: false } };
 let n = 0;
 const msg = (word: string, body: unknown = {}, from = "person:owner"): Message =>
-  ({ seq: ++n, id: `m${n}`, ts: 0, from, to: "service:devices", kind: word === "config.changed" ? "event" : "request", word, body });
+  ({ seq: ++n, id: `m${n}`, ts: 0, from, to: "service:devices", kind: word === "config.changed" || word.startsWith("codex.") ? "event" : "request", word, body });
 
 class FakeGateway implements PairingGateway {
   calls: string[] = [];
@@ -236,4 +236,19 @@ test("config.changed from a hand is kept for describe", async (t) => {
   const phone = await connected(hub);
   await devices.handle({ ...msg("config.changed", { item: "accessibility", state: "missing" }), from: dev(phone) }, owner);
   assert.deepEqual((await call("describe", { device: dev(phone) })).config, { accessibility: "missing" });
+});
+
+test("a computer's Codex app needing the owner becomes a short message to the owner, once per event", async (t) => {
+  const { hub, devices } = await setup(t);
+  const computer = await connected(hub, { kind: "computer", name: "Mac" });
+  const from = dev(computer);
+  const event = (word: string, body: object, id: string) => devices.handle({ ...msg(word, body), id, from }, owner);
+  await event("codex.turn_ended", { thread: "t1", title: "Fix the build", said: "all green" }, "e1");
+  await event("codex.approval_pending", { thread: "t1", title: "Fix the build", request_id: "5", summary: "make deploy" }, "e2");
+  const says = hub.router.sent.filter((s) => s.msg.word === "say");
+  assert.equal(says.length, 2);
+  assert.ok(says.every((s) => s.msg.to === "person:owner" && s.caller.member === "service:devices"));
+  assert.deepEqual(says.map((s) => (s.msg.body as any).text), ["Codex 「Fix the build」做完了一轮：all green", "Codex 「Fix the build」在等你批准：make deploy"]);
+  assert.deepEqual(says.map((s) => (s.msg.body as any).kind), ["heads_up", "heads_up"]);
+  assert.notEqual((says[0]!.msg.body as any).dedupe_key, (says[1]!.msg.body as any).dedupe_key);
 });

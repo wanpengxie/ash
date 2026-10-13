@@ -18,6 +18,7 @@ import { deviceCli } from "./cli";
 import { DEVICE_VERSION, installRelease } from "./install";
 import { Browser, detectEgo } from "./browser";
 import { KimiBridge, KimiBrowser } from "./kimi";
+import { CodexApp, CODEX_EVENTS, type CodexAppOptions } from "./codex-app";
 
 export interface DeviceConfig { gateway: string; name: string; stateDir: string; workdir: string; installRoot?: string }
 
@@ -31,6 +32,8 @@ export interface DeviceDeps {
   kimiPorts?: number[];
   /** ego-browser's path; null: none (default: look for it). */
   ego?: string | null;
+  /** The Codex desktop app's channel: `false` leaves it out (tests), options replace the real socket and runtime. */
+  codexApp?: false | CodexAppOptions;
   /** How long agents keep running without the hub. */
   graceMs?: number;
 }
@@ -63,13 +66,19 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
   const bridge = new KimiBridge();
   await bridge.start(dependencies.kimiPorts).then(() => console.error("Browser extension endpoint:", bridge.url), () => console.error("Browser extension listener unavailable"));
   const kimi = new KimiBrowser(bridge, stateDir);
+  // The Codex desktop app, if it is running here: joined through its own local channel, and joined again when it restarts.
+  const codex = dependencies.codexApp === false ? null : new CodexApp({
+    ...dependencies.codexApp, log: (message, error) => console.error(message, error ?? ""),
+    onChange: () => declare(),
+    onEvent: (word, body) => { void client.emit(word, body).catch(() => {}); },
+  });
 
   // The hand (device channel).
   let client!: HandClient;
   const workspace = createWorkspace({ workdir, stateDir, stream: (data, mime) => client.sendStream("device", data, { mime }) });
   let updating = false;
   const hand = createHand({
-    workspace, ego, kimi,
+    workspace, ego, kimi, codex,
     busy: () => agents.busy || workspace.busy || kimi.busy || !!ego?.running || updating,
     update: config.installRoot && dependencies.restart
       ? async (version, sha256) => {
@@ -125,17 +134,18 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
     },
   });
   port.onIdleTunnel = () => { if (client.state === "waiting") client.reconnectNow(); };
-  const declare = () => void client.setManifest(hand.manifest()).then((ack) => { if (ack.rejected.length) log("the hub did not take some capabilities", JSON.stringify(ack.rejected)); }, () => {});
+  const declare = () => void client.setManifest(hand.manifest(), codex?.online ? CODEX_EVENTS : []).then((ack) => { if (ack.rejected.length) log("the hub did not take some capabilities", JSON.stringify(ack.rejected)); }, () => {});
   bridge.onChange(declare);
 
   const stopAll = async () => {
     client.stop(); line?.stop(); port.close();
-    await agents.close(); await workspace.close(); await bridge.close(); await runtimes.close();
+    await agents.close(); await workspace.close(); await bridge.close(); await codex?.close(); await runtimes.close();
     finish();
   };
   try { if (line) await line.pair(stateDir, pairCode, config.name); } catch (error) { await stopAll(); throw error; }
   declare();
   client.start();
+  codex?.start();
   const run = Promise.all([line ? line.run() : Promise.resolve(), finished]).then(() => {});
   return { client, agents, handId: identity.id, port, run, close: stopAll };
 }

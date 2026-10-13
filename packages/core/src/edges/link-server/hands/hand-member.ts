@@ -31,7 +31,7 @@ export function capabilityContract(member: string, cap: CapabilitySpec, deviceNa
 }
 
 /** Events go to the fixed service of their namespace; nothing is broadcast (SPEC-03 §4.3). */
-export const EVENT_TARGETS: Readonly<Record<string, string>> = { sense: "service:senses", widget: "service:widgets", config: "service:devices", checkup: "service:admin" };
+export const EVENT_TARGETS: Readonly<Record<string, string>> = { sense: "service:senses", widget: "service:widgets", config: "service:devices", checkup: "service:admin", codex: "service:devices" };
 
 /**
  * An event the hand declared in its manifest, as a word the hand itself sends: the router lets a sender emit what its

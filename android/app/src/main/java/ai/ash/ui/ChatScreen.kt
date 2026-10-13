@@ -46,6 +46,7 @@ class ChatScreen(
     private val files: ChatHooks.Files,
     private val home: ChatHooks.Home,
     private val onApps: () -> Unit,
+    private val onCodex: () -> Unit = {},
 ) {
     private val ctx: Context = activity
     private val c = AshUi.p(ctx)
@@ -273,6 +274,7 @@ class ChatScreen(
             contentDescription = "打开她的主页"
         }
         addView(who, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(AshUi.button(ctx, "Codex", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { onCodex() }.apply { contentDescription = "电脑上的 Codex" })
         addView(AshUi.iconButton(ctx, ctx.getDrawable(R.drawable.ash_ic_grid)!!, "应用") { onApps() })
     }
 

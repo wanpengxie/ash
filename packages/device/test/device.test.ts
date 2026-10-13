@@ -13,6 +13,7 @@ import { checkCapabilitySpec } from "../../sdk/src/link";
 import { startDevice, type DeviceDeps, type RunningDevice } from "../src/main";
 import { loadIdentity } from "../src/link";
 import { DEVICE_VERSION } from "../src/install";
+import { Desktop, snapshot, turn } from "./fake-codex-desktop";
 import { context, errorCode, eventually, fakeCodex, openTunnel, request, startKernel, withPath, type Kernel } from "./kernel";
 
 const fixture = fileURLToPath(new URL("./fixtures/agent-cli.mjs", import.meta.url));
@@ -27,7 +28,7 @@ async function setup(t: { after(fn: () => unknown): void }, o: { installRoot?: s
   const kernel = await startKernel();
   const identity = await loadIdentity(stateDir);
   kernel.pair({ id: identity.id, publicKey: identity.publicKey }, o.permissions);
-  const device = await startDevice({ gateway: "", name: "Test Mac", stateDir, workdir, installRoot: o.installRoot }, undefined, { relay: false, detect: o.detect ?? nothing, ego: null, kimiPorts: [0], ...o.deps });
+  const device = await startDevice({ gateway: "", name: "Test Mac", stateDir, workdir, installRoot: o.installRoot }, undefined, { relay: false, detect: o.detect ?? nothing, ego: null, kimiPorts: [0], codexApp: false, ...o.deps });
   t.after(async () => { await device.close(); await kernel.stop(); });
   const tunnel = o.connect === false ? { cut() {} } : openTunnel(kernel, device, identity.id);
   return { kernel, device, id: identity.id, dir, workdir, stateDir, tunnel };
@@ -334,4 +335,32 @@ test("the computer's key signs the hub's challenge: the hand id is the hash of t
   assert.equal(s.device.handId, s.id);
   const hand = s.kernel.hands.get(s.id)!;
   assert.equal(hand.public_key.length > 0, true);
+});
+
+test("the Codex app: while it runs the hub is offered x.codex.* and its two events; a call reaches it and a finished turn is reported as the hand's event", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ash-cxdev-"));
+  const desktop = new Desktop(join(dir, "ipc.sock"));
+  await desktop.listen();
+  await desktop.owner();
+  t.after(() => desktop.stop().catch(() => {}));
+  desktop.state.set("t1", { revision: 1, raw: snapshot({ threadRuntimeStatus: { type: "active" }, turns: [turn("u1", "inProgress", [{ type: "agentMessage", text: "on it" }])] }) });
+  const s = await setup(t, { deps: { codexApp: { socketPath: desktop.path, ownerWaitMs: 300, reconnectMs: 30, listThreads: async () => [{ id: "t1", title: "Fix the build", updated_at: 5 }] } } });
+  await s.device.client.ready();
+  await eventually(() => s.kernel.registry.members.has(`device:${s.id}`) && s.kernel.hands.capabilities(s.id).includes("x.codex.send"), "the Codex capabilities declared");
+  const names = s.kernel.hands.capabilities(s.id).filter((n) => n.startsWith("x.codex."));
+  assert.deepEqual(names.sort(), ["x.codex.approvals", "x.codex.approve", "x.codex.send", "x.codex.session", "x.codex.sessions", "x.codex.stop"]);
+
+  const listed = await s.kernel.call(`device:${s.id}`, "x.codex.sessions");
+  assert.deepEqual((listed.data as any).sessions.map((x: any) => [x.id, x.state, x.open]), [["t1", "running", true]]);
+
+  desktop.change("t1", desktop.state.get("t1")!.raw, [
+    { op: "replace", path: ["threadRuntimeStatus", "type"], value: "idle" },
+    { op: "replace", path: ["turns", 0, "status"], value: "completed" },
+  ]);
+  await eventually(() => s.kernel.router.sent.some((m) => m.msg.word === "codex.turn_ended"), "the turn_ended event reaching the hub");
+  const sent = s.kernel.router.sent.find((m) => m.msg.word === "codex.turn_ended")!;
+  assert.deepEqual([sent.msg.to, sent.msg.kind, (sent.msg.body as any).thread, (sent.msg.body as any).title], ["service:devices", "event", "t1", "Fix the build"]);
+
+  await desktop.stop();
+  await eventually(() => !s.kernel.hands.capabilities(s.id).some((n) => n.startsWith("x.codex.")), "the capabilities withdrawn when the app quits");
 });

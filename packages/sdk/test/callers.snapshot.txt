@@ -52,6 +52,8 @@
 * service:devices/pair_code  owner  local_only
 * service:devices/pair.changed  kernel  event-out
 * service:devices/config.changed  kernel  event-in
+* service:devices/codex.turn_ended  kernel  event-in
+* service:devices/codex.approval_pending  kernel  event-in
 * service:link/list  owner,agent
 * service:link/describe  owner,agent
 * service:link/diagnose  owner,agent
