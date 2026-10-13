@@ -44,8 +44,7 @@
           },
           "purpose": "device verification: model catalog"
         },
-        "path": "data.catalog.checked_at",
-        "exists": true
+        "path": "data.catalog.checked_at"
       },
       "timeout_ms": 90000,
       "every_ms": 2000
