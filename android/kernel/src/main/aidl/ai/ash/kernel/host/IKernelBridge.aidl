@@ -28,4 +28,6 @@ interface IKernelBridge {
     String attach(IHostCallback cb);
     // Visible launch progress, and whether this host's core has said lifecycle.ready.
     void reportCoreStatus(String text, boolean ready);
+    // The context probe's state, for the kernel page (one or a few lines of text).
+    void reportProbe(String text);
 }

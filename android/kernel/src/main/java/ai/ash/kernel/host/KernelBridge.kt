@@ -77,6 +77,8 @@ class KernelBridge(ctx: Context) : IKernelBridge.Stub() {
         }
     }
 
+    override fun reportProbe(text: String) { if (HostPresence.yielded) HostPresence.probe = text }
+
     companion object {
         private const val TAG = "ash.kernel.bridge"
 
@@ -100,6 +102,8 @@ object HostPresence {
         private set
     @Volatile var status = "正在启动"
         private set
+    /** The context probe's state as the host last reported it. */
+    @Volatile var probe = ""
 
     internal fun report(text: String, ready: Boolean) { status = text; coreReady = ready }
 
@@ -124,12 +128,14 @@ object HostPresence {
         asked = false
         coreReady = false
         status = "宿主未连接"
+        probe = ""
         onChange?.invoke()
         // The host went away (its service stopped or wireless debugging was revoked): the kernel service takes over.
         runCatching { ai.ash.kernel.KernelService.start(ctx) }
     }
 
     fun wakeFired(atMs: Long) = runCatching { callback?.wakeFired(atMs) }
+    fun setProbe(on: Boolean) = runCatching { callback?.setProbe(on) }
     /** The kernel asked the host to stop: its going is not a loss. */
     @Volatile private var asked = false
     fun shutdown(reason: String) = runCatching { asked = true; callback?.shutdown(reason) }

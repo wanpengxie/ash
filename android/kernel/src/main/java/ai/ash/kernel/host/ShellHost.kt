@@ -75,6 +75,9 @@ object ShellHost {
         val phone = ShellPhone(ctx, ShellPhone.kernelApk(ctx, pkg)) { Log.i(TAG, it) }
         val api = HostApi(HostApi.CAPABILITIES + PHONE_CAPABILITIES, BridgeIdentity(bridge), WakeManager(BridgeAlarm(bridge)), power, hands, callbacks, { Log.w(TAG, it) }, phone)
         val pipe = HostPipe(api) { Log.i(TAG, it) }
+        // A one-day probe of what the owner does on the phone and what recording it costs (/data/local/tmp/ash-ctx);
+        // its state is shown on the kernel page.
+        val probe = ContextProbeLauncher(ShellPhone.kernelApk(ctx, pkg), { Log.i(TAG, it) }) { runCatching { bridge.reportProbe(it) } }
 
         val version = runCatching { ctx.packageManager.getPackageInfo(pkg, 0).versionName }.getOrNull() ?: "0"
         supervisor = KernelSupervisor(
@@ -97,6 +100,7 @@ object ShellHost {
         val cb = object : IHostCallback.Stub() {
             override fun wakeFired(atMs: Long) { supervisor.sendEvent(HostEvents.wakeFired(atMs)) }
             override fun shutdown(reason: String) { Thread({ supervisor.shutdown(reason, 5_000) }, "ash-host-shutdown").start() }
+            override fun setProbe(on: Boolean) { probe.setPaused(!on) }
         }
         // Claim supervision first: the bridge stops the old core before acknowledging the handover.
         // A second host is refused here and exits instead of starting a second core.
@@ -125,8 +129,7 @@ object ShellHost {
                 System.exit(1)
             }
         }, "ash-kernel-host").start()
-        // A one-day probe of what the owner does on the phone and what recording it costs (/data/local/tmp/ash-ctx).
-        ContextProbeLauncher(ShellPhone.kernelApk(ctx, pkg)) { Log.i(TAG, it) }.start()
+        probe.start()
         Log.i(TAG, "started for $pkg (uid $kernelUid)")
     }
 
