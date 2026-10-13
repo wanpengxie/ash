@@ -34,7 +34,9 @@ import java.util.Locale
  * - stats.jsonl: what it costs (CPU of this process and of getevent, poll time, bytes, battery), every 10 minutes.
  * Accessibility comes from a UiAutomation that does not suppress the installed accessibility services. Screen reads
  * run on their own thread with a time budget, so a hung foreground app cannot stall the event log.
- * Pause by creating /data/local/tmp/ash-ctx/paused. Exits when its stdin closes (the host went).
+ * Pause by creating /data/local/tmp/ash-ctx/paused. Exits when its stdin closes (the host went), and while
+ * /data/local/tmp/ash-ctx/hold is younger than two minutes, which frees the one UiAutomation for `uiautomator dump`
+ * (the install script touches it); the launcher starts it again later.
  */
 object ContextProbe {
     private val ROOT = File("/data/local/tmp/ash-ctx")
@@ -72,6 +74,7 @@ object ContextProbe {
     fun main(args: Array<String>) {
         Looper.prepareMainLooper()
         ROOT.mkdirs()
+        if (held()) System.exit(0)
         val lock = RandomAccessFile(File(ROOT, ".lock"), "rw").channel.tryLock()
         if (lock == null) { System.err.println("another ash_ctx is running"); System.exit(0) }
         Thread({ try { while (System.`in`.read() >= 0) { } } catch (_: Throwable) { }; Touch.stop(); rec.flush(); System.exit(0) }, "ctx-stdin")
@@ -113,6 +116,7 @@ object ContextProbe {
     }
 
     private fun paused() = File(ROOT, "paused").exists()
+    private fun held() = File(ROOT, "hold").let { it.exists() && System.currentTimeMillis() - it.lastModified() < 120_000 }
 
     // ---- accessibility events ----
 
@@ -220,6 +224,7 @@ object ContextProbe {
     // ---- screen text, once a second while the screen is on ----
 
     private fun poll() {
+        if (held()) { write("events", JSONObject().put("t", System.currentTimeMillis()).put("ev", "probe_hold")); Touch.stop(); rec.flush(); System.exit(0) }
         val on = isInteractive()
         if (on != interactive) {
             interactive = on
