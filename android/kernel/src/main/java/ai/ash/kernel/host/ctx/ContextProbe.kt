@@ -46,7 +46,7 @@ object ContextProbe {
     private const val SCROLL_IDLE_MS = 1_500L
     private const val MAX_NODES = 600
     private const val MAX_CHARS = 6_000
-    private const val POLL_BUDGET_MS = 500L
+    private const val POLL_BUDGET_MS = 1_500L
     private const val EVENT_TYPES = AccessibilityEvent.TYPE_VIEW_CLICKED or AccessibilityEvent.TYPE_VIEW_LONG_CLICKED or
         AccessibilityEvent.TYPE_VIEW_CONTEXT_CLICKED or AccessibilityEvent.TYPE_VIEW_SCROLLED or
         AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
@@ -108,8 +108,9 @@ object ContextProbe {
             .invoke(made, UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         val info = made.serviceInfo
         info.eventTypes = EVENT_TYPES
-        info.flags = info.flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-            AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+        // Not FLAG_INCLUDE_NOT_IMPORTANT_VIEWS: WeChat's and Douyin's full trees took longer than the read budget.
+        info.flags = (info.flags and AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS.inv()) or
+            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         info.notificationTimeout = 0
         made.serviceInfo = info
         return made
