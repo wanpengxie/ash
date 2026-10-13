@@ -308,7 +308,9 @@ export class CodexApp {
     if (!this.o.onEvent) return;
     if (before?.running && !now.running) {
       const last = view.turns.at(-1);
-      const said = [...(last?.items ?? [])].reverse().find((i) => i.kind === "agent")?.text ?? "";
+      // What Codex finally said: its closing answer if it marked one, else the last thing it said.
+      const spoken = (last?.items ?? []).filter((i) => i.kind === "agent");
+      const said = (spoken.filter((i) => i.phase === "final_answer").at(-1) ?? spoken.at(-1))?.text ?? "";
       this.o.onEvent("codex.turn_ended", { thread: conv.id, title: view.title, outcome: last?.status ?? "completed", ...(said ? { said: clip(said, 200) } : {}) });
     }
     for (const a of view.approvals) {
@@ -583,14 +585,14 @@ function textOf(v: unknown): string {
   return r ? textOf(r.text ?? r.content ?? r.summary ?? "") : "";
 }
 
-function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string } {
+function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string; phase?: string } {
   const type = String(item.type ?? "item");
   const status = str(item.status) ?? undefined;
   const text = (kind: string, t: unknown) => ({ kind, text: redactText(clip(textOf(t), max)), ...(status ? { status } : {}) });
   switch (type) {
     case "userMessage": return text("user", item.content ?? item.text);
     case "steeringUserMessage": return text("user", rec(item.restoreMessage)?.text ?? item.content ?? item.text);
-    case "agentMessage": return text("agent", item.text);
+    case "agentMessage": return { ...text("agent", item.text), ...(str(item.phase) ? { phase: item.phase as string } : {}) };
     case "reasoning": return text("thinking", item.summary ?? item.text);
     case "commandExecution": return text("command", Array.isArray(item.command) ? item.command.join(" ") : item.command);
     case "fileChange": return text("file", (Array.isArray(item.changes) ? item.changes : []).map((c) => str(rec(c)?.path)).filter(Boolean).join(", "));

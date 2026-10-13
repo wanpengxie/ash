@@ -244,3 +244,21 @@ test("the capabilities are valid, extensions, need no approval card, and are off
   const gone = await hand.handlers.call(frame("x.codex.sessions", {}), { signal: new AbortController().signal, progress() {} });
   assert.ok(!gone.ok && gone.error.code === "unavailable");
 });
+
+test("the end of a turn reports Codex's closing answer (phase final_answer) even when a comment came after it; else the last thing said", async (t) => {
+  const { desktop, app, events } = await fixture(t);
+  const items = (extra: F[]) => [{ type: "agentMessage", phase: "commentary", text: "looking" }, { type: "agentMessage", phase: "final_answer", text: "the answer" }, ...extra];
+  desktop.change("t1", snapshot({ threadRuntimeStatus: { type: "active" }, turns: [turn("u1", "inProgress", items([{ type: "agentMessage", phase: "commentary", text: "afterthought" }]))] }));
+  await app.sessions();
+  await until(() => (app as any).convs.has("t1"), "t1 followed");
+  desktop.change("t1", desktop.state.get("t1")!.raw, [{ op: "replace", path: ["threadRuntimeStatus", "type"], value: "idle" }, { op: "replace", path: ["turns", 0, "status"], value: "completed" }]);
+  await until(() => events.length === 1, "the turn-ended event");
+  assert.equal(events[0][1].said, "the answer");
+
+  desktop.change("t2", snapshot({ id: "t2", name: "Plain", threadRuntimeStatus: { type: "active" }, turns: [turn("u2", "inProgress", [{ type: "agentMessage", text: "first" }, { type: "agentMessage", text: "last one" }])] }));
+  await app.sessions();
+  await until(() => (app as any).convs.has("t2"), "t2 followed");
+  desktop.change("t2", desktop.state.get("t2")!.raw, [{ op: "replace", path: ["threadRuntimeStatus", "type"], value: "idle" }, { op: "replace", path: ["turns", 0, "status"], value: "completed" }]);
+  await until(() => events.length === 2, "the second event");
+  assert.equal(events[1][1].said, "last one");
+});
