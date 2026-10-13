@@ -162,9 +162,13 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
   /** The keys the hub gave (by name): they go to a process through its environment and are never written to a file. */
   const keys = new Map<string, string>();
   let routeCache: { at: number; route: Route } | null = null;
-  /** The proxy Codex requests go through now (the gateway asks for it when it connects): the one the last probe found open. */
-  let codexProxy: string | undefined;
-  const gateway = deps.gateway === false ? null : (deps.gateway ?? new CodexGateway({ proxy: () => codexProxy, log }));
+  /**
+   * The proxy Codex requests go through (the gateway asks for it when it connects): v2rayA's, unless the last probe found only the
+   * straight way open. Before any probe (a hub that just started) it is the proxy too: straight out reaches OpenAI only with the
+   * phone's VPN on.
+   */
+  const codexProxy = (): string | undefined => (routeCache?.route === "direct" ? undefined : proxyUrl);
+  const gateway = deps.gateway === false ? null : (deps.gateway ?? new CodexGateway({ proxy: codexProxy, log }));
   let routeProbe: Promise<Route> | null = null;
   const login: { state: "none" | "pending" | "ready" | "unknown"; info?: Record<string, unknown>; child?: DriverProcess } = { state: "unknown" };
 
@@ -174,7 +178,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
   function routeNow(fresh = false): Promise<Route> {
     if (!fresh && routeCache && Date.now() - routeCache.at < routeTtlMs) return Promise.resolve(routeCache.route);
     if (!routeProbe) {
-      routeProbe = chooseRoute(probe).then((route) => { routeCache = { at: Date.now(), route }; codexProxy = route === "proxy" ? proxyUrl : undefined; return route; }).finally(() => { routeProbe = null; });
+      routeProbe = chooseRoute(probe).then((route) => { routeCache = { at: Date.now(), route }; return route; }).finally(() => { routeProbe = null; });
     }
     return routeProbe;
   }

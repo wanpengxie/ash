@@ -143,12 +143,14 @@ export class CodexGateway {
   private starting?: Promise<number>;
   private timer?: NodeJS.Timeout;
   private readonly sessions = new Map<string, Sess>();
+  /** When a connection to Codex last could not be made: until a minute after, an SSE request does not wait for another try. */
+  private dialFailedAt = 0;
   private readonly o: Required<Omit<CodexGatewayOptions, "log" | "proxy">> & { log: (...a: unknown[]) => void; proxy: () => string | undefined };
 
   constructor(o: CodexGatewayOptions = {}) {
     this.o = {
       upstream: o.upstream ?? DEFAULT_UPSTREAM, proxy: o.proxy ?? (() => undefined), log: o.log ?? (() => {}),
-      connectMs: o.connectMs ?? 10_000, firstFrameMs: o.firstFrameMs ?? 25_000, idleFrameMs: o.idleFrameMs ?? 300_000,
+      connectMs: o.connectMs ?? 30_000, firstFrameMs: o.firstFrameMs ?? 25_000, idleFrameMs: o.idleFrameMs ?? 300_000,
       pingMs: o.pingMs ?? 30_000, maxAgeMs: o.maxAgeMs ?? 50 * 60_000, sessionMs: o.sessionMs ?? 30 * 60_000, maxSessions: o.maxSessions ?? 8,
     };
   }
@@ -221,7 +223,8 @@ export class CodexGateway {
     } catch { /* forwarded as it is below */ }
     this.stats.sse++;
     const client = clientOf(res);
-    if (body) {
+    // The WebSocket that pi gave up on just now could not be made: the POST goes out as it is, once, instead of waiting for it again.
+    if (body && Date.now() - this.dialFailedAt > 60_000) {
       let started = false;
       try {
         await this.run(body, headers, (t) => {
@@ -317,7 +320,7 @@ export class CodexGateway {
       let conn: Up | undefined;
       let result: { outcome: Outcome; started: boolean; error?: unknown; held?: string } | undefined;
       try { conn = plan.conn ?? (await this.take(S)); }
-      catch (e) { lastError = e; }
+      catch (e) { lastError = e; this.o.log(`codex-gateway: no connection to Codex: ${msg(e)}`); throw lastError; } // a way that cannot be dialled now is not dialled twice
       if (conn) {
         if (plan.conn) this.stats.reuses++;
         if (plan.delta) this.stats.deltas++; else this.stats.fulls++;
@@ -444,13 +447,15 @@ export class CodexGateway {
     });
     ws.on("error", () => {});
     await new Promise<void>((resolve, reject) => {
-      const guard = setTimeout(() => { ws.terminate(); reject(new Error(`connect timeout after ${this.o.connectMs}ms`)); }, this.o.connectMs + 2000);
+      const failed = (e: Error) => { this.dialFailedAt = Date.now(); reject(e); };
+      const guard = setTimeout(() => { ws.terminate(); failed(new Error(`connect timeout after ${this.o.connectMs}ms`)); }, this.o.connectMs + 2000);
       ws.once("open", () => { clearTimeout(guard); resolve(); });
-      ws.once("error", (e) => { clearTimeout(guard); reject(e); });
-      ws.once("unexpected-response", (_req, resp) => { clearTimeout(guard); resp.resume(); reject(new Error(`Codex refused the connection (${resp.statusCode})`)); });
+      ws.once("error", (e) => { clearTimeout(guard); failed(e); });
+      ws.once("unexpected-response", (_req, resp) => { clearTimeout(guard); resp.resume(); failed(new Error(`Codex refused the connection (${resp.statusCode})`)); });
     });
     this.stats.connects++;
-    this.o.log(`codex-gateway: connected to Codex in ${Date.now() - t0}ms${proxy ? " through the proxy" : ""}`);
+    this.dialFailedAt = 0;
+    this.o.log(`codex-gateway: connected to Codex in ${Date.now() - t0}ms${proxy ? " through the proxy" : " straight out"}`);
     const up = new Up(ws, S.key);
     ws.on("pong", () => { up.alive = true; });
     ws.once("close", () => { up.dead = true; });
