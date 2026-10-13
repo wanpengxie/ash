@@ -198,7 +198,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   const clock = createClockService({ ledger, router, now });
   const senses = createSensesService({ dataDir, now });
   const cost = createCostService({ ledger, now });
-  const reflex = createReflexService({ ledger, router, registry, virtual, jev: createJev({ post: (req) => llm.post("service:reflex", req) }) });
+  const reflex = createReflexService({ ledger, router, jev: createJev({ post: (req) => llm.post("service:reflex", req) }) });
   const history = createHistoryService({ ledger, now });
   const admin = createAdminService({
     ledger, router, registry, version: hubVersion(), now, startedAt,

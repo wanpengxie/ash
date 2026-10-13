@@ -134,8 +134,6 @@
 * service:reflex/task.outcome  kernel
 * service:reflex/task.stop  owner
 * service:reflex/task.end  owner
-* service:reflex/screen.plan  kernel
-* service:reflex/screen.reconcile  kernel
   service:senses/query  owner,agent,app
   service:senses/daily  owner,agent,app
   service:senses/now  owner,agent,app

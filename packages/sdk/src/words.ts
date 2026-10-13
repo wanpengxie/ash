@@ -532,13 +532,6 @@ add("service:reflex", "task.stop", "request", obj({ turn: id }, ["turn"]), obj({
 add("service:reflex", "task.end", "request", obj({ turn: id, pending_ids: { type: "array", items: id, maxItems: 100, uniqueItems: true } }, ["turn", "pending_ids"]), obj({ ended: bool }, ["ended"]),
   { callers: OWNER, effect: "act", timeout_ms: 5000, label: "在结束任务", description: "End the selected capsule interaction: stop its current turn and withdraw only the pending requests that are displayed. Never stops a newer turn." });
 
-add("service:reflex", "screen.plan", "request", obj({ agent: agentRef, lane: nonempty, ids: { type: "array", items: id, maxItems: 50 } }, ["agent", "lane"]),
-  obj({ mode: choice("none", "foreground_handoff", "foreground_task", "virtual_task"), inject: { type: "string", maxLength: 4000 }, confidence: { type: "number", minimum: 0, maximum: 1 } }, ["mode"]),
-  { callers: KERNEL, effect: "act", timeout_ms: 15000, label: "在判断在哪块屏幕上做", description: "Before a turn that the owner started opens: decide whether the turn's phone-screen work belongs on the real screen or on a background virtual screen, and give the text to put into that turn. The agent names the lane because the turn does not have an id yet. Whatever cannot be judged (no phone, no judge, unsure) is mode none with no text: the turn goes on untouched." });
-add("service:reflex", "screen.reconcile", "request", obj({ turn: id, agent: agentRef, lane: nonempty, outcome: choice("completed", "cancelled", "error", "interrupted") }, ["turn", "agent", "lane"]),
-  obj({ acted: array(str) }, ["acted"]),
-  { callers: KERNEL, effect: "act", timeout_ms: 30000, label: "在收拾后台屏幕", description: "After a turn ended: close the virtual screen this turn opened when its work is done, if the screen state the decision saw is still current. The real screen is never touched; the owner chooses when to go back to Ash." });
-
 // ===================================================================================================================
 // service:senses: the archive of what the hands sense. The rules for waking anyone are an organ's, not ours.
 // ===================================================================================================================

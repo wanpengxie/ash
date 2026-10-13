@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "2e9400915f6ec823d7782bb81bec9ee1c1edf18e0585ef7ab49711e95c699feb",
+ "hash": "c3ea7605ebf3e59b84f2ba7f4c88639cb088b1d04588e9649f3f4d7eed6d198f",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -12759,138 +12759,6 @@
    "timeout_ms": 5000,
    "label": {
     "doing": "在结束任务"
-   }
-  },
-  {
-   "member": "service:reflex",
-   "word": "screen.plan",
-   "kind": "request",
-   "direction": "in",
-   "description": "Before a turn that the owner started opens: decide whether the turn's phone-screen work belongs on the real screen or on a background virtual screen, and give the text to put into that turn. The agent names the lane because the turn does not have an id yet. Whatever cannot be judged (no phone, no judge, unsure) is mode none with no text: the turn goes on untouched.",
-   "input_schema": {
-    "type": "object",
-    "properties": {
-     "agent": {
-      "type": "string",
-      "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
-     },
-     "lane": {
-      "type": "string",
-      "minLength": 1
-     },
-     "ids": {
-      "type": "array",
-      "items": {
-       "type": "string",
-       "minLength": 1
-      },
-      "maxItems": 50
-     }
-    },
-    "required": [
-     "agent",
-     "lane"
-    ],
-    "additionalProperties": false
-   },
-   "result_schema": {
-    "type": "object",
-    "properties": {
-     "mode": {
-      "type": "string",
-      "enum": [
-       "none",
-       "foreground_handoff",
-       "foreground_task",
-       "virtual_task"
-      ]
-     },
-     "inject": {
-      "type": "string",
-      "maxLength": 4000
-     },
-     "confidence": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-     }
-    },
-    "required": [
-     "mode"
-    ],
-    "additionalProperties": false
-   },
-   "effect": "act",
-   "risk": "none",
-   "callers": [
-    "kernel"
-   ],
-   "timeout_ms": 15000,
-   "label": {
-    "doing": "在判断在哪块屏幕上做"
-   }
-  },
-  {
-   "member": "service:reflex",
-   "word": "screen.reconcile",
-   "kind": "request",
-   "direction": "in",
-   "description": "After a turn ended: close the virtual screen this turn opened when its work is done, if the screen state the decision saw is still current. The real screen is never touched; the owner chooses when to go back to Ash.",
-   "input_schema": {
-    "type": "object",
-    "properties": {
-     "turn": {
-      "type": "string",
-      "minLength": 1
-     },
-     "agent": {
-      "type": "string",
-      "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
-     },
-     "lane": {
-      "type": "string",
-      "minLength": 1
-     },
-     "outcome": {
-      "type": "string",
-      "enum": [
-       "completed",
-       "cancelled",
-       "error",
-       "interrupted"
-      ]
-     }
-    },
-    "required": [
-     "turn",
-     "agent",
-     "lane"
-    ],
-    "additionalProperties": false
-   },
-   "result_schema": {
-    "type": "object",
-    "properties": {
-     "acted": {
-      "type": "array",
-      "items": {
-       "type": "string"
-      }
-     }
-    },
-    "required": [
-     "acted"
-    ],
-    "additionalProperties": false
-   },
-   "effect": "act",
-   "risk": "none",
-   "callers": [
-    "kernel"
-   ],
-   "timeout_ms": 30000,
-   "label": {
-    "doing": "在收拾后台屏幕"
    }
   },
   {

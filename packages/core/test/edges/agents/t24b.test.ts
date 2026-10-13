@@ -104,25 +104,21 @@ test("a lane whose turn cannot be ended does not keep the others, or the stop of
   await waitFor(() => sends(d, "front").length === 2);
 });
 
-test("a hub that is closing: the turns it cuts start no other lane and ask for no screen reconcile", async () => {
+test("a hub that is closing: the turns it cuts start no other lane", async () => {
   const f = fixture();
   await f.start();
   const d = f.driver();
-  f.router.on("service:reflex/screen.plan", () => ({ ok: true, result: { data: { mode: "foreground_task", inject: "real screen" } } }));
-  f.router.on("service:reflex/screen.reconcile", () => ({ ok: true, result: { data: { acted: [] } } }));
   await f.service("declare", { id: "agent:r", name: "r", summary: "reflective", brief: "reflect",
     lanes: { front: { from: ["person:owner"] }, reflect: { on: ["front:turn.ended"], speak: false } } });
   await settle();
   await f.call("agent:r", "say", { text: "忙着" });
   await waitFor(() => d.of("send").some((c) => c[1] === "agent:r"));
-  assert.equal(f.router.to("service:reflex", "screen.reconcile").length, 0);
 
   await f.agents.stopAll();
   await settle();
 
   assert.ok(ended(f).some((e) => e.lane === "front" && e.outcome === "interrupted"), "the turn was ended");
   assert.equal(f.agents.manager.inbox.pending("agent:r", "reflect").length, 0, "nothing was filed for the reflect lane");
-  assert.equal(f.router.to("service:reflex", "screen.reconcile").length, 0);
 });
 
 test("only the agent's own process going away is named as that: a tool's 'process exited' is not", () => {

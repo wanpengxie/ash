@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `2e9400915f6ec823`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `c3ea7605ebf3e59b`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -21,7 +21,7 @@
 - [`service:widgets`](#servicewidgets) (13)
 - [`service:pulse`](#servicepulse) (7)
 - [`service:cost`](#servicecost) (4)
-- [`service:reflex`](#servicereflex) (6)
+- [`service:reflex`](#servicereflex) (4)
 - [`service:senses`](#servicesenses) (12)
 - [`service:directory`](#servicedirectory) (2)
 - [`service:history`](#servicehistory) (9)
@@ -282,8 +282,6 @@
 | `task.outcome` | kernel | act / none | timeout 8s | turn* | 在判断结果 | After a turn ended normally, label how it ended from the owner's point of view, for the island and the capsule: delivered, needs a reply, needs action in Ash, or incomplete. |
 | `task.stop` | owner | act / none | timeout 3s | turn* | 在停下任务 | Stop only the task the owner selected, never a newer turn. |
 | `task.end` | owner | act / none | timeout 5s | turn*, pending_ids* | 在结束任务 | End the selected capsule interaction: stop its current turn and withdraw only the pending requests that are displayed. Never stops a newer turn. |
-| `screen.plan` | kernel | act / none | timeout 15s | agent*, lane*, ids | 在判断在哪块屏幕上做 | Before a turn that the owner started opens: decide whether the turn's phone-screen work belongs on the real screen or on a background virtual screen, and give the text to put into that turn. The agent names the lane because the turn does not have an id yet. Whatever cannot be judged (no phone, no judge, unsure) is mode none with no text: the turn goes on untouched. |
-| `screen.reconcile` | kernel | act / none | timeout 30s | turn*, agent*, lane*, outcome | 在收拾后台屏幕 | After a turn ended: close the virtual screen this turn opened when its work is done, if the screen state the decision saw is still current. The real screen is never touched; the owner chooses when to go back to Ash. |
 
 ## `service:senses`
 

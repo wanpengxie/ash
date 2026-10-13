@@ -71,8 +71,6 @@ export const USAGE_POLL_MS = 10 * 60_000;
 export const USAGE_DEBOUNCE_MS = 5000;
 /** How long a worker may take when `spawn` names no limit (seconds). */
 export const SPAWN_TIMEOUT_S = 600;
-/** How long after the last `typing` the owner is taken to be still typing (ms). */
-export const TYPING_MS = 5000;
 /** A process that stayed up this long is stable (as is one that finished a round): the failure count clears, and a primary agent that was in trouble is told it is back. */
 export const STABLE_RUN_MS = 60_000;
 /**
@@ -105,8 +103,6 @@ const BATCH = 20;
 
 interface Lane {
   key: string;
-  /** A drain is already scheduled for when the owner stops typing. */
-  typingTimer?: boolean;
   busy: boolean;
   /** A batch is being prepared or handed to the driver. */
   sending: boolean;
@@ -118,7 +114,6 @@ interface Lane {
   compactPending: boolean;
   quotaNoticed: boolean;
   /** service:reflex looked at the screen before the turn on this lane, so it is asked to put things back when the turn ends. */
-  screenPlanned: boolean;
   routing: Set<string>;
 }
 /** The process of one start attempt, and the lanes it holds. A new attempt makes a new one; the old one is never used again. */
@@ -180,7 +175,6 @@ export class AgentManager {
   private readonly drivers = new Map<string, AgentDriver>();
   private readonly waiters = new Map<string, Waiter>();
   private readonly outputs = new Map<string, string[]>();
-  private readonly typingUntil = new Map<string, number>();
   private paused = false;
   /** Per agent: the keys being written into its runtime now (settled when none is); no turn of that agent opens before they are in. */
   private readonly keySync = new Map<string, Promise<void>>();
@@ -616,8 +610,7 @@ export class AgentManager {
 
   /** A request or event addressed to an agent. */
   async accept(id: string, msg: Message, raw: unknown, signal?: AbortSignal): Promise<{ data: unknown }> {
-    if (msg.word === "typing") { this.typingUntil.set(id, this.now() + TYPING_MS); return { data: undefined }; }
-    if (msg.word === "say" && msg.from === OWNER_ID) this.typingUntil.delete(id); // they sent it: they are done typing
+    if (msg.word === "typing") return { data: undefined }; // heard (the owner is active), but nothing waits for it
     const body = (raw && typeof raw === "object" ? raw : msg.body) as Record<string, any>;
     const decl = this.run(id).spec.decl;
     const attachments = this.storeAttachments(body.attachments);
@@ -665,15 +658,6 @@ export class AgentManager {
     if (!this.isUp(live) || lane.busy || lane.sending || this.paused) return;
     const rows = this.inbox.pending(live.id, lane.key, BATCH);
     if (!rows.length) return;
-    // The owner is still typing to this agent: a lane that takes their words waits until they have had time to finish.
-    const wait = (this.typingUntil.get(live.id) ?? 0) - this.now();
-    if (wait > 0 && lanesOf(this.run(live.id).spec.decl)[lane.key]?.from?.includes(OWNER_ID)) {
-      if (!lane.typingTimer) {
-        lane.typingTimer = true;
-        this.timers.after(wait, () => { lane.typingTimer = false; this.bg(this.drain(live, lane), `drain ${live.id}/${lane.key}`); });
-      }
-      return;
-    }
     lane.sending = true;
     let sent = false;
     try {
@@ -681,18 +665,13 @@ export class AgentManager {
       await this.ensureKeys(live); // a key the owner has saved is in the runtime first, or this turn would meet the old one
       if (lane.busy || !this.isUp(live) || this.paused) return; // (the owner may have paused meanwhile)
       await this.inject(live, lane);
-      const screen = await this.screenPlan(live, lane, rows);
-      if (lane.busy || !this.isUp(live) || this.paused) return;
       this.inbox.mark(rows.map((r) => r.id), "sent");
       try {
-        lane.screenPlanned = screen.asked; // before the send: a turn can end before it returns
-        if (screen.text) await live.driver.inject(live.id, lane.key, { text: screen.text }).catch((error) => this.log(`agents: screen text for ${live.id}/${lane.key}: ${errorText(error)}`));
         // The lane turns busy when the driver reports `turn.started`, not here: on a remote driver that report
         // (or even `turn.ended`) can arrive before this call returns.
         await live.driver.send(live.id, lane.key, rows.map(toDriverMessage));
         sent = true;
       } catch (error) {
-        lane.screenPlanned = false;
         this.inbox.mark(rows.map((r) => r.id), "pending");
         if (!(error instanceof WordError && error.code === "conflict")) throw error; // conflict: the driver is in a turn already
       }
@@ -745,32 +724,6 @@ export class AgentManager {
       this.tellOwner(data.reason || `${live.id} 今天的额度用完了${data.limit ? `（${data.used ?? "?"}/${data.limit}）` : ""}，先不开新的一轮；你的消息我留着。`);
     }
     return false;
-  }
-
-  /**
-   * Before a turn the owner started: ask `service:reflex` where the turn's phone-screen work belongs. `text` is what it
-   * wants put into the session ahead of the turn; `asked` says reflex answered, so it is also asked to put things back
-   * when the turn ends. Offline, refused or failing: nothing, and the turn goes on as if nobody had asked.
-   */
-  private async screenPlan(live: Live, lane: Lane, rows: InboxRow[]): Promise<{ text: string | null; asked: boolean }> {
-    const ids = rows.filter((r) => r.from === OWNER_ID).map((r) => r.id);
-    const nothing = { text: null, asked: false };
-    if (!ids.length) return nothing;
-    try {
-      const reply = await this.deps.router.send({ to: "service:reflex", kind: "request", word: "screen.plan", body: { agent: live.id, lane: lane.key, ids } }, SERVICE_CALLER);
-      if (!reply.ok) return nothing;
-      const data = reply.result?.data as { mode?: string; inject?: unknown } | undefined;
-      return { text: data?.mode !== "none" && typeof data?.inject === "string" && data.inject ? data.inject : null, asked: true };
-    } catch (error) {
-      this.log(`agents: screen.plan ${live.id}/${lane.key}: ${errorText(error)}`);
-      return nothing;
-    }
-  }
-
-  /** The turn is over: reflex puts the screen back if it looked at it before. */
-  private async screenReconcile(live: Live, ev: { turn: string; key: string; outcome: string }): Promise<void> {
-    const reply = await this.deps.router.send({ to: "service:reflex", kind: "request", word: "screen.reconcile", body: { turn: ev.turn, agent: live.id, lane: ev.key, outcome: ev.outcome } }, SERVICE_CALLER);
-    if (!reply.ok && reply.error.code !== "offline") this.log(`agents: screen.reconcile ${ev.turn}: ${reply.error.code}`);
   }
 
   /** Put the dynamic modules whose content changed into the lane's session (all of them every REINJECT_EVERY turns). */
@@ -888,9 +841,8 @@ export class AgentManager {
     // The end of the turn goes first: whoever judges from it whether the turn spoke must not take the failure notice for speech.
     this.emit(live.id, "turn.ended", { turn: ev.turn, lane: ev.key, outcome: ev.outcome, ...(ev.error ? { error: ev.error } : {}) }, ev.turn);
     if (failed) this.failureNotice(live.id, ev.turn, ev.error);
-    // The hub is going down: the turns it cuts are over, and they start nothing else and put nothing on the screen.
-    if (this.closing) { lane.screenPlanned = false; return; }
-    if (lane.screenPlanned) { lane.screenPlanned = false; this.bg(this.screenReconcile(live, ev), "screen reconcile"); }
+    // The hub is going down: the turns it cuts are over, and they start nothing else.
+    if (this.closing) return;
     // A turn that another lane's `on` started does not start further lanes: that would loop.
     if (!(rows.length && rows.every((r) => r.word === "lane"))) this.trigger(live, ev.key, `${ev.key}:turn.ended`, `Lane ${ev.key} finished a turn (${ev.outcome}). Its turn id is ${ev.turn}; service:history/turn shows what happened in it.`, ev.turn);
     if (cut !== undefined) return; // this process is gone: no reload, compact or drain on it
@@ -1132,7 +1084,7 @@ export class AgentManager {
   }
 }
 
-const newLane = (key: string): Lane => ({ key, busy: false, sending: false, injected: new Map(), turnsSince: 0, reloadPending: false, compactPending: false, quotaNoticed: false, screenPlanned: false, routing: new Set() });
+const newLane = (key: string): Lane => ({ key, busy: false, sending: false, injected: new Map(), turnsSince: 0, reloadPending: false, compactPending: false, quotaNoticed: false, routing: new Set() });
 
 export const staticHash = (modules: PromptModule[]): string =>
   createHash("sha256").update(modules.map((m) => `${m.id}:${m.version}`).join("|")).digest("hex").slice(0, 12);

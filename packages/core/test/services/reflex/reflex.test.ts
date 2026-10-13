@@ -30,7 +30,7 @@ const code = async (promise: Promise<unknown>) => { try { await promise; } catch
 test("the member is service:reflex with the contract words of the sdk", () => {
   const { service } = setup();
   assert.equal(service.id, "service:reflex");
-  assert.deepEqual(service.words().map((w) => w.word).sort(), ["conversation.control", "screen.plan", "screen.reconcile", "task.end", "task.outcome", "task.stop"]);
+  assert.deepEqual(service.words().map((w) => w.word).sort(), ["conversation.control", "task.end", "task.outcome", "task.stop"]);
 });
 
 // ---- conversation.control ------------------------------------------------------------------------------------

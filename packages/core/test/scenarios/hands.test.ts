@@ -169,10 +169,7 @@ test("设备 27: decision.* are for the hub's reflex only: neither the owner nor
   assert.ok(!mine.ok && mine.error.code === "forbidden");
   await eventually(() => state.agent, "the agent's attempt");
   assert.equal(errorCode(state.agent!), "forbidden");
-  // The one call the hand did get is the hub's own reflex (`screen.plan` asks for a surface once), never the owner's or the agent's.
-  await eventually(() => phone.calls.length >= 1, "the hub's own reflex asking for a surface");
+  // Neither the owner's call nor the agent's reached the hand.
   await quiet();
-  assert.equal(phone.calls.length, 1);
-  assert.notEqual(phone.calls[0]!.caller.member, OWNER);
-  assert.notEqual(phone.calls[0]!.caller.member, MAIN);
+  assert.equal(phone.calls.length, 0);
 });
