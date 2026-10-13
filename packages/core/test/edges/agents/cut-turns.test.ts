@@ -13,7 +13,7 @@ const sends = (d: FakeDriver, key: string) => d.of("send").filter((c) => c[2] ==
 const texts = (call: unknown[]) => (call[3] as { text: string }[]).map((m) => m.text);
 const ended = (f: ReturnType<typeof fixture>) => f.router.events("turn.ended").map((e) => e.msg.body as { turn: string; lane: string; outcome: string; error?: string });
 
-test("the process dies in the middle of a front turn: the turn ends once as error, the owner gets the failure notice and the card, and retry runs it on the new process", async () => {
+test("the process dies in the middle of a front turn: the turn ends once as error, no failure card; the new process is given the recovery prompt and finishes it", async () => {
   const f = fixture();
   await f.start();
   const d = f.driver();
@@ -22,35 +22,36 @@ test("the process dies in the middle of a front turn: the turn ends once as erro
   const turn = d.running.get(`${M}/front`)!.turn;
 
   d.die(M, "process exited (SIGKILL)"); // no turn.ended from the driver: the process took the turn with it
-  await waitFor(() => f.router.to("person:owner", "show").length === 1);
   await waitFor(() => d.of("start").length === 2); // restarted at once
+  await waitFor(() => sends(d, "front").length === 2); // and the cut turn goes on
 
   const gone = ended(f).filter((e) => e.turn === turn);
   assert.equal(gone.length, 1);
   assert.equal(gone[0]!.outcome, "error");
   assert.match(gone[0]!.error!, /SIGKILL/);
-  assert.match(f.router.says()[0]!.text, /没做成：负责思考的进程中途退出了/);
-  assert.deepEqual((f.router.to("person:owner", "show")[0]!.msg.body as any).card.options, [{ id: `retry:${turn}`, text: "重试" }]);
-  assert.equal(f.agents.manager.inbox.byTurn(turn)[0]!.state, "failed");
-  assert.equal(f.agents.manager.stateOf(M), "idle", "the lane is free for the next turn");
+  assert.equal(f.router.to("person:owner", "show").length, 0, "no failure card: it is picked up again");
+  assert.match(texts(sends(d, "front")[1]!)[0]!, /上一轮在 .* 被中断.*做一件长任务/s);
+  assert.match(f.router.says()[0]!.text, /刚才中断了.*正在接着做：做一件长任务/);
 
   // a late word of the dead process about the same turn (a prompt that was rejected at its exit) ends nothing a second time
   d.report({ event: "turn.ended", agent: M, key: "front", turn, outcome: "error", error: "process exited" });
   await settle();
   assert.equal(ended(f).filter((e) => e.turn === turn).length, 1);
-  assert.equal(f.router.to("person:owner", "show").length, 1, "one card");
 
-  // the owner picks retry: the same words go to the new process, and that turn ends on its own
-  await f.call(M, "say", { in_reply_to: "card_1", option_id: `retry:${turn}`, text: "重试" }, undefined);
-  await waitFor(() => sends(d, "front").length === 2);
-  assert.deepEqual(texts(sends(d, "front")[1]!), ["做一件长任务"]);
+  // the new turn took the owner's message over: it is not delivered again, and it ends on its own
+  const now = d.running.get(`${M}/front`)!.turn;
+  assert.deepEqual(f.agents.manager.inbox.byTurn(now).map((r) => r.id).filter((i) => !i.startsWith("resume:")).length, 1);
+  assert.equal(f.agents.manager.journal.get(turn)!.state, "resumed");
+  assert.equal(f.agents.manager.journal.get(now)!.resumed_from, turn);
   d.say(M, "front", "做完了");
   d.finish(M, "front");
   await waitFor(() => ended(f).length === 2);
   assert.equal(ended(f)[1]!.outcome, "completed");
+  assert.equal(f.agents.manager.journal.get(now)!.state, "done");
+  assert.equal(sends(d, "front").length, 2, "never sent as a new message");
 });
 
-test("a back turn cut by a dead process ends as error without a word to the owner; the new process is told it was cut off", async () => {
+test("a back turn cut by a dead process ends as error without a word to the owner; the new process is given the recovery prompt", async () => {
   const f = fixture();
   await f.start();
   const d = f.driver();
@@ -63,8 +64,7 @@ test("a back turn cut by a dead process ends as error without a word to the owne
 
   assert.deepEqual(ended(f).filter((e) => e.turn === turn).map((e) => e.outcome), ["error"]);
   assert.equal(f.router.to("person:owner", "show").length, 0);
-  assert.equal(f.router.says().length, 0);
-  assert.match(texts(sends(d, "back")[1]!)[0]!, /上一轮中断了/);
+  assert.match(texts(sends(d, "back")[1]!)[0]!, /上一轮在 .* 被中断.*原任务：「Wake/s);
 });
 
 test("a stop on purpose in the middle of a turn ends it as interrupted, with no failure notice", async () => {

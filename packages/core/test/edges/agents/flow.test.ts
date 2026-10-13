@@ -271,13 +271,13 @@ test("the hub restarts in the middle of a turn: that batch is not sent again; th
   const g = fixture({ from: f });
   await g.start();
   const d = g.driver();
-  await waitFor(() => sends(d).length === 2);
-  const back = texts(sends(d, "back")[0]!)[0]!;
-  assert.match(back, /上一轮中断了（当时在处理：do the long thing）/);
-  assert.deepEqual(texts(sends(d, "front")[0]!), ["queued one", "never delivered"]);
-  assert.equal(g.agents.manager.inbox.get(f.agents.manager.inbox.pending(M, "front")[0]?.id ?? "x"), null);
-  const old = g.ledger.db().prepare("SELECT state FROM agent_inbox WHERE text='do the long thing'").get() as { state: string };
-  assert.equal(old.state, "interrupted");
+  await waitFor(() => sends(d).length === 1);
+  await settle();
+  assert.equal(sends(d, "back").length, 0, "the old wake that left the choice to the agent is gone");
+  const batch = texts(sends(d, "front")[0]!);
+  assert.deepEqual(batch.slice(0, 2), ["queued one", "never delivered"]);
+  assert.match(batch[2]!, /上一轮在 .* 被中断（大脑重启）.*do the long thing/s);
+  assert.equal(batch.length, 3, "the cut message itself is not delivered again");
 });
 
 test("ask: the answer is what the agent said in the turn that took the question; answer can give it earlier; tell's answer goes back to the sender", async () => {

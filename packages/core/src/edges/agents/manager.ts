@@ -17,6 +17,8 @@ import type { Registry, Router, Vault } from "../../kernel/types";
 import { proxyEnv } from "../../../../sdk/src/proxy";
 import { failureText, RETRY_OPTION } from "./failure";
 import { Inbox, toDriverMessage, type InboxRow } from "./inbox";
+import { Journal, type JournalRow } from "./journal";
+import { classify, ownerLine, readCalls, recoveryPrompt } from "./resume";
 import { Modules, SERVICE_CALLER, type OwnerChannel } from "./modules";
 import { lanesOf, Runs, type AgentDecl, type LaneDecl, type Run, type Templates } from "./runs";
 
@@ -100,6 +102,12 @@ const EPHEMERAL_TRIES = 3;
 /** Dynamic modules are put in again after this many turns even if unchanged. */
 export const REINJECT_EVERY = 20;
 const BATCH = 20;
+/** A cut turn is picked up again at most this often; then it is a failure. */
+export const MAX_RESUMES = 2;
+/** A turn cut off longer ago than this is not picked up by itself: the owner is asked. */
+export const RESUME_WINDOW_MS = 30 * 60_000;
+/** Inbox id of the message that carries a turn's recovery prompt: `resume:<the cut turn>`. */
+const RESUME_PREFIX = "resume:";
 
 interface Lane {
   key: string;
@@ -164,12 +172,15 @@ interface Slot {
 interface Waiter { id: string; agent: string; from: string; since: number; resolve(answer: string): void; reject(error: WordError): void }
 
 export const agentCaller = (agent: string, turn?: string): Caller => ({ member: agent, via: "agent", local: true, ...(turn ? { turn } : {}) });
+const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+const clipText = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const errorText = (error: unknown) => String((error as { message?: unknown } | null)?.message ?? error).replace(/\s+/g, " ").slice(0, 300);
 
 export class AgentManager {
   readonly runs: Runs;
   readonly inbox: Inbox;
+  readonly journal: Journal;
   readonly modules: Modules;
   private readonly slots = new Map<string, Slot>();
   private readonly drivers = new Map<string, AgentDriver>();
@@ -199,6 +210,7 @@ export class AgentManager {
     this.proxy = proxyKey(deps.network);
     this.runs = new Runs(deps.ledger, this.now);
     this.inbox = new Inbox(deps.ledger.db());
+    this.journal = new Journal(deps.ledger.db());
     this.modules = new Modules({ router: deps.router, registry: deps.registry, now: this.now, rules: deps.rules, channels: deps.channels });
   }
 
@@ -215,6 +227,7 @@ export class AgentManager {
     this.runs.seed(this.deps.templates);
     this.deps.declare?.(this.runs);
     this.inbox.prune(this.now() - 7 * 86_400_000);
+    this.journal.prune(this.now() - 7 * 86_400_000);
     // From here on the declared agents are members. A kind with no driver here is not: nothing would ever start it.
     const on = this.runs.list().filter((run) => run.desired === "on" && this.deps.drivers[run.spec.decl.runtime.kind]);
     for (const run of on) this.ensureMember(run.id);
@@ -447,7 +460,7 @@ export class AgentManager {
     const hash = staticHash(statics);
     this.runs.patch(id, (spec) => { for (const key of Object.keys(lanes)) if (!spec.sessions[key] || !spec.static_hash[key]) spec.static_hash[key] ??= hash; });
     this.deps.started?.(id);
-    this.interruptedNotice(id, slot.why);
+    this.recover(id, slot.why);
     for (const lane of live.lanes.values()) this.bg(this.drain(live, lane), `drain ${id}/${lane.key}`);
     // Troubled: it is back once it has stayed up (or finished a round, which `finishTurn` takes).
     if (slot.troubled) slot.cancelStable = this.timers.after(STABLE_RUN_MS, () => { if (current()) this.stable(slot); });
@@ -535,27 +548,69 @@ export class AgentManager {
 
   /**
    * A turn the ledger still shows as open belongs to a process that is gone (this one has not taken a message yet): the hub died with
-   * it, so nobody wrote its end, and the chat would say "working" for ever. Close each with `interrupted`, the lane from its start. It is
-   * not a failure: the wake below tells the agent, which decides whether to go on.
+   * it, so nobody wrote its end, and the chat would say "working" for ever. Close each with `interrupted`, the lane from its start,
+   * and mark the journal. It is not a failure: `recover` decides whether it is picked up again.
    */
   private endStaleTurns(id: string): void {
-    const open = this.deps.ledger.db().prepare("SELECT fact_turn AS turn, lane FROM messages WHERE fact_type='turn.start' AND \"from\"=? AND turn_end_seq IS NULL AND fact_turn IS NOT NULL").all(id) as { turn: string; lane: string }[];
+    const db = this.deps.ledger.db();
+    const open = db.prepare("SELECT fact_turn AS turn, lane FROM messages WHERE fact_type='turn.start' AND \"from\"=? AND turn_end_seq IS NULL AND fact_turn IS NOT NULL").all(id) as { turn: string; lane: string }[];
     for (const { turn, lane } of open) this.emit(id, "turn.ended", { turn, lane, outcome: "interrupted", error: "the hub restarted" }, turn);
+    // When it was cut: the last thing the ledger heard of the turn (the hub was down since).
+    for (const row of this.journal.running(id)) {
+      const last = db.prepare("SELECT MAX(ts) AS ts FROM messages WHERE turn=? OR fact_turn=?").get(row.turn, row.turn) as { ts: number | null };
+      this.journal.set(row.turn, "interrupted", Math.max(row.started_at, last.ts ?? 0));
+    }
   }
 
-  /** What was in flight when the agent went away is not sent again; the agent hears that it was cut off and decides. */
-  private interruptedNotice(id: string, why: string): void {
+  /**
+   * The agent is up and takes messages: close what the last process left open, then decide for each cut turn (SPEC-08 §turn resume):
+   * the owner stopped it (never here: that is `cancelled`); picked up twice already -> failure; cut off long ago -> ask the owner;
+   * else go on with the same session, the input being the recovery prompt. Whoever asked in a cut turn is told `result_unknown`.
+   */
+  private recover(id: string, why: string): void {
     this.endStaleTurns(id);
     const rows = this.inbox.unfinished(id);
-    if (!rows.length) return;
-    const cut = rows.filter((r) => r.turn);
     this.inbox.mark(rows.filter((r) => !r.turn).map((r) => r.id), "pending");
-    this.inbox.mark(cut.map((r) => r.id), "interrupted");
-    // Whoever asked in the turn that was cut is told so now: nobody knows whether it was done. What still waits in the inbox is answered by the new process.
+    const cut = rows.filter((r) => r.turn);
     for (const r of cut) this.rejectWaiter(r.id, new WordError("result_unknown", `${id} was restarted in the middle of the turn that took this question (${why}); it is not known whether it was done`));
-    if (!cut.length) return;
-    const doing = cut.slice(0, 3).map((r) => r.text.replace(/\s+/g, " ").slice(0, 80)).join("；");
-    this.enqueue(id, { id: this.newId(), from: SERVICE_CALLER.member, word: "wake", text: `${why}，上一轮中断了（当时在处理：${doing}）。要不要接着做，你自己决定。`, attachments: [], at: this.now() });
+    const handled = new Set<string>();
+    for (const j of this.journal.interrupted(id)) {
+      handled.add(j.turn);
+      try { this.decide(id, j, why); } catch (error) { this.log(`agents: picking up ${j.turn}: ${errorText(error)}`); }
+    }
+    // Rows of a turn the journal does not know (before the journal) or that is already being picked up: the first are left cut, the second wait for their new turn.
+    const waiting = new Set(cut.map((r) => r.turn!).filter((t) => !handled.has(t) && this.journal.get(t)?.state === "resuming"));
+    this.inbox.mark(cut.filter((r) => !handled.has(r.turn!) && !waiting.has(r.turn!)).map((r) => r.id), "interrupted");
+  }
+
+  private decide(id: string, j: JournalRow, why: string): void {
+    const all = this.inbox.byTurn(j.turn);
+    const asked = all.filter((r) => !r.id.startsWith(RESUME_PREFIX));
+    for (const r of all) if (r.id.startsWith(RESUME_PREFIX)) this.inbox.mark([r.id], "done");
+    const task = asked.filter((r) => r.word !== "lane").slice(0, 3).map((r) => flat(r.text).slice(0, 80)).join("；") || asked.slice(0, 3).map((r) => flat(r.text).slice(0, 80)).join("；");
+    const toOwner = asked.some((r) => r.from === OWNER_ID);
+    if (j.resumes >= MAX_RESUMES) {
+      this.journal.set(j.turn, "given_up");
+      if (toOwner) { this.inbox.mark(asked.map((r) => r.id), "failed"); this.failureNotice(id, j.turn, "the agent process ended repeatedly"); } else this.inbox.mark(asked.map((r) => r.id), "interrupted");
+      return;
+    }
+    if (this.now() - (j.ended_at ?? j.started_at) > RESUME_WINDOW_MS) {
+      this.journal.set(j.turn, "asked");
+      if (asked.every((r) => r.word === "lane")) { this.inbox.mark(asked.map((r) => r.id), "interrupted"); return; }
+      this.inbox.mark(asked.map((r) => r.id), "failed"); // so that the card's 「继续」 delivers them again
+      const who = agentCaller(id, j.turn);
+      this.bg(this.deps.router.send({ to: OWNER_ID, kind: "request", word: "show", body: { card: { type: "options", prompt: `刚才那件事（${clipText(task, 40)}）被打断了，要不要继续？`, options: [{ id: `${RETRY_OPTION}:${j.turn}`, text: "继续" }] } } }, who), "resume card");
+      return;
+    }
+    // go on: the chain of cut turns is what has been done so far
+    const chain: string[] = [];
+    for (let t: string | undefined = j.turn; t && chain.length < 5; t = this.journal.get(t)?.resumed_from) chain.push(t);
+    const calls = classify(readCalls(this.deps.ledger.db(), id, chain.reverse(), (to, word) => this.deps.registry.find(to, word)?.contract.effect));
+    const prompt = recoveryPrompt({ at: j.ended_at ?? j.started_at, why, task: task || "（没有文字）", calls });
+    this.journal.setResumes(j.turn, j.resumes + 1);
+    this.journal.set(j.turn, "resuming");
+    this.enqueue(id, { id: `${RESUME_PREFIX}${j.turn}`, from: SERVICE_CALLER.member, word: "wake", text: prompt, attachments: [], at: this.now() }, j.lane);
+    if (toOwner) this.tellOwner(ownerLine(why, task));
   }
 
   // ----------------------------------------------------------------------------------------------------------------
@@ -773,6 +828,7 @@ export class AgentManager {
         lane.turnsSince++;
         this.outputs.set(ev.turn, []);
         if (ev.ids?.length) this.inbox.mark(ev.ids, "sent", ev.turn);
+        this.journalStart(live, ev);
         this.emit(ev.agent, "turn.started", { turn: ev.turn, lane: ev.key, ...(ev.ids ? { ids: ev.ids } : {}) }, ev.turn);
         return;
       case "output": {
@@ -790,6 +846,16 @@ export class AgentManager {
         this.finishTurn(live, lane, ev);
         return;
     }
+  }
+
+  /** A turn begins: its row. One that carries a recovery prompt takes over the messages (and the count) of the turn it goes on from. */
+  private journalStart(live: Live, ev: Extract<AgentEvent, { event: "turn.started" }>): void {
+    const from = ev.ids?.find((i) => i.startsWith(RESUME_PREFIX))?.slice(RESUME_PREFIX.length);
+    const old = from ? this.journal.get(from) : null;
+    this.journal.start({ turn: ev.turn, agent: ev.agent, lane: ev.key, session: live.driver.session.get(ev.agent, ev.key), ids: ev.ids, at: this.now(), ...(old ? { resumes: old.resumes, resumed_from: old.turn } : {}) });
+    if (!old) return;
+    this.journal.set(old.turn, "resumed");
+    this.inbox.mark(this.inbox.byTurn(old.turn).filter((r) => !r.id.startsWith(RESUME_PREFIX) && r.state === "sent").map((r) => r.id), "sent", ev.turn);
   }
 
   /** Tell the owner in one line what went wrong, and offer a retry card. */
@@ -815,7 +881,7 @@ export class AgentManager {
 
   /**
    * `cut`: the turn ends because its process went away (see `cutTurns`), not because the driver said so. Nothing is handed to
-   * that driver any more; what was not failed stays `sent`, so the next process hears of it (`interruptedNotice`); the ask that
+   * that driver any more; what was not failed stays `sent`, so the next process picks it up (`recover`); the ask that
    * was in it is told result_unknown, nobody knows whether it was done. The string is the reason named in that message.
    */
   private finishTurn(live: Live, lane: Lane, ev: Extract<AgentEvent, { event: "turn.ended" }>, cut?: string): void {
@@ -825,7 +891,11 @@ export class AgentManager {
     lane.turn = undefined;
     const rows = this.inbox.byTurn(ev.turn);
     // A turn that was answering the owner and failed is kept as failed, so 「重试」 can deliver the same batch again.
-    const failed = ev.outcome === "error" && this.speaks(live.id, ev.key) && rows.some((r) => r.from === OWNER_ID);
+    const journal = this.journal.get(ev.turn);
+    // A process that took the turn with it is picked up again (`recover`) unless that was done as often as allowed: no failure card then.
+    const again = cut !== undefined && !!journal && journal.resumes < MAX_RESUMES;
+    const failed = ev.outcome === "error" && this.speaks(live.id, ev.key) && rows.some((r) => r.from === OWNER_ID) && !again;
+    this.journal.set(ev.turn, cut !== undefined ? (again ? "interrupted" : "given_up") : ev.outcome === "completed" ? "done" : ev.outcome === "error" ? "failed" : "cancelled", this.now());
     if (!cut || failed) this.inbox.finish(ev.turn, ev.outcome === "interrupted" ? "interrupted" : failed ? "failed" : "done");
     const said = (this.outputs.get(ev.turn) ?? []).join("\n\n");
     this.outputs.delete(ev.turn);

@@ -147,22 +147,35 @@ test("SPEC-01 §5.2: a sub-agent speaks to the owner only in the turn where the 
   await eventually(() => spoke().find((m) => textOf(m) === "你好，我在"), "the front lane's words reaching the owner");
 });
 
-test("S170, S171, SPEC-00 §6.5: the hub restarts in the middle of a turn: the batch is not sent again; the agent is told, and a call in flight is not replayed", async (t) => {
+test("S170, S171, SPEC-00 §6.5: the hub restarts in the middle of a turn: the turn goes on with a recovery prompt; the owner's message is not given again, and a call in flight is not replayed", async (t) => {
   const s = await startScenario(t);
-  const hand = await s.hand({ capabilities: [extensionCapability("x.test.act", { effect: "act", risk: "none" })] });
-  const held = hand.hold("x.test.act");
-  s.driver.script(byOwnerText({ "做一件慢事": async (turn) => { await turn.call(hand.member, "x.test.act", {}); } }));
+  const hand = await s.hand({ capabilities: [
+    extensionCapability("x.test.read", { effect: "read", risk: "none" }),
+    extensionCapability("x.test.act", { effect: "act", risk: "none" }),
+    extensionCapability("x.test.last", { effect: "act", risk: "none" }),
+  ] });
+  const held = hand.hold("x.test.last");
+  s.driver.script(byOwnerText({ "做一件慢事": async (turn) => {
+    await turn.call(hand.member, "x.test.read", {});
+    await turn.call(hand.member, "x.test.act", {});
+    await turn.call(hand.member, "x.test.last", {}); // sent, and the hub dies before it is answered
+  } }));
   const owner = await s.human();
   accepted(await owner.say("做一件慢事"));
   await held.started;
   const before = s.driver.deliveries.length;
 
-  await s.restart();
+  await s.restart(undefined, { crash: true });
 
-  const { message } = await s.driver.delivery((m) => m.lane === "back" && /中断|interrupt/i.test(m.text), "the note that the last turn was interrupted");
+  const { message } = await s.driver.delivery((m) => m.lane === "front" && /上一轮在 .* 被中断/.test(m.text), "the recovery prompt of the cut turn");
   assert.notEqual(message.from, OWNER);
+  assert.match(message.text, /原任务：「做一件慢事」/);
+  assert.match(message.text, /已完成：.*x\.test\.read.*x\.test\.act/s);
+  assert.match(message.text, /结果不明：.*x\.test\.last.*可能已执行/s);
+  assert.doesNotMatch(message.text.split("结果不明")[0]!, /x\.test\.last/);
   assert.equal(s.driver.deliveries.slice(before).filter((d) => d.messages.some(ownerMessage("做一件慢事"))).length, 0, "the owner's message was not given again");
-  assert.equal(hand.calls.length, 1, "the call in flight was not replayed");
+  assert.equal(hand.calls.length, 3, "the call in flight was not replayed");
+  await eventually(() => owner.messages.some((m) => m.to === OWNER && /刚才中断了.*正在接着做：做一件慢事/.test(textOf(m))), "the owner told in one line");
 });
 
 test("the hub is killed in the middle of a front turn (nothing written at the stop): after the restart the chat does not say it is still working", async (t) => {

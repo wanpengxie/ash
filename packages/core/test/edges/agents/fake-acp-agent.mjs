@@ -21,7 +21,7 @@ async function prompt(id, params) {
   s.cancelled = false;
   // kill -9: no reply, stdout just closes. Only the first time (FAKE_KILLED is the marker), so a retry gets through.
   if (text.includes("KILL9") && process.env.FAKE_KILLED && !existsSync(process.env.FAKE_KILLED)) { writeFileSync(process.env.FAKE_KILLED, "1"); process.kill(process.pid, "SIGKILL"); }
-  if (text.includes("DIE") && !text.includes("上一轮中断了")) process.exit(1); // the hub's cut-off notice quotes what was cut off
+  if (text.includes("DIE") && !text.includes("被中断")) process.exit(1); // the hub's recovery prompt quotes what was cut off
   update(id, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } });
   if (text.includes("TOOL")) {
     update(id, { sessionUpdate: "tool_call", toolCallId: "c1", title: "read_file", kind: "read", status: "pending" });

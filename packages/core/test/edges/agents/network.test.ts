@@ -59,13 +59,14 @@ test("an agent in a turn is restarted at once: it is told the turn was cut, and 
   await changed(f, { proxy: { http: "http://10.0.2.2:7891" } });
   await waitFor(() => starts(f) === 2);
   assert.equal(d.of("stop").length, 1, "no waiting for the turns to end");
-  const told = () => d.of("send").filter((c) => c[2] === "back" && ((c[3] as any[])[0].text as string).includes("上一轮中断了"));
+  const told = () => d.of("send").filter((c) => c[2] === "back" && ((c[3] as any[])[0].text as string).includes("被中断"));
   await waitFor(() => told().length === 1);
   assert.match(((told()[0]![3]) as any[])[0].text, /代理换了/);
   // the words that came after are delivered in the new process like any others
   await f.call(M, "say", { text: "still there?" }, OWNER_C);
   await waitFor(() => sends(d, "front").length === 2);
-  assert.equal(((sends(d, "front")[1]![3]) as any[])[0].text, "still there?");
+  assert.match(((sends(d, "front")[1]![3]) as any[])[0].text, /被中断.*hello/s); // the cut turn goes on first
+  await waitFor(() => [...d.of("send"), ...d.of("followup")].some((c) => ((c[3] as any[]).some((m) => m.text === "still there?"))));
 });
 
 test("an ask queued behind a running turn is not refused by the restart: the new process gets the question and answers it", async () => {
