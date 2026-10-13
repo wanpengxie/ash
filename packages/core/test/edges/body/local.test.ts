@@ -299,6 +299,20 @@ withFixture("opening the body writes the host's DNS servers into the container's
   } finally { await other.close(); }
 });
 
+withFixture("the container gets a CA bundle from Node's roots when it has none; one already there is kept", async (f) => {
+  const bundle = join(f.rootfs, "etc", "ssl", "certs", "ca-certificates.crt");
+  await ask(f.body, "workspace.ls", { path: "/" });
+  const written = await readFile(bundle, "utf8");
+  assert.ok(written.split("BEGIN CERTIFICATE").length > 50, "Node's roots");
+  await writeFile(bundle, "apt's bundle\n");
+  const proot: ProotConfig = { root: join(f.dir, "main"), rootfs: f.rootfs, bin: "/bin/true", loader: "", lib: "" };
+  const other = createLocalBody({ isolation: { kind: "proot", proot } });
+  try {
+    other.spawn(["true"]).on("error", () => {});
+    assert.equal(await readFile(bundle, "utf8"), "apt's bundle\n");
+  } finally { await other.close(); }
+});
+
 test("the DNS servers are not written before the image is installed", async () => {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "body-dns-"));
   try {

@@ -10,8 +10,9 @@
  *   machine's paths, so a program is given `runtimePath(cwd)`, the machine path of a body path.
  */
 import { spawn as spawnProcess, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";
+import tls from "node:tls";
 import type { HostIsolation, HostNetwork } from "../../../../sdk/src/host";
 import { MAIN_BODY_ID } from "../../../../sdk/src/ids";
 import { WordError, type HandleContext, type Message, type WordResult } from "../../../../sdk/src/message";
@@ -50,6 +51,23 @@ export function writeResolvConf(proot: ProotConfig): void {
   try { if (!lstatSync(file).isSymbolicLink() && readFileSync(file, "utf8") === text) return; } catch { /* missing: write it */ }
   const temp = `${file}.tmp-${process.pid}`;
   writeFileSync(temp, text, { mode: 0o644 });
+  rmSync(file, { force: true });
+  renameSync(temp, file);
+}
+
+/**
+ * The container's CA bundle (`etc/ssl/certs/ca-certificates.crt`), from Node's own roots, when the image has none: the
+ * base image carries no ca-certificates package, and a program that reads the system roots (Go's, such as v2rayA and its
+ * core) cannot verify any TLS server without it. A bundle already there (apt's ca-certificates) is left alone.
+ */
+export function writeCaBundle(proot: ProotConfig): void {
+  const dir = join(proot.rootfs, "etc", "ssl", "certs");
+  if (!existsSync(join(proot.rootfs, "etc"))) return;
+  const file = join(dir, "ca-certificates.crt");
+  try { if (statSync(file).size > 0) return; } catch { /* missing: write it */ }
+  mkdirSync(dir, { recursive: true });
+  const temp = `${file}.tmp-${process.pid}`;
+  writeFileSync(temp, `${tls.rootCertificates.join("\n")}\n`, { mode: 0o644 });
   rmSync(file, { force: true });
   renameSync(temp, file);
 }
@@ -151,6 +169,7 @@ export function createLocalBody(o: LocalBodyOptions): LocalBody {
     if (!existsSync(proot.rootfs)) throw new WordError("unavailable", "The main body is not installed yet");
     mkdirSync(join(proot.rootfs, PROOT_WORKDIR), { recursive: true });
     writeResolvConf(proot);
+    writeCaBundle(proot);
     return workspace = new Workspace({
       root: proot.rootfs, chroot: true, workdir: PROOT_WORKDIR, ownership: "own", mounts: prootMounts(proot),
       exec: o.exec ?? ((command, place) => runProot(proot, ["/bin/bash", "-c", command], { workdir: place.cwd, env: { ...proxyEnv(network), ...o.env }, detached: true })),
@@ -163,6 +182,7 @@ export function createLocalBody(o: LocalBodyOptions): LocalBody {
   // container: end them before this core starts its own.
   if (isolation.kind === "proot") {
     const ended = reapContainer(isolation.proot);
+    if (existsSync(isolation.proot.rootfs)) writeCaBundle(isolation.proot);
     if (ended) (o.log ?? ((line: string) => console.error(line)))(`[body] ended ${ended} process(es) an earlier core left in the container`);
   }
   return {
@@ -173,6 +193,7 @@ export function createLocalBody(o: LocalBodyOptions): LocalBody {
     spawn(argv, opts = {}) {
       if (isolation.kind === "proot") {
         writeResolvConf(isolation.proot);
+        writeCaBundle(isolation.proot);
         const runtime = argv[0] === "dsh";
         const program = runtime ? [PROOT_DSH, ...argv.slice(1)] : argv[0] === "pi" ? [PROOT_PI, ...argv.slice(1)] : argv;
         return runProot(isolation.proot, program, {
