@@ -6,7 +6,7 @@ whenToUse: 主人要搭中转站、换中转站、领回旧中转站、换域名
 
 # 管理中转站
 
-中转站是主人自己 Cloudflare 账号里的一个 Worker，程序是公开仓库 `https://github.com/wanpengxie/ash-gateway`。手机（中枢）主动连它，电脑、网页经它连回手机。你在自己的 Linux 身体里用 **wrangler**（Cloudflare 官方命令行）管理它：部署、改密钥、绑域名、看日志都靠它。中枢只负责**认领**和**连接**：你把地址和认领密钥交给 `service:link/gateway.use`。
+中转站是主人自己 Cloudflare 账号里的一个 Worker，程序是公开仓库 `https://github.com/wanpengxie/ash-gateway`，每个版本都发布成可以直接部署的文件（Release）。手机（中枢）主动连它，电脑、网页经它连回手机。你在自己的 Linux 身体里用 **wrangler**（Cloudflare 官方命令行）管理它：部署、改密钥、绑域名、看日志都靠它。中枢只负责**认领**和**连接**：你把地址和认领密钥交给 `service:link/gateway.use`。
 
 工作目录统一用 `~/relay`。命令都在你的身体里跑（`bash`），长的放后台、写日志、再读日志，别让一条命令卡住你。身体里没有 curl 和 git，下载和访问网址都用 node 自带的 fetch（下面的写法照抄）。
 
@@ -38,15 +38,14 @@ sleep 5; grep -oE 'https://dash\.cloudflare\.com/oauth2/auth[^ ]+' ~/relay/login
 2. **用什么地址**：默认 `https://<名字>.<他的子域>.workers.dev`；要用他自己的域名，问他具体用哪个子域名（必须是他 Cloudflare 账号里已有域名下的、没被别的服务占用的子域名）。
 
 ```bash
-cd ~/relay && rm -rf ash-gateway-main
-node -e 'fetch("https://codeload.github.com/wanpengxie/ash-gateway/tar.gz/main").then(r=>r.arrayBuffer()).then(b=>require("fs").writeFileSync("gw.tgz",Buffer.from(b)))' && tar xzf gw.tgz && rm gw.tgz
-cd ash-gateway-main
+mkdir -p ~/relay/release && cd ~/relay/release && rm -f ash-gateway.mjs wrangler.jsonc
+node -e 'const b="https://github.com/wanpengxie/ash-gateway/releases/latest/download/";Promise.all(["ash-gateway.mjs","wrangler.jsonc"].map(f=>fetch(b+f).then(r=>{if(!r.ok)throw new Error(f+" "+r.status);return r.arrayBuffer()}).then(x=>require("fs").writeFileSync(f,Buffer.from(x))))).then(()=>console.log("ok"))'
 ```
 
-源码只是给 wrangler 打包用的，放在你自己的身体里；仓库没有运行时依赖，不用 `npm ci`。
+这是网关仓库发布好的构建结果（一个模块加一份可直接部署的配置），不用源码、不用打包。
 
-- 改 `wrangler.jsonc`：`"name"` 改成定好的名字；`"routes"` 改成 `[{ "pattern": "<他的子域名>", "custom_domain": true }]`，只用 workers.dev 就把 `routes` 整行删掉。
-- `npx --yes wrangler@4 deploy > ~/relay/deploy.log 2>&1`（wrangler 自己打包 `src/worker.ts` 再上传），从日志里拿到地址（workers.dev 那条和自定义域名）。
+- 改 `wrangler.jsonc`：`"name"` 改成定好的名字；用他自己的域名就加一项 `"routes": [{ "pattern": "<他的子域名>", "custom_domain": true }]`，只用 workers.dev 就不加。
+- 在 `~/relay/release` 里 `npx --yes wrangler@4 deploy > ~/relay/deploy.log 2>&1`（按配置原样上传），从日志里拿到地址（workers.dev 那条和自定义域名）。
 - 设认领密钥（见第 4 节），再交给中枢（第 5 节）。
 
 ## 3. 领回旧的（换了手机、重装过、旧手机丢了）
