@@ -65,7 +65,7 @@ const WEB: readonly string[] = ["web_ui", "chat"];
 const PROBLEM_TEXT: Record<string, string> = {
   claimed_by_other: "The relay is claimed by another owner.",
   bad_secret: "The relay did not accept the claim secret.",
-  missing_secret: "The relay is not claimed and there is no claim secret; set one in the vault as GATEWAY_BOOTSTRAP.",
+  missing_secret: "The relay is not claimed and no claim secret came with the request.",
   unsupported: "The relay speaks a protocol this hub does not.",
   unreachable: "The relay cannot be reached.",
 };
@@ -113,7 +113,7 @@ export class GatewayControl {
       relay.stop();
       const problem = error instanceof RelayError ? error.problem : "unreachable";
       throw new WordError(problem === "claimed_by_other" || problem === "missing_secret" || problem === "bad_secret" ? "forbidden" : "unavailable", PROBLEM_TEXT[problem] ?? "The relay cannot be used.", {
-        recovery_hint: problem === "missing_secret" ? "Store the relay's claim secret with service:vault/set (ref GATEWAY_BOOTSTRAP), then use it again." : "Check the address; to build a new relay or take this one back, see skill relay.",
+        recovery_hint: problem === "missing_secret" ? "Pass the relay's BOOTSTRAP_SECRET as claim_secret (skill relay)." : "Check the address; to build a new relay or take this one back, see skill relay.",
       });
     }
     this.end();

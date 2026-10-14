@@ -339,6 +339,16 @@ test("an unclaimed relay of the owner's own is claimed with the secret in the va
   assert.ok(await w.control.gateway.connected(5000));
 });
 
+test("an unclaimed relay is claimed with the claim_secret the request carries: the handler reads it from the raw body, its message has it masked", async (t) => {
+  const w = await startWorld(t, { gateway: false });
+  const { FakeGateway } = await import("../../../../link/test/fixtures/fake-gateway");
+  const fresh = await FakeGateway.start({ secret: "claim-secret-456" });
+  t.after(() => fresh.stop());
+  await w.link("gateway.use", { url: fresh.url, claim_secret: { set: true, length: 16 } }, { ...agent, raw: { url: fresh.url, claim_secret: "claim-secret-456" } });
+  assert.equal(fresh.claimed, true);
+  assert.ok(await w.control.gateway.connected(5000));
+});
+
 test("the relay is told the network changed: env.changed connects again", async (t) => {
   const w = await startWorld(t);
   const before = w.gw.ownerConnections;

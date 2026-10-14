@@ -21,14 +21,14 @@ whenToUse: 主人要搭中转站、换中转站、领回旧中转站、换域名
 ```bash
 mkdir -p ~/relay && cd ~/relay
 npx --yes wrangler@4 whoami 2>&1 | tail -5     # 已登录就直接用，跳过下面
-nohup npx --yes wrangler@4 login --browser=false > ~/relay/login.log 2>&1 &
-sleep 5; grep -oE 'https://dash\.cloudflare\.com/oauth2/auth[^ ]+' ~/relay/login.log | head -1
+nohup node /opt/ash/ash-skills/skills/relay/login.mjs > ~/relay/login.log 2>&1 &
+sleep 2; head -1 ~/relay/login.log             # 授权链接
 ```
 
-- 把那条链接发给主人（一句话：「请在手机上打开这个链接，登录你的 Cloudflare，选你自己的账号，点授权」）。他授权后浏览器会跳到 `localhost:8976`，那是你身体里正在等的 wrangler，登录就完成了（浏览器那页显示什么都不要紧）。
-- 等 `grep -q "Successfully logged in" ~/relay/login.log`，再 `npx wrangler@4 whoami` 看他的账号。**有几个账号就问他用哪个**，然后后面所有命令前加 `CLOUDFLARE_ACCOUNT_ID=<id>`。
-- 8976 端口被占：上一次 `wrangler login` 还在等，先结束它（`kill` 那个进程号）再来。
-- 令牌留在你身体的 `~/.config/.wrangler`，会自动续期。**不要读出、不要打印、不要发给任何人。**
+- 用技能自带的 `login.mjs`，**不要用 `wrangler login`**：手机浏览器会把回调打开两次，wrangler 拿同一个授权码换两次，第二次 `invalid_grant`，令牌就坏了。`login.mjs` 只换一次，直接写好 wrangler 自己的令牌文件。
+- 把链接发给主人（一句话：「请在手机上打开这个链接，登录你的 Cloudflare，选你自己的账号，点授权」）。他授权后浏览器会跳到 `localhost:8976`，页面显示「授权成功」。
+- 等 `grep -q LOGIN_OK ~/relay/login.log`（`LOGIN_FAILED`、`DENIED`、`TIMEOUT` 就重来一次，`PORT_BUSY` 是上一次的还在等，`kill` 掉它的进程再来）。再 `npx wrangler@4 whoami` 看他的账号。**有几个账号就问他用哪个**，然后后面所有命令前加 `CLOUDFLARE_ACCOUNT_ID=<id>`。
+- 令牌留在你身体的 `~/.config/.wrangler`，wrangler 会自动续期。**不要读出、不要打印、不要发给任何人。**
 - npm 下载很慢或失败：加 `--registry=https://registry.npmmirror.com` 再试。
 
 ## 2. 部署一个新的
@@ -68,7 +68,8 @@ npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/
 
 ## 5. 交给中枢认领、连上
 
-- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_secret: "<secret 文件的内容>"}, purpose: "让这台手机认领中转站 <地址>"}`。这一步主人会收到一张卡，他点同意后中枢用手机自己的密钥完成认领并连上。`claim_secret` 不进账本。
+- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_secret: "<secret 文件的内容>"}, purpose: "让这台手机认领中转站 <地址>"}`。主人会收到一张确认卡（卡上不显示密钥），他点同意后中枢用手机自己的密钥完成认领并连上。密钥只在内存里等这张卡，不进账本；大脑在这期间重启了，就再调一次。
+- 认领密钥只走 `claim_secret` 这一条路：**不要**让主人去设置里存密钥，不要把它写进主人能打开的文件或发进对话。
 - 拿到结果后 **`rm -f ~/relay/secret`**。认领只能成功一次，之后这个密钥没用了。
 - 用自定义域名时，`url` 填自定义域名（国内网络更稳）；地址以后要换，再 `gateway.use` 一次新地址即可（同一个 Worker 不用重新认领）。
 
@@ -85,8 +86,8 @@ npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/
 ## 常见错误
 
 - 没问主人就覆盖、重置或换域名。
-- 把认领密钥、wrangler 的令牌打进对话或笔记；用完没删 `~/relay/secret`。
-- 用 curl、git（身体里没有）；或者前台跑 `wrangler login` 把自己卡住。
+- 把认领密钥、wrangler 的令牌打进对话、笔记或主人能打开的文件；让主人去设置里存认领密钥；用完没删 `~/relay/secret`。
+- 用 curl、git（身体里没有）；用 `wrangler login` 登录（回调会换两次码而失败），或者自己另写一个登录程序。
 - 看到 `connected` 就说好了，没看 `/v1/health` 的 `owner_online`。
 - 主人有多个 Cloudflare 账号时自己挑了一个。
 

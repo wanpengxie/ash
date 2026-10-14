@@ -97,6 +97,8 @@ export class HubRouter implements Router {
   /** Ids of the requests being handled now, so an id a caller picked cannot be used twice, recorded or not. */
   private readonly inflight = new Set<string>();
   /** The requests handed to a member and not answered yet, so one can be cancelled from outside (a lease ending cancels the screen requests on the way). */
+  /** The secrets of the requests that wait for the owner: held in memory only, never written down, so a restart loses them. */
+  private readonly sealed = new Map<string, unknown>();
   private readonly delivering = new Map<string, { from: string; to: string | null; word: string; caller: Caller; cancel(): void }>();
 
   constructor(private readonly deps: RouterDeps) {
@@ -112,7 +114,13 @@ export class HubRouter implements Router {
     const pending = store.getPending(pendingId);
     if (!pending) return fail(errorBody("not_found", "no such pending request"));
     if (pending.state !== "approved") return fail(errorBody("conflict", pending.state === "redeemed" ? "this approval was already used" : pending.state === "expired" ? "this approval ran out; make the request again" : `this request is ${pending.state}, not approved`));
-    const msg: Outgoing = { to: pending.to, kind: "request", word: pending.word, body: pending.body, ...(pending.thread ? { thread: pending.thread } : {}) };
+    // A request that carried a secret was stored masked; it goes on with the secret held in memory, or not at all.
+    const contract = this.deps.registry.find(pending.to, pending.word)?.contract;
+    const masked = contract ? this.deps.redact.forLedger({ seq: 0, id: pendingId, ts: 0, from: pending.originator, to: pending.to, kind: "request", word: pending.word, body: pending.body }, contract).body !== pending.body : false;
+    const body = this.sealed.get(pendingId) ?? pending.body;
+    if (masked && !this.sealed.has(pendingId)) return fail(errorBody("conflict", "the secret this request carried was lost when Ash restarted", { recovery_hint: "Make the request again." }));
+    this.sealed.delete(pendingId);
+    const msg: Outgoing = { to: pending.to, kind: "request", word: pending.word, body, ...(pending.thread ? { thread: pending.thread } : {}) };
     return this.run(msg, { ...pending.caller, turn: redeemer.turn }, opts, pending);
   }
 
@@ -273,10 +281,13 @@ export class HubRouter implements Router {
   }
 
   private park(stamped: Message, view: Message, raw: unknown, contract: WordContract, caller: Caller, offerAlways: boolean, opts: SendOptions, member: Member, reviewReason?: string): Reply {
-    // A secret is never written down, so a request that carries one cannot wait for the owner.
-    if (JSON.stringify(view.body) !== JSON.stringify(raw)) return fail(errorBody("forbidden", "a request that carries a secret cannot wait for the owner's approval", { recovery_hint: "The owner can do this directly; an agent cannot." }));
     const ttl = Math.min(Math.max(Math.trunc(opts.approval?.ttl_minutes ?? DEFAULT_TTL_MINUTES) || DEFAULT_TTL_MINUTES, 1), 10_080);
     const expires = stamped.ts + ttl * 60_000;
+    // A secret is never written down: the card and the ledger have it masked, the secret waits in memory until the question ends.
+    if (JSON.stringify(view.body) !== JSON.stringify(raw)) {
+      this.sealed.set(stamped.id, raw);
+      (setTimeout(() => this.sealed.delete(stamped.id), Math.max(expires - this.now(), 0) + 60_000) as { unref?: () => void }).unref?.();
+    }
     // The member may say more about what this request will do (an app install: the permissions it takes); the card carries it.
     let detail: string | null = null;
     try { detail = member.cardDetail?.(view) ?? null; } catch (error) { this.deps.onError?.("cardDetail", error); }
