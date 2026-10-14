@@ -88,7 +88,18 @@ App 里随附一个 Linux 容器，智能体在其中运行。它由 `tools/buil
 
 ---
 
-## 5. 摘要
+## 5. 手机上的文字识别（`ocr.read`）
+
+手机端（`android/app/.../caps/perception/`）用 ONNX Runtime 在本机跑文字识别模型；模型文件**不在安装包里**，首次使用时从 Hugging Face（或其镜像）下载到应用私有目录，并核对 sha-256。
+
+| 来源 | 许可证 | 用到的部分 |
+|---|---|---|
+| **ONNX Runtime** <https://github.com/microsoft/onnxruntime>（`com.microsoft.onnxruntime:onnxruntime-android`） | MIT | 链接进手机应用的推理库 |
+| **PP-OCRv6 medium 检测 / 识别模型、PP-LCNet 文字行方向模型**（PaddlePaddle，ONNX 导出） <https://huggingface.co/PaddlePaddle> | Apache-2.0 | 运行时下载，不随包分发；识别字典（`assets/perception/ppocrv6_dict.txt`）取自识别模型的 `inference.yml` |
+
+---
+
+## 6. 摘要
 
 | 范围 | 许可证 |
 |---|---|
@@ -96,6 +107,7 @@ App 里随附一个 Linux 容器，智能体在其中运行。它由 `tools/buil
 | `android/kernel/src/main/java/ai/ash/kernel/host/vscreen/`（虚拟屏） | **LGPL-3.0**（源自 Operit） |
 | `android/kernel/src/main/java/ai/ash/kernel/host/`、`android/kernel/src/main/jni/` 中改写自 Shizuku、scrcpy 的文件 | **Apache-2.0** |
 | `libashadb.so` 中静态链接的 BoringSSL；依赖 okhttp-tls | **Apache-2.0** |
+| 手机上的文字识别：ONNX Runtime；PP-OCRv6 模型与字典 | MIT；Apache-2.0（模型运行时下载） |
 | payload：DSH（`@deepseek-ai/*`）及其 npm 依赖 | 各自原许可，原样分发，本仓库不重新授权 |
 | payload：Termux 软件包（node、python、git、ripgrep、bash、curl、pnpm、openssl 等） | 各自原许可（见 payload 内 `runtime/share/LICENSES` 与各包说明）；版本与哈希锁定在 `payload/manifest.json` |
 | 智能体容器：PRoot | **GPL-2.0** |

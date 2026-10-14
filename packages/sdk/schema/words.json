@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "6674b8d105a9a712710913f347a757e8ac1d85c49bbfbb9259700859fba837fd",
+ "hash": "ae611d0d5e4c8ef4c678e2a76a1e35144172c703c4297df70d44536a2e99847a",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -20260,6 +20260,192 @@
    ],
    "label": {
     "doing": "在等你拍照"
+   }
+  },
+  {
+   "member": "device:*",
+   "word": "ocr.read",
+   "kind": "request",
+   "direction": "in",
+   "description": "Read the text in an image on the hand, offline (no cloud): returns the text in reading order and each line with its box and confidence. Give path (a file in shared storage, /sdcard/...) or data (base64). Good for screenshots, photos of documents, receipts, signs; the model reads Chinese, English, Japanese and many Latin-script languages in one pass. The first call downloads the model once.",
+   "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [],
+    "properties": {
+     "path": {
+      "type": "string",
+      "description": "Absolute path of the image file (shared storage, /sdcard/...)."
+     },
+     "data": {
+      "type": "string",
+      "description": "The image itself as base64 (about 10 MB at most), instead of path."
+     },
+     "max_side": {
+      "type": "integer",
+      "minimum": 320,
+      "maximum": 2048,
+      "description": "Longest side in px the image is scaled to for finding text, 320..2048 (default 960); raise it for small text on a large image."
+     },
+     "min_score": {
+      "type": "number",
+      "description": "Drop lines the reader is less sure of than this, 0..1 (default 0.5)."
+     }
+    }
+   },
+   "result_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": [
+     "text",
+     "blocks",
+     "ms"
+    ],
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "All recognised text, one line per row, top to bottom."
+     },
+     "width": {
+      "type": "integer",
+      "description": "Image width in px."
+     },
+     "height": {
+      "type": "integer",
+      "description": "Image height in px."
+     },
+     "blocks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": true,
+       "required": [
+        "text",
+        "box",
+        "score"
+       ],
+       "properties": {
+        "text": {
+         "type": "string"
+        },
+        "box": {
+         "type": "array",
+         "items": {
+          "type": "integer"
+         },
+         "description": "[left, top, right, bottom] in image pixels."
+        },
+        "score": {
+         "type": "number"
+        }
+       }
+      }
+     },
+     "ms": {
+      "type": "integer",
+      "description": "Time the call took, ms (model loading included)."
+     }
+    }
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在识别图片里的字"
+   }
+  },
+  {
+   "member": "device:*",
+   "word": "tts.speak",
+   "kind": "request",
+   "direction": "in",
+   "description": "Turn text into speech on the hand, offline. play true (default) says it aloud on the phone and returns when it has finished; play false writes a WAV file in shared storage and returns its path, for you to send or keep. Chinese text is spoken in Chinese, other text in English, unless lang says otherwise.",
+   "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "text"
+    ],
+    "properties": {
+     "text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What to say, at most 4000 characters."
+     },
+     "lang": {
+      "type": "string",
+      "description": "BCP 47 tag, e.g. zh-CN, en-US (default: from the text)."
+     },
+     "voice": {
+      "type": "string",
+      "description": "A voice name of the phone's speech engine (an unknown name returns the names it has)."
+     },
+     "rate": {
+      "type": "number",
+      "description": "Speed, 0.25..4 (default 1)."
+     },
+     "pitch": {
+      "type": "number",
+      "description": "Pitch, 0.5..2 (default 1)."
+     },
+     "play": {
+      "type": "boolean",
+      "description": "true (default) plays it on the phone; false writes a file instead."
+     }
+    }
+   },
+   "result_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": [
+     "played",
+     "ms"
+    ],
+    "properties": {
+     "played": {
+      "type": "boolean"
+     },
+     "path": {
+      "type": "string",
+      "description": "WAV file in shared storage, when play is false."
+     },
+     "mime_type": {
+      "type": "string"
+     },
+     "bytes": {
+      "type": "integer"
+     },
+     "duration_ms": {
+      "type": "integer",
+      "description": "Length of the speech, ms."
+     },
+     "lang": {
+      "type": "string"
+     },
+     "voice": {
+      "type": "string"
+     },
+     "engine": {
+      "type": "string"
+     },
+     "ms": {
+      "type": "integer"
+     }
+    }
+   },
+   "effect": "act",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在念出文字"
    }
   },
   {

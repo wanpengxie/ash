@@ -69,6 +69,8 @@
         <!-- Who can open the battery-exemption pages: some ROMs have two handlers, and BatteryExemption picks one rather than let the system ask. -->
         <intent><action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" /><data android:scheme="package" /></intent>
         <intent><action android:name="android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS" /></intent>
+        <!-- tts.speak: whether the phone has a speech engine at all. -->
+        <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
     </queries>
 
     <application

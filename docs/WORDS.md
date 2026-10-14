@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `6674b8d105a9a712`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `ae611d0d5e4c8ef4`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -31,7 +31,7 @@
 - [`person:owner`](#personowner) (9)
 - [`agent:*`](#agent) (8)
 - [`app:*`](#app) (1)
-- [`device:*`](#device) (63)
+- [`device:*`](#device) (65)
 - [`body:*`](#body) (10)
 
 ## 错误码
@@ -448,6 +448,8 @@
 | `media.read` | owner, agent, app | read / none | - | id*, max_size, copy | 在看你的照片 | Open one item from media.list by id. A photo comes back as an image you can look at (scaled to max_size) with its details; a video comes back with one frame; video and audio come with a path to process. |
 | `media.save` | owner, agent, app | write / none | - | path, data, name, mime_type, album | 在存图片到相册 | Save a photo or video into the owner's gallery (Pictures/<album> or Movies/<album>, default album Ash) so it shows up in the Photos app. Give a path or the file as base64 (about 10 MB at most). |
 | `camera.capture` | owner, agent, app | act / none | - | reason, timeout_s, max_size | 在等你拍照 | Ask the owner to take a photo: the phone's own camera opens and the owner presses the shutter. Returns the photo as an image and its path; fails with cancelled when the owner closes the camera without a photo. |
+| `ocr.read` | owner, agent, app | read / none | - | path, data, max_side, min_score | 在识别图片里的字 | Read the text in an image on the hand, offline (no cloud): returns the text in reading order and each line with its box and confidence. Give path (a file in shared storage, /sdcard/...) or data (base64). Good for screenshots, photos of documents, receipts, signs; the model reads Chinese, English, Japanese and many Latin-script languages in one pass. The first call downloads the model once. |
+| `tts.speak` | owner, agent, app | act / none | - | text*, lang, voice, rate, pitch, play | 在念出文字 | Turn text into speech on the hand, offline. play true (default) says it aloud on the phone and returns when it has finished; play false writes a WAV file in shared storage and returns its path, for you to send or keep. Chinese text is spoken in Chinese, other text in English, unless lang says otherwise. |
 | `location.get` | owner, agent, app | read / none | - | accuracy, timeout_s | 在看手机位置 | The phone's location now: the fused, GPS and network providers are asked together and the first fix good enough for the accuracy wins. The result says which provider answered, its accuracy and the fix's age. |
 | `location.history` | owner, agent, app | read / none | - | from, to, max_points | 在看位置记录 | Recorded location points in a time range (default the last 24 hours), thinned evenly to max_points. |
 | `location.track` | owner, agent, app | write / none | - | on*, interval_min | 在开关位置记录 | Turn location and motion recording on or off. While on, the app keeps a notification with a stop button, takes a point when movement starts or stops and every interval_min minutes, and reports new points to Ash. |

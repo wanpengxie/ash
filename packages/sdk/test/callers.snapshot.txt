@@ -282,6 +282,8 @@
   device:*/media.read  owner,agent,app
   device:*/media.save  owner,agent,app
   device:*/camera.capture  owner,agent,app
+  device:*/ocr.read  owner,agent,app
+  device:*/tts.speak  owner,agent,app
   device:*/location.get  owner,agent,app
   device:*/location.history  owner,agent,app
   device:*/location.track  owner,agent,app

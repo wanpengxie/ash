@@ -5,6 +5,7 @@ import ai.ash.caps.calendar.CalendarCapabilities
 import ai.ash.caps.config.ConfigCapabilities
 import ai.ash.caps.decision.DecisionCapabilities
 import ai.ash.caps.media.MediaCapabilities
+import ai.ash.caps.perception.PerceptionCapabilities
 import ai.ash.caps.screen.Screen
 import ai.ash.caps.screen.ScreenCapabilities
 import ai.ash.caps.senses.SenseCapabilities
@@ -26,7 +27,7 @@ object Capabilities {
     /** Every module contributes its list here. */
     val all: List<Capability> by lazy {
         val list = SystemCapabilities.list + CalendarCapabilities.list + BrowserCapabilities.list +
-            MediaCapabilities.list + ScreenCapabilities.list + SenseCapabilities.list + ConfigCapabilities.list + DecisionCapabilities.list
+            MediaCapabilities.list + PerceptionCapabilities.list + ScreenCapabilities.list + SenseCapabilities.list + ConfigCapabilities.list + DecisionCapabilities.list
         val names = list.map { it.name }
         require(names.size == names.toSet().size) { "a capability is declared twice: ${names.groupBy { it }.filterValues { it.size > 1 }.keys}" }
         list

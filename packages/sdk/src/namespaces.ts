@@ -506,6 +506,36 @@ const CAMERA_ACTIONS: readonly StandardAction[] = [
     loose({ path: str() }), "act", "none", { errors: ["cancelled", "timeout"] }),
 ];
 
+// ---- ocr, tts: cheap, offline perception on the hand ----------------------------------------------------------------------
+
+const OCR_ACTIONS: readonly StandardAction[] = [
+  action("ocr.read", "在识别图片里的字", "Read the text in an image on the hand, offline (no cloud): returns the text in reading order and each line with its box and confidence. Give path (a file in shared storage, /sdcard/...) or data (base64). Good for screenshots, photos of documents, receipts, signs; the model reads Chinese, English, Japanese and many Latin-script languages in one pass. The first call downloads the model once.",
+    object({
+      path: str("Absolute path of the image file (shared storage, /sdcard/...)."), data: str("The image itself as base64 (about 10 MB at most), instead of path."),
+      max_side: int("Longest side in px the image is scaled to for finding text, 320..2048 (default 960); raise it for small text on a large image.", 320, 2048),
+      min_score: num("Drop lines the reader is less sure of than this, 0..1 (default 0.5)."),
+    }),
+    loose({
+      text: str("All recognised text, one line per row, top to bottom."), width: int("Image width in px."), height: int("Image height in px."),
+      blocks: list(loose({ text: str(), box: list(int(), "[left, top, right, bottom] in image pixels."), score: num() }, ["text", "box", "score"])),
+      ms: int("Time the call took, ms (model loading included)."),
+    }, ["text", "blocks", "ms"]),
+    "read", "none", { errors: ["bad_request", "not_found", "forbidden", "too_large", "unavailable", "timeout"] }),
+];
+
+const TTS_ACTIONS: readonly StandardAction[] = [
+  action("tts.speak", "在念出文字", "Turn text into speech on the hand, offline. play true (default) says it aloud on the phone and returns when it has finished; play false writes a WAV file in shared storage and returns its path, for you to send or keep. Chinese text is spoken in Chinese, other text in English, unless lang says otherwise.",
+    object({
+      text: text1("What to say, at most 4000 characters."), lang: str("BCP 47 tag, e.g. zh-CN, en-US (default: from the text)."), voice: str("A voice name of the phone's speech engine (an unknown name returns the names it has)."),
+      rate: num("Speed, 0.25..4 (default 1)."), pitch: num("Pitch, 0.5..2 (default 1)."), play: bool("true (default) plays it on the phone; false writes a file instead."),
+    }, ["text"]),
+    loose({
+      played: bool(), path: str("WAV file in shared storage, when play is false."), mime_type: str(), bytes: int(), duration_ms: int("Length of the speech, ms."),
+      lang: str(), voice: str(), engine: str(), ms: int(),
+    }, ["played", "ms"]),
+    "act", "none", { errors: ["bad_request", "forbidden", "too_large", "unavailable", "timeout"] }),
+];
+
 // ---- location, activity, health, sensors, sense -------------------------------------------------------------------------
 
 const ACCURACIES = ["high", "balanced", "low"] as const;
@@ -622,7 +652,7 @@ const DECISION_ACTIONS: readonly StandardAction[] = [
 export const STANDARD_NAMESPACES: Readonly<Record<string, readonly StandardAction[]>> = Object.freeze({
   screen: SCREEN_ACTIONS, input: INPUT_ACTIONS, vscreen: VSCREEN_ACTIONS, apps: APPS_ACTIONS, settings: SETTINGS_ACTIONS,
   clipboard: CLIPBOARD_ACTIONS, device: DEVICE_ACTIONS, workspace: WORKSPACE_ACTIONS, body: BODY_ACTIONS,
-  browser: BROWSER_ACTIONS, calendar: CALENDAR_ACTIONS, media: MEDIA_ACTIONS, camera: CAMERA_ACTIONS, location: LOCATION_ACTIONS,
+  browser: BROWSER_ACTIONS, calendar: CALENDAR_ACTIONS, media: MEDIA_ACTIONS, camera: CAMERA_ACTIONS, ocr: OCR_ACTIONS, tts: TTS_ACTIONS, location: LOCATION_ACTIONS,
   activity: ACTIVITY_ACTIONS, health: HEALTH_ACTIONS, sensors: SENSORS_ACTIONS, sense: SENSE_ACTIONS, config: CONFIG_ACTIONS, decision: DECISION_ACTIONS,
 });
 export const STANDARD_ACTIONS: readonly StandardAction[] = Object.freeze(Object.values(STANDARD_NAMESPACES).flat());

@@ -118,7 +118,16 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // The WebSocket under ash-link/1.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // On-phone inference for ocr.read (PP-OCRv6 medium ONNX models, downloaded on first use). The AAR carries arm64 libraries only after abiFilters.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // The same ai.onnxruntime API with desktop libraries, so the reader can be run end to end in a unit test when the models are at hand (see OcrEndToEndTest).
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.31.0")
+}
+
+// Unit tests run on the desktop JVM: they take the desktop ONNX Runtime above, not the Android AAR of the same classes.
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") || it.name.endsWith("UnitTestCompileClasspath") }.configureEach {
+    exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
 }
