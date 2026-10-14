@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, copyFileSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-const version = '0.2.0', nodeVersion = '22.22.1';
+// The version is the program's own (DEVICE_VERSION), so the package, its manifest and install.sh can never disagree.
+const version = readFileSync('packages/device/src/install.ts','utf8').match(/DEVICE_VERSION = "([0-9.]+)"/)[1], nodeVersion = '22.22.1';
 const out = resolve('build/device'); mkdirSync(out, { recursive: true });
 const targets = process.argv.includes('--all') ? [['linux','x64'],['linux','arm64'],['darwin','x64'],['darwin','arm64']] : [[process.platform,process.arch]];
 const sums = [];
@@ -32,4 +33,5 @@ for (const [platform,arch] of targets) {
   const name=`ash-device-${platform}-${arch}.tar.gz`,target=join(out,name);execFileSync('tar',['-czf',target,'-C',stage,'ash-device']);
   sums.push(`${createHash('sha256').update(readFileSync(target)).digest('hex')}  ${name}`);console.log(target);
 }
-writeFileSync(join(out,'SHA256SUMS'),sums.join('\n')+'\n');copyFileSync('packages/device/install.sh',join(out,'install.sh'));
+writeFileSync(join(out,'SHA256SUMS'),sums.join('\n')+'\n');// The script installs the release it is published with.
+writeFileSync(join(out,'install.sh'),readFileSync('packages/device/install.sh','utf8').replace(/ASH_DEVICE_VERSION:-[0-9.]+\}/,`ASH_DEVICE_VERSION:-${version}}`));
