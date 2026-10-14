@@ -26,7 +26,7 @@ sleep 2; head -1 ~/relay/login.log             # 授权链接
 ```
 
 - 用技能自带的 `login.mjs`，**不要用 `wrangler login`**：手机浏览器会把回调打开两次，wrangler 拿同一个授权码换两次，第二次 `invalid_grant`，令牌就坏了。`login.mjs` 只换一次，直接写好 wrangler 自己的令牌文件。
-- **授权你自己点，不要把链接丢给主人**：`capability_call {member: "device:<手机>", word: "apps.open_url", body: {uri: "<链接>", package: "com.android.chrome"}}` 在手机的 Chrome 里打开（主人的 Cloudflare 登录状态在那里），再按技能 `phone-operation` 看屏幕、点「Authorize / 授权」。跳到 `localhost:8976` 显示「授权成功」就完成了。
+- **授权你自己点，不要把链接丢给主人**：先 `service:gate/lease.request {minutes: 10, goal: "在 Chrome 里替你点 Cloudflare 授权"}` 借一会儿屏幕（主人点一下），再 `capability_call {member: "device:<手机>", word: "apps.open_url", body: {uri: "<链接>", package: "com.android.chrome"}}` 在手机的 Chrome 里打开（主人的 Cloudflare 登录状态在那里），按技能 `phone-operation` 看屏幕、点「Authorize / 授权」。跳到 `localhost:8976` 显示「授权成功」就完成了。
 - 只有页面要输密码、过验证码时，才告诉主人：「Chrome 里 Cloudflare 要你登录一下，登好跟我说」，他说好了你接着点授权。
 - 等 `grep -q LOGIN_OK ~/relay/login.log`（`LOGIN_FAILED`、`DENIED`、`TIMEOUT` 就重来一次，`PORT_BUSY` 是上一次的还在等，`kill` 掉它的进程再来）。再 `npx wrangler@4 whoami` 看他的账号。**有几个账号就问他用哪个**，然后后面所有命令前加 `CLOUDFLARE_ACCOUNT_ID=<id>`。
 - 令牌留在你身体的 `~/.config/.wrangler`，wrangler 会自动续期。**不要读出、不要打印、不要发给任何人。**
