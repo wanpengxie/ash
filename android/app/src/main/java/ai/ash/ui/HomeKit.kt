@@ -260,6 +260,8 @@ internal object Hk {
             else InputType.TYPE_CLASS_TEXT
         typeface = android.graphics.Typeface.DEFAULT   // a password box turns its hint monospaced
         if (multiline) { minLines = 5; gravity = Gravity.TOP or Gravity.START } else { setSingleLine() }
+        // setSingleLine() drops the password masking the input type set: put it back.
+        if (password) transformationMethod = android.text.method.PasswordTransformationMethod.getInstance()
         imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
     }
 

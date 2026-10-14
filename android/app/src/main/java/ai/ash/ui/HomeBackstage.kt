@@ -150,6 +150,8 @@ class HmKeys(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private val checking = HashSet<String>()
     private val status = HashMap<String, String>()
     private val fields = HomeModel.KEYS.associate { it.ref to Hk.field(ctx, "粘贴 Key", password = true) }
+    /** The fields of the other credentials (an agent asked for one, or the owner keeps one), made as they appear. */
+    private val otherFields = HashMap<String, EditText>()
 
     init { draw() }
 
@@ -204,6 +206,59 @@ class HmKeys(env: HomeEnv, arg: String?) : HomePage(env, arg) {
                 })
             })
         }
+        drawOthers()
+    }
+
+    /** Everything else the hub keeps: what she asked for (waiting, first), the hub's connections, keys she stored, keys of yours. */
+    private fun JSONObject.s(key: String): String = optString(key)
+
+    private fun LinearLayout.drawOthers() {
+        val known = HomeModel.KEYS.map { it.ref }.toSet()
+        val others = (vault ?: emptyList()).filter { it.s("ref") !in known }.sortedBy { if (it.s("status") == "waiting") 0 else 1 }
+        if (others.isEmpty()) return
+        addView(AshUi.text(ctx, "连接与其他密钥", AshType(13f, 19f, 600, Role.TEXT_2)).apply { setPadding(dp(4), dp(12), dp(4), 0) })
+        others.forEach { e ->
+            val ref = e.s("ref"); val kind = e.s("kind"); val st = e.s("status")
+            val fillable = kind == "key" || kind == "password"
+            addView(AshUi.card(ctx).apply {
+                setPadding(dp(16), dp(16), dp(16), dp(16))
+                addView(AshUi.text(ctx, e.s("label").ifEmpty { ref }, AshType(17f, 24f, 700, Role.INK)))
+                addView(AshUi.text(ctx, HomeModel.vaultLine(e), AshTokens.Type.sub))
+                if (e.s("why").isNotEmpty()) addView(AshUi.text(ctx, "她要它来：${e.s("why")}", AshType(13f, 19f, 400, Role.TEXT_2)))
+                status[ref]?.takeIf { it.isNotEmpty() }?.let { addView(AshUi.text(ctx, it, AshType(13f, 19f, 400, Role.TEXT_2))) }
+                if (fillable && (st == "waiting" || st == "broken")) {
+                    val field = otherFields.getOrPut(ref) { Hk.field(ctx, if (kind == "password") "输入密码" else "粘贴密钥", password = true) }
+                    (field.parent as? android.view.ViewGroup)?.removeView(field)
+                    field.hint = if (e.optBoolean("configured")) "粘贴新的替换" else if (kind == "password") "输入密码" else "粘贴密钥"
+                    addView(field)
+                }
+                addView(AshUi.hstack(ctx, 8).apply {
+                    if (fillable && (st == "waiting" || st == "broken")) addView(AshUi.button(ctx, "保存", Kind.PRIMARY, AshUi.BtnSize.SM) { saveOther(e) }.also { if (locked) AshUi.disable(it) })
+                    if (e.s("help_url").startsWith("https://")) addView(AshUi.button(ctx, "去哪拿", Kind.NEUTRAL, AshUi.BtnSize.SM) {
+                        runCatching { env.activity.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(e.s("help_url")))) }
+                    })
+                    val gone = if (kind == "oauth") "断开" else "删除"
+                    addView(Hk.twoTap(ctx, gone, "确定$gone？", null, { status[ref] = it; draw() }, AshUi.BtnSize.SM, false) { removeOther(ref) })
+                })
+            })
+        }
+    }
+
+    private fun saveOther(e: JSONObject) {
+        val ref = e.s("ref"); val field = otherFields[ref] ?: return
+        val value = field.text.toString().trim()
+        field.setText("")
+        if (value.isEmpty()) { status[ref] = "请先填上。"; draw(); return }
+        status[ref] = "正在保存…"; draw()
+        call("service:vault", "set", JSONObject().put("ref", ref).put("value", value).put("label", e.s("label").ifEmpty { ref }).put("kind", e.s("kind").ifEmpty { "key" })) { r ->
+            status[ref] = if (r.ok) "已保存，她会收到通知。" else "保存失败，请重试。"
+            refresh()
+        }
+    }
+
+    private fun removeOther(ref: String) = call("service:vault", "delete", JSONObject().put("ref", ref)) { r ->
+        status[ref] = if (r.ok) "" else "没删掉，请重试。"
+        refresh()
     }
 
     private fun save(k: HomeModel.KeyInfo, field: EditText) {
@@ -211,18 +266,18 @@ class HmKeys(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         field.setText("")
         if (value.isEmpty()) { status[k.ref] = "请先粘贴 Key。"; draw(); return }
         status[k.ref] = "正在保存…"; draw()
-        call("service:vault", "set", JSONObject().put("ref", k.ref).put("value", value).put("label", k.title).put("kind", "model")) { r ->
+        call("service:vault", "set", JSONObject().put("ref", k.ref).put("value", value).put("label", k.title).put("kind", "key")) { r ->
             if (r.ok && r.data.optBoolean("configured")) {
-                vault = (vault ?: emptyList()).filter { it.str("ref") != k.ref } + JSONObject().put("ref", k.ref).put("configured", true)
-                health = health.filter { it.str("provider") != k.provider }; status[k.ref] = ""; verify(k)
+                vault = (vault ?: emptyList()).filter { it.s("ref") != k.ref } + JSONObject().put("ref", k.ref).put("configured", true)
+                health = health.filter { it.s("provider") != k.provider }; status[k.ref] = ""; verify(k)
             } else if (r.ok) { status[k.ref] = "保存失败，请重试。"; draw() } else failure(k, r, "保存失败，请重试。")
         }
     }
 
     private fun remove(k: HomeModel.KeyInfo) = call("service:vault", "delete", JSONObject().put("ref", k.ref)) { r ->
         if (r.ok && r.data.optBoolean("deleted")) {
-            vault = (vault ?: emptyList()).map { if (it.str("ref") == k.ref) JSONObject(it.toString()).put("configured", false) else it }
-            health = health.filter { it.str("provider") != k.provider }; status[k.ref] = ""; draw()
+            vault = (vault ?: emptyList()).map { if (it.s("ref") == k.ref) JSONObject(it.toString()).put("configured", false) else it }
+            health = health.filter { it.s("provider") != k.provider }; status[k.ref] = ""; draw()
         } else if (r.ok) { status[k.ref] = "移除失败，请重试。"; draw() } else failure(k, r, "移除失败，请重试。")
     }
 

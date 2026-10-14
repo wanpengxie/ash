@@ -12,6 +12,7 @@ import type { Readable, Writable } from "node:stream";
 import { HOST_EXIT_CONFIG } from "../../sdk/src/host";
 import { fileURLToPath } from "node:url";
 import type { AgentDriverFactory } from "../../sdk/src/driver";
+import type { HostNetwork } from "../../sdk/src/host";
 import { MAIN_BODY_ID } from "../../sdk/src/ids";
 import { WordError, type Caller } from "../../sdk/src/message";
 import { createAgents, bodyFileWriter } from "./edges/agents";
@@ -203,7 +204,9 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   const health = late.health = createHealthService({ ledger, router, registry, now, log: (message) => log(`health: ${message}`), viewing: () => late.human?.viewing() ?? false, ...(opts.healthTickMs ? { tickMs: opts.healthTickMs } : {}) });
   const widgets = createWidgetsService({ ledger, router, now });
   const directory = createDirectoryService({ registry, agentPolicy: policyOf, toolWords, appGranted: (app, member, word) => late.apps!.runtime.granted(app, member, word) });
-  const vaultService = createVaultService({ vault, ledger, router });
+  // The host's network, for the hub's own calls out (the service connections go through the phone's proxy when it has one).
+  let network: HostNetwork | null = null;
+  const vaultService = createVaultService({ vault, ledger, router, network: () => network, now, log, appCredential: (app, ref) => late.apps!.runtime.credential(app, ref) });
   const semantic = createSemantic({
     ledger, router, now, log,
     templatesDir: join(SKILLS, "persona"), modelKeys: DEFAULT_CREDENTIAL_REFS,
@@ -289,7 +292,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
     summarize: createSummarizer({ llm }),
   });
-  const hostService = createHostService({ client: host, router, registry, virtual, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (network) => body.setNetwork(network), log });
+  const hostService = createHostService({ client: host, router, registry, virtual, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);
   link.mount("/mcp", tools.handler);
   link.mount("/", staticWeb(), { relay: true });
@@ -317,6 +320,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     linkControl.stop();
     clock.stop();
     gateService.stop();
+    vaultService.oauth.stop();
     await agents.stopAll();
     await apps.stopAll(deadline);
     human.close();

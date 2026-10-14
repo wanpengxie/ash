@@ -7,7 +7,7 @@ import type { AppNeed } from "../../../../sdk/src/app";
 import type { Db, Ledger } from "../../kernel/ledger";
 
 /** The key a need is granted and revoked by: its member id, or notify / widgets / card. */
-export const needKey = (need: AppNeed): string => ("member" in need ? need.member : "notify" in need ? "notify" : "widgets" in need ? "widgets" : "card");
+export const needKey = (need: AppNeed): string => ("member" in need ? need.member : "credential" in need ? `credential:${need.credential}` : "notify" in need ? "notify" : "widgets" in need ? "widgets" : "card");
 
 export interface AppGrant {
   version: string;
@@ -101,8 +101,16 @@ export class AppGrants {
   allows(app: string, member: string, word: string): boolean {
     const id = app.replace(/^app:/, "");
     const grant = this.get(id);
+    // service:vault/token: an app with any credential need may ask; which credential is checked by the vault (`credential`).
+    if (member === "service:vault" && word === "token") return Boolean(grant?.enabled && grant.needs.some((need) => "credential" in need));
     return Boolean(grant?.enabled && grant.needs.some((need) => "member" in need && need.words.includes(word)
       && (need.member === member || (need.member === "device:*" && member.startsWith("device:")) || (need.member === "agent:*" && member.startsWith("agent:")))));
+  }
+
+  /** Was app:<id> granted the vault credential [ref]? */
+  credential(app: string, ref: string): boolean {
+    const grant = this.get(app.replace(/^app:/, ""));
+    return Boolean(grant?.enabled && grant.needs.some((need) => "credential" in need && need.credential === ref));
   }
 
   has(id: string, kind: "notify" | "widgets" | "card"): boolean {

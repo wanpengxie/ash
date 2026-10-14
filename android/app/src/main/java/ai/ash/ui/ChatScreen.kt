@@ -256,6 +256,9 @@ class ChatScreen(
             if (!r.optBoolean("ok")) toast("没有送到，再点一次试试")
             refresh()
         }
+        // 「去填写」 on a card asking for a key: the value is typed on the keys page, never in the conversation.
+        if (choice == "vault_fill") activity.startActivity(android.content.Intent(activity, HomeActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra(HomeActivity.EXTRA_HOME_PAGE, "keys"))
     }
 
     // --- the screen ---

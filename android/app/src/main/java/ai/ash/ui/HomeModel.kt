@@ -375,6 +375,13 @@ object HomeModel {
         KeyInfo("DEEPSEEK_API_KEY", "deepseek", "DeepSeek Key", "对话模型的 DeepSeek Key", "对话模型的 DeepSeek 账户", "她暂时无法对话", "跟你对话用", "没有它，她没法跟你说话。"),
         KeyInfo("OPENROUTER_API_KEY", "openrouter", "OpenRouter Key", "快速判断的 OpenRouter Key", "快速判断的 OpenRouter 账户", "快速判断只能靠关键词", "快速判断要不要问你", "没有它，快速判断只能靠关键词。"))
 
+    /** One line under a credential's name on the keys page: what kind, whose, and how it stands. */
+    fun vaultLine(e: JSONObject): String {
+        val kind = when (e.optString("kind")) { "oauth" -> "连接"; "password" -> "密码"; "generated" -> "中枢生成的密钥"; else -> "密钥" }
+        val state = when (e.optString("status")) { "waiting" -> "等你填"; "broken" -> "失效了，要重新连接"; "expiring" -> "快过期"; else -> if (e.optBoolean("configured")) "可用" else "还没有" }
+        return listOfNotNull(kind, e.optString("account").ifEmpty { null }, state).joinToString(" · ")
+    }
+
     fun keyStateText(health: JSONObject?): String = when (health?.str("status")) {
         "ok" -> "已保存，已验证可用。"
         "low_balance" -> "已验证，但余额不足，她暂时无法对话。"

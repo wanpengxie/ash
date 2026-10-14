@@ -319,6 +319,26 @@
                 "maxLength": 200
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "credential",
+              "why"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "credential": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+                "description": "The name of a connection or key in the hub's vault (service:vault/list)."
+              },
+              "why": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
           }
         ]
       }

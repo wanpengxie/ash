@@ -87,7 +87,7 @@ export class LinkMember implements Member {
       case "reconnect": return { data: { requested: this.cycle(input.hand, "reconnect requested", false) } };
       case "refresh_manifest": return { data: { requested: this.cycle(input.hand, "the hub asked for the capability list again", true) } };
       case "gateway.status": return { data: this.d.gateway.status() };
-      case "gateway.use": return { data: { url: await this.d.gateway.use(input.url, typeof input.claim_secret === "string" ? { claimSecret: input.claim_secret } : {}) } };
+      case "gateway.use": return { data: { url: await this.d.gateway.use(input.url, typeof input.claim_ref === "string" ? { claimRef: input.claim_ref } : {}) } };
       case "env.changed": this.d.gateway.reconnectRelay(); return;
       case "connected": case "disconnected": case "handshake_failed": return;
       default: throw new WordError("not_found", `${LINK_ID} has no word ${msg.word}`);

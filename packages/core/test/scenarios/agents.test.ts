@@ -262,7 +262,7 @@ test("S164, S165: pausing stops the running turns of every agent; resuming is th
 test("S028 (first_meeting): the first time the owner connects, the primary agent is woken once; a later connection does not wake it again", async (t) => {
   const s = await startScenario(t, { firstMeeting: true });
   const first = await s.human();
-  const saved = await first.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-test", kind: "model" });
+  const saved = await first.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-test", kind: "key" });
   assert.ok(saved.ok);
 
   const { message } = await s.driver.delivery((m) => m.word === "wake" && m.text.startsWith("Wake · first_meeting"), "the first-meeting wake");
@@ -289,7 +289,7 @@ test("S028 (first_meeting, no key): a new install has no model key, so a connect
   await quiet();
   assert.equal(meetings().length, 0, "no model key: connecting does not start a turn that can only fail");
 
-  const wrong = await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-wrong", kind: "model" });
+  const wrong = await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-wrong", kind: "key" });
   assert.ok(wrong.ok);
   const failed = await s.driver.turn((r) => r.messages.some(isMeeting), "the first turn, with a wrong key");
   await failed.done;
@@ -298,13 +298,13 @@ test("S028 (first_meeting, no key): a new install has no model key, so a connect
   assert.equal(meetings().length, 1, "a failed turn is not retried on a timer");
 
   keyed = true;
-  const saved = await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-test", kind: "model" });
+  const saved = await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-test", kind: "key" });
   assert.ok(saved.ok);
   await eventually(() => meetings().length === 2, "the first meeting again once the key is saved");
   await eventually(() => s.driver.messages().length > 0 && owner.messages.some((m) => m.to === OWNER && m.word === "say" && textOf(m) === "你好，我是 Ash。"), "the agent greets the owner");
 
   await s.human({ name: "another channel of the owner" });
-  const saved2 = await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-test-2", kind: "model" });
+  const saved2 = await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-test-2", kind: "key" });
   assert.ok(saved2.ok);
   await quiet();
   assert.equal(meetings().length, 2, "the agent has spoken: no third meeting");

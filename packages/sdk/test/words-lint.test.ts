@@ -40,7 +40,7 @@ test("the services of SPEC-02 §4.1 are all there, and the removed ones are not"
   assert.equal(SERVICE_NAMES.length, 21);
   const has = (member: string, ...words: string[]) => words.forEach((word) => assert.ok(wordContract(member, word), `${member}/${word}`));
   has("service:gate", "rules.list", "rules.set", "rules.revoke", "mode.set", "audit", "history", "pending.list", "pending.get", "pending.redeem", "pending.skip", "pending.withdraw");
-  has("service:vault", "list", "describe", "set", "delete");
+  has("service:vault", "list", "describe", "set", "delete", "put", "generate", "request", "services", "connect", "provider");
   has("service:devices", "list", "describe", "pair_start", "pair_status", "pair_pending", "pair_approve", "pair_reject", "revoke", "rename", "access_set", "update", "pair_code", "restore");
   has("service:link", "list", "describe", "diagnose", "disconnect", "reconnect", "refresh_manifest", "gateway.status", "gateway.use", "connected", "disconnected", "handshake_failed");
   has("service:agents", "list", "runtimes", "threads", "thread.stop", "describe", "ask", "tell", "answer", "declare", "update", "start", "stop", "restart", "remove", "configure", "plugins", "spawn", "primary.set",
@@ -103,7 +103,10 @@ test("secrets and masks sit where SPEC-01 §10.0 says", () => {
   assert.ok(!JSON.stringify(set.result_schema).includes("x-ash-secret"));
   assert.ok(JSON.stringify(wordContract("service:devices", "list")!.result_schema).includes('"x-ash-sensitive":{"mask":"ip"}'));
   assert.ok(JSON.stringify(wordContract("service:link", "gateway.status")!.result_schema).includes('"mask":"email"'));
-  for (const word of wordsOf("service:vault")) assert.ok(!/value/.test(JSON.stringify(word.result_schema ?? {})) || word.word === "set", word.word);
+  for (const word of wordsOf("service:vault")) assert.ok(!/value/.test(JSON.stringify(word.result_schema ?? {})) || word.word === "set" || word.word === "token", word.word);
+  // token hands a value to an app only: an app's read is never recorded.
+  const token = wordContract("service:vault", "token")!;
+  assert.deepEqual([token.callers, token.effect], [["app"], "read"]);
 });
 
 test("effect and risk: the one set of values and the two constraints", () => {

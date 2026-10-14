@@ -35,7 +35,7 @@ test("a remote owner does not see local_only words", async () => {
 
 test("an agent sees what callers allows; the kernel sees all, including kernel-only words", async () => {
   const a = await call(service, agent("main"), "list");
-  assert.deepEqual(words(a, "service:vault").sort(), ["describe", "list"]);
+  assert.deepEqual(words(a, "service:vault").sort(), ["connect", "describe", "generate", "list", "provider", "put", "request", "services"]);
   assert.ok(!a.members.some((m: any) => m.id === "service:host"));
   const k = await call(service, kernel, "list");
   assert.ok(words(k, "service:host").includes("wake.at"));
@@ -88,7 +88,7 @@ test("list carries each word's label, and flags words that need approval for age
   });
   const vaultWords = (data: any) => data.members.find((m: any) => m.id === "service:vault").words;
   const forAgent = vaultWords(await call(risky, agent(), "list"));
-  assert.deepEqual(forAgent.find((w: any) => w.name === "list"), { name: "list", label: "在看保存的密钥", needs_approval: true });
+  assert.deepEqual(forAgent.find((w: any) => w.name === "list"), { name: "list", label: "在看保存的凭据", needs_approval: true });
   assert.equal(forAgent.find((w: any) => w.name === "describe").needs_approval, "per_call");
   assert.ok(vaultWords(await call(risky, owner, "list")).every((w: any) => w.needs_approval === undefined && w.label));
 });

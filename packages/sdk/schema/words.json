@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "01e823791b1e1b76d15c4343493aa04b7a1149a2d07ca3accbfdb687c2e6fb25",
+ "hash": "49f797f3764a86ae576eac4fb12a7f284f11c7527d62b1c8b3124a876dafbffc",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -2311,7 +2311,7 @@
    "word": "list",
    "kind": "request",
    "direction": "in",
-   "description": "Which credentials are saved (names and kinds only, never a value).",
+   "description": "Every credential the hub keeps, the hub's own connections included: name, kind, service, status, expiry. Never a value.",
    "input_schema": {
     "type": "object",
     "properties": {},
@@ -2337,16 +2337,54 @@
         "kind": {
          "type": "string",
          "enum": [
-          "model",
-          "login",
-          "api",
-          "other"
+          "oauth",
+          "key",
+          "password",
+          "generated"
          ]
+        },
+        "service": {
+         "type": "string"
+        },
+        "why": {
+         "type": "string"
+        },
+        "help_url": {
+         "type": "string"
+        },
+        "account": {
+         "type": "string"
+        },
+        "scopes": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
         },
         "configured": {
          "type": "boolean"
         },
+        "status": {
+         "type": "string",
+         "enum": [
+          "ok",
+          "expiring",
+          "broken",
+          "waiting",
+          "missing"
+         ]
+        },
+        "expires_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
         "updated_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "last_used_at": {
          "type": "integer",
          "minimum": 0,
          "maximum": 9007199254740991
@@ -2356,7 +2394,8 @@
         "ref",
         "label",
         "kind",
-        "configured"
+        "configured",
+        "status"
        ],
        "additionalProperties": false
       }
@@ -2371,11 +2410,10 @@
    "risk": "none",
    "callers": [
     "owner",
-    "agent",
-    "app"
+    "agent"
    ],
    "label": {
-    "doing": "在看保存的密钥"
+    "doing": "在看保存的凭据"
    }
   },
   {
@@ -2383,13 +2421,13 @@
    "word": "describe",
    "kind": "request",
    "direction": "in",
-   "description": "Whether one credential is saved, and what it is for. A value is never returned.",
+   "description": "One credential: whether it is set and works, what it is for, when it expires. A value is never returned.",
    "input_schema": {
     "type": "object",
     "properties": {
      "ref": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
      }
     },
     "required": [
@@ -2411,16 +2449,54 @@
      "kind": {
       "type": "string",
       "enum": [
-       "model",
-       "login",
-       "api",
-       "other"
+       "oauth",
+       "key",
+       "password",
+       "generated"
       ]
+     },
+     "service": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     },
+     "help_url": {
+      "type": "string"
+     },
+     "account": {
+      "type": "string"
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      },
      "configured": {
       "type": "boolean"
      },
+     "status": {
+      "type": "string",
+      "enum": [
+       "ok",
+       "expiring",
+       "broken",
+       "waiting",
+       "missing"
+      ]
+     },
+     "expires_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
      "updated_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "last_used_at": {
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
@@ -2430,7 +2506,8 @@
      "ref",
      "label",
      "kind",
-     "configured"
+     "configured",
+     "status"
     ],
     "additionalProperties": false
    },
@@ -2438,11 +2515,10 @@
    "risk": "none",
    "callers": [
     "owner",
-    "agent",
-    "app"
+    "agent"
    ],
    "label": {
-    "doing": "在看保存的密钥"
+    "doing": "在看保存的凭据"
    }
   },
   {
@@ -2450,13 +2526,13 @@
    "word": "set",
    "kind": "request",
    "direction": "in",
-   "description": "Save a credential in the vault. Only the owner, from a channel on this machine; the value is held sealed and never reaches the ledger or an agent.",
+   "description": "The owner saves a key or a password on the phone itself (the keys page, opened from a fill-in card). The value is held sealed and never reaches the ledger or an agent.",
    "input_schema": {
     "type": "object",
     "properties": {
      "ref": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
      },
      "value": {
       "type": "string",
@@ -2470,10 +2546,10 @@
      "kind": {
       "type": "string",
       "enum": [
-       "model",
-       "login",
-       "api",
-       "other"
+       "oauth",
+       "key",
+       "password",
+       "generated"
       ]
      }
     },
@@ -2512,16 +2588,210 @@
   },
   {
    "member": "service:vault",
-   "word": "delete",
+   "word": "put",
    "kind": "request",
    "direction": "in",
-   "description": "Delete a saved credential. Only the owner, from a channel on this machine.",
+   "description": "Store a key you obtained yourself (one you created in the service's console, an OAuth app's client secret) for the hub's connections to use. Write-only: nobody can read it back, you included. You cannot replace a credential the owner saved or a connection's token.",
    "input_schema": {
     "type": "object",
     "properties": {
      "ref": {
       "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+     },
+     "value": {
+      "type": "string",
+      "minLength": 1,
+      "x-ash-secret": true
+     },
+     "label": {
+      "type": "string",
       "minLength": 1
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "key",
+       "password"
+      ]
+     },
+     "service": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "ref",
+     "value",
+     "label"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "minLength": 1
+     },
+     "configured": {
+      "const": true
+     }
+    },
+    "required": [
+     "ref",
+     "configured"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "agent"
+   ],
+   "label": {
+    "doing": "在存入凭据"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "generate",
+   "kind": "request",
+   "direction": "in",
+   "description": "The hub makes a random secret and keeps it (base64url, 32 bytes unless said). Nobody can read it; the hub's own words use it by name.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+     },
+     "label": {
+      "type": "string",
+      "minLength": 1
+     },
+     "bytes": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 64
+     }
+    },
+    "required": [
+     "ref",
+     "label"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "minLength": 1
+     },
+     "configured": {
+      "const": true
+     }
+    },
+    "required": [
+     "ref",
+     "configured"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在生成密钥"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "request",
+   "kind": "request",
+   "direction": "in",
+   "description": "Ask the owner for a key or password you cannot get yourself: the entry shows as waiting on the keys page and the owner gets a card to fill it in; the value goes from the page straight into the vault and never to you. Answers at once with status waiting; you are told (vault.changed) when it is saved. Try to obtain a key yourself first.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+     },
+     "label": {
+      "type": "string",
+      "minLength": 1
+     },
+     "why": {
+      "type": "string",
+      "minLength": 1
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "key",
+       "password"
+      ]
+     },
+     "help_url": {
+      "type": "string"
+     },
+     "service": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "ref",
+     "label",
+     "why"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "minLength": 1
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "waiting",
+       "ok"
+      ]
+     }
+    },
+    "required": [
+     "ref",
+     "status"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "agent"
+   ],
+   "label": {
+    "doing": "在向你要密钥"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "delete",
+   "kind": "request",
+   "direction": "in",
+   "description": "Delete a credential; a connection's token is revoked at the service first when the service allows it.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
      }
     },
     "required": [
@@ -2548,7 +2818,293 @@
    ],
    "local_only": true,
    "label": {
-    "doing": "在删除密钥"
+    "doing": "在删除凭据"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "connect",
+   "kind": "request",
+   "direction": "in",
+   "description": "Connect one of the hub's services (vault.services lists them) to the owner's account with OAuth: the hub starts the flow and answers with the page to authorize on. Open it in the phone's Chrome (apps.open_url, package com.android.chrome) and tap Allow yourself; ask the owner only when the page wants a password, a code or a scan. The hub receives the callback, keeps the token and renews it; vault.describe shows status ok when done. The owner approves the connection (the service and its scopes) once.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string",
+      "minLength": 1
+     },
+     "account": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "service"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "minLength": 1
+     },
+     "auth_url": {
+      "type": "string",
+      "minLength": 1
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "expires_at": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "ref",
+     "auth_url",
+     "scopes",
+     "expires_at"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "structure",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在连接服务"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "provider",
+   "kind": "request",
+   "direction": "in",
+   "description": "Teach the hub a service it can connect with OAuth (authorization code + PKCE, loopback callback): its authorize and token addresses, scopes, extra authorize parameters, and the vault refs of the OAuth app's client id and secret. Write it from the service's OAuth documentation. Addresses are https (http only for 127.0.0.1). The owner approves it: the card shows where tokens would come from.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,31}$"
+     },
+     "label": {
+      "type": "string",
+      "minLength": 1
+     },
+     "grants": {
+      "type": "string",
+      "minLength": 1
+     },
+     "auth_url": {
+      "type": "string",
+      "minLength": 1
+     },
+     "token_url": {
+      "type": "string",
+      "minLength": 1
+     },
+     "revoke_url": {
+      "type": "string"
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "extra": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "client_id_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+     },
+     "client_secret_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+     },
+     "how": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "service",
+     "label",
+     "grants",
+     "auth_url",
+     "token_url",
+     "scopes",
+     "client_id_ref",
+     "client_secret_ref"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "service": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "service"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "structure",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在添加可连接的服务"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "token",
+   "kind": "request",
+   "direction": "in",
+   "description": "For an app the owner granted this credential ({credential: <ref>} in app.json's needs): a working value of it — a connection's access token (renewed by the hub when it is about to expire) or the stored key or password. Ask for it each time you call the service; do not keep it on disk. Only apps may call it and an app's reads are not recorded, so the value never reaches the ledger.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "minLength": 1
+     },
+     "value": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "oauth",
+       "key",
+       "password",
+       "generated"
+      ]
+     },
+     "expires_at": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "ref",
+     "value",
+     "kind"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "app"
+   ],
+   "label": {
+    "doing": "在取连接的令牌"
+   }
+  },
+  {
+   "member": "service:vault",
+   "word": "services",
+   "kind": "request",
+   "direction": "in",
+   "description": "The services the hub can connect, what each needs first (an OAuth app's client id and secret stored with vault.put, and how to make one) and whether it is connected.",
+   "input_schema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "services": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "service": {
+         "type": "string",
+         "minLength": 1
+        },
+        "label": {
+         "type": "string",
+         "minLength": 1
+        },
+        "scopes": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "needs": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "connected": {
+         "type": "boolean"
+        },
+        "ref": {
+         "type": "string"
+        },
+        "how": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "service",
+        "label",
+        "scopes",
+        "needs",
+        "connected"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "services"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看能连的服务"
    }
   },
   {
@@ -2568,7 +3124,9 @@
       "type": "string",
       "enum": [
        "saved",
-       "removed"
+       "removed",
+       "connected",
+       "broken"
       ]
      }
     },
@@ -4095,7 +4653,7 @@
    "word": "gateway.use",
    "kind": "request",
    "direction": "in",
-   "description": "Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed only to claim a relay that has no owner; it works once, so it is an ordinary argument. An agent asking for this is asked about by the owner.",
+   "description": "Use the relay at this address: claim it if it has no owner yet and connect. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. An agent asking for this is asked about by the owner.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -4104,10 +4662,9 @@
       "minLength": 1,
       "maxLength": 2048
      },
-     "claim_secret": {
+     "claim_ref": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 512
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
      }
     },
     "required": [

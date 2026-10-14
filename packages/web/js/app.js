@@ -243,6 +243,8 @@ export function boot() {
         if (!net.same(binding)) throw new Error("连接刚换过，回答没有送出，请再点一次。");
         await answerAsk(net, fresh, choice, intent.clientId, { answerText });
         intent.status = "confirmed";
+        // 「去填写」 on a card asking for a key: the value is typed on the keys page, never in the conversation.
+        if (choice === "vault_fill") globalThis.dispatchEvent(new CustomEvent("ash:open", { cancelable: true, detail: { page: "home", section: "keys" } }));
       } catch (error) {
         intent.status = /无权|被拒绝|已失效|不可用|已经过期|没有这个选项|没被接受/.test(error?.message || "") ? "rejected" : "uncertain";
         presenceBar.problem(error instanceof Error ? error.message : "回答有没有送到还不知道，请再点一次。");

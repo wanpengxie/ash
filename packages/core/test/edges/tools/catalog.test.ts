@@ -60,7 +60,7 @@ test("the declaration cuts the catalog down: tools stand for their words, words 
   assert.deepEqual(wordsIn(data, "service:gate").sort(), ["pending.get", "pending.list", "pending.redeem", "pending.skip", "pending.withdraw"], "an agent always has the words of its own pending requests");
   assert.deepEqual(wordsIn(data, PHONE), ["location.get"]);
   assert.deepEqual(wordsIn(data, "service:clock").sort(), ["cancel", "list", "set"]);
-  assert.deepEqual(wordsIn(data, "service:vault").sort(), ["describe", "list"], "vault set is not for an agent whatever the pattern says");
+  assert.deepEqual(wordsIn(data, "service:vault").sort(), ["connect", "describe", "generate", "list", "provider", "put", "request", "services"], "vault set, delete and token are not for an agent whatever the pattern says");
   // a declaration with no limit sees everything the contracts allow; an empty list sees nothing
   r.policies.set(MAIN, { tools: ["capability_list"], words: [] });
   assert.deepEqual((await tools.call("capability_list")).data.members.map((m: any) => m.id), ["service:gate"], "only the words of its own pending requests, which every agent has");

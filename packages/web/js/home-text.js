@@ -11,6 +11,13 @@ export const KEYS = [
 ];
 
 /** What `service:llm/keys.status` says about one saved key, in words for the owner. `health` is undefined when the hub could not be asked. */
+/** One line under a credential's name on the keys page: what kind, whose, and how it stands. */
+export function vaultLine(entry) {
+  const kind = { oauth: "连接", password: "密码", generated: "中枢生成的密钥" }[entry?.kind] ?? "密钥";
+  const state = { waiting: "等你填", broken: "失效了，要重新连接", expiring: "快过期" }[entry?.status] ?? (entry?.configured ? "可用" : "还没有");
+  return [kind, entry?.account || null, state].filter(Boolean).join(" · ");
+}
+
 export function keyStateText(health) {
   if (health?.status === "ok") return "已保存，已验证可用。";
   if (health?.status === "low_balance") return "已验证，但余额不足，她暂时无法对话。";

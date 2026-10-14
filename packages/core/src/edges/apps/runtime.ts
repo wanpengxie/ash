@@ -146,6 +146,11 @@ export class AppRuntime {
    * every request an app sends. A word needs a grant in app.json's `needs`, approved at install; an event (`to` null) must
    * be one the running app declared. Only a running, enabled app has anything.
    */
+  /** Was app:<id> (running, enabled) granted the vault credential [ref]? The vault asks this for service:vault/token. */
+  credential(app: string, ref: string): boolean {
+    return this.running.has(app.replace(/^app:/, "")) && this.grants.credential(app, ref);
+  }
+
   granted(app: string, to: string | null, word: string): boolean {
     const id = app.replace(/^app:/, "");
     const state = this.running.get(id);
@@ -526,6 +531,7 @@ export class AppRuntime {
   private installDetail(manifest: AppJson, origin: AppOrigin): string {
     const lines = (manifest.needs ?? []).map((need) => ("member" in need
       ? `· ${clean(need.why, 200)}（${need.member}：${need.words.join("、")}）`
+      : "credential" in need ? `· ${clean(need.why, 200)}（用保险箱里的「${need.credential}」：它能以你的身份调用这个服务）`
       : `· ${clean(need.why, 200)}（${({ notify: "提醒你", widgets: "小组件", card: "在对话里放入口卡片" } as Record<string, string>)[needKey(need)]}）`));
     const who = origin === "builtin" ? "Ash 自带" : origin === "agent" ? "Ash 自己写的，没有发布过，也没有别人检查过" : `发布者写的是「${clean(manifest.publisher, 40)}」，Ash 无法核实`;
     const listens = manifest.listens ?? [];

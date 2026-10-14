@@ -32,10 +32,17 @@
 * service:gate/lease.revoke  owner
 * service:gate/lease.list  owner
 * service:gate/lease.state  kernel  event-out
-  service:vault/list  owner,agent,app
-  service:vault/describe  owner,agent,app
+* service:vault/list  owner,agent
+* service:vault/describe  owner,agent
 * service:vault/set  owner  local_only
+* service:vault/put  agent
+* service:vault/generate  owner,agent
+* service:vault/request  agent
 * service:vault/delete  owner  local_only
+* service:vault/connect  owner,agent
+* service:vault/provider  owner,agent
+* service:vault/token  app
+* service:vault/services  owner,agent
 * service:vault/vault.changed  kernel  event-out
   service:devices/list  owner,agent,app
   service:devices/describe  owner,agent,app

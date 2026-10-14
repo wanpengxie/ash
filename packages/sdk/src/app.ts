@@ -37,7 +37,9 @@ export type AppNeed =
   | { member: string; words: string[]; why: string }
   | { notify: true; why: string }
   | { widgets: true; why: string }
-  | { card: true; why: string };
+  | { card: true; why: string }
+  /** A connection or key the hub's vault keeps (its name): the app gets a working token with service:vault/token, nobody else does. */
+  | { credential: string; why: string };
 /** An event that wakes an agent at once. A plain name wakes the primary agent; `agent` (`agent:<name>`) names another one. */
 export type AppWakeEvent = string | { event: string; agent?: string };
 
@@ -172,6 +174,10 @@ export const APP_SCHEMA: JsonSchema = {
             },
           },
           needFlag("notify"), needFlag("widgets"), needFlag("card"),
+          {
+            type: "object", required: ["credential", "why"], additionalProperties: false,
+            properties: { credential: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$", description: "The name of a connection or key in the hub's vault (service:vault/list)." }, why },
+          },
         ],
       },
     },

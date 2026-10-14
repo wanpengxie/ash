@@ -36,7 +36,7 @@ test("a key saved in the vault is verified at once; an expired one is reported a
   assert.deepEqual(first.find((k: { provider: string }) => k.provider === "openrouter"), { provider: "openrouter", ref: "OPENROUTER_API_KEY", configured: false, status: "unknown" });
   assert.ok(provider.seen.some((r) => r.path === "/user/balance" && r.authorization === "Bearer sk-scenario"));
 
-  await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-good-key", kind: "model" });
+  await owner.call("service:vault", "set", { ref: "DEEPSEEK_API_KEY", value: "sk-good-key", kind: "key" });
   await eventually(async () => dataOf(await owner.call("service:llm", "keys.status", {})).keys.find((k: { provider: string }) => k.provider === "deepseek").status === "ok", "the new key to be checked");
   const after = JSON.stringify(dataOf(await owner.call("service:llm", "keys.status", {})));
   assert.doesNotMatch(after, /sk-good-key|sk-scenario/);

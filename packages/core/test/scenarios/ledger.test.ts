@@ -67,7 +67,7 @@ test("SPEC-00 §6.9, S159: a secret put in the vault is in no ledger record; onl
   const owner = await s.human();
   const secret = "sk-scenario-0123456789abcdef";
 
-  const set = await owner.call("service:vault", "set", { ref: "deepseek", value: secret, label: "DeepSeek", kind: "model" });
+  const set = await owner.call("service:vault", "set", { ref: "deepseek", value: secret, label: "DeepSeek", kind: "key" });
   assert.ok(set.ok, "the owner sets a key from this machine");
 
   // An agent's reading of the ledger is itself recorded (a `query` to service:history, whose filter may hold what was searched for): those are left out.

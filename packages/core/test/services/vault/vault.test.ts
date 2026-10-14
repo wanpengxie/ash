@@ -20,14 +20,14 @@ function setup() {
   return { ledger, path, vault, vaultFile, router, logs, service };
 }
 
-test("the words are list, describe, set, delete; set and delete are for the owner on this machine", () => {
+test("the words: the owner sets and deletes, an agent puts, generates and requests, both list, describe and connect", () => {
   const { service } = setup();
   const w = (name: string) => service.words().find((x) => x.word === name)!;
-  assert.deepEqual(service.words().filter((x) => x.kind === "request").map((x) => x.word).sort(), ["delete", "describe", "list", "set"]);
-  for (const name of ["set", "delete"]) { assert.deepEqual(w(name).callers, ["owner"]); assert.equal(w(name).local_only, true); }
-  assert.equal((w("set").input_schema.properties as any).value["x-ash-secret"], true);
+  assert.deepEqual(service.words().filter((x) => x.kind === "request").map((x) => x.word).sort(), ["connect", "delete", "describe", "generate", "list", "provider", "put", "request", "services", "set", "token"]);
+  for (const name of ["set", "delete"]) assert.deepEqual(w(name).callers, ["owner"]);
+  for (const name of ["put", "request"]) assert.deepEqual(w(name).callers, ["agent"]);
+  for (const name of ["set", "put"]) assert.equal((w(name).input_schema.properties as any).value["x-ash-secret"], true);
 });
-
 test("set stores the original value, announces vault.changed with names only, and the secret is nowhere else", async () => {
   const s = setup();
   // What the router does: the ledger and the handler's message see the masked body, only ctx.raw has the value.
@@ -61,11 +61,11 @@ test("a placeholder instead of the value is refused, and never stored", async ()
 
 test("list and describe show names, labels and whether set, never a value", async () => {
   const s = setup();
-  await call(s.service, owner, "set", { ref: "CF_TOKEN", value: SECRET, label: "Cloudflare", kind: "api" });
+  await call(s.service, owner, "set", { ref: "CF_TOKEN", value: SECRET, label: "Cloudflare", kind: "key" });
   const list = await call(s.service, agent(), "list");
   const refs = list.entries.map((e: any) => e.ref);
   assert.ok(refs.includes("CF_TOKEN") && refs.includes("DEEPSEEK_API_KEY"));
-  assert.deepEqual(list.entries.find((e: any) => e.ref === "CF_TOKEN"), { ref: "CF_TOKEN", label: "Cloudflare", kind: "api", configured: true, updated_at: 99 });
+  assert.deepEqual(list.entries.find((e: any) => e.ref === "CF_TOKEN"), { ref: "CF_TOKEN", label: "Cloudflare", kind: "key", configured: true, status: "ok", updated_at: 99 });
   assert.equal(list.entries.find((e: any) => e.ref === "DEEPSEEK_API_KEY").configured, false);
   assert.equal((await call(s.service, agent(), "describe", { ref: "CF_TOKEN" })).configured, true);
   assert.ok(!JSON.stringify(list).includes(SECRET));

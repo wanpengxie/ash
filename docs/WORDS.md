@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `01e823791b1e1b76`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `49f797f3764a86ae`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -10,7 +10,7 @@
 - [`service:admin`](#serviceadmin) (12)
 - [`service:health`](#servicehealth) (2)
 - [`service:gate`](#servicegate) (17)
-- [`service:vault`](#servicevault) (5)
+- [`service:vault`](#servicevault) (12)
 - [`service:devices`](#servicedevices) (17)
 - [`service:link`](#servicelink) (12)
 - [`service:agents`](#serviceagents) (32)
@@ -103,10 +103,17 @@
 
 | 词 | 调用方 | effect / risk | 标记 | 输入 | 进行时 | 说明 |
 |---|---|---|---|---|---|---|
-| `list` | owner, agent, app | read / none | - | - | 在看保存的密钥 | Which credentials are saved (names and kinds only, never a value). |
-| `describe` | owner, agent, app | read / none | - | ref* | 在看保存的密钥 | Whether one credential is saved, and what it is for. A value is never returned. |
-| `set` | owner | write / structure | local_only | ref*, value* (secret), label, kind | 在保存密钥 | Save a credential in the vault. Only the owner, from a channel on this machine; the value is held sealed and never reaches the ledger or an agent. |
-| `delete` | owner | write / structure | local_only | ref* | 在删除密钥 | Delete a saved credential. Only the owner, from a channel on this machine. |
+| `list` | owner, agent | read / none | - | - | 在看保存的凭据 | Every credential the hub keeps, the hub's own connections included: name, kind, service, status, expiry. Never a value. |
+| `describe` | owner, agent | read / none | - | ref* | 在看保存的凭据 | One credential: whether it is set and works, what it is for, when it expires. A value is never returned. |
+| `set` | owner | write / structure | local_only | ref*, value* (secret), label, kind | 在保存密钥 | The owner saves a key or a password on the phone itself (the keys page, opened from a fill-in card). The value is held sealed and never reaches the ledger or an agent. |
+| `put` | agent | write / none | - | ref*, value* (secret), label*, kind, service | 在存入凭据 | Store a key you obtained yourself (one you created in the service's console, an OAuth app's client secret) for the hub's connections to use. Write-only: nobody can read it back, you included. You cannot replace a credential the owner saved or a connection's token. |
+| `generate` | owner, agent | write / none | - | ref*, label*, bytes | 在生成密钥 | The hub makes a random secret and keeps it (base64url, 32 bytes unless said). Nobody can read it; the hub's own words use it by name. |
+| `request` | agent | write / none | - | ref*, label*, why*, kind, help_url, service | 在向你要密钥 | Ask the owner for a key or password you cannot get yourself: the entry shows as waiting on the keys page and the owner gets a card to fill it in; the value goes from the page straight into the vault and never to you. Answers at once with status waiting; you are told (vault.changed) when it is saved. Try to obtain a key yourself first. |
+| `delete` | owner | write / structure | local_only | ref* | 在删除凭据 | Delete a credential; a connection's token is revoked at the service first when the service allows it. |
+| `connect` | owner, agent | write / structure | - | service*, account | 在连接服务 | Connect one of the hub's services (vault.services lists them) to the owner's account with OAuth: the hub starts the flow and answers with the page to authorize on. Open it in the phone's Chrome (apps.open_url, package com.android.chrome) and tap Allow yourself; ask the owner only when the page wants a password, a code or a scan. The hub receives the callback, keeps the token and renews it; vault.describe shows status ok when done. The owner approves the connection (the service and its scopes) once. |
+| `provider` | owner, agent | write / structure | - | service*, label*, grants*, auth_url*, token_url*, revoke_url, scopes*, extra, client_id_ref*, client_secret_ref*, how | 在添加可连接的服务 | Teach the hub a service it can connect with OAuth (authorization code + PKCE, loopback callback): its authorize and token addresses, scopes, extra authorize parameters, and the vault refs of the OAuth app's client id and secret. Write it from the service's OAuth documentation. Addresses are https (http only for 127.0.0.1). The owner approves it: the card shows where tokens would come from. |
+| `token` | app | read / none | - | ref* | 在取连接的令牌 | For an app the owner granted this credential ({credential: <ref>} in app.json's needs): a working value of it — a connection's access token (renewed by the hub when it is about to expire) or the stored key or password. Ask for it each time you call the service; do not keep it on disk. Only apps may call it and an app's reads are not recorded, so the value never reaches the ledger. |
+| `services` | owner, agent | read / none | - | - | 在看能连的服务 | The services the hub can connect, what each needs first (an OAuth app's client id and secret stored with vault.put, and how to make one) and whether it is connected. |
 | `vault.changed` | kernel | read / none | event out | ref*, action* | 在记下密钥变化 | A credential was saved or removed. Names only; the value is never on the ledger. The agents module listens to configure the runtime's own credentials. |
 
 ## `service:devices`
@@ -142,7 +149,7 @@
 | `reconnect` | owner, agent | act / none | - | hand* | 在重连 | Ask the relay to open the tunnel again, or tell a local hand to reconnect. |
 | `refresh_manifest` | owner, agent | act / none | - | hand* | 在请手重发能力清单 | Ask a hand to send its capability list again, for example after you changed what it may lend. |
 | `gateway.status` | owner, agent | read / none | - | - | 在看中转站 | The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, and the latest error. The relay itself (deploying it, taking it back, its domain) is the agent's to run with wrangler: skill relay. |
-| `gateway.use` | owner, agent | write / structure | - | url*, claim_secret | 在改用中转站 | Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed only to claim a relay that has no owner; it works once, so it is an ordinary argument. An agent asking for this is asked about by the owner. |
+| `gateway.use` | owner, agent | write / structure | - | url*, claim_ref | 在改用中转站 | Use the relay at this address: claim it if it has no owner yet and connect. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. An agent asking for this is asked about by the owner. |
 | `connected` | kernel | read / none | event out, record | hand*, conn*, channels | 在记下设备连上 | A hand finished the handshake and is connected. Goes into the ledger. |
 | `disconnected` | kernel | read / none | event out, record | hand*, conn, channel, code, reason | 在记下设备断开 | A hand's connection closed, with the close code and reason. Goes into the ledger. |
 | `handshake_failed` | kernel | read / none | event out | hand, conn, channel, code*, reason | 在记下握手失败 | A connection attempt failed the handshake (4001 identity, 4003 revoked, 4008 version, ...). Not recorded; service:link/diagnose reports the recent ones. |

@@ -69,9 +69,12 @@ npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/
 
 ## 5. 交给中枢认领、连上
 
-- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_secret: "<secret 文件的内容>"}, purpose: "让这台手机认领中转站 <地址>"}`。主人会收到一张确认卡，他点同意后中枢用手机自己的密钥完成认领并连上。认领密钥只能用一次，认领后就作废。
-- 认领密钥只走 `claim_secret` 这一条路：**不要**让主人去设置里存密钥，不要发进对话。
-- 拿到结果后 **`rm -f ~/relay/secret`**。认领只能成功一次，之后这个密钥没用了。
+认领密钥要经过中枢，所以放进中枢的保险箱（技能 `credentials`），按名字交给中枢：
+
+- `capability_call {member: "service:vault", word: "put", body: {ref: "relay_claim", value: "<secret 文件的内容>", label: "中转站认领密钥"}}`（只写，存进去就读不出来）。
+- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_ref: "relay_claim"}, purpose: "让这台手机认领中转站 <地址>"}`。主人点一次确认卡，中枢从保险箱取出密钥、用手机自己的密钥完成认领并连上。
+- 然后 **`rm -f ~/relay/secret`**，保险箱里的 `relay_claim` 也删掉不用管：认领只能成功一次，之后它没用了。
+- **不要**让主人去设置里存密钥，不要把密钥发进对话。
 - 用自定义域名时，`url` 填自定义域名（国内网络更稳）；地址以后要换，再 `gateway.use` 一次新地址即可（同一个 Worker 不用重新认领）。
 
 ## 6. 怎么核对
@@ -82,12 +85,12 @@ npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/
 
 ## 好的样子
 
-主人说「搭个中转站，用我的 ash.onestudio.cc」。你先看 `gateway.status`（没有中转站），`whoami` 发现还没登录，就起 `login.mjs`、在手机 Chrome 里打开授权页、自己点「授权」，登录成功后你看到他账号里已经有 `ash-gateway` 绑着 ash.onestudio.cc、`/v1/health` 显示被别的手机认领着。你问他：「你账号里的 ash-gateway（ash.onestudio.cc）现在归旧手机，重置会清掉它上面所有已配对的设备，之后在这台手机上重新认领。重置吗？」他说重置。你设新的 `RESET_EPOCH` 和认领密钥，`/v1/health` 变成 `claimed: false`，再 `gateway.use` 交给中枢，他点了确认卡，`gateway.status` 显示已连接。你告诉他：「中转站好了，地址 ash.onestudio.cc。要接电脑吗？」
+主人说「搭个中转站，用我的 ash.onestudio.cc」。你先看 `gateway.status`（没有中转站），`whoami` 发现还没登录，就起 `login.mjs`、在手机 Chrome 里打开授权页、自己点「授权」，登录成功后你看到他账号里已经有 `ash-gateway` 绑着 ash.onestudio.cc、`/v1/health` 显示被别的手机认领着。你问他：「你账号里的 ash-gateway（ash.onestudio.cc）现在归旧手机，重置会清掉它上面所有已配对的设备，之后在这台手机上重新认领。重置吗？」他说重置。你设新的 `RESET_EPOCH` 和认领密钥，`/v1/health` 变成 `claimed: false`，把认领密钥 `put` 进保险箱，再 `gateway.use {claim_ref}` 交给中枢，他点了确认卡，`gateway.status` 显示已连接。你告诉他：「中转站好了，地址 ash.onestudio.cc。要接电脑吗？」
 
 ## 常见错误
 
 - 没问主人就覆盖、重置或换域名。
-- 把 wrangler 的令牌打进对话或笔记；让主人去设置里存认领密钥；把授权链接丢给主人自己点；用完没删 `~/relay/secret`。
+- 把 wrangler 的令牌打进对话或笔记；让主人去设置里存认领密钥；把认领密钥直接写在 `gateway.use` 里（它只收保险箱的名字）；把授权链接丢给主人自己点；用完没删 `~/relay/secret`。
 - 用 curl、git（身体里没有）；用 `wrangler login` 登录（回调会换两次码而失败），或者自己另写一个登录程序。
 - 看到 `connected` 就说好了，没看 `/v1/health` 的 `owner_online`。
 - 主人有多个 Cloudflare 账号时自己挑了一个。

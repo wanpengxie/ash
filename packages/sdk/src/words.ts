@@ -213,17 +213,41 @@ add("service:gate", "lease.state", "event", obj({ leases: array(leaseView) }, ["
 // ===================================================================================================================
 // service:vault: credentials. An agent may look, never touch.
 // ===================================================================================================================
-const vaultEntry = obj({ ref: nonempty, label: nonempty, kind: choice("model", "login", "api", "other"), configured: bool, updated_at: nonnegativeSafe }, ["ref", "label", "kind", "configured"]);
+const vaultKind = choice("oauth", "key", "password", "generated");
+const vaultEntry = obj({ ref: nonempty, label: nonempty, kind: vaultKind, service: str, why: str, help_url: str, account: str, scopes: strings,
+  configured: bool, status: choice("ok", "expiring", "broken", "waiting", "missing"), expires_at: nonnegativeSafe, updated_at: nonnegativeSafe, last_used_at: nonnegativeSafe },
+  ["ref", "label", "kind", "configured", "status"]);
+const vaultRef: JsonSchema = { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$" };
 add("service:vault", "list", "request", empty, obj({ entries: array(vaultEntry) }, ["entries"]),
-  { label: "在看保存的密钥", description: "Which credentials are saved (names and kinds only, never a value)." });
-add("service:vault", "describe", "request", obj({ ref: nonempty }, ["ref"]), vaultEntry,
-  { label: "在看保存的密钥", description: "Whether one credential is saved, and what it is for. A value is never returned." });
-add("service:vault", "set", "request", obj({ ref: nonempty, value: secret({ type: "string", minLength: 1 }), label: nonempty, kind: choice("model", "login", "api", "other") }, ["ref", "value"]),
+  { callers: OWNER_AGENT, label: "在看保存的凭据", description: "Every credential the hub keeps, the hub's own connections included: name, kind, service, status, expiry. Never a value." });
+add("service:vault", "describe", "request", obj({ ref: vaultRef }, ["ref"]), vaultEntry,
+  { callers: OWNER_AGENT, label: "在看保存的凭据", description: "One credential: whether it is set and works, what it is for, when it expires. A value is never returned." });
+add("service:vault", "set", "request", obj({ ref: vaultRef, value: secret({ type: "string", minLength: 1 }), label: nonempty, kind: vaultKind }, ["ref", "value"]),
   obj({ ref: nonempty, configured: { const: true } }, ["ref", "configured"]),
-  { callers: OWNER, local_only: true, effect: "write", risk: "structure", label: "在保存密钥", description: "Save a credential in the vault. Only the owner, from a channel on this machine; the value is held sealed and never reaches the ledger or an agent." });
-add("service:vault", "delete", "request", obj({ ref: nonempty }, ["ref"]), obj({ deleted: bool }, ["deleted"]),
-  { callers: OWNER, local_only: true, effect: "write", risk: "structure", label: "在删除密钥", description: "Delete a saved credential. Only the owner, from a channel on this machine." });
-add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed") }, ["ref", "action"]), undefined,
+  { callers: OWNER, local_only: true, effect: "write", risk: "structure", label: "在保存密钥", description: "The owner saves a key or a password on the phone itself (the keys page, opened from a fill-in card). The value is held sealed and never reaches the ledger or an agent." });
+add("service:vault", "put", "request", obj({ ref: vaultRef, value: secret({ type: "string", minLength: 1 }), label: nonempty, kind: choice("key", "password"), service: str }, ["ref", "value", "label"]),
+  obj({ ref: nonempty, configured: { const: true } }, ["ref", "configured"]),
+  { callers: ["agent"], effect: "write", label: "在存入凭据", description: "Store a key you obtained yourself (one you created in the service's console, an OAuth app's client secret) for the hub's connections to use. Write-only: nobody can read it back, you included. You cannot replace a credential the owner saved or a connection's token." });
+add("service:vault", "generate", "request", obj({ ref: vaultRef, label: nonempty, bytes: { type: "integer", minimum: 16, maximum: 64 } }, ["ref", "label"]),
+  obj({ ref: nonempty, configured: { const: true } }, ["ref", "configured"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在生成密钥", description: "The hub makes a random secret and keeps it (base64url, 32 bytes unless said). Nobody can read it; the hub's own words use it by name." });
+add("service:vault", "request", "request", obj({ ref: vaultRef, label: nonempty, why: nonempty, kind: choice("key", "password"), help_url: str, service: str }, ["ref", "label", "why"]),
+  obj({ ref: nonempty, status: choice("waiting", "ok") }, ["ref", "status"]),
+  { callers: ["agent"], effect: "write", label: "在向你要密钥", description: "Ask the owner for a key or password you cannot get yourself: the entry shows as waiting on the keys page and the owner gets a card to fill it in; the value goes from the page straight into the vault and never to you. Answers at once with status waiting; you are told (vault.changed) when it is saved. Try to obtain a key yourself first." });
+add("service:vault", "delete", "request", obj({ ref: vaultRef }, ["ref"]), obj({ deleted: bool }, ["deleted"]),
+  { callers: OWNER, local_only: true, effect: "write", risk: "structure", label: "在删除凭据", description: "Delete a credential; a connection's token is revoked at the service first when the service allows it." });
+add("service:vault", "connect", "request", obj({ service: nonempty, account: str }, ["service"]),
+  obj({ ref: nonempty, auth_url: nonempty, scopes: strings, expires_at: num }, ["ref", "auth_url", "scopes", "expires_at"]),
+  { callers: OWNER_AGENT, effect: "write", risk: "structure", label: "在连接服务", description: "Connect one of the hub's services (vault.services lists them) to the owner's account with OAuth: the hub starts the flow and answers with the page to authorize on. Open it in the phone's Chrome (apps.open_url, package com.android.chrome) and tap Allow yourself; ask the owner only when the page wants a password, a code or a scan. The hub receives the callback, keeps the token and renews it; vault.describe shows status ok when done. The owner approves the connection (the service and its scopes) once." });
+add("service:vault", "provider", "request", obj({ service: { type: "string", pattern: "^[a-z][a-z0-9_]{1,31}$" }, label: nonempty, grants: nonempty, auth_url: nonempty, token_url: nonempty, revoke_url: str,
+  scopes: strings, extra: { type: "object", additionalProperties: str }, client_id_ref: vaultRef, client_secret_ref: vaultRef, how: str },
+  ["service", "label", "grants", "auth_url", "token_url", "scopes", "client_id_ref", "client_secret_ref"]), obj({ service: nonempty }, ["service"]),
+  { callers: OWNER_AGENT, effect: "write", risk: "structure", label: "在添加可连接的服务", description: "Teach the hub a service it can connect with OAuth (authorization code + PKCE, loopback callback): its authorize and token addresses, scopes, extra authorize parameters, and the vault refs of the OAuth app's client id and secret. Write it from the service's OAuth documentation. Addresses are https (http only for 127.0.0.1). The owner approves it: the card shows where tokens would come from." });
+add("service:vault", "token", "request", obj({ ref: vaultRef }, ["ref"]), obj({ ref: nonempty, value: str, kind: vaultKind, expires_at: num }, ["ref", "value", "kind"]),
+  { callers: ["app"], label: "在取连接的令牌", description: "For an app the owner granted this credential ({credential: <ref>} in app.json's needs): a working value of it — a connection's access token (renewed by the hub when it is about to expire) or the stored key or password. Ask for it each time you call the service; do not keep it on disk. Only apps may call it and an app's reads are not recorded, so the value never reaches the ledger." });
+add("service:vault", "services", "request", empty, obj({ services: array(obj({ service: nonempty, label: nonempty, scopes: strings, needs: strings, connected: bool, ref: str, how: str }, ["service", "label", "scopes", "needs", "connected"])) }, ["services"]),
+  { callers: OWNER_AGENT, label: "在看能连的服务", description: "The services the hub can connect, what each needs first (an OAuth app's client id and secret stored with vault.put, and how to make one) and whether it is connected." });
+add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choice("saved", "removed", "connected", "broken") }, ["ref", "action"]), undefined,
   { label: "在记下密钥变化", description: "A credential was saved or removed. Names only; the value is never on the ledger. The agents module listens to configure the runtime's own credentials." });
 
 // ===================================================================================================================
@@ -293,8 +317,8 @@ add("service:link", "refresh_manifest", "request", obj({ hand: handRef }, ["hand
 add("service:link", "gateway.status", "request", empty,
   obj({ configured: bool, url: str, claimed: bool, connected: bool, account_email: sensitive(str, "email"), last_error: str }, ["configured", "connected"], true),
   { callers: LINK_CALLERS, label: "在看中转站", description: "The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, and the latest error. The relay itself (deploying it, taking it back, its domain) is the agent's to run with wrangler: skill relay." });
-add("service:link", "gateway.use", "request", obj({ url: { type: "string", minLength: 1, maxLength: 2048 }, claim_secret: { type: "string", minLength: 1, maxLength: 512 } }, ["url"]), obj({ url: str }, ["url"]),
-  { callers: LINK_CALLERS, effect: "write", risk: "structure", label: "在改用中转站", description: "Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed only to claim a relay that has no owner; it works once, so it is an ordinary argument. An agent asking for this is asked about by the owner." });
+add("service:link", "gateway.use", "request", obj({ url: { type: "string", minLength: 1, maxLength: 2048 }, claim_ref: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$" } }, ["url"]), obj({ url: str }, ["url"]),
+  { callers: LINK_CALLERS, effect: "write", risk: "structure", label: "在改用中转站", description: "Use the relay at this address: claim it if it has no owner yet and connect. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. An agent asking for this is asked about by the owner." });
 const linkEvent = { hand: handRef, conn: id, channel: choice("device", "human", "agent"), code: integer, reason: str };
 add("service:link", "connected", "event", obj({ hand: handRef, conn: id, channels: strings }, ["hand", "conn"]), undefined,
   { record: true, label: "在记下设备连上", description: "A hand finished the handshake and is connected. Goes into the ledger." });

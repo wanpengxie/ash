@@ -99,18 +99,18 @@ export class GatewayControl {
   stop(): void { this.end(); }
 
   /**
-   * Makes [url] the relay: reaches it, claims it with [claimSecret] when it is
+   * Makes [url] the relay: reaches it, claims it with the secret in the vault entry [claimRef] when it is
    * unclaimed, remembers it and connects. Throws a `WordError` saying what is wrong when it cannot be reached or claimed.
    */
-  async use(url: string, opts: { claimSecret?: string; account?: { email?: string } } = {}): Promise<string> {
+  async use(url: string, opts: { claimRef?: string; account?: { email?: string } } = {}): Promise<string> {
     const origin = this.normalize(url);
-    const relay = await this.build(origin, () => opts.claimSecret ?? null);
+    const relay = await this.build(origin, () => (opts.claimRef ? this.d.vault.use(opts.claimRef) : null));
     try { await relay.ensureClaimed(); }
     catch (error) {
       relay.stop();
       const problem = error instanceof RelayError ? error.problem : "unreachable";
       throw new WordError(problem === "claimed_by_other" || problem === "missing_secret" || problem === "bad_secret" ? "forbidden" : "unavailable", PROBLEM_TEXT[problem] ?? "The relay cannot be used.", {
-        recovery_hint: problem === "missing_secret" ? "Pass the relay's BOOTSTRAP_SECRET as claim_secret (skill relay)." : "Check the address; to build a new relay or take this one back, see skill relay.",
+        recovery_hint: problem === "missing_secret" ? "Store the relay's BOOTSTRAP_SECRET with service:vault/put and pass its name as claim_ref (skill relay)." : "Check the address; to build a new relay or take this one back, see skill relay.",
       });
     }
     this.end();

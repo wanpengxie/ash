@@ -1,7 +1,7 @@
 import { fill } from "./home-dom.js";
 // 幕后: what runs her. Keys (and whether they work), the model, what she costs, and the developer options. The spending card
 // is the same on the page and on 花了多少.
-import { HELPER, KEYS, balanceSentence, keyProblems, keyStateText, pluginName, providerName } from "./home-text.js";
+import { HELPER, KEYS, balanceSentence, keyProblems, keyStateText, pluginName, providerName, vaultLine } from "./home-text.js";
 import { readAgents, readUsage, settled } from "./home-data.js";
 import { pauseControl } from "./home-pause.js";
 import { btn, card, group, h, list, localHint, note, row, skeleton, tag, twoTap } from "./home-ui.js";
@@ -119,7 +119,7 @@ export function keysPage(ctx, screen) {
       if (!value) { state.status[key.ref] = "请先粘贴 Key。"; paint(key); return; }
       save.disabled = true; state.status[key.ref] = "正在保存…"; paint(key);
       try {
-        const result = await screen.ask("service:vault", "set", { ref: key.ref, value, label: key.title, kind: "model" });
+        const result = await screen.ask("service:vault", "set", { ref: key.ref, value, label: key.title, kind: "key" });
         if (!screen.alive()) return;
         if (result.configured === true) {
           state.vault = [...(state.vault ?? []).filter((entry) => entry.ref !== key.ref), { ref: key.ref, configured: true }];
@@ -171,14 +171,45 @@ export function keysPage(ctx, screen) {
     problems.hidden = !found.length;
     problems.textContent = found.length ? ["发现这些问题：", ...found.map((line) => `· ${line}`)].join("\n") : "";
   };
-  fill(box, localHint(ctx), note(`Key 只保存在这台手机上。她知道存了哪几个，但看不到内容，Key 也不会出现在聊天里。保存后立刻生效。`), problems, ...KEYS.map(build));
+  // Everything else the hub keeps: what she asked for (waiting, first), the hub's connections, keys she stored, keys of yours.
+  const others = h("div", { class: "hm-stack", id: "homeKeysOthers" });
+  const otherStatus = {};
+  const paintOthers = () => {
+    const known = new Set(KEYS.map((key) => key.ref));
+    const list = (state.vault ?? []).filter((entry) => !known.has(entry.ref)).sort((a, b) => (a.status === "waiting" ? 0 : 1) - (b.status === "waiting" ? 0 : 1));
+    if (!list.length) { fill(others); return; }
+    fill(others, h("span", { class: "tx-sub hm-backttl" }, "连接与其他密钥"), ...list.map((entry) => {
+      const fillable = (entry.kind === "key" || entry.kind === "password") && (entry.status === "waiting" || entry.status === "broken");
+      const field = fillable ? h("input", { type: "password", autocomplete: "off", placeholder: entry.kind === "password" ? "输入密码" : "粘贴密钥", id: `homeKey_${entry.ref}_value`, "aria-label": entry.label }) : null;
+      const status = h("p", { class: "hm-note", role: "status" }, otherStatus[entry.ref] ?? "");
+      const save = fillable ? btn("保存", "a-btn btn-primary btn-sm", async () => {
+        const value = field.value.trim();
+        field.value = "";
+        if (!value) { status.textContent = "请先填上。"; return; }
+        status.textContent = "正在保存…";
+        try { await screen.ask("service:vault", "set", { ref: entry.ref, value, label: entry.label || entry.ref, kind: entry.kind }); otherStatus[entry.ref] = "已保存，她会收到通知。"; }
+        catch { otherStatus[entry.ref] = "保存失败，请重试。"; }
+        if (screen.alive()) await refresh();
+      }, { id: `homeKey_${entry.ref}_save` }) : null;
+      const help = typeof entry.help_url === "string" && entry.help_url.startsWith("https://") ? h("a", { class: "a-btn btn-neutral btn-sm", href: entry.help_url, target: "_blank", rel: "noopener" }, "去哪拿") : null;
+      const remove = h("button", { type: "button", class: "a-btn btn-neutral btn-sm", id: `homeKey_${entry.ref}_remove` });
+      const gone = entry.kind === "oauth" ? "断开" : "删除";
+      twoTap(remove, { label: gone, confirm: `确定${gone}？`, onWarn: (text) => { status.textContent = text; }, run: async () => {
+        try { await screen.ask("service:vault", "delete", { ref: entry.ref }); otherStatus[entry.ref] = ""; } catch { otherStatus[entry.ref] = "没删掉，请重试。"; }
+        if (screen.alive()) await refresh();
+      } });
+      return card("hm-promise", h("span", { class: "hm-big" }, entry.label || entry.ref), h("span", { class: "tx-sub" }, vaultLine(entry)),
+        entry.why ? h("span", { class: "tx-caption" }, `她要它来：${entry.why}`) : null, status, field, h("div", { class: "hm-actions" }, save, help, remove));
+    }));
+  };
+  fill(box, localHint(ctx), note(`Key 只保存在这台手机上。她知道存了哪几个，但看不到内容，Key 也不会出现在聊天里。保存后立刻生效。`), problems, ...KEYS.map(build), others);
   paintAll();
   const refresh = async () => {
     try {
       const [vault, keys] = await Promise.all([screen.ask("service:vault", "list", {}).then((data) => ({ available: true, entries: Array.isArray(data.entries) ? data.entries : [] }), (error) => { if (error?.code === "unavailable") return { available: false, entries: [] }; throw error; }),
         screen.ask("service:llm", "keys.status", {}).then((data) => Array.isArray(data.keys) ? data.keys : [], () => [])]);
       if (!screen.alive()) return;
-      state.locked = !vault.available; state.vault = vault.entries; state.health = keys; paintAll();
+      state.locked = !vault.available; state.vault = vault.entries; state.health = keys; paintAll(); paintOthers();
       for (const key of KEYS) { const health = state.health.find((item) => item?.ref === key.ref); if (saved(key.ref) && health?.configured === true && health.status === "unknown" && health.checked_at === undefined) void verify(key); }
     } catch (error) { if (screen.alive() && error?.code !== "stale") for (const key of KEYS) { state.status[key.ref] = "读取失败，请重试。"; paint(key); } }
   };

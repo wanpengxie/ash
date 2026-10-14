@@ -25,6 +25,7 @@ whenToUse: 主人想要一个长期用的小工具（记账、书单、习惯、
 5. **卡片**（`cards`，最多 8 张）：画卡片的工具只读，从现在的数据画，大小按 `widgets-design` 选（多数 `4x2`），不要硬塞 30 条；`action` 工具处理卡上的勾选。卡片 id 在桌面是 `<应用 id>.<卡片 id>`，主人想放桌面就 `widget.bind`。
 
 需要手机的东西（健康数据等）才写 `needs`：成员写 `device:*`（任何一只手，不写死 id），服务里用 `capability_list` 找到手机的 id 再调；每项写给主人看的 `why`；不需要就留空，这样安装时主人看到的是「不需要用 Ash 的其他东西」。
+要以主人身份调一个外部服务（他连好的 Gmail、Slack……或保险箱里的密钥），`needs` 写 `{credential: "<名字>", why}`，用的时候 `call("service:vault", "token", {ref})` 现取，见技能 `credentials`。
 
 ## 做法
 
