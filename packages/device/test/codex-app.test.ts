@@ -18,7 +18,7 @@ async function fixture(t: { after(fn: () => unknown): void }, over: F = {}) {
   const events: [string, F][] = [];
   const changes: boolean[] = [];
   const listed: Listed[] = over.listed ?? [{ id: "t1", title: "Fix the build", cwd: "/work/app", updated_at: 2000 }, { id: "t2", title: "Old idea", updated_at: 1000 }];
-  const app = new CodexApp({ socketPath: desktop.path, reconnectMs: 30, ownerWaitMs: 200, openWaitMs: 1500, openThread: over.openThread ?? (async () => {}), listThreads: async () => listed, readThread: over.readThread ?? (async () => null), onChange: () => changes.push(app.online), onEvent: (w, b) => events.push([w, b]) });
+  const app = new CodexApp({ socketPath: desktop.path, reconnectMs: 30, ownerWaitMs: 200, openWaitMs: 1500, openThread: over.openThread ?? (async () => {}), startThread: over.startThread, listThreads: over.listThreads ?? (async () => listed), readThread: over.readThread ?? (async () => null), onChange: () => changes.push(app.online), onEvent: (w, b) => events.push([w, b]) });
   app.start();
   t.after(async () => { await app.close(); await desktop.stop().catch(() => {}); });
   await until(() => app.online, "joining the app");
@@ -89,6 +89,37 @@ test("a past session is read from the runtime; sending to it has the app open it
   assert.deepEqual([sent.sent, sent.mode, asked], [true, "start", ["t2"]]);
   const opened = await fx.app.open("t2");
   assert.deepEqual([opened.opened, opened.already, asked.length], [true, true, 1], "already open: not asked again");
+});
+
+test("a new session: made in the project's directory, named, opened in the app, and its first message sent there", async (t) => {
+  const made: [string, string][] = [];
+  let desktop!: Desktop;
+  const fx = await fixture(t, {
+    startThread: async (cwd: string, title: string) => { made.push([cwd, title]); return "t9"; },
+    openThread: async (id: string) => { desktop.state.set(id, { revision: 1, raw: snapshot({ id, name: "Plan the trip" }) }); },
+  });
+  desktop = fx.desktop;
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ash-proj-"));
+  const out = await fx.app.create(dir, "Plan the trip\nwith the kids", undefined);
+  assert.deepEqual([out.thread, out.title, out.cwd, out.sent], ["t9", "Plan the trip", dir, true]);
+  assert.deepEqual(made, [[dir, "Plan the trip"]]);
+  const start = desktop.owned.find((f) => f.method === "thread-follower-start-turn")!;
+  assert.equal(start.params.conversationId, "t9");
+  await assert.rejects(fx.app.create("relative/dir", "hi"), code("bad_request"));
+  await assert.rejects(fx.app.create(join(dir, "missing"), "hi"), code("bad_request"));
+});
+
+test("the session list: the last good one is kept when a read fails or is slow, and read again behind it", async (t) => {
+  let calls = 0, fail = false;
+  let now = 1_000_000;
+  const fx = await fixture(t, { listThreads: async () => { calls++; if (fail) throw new Error("runtime control timed out"); return [{ id: "t1", title: "One" }, { id: "t2", title: "Two" }]; } });
+  (fx.app as any).o.now = () => now;
+  assert.equal((await fx.app.sessions()).sessions.length, 2);
+  fail = true; now += 10_000;
+  assert.equal((await fx.app.sessions()).sessions.length, 2, "answered from the last list while it is read again");
+  await until(() => calls >= 2, "the read behind it");
+  now += 10_000;
+  assert.equal((await fx.app.sessions()).sessions.length, 2, "a failed read does not shrink the list");
 });
 
 test("a past session the app does not take up (the computer locked) is unavailable, not lost", async (t) => {
@@ -246,7 +277,7 @@ test("the capabilities are valid, extensions, need no approval card, and are off
     assert.ok(isExtensionName(cap.name), cap.name);
     assert.equal(cap.risk, "none", `${cap.name}: remote control of the owner's own app asks nothing`);
   }
-  assert.deepEqual(CODEX_CAPABILITIES.map((c) => [c.name, c.effect]), [["x.codex.sessions", "read"], ["x.codex.session", "read"], ["x.codex.approvals", "read"], ["x.codex.open", "act"], ["x.codex.send", "act"], ["x.codex.stop", "act"], ["x.codex.approve", "act"]]);
+  assert.deepEqual(CODEX_CAPABILITIES.map((c) => [c.name, c.effect]), [["x.codex.sessions", "read"], ["x.codex.session", "read"], ["x.codex.approvals", "read"], ["x.codex.open", "act"], ["x.codex.new", "act"], ["x.codex.send", "act"], ["x.codex.stop", "act"], ["x.codex.approve", "act"]]);
 
   const { app, desktop } = await fixture(t);
   const hand = createHand({ workspace: {} as any, codex: app });

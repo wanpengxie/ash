@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "8ae143876855871b55b51d4ed45605710b02de241b95dffdef38fc21f5d966a6",
+ "hash": "b4e0ee5f44384ded3b3ac6197964ecc64dbd99f61bc53483369729e853b0f705",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -5129,7 +5129,7 @@
    "word": "runtimes",
    "kind": "request",
    "direction": "in",
-   "description": "The agent runtimes available (in the main body, and on computers allowed to host agents) with their models. Query before declaring an agent that runs on a computer.",
+   "description": "The agent runtimes you can run your own helper agents on (in the main body, and on computers allowed to host agents: codex = the Codex CLI, claude = Claude Code) with their models. Query before declaring an agent that runs on a computer. Not the owner's Codex App and its sessions: those are x.codex.* on the computer's device.",
    "input_schema": {
     "type": "object",
     "properties": {},

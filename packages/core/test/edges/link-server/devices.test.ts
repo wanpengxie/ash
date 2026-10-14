@@ -249,7 +249,7 @@ test("a computer's Codex app needing the owner becomes a short message to the ow
   const says = hub.router.sent.filter((s) => s.msg.word === "say");
   assert.equal(says.length, 2);
   assert.ok(says.every((s) => s.msg.to === "person:owner" && s.caller.member === "service:devices"));
-  assert.deepEqual(says.map((s) => (s.msg.body as any).text), ["Codex 「Fix the build」做完了一轮：all green", "Codex 「Fix the build」在等你批准：make deploy"]);
+  assert.deepEqual(says.map((s) => (s.msg.body as any).text), ["Codex App 的会话「Fix the build」做完了一轮：all green", "Codex App 的会话「Fix the build」在等你批准：make deploy"]);
   assert.deepEqual(says.map((s) => (s.msg.body as any).kind), ["heads_up", "heads_up"]);
   assert.notEqual((says[0]!.msg.body as any).dedupe_key, (says[1]!.msg.body as any).dedupe_key);
 });

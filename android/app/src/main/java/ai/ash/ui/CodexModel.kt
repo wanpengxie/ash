@@ -13,6 +13,7 @@ object CodexModel {
     const val SEND = "x.codex.send"
     const val STOP = "x.codex.stop"
     const val APPROVE = "x.codex.approve"
+    const val NEW = "x.codex.new"
 
     data class Session(val id: String, val title: String, val state: String, val open: Boolean, val cwd: String?, val updatedAt: Long?) {
         val running get() = state == "running"
@@ -22,6 +23,9 @@ object CodexModel {
     data class Turn(val id: String, val status: String, val items: List<Item>)
     data class Approval(val requestId: String, val kind: String, val summary: String)
     data class Detail(val session: Session, val turns: List<Turn>, val approvals: List<Approval>)
+    data class Computer(val id: String, val name: String)
+    /** A project: the sessions that work in one directory ([cwd] null: those that say none). */
+    data class Project(val cwd: String?, val name: String, val sessions: List<Session>)
 
     private fun JSONObject.str(key: String) = optString(key).takeIf { it.isNotEmpty() }
     private fun <T> JSONArray?.mapObjects(f: (JSONObject) -> T): List<T> =
@@ -44,9 +48,27 @@ object CodexModel {
         return Detail(session(data), turns, approvals.filter { it.requestId.isNotEmpty() })
     }
 
-    /** The computer to ask: the first of `service:devices list` that is a computer and online. */
-    fun computer(data: JSONObject?): String? =
-        data?.optJSONArray("devices").mapObjects { it }.firstOrNull { it.optString("kind") == "computer" && it.optBoolean("online") && it.optString("device").isNotEmpty() }?.optString("device")
+    /** The computers that can be asked: those of `service:devices list` that are computers and online, in its order. */
+    fun computers(data: JSONObject?): List<Computer> =
+        data?.optJSONArray("devices").mapObjects { it }.filter { it.optString("kind") == "computer" && it.optBoolean("online") && it.optString("device").isNotEmpty() }
+            .map { Computer(it.optString("device"), it.str("name") ?: "电脑") }
+
+    /** The computer shown: the one chosen before while it is still there, else the first. */
+    fun pick(computers: List<Computer>, chosen: String?): String? = computers.firstOrNull { it.id == chosen }?.id ?: computers.firstOrNull()?.id
+
+    /**
+     * The sessions by project: a project with a running or waiting session first, then the one changed most recently; inside a
+     * project the order the computer gave.
+     */
+    fun projects(sessions: List<Session>): List<Project> {
+        val groups = LinkedHashMap<String?, MutableList<Session>>()
+        for (s in sessions) groups.getOrPut(s.cwd?.trimEnd('/')?.ifEmpty { "/" }) { mutableListOf() }.add(s)
+        return groups.map { (cwd, list) -> Project(cwd, cwd?.substringAfterLast('/')?.ifEmpty { cwd } ?: "其他", list) }
+            .sortedWith(compareByDescending<Project> { p -> p.sessions.any { it.running || it.waiting } }.thenByDescending { p -> p.sessions.maxOf { it.updatedAt ?: 0L } })
+    }
+
+    /** The new session's id from x.codex.new. */
+    fun created(data: JSONObject?): String? = data?.str("thread")
 
     fun stateLabel(s: Session): String = when { s.waiting -> "等你批准"; s.running -> "在跑"; !s.open -> "历史"; else -> "空闲" }
 

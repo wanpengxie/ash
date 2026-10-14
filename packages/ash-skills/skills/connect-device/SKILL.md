@@ -23,7 +23,7 @@ whenToUse: 主人要接一台电脑或浏览器、想让电脑上的 Agent 干�
 ## 电脑上的 Codex App
 
 电脑接好且能当 body 后，它的 Codex App 有两个方向，主人说「接上 Codex」就两个都弄好：
-- **你和主人操作 Codex**：`device:<编号>` 上的 `x.codex.sessions`（全部会话，含历史；`open: false` 是 App 里现在没打开）、`x.codex.session`（看一个会话）、`x.codex.open`（在电脑的 Codex App 里打开一个历史会话）、`x.codex.send`（发任务或接着说；历史会话会先自动打开）、`x.codex.approvals` / `x.codex.approve`（Codex 等批准的操作）、`x.codex.stop`（停下）。Codex 一轮做完或等批准时你会收到后台消息，按主人的意思处理或转告。打不开（`unavailable`）多半是电脑锁屏或睡着了，告诉主人。
+- **你和主人操作 Codex**：`device:<编号>` 上的 `x.codex.sessions`（全部会话，含历史；`open: false` 是 App 里现在没打开）、`x.codex.session`（看一个会话）、`x.codex.open`（在电脑的 Codex App 里打开一个历史会话）、`x.codex.new {cwd, text}`（在一个项目目录里开新会话并发第一句；`cwd` 用会话列表里的项目目录）、`x.codex.send`（发任务或接着说；历史会话会先自动打开）、`x.codex.approvals` / `x.codex.approve`（Codex 等批准的操作）、`x.codex.stop`（停下）。Codex 一轮做完或等批准时你会收到后台消息，按主人的意思处理或转告。打不开（`unavailable`）多半是电脑锁屏或睡着了，告诉主人。
 - **Codex 用 Ash 的工具**：电脑上装 Ash 程序时，有 Codex 就自动给它装好 Ash 的 MCP 和技能（Codex 后装的，Ash 程序下次启动时补上）。核对：`capability_call {member: "body:<编号>", word: "workspace.bash", body: {command: "~/.ash-device/current/bin/ash-device codex status"}}`，`config` 和 `skill` 都是 `installed` 才算好；不是就把 `status` 换成 `install` 跑一次，看它说的原因。装上后 Codex 要重开一次（或开新会话）才生效，告诉主人。
 - 验证：`x.codex.sessions` 能列出会话；装完后请主人在 Codex 里说一句「用 Ash 看看我手机上的提醒」之类的话，或你自己 `x.codex.send` 一条让它调 Ash 的工具，看到结果再说接好了。
 

@@ -348,7 +348,7 @@ test("the Codex app: while it runs the hub is offered x.codex.* and its two even
   await s.device.client.ready();
   await eventually(() => s.kernel.registry.members.has(`device:${s.id}`) && s.kernel.hands.capabilities(s.id).includes("x.codex.send"), "the Codex capabilities declared");
   const names = s.kernel.hands.capabilities(s.id).filter((n) => n.startsWith("x.codex."));
-  assert.deepEqual(names.sort(), ["x.codex.approvals", "x.codex.approve", "x.codex.open", "x.codex.send", "x.codex.session", "x.codex.sessions", "x.codex.stop"]);
+  assert.deepEqual(names.sort(), ["x.codex.approvals", "x.codex.approve", "x.codex.new", "x.codex.open", "x.codex.send", "x.codex.session", "x.codex.sessions", "x.codex.stop"]);
 
   const listed = await s.kernel.call(`device:${s.id}`, "x.codex.sessions");
   assert.deepEqual((listed.data as any).sessions.map((x: any) => [x.id, x.state, x.open]), [["t1", "running", true]]);

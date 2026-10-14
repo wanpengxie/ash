@@ -14,7 +14,8 @@ import { execFile } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { stat } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import type { CapabilitySpec } from "../../sdk/src/link";
 import { WordError } from "../../sdk/src/message";
 import type { CallOutcome } from "../../link/src/hand";
@@ -31,7 +32,7 @@ const THREAD = { type: "string", minLength: 1, description: "The session id from
 const REMOTE = { risk: "none" as const, callers: ["owner", "agent", "app"] as ("owner" | "agent" | "app")[] };
 
 export const CODEX_CAPABILITIES: CapabilitySpec[] = [
-  { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The sessions of the Codex desktop app on this computer, past ones included: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open now; x.codex.send and x.codex.open open it there.",
+  { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The owner's own Codex App (the desktop app on this computer, his workbench, not your helper agents): its sessions, past ones included: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open now; x.codex.send and x.codex.open open it there.",
     input_schema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many (default 30)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
   { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for.",
@@ -43,6 +44,9 @@ export const CODEX_CAPABILITIES: CapabilitySpec[] = [
   { name: "x.codex.open", label: "在打开 Codex 会话", description: "Open a session (a past one too) in the Codex app on this computer, so it can be messaged, stopped and approved from here and is seen on the computer's screen.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread"], properties: { thread: THREAD } },
     effect: "act", timeout_ms: 60_000, ...REMOTE },
+  { name: "x.codex.new", label: "在开新的 Codex 会话", description: "Start a new Codex session in a project (cwd: its working directory, as x.codex.sessions shows them, or any absolute path) with its first message; it opens in the Codex app on this computer. Returns the new session's id (thread).",
+    input_schema: { type: "object", additionalProperties: false, required: ["cwd", "text"], properties: { cwd: { type: "string", minLength: 1, description: "The project's directory." }, text: { type: "string", minLength: 1, maxLength: 20_000 }, title: { type: "string", maxLength: 80, description: "The session's name (default: the first line of text)." } } },
+    effect: "act", timeout_ms: 130_000, ...REMOTE },
   { name: "x.codex.send", label: "在给 Codex 发消息", description: "Say something to a Codex session, a past one too (it is opened in the app first): a new turn when it is idle, added to the running turn when it is busy. If the answer is lost the result is unknown and nothing is sent again by itself; read the session before repeating. Pass the same client_id to repeat safely.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread", "text"], properties: { thread: THREAD, text: { type: "string", minLength: 1, maxLength: 20_000 }, client_id: { type: "string", minLength: 1, maxLength: 80, description: "Makes a repeat of the same send a no-op." } } },
     effect: "act", timeout_ms: 130_000, ...REMOTE },
@@ -101,6 +105,8 @@ export interface CodexAppOptions {
   reconnectMs?: number;
   /** How long to wait for the app to say it has a session open (default 2.5 s). */
   ownerWaitMs?: number;
+  /** Make a new, empty session in [cwd] named [title], and give its id (default: the Codex runtime). */
+  startThread?: (cwd: string, title: string) => Promise<string>;
   /** Have the app open a session (default: its own link codex://threads/<id>, opened in the background). */
   openThread?: (id: string) => Promise<void>;
   /** How long to wait for the app to take up a session it was asked to open (default 20 s). */
@@ -130,6 +136,9 @@ export class CodexApp {
   private readonly seen = new Map<string, Seen>();
   private readonly sends = new Map<string, { at: number; done: Promise<Rec> }>();
   private listed: { at: number; rows: Listed[] } | null = null;
+  private listing: Promise<Listed[]> | null = null;
+  /** Sessions made here (x.codex.new): known to exist before the runtime lists them. */
+  private readonly made = new Set<string>();
   private readonly o: Required<Pick<CodexAppOptions, "socketPath" | "reconnectMs" | "ownerWaitMs" | "openWaitMs" | "openThread" | "now">> & CodexAppOptions;
 
   constructor(options: CodexAppOptions = {}) {
@@ -348,12 +357,21 @@ export class CodexApp {
 
   // ---- reading ----
 
+  /**
+   * The saved sessions. Reading them starts a Codex runtime, which takes seconds and now and then times out: the last good list
+   * is answered at once and read again behind it, and a failed read never replaces it (the list would shrink to the open ones).
+   */
   private async listRows(limit: number): Promise<Listed[]> {
-    const now = this.o.now();
-    if (this.listed && now - this.listed.at < 5000 && this.listed.rows.length >= Math.min(limit, 1)) return this.listed.rows;
-    const rows = await (this.o.listThreads ?? listWithAppServer)(Math.max(limit, 50)).catch((error) => { this.o.log?.("codex app: listing sessions failed", error); return [] as Listed[]; });
-    this.listed = { at: now, rows };
-    return rows;
+    const fresh = () => {
+      this.listing ??= (this.o.listThreads ?? listWithAppServer)(Math.max(limit, 50))
+        .then((rows) => { this.listed = { at: this.o.now(), rows }; return rows; })
+        .catch((error) => { this.o.log?.("codex app: listing sessions failed", error); return this.listed?.rows ?? []; })
+        .finally(() => { this.listing = null; });
+      return this.listing;
+    };
+    if (!this.listed) return fresh();
+    if (this.o.now() - this.listed.at >= 5000) void fresh();
+    return this.listed.rows;
   }
 
   /** Ask the windows which sessions they have open, and give them a moment to answer. */
@@ -420,7 +438,7 @@ export class CodexApp {
   private async opened(id: string): Promise<Conv> {
     const have = await this.owned(id, this.o.ownerWaitMs);
     if (have) return have;
-    const saved = this.convs.has(id) || (await this.listRows(50)).some((r) => r.id === id) || !!(await (this.o.readThread ?? readWithAppServer)(id).catch(() => null));
+    const saved = this.convs.has(id) || this.made.has(id) || (await this.listRows(50)).some((r) => r.id === id) || !!(await (this.o.readThread ?? readWithAppServer)(id).catch(() => null));
     if (!saved) throw new WordError("not_found", `Codex has no session ${id}`, { recovery_hint: "x.codex.sessions" });
     try { await this.o.openThread(id); }
     catch (error) { throw new WordError("failed", `the Codex app could not be asked to open the session: ${clip(errorText(error), 200)}`); }
@@ -431,6 +449,23 @@ export class CodexApp {
       if (conv) return conv;
     }
     throw new WordError("unavailable", "The Codex app was asked to open the session but has not taken it up", { recovery_hint: "the computer may be locked or asleep; try again, or open the session in the Codex app" });
+  }
+
+  /**
+   * A new session in a project (its working directory), with its first message. The app has no way to be asked for a new
+   * session, so it is made by the Codex runtime (named, so it is kept), opened in the app like a past one, and spoken to there.
+   */
+  async create(cwd: string, text: string, title?: string): Promise<Rec> {
+    this.requireOnline();
+    if (!isAbsolute(cwd) || !(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new WordError("bad_request", `${cwd} is not a directory on this computer`, { recovery_hint: "use the cwd of a session from x.codex.sessions, or an absolute path" });
+    const name = clip(title?.trim() || text.trim().split("\n")[0], 60);
+    let id: string;
+    try { id = await (this.o.startThread ?? startWithAppServer)(cwd, name); }
+    catch (error) { throw new WordError("failed", `Codex could not make the session: ${clip(errorText(error), 200)}`); }
+    if (this.listed) this.listed.at = 0;
+    this.made.add(id);
+    const sent = await this.send(id, text);
+    return { thread: id, title: name, cwd, ...sent };
   }
 
   async open(id: string) {
@@ -546,6 +581,11 @@ export class CodexApp {
       case "x.codex.session": data = await this.session(thread(), typeof args.turns === "number" ? args.turns : 6, typeof args.max_chars === "number" ? args.max_chars : 600); break;
       case "x.codex.approvals": data = await this.approvals(); break;
       case "x.codex.open": data = await this.open(thread()); break;
+      case "x.codex.new": {
+        const cwd = str(args.cwd), text = str(args.text);
+        if (!cwd || !text) throw new WordError("bad_request", "cwd and text are required");
+        data = await this.create(cwd, text, str(args.title) ?? undefined); break;
+      }
       case "x.codex.send": { const text = str(args.text); if (!text) throw new WordError("bad_request", "text is required"); data = await this.send(thread(), text, str(args.client_id) ?? undefined); break; }
       case "x.codex.stop": data = await this.stop(thread()); break;
       case "x.codex.approve": {
@@ -709,6 +749,16 @@ async function listWithAppServer(limit: number): Promise<Listed[]> {
       ...(str(t.cwd) ? { cwd: t.cwd as string } : {}),
       ...(seconds(t.updatedAt) ? { updated_at: seconds(t.updatedAt) } : {}),
     }));
+  });
+}
+
+async function startWithAppServer(cwd: string, title: string): Promise<string> {
+  return withRuntime(async (p) => {
+    const id = str(rec((await p.request("thread/start", { cwd }, 30_000))?.thread)?.id);
+    if (!id) throw new Error("the runtime gave no session id");
+    // An empty session is not kept until something is written to it; its name is.
+    await p.request("thread/name/set", { threadId: id, name: title }, 30_000);
+    return id;
   });
 }
 

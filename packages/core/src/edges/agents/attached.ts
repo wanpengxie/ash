@@ -16,7 +16,7 @@ import type { AgentPolicy } from "../../kernel/router";
 export interface AttachedCaller {
   /** `agent:codex-<computer>` */
   id: string;
-  /** For the owner to read: 「<computer> 上的 Codex」. */
+  /** For the owner to read: 「<computer> 上的 Codex App」. */
   name: string;
   /** The computer's hand id. */
   computer: string;
@@ -35,7 +35,7 @@ export class AttachedCallers {
     const base = `agent:codex-${slug(computerName) || slug(computer).slice(0, 8) || "pc"}`.slice(0, 32).replace(/-+$/, "");
     // Two computers with one name: the second one gets the start of its hand id.
     const id = this.byId.has(base) ? `${base.slice(0, 23)}-${slug(computer).slice(0, 8)}`.replace(/-+$/, "") : base;
-    const caller = { id, name: `${computerName} 上的 Codex`, computer };
+    const caller = { id, name: `${computerName} 上的 Codex App`, computer };
     this.byComputer.set(computer, caller);
     this.byId.set(id, caller);
     return caller;

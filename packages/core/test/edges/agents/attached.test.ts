@@ -8,7 +8,7 @@ test("one caller per computer, named for it, made on first use, with the default
   const callers = new AttachedCallers();
   const a = callers.declare("hand-aaaa1111", "MacBook Pro");
   assert.equal(a.id, "agent:codex-macbook-pro");
-  assert.equal(a.name, "MacBook Pro 上的 Codex");
+  assert.equal(a.name, "MacBook Pro 上的 Codex App");
   assert.ok(isAgentId(a.id));
   assert.equal(callers.declare("hand-aaaa1111", "MacBook Pro"), a, "the second call finds it");
   assert.deepEqual(callers.policyOf(a.id), {}, "no tools and no words: what a declaration without limits gives");

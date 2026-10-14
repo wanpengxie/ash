@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { TOOL_NAMES } from "../../core/src/edges/tools";
 import { BROWSER_EXTENSIONS } from "../../sdk/src/namespaces";
+import { CODEX_CAPABILITIES } from "../../device/src/codex-app";
 
 /**
  * What the agent reads (prompts/rules/*.md and the skills' markdown) uses only names the contract has:
@@ -53,7 +54,8 @@ const wordsOf = (member: string): Set<string> => new Set(words.filter((w) => w.m
 const members = new Set(words.map((w) => w.member));
 const allWords = new Set(words.map((w) => w.word));
 const namespaces = new Set([...allWords].filter((w) => w.includes(".")).map((w) => w.split(".")[0]!));
-const extensions = new Set(BROWSER_EXTENSIONS);
+// Extensions a computer offers: the browser's, and its Codex App's.
+const extensions = new Set<string>([...BROWSER_EXTENSIONS, ...CODEX_CAPABILITIES.map((c) => c.name)]);
 
 /** `device:<编号>` and `body:<编号>` stand for every hand and body; `agent:<名字>` for every agent. */
 function memberKey(id: string): string | null {
@@ -79,7 +81,7 @@ function check(file: string): Problem[] {
   const bad = (name: string, why: string) => problems.push({ file: where(file), name, why });
 
   const word = (name: string) => {
-    if (name.startsWith("x.")) { if (!name.endsWith(".*") && !extensions.has(name)) bad(name, "not an extension in BROWSER_EXTENSIONS"); return; }
+    if (name.startsWith("x.")) { if (!name.endsWith(".*") && !extensions.has(name)) bad(name, "not an extension in BROWSER_EXTENSIONS or CODEX_CAPABILITIES"); return; }
     if (name.endsWith(".*")) { if (!namespaces.has(name.slice(0, -2)) && !name.startsWith("x.android.browser")) bad(name, "no such namespace"); return; }
     if (!allWords.has(name)) bad(name, "not in words.json");
   };

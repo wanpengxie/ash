@@ -428,7 +428,7 @@ const session = (word: string, label: string, description: string, input: Record
 add("service:agents", "list", "request", empty, obj({ agents: array(agentInfo) }, ["agents"]),
   { label: "在看有哪些帮手", description: "Every declared agent: id, name, what it does, whether it is idle, working or stopped, and which one is primary." });
 add("service:agents", "runtimes", "request", empty, obj({ runtimes: array(free) }, ["runtimes"]),
-  { label: "在查能在哪儿开帮手", description: "The agent runtimes available (in the main body, and on computers allowed to host agents) with their models. Query before declaring an agent that runs on a computer." });
+  { label: "在查能在哪儿开帮手", description: "The agent runtimes you can run your own helper agents on (in the main body, and on computers allowed to host agents: codex = the Codex CLI, claude = Claude Code) with their models. Query before declaring an agent that runs on a computer. Not the owner's Codex App and its sessions: those are x.codex.* on the computer's device." });
 add("service:agents", "threads", "request", empty, obj({ threads: array(free) }, ["threads"]),
   { callers: OWNER_AGENT, label: "在看交出去的事", description: "The delegated work in flight (threads between agents)." });
 add("service:agents", "thread.stop", "request", obj({ thread: id }, ["thread"]), obj({ cancelled: bool }, ["cancelled"]),

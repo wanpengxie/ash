@@ -32,14 +32,32 @@ class CodexModelTest {
         assertNull(CodexModel.detail(JSONObject("{}")))
     }
 
-    @Test fun theComputerIsTheFirstOnlineOne() {
+    @Test fun theComputersAreTheOnlineOnesAndTheChosenOneStays() {
         val data = JSONObject("""{"devices":[
             {"device":"device:phone","kind":"phone","online":true},
             {"device":"device:old","kind":"computer","online":false},
-            {"device":"device:mac","kind":"computer","online":true}]}""")
-        assertEquals("device:mac", CodexModel.computer(data))
-        assertNull(CodexModel.computer(JSONObject("""{"devices":[{"device":"device:old","kind":"computer","online":false}]}""")))
-        assertNull(CodexModel.computer(null))
+            {"device":"device:mac","kind":"computer","online":true,"name":"MacBook Pro"},
+            {"device":"device:mini","kind":"computer","online":true,"name":"Mac mini"}]}""")
+        val list = CodexModel.computers(data)
+        assertEquals(listOf("MacBook Pro", "Mac mini"), list.map { it.name })
+        assertEquals("device:mac", CodexModel.pick(list, null))
+        assertEquals("device:mini", CodexModel.pick(list, "device:mini"))
+        assertEquals("device:mac", CodexModel.pick(list, "device:gone"))
+        assertNull(CodexModel.pick(CodexModel.computers(null), null))
+    }
+
+    @Test fun sessionsGoByProjectTheBusyAndRecentFirst() {
+        val data = JSONObject("""{"sessions":[
+            {"id":"a","title":"A","state":"idle","cwd":"/w/app","updated_at":100},
+            {"id":"b","title":"B","state":"idle","cwd":"/w/notes/","updated_at":300},
+            {"id":"c","title":"C","state":"running","cwd":"/w/app","updated_at":50},
+            {"id":"d","title":"D","state":"idle","updated_at":10}]}""")
+        val projects = CodexModel.projects(CodexModel.sessions(data))
+        assertEquals(listOf("app", "notes", "其他"), projects.map { it.name })
+        assertEquals(listOf("a", "c"), projects[0].sessions.map { it.id })
+        assertEquals("/w/notes", projects[1].cwd)
+        assertNull(projects[2].cwd)
+        assertEquals("t9", CodexModel.created(JSONObject("""{"thread":"t9","sent":true}""")))
     }
 
     @Test fun agoAndTheWordsForAFailure() {

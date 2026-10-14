@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `8ae143876855871b`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `b4e0ee5f44384ded`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -160,7 +160,7 @@
 | 词 | 调用方 | effect / risk | 标记 | 输入 | 进行时 | 说明 |
 |---|---|---|---|---|---|---|
 | `list` | owner, agent, app | read / none | - | - | 在看有哪些帮手 | Every declared agent: id, name, what it does, whether it is idle, working or stopped, and which one is primary. |
-| `runtimes` | owner, agent, app | read / none | - | - | 在查能在哪儿开帮手 | The agent runtimes available (in the main body, and on computers allowed to host agents) with their models. Query before declaring an agent that runs on a computer. |
+| `runtimes` | owner, agent, app | read / none | - | - | 在查能在哪儿开帮手 | The agent runtimes you can run your own helper agents on (in the main body, and on computers allowed to host agents: codex = the Codex CLI, claude = Claude Code) with their models. Query before declaring an agent that runs on a computer. Not the owner's Codex App and its sessions: those are x.codex.* on the computer's device. |
 | `threads` | owner, agent | read / none | - | - | 在看交出去的事 | The delegated work in flight (threads between agents). |
 | `thread.stop` | owner, agent | act / none | - | thread* | 在停下交出去的事 | Stop one delegated thread of work. |
 | `describe` | owner, agent, app | read / none | - | agent* | 在看帮手 | One agent's declaration (role, tools, lanes, modules, where it lives) and its state. |

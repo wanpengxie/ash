@@ -40,8 +40,11 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
     private val input = EditText(activity)
     private val composer = composer()
 
-    /** The computer's id (`device:…`), once found. */
+    /** The online computers, and the one shown (`device:…`), once found. */
+    private var computers: List<CodexModel.Computer> = emptyList()
     private var device: String? = null
+    /** A new session being written, in this project (its first message goes with x.codex.new). */
+    private var newIn: CodexModel.Project? = null
     private var sessions: List<CodexModel.Session>? = null
     private var detailId: String? = null
     private var detail: CodexModel.Detail? = null
@@ -79,8 +82,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
 
     /** The back key: from a session to the list; false when the list itself is showing. */
     fun back(): Boolean {
-        if (detailId == null) return false
-        detailId = null; detail = null; note = null; stop.visibility = View.GONE
+        if (detailId == null && newIn == null) return false
+        detailId = null; detail = null; newIn = null; note = null; stop.visibility = View.GONE
         render(); refresh()
         return true
     }
@@ -91,11 +94,14 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         if (loading || closed) return
         if (!port.open) { note = "还没连上 Ash"; render(); return }
         val dev = device
-        if (dev == null) {
+        // The computers are read again now and then, so one that comes online shows up beside the others.
+        if (dev == null || System.currentTimeMillis() - computersAt > 15_000) {
             loading = true
             port.call("service:devices", "list") { data, failure ->
                 loading = false
-                device = CodexModel.computer(data)
+                computersAt = System.currentTimeMillis()
+                computers = CodexModel.computers(data)
+                device = CodexModel.pick(computers, chosen)
                 if (device == null) { sessions = null; note = failure?.let { CodexModel.unreachable(it.code) } ?: "没有在线的电脑。电脑上的 Ash 连上以后，这里就能看到 Codex。"; render() }
                 else refresh()
             }
@@ -106,7 +112,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         val done: (JSONObject?, HumanPort.Failure?) -> Unit = { data, failure ->
             loading = false
             when {
-                failure != null -> { device = null; note = CodexModel.unreachable(failure.code); if (id == null) sessions = null }
+                // The computer went away: find the computers again. A computer without Codex keeps its place, so another can be chosen.
+                failure != null -> { if (failure.code == "offline") device = null; note = CodexModel.unreachable(failure.code); if (id == null) sessions = null }
                 id == null -> { sessions = CodexModel.sessions(data); note = null }
                 id == detailId -> { detail = CodexModel.detail(data); note = null }
             }
@@ -114,6 +121,37 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         }
         if (id == null) port.call(dev, CodexModel.SESSIONS, JSONObject().put("limit", 50), done)
         else port.call(dev, CodexModel.SESSION, JSONObject().put("thread", id).put("turns", 8).put("max_chars", 1200), done)
+    }
+
+    private var chosen: String? = null
+    private var computersAt = 0L
+
+    private fun choose(computer: String) {
+        if (computer == device) return
+        chosen = computer; device = computer; sessions = null; note = null
+        render(); refresh()
+    }
+
+    private fun startNew(p: CodexModel.Project) {
+        newIn = p; detailId = null; detail = null; note = null
+        render(); input.requestFocus()
+    }
+
+    private fun create(text: String) {
+        val dev = device ?: return
+        val p = newIn ?: return
+        val cwd = p.cwd ?: return
+        if (busy) return
+        busy = true
+        note = "正在电脑上开新会话…"; render()
+        port.call(dev, CodexModel.NEW, JSONObject().put("cwd", cwd).put("text", text)) { data, failure ->
+            busy = false
+            val id = CodexModel.created(data)
+            if (failure != null || id == null) { note = null; render(); toast(failure?.let { CodexModel.failure(it.code, it.message) } ?: "没能开新会话"); input.setText(text); return@call }
+            newIn = null; detailId = id; detail = null; note = null; sessions = null
+            render(); main.postDelayed({ refresh() }, 600)
+        }
+        input.setText("")
     }
 
     private fun open(s: CodexModel.Session) {
@@ -176,30 +214,51 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         addView(input, LinearLayout.LayoutParams(0, -2, 1f))
         addView(AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_up)!!, "发送", filled = true) {
             val t = input.text.toString().trim()
-            if (t.isNotEmpty()) say(t)
+            if (t.isNotEmpty()) { if (newIn != null) create(t) else say(t) }
         })
     }
 
     private fun render() {
         if (closed) return
-        val inDetail = detailId != null
+        val inDetail = detailId != null || newIn != null
         val atBottom = content.height - (scroll.height + scroll.scrollY) < d(80)
         content.removeAllViews()
         composer.visibility = if (inDetail) View.VISIBLE else View.GONE
         if (!inDetail) { title.text = "Codex"; stop.visibility = View.GONE }
         note?.let { content.addView(AshUi.text(activity, it, AshTokens.Type.callout, c.text2).apply { gravity = Gravity.CENTER; setPadding(d(8), d(24), d(8), d(8)) }) }
-        if (inDetail) drawDetail(atBottom || detail == null) else drawList()
+        when {
+            newIn != null -> drawNew(newIn!!)
+            inDetail -> drawDetail(atBottom || detail == null)
+            else -> drawList()
+        }
     }
 
     private fun drawList() {
+        // Several computers: which one's Codex is shown.
+        if (computers.size > 1) {
+            val at = computers.indexOfFirst { it.id == device }.coerceAtLeast(0)
+            content.addView(AshUi.segmented(activity, computers.map { it.name }, at) { choose(computers[it].id) })
+        }
         val list = sessions ?: run { if (note == null) content.addView(hint("正在读取…")); return }
         if (list.isEmpty()) { content.addView(hint("Codex 里还没有会话")); return }
         val now = System.currentTimeMillis()
-        content.addView(AshUi.group(activity, rows = list.map { s ->
-            val tone = when { s.waiting -> AshUi.Tone.WARN; s.running -> AshUi.Tone.OK; else -> AshUi.Tone.MUTE }
-            AshUi.row(activity, s.title, CodexModel.subtitle(s, now).ifEmpty { null }, null, AshUi.Tone.MUTE,
-                trailing = AshUi.tag(activity, CodexModel.stateLabel(s), tone, dot = s.running)) { open(s) }
-        }, iconInset = false))
+        for (p in CodexModel.projects(list)) {
+            val rows = mutableListOf<View>()
+            if (p.cwd != null) rows += AshUi.row(activity, "＋ 新对话", null, null, AshUi.Tone.MUTE) { startNew(p) }
+            rows += p.sessions.map { s ->
+                val tone = when { s.waiting -> AshUi.Tone.WARN; s.running -> AshUi.Tone.OK; else -> AshUi.Tone.MUTE }
+                AshUi.row(activity, s.title, s.updatedAt?.let { CodexModel.ago(it, now) }, null, AshUi.Tone.MUTE,
+                    trailing = AshUi.tag(activity, CodexModel.stateLabel(s), tone, dot = s.running)) { open(s) }
+            }
+            content.addView(AshUi.group(activity, title = p.name, rows = rows, iconInset = false))
+        }
+    }
+
+    private fun drawNew(p: CodexModel.Project) {
+        title.text = "新对话 · ${p.name}"
+        stop.visibility = View.GONE
+        input.hint = "第一句话…"
+        if (note == null) content.addView(hint("在 ${p.cwd} 里开一个新的 Codex 会话，写下第一句话发出去。"))
     }
 
     private fun drawDetail(toBottom: Boolean) {

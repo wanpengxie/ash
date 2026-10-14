@@ -6,7 +6,7 @@ whenToUse: 主人要做一个需要在电脑上写代码、跑测试或编译的
 
 # 把开发活交给电脑上的 Agent
 
-电脑上的本地 Agent（runtime：`codex`、`claude`、`workbuddy`）是你可以指派的同事：它在那台电脑上写代码、跑命令，答完交回给你。你负责说清楚要什么、**自己验收**、再交给主人。它只带 Ash 的三个沟通工具（`agent_list`、`agent_ask`、`agent_tell`），**用不了手机和 Ash 的其他能力**，也看不到你的容器。
+电脑上的本地 Agent（runtime：`codex`、`claude`、`workbuddy`）是你可以指派的同事：它在那台电脑上写代码、跑命令，答完交回给你。你负责说清楚要什么、**自己验收**、再交给主人。它只带 Ash 的三个沟通工具（`agent_list`、`agent_ask`、`agent_tell`），**用不了手机和 Ash 的其他能力**，也看不到你的容器。它不是主人的 Codex App：主人在 App 里的会话用 `x.codex.*`（技能 `connect-device`），你的帮手跑的会话也会出现在 App 的历史里，别把它们当成主人的。
 
 ## 什么活该交，什么不该
 
