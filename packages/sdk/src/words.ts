@@ -252,27 +252,27 @@ add("service:vault", "vault.changed", "event", obj({ ref: nonempty, action: choi
 // ===================================================================================================================
 // service:devices: who may connect (the hub's registry of hands)
 // ===================================================================================================================
-const pairKind = choice("computer", "server", "browser");
-const accessFields = { tier: choice("ask", "full"), lend: bool, body: bool, local_agents: bool, web_ui: bool };
+const pairKind = choice("computer", "server");
+const accessFields = { tier: choice("ask", "full"), lend: bool, body: bool, local_agents: bool };
 const deviceInfo = obj({
-  device: deviceRef, name: str, kind: str, online: bool, tier: choice("ask", "full"), lend: bool, body: bool, local_agents: bool, web_ui: bool,
+  device: deviceRef, name: str, kind: str, online: bool, tier: choice("ask", "full"), lend: bool, body: bool, local_agents: bool,
   via: choice("local", "gateway"), ip: str, last_seen: nonnegativeSafe, revoked_at: nonnegativeSafe,
 }, ["device", "name", "online"], true);
-const pairState = choice("waiting", "requested", "approved", "connected", "rejected", "expired");
-const pairInfo = obj({ pair_id: id, state: pairState, name: str, kind: pairKind, expires_at: nonnegativeSafe, device: deviceRef }, ["pair_id", "state"]);
+const pairState = choice("waiting", "requested", "approved", "connected", "rejected", "expired", "failed");
+const pairInfo = obj({ pair_id: id, state: pairState, name: str, kind: pairKind, expires_at: nonnegativeSafe, device: deviceRef, reason: str }, ["pair_id", "state"]);
 add("service:devices", "list", "request", empty, obj({ devices: array(deviceInfo) }, ["devices"]),
-  { label: "在看已连接设备", description: "Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents, web chat) and its tier." });
+  { label: "在看已连接设备", description: "Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier." });
 add("service:devices", "describe", "request", obj({ device: deviceRef }, ["device"]), deviceInfo,
   { label: "在看设备详情", description: "One hand in detail: how it connects, what it was allowed, when it was last seen." });
 add("service:devices", "pair_start", "request", obj({ kind: pairKind, name: nonempty }),
-  obj({ pair_id: id, expires_at: nonnegativeSafe, code: nonempty, url: str }, ["pair_id", "expires_at"]),
-  { effect: "act", label: "在开始设备配对", description: "Start pairing a new computer, server or browser. You get the pair_id, the one-time code and the address to open on the new device (its page gives the install command for a computer and asks a browser for the code); hand them to the owner, or run it yourself on a device you can already use. Nothing joins without the owner: the new device's request comes to the owner as a card, who decides what it may do. As the pairing moves on you get a background message; pair_status to look." });
+  obj({ pair_id: id, expires_at: nonnegativeSafe, command: nonempty }, ["pair_id", "expires_at", "command"]),
+  { effect: "act", label: "在开始设备配对", description: "Start pairing a new computer or server. You get the pair_id and the whole install command to run in the new computer's terminal: it downloads Ash's program from its GitHub release, checks it, and pairs with a one-time code and a one-time secret. The secret never goes to the relay, so the relay cannot swap either side's key; it lives only in this command, so give the command to the owner in the conversation (or run it yourself on a computer you can already use), nowhere else. The device's request comes back to you; pair_approve lets it in. As the pairing moves on you get a background message; pair_status to look." });
 add("service:devices", "pair_status", "request", obj({ pair_id: id }, ["pair_id"]), pairInfo,
-  { label: "在看配对进展", description: "Where a pairing is: waiting for the code, requested (the owner is asked), approved, connected, rejected or expired." });
+  { label: "在看配对进展", description: "Where a pairing is: waiting for the command to be run, requested (a device asked to join), approved, connected, rejected, expired, or failed (with the reason: the device or the hub could not prove the pairing secret on the first connection, so a key was swapped on the way; pair again)." });
 add("service:devices", "pair_pending", "request", empty, obj({ pairs: array(pairInfo) }, ["pairs"]),
   { label: "在看配对申请", description: "The pairings a device has answered, waiting for pair_approve or pair_reject." });
 add("service:devices", "pair_approve", "request", obj({ pair_id: id, name: nonempty, ...accessFields }, ["pair_id"]), pairInfo,
-  { effect: "write", label: "在批准设备配对", description: "Let in the device that answered a pairing, with what it may do: lend capabilities, serve as a body, run local agents, web chat; and its tier. The one who started the pairing approves it (the owner asked for this device), right away." });
+  { effect: "write", label: "在批准设备配对", description: "Let in the device that answered a pairing, with what it may do: lend capabilities, serve as a body, run local agents; and its tier. The one who started the pairing approves it (the owner asked for this device), right away. The pairing is done when the device connects and proves the pairing secret." });
 add("service:devices", "pair_reject", "request", obj({ pair_id: id }, ["pair_id"]), pairInfo,
   { effect: "write", label: "在拒绝设备配对", description: "Reject a pairing request." });
 add("service:devices", "revoke", "request", obj({ device: deviceRef }, ["device"]), obj({ revoked: bool }, ["revoked"]),
@@ -282,13 +282,13 @@ add("service:devices", "restore", "request", obj({ device: deviceRef }, ["device
 add("service:devices", "rename", "request", obj({ device: deviceRef, name: nonempty }, ["device", "name"]), obj({ device: deviceRef, name: str }, ["device", "name"]),
   { effect: "write", label: "在修改设备名称", description: "Change the name a hand is shown with." });
 add("service:devices", "access_set", "request", obj({ device: deviceRef, ...accessFields }, ["device"]), deviceInfo,
-  { effect: "write", label: "在调整设备权限", description: "Change what a hand may do (lend capabilities, serve as a body, run local agents, web chat) and its tier (ask, full): the same choices pair_approve makes." });
+  { effect: "write", label: "在调整设备权限", description: "Change what a hand may do (lend capabilities, serve as a body, run local agents) and its tier (ask, full): the same choices pair_approve makes." });
 add("service:devices", "update", "request", obj({ device: deviceRef, version: { type: "string", pattern: "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" }, sha256: sha }, ["device", "version", "sha256"]), obj({ started: bool }, ["started"]),
   { effect: "write", risk: "structure", label: "在更新设备程序", description: "Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked." });
-add("service:devices", "pair_code", "request", obj({ pair_id: id }, ["pair_id"]), obj({ code: nonempty, url: str, expires_at: nonnegativeSafe }, ["code"]),
-  { callers: OWNER_AGENT, label: "在看配对码", description: "The one-time code of a pairing still waiting, with the address to open on the new device. The code only lets the device ask; pair_approve lets it in." });
-add("service:devices", "pair.changed", "event", obj({ pair_id: id, state: pairState, device: deviceRef }, ["pair_id", "state"]), undefined,
-  { record: true, label: "在记下配对进展", description: "A pairing moved on (requested, approved, rejected, connected, expired). The one who started it is told by a background message." });
+add("service:devices", "pair_code", "request", obj({ pair_id: id }, ["pair_id"]), obj({ command: nonempty, expires_at: nonnegativeSafe }, ["command"]),
+  { callers: OWNER_AGENT, label: "在看配对命令", description: "The install command of a pairing still waiting, again. It only lets the device ask; pair_approve lets it in." });
+add("service:devices", "pair.changed", "event", obj({ pair_id: id, state: pairState, device: deviceRef, reason: str }, ["pair_id", "state"]), undefined,
+  { record: true, label: "在记下配对进展", description: "A pairing moved on (requested, approved, rejected, connected, expired, failed with its reason). The one who started it is told by a background message." });
 add("service:devices", "config.changed", "event", obj({ item: nonempty, state: nonempty }, ["item", "state"]), undefined,
   { direction: "in", label: "在记下手机设置变化", description: "A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded." });
 add("service:devices", "codex.turn_ended", "event", obj({ thread: nonempty, title: str, outcome: str, said: str }, ["thread"]), undefined,

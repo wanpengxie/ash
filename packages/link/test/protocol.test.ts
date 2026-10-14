@@ -92,7 +92,7 @@ test("a hand that sends a frame only the kernel sends is closed with 4400", asyn
   hand.on("message", (data: string) => {
     const frame = JSON.parse(data) as Frame;
     frames.push(frame);
-    if (frame.t === "challenge") hand.send(JSON.stringify({ t: "hello", protocol: "ash-link/1", hand: { kind: "computer", name: "h", version: "1", platform: "x" }, channels: { device: {} } }));
+    if (frame.t === "challenge") hand.send(JSON.stringify({ t: "hello", protocol: "ash-link/2", hand: { kind: "computer", name: "h", version: "1", platform: "x" }, channels: { device: {} } }));
     if (frame.t === "welcome") hand.send(JSON.stringify({ t: "call", ch: "device", id: "c", capability: "a.b", args: {}, caller: { member: "m", label: "l" }, deadline: 1 }));
   });
   kernel.accept(server);

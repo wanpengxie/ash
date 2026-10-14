@@ -11238,7 +11238,7 @@ var DEFAULT_RECOVERY_HINTS = Object.freeze({
 });
 
 // packages/sdk/src/versions.ts
-var LINK_PROTOCOL = "ash-link/1";
+var LINK_PROTOCOL = "ash-link/2";
 
 // packages/sdk/src/word.ts
 var EFFECTS = Object.freeze(["read", "write", "act", "execute"]);

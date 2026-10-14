@@ -1,19 +1,20 @@
 /**
- * The hub's connection to its relay (HUB-MODULES §2.1 "网关", SPEC-03 §8): the owner stays connected to the relay, opens a
- * `/link` tunnel to every device it reports online that may be reached, and takes the browsers the relay lets in. It also
- * is the relay's side of pairing (`PairingGateway`, which `service:devices` uses).
+ * The hub's connection to its relay (HUB-MODULES §2.1 "网关", SPEC-03 §8): the owner stays connected to the relay and opens a
+ * `/link` tunnel to every device it reports online that may be reached, secured end to end (docs/LINK-E2E.md): the relay
+ * passes on what it cannot read and serves nothing itself. It also is the relay's side of pairing (`PairingGateway`, which
+ * `service:devices` uses), and it keeps the hub's TLS key, the owner's endorsement of it and the one-time pairing secrets.
  *
- * Which device gets a tunnel: the relay holds one permission, `expose_capability`, for everything that is not the web
- * page, and at pairing the hub grants it when any of lending capabilities, serving as a body or running local agents is
- * allowed. So "has `expose_capability`" is the relay's word for "has a non-web permission". The kernel's own record
- * decides which channels open at the handshake (lend, body, local agents); this module only skips devices it has no record of
- * or that are revoked. It also carries a browser's HTTP request for the web page to the link server (`relayHttp`).
+ * Which device gets a tunnel: the relay holds one permission, `expose_capability`, and at pairing the hub grants it when any
+ * of lending capabilities, serving as a body or running local agents is allowed. The kernel's own record decides which
+ * channels open at the handshake; this module only skips devices it has no record of or that are revoked.
  */
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { WordError } from "../../../../../sdk/src/message";
+import { DEVICE_RELEASES, DEVICE_VERSION } from "../../../../../sdk/src/versions";
 import type { Db } from "../../../kernel/ledger";
 import type { Vault } from "../../../kernel/types";
-import { Relay, RelayError, relayRefused, relayUnanswered, type BrowserOpen, type RelayDevice, type RelayHttpRequest, type RelayHttpResponse, type RelayOptions, type RelayPairRequest } from "../../../../../link/src/gateway";
+import { Relay, RelayError, relayRefused, relayUnanswered, type RelayDevice, type RelayOptions, type RelayPairRequest } from "../../../../../link/src/gateway";
+import { endorsementText, linkKey, type Endorsement, type LinkKey } from "../../../../../link/src/secure";
 import type { LinkSocket } from "../../../../../link/src/socket";
 import type { Devices, PairKind, PairingGateway, RelayPermission } from "../hands/devices";
 import type { HandRegistry } from "../hands/registry";
@@ -28,7 +29,7 @@ export interface OwnerIdentity {
 
 export interface GatewayControlDeps {
   db: Db;
-  link: Pick<HubLinkServer, "acceptGateway" | "relayHttp">;
+  link: Pick<HubLinkServer, "acceptGateway">;
   hands: Pick<HandRegistry, "get">;
   vault: Pick<Vault, "use">;
   identity: OwnerIdentity;
@@ -57,7 +58,16 @@ const SCHEMA = "CREATE TABLE IF NOT EXISTS link_gateway (key TEXT PRIMARY KEY, v
 /** The relay closes a tunnel with these when retrying cannot help: revoked, unknown stream, offline or not allowed, replaced, device gone. */
 const NO_REOPEN = new Set([4003, 4403, 4404, 4409, 4410]);
 const sha256b64u = (text: string) => createHash("sha256").update(text).digest("base64url");
-const WEB: readonly string[] = ["web_ui", "chat"];
+/** The owner's endorsement of the hub's TLS key lasts this long, and is signed again when less than [RENEW_MS] is left. */
+const ENDORSE_MS = 30 * 86_400_000;
+const RENEW_MS = 7 * 86_400_000;
+
+/**
+ * The one command that installs the computer program from its GitHub release (the script checks the package against the
+ * release's SHA256SUMS) and pairs it. The secret is in it and nowhere else the relay could see.
+ */
+export const installCommand = (relay: string, code: string, secret: string): string =>
+  `curl -fsSL ${DEVICE_RELEASES}/device-v${DEVICE_VERSION}/install.sh | sh -s -- ${relay} ${code} ${secret}`;
 
 const PROBLEM_TEXT: Record<string, string> = {
   claimed_by_other: "The relay is claimed by another owner.",
@@ -79,7 +89,9 @@ function refusal(problem: string, detail: string): WordError {
 
 export class GatewayControl {
   private relay: Relay | null = null;
-  private devices: Pick<Devices, "pairs" | "pairingRequested"> | null = null;
+  private devices: Pick<Devices, "pairs" | "pairingRequested" | "pairingFailed"> | null = null;
+  private creds: { key: LinkKey; endorsement: Endorsement | null } | null = null;
+  private signing: Promise<void> | null = null;
   private readonly tunnels = new Map<string, { socket: LinkSocket; at: number; failures: number }>();
   private readonly failures = new Map<string, number>();
   private retry = new Map<string, ReturnType<typeof setTimeout>>();
@@ -124,6 +136,7 @@ export class GatewayControl {
     this.relay = relay;
     this.put("url", origin);
     this.put("account_email", opts.account?.email);
+    await this.endorse().catch((error) => this.d.log?.("the owner's endorsement of the hub's key could not be made; tunnels wait for it", error));
     relay.start();
     return origin;
   }
@@ -147,6 +160,7 @@ export class GatewayControl {
 
   private async begin(url: string): Promise<void> {
     this.relay = await this.build(url, () => null);
+    await this.endorse().catch((error) => this.d.log?.("the owner's endorsement of the hub's key could not be made; tunnels wait for it", error));
     this.relay.start();
   }
 
@@ -181,8 +195,6 @@ export class GatewayControl {
       handlers: {
         devices: (list) => this.reconcile(list),
         pairRequest: (request) => this.pairRequest(request),
-        browser: (open) => this.browser(open),
-        http: (request) => this.web(request),
       },
     };
     return (this.d.relay ?? ((o) => new Relay(o)))(options);
@@ -225,6 +237,31 @@ export class GatewayControl {
     return true;
   }
 
+  // ---- the hub's key -------------------------------------------------------------------------------------------------------
+
+  /**
+   * The hub's TLS key (made once and kept in this table; a device judges the hub by it) and the owner's endorsement of it,
+   * signed again by the owner's key when it is missing, runs low, or names another owner or key. One signing at a time.
+   */
+  private endorse(): Promise<void> {
+    this.signing ??= (async () => {
+      if (!this.creds) {
+        let pem = this.get("link_key");
+        if (!pem) { pem = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }) as string; this.put("link_key", pem); }
+        const saved = this.get("link_endorsement");
+        this.creds = { key: linkKey(createPrivateKey(pem)), endorsement: saved ? JSON.parse(saved) as Endorsement : null };
+      }
+      const owner = await this.d.identity.key();
+      const { key, endorsement } = this.creds;
+      if (endorsement && endorsement.owner_key === owner.public_key && endorsement.hub_key === key.publicKey && endorsement.expires_at - Date.now() > RENEW_MS) return;
+      const unsigned = { owner_key: owner.public_key, hub_key: key.publicKey, expires_at: Date.now() + ENDORSE_MS };
+      const { sig } = await this.d.identity.sign(Buffer.from(endorsementText(unsigned), "utf8").toString("base64url"));
+      this.creds.endorsement = { ...unsigned, sig };
+      this.put("link_endorsement", JSON.stringify(this.creds.endorsement));
+    })().finally(() => { this.signing = null; });
+    return this.signing;
+  }
+
   // ---- tunnels -------------------------------------------------------------------------------------------------------------
 
   private reachable(device: RelayDevice): boolean {
@@ -245,6 +282,14 @@ export class GatewayControl {
   private open(handId: string): void {
     const relay = this.relay;
     if (!relay) return;
+    const creds = this.creds;
+    const endorsement = creds?.endorsement;
+    if (!creds || !endorsement || endorsement.expires_at <= Date.now()) {
+      // Without the owner's word for its key the hub cannot prove itself: get it, then look at the devices again.
+      void this.endorse().then(() => relay.refreshDevices(), (error) => this.d.log?.("the owner's endorsement of the hub's key could not be made", error));
+      return;
+    }
+    if (endorsement.expires_at - Date.now() < RENEW_MS) void this.endorse().catch((error) => this.d.log?.("renewing the owner's endorsement failed", error));
     let socket: LinkSocket;
     try { socket = relay.openLink(handId); }
     catch (error) { this.d.log?.(`could not open a tunnel to ${handId}`, error); return; }
@@ -263,30 +308,23 @@ export class GatewayControl {
       timer.unref();
       this.retry.set(handId, timer);
     });
-    this.d.link.acceptGateway(socket, handId);
-  }
-
-  /** A browser the relay let in: only `/link`, and only the human channel. */
-  private browser(open: BrowserOpen): void {
-    let pathname = "";
-    try { pathname = new URL(open.path, "http://browser.invalid").pathname; } catch { /* refused below */ }
-    if (pathname !== "/link") return open.reject(4404, "path_not_allowed");
-    this.d.link.acceptGateway(open.accept(), open.from, { humanOnly: true });
-  }
-
-  /** A browser's request for the web page: the same rule as the web socket, the device must be one the owner allowed web access. */
-  private async web(request: RelayHttpRequest): Promise<RelayHttpResponse> {
-    const hand = this.d.hands.get(request.from);
-    if (!hand || hand.revoked_at || !hand.web_ui) {
-      return { status: 403, headers: [["content-type", "application/json"]], body: Buffer.from('{"error":"forbidden","message":"web access is not allowed for this device"}') };
-    }
-    return this.d.link.relayHttp(request);
+    const secret = `pair_secret:${handId}`;
+    this.d.link.acceptGateway(socket, handId, {
+      key: creds.key, endorsement, pairSecret: this.get(secret) ?? null,
+      paired: () => this.put(secret, undefined),
+      refused: (refusal) => {
+        if (!refusal.pairing) return;
+        // The key that connected is not the one that asked to pair: the relay swapped it. The pairing is over.
+        this.put(secret, undefined);
+        this.devices?.pairingFailed(handId, refusal.message);
+      },
+    });
   }
 
   // ---- pairing -------------------------------------------------------------------------------------------------------------
 
   /** `service:devices` is built with the pairing side of this module, so it is given back afterwards. */
-  bindDevices(devices: Pick<Devices, "pairs" | "pairingRequested">): void { this.devices = devices; }
+  bindDevices(devices: Pick<Devices, "pairs" | "pairingRequested" | "pairingFailed">): void { this.devices = devices; }
 
   /**
    * A device asked to pair. The relay does not say with which code, so the hub finds the pairing: by the code's hash when
@@ -300,21 +338,25 @@ export class GatewayControl {
     const pair = request.ticket_hash ? waiting.find((p) => sha256b64u(p.ticket) === request.ticket_hash) : waiting.length === 1 ? waiting[0] : undefined;
     if (!pair) { this.d.log?.(`pairing request ${request.request_id} cannot be matched to a pairing (${waiting.length} waiting)`); return; }
     devices.pairingRequested({
-      request_id: request.request_id, hand_id: request.client_id, name: request.name, kind: pair.kind === "browser" ? "browser" : "computer",
+      request_id: request.request_id, hand_id: request.client_id, name: request.name, kind: "computer",
       public_key: request.pubkey, fingerprint: request.fingerprint, ticket: pair.ticket,
     });
   }
 
   readonly pairing: PairingGateway = {
-    // A computer opens the install page that carries the code; a browser opens the relay's front page and types the code in.
-    issue: (kind: PairKind) => this.asked(async () => {
+    // The relay gets the code's hash; the secret is made here and only ever written into the command.
+    issue: (_kind: PairKind) => this.asked(async () => {
       const issued = await this.ready().ticket();
-      return { ticket: issued.ticket, expires_in: issued.expires_in, url: kind === "browser" ? `${issued.origin}/` : `${issued.origin}/p/${issued.ticket}` };
+      const secret = randomBytes(32).toString("base64url");
+      return { ticket: issued.ticket, expires_in: issued.expires_in, secret, command: installCommand(issued.origin, issued.ticket, secret) };
     }),
-    approve: (requestId: string, permissions: RelayPermission[]) => this.asked(() => this.ready().approve(requestId, permissions)),
+    // Kept before the relay lets the device in: it connects the moment it is approved.
+    approve: (requestId: string, permissions: RelayPermission[], pairing: { hand: string; secret: string }) => this.asked(async () => {
+      this.put(`pair_secret:${pairing.hand}`, pairing.secret);
+      await this.ready().approve(requestId, permissions);
+    }),
     reject: (requestId: string) => this.asked(() => this.ready().reject(requestId)),
     revoke: (handId: string) => this.asked(async () => { await this.ready().revoke(handId); this.tunnels.get(handId)?.socket.close(4003, "revoked"); }),
-    setWebUi: (handId: string, allow: boolean) => this.asked(() => this.ready().setPermissions(handId, (cur) => [...cur.filter((p) => !WEB.includes(p)), ...(allow ? ["web_ui", "chat"] : [])])),
     setExpose: (handId: string, allow: boolean) => this.asked(() => this.ready().setPermissions(handId, (cur) => [...cur.filter((p) => p !== "expose_capability"), ...(allow ? ["expose_capability"] : [])])),
   };
 

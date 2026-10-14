@@ -6,7 +6,7 @@ import { startHub } from "./harness";
 test("the web client: the page, its manifest, icon and faces are served at /, and nothing else is, to GET only", async (t) => {
   const { staticWeb } = await import("../../../src/edges/link-server/web");
   const hub = await startHub(); t.after(() => hub.stop());
-  hub.server.mount("/", staticWeb(), { relay: true });
+  hub.server.mount("/", staticWeb());
   const get = (path: string, method = "GET") => fetch(`http://127.0.0.1:${hub.port}${path}`, { method });
 
   const page = await get("/");

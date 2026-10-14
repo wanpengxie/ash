@@ -13,7 +13,7 @@ import type { Ledger } from "../../../../src/kernel/ledger";
 import type { Router } from "../../../../src/kernel/types";
 import { openLedger } from "../../../kernel/ledger/helpers";
 import { eventually } from "../../../fixtures/wait";
-import { connect, connectViaRelay, newIdentity, startHub, type Hub, type TestHand } from "../harness";
+import { connect, startHub, type Hub, type TestHand } from "../harness";
 
 export interface Sent { msg: Outgoing; caller: Caller }
 
@@ -135,21 +135,6 @@ export class Channel {
         log: (message) => self.logs.push(message),
         stream: (stream) => { self.streams.push({ sid: stream.sid, ...(stream.mime ? { mime: stream.mime } : {}), data: stream.data }); },
       },
-    });
-    self = new Channel(hand, options);
-    await hand.client.ready();
-    await eventually(() => self.clientId, "the welcome");
-    return self;
-  }
-
-  /** A channel that came through the relay (not local); the hand must be registered with web_ui first. */
-  static async openRemote(hub: Hub, options: ChannelOptions = {}): Promise<Channel> {
-    const identity = await newIdentity();
-    hub.hands.register({ id: identity.handId, name: "远程网页", kind: "browser", public_key: identity.publicKey, paired_by: "gateway", web_ui: true });
-    let self!: Channel;
-    const hand = connectViaRelay(hub, identity.handId, identity, {
-      kind: "browser", channels: { human: { label: options.label ?? "网页", surfaces: options.surfaces ?? ["chat"] } },
-      handlers: { present: async (frame) => { self.presents.push(frame); return { ok: true }; }, welcome: (w) => { const g = w.channels.human; if (g && "client" in g) self.clientId = g.client; } },
     });
     self = new Channel(hand, options);
     await hand.client.ready();

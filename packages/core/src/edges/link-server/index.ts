@@ -1,16 +1,21 @@
 /**
  * link-server (HUB-MODULES §2.1): the one HTTP server of the kernel on 127.0.0.1, and on it `/link`, where hands and
- * channels of people connect with `ash-link/1`. It proves who connects, decides which channels are open
+ * channels of people connect with `ash-link/2`. It proves who connects, decides which channels are open
  * (SPEC-03 §2.2.1) and hands each open channel to the module that owns it: the device channel to the hand
  * registry, the others to whatever is mounted with `onChannel`. Other paths (`/mcp`, the web page) are mounted with
- * `mount`. Connections that arrive through the relay come in through `acceptGateway`.
+ * `mount`; none of them is reachable from the relay.
+ *
+ * Two ways in (docs/LINK-E2E.md §2): the local link on 127.0.0.1, in the clear, with the local token and the hand's
+ * signature; and the relay's tunnels, through `acceptGateway` only, which secures each one (TLS, the owner's endorsement,
+ * the paired key) before the link server sees a frame. The relay passes on what it cannot read.
  */
 import { randomBytes } from "node:crypto";
-import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { handId } from "../../../../sdk/src/ids";
 import { CLOSE_CODES, type HandKind, type HelloFrame, type LinkChannel } from "../../../../sdk/src/link";
 import { MCP_SERVER_VERSION } from "../../../../sdk/src/versions";
+import { SecureRefusal, sameKey, secureHub, type Endorsement, type LinkKey } from "../../../../link/src/secure";
 import {
   createLinkServer as createLink, type AuthContext, type AuthResult, type LinkServer, type LinkSession, type SessionHandlers,
 } from "../../../../link/src/server";
@@ -61,22 +66,15 @@ export interface HubLinkServer {
   /** Opens the port on 127.0.0.1, makes the local token and tells the host both. */
   start(): Promise<Started>;
   stop(): Promise<void>;
-  /**
-   * Routes `path` and everything under it to [handler]; `/` takes what no other mount does. `/link` is not available.
-   * Only a mount made with `relay: true` (the static web page) can be reached by a browser through the relay; `/mcp` is not.
-   * A relay mount sees relayed requests as coming from 127.0.0.1: it must not grant anything on that, nor put the local
-   * token in a page.
-   */
-  mount(path: string, handler: HttpHandler, opts?: { relay?: boolean }): void;
-  /** A browser's HTTP request that came through the relay, served by the mount it would reach here; 404 for any mount that is not for the relay. */
-  relayHttp(request: RelayedRequest): Promise<RelayedResponse>;
+  /** Routes `path` and everything under it to [handler] on 127.0.0.1; `/` takes what no other mount does. `/link` is not available. */
+  mount(path: string, handler: HttpHandler): void;
   /** Gives a channel to the module that owns it. `device` belongs to the hand registry. */
   onChannel(channel: Exclude<LinkChannel, "device">, attach: ChannelAttach): void;
   /**
-   * A WebSocket the relay opened for device [from]; it is judged like any other connection, by the hand's record.
-   * A browser's socket is `humanOnly`: only the human channel can open on it, and it needs no key (the relay vouched for its session).
+   * A tunnel the hub opened through the relay to device [from]. It is secured first ([GatewaySecurity]); only then does the
+   * handshake begin, and the connection is judged like any other, by the hand's record and the key it proved.
    */
-  acceptGateway(socket: LinkSocket, from: string, opts?: { humanOnly?: boolean }): void;
+  acceptGateway(tunnel: LinkSocket, from: string, security: GatewaySecurity): void;
   /** The live connections, oldest first. */
   connections(): LinkConnection[];
   /** Closes one connection by its session id; false when it is not there. */
@@ -85,15 +83,21 @@ export interface HubLinkServer {
   observe(listener: (event: LinkEvent) => void): () => void;
 }
 
-export interface RelayedRequest { method: string; path: string; headers: [string, string][]; body: Uint8Array; signal?: AbortSignal }
-export interface RelayedResponse { status: number; headers: [string, string][]; body: AsyncIterable<Uint8Array> | Uint8Array }
+/** What securing a relay tunnel needs from the hub (the gateway control module keeps it). */
+export interface GatewaySecurity {
+  /** The hub's TLS key and the owner's endorsement of it. */
+  key: LinkKey;
+  endorsement: Endorsement;
+  /** Set until the device proved the one-time pairing secret on its first connection. */
+  pairSecret: string | null;
+  /** The device proved it. */
+  paired?(): void;
+  /** The connection was not secured; [refusal.pairing]: the pairing secret did not hold (a key was swapped on the way). */
+  refused?(refusal: SecureRefusal): void;
+}
 
-/** Request headers that describe the hop, not the request. */
-const HOP_HEADERS = new Set(["host", "connection", "keep-alive", "transfer-encoding", "upgrade", "expect", "content-length", "te", "trailer"]);
-const notFound = (): RelayedResponse => ({ status: 404, headers: [["content-type", "application/json"]], body: Buffer.from('{"error":"not_found"}') });
-
-/** Marks a socket as one the relay vouches for; only `acceptGateway` makes one. */
-class FromGateway { constructor(readonly from: string, readonly humanOnly: boolean) {} }
+/** Marks a socket as one that came through a secured relay tunnel; only `acceptGateway` makes one. [peerKey] is the key the device proved. */
+class FromGateway { constructor(readonly from: string, readonly peerKey: string) {} }
 
 const refuse = (code: number, reason: string): AuthResult => ({ ok: false, code, reason });
 const newClient = () => `client:${randomBytes(9).toString("base64url")}`;
@@ -102,7 +106,7 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
   const { hands, hostClient } = options;
   const log = options.log ?? (() => {});
   const channels = new Map<Exclude<LinkChannel, "device">, ChannelAttach>();
-  const mounts = new Map<string, { handler: HttpHandler; relay: boolean }>();
+  const mounts = new Map<string, HttpHandler>();
   /** Whether each handshake came over the local link, until its session is made (the server hands the same `hello` object on). */
   const locals = new WeakMap<HelloFrame, boolean>();
   const open = new Map<string, LinkConnection>();
@@ -124,8 +128,11 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
     const key = hello.hand.public_key;
     if (!relay && !bearerIs(ctx.headers.authorization, token)) return refuse(CLOSE_CODES.unauthenticated, "bad token");
     if (!relay && (!key || !hello.sig)) return refuse(CLOSE_CODES.unauthenticated, "the identity was not proven");
+    if (relay && !key) return refuse(CLOSE_CODES.unauthenticated, "the identity was not proven");
     if (key && (!hello.sig || !spkiBytes(key) || !signatureHolds(key, ctx.nonce, hello.sig))) return refuse(CLOSE_CODES.unauthenticated, "the signature does not hold");
-    const id = key ? await handId(spkiBytes(key)!) : relay!.from;
+    // Through the relay, the hello must name the key the device proved in TLS.
+    if (relay && !sameKey(key!, relay.peerKey)) return refuse(CLOSE_CODES.unauthenticated, "the key is not the one the connection was secured with");
+    const id = await handId(spkiBytes(key!)!);
     if (relay && id !== relay.from) return refuse(CLOSE_CODES.unauthenticated, "the key is not the device's");
     known(id);
 
@@ -135,19 +142,12 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
     if (relay) {
       // A hand that came through the relay is held to what the owner allowed it (SPEC-03 §2.2.1).
       if (!hand) return refuse(CLOSE_CODES.unauthenticated, "unknown device");
-      if (hand.public_key && !key && !relay.humanOnly) return refuse(CLOSE_CODES.unauthenticated, "the identity was not proven");
-      const human = hand.web_ui ? { accepted: true as const, client: newClient(), local: false } : { accepted: false as const, reason: "the owner has not allowed this device web access" };
-      // A browser's socket carries the human channel and nothing else, whatever else this device may do on its own socket.
-      if (relay.humanOnly) {
-        const only = { accepted: false as const, reason: "a browser connection carries only the human channel" };
-        return { ok: true, hand_id: id, channels: { device: only, human, agent: only } };
-      }
       return {
         ok: true, hand_id: id,
         channels: {
           // The device channel carries the manifest, which a body needs even when the hand itself lends nothing.
           device: hand.lend || hands.isBound(id) ? { accepted: true } : { accepted: false, reason: "the owner has not allowed this device to lend capabilities or serve as a body" },
-          human,
+          human: { accepted: false, reason: "a device's own page is not served through the relay yet" },
           agent: hand.local_agents && hand.kind === "computer" ? { accepted: true } : { accepted: false, reason: "the owner has not allowed this computer to run local agents" },
         },
       };
@@ -180,8 +180,9 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
     };
   };
 
+  const kernel = options.kernel ?? { id: "ash-hub", version: MCP_SERVER_VERSION };
   const link: LinkServer = createLink({
-    kernel: options.kernel ?? { id: "ash-hub", version: MCP_SERVER_VERSION },
+    kernel,
     authenticate,
     log,
     refused: ({ code, reason, meta }) => tell({ type: "refused", ...(meta instanceof FromGateway ? { hand: meta.from } : {}), via: meta instanceof FromGateway ? "gateway" : "local", code, reason }),
@@ -205,7 +206,7 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
     const path = new URL(req.url ?? "/", "http://link.invalid").pathname;
     const match = mountFor(path);
     if (!match) { res.writeHead(404).end(); return; }
-    mounts.get(match)!.handler(req, res);
+    mounts.get(match)!(req, res);
   };
   const mountFor = (path: string) => [...mounts.keys()].filter((m) => m === "/" || path === m || path.startsWith(`${m}/`)).sort((a, b) => b.length - a.length)[0];
 
@@ -234,39 +235,34 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
-    mount(path, handler, opts) {
+    mount(path, handler) {
       if (!path.startsWith("/") || path === "/link" || path.startsWith("/link/")) throw new Error(`cannot mount ${path}`);
       if (mounts.has(path)) throw new Error(`${path} is already mounted`);
-      mounts.set(path, { handler, relay: opts?.relay === true });
-    },
-    async relayHttp(request) {
-      // The path is made plain first, so `/link/../mcp` is judged as `/mcp`.
-      let target: URL;
-      try { target = new URL(request.path, "http://link.invalid"); } catch { return notFound(); }
-      const match = mountFor(target.pathname);
-      if (!match || !mounts.get(match)!.relay || !port) return notFound();
-      const headers: Record<string, string | string[]> = {};
-      for (const [name, value] of request.headers) {
-        const key = name.toLowerCase();
-        if (HOP_HEADERS.has(key)) continue;
-        const had = headers[key];
-        headers[key] = had === undefined ? value : Array.isArray(had) ? [...had, value] : [had, value];
-      }
-      if (request.body.byteLength) headers["content-length"] = String(request.body.byteLength);
-      const res = await new Promise<IncomingMessage>((resolve, reject) => {
-        const out = httpRequest({ host: "127.0.0.1", port, method: request.method, path: target.pathname + target.search, headers, signal: request.signal }, resolve);
-        out.once("error", reject);
-        out.end(request.body.byteLength ? Buffer.from(request.body) : undefined);
-      });
-      const pairs: [string, string][] = [];
-      for (const [name, value] of Object.entries(res.headers)) for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) pairs.push([name, v]);
-      return { status: res.statusCode ?? 502, headers: pairs, body: res };
+      mounts.set(path, handler);
     },
     onChannel(channel, attach) {
       if (channels.has(channel)) throw new Error(`the ${channel} channel already has an owner`);
       channels.set(channel, attach);
     },
-    acceptGateway(socket, from, opts) { link.accept(socket, { meta: new FromGateway(from, opts?.humanOnly === true) }); },
+    acceptGateway(tunnel, from, security) {
+      const refused = (code: number, reason: string) => tell({ type: "refused", hand: from, via: "gateway", code, reason });
+      // Without a key on record there is nothing to secure the tunnel against. A revoked hand is still secured, so that it
+      // hears 4003 from the hub itself (inside TLS) and stops; a close code in the clear could be the relay's.
+      const hand = hands.get(from);
+      if (!hand?.public_key) {
+        refused(CLOSE_CODES.unauthenticated, "unknown device");
+        tunnel.close(CLOSE_CODES.unauthenticated, "unknown device");
+        return;
+      }
+      secureHub(tunnel, { key: security.key, endorsement: security.endorsement, kernel, deviceKey: hand.public_key, pairSecret: security.pairSecret }).then(({ socket, peerKey }) => {
+        if (security.pairSecret) security.paired?.();
+        link.accept(socket, { meta: new FromGateway(from, peerKey) });
+      }, (error: unknown) => {
+        const refusal = error instanceof SecureRefusal ? error : new SecureRefusal(CLOSE_CODES.internal, error instanceof Error ? error.message : String(error));
+        refused(refusal.code, refusal.message);
+        security.refused?.(refusal);
+      });
+    },
     connections: () => [...open.values()],
     closeConnection: (conn, code, reason) => link.closeSession(conn, code, reason),
     observe(listener) { listeners.add(listener); return () => void listeners.delete(listener); },

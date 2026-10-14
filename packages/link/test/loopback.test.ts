@@ -18,7 +18,7 @@ test("handshake: challenge, hello, welcome; the token header reaches the callbac
   const kernel = await startKernel({
     authenticate: (hello, ctx) => {
       seenHeader = ctx.headers.authorization;
-      return { ok: true, hand_id: "hand-1", channels: { device: { accepted: true }, human: { accepted: false, reason: "web_ui is off" } } };
+      return { ok: true, hand_id: "hand-1", channels: { device: { accepted: true }, human: { accepted: false, reason: "not offered here" } } };
     },
   });
   const hand = nodeHand(kernel, "laptop");
@@ -28,7 +28,7 @@ test("handshake: challenge, hello, welcome; the token header reaches the callbac
     assert.equal(seenHeader, `Bearer ${TOKEN}`);
     assert.equal(welcome.hand_id, "hand-1");
     assert.equal(welcome.heartbeat_ms, LIMITS.heartbeatMs);
-    assert.deepEqual(welcome.channels, { device: { accepted: true }, human: { accepted: false, reason: "web_ui is off" } });
+    assert.deepEqual(welcome.channels, { device: { accepted: true }, human: { accepted: false, reason: "not offered here" } });
     assert.equal(kernel.sessions[0]!.hello.hand.name, "laptop");
   } finally { hand.stop(); await kernel.stop(); }
 });
@@ -98,7 +98,7 @@ test("a malformed frame after the handshake is closed with 4400 after an error f
     ws.on("message", (data) => {
       const frame = JSON.parse(data.toString()) as Frame;
       seen.push(frame);
-      if (frame.t === "challenge") ws.send(JSON.stringify({ t: "hello", protocol: "ash-link/1", hand: { kind: "computer", name: "raw", version: "1", platform: "x" }, channels: { device: {} } }));
+      if (frame.t === "challenge") ws.send(JSON.stringify({ t: "hello", protocol: "ash-link/2", hand: { kind: "computer", name: "raw", version: "1", platform: "x" }, channels: { device: {} } }));
       if (frame.t === "welcome") ws.send(JSON.stringify({ t: "event", ch: "device", word: "no id" }));
     });
     assert.equal(await closed, 4400);
@@ -422,7 +422,7 @@ test("a channel the hand was not given answers forbidden", async () => {
     const errors: string[] = [];
     ws.on("message", (data) => {
       const frame = JSON.parse(data.toString()) as Frame;
-      if (frame.t === "challenge") ws.send(JSON.stringify({ t: "hello", protocol: "ash-link/1", hand: { kind: "browser", name: "b", version: "1", platform: "web" }, channels: { device: {}, human: {} } }));
+      if (frame.t === "challenge") ws.send(JSON.stringify({ t: "hello", protocol: "ash-link/2", hand: { kind: "browser", name: "b", version: "1", platform: "web" }, channels: { device: {}, human: {} } }));
       if (frame.t === "welcome") ws.send(JSON.stringify({ t: "manifest", ch: "device", rev: 1, capabilities: [], events: [] }));
       if (frame.t === "error") errors.push(frame.code);
     });

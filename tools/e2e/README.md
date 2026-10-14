@@ -91,9 +91,8 @@ Only the hand app holds it. What is available without touching the hub:
   carries it: that is how `packages/core/test/scenarios` and this tool's test get it.
 - On a phone, nothing hands it to an outside process, with one exception that exists only in a **debuggable** build of
   the hand app (see "On a phone or emulator" below).
-- A relay (a computer paired with `web_ui`) is the other formal door for a remote owner; it gives the human channel with
-  `local=false`, so `say`, `answer` and most `call`s work but the local-only words (`vault/set`, `admin/pause`, `admin/logs`) are refused.
-  This tool does not speak the relay.
+- The relay carries only computers' own connections, end to end encrypted (docs/LINK-E2E.md); it serves no page and opens no
+  human channel. This tool does not speak the relay.
 
 ## On a phone or emulator (debuggable build only)
 

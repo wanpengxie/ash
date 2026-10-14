@@ -3,18 +3,16 @@ import type { WordError } from "../../../../sdk/src/message";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { HandClient } from "../../../../link/src/hand";
-import { connectorOver } from "../../../../link/test/fixtures/fake-gateway";
 import { eventually } from "../../fixtures/wait";
 import { agent, msg, owner, startWorld } from "./control-harness";
 import { cap, connect, connected, newIdentity } from "./harness";
 
 const sha256b64u = (text: string) => createHash("sha256").update(text).digest("base64url");
 
-test("a device the relay reports online with a non-web permission gets a /link tunnel and becomes a hand; one with only web permissions does not", async (t) => {
+test("a device the relay reports online with expose_capability gets a secured /link tunnel and becomes a hand; one without does not", async (t) => {
   const w = await startWorld(t);
   const mac = await w.device({ name: "Mac", permissions: ["expose_capability"] });
-  const web = await w.device({ name: "Laptop browser", kind: "browser", permissions: ["web_ui", "chat"], lend: false, web_ui: true });
+  const web = await w.device({ name: "Laptop", permissions: [], lend: false });
 
   await eventually(() => w.hub.hands.online(mac.id), "the Mac to come in through the tunnel");
   assert.equal(w.hub.hands.via(mac.id), "gateway");
@@ -66,48 +64,18 @@ test("a permission taken away at the relay ends the tunnel and it is not opened 
   await eventually(() => w.hub.hands.online(mac.id), "the tunnel to come back");
 });
 
-test("a browser the relay lets in gets the human channel only; a path other than /link is refused", async (t) => {
+test("the relay serves nothing of the hub's: a browser's stream or page request is refused", async (t) => {
   const w = await startWorld(t);
   const identity = await newIdentity();
-  w.hub.hands.register({ id: identity.handId, name: "Chrome", kind: "browser", public_key: identity.publicKey, paired_by: "gateway", web_ui: true });
-
-  const endpoint = w.gw.openBrowser(identity.handId, "/link");
-  const browser = new HandClient({
-    url: "relay://browser/link", connector: connectorOver(endpoint), hand: { kind: "browser", name: "Chrome", version: "1", platform: "web" },
-    channels: { human: { label: "web", surfaces: ["chat"] }, device: {}, agent: { runtimes: [] } } as never,
-  });
-  t.after(() => browser.stop());
-  browser.start();
-  const welcome = await browser.ready();
-  assert.equal(welcome.hand_id, identity.handId);
-  assert.deepEqual([welcome.channels.human && "client" in welcome.channels.human, (welcome.channels.human as { local: boolean }).local], [true, false]);
-  assert.equal((welcome.channels.device as { accepted: boolean }).accepted, false);
-  assert.equal((welcome.channels.agent as { accepted: boolean }).accepted, false);
-  const listed = (await w.link("list")).connections;
-  assert.deepEqual(listed.map((c: any) => [c.hand, c.channels, c.via]), [[identity.handId, ["human"], "gateway"]]);
-
-  const wrongPath = w.gw.openBrowser(identity.handId, "/api/send");
-  await eventually(() => wrongPath.closedWith, "the refusal");
-  assert.equal(wrongPath.closedWith!.code, 4404);
-  assert.equal(wrongPath.opened, false);
-  const query = w.gw.openBrowser(identity.handId, "/link/../mcp");
-  await eventually(() => query.closedWith, "the refusal of a trick path");
-  assert.equal(query.closedWith!.code, 4404);
-});
-
-test("a browser without the web permission is turned away at the handshake, and the owner can see the refusal", async (t) => {
-  const w = await startWorld(t);
-  const identity = await newIdentity();
-  w.hub.hands.register({ id: identity.handId, name: "Guest", kind: "browser", public_key: identity.publicKey, paired_by: "gateway", web_ui: false });
-  const endpoint = w.gw.openBrowser(identity.handId, "/link");
-  const browser = new HandClient({
-    url: "relay://browser/link", connector: connectorOver(endpoint), hand: { kind: "browser", name: "Guest", version: "1", platform: "web" },
-    channels: { human: { label: "web", surfaces: ["chat"] } } as never,
-  });
-  t.after(() => browser.stop());
-  browser.start();
-  const welcome = await browser.ready();
-  assert.equal((welcome.channels.human as { accepted?: boolean }).accepted, false);
+  w.hub.hands.register({ id: identity.handId, name: "Mac", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true });
+  for (const path of ["/link", "/", "/mcp"]) {
+    const stream = w.gw.openBrowser(identity.handId, path);
+    await eventually(() => stream.closedWith, `the refusal of ${path}`);
+    assert.deepEqual([stream.closedWith!.code, stream.opened], [4404, false], path);
+  }
+  const page = await w.gw.browserHttp(identity.handId, { path: "/" });
+  assert.deepEqual([page.status, page.error], [undefined, "not served through the relay"]);
+  assert.deepEqual((await w.link("list")).connections, []);
 });
 
 test("a request the relay does not answer in time is 'unavailable' with the advice to retry, not an internal failure of the hub", async (t) => {
@@ -125,31 +93,77 @@ test("a request the relay does not answer in time is 'unavailable' with the advi
   assert.ok(!/timeout|no matching frame/.test(start.message), "the words of the library are not the owner's");
 });
 
-test("pairing: a non-web permission (lend, body or local agents) gets the relay's expose_capability; the web page alone does not", async (t) => {
+/** The code and the secret out of an install command (`… | sh -s -- <relay> <code> <secret>`). */
+const fromCommand = (command: string) => { const [relay, code, secret] = command.split(" -- ")[1]!.split(" "); return { relay: relay!, code: code!, secret: secret! }; };
+
+test("pairing: the install command fetches the release from GitHub and carries the code and a secret the relay never sees", async (t) => {
   const w = await startWorld(t);
-  const code = async (kind: "computer" | "browser", name: string) => {
-    const { pair_id } = (await w.devices.handle(msg("service:devices", "pair_start", { kind, name }), owner) as any).data;
-    const { code: ticket, url } = (await w.devices.handle(msg("service:devices", "pair_code", { pair_id }), owner) as any).data;
-    assert.equal(url, kind === "browser" ? `${w.gw.url}/` : `${w.gw.url}/p/${ticket}`, "a computer opens the install page that carries the code; a browser opens the relay's front page and types the code in");
-    assert.ok(w.gw.tickets.includes(sha256b64u(ticket)), "the relay holds the code's hash, not the code");
-    return { pair_id, ticket };
-  };
-  const pairWith = async (name: string, kind: "computer" | "browser", approve: Record<string, unknown>) => {
+  const { pair_id, command } = (await w.devices.handle(msg("service:devices", "pair_start", { kind: "computer", name: "Mac" }), owner) as any).data;
+  assert.match(command, /^curl -fsSL https:\/\/github\.com\/wanpengxie\/ash\/releases\/download\/device-v[0-9.]+\/install\.sh \| sh -s -- \S+ \S+ \S+$/);
+  const { relay, code, secret } = fromCommand(command);
+  assert.equal(relay, w.gw.url);
+  assert.ok(secret.length >= 43, "32 random bytes");
+  assert.ok(w.gw.tickets.includes(sha256b64u(code)), "the relay holds the code's hash");
+  assert.ok(!JSON.stringify(w.gw.ops).includes(secret) && !JSON.stringify(w.gw.ops).includes(code), "neither the secret nor the code went to the relay");
+  assert.equal(((await w.devices.handle(msg("service:devices", "pair_code", { pair_id }), owner)) as any).data.command, command);
+});
+
+test("pairing: lend, body or local agents get the relay's expose_capability; nothing ticked gets nothing", async (t) => {
+  const w = await startWorld(t);
+  const pairWith = async (name: string, approve: Record<string, unknown>) => {
     const identity = await newIdentity();
-    const { pair_id, ticket } = await code(kind, name);
-    w.gw.pairRequest({ request_id: `r-${name}`, client_id: identity.handId, name, pubkey: identity.publicKey, ticket_hash: sha256b64u(ticket) });
+    const { pair_id, command } = (await w.devices.handle(msg("service:devices", "pair_start", { kind: "computer", name }), owner) as any).data;
+    w.gw.pairRequest({ request_id: `r-${name}`, client_id: identity.handId, name, pubkey: identity.publicKey, ticket_hash: sha256b64u(fromCommand(command).code) });
     await eventually(() => w.devices.pairs.get(pair_id)!.state === "requested", "the request");
     await w.devices.handle(msg("service:devices", "pair_approve", { pair_id, ...approve }), owner);
     return w.gw.devices.get(identity.handId)!.permissions;
   };
 
-  assert.deepEqual(await pairWith("lender", "computer", { lend: true }), ["expose_capability"]);
-  assert.deepEqual(await pairWith("body", "computer", { lend: false, body: true }), ["expose_capability"]);
+  assert.deepEqual(await pairWith("lender", { lend: true }), ["expose_capability"]);
+  assert.deepEqual(await pairWith("body", { lend: false, body: true }), ["expose_capability"]);
   assert.ok(w.hub.router.sent.some((s) => s.msg.to === "service:bodies" && s.msg.word === "bind"), "the body box binds through service:bodies");
-  assert.deepEqual(await pairWith("agents", "computer", { lend: false, local_agents: true }), ["expose_capability"]);
-  assert.deepEqual(await pairWith("chat only", "computer", { lend: false, web_ui: true }), ["chat", "web_ui"]);
-  assert.deepEqual(await pairWith("everything", "computer", { lend: true, local_agents: true, body: true, web_ui: true }), ["expose_capability", "chat", "web_ui"]);
-  assert.deepEqual(await pairWith("browser", "browser", {}), ["chat", "web_ui"]);
+  assert.deepEqual(await pairWith("agents", { lend: false, local_agents: true }), ["expose_capability"]);
+  assert.deepEqual(await pairWith("nothing", { lend: false }), []);
+});
+
+test("pairing end to end: the device proves the secret on its first connection, pins the owner, and the hub forgets the secret", async (t) => {
+  const w = await startWorld(t);
+  const { pair_id, command } = (await w.devices.handle(msg("service:devices", "pair_start", { kind: "computer", name: "Mac" }), agent) as any).data;
+  const { code, secret } = fromCommand(command);
+  const identity = await newIdentity();
+  // What the relay told the device at pairing is not trusted until the hub proves the secret.
+  const told = (await newIdentity()).publicKey;
+  const mac = await w.device({ name: "Mac", identity, register: false, permissions: [], online: false, trust: { ownerKey: told, pairSecret: secret } });
+  w.gw.pairRequest({ request_id: "r1", client_id: identity.handId, name: "Mac", pubkey: identity.publicKey, ticket_hash: sha256b64u(code) });
+  await eventually(() => w.devices.pairs.get(pair_id)!.state === "requested", "the request");
+  await w.devices.handle(msg("service:devices", "pair_approve", { pair_id, lend: true }), agent);
+  w.gw.setDevice(identity.handId, { online: true });
+
+  await eventually(() => w.devices.pairs.get(pair_id)!.state === "connected", "the pairing to finish");
+  assert.deepEqual(mac.pinned, [w.key.publicKey]);
+  assert.equal(w.hub.db.prepare("SELECT value FROM link_gateway WHERE key = ?").get(`pair_secret:${identity.handId}`), undefined, "the secret is gone");
+  assert.equal(w.hub.hands.via(identity.handId), "gateway");
+});
+
+test("pairing: a relay that swapped the device's key cannot finish it; the record is revoked and the pairing fails with the reason", async (t) => {
+  const w = await startWorld(t);
+  const { pair_id, command } = (await w.devices.handle(msg("service:devices", "pair_start", { kind: "computer", name: "Mac" }), agent) as any).data;
+  const swapped = await newIdentity();
+  // The relay's own key went in as the device's; it never saw the secret.
+  const impostor = await w.device({ name: "Mac", identity: swapped, register: false, permissions: [], online: false, trust: { ownerKey: w.key.publicKey, pairSecret: null } });
+  w.gw.pairRequest({ request_id: "r1", client_id: swapped.handId, name: "Mac", pubkey: swapped.publicKey, ticket_hash: sha256b64u(fromCommand(command).code) });
+  await eventually(() => w.devices.pairs.get(pair_id)!.state === "requested", "the request");
+  await w.devices.handle(msg("service:devices", "pair_approve", { pair_id, lend: true }), agent);
+  w.gw.setDevice(swapped.handId, { online: true });
+
+  await eventually(() => w.devices.pairs.get(pair_id)!.state === "failed", "the pairing to fail");
+  const status = ((await w.devices.handle(msg("service:devices", "pair_status", { pair_id }), agent)) as any).data;
+  assert.match(status.reason, /could not prove the pairing secret: the relay may have swapped the device's key/);
+  assert.ok(w.hub.hands.get(swapped.handId)!.revoked_at, "its record is revoked");
+  assert.equal(w.hub.hands.online(swapped.handId), false);
+  assert.equal(impostor.clients.every((c) => c.state !== "ready"), true);
+  assert.ok(w.tell().some((m) => m.to === "agent:main" && /failed: .*swapped/.test(m.text)), "the agent that started it is told");
+  assert.ok(w.events("handshake_failed").some((e) => e.code === 4001 && /pairing secret/.test(e.reason)));
 });
 
 test("pairing: a request is matched to its pairing by the code's hash; without the hash only an unambiguous one is", async (t) => {
@@ -172,20 +186,19 @@ test("pairing: a request is matched to its pairing by the code's hash; without t
 test("access_set tells the relay when the device starts or stops needing a tunnel", async (t) => {
   const w = await startWorld(t);
   const identity = await newIdentity();
-  const { pair_id } = (await w.devices.handle(msg("service:devices", "pair_start", { kind: "computer", name: "Mac" }), owner) as any).data;
-  const ticket = ((await w.devices.handle(msg("service:devices", "pair_code", { pair_id }), owner)) as any).data.code;
-  w.gw.pairRequest({ request_id: "r1", client_id: identity.handId, name: "Mac", pubkey: identity.publicKey, ticket_hash: sha256b64u(ticket) });
+  const { pair_id, command } = (await w.devices.handle(msg("service:devices", "pair_start", { kind: "computer", name: "Mac" }), owner) as any).data;
+  w.gw.pairRequest({ request_id: "r1", client_id: identity.handId, name: "Mac", pubkey: identity.publicKey, ticket_hash: sha256b64u(fromCommand(command).code) });
   await eventually(() => w.devices.pairs.get(pair_id)!.state === "requested", "the request");
-  await w.devices.handle(msg("service:devices", "pair_approve", { pair_id, lend: false, web_ui: true }), owner);
+  await w.devices.handle(msg("service:devices", "pair_approve", { pair_id, lend: false }), owner);
   const permissions = () => w.gw.devices.get(identity.handId)!.permissions;
-  assert.deepEqual(permissions(), ["chat", "web_ui"]);
+  assert.deepEqual(permissions(), []);
 
   await w.devices.handle(msg("service:devices", "access_set", { device: `device:${identity.handId}`, lend: true }), owner);
-  assert.deepEqual(permissions(), ["chat", "web_ui", "expose_capability"]);
+  assert.deepEqual(permissions(), ["expose_capability"]);
   await w.devices.handle(msg("service:devices", "access_set", { device: `device:${identity.handId}`, local_agents: true, lend: false }), owner);
   assert.ok(permissions().includes("expose_capability"), "still needed for the local agents");
   await w.devices.handle(msg("service:devices", "access_set", { device: `device:${identity.handId}`, local_agents: false }), owner);
-  assert.deepEqual(permissions(), ["chat", "web_ui"]);
+  assert.deepEqual(permissions(), []);
 });
 
 test("list, describe, disconnect: what is connected, how, and the last time it closed; no credential is in any of it", async (t) => {
@@ -371,49 +384,4 @@ test("the words are the contract's, every one, and agents may use them", async (
     assert.ok(words.includes(word), word);
   }
   assert.deepEqual(await w.link("list", {}, agent), { connections: [] });
-});
-
-test("a browser reaches the static web page through the relay, and nothing else: /mcp and other mounts are not served, tricks are judged by the plain path", async (t) => {
-  const w = await startWorld(t);
-  const identity = await newIdentity();
-  w.hub.hands.register({ id: identity.handId, name: "Chrome", kind: "browser", public_key: identity.publicKey, paired_by: "gateway", web_ui: true });
-  const guest = await newIdentity();
-  w.hub.hands.register({ id: guest.handId, name: "Guest", kind: "browser", public_key: guest.publicKey, paired_by: "gateway", web_ui: false });
-  const revoked = await newIdentity();
-  w.hub.hands.register({ id: revoked.handId, name: "Gone", kind: "browser", public_key: revoked.publicKey, paired_by: "gateway", web_ui: true });
-  w.hub.hands.revoke(revoked.handId);
-
-  const seen: { method?: string; url?: string; body: string; type?: string }[] = [];
-  const big = Buffer.alloc(700_000, 1);
-  w.hub.server.mount("/", (req, res) => {
-    const parts: Buffer[] = [];
-    req.on("data", (c) => parts.push(c));
-    req.on("end", () => {
-      seen.push({ method: req.method, url: req.url, body: Buffer.concat(parts).toString(), type: req.headers["content-type"] });
-      if (req.url === "/big") return void res.writeHead(200, { "content-type": "application/octet-stream" }).end(big);
-      res.writeHead(200, { "content-type": "text/html", "set-cookie": "a=b" }).end("<h1>ash</h1>");
-    });
-  }, { relay: true });
-  w.hub.server.mount("/mcp", (_req, res) => void res.writeHead(200).end("tools"));
-  w.hub.server.mount("/internal", (_req, res) => void res.writeHead(200).end("not for the relay"));
-
-  const page = await w.gw.browserHttp(identity.handId, { path: "/" });
-  assert.deepEqual([page.status, page.body.toString(), page.ended], [200, "<h1>ash</h1>", true]);
-  assert.ok(page.headers!.some(([k, v]) => k === "content-type" && v === "text/html"));
-  const post = await w.gw.browserHttp(identity.handId, { method: "POST", path: "/assets/app.js?v=2", headers: [["content-type", "application/json"], ["host", "evil.example"]], body: Buffer.from('{"a":1}') });
-  assert.equal(post.status, 200);
-  assert.deepEqual(seen.at(-1), { method: "POST", url: "/assets/app.js?v=2", body: '{"a":1}', type: "application/json" });
-  assert.ok((await w.gw.browserHttp(identity.handId, { path: "/big" })).body.equals(big));
-
-  const before = seen.length;
-  for (const path of ["/mcp", "/mcp/x", "/internal", "/link/../mcp", "/%2e%2e/mcp", "/a/../../mcp"]) {
-    const answer = await w.gw.browserHttp(identity.handId, { path });
-    assert.equal(answer.status, 404, path);
-    assert.ok(!answer.body.toString().includes("tools"), path);
-  }
-  assert.equal(seen.length, before, "none of them reached the page's handler either");
-
-  for (const id of [guest.handId, revoked.handId, "unknown-device-000000000"]) {
-    assert.equal((await w.gw.browserHttp(id, { path: "/" })).status, 403, id);
-  }
 });

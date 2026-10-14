@@ -24,7 +24,7 @@ const RECENT_REFUSALS = 50;
 /** What the close codes of SPEC-03 §7 mean, for the owner and for agents. */
 const CODE_MEANING: Record<number, string> = {
   1000: "closed normally",
-  4001: "the identity was not proven (wrong token or signature)",
+  4001: "the identity was not proven (wrong token, signature or key, or the connection could not be secured)",
   4003: "the hand has been revoked",
   4008: "the protocol version is not supported; the hand needs updating",
   4009: "a newer connection of the same hand took its place",
@@ -95,7 +95,7 @@ export class LinkMember implements Member {
   cardDetail(msg: Message): string | null {
     if (msg.word !== "gateway.use") return null;
     const url = String((msg.body as { url?: unknown } | undefined)?.url ?? "");
-    return `这是你自己的中转站（部署在你的 Cloudflare 账号里）：${url}。同意后这台手机成为它唯一的主人，电脑和网页之后经它连回这台手机。`;
+    return `这是你自己的中转站（部署在你的 Cloudflare 账号里）：${url}。同意后这台手机成为它唯一的主人，电脑之后经它连回这台手机，它只转发加密后的数据。`;
   }
 
   async handle(msg: Message, ctx: HandleContext): Promise<WordResult | void> {
@@ -175,7 +175,7 @@ export class LinkMember implements Member {
       const exposed = device.permissions.includes("expose_capability");
       if (device.online && exposed && !device.tunnel) add("tunnel.missing", `${nameOf(device.id)} is online at the relay and may be reached but has no tunnel.`);
       else if (device.tunnel) add("tunnel.open", `${nameOf(device.id)} has a tunnel.`);
-      else if (device.online && !exposed) add("tunnel.not_allowed", `${nameOf(device.id)} is online at the relay but holds only web permissions, so no tunnel is opened.`);
+      else if (device.online && !exposed) add("tunnel.not_allowed", `${nameOf(device.id)} is online at the relay but may do nothing (lend, body or local agents), so no tunnel is opened.`);
     }
     if (hand && !this.d.link.connections().some((c) => c.hand === hand)) {
       const last = this.last.get(hand);
@@ -212,7 +212,7 @@ export interface LinkControl {
   pairing: PairingGateway;
   gateway: GatewayControl;
   /** `service:devices` is made with `pairing`, so it is given back here to be told of pairing requests. */
-  bindDevices(devices: Pick<Devices, "pairs" | "pairingRequested">): void;
+  bindDevices(devices: Pick<Devices, "pairs" | "pairingRequested" | "pairingFailed">): void;
   /** Starts observing connections and connects to the relay that was set before. Never throws. */
   start(): Promise<void>;
   stop(): void;

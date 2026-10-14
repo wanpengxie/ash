@@ -2,7 +2,7 @@
   "name": "ash-link",
   "private": true,
   "type": "module",
-  "description": "ash-link/1: the connection protocol between the kernel and its hands (server, Node and browser clients)",
+  "description": "ash-link/2: the connection protocol between the kernel and its hands (server, Node and browser clients)",
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts"

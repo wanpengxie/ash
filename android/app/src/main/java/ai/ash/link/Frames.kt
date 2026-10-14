@@ -4,9 +4,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 
-/** `ash-link/1`: the protocol name, limits and close codes (SPEC-03 §1, §3, §7). The single definition is `packages/sdk/src/link.ts`. */
+/** `ash-link/2`: the protocol name, limits and close codes (SPEC-03 §1, §3, §7). The single definition is `packages/sdk/src/link.ts`. */
 object LinkProtocol {
-    const val NAME = "ash-link/1"
+    const val NAME = "ash-link/2"
     /** One frame, as UTF-8 JSON text. */
     const val FRAME_BYTES = 4 * 1024 * 1024
     /** One `stream` data chunk, before base64. */
@@ -43,7 +43,7 @@ sealed class Decoded {
 }
 
 /**
- * The frames of `ash-link/1`: checking, decoding and encoding, in strict mode (a field the protocol does not name is
+ * The frames of `ash-link/2`: checking, decoding and encoding, in strict mode (a field the protocol does not name is
  * refused, as in the TypeScript reference).
  *
  * The rules are not written again here. They are the JSON Schemas that `packages/sdk` generates from its one

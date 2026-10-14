@@ -94,7 +94,7 @@ export class HandLinkError extends Error {
 }
 
 /**
- * A hand's side of `ash-link/1`: connects, answers the challenge, keeps the connection (reconnecting with backoff),
+ * A hand's side of `ash-link/2`: connects, answers the challenge, keeps the connection (reconnecting with backoff),
  * serves the kernel's calls, and keeps the manifest and unacked events across reconnects.
  */
 export class HandClient {

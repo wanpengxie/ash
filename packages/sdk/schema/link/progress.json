@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ash-link/1 progress frame",
+  "title": "ash-link/2 progress frame",
   "type": "object",
   "properties": {
     "t": {

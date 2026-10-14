@@ -11,13 +11,13 @@ let n = 0;
 const msg = (word: string, body: unknown = {}, from = "person:owner"): Message =>
   ({ seq: ++n, id: `m${n}`, ts: 0, from, to: "service:devices", kind: word === "config.changed" || word.startsWith("codex.") ? "event" : "request", word, body });
 
+const COMMAND = "curl -fsSL https://example.invalid/install.sh | sh -s -- https://relay.example TICKET-123 SECRET-456";
 class FakeGateway implements PairingGateway {
   calls: string[] = [];
-  async issue(kind: PairKind) { this.calls.push(`issue ${kind}`); return { ticket: "TICKET-123", expires_in: 600, url: "https://relay.example/p/TICKET-123" }; }
-  async approve(id: string, permissions: RelayPermission[]) { this.calls.push(`approve ${id} ${permissions.join("+")}`); }
+  async issue(kind: PairKind) { this.calls.push(`issue ${kind}`); return { ticket: "TICKET-123", expires_in: 600, secret: "SECRET-456", command: COMMAND }; }
+  async approve(id: string, permissions: RelayPermission[], pairing: { hand: string; secret: string }) { this.calls.push(`approve ${id} ${permissions.join("+")} ${pairing.secret}`); }
   async reject(id: string) { this.calls.push(`reject ${id}`); }
   async revoke(id: string) { this.calls.push(`revoke ${id}`); }
-  async setWebUi(id: string, allow: boolean) { this.calls.push(`web_ui ${id} ${allow}`); }
   async setExpose(id: string, allow: boolean) { this.calls.push(`expose ${id} ${allow}`); }
 }
 
@@ -67,8 +67,8 @@ test("rename and access_set change the record; the list shows it", async (t) => 
   const phone = await connected(hub, { capabilities: [cap("location.get")] });
   assert.deepEqual(await call("rename", { device: dev(phone), name: " 客厅的手机 " }), { device: dev(phone), name: "客厅的手机" });
   assert.equal(hub.registry.members.get(dev(phone))!.name, "客厅的手机", "the member carries the new name");
-  const info = await call("access_set", { device: dev(phone), tier: "full", web_ui: true });
-  assert.deepEqual([info.name, info.tier, info.web_ui, info.lend], ["客厅的手机", "full", true, true]);
+  const info = await call("access_set", { device: dev(phone), tier: "full" });
+  assert.deepEqual([info.name, info.tier, info.lend], ["客厅的手机", "full", true]);
   assert.equal(hub.hands.tier(dev(phone)), "full");
   assert.equal(hub.hands.tier("body:main"), "ask");
   assert.equal(hub.hands.tier("service:gate"), "ask");
@@ -113,19 +113,20 @@ test("revoke closes the hand (4003), keeps its record, and asks the relay to for
   assert.equal(back.client.state, "ready");
 });
 
-test("taking a permission away from a hand that came through the relay ends its connection; the relay hears web_ui", async (t) => {
+test("taking a permission away from a hand that came through the relay ends its connection; the relay hears it", async (t) => {
   const { hub, call, refused, gateway } = await setup(t);
   const identity = await newIdentity();
-  hub.hands.register({ id: identity.handId, name: "远程电脑", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true, web_ui: true });
-  const remote = connectViaRelay(hub, identity.handId, identity, { channels: { device: {}, human: {} } });
+  hub.hands.register({ id: identity.handId, name: "远程电脑", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true });
+  const remote = connectViaRelay(hub, identity.handId, identity);
   await remote.client.ready();
 
-  await call("access_set", { device: dev(remote), web_ui: false });
+  await call("access_set", { device: dev(remote), lend: false });
   await eventually(() => remote.closes.length > 0, "the connection ending");
   assert.equal(remote.closes[0]!.code, 1000);
-  assert.deepEqual(gateway.calls, [`web_ui ${identity.handId} false`]);
+  assert.deepEqual(gateway.calls, [`expose ${identity.handId} false`]);
 
-  hub.hands.register({ id: "b".repeat(22), name: "网页", kind: "browser", public_key: "", paired_by: "gateway", web_ui: true });
+  // The phone's own web page is a local hand of kind browser: it cannot be given a computer's rights.
+  hub.hands.register({ id: "b".repeat(22), name: "网页", kind: "browser", public_key: "", paired_by: "local" });
   assert.equal(await refused("access_set", { device: `device:${"b".repeat(22)}`, local_agents: true }), "forbidden");
   assert.equal(await refused("access_set", { device: `device:${"b".repeat(22)}`, tier: "full" }), "forbidden");
 });
@@ -144,12 +145,12 @@ test("widening a permission also ends the connection of a hand from the relay, s
   const { hub, call } = await setup(t);
   const identity = await newIdentity();
   hub.hands.register({ id: identity.handId, name: "远程电脑", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true });
-  const remote = connectViaRelay(hub, identity.handId, identity, { channels: { device: {}, human: {} } });
+  const remote = connectViaRelay(hub, identity.handId, identity, { channels: { device: {}, agent: {} } });
   const welcome = await remote.client.ready();
-  assert.ok(welcome.channels.human && !("client" in welcome.channels.human));
+  assert.deepEqual(welcome.channels.agent, { accepted: false, reason: "the owner has not allowed this computer to run local agents" });
 
-  await call("access_set", { device: dev(remote), web_ui: true });
-  await eventually(() => remote.client.welcome?.channels.human !== undefined && "client" in remote.client.welcome.channels.human, "the hand back with human open");
+  await call("access_set", { device: dev(remote), local_agents: true });
+  await eventually(() => (remote.client.welcome?.channels.agent as { accepted?: boolean } | undefined)?.accepted === true, "the hand back with agent open");
   assert.equal(remote.closes[0]!.code, 1000);
 });
 
@@ -163,22 +164,22 @@ test("update has the computer's x.ash.update run, asked by this service", async 
   assert.equal(await refused("update", body), "offline");
 });
 
-test("pairing: whoever starts it gets the code and the address; requested, approved, then connected when the computer arrives", async (t) => {
+test("pairing: whoever starts it gets the install command; requested, approved, then connected when the computer arrives", async (t) => {
   const { hub, devices, call, refused, gateway } = await setup(t);
 
   const started = await call("pair_start", { kind: "computer", name: "书房电脑" }, agent);
-  assert.deepEqual(Object.keys(started).sort(), ["code", "expires_at", "pair_id", "url"]);
-  assert.deepEqual([started.code, started.url], ["TICKET-123", "https://relay.example/p/TICKET-123"], "an agent that starts a pairing can tell the owner where to go");
+  assert.deepEqual(Object.keys(started).sort(), ["command", "expires_at", "pair_id"]);
+  assert.equal(started.command, COMMAND, "an agent that starts a pairing can give the owner the command");
   const pair = devices.pairs.get(started.pair_id)!;
   assert.equal(pair.initiator, "agent:main");
   assert.equal(pair.ticket, "TICKET-123");
-  assert.ok(!JSON.stringify(await call("pair_status", { pair_id: started.pair_id })).includes("TICKET"));
+  assert.ok(!/TICKET|SECRET/.test(JSON.stringify(await call("pair_status", { pair_id: started.pair_id }))));
   assert.equal((await call("pair_status", { pair_id: started.pair_id })).state, "waiting");
   assert.deepEqual((await call("pair_pending")).pairs, []);
   assert.equal(await refused("pair_approve", { pair_id: started.pair_id }), "conflict", "nobody has asked yet");
 
-  // the code again, while it waits (owner or agent); what lets the device in is the owner's approval below
-  assert.deepEqual(await call("pair_code", { pair_id: started.pair_id }), { code: "TICKET-123", url: "https://relay.example/p/TICKET-123", expires_at: pair.expires_at });
+  // the command again, while it waits (owner or agent); what lets the device in is the approval below
+  assert.deepEqual(await call("pair_code", { pair_id: started.pair_id }), { command: COMMAND, expires_at: pair.expires_at });
 
   const identity = await newIdentity();
   const asked = devices.pairingRequested({ request_id: "req1", hand_id: identity.handId, name: "新电脑", kind: "computer", public_key: identity.publicKey, fingerprint: "ab:cd", ticket: "TICKET-123" });
@@ -187,13 +188,13 @@ test("pairing: whoever starts it gets the code and the address; requested, appro
 
   const order: string[] = [];
   const approveOnRelay = gateway.approve.bind(gateway);
-  gateway.approve = async (id, permissions) => { order.push(`known=${hub.hands.get(identity.handId) !== null}`); return approveOnRelay(id, permissions); };
+  gateway.approve = async (id, permissions, pairing) => { order.push(`known=${hub.hands.get(identity.handId) !== null}`); return approveOnRelay(id, permissions, pairing); };
   const approved = await call("pair_approve", { pair_id: started.pair_id, name: "书房电脑", lend: true, local_agents: true, tier: "full" });
   assert.deepEqual(order, ["known=true"], "the hand is on record before the relay lets it in");
   assert.deepEqual([approved.state, approved.device], ["approved", dev({ identity })]);
-  assert.deepEqual(gateway.calls, ["issue computer", "approve req1 expose_capability"]);
+  assert.deepEqual(gateway.calls, ["issue computer", "approve req1 expose_capability SECRET-456"], "the secret goes to the hub's side of the relay link, to be proved later");
   const record = hub.hands.get(identity.handId)!;
-  assert.deepEqual([record.name, record.kind, record.paired_by, record.tier, record.lend, record.local_agents, record.web_ui], ["书房电脑", "computer", "gateway", "full", true, true, false]);
+  assert.deepEqual([record.name, record.kind, record.paired_by, record.tier, record.lend, record.local_agents], ["书房电脑", "computer", "gateway", "full", true, true]);
 
   const remote = connectViaRelay(hub, identity.handId, identity);
   await remote.client.ready();
@@ -207,29 +208,38 @@ test("pairing: whoever starts it gets the code and the address; requested, appro
   assert.match(String(told.at(-1)![2]), new RegExp(`${started.pair_id}.*done`));
 });
 
-test("pairing: a code nobody used expires; a request can be rejected; a browser cannot be given a computer's rights; no relay, no pairing", async (t) => {
-  const { hub, devices, call, refused, gateway, advance } = await setup(t);
+test("pairing: a code nobody used expires; a request can be rejected; there is no browser pairing; no relay, no pairing", async (t) => {
+  const { devices, call, refused, gateway, advance } = await setup(t);
   const one = await call("pair_start", { kind: "computer", name: "a" });
   advance(601_000);
   assert.equal((await call("pair_status", { pair_id: one.pair_id })).state, "expired");
   assert.equal(devices.pairingRequested({ request_id: "late", hand_id: "z".repeat(22), name: "x", kind: "computer", public_key: "", fingerprint: "f", ticket: "TICKET-123" }), null);
 
-  const two = await call("pair_start", { kind: "browser", name: "web" });
+  const two = await call("pair_start", { kind: "server", name: "box" });
   const identity = await newIdentity();
-  devices.pairingRequested({ request_id: "req2", hand_id: identity.handId, name: "浏览器", kind: "browser", public_key: "", fingerprint: "f", ticket: "TICKET-123" });
-  assert.equal(await refused("pair_approve", { pair_id: two.pair_id, lend: true }), "forbidden");
-  assert.deepEqual(await call("pair_reject", { pair_id: two.pair_id }), { pair_id: two.pair_id, state: "rejected", name: "web", kind: "browser", expires_at: devices.pairs.get(two.pair_id)!.expires_at });
+  devices.pairingRequested({ request_id: "req2", hand_id: identity.handId, name: "服务器", kind: "computer", public_key: identity.publicKey, fingerprint: "f", ticket: "TICKET-123" });
+  assert.deepEqual(await call("pair_reject", { pair_id: two.pair_id }), { pair_id: two.pair_id, state: "rejected", name: "box", kind: "server", expires_at: devices.pairs.get(two.pair_id)!.expires_at });
   assert.ok(gateway.calls.includes("reject req2"));
-
-  const three = await call("pair_start", { kind: "browser", name: "web2" });
-  devices.pairingRequested({ request_id: "req3", hand_id: identity.handId, name: "浏览器", kind: "browser", public_key: "", fingerprint: "f", ticket: "TICKET-123" });
-  await call("pair_approve", { pair_id: three.pair_id });
-  assert.equal(gateway.calls.at(-1), "approve req3 chat+web_ui");
-  const record = hub.hands.get(identity.handId)!;
-  assert.deepEqual([record.kind, record.lend, record.web_ui, record.local_agents], ["browser", false, true, false]);
+  assert.ok(devices.words().find((w) => w.word === "pair_start")!.input_schema.properties!.kind!.enum!.every((k: string) => k !== "browser"));
 
   const bare = await setup(t, null);
   assert.equal(await bare.refused("pair_start", { kind: "computer", name: "x" }), "unavailable");
+});
+
+test("pairing fails when the device that connects cannot prove the secret: the record is revoked and the starter told why", async (t) => {
+  const { hub, devices, call, gateway } = await setup(t);
+  const started = await call("pair_start", { kind: "computer", name: "书房电脑" }, agent);
+  const identity = await newIdentity();
+  devices.pairingRequested({ request_id: "req1", hand_id: identity.handId, name: "书房电脑", kind: "computer", public_key: identity.publicKey, fingerprint: "f", ticket: "TICKET-123" });
+  await call("pair_approve", { pair_id: started.pair_id, lend: true }, agent);
+
+  devices.pairingFailed(identity.handId, "the device could not prove the pairing secret: the relay may have swapped the device's key");
+  const status = await call("pair_status", { pair_id: started.pair_id });
+  assert.deepEqual([status.state, status.reason], ["failed", "the device could not prove the pairing secret: the relay may have swapped the device's key"]);
+  assert.ok(hub.hands.get(identity.handId)!.revoked_at);
+  await eventually(() => gateway.calls.includes(`revoke ${identity.handId}`), "the relay to revoke it too");
+  await eventually(() => hub.router.sent.some((s) => s.msg.word === "tell" && /failed: .*swapped.*start a new pairing/.test(String((s.msg.body as { text: string }).text))), "the agent told");
+  assert.ok(hub.router.sent.some((s) => s.msg.word === "pair.changed" && (s.msg.body as { state: string; reason?: string }).state === "failed" && /swapped/.test((s.msg.body as { reason?: string }).reason ?? "")));
 });
 
 test("config.changed from a hand is kept for describe", async (t) => {

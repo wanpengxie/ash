@@ -102,7 +102,7 @@ class LinkOptions(
 )
 
 /**
- * A hand's side of `ash-link/1` (SPEC-03): opens the WebSocket, answers the challenge, keeps the connection
+ * A hand's side of `ash-link/2` (SPEC-03): opens the WebSocket, answers the challenge, keeps the connection
  * (reconnecting with backoff), serves the kernel's calls on worker threads, and keeps the manifest and the unacked
  * events across reconnects. Port of `packages/link/src/hand.ts`.
  *

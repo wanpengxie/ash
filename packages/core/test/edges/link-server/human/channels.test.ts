@@ -55,33 +55,19 @@ test("typing goes to the agent being typed to, once per typing, and to nobody el
   assert.equal(hub.mini.sent[0]!.caller.via, "service");
 });
 
-test("the owner's words are stamped person:owner with the channel they came from; a remote channel is not local", async (t) => {
+test("the owner's words are stamped person:owner with the channel they came from", async (t) => {
   const hub = await startHumanHub(); t.after(() => hub.stop());
   const phone = await Channel.open(hub, { label: "手机 · 对话" });
-  const remote = await Channel.openRemote(hub, { label: "网页 · 远程" });
+  const web = await Channel.open(hub, { label: "网页", kind: "browser" });
 
-  await phone.send({ to: "agent:main", kind: "request", word: "say", body: { text: "近的" } });
-  await remote.send({ to: "agent:main", kind: "request", word: "say", body: { text: "远的" } });
+  await phone.send({ to: "agent:main", kind: "request", word: "say", body: { text: "手机上的" } });
+  await web.send({ to: "agent:main", kind: "request", word: "say", body: { text: "网页上的" } });
 
-  const [near, far] = hub.mini.sent;
+  const [near, page] = hub.mini.sent;
   assert.deepEqual(near!.caller, { member: "person:owner", via: "human", local: true, client: phone.clientId,
     origin: { channel: "app", client: phone.clientId, hand: `device:${phone.hand.identity.handId}`, label: "手机 · 对话" } });
-  assert.equal(far!.caller.local, false);
-  assert.equal(far!.caller.client, remote.clientId);
-  assert.equal(far!.caller.origin!.channel, "web");
-});
-
-test("no word is local-only: the owner's word from a remote channel passes as from the local one", async (t) => {
-  const hub = await startHumanHub(); t.after(() => hub.stop());
-  const phone = await Channel.open(hub);
-  const remote = await Channel.openRemote(hub);
-  const set = { to: "service:vault", kind: "request" as const, word: "set", body: { ref: "X", value: "v" } };
-
-  const far = await remote.send(set);
-  const near = await phone.send(set);
-
-  assert.ok(far.ok);
-  assert.ok(near.ok);
+  assert.equal(page!.caller.client, web.clientId);
+  assert.equal(page!.caller.origin!.channel, "web");
 });
 
 test("each surface goes only to the channels that declared it", async (t) => {
@@ -160,13 +146,13 @@ test("channels(): the open channels, with what the agents' environment needs (no
   const hub = await startHumanHub(); t.after(() => hub.stop());
   assert.deepEqual(hub.human.channels(), []);
   const phone = await Channel.open(hub, { label: "手机 · 对话" });
-  const web = await Channel.openRemote(hub, { label: "网页 Mac Chrome" });
+  const web = await Channel.open(hub, { label: "网页 Mac Chrome", kind: "browser" });
   phone.presence({ visible: true });
   await eventually(() => hub.human.clients().find((c) => c.client === phone.clientId)?.visible, "the phone visible");
 
   const channels = hub.human.channels();
   assert.deepEqual(channels.find((c) => c.client === phone.clientId), { client: phone.clientId, kind: "app", label: "手机 · 对话", local: true });
-  assert.deepEqual(channels.find((c) => c.client === web.clientId), { client: web.clientId, kind: "web", label: "网页 Mac Chrome", local: false });
+  assert.deepEqual(channels.find((c) => c.client === web.clientId), { client: web.clientId, kind: "web", label: "网页 Mac Chrome", local: true });
 
   web.client.stop();
   await eventually(() => hub.human.channels().length === 1, "the web channel gone");

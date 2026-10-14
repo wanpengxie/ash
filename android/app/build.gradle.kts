@@ -1,4 +1,4 @@
-// The ash hand app: lends the phone's abilities to the kernel over the ash-link/1 link and shows the owner what it sends.
+// The ash hand app: lends the phone's abilities to the kernel over the ash-link/2 link and shows the owner what it sends.
 // The kernel (ash core, its payload and the agent container) lives in its own package, android/kernel (ai.ash.kernel).
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -8,7 +8,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// The ash-link/1 frame schemas that packages/sdk generates (npm run gen:link-schema): the app checks every frame against them.
+// The ash-link/2 frame schemas that packages/sdk generates (npm run gen:link-schema): the app checks every frame against them.
 val linkSchemaDir = rootProject.file("../packages/sdk/schema/link")
 val linkSchemaAssets = layout.buildDirectory.dir("generated/link-schema-assets")
 val copyLinkSchema by tasks.registering(Sync::class) {
@@ -116,7 +116,7 @@ dependencies {
     // 1.1.0-beta01: the last release that builds with compileSdk 35 and this Android Gradle plugin (1.1.0 needs 36 / 8.9.1).
     implementation("androidx.health.connect:connect-client:1.1.0-beta01")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    // The WebSocket under ash-link/1.
+    // The WebSocket under ash-link/2.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // On-phone inference for ocr.read (PP-OCRv6 medium ONNX models, downloaded on first use). The AAR carries arm64 libraries only after abiFilters.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")

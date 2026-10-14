@@ -9,25 +9,40 @@ import type { CapabilitySpec } from "../../../../sdk/src/link";
 import type { Caller, Outgoing, Reply } from "../../../../sdk/src/message";
 import type { Member } from "../../../../sdk/src/word";
 import { createNodeClient } from "../../../../link/src/client";
-import { HandClient, type EventQueue, type HandHandlers } from "../../../../link/src/hand";
+import { HandClient, type Connector, type EventQueue, type HandHandlers } from "../../../../link/src/hand";
+import { linkKey, secureConnector, type LinkKey } from "../../../../link/src/secure";
 import { memoryPair } from "../../../../link/test/fixtures/memory";
-import { createLinkServer, type HubLinkServer } from "../../../src/edges/link-server";
+import { endorse, party } from "../../../../link/test/fixtures/secure";
+import { createLinkServer, type GatewaySecurity, type HubLinkServer } from "../../../src/edges/link-server";
 import { HandRegistry } from "../../../src/edges/link-server/hands/registry";
 import type { MemberInfo, Registry, Router } from "../../../src/kernel/types";
 
 /** Every client a test started; the hub stops them so none is left reconnecting. */
 const clients = new Set<HandClient>();
 
-export interface Identity { publicKey: string; handId: string; sign(nonce: string): string }
+export interface Identity { publicKey: string; handId: string; sign(nonce: string): string; /** The same key for TLS on a relay tunnel. */ link: LinkKey }
 
 export async function newIdentity(): Promise<Identity> {
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const spki = publicKey.export({ type: "spki", format: "der" });
   return {
-    publicKey: base64url(spki), handId: await handId(spki),
+    publicKey: base64url(spki), handId: await handId(spki), link: linkKey(privateKey),
     sign: (nonce) => base64url(signBytes("sha256", Buffer.from(nonce, "utf8"), { key: privateKey, dsaEncoding: "der" })),
   };
 }
+
+/** The hub's side of securing relay tunnels in tests: an owner key, the hub's TLS key and the owner's endorsement of it. */
+export function relaySecurity(): { ownerKey: string; security: GatewaySecurity } {
+  const owner = party(), hub = party();
+  return { ownerKey: owner.publicKey, security: { key: hub.key, endorsement: endorse(owner, hub), pairSecret: null } };
+}
+
+/**
+ * A device's end of a relay tunnel: TLS over [connect]'s socket, the hub checked against [ownerKey] (what the device pinned at
+ * pairing), as `ash-device` does.
+ */
+export const secureDevice = (identity: Identity, ownerKey: string, connect: Connector): Connector =>
+  secureConnector(connect, { key: identity.link, trust: () => ({ ownerKey, pairSecret: null }) });
 
 export const cap = (name: string, over: Partial<CapabilitySpec> = {}): CapabilitySpec =>
   ({ name, description: `${name}: a capability of the test hand.`, label: `在${name}`, input_schema: { type: "object" }, effect: "read", risk: "none", ...over });
@@ -84,6 +99,8 @@ export interface Hub {
   bodies: FakeBodies;
   hands: HandRegistry;
   server: HubLinkServer;
+  /** How relay tunnels to this hub are secured, and the owner key devices pin. */
+  relay: { ownerKey: string; security: GatewaySecurity };
   handoffs: { port: number; token: string }[];
   port: number;
   token: string;
@@ -103,7 +120,7 @@ export async function startHub(): Promise<Hub> {
     hostClient: { handsHandoff: async (port: number, token: string) => { handoffs.push({ port, token }); return { supported: false } as const; } },
   });
   const { port, token } = await server.start();
-  return { db, registry, router, bodies, hands, server, handoffs, port, token, url: `ws://127.0.0.1:${port}/link`, stop: async () => { for (const c of clients) c.stop(); clients.clear(); await server.stop(); } };
+  return { db, registry, router, bodies, hands, server, relay: relaySecurity(), handoffs, port, token, url: `ws://127.0.0.1:${port}/link`, stop: async () => { for (const c of clients) c.stop(); clients.clear(); await server.stop(); } };
 }
 
 export interface HandOptions {
@@ -152,19 +169,19 @@ export async function connected(hub: Pick<Hub, "url" | "token">, o: HandOptions 
   return { ...hand, ack };
 }
 
-/** A hand that the relay vouches for as device [from]: its socket is handed to `acceptGateway`, no token. */
-export function connectViaRelay(hub: Pick<Hub, "server">, from: string, identity: Identity, o: Omit<HandOptions, "identity" | "token"> = {}): TestHand {
+/** A hand that reaches the hub through a relay tunnel for device [from]: secured end to end, then judged by the hand's record. */
+export function connectViaRelay(hub: Pick<Hub, "server" | "relay">, from: string, identity: Identity, o: Omit<HandOptions, "identity" | "token"> = {}): TestHand {
   const closes: TestHand["closes"] = [];
   const client = new HandClient({
     url: "relay://tunnel/link",
-    connector: (_url, _headers, events) => {
+    connector: secureDevice(identity, hub.relay.ownerKey, (_url, _headers, events) => {
       const pair = memoryPair();
       pair.hand.on("message", (data: string) => events.message(data, false));
       pair.hand.on("close", (code: number, reason: Buffer) => events.close(code, reason.toString()));
-      hub.server.acceptGateway(pair.server, from);
+      hub.server.acceptGateway(pair.server, from, hub.relay.security);
       queueMicrotask(() => events.open());
       return pair.hand;
-    },
+    }),
     hand: { kind: o.kind ?? "computer", name: o.name ?? "relay hand", version: "0.0.1", platform: "test", public_key: identity.publicKey },
     channels: (o.channels ?? { device: {} }) as never,
     sign: (nonce) => identity.sign(nonce),

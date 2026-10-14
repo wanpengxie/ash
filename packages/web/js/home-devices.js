@@ -6,7 +6,7 @@ import { readDevices } from "./home-data.js";
 import { btn, card, group, h, list, localHint, note, row, skeleton, twoTap } from "./home-ui.js";
 import { switchRow } from "./home-switch.js";
 
-const KINDS = [["computer", "电脑"], ["server", "服务器"], ["browser", "浏览器"]];
+const KINDS = [["computer", "电脑"], ["server", "服务器"]];
 
 /** What a device may do, as switches and a choice. [read()] is the body of `access_set` / `pair_approve`. */
 function permissions(device, { browser = false, idPrefix = "dev" } = {}) {
@@ -18,10 +18,9 @@ function permissions(device, { browser = false, idPrefix = "dev" } = {}) {
     ["lend", "借出它的能力", "让她能用它", device.lend === true],
     ["body", "当作身体", "让她读写它的文件、执行命令", device.body === true],
     ["local_agents", "允许本地 Agent", "使用电脑本地完整权限", device.local_agents === true],
-    ["web_ui", "允许访问聊天和网页界面", null, device.web_ui === true],
-  ].map(([key, title, sub, on]) => ({ key, el: switchRow({ title, sub, checked: browser ? key === "web_ui" : on, disabled: browser, id: `${idPrefix}_${key}` }) }));
+  ].map(([key, title, sub, on]) => ({ key, el: switchRow({ title, sub, checked: browser ? false : on, disabled: browser, id: `${idPrefix}_${key}` }) }));
   const root = h("div", { class: "hm-stack" }, h("span", { class: "group-ttl" }, "它能做什么"), tier, h("div", { class: "list noic" }, rows.map((r) => r.el)));
-  return { root, read: () => ({ tier: browser ? "ask" : current, ...Object.fromEntries(rows.map(({ key, el }) => [key, browser ? key === "web_ui" : el.get()])) }) };
+  return { root, read: () => ({ tier: browser ? "ask" : current, ...Object.fromEntries(rows.map(({ key, el }) => [key, browser ? false : el.get()])) }) };
 }
 
 const deviceLine = (device) => {
@@ -59,7 +58,7 @@ export function devicePage(ctx, screen, arg) {
       const pair = data.pairs.find((p) => p.pair_id === arg.pair && p.state === "requested");
       if (!pair) { fill(box, list(row({ icon: "check", tone: "ok", title: "这个请求已经处理了" })), btn("回到她的手和眼", "a-btn btn-neutral btn-block", () => ctx.back())); return; }
       const kind = KIND_NAMES[pair.kind] ?? "设备";
-      const grant = permissions({ tier: "ask", lend: pair.kind !== "browser" }, { browser: pair.kind === "browser", idPrefix: `pending_${pair.pair_id}` });
+      const grant = permissions({ tier: "ask", lend: true }, { idPrefix: `pending_${pair.pair_id}` });
       fill(box, card("hm-promise", h("span", { class: "hm-big" }, pair.name || `新${kind}`), h("span", { class: "tx-sub" }, `${kind} · 先确认它是你的设备，再选它能做什么`)), grant.root,
         btn("批准", "a-btn btn-primary btn-block", () => { void act("pair_approve", { pair_id: pair.pair_id, ...grant.read() }).then(() => ctx.back()).catch(failed("批准未确认，请刷新状态后检查。")); }, { id: "homePendingApprove" }),
         btn("拒绝", "a-btn btn-neutral btn-block", () => { void act("pair_reject", { pair_id: pair.pair_id }).then(() => ctx.back()).catch(failed("拒绝未确认，请重试。")); }, { id: "homePendingReject" }), statusEl());
@@ -95,10 +94,10 @@ export function devicePage(ctx, screen, arg) {
   return { title: arg?.pair ? "新设备" : "设备", body: box, refresh };
 }
 
-/** 连一台新设备: a pairing code for a computer, server or browser, and the relay it connects through. */
+/** 连一台新设备: the install command for a computer or server (it carries the one-time code and secret), and the relay it connects through. */
 export function connectPage(ctx, screen) {
   const root = h("div", { class: "hm-stack" });
-  const state = { kind: "computer", shown: null, pairResult: "", relay: null, copy: "复制地址", requested: 0, signature: null };
+  const state = { kind: "computer", shown: null, pairResult: "", relay: null, copy: "复制命令", requested: 0, signature: null };
   const countdown = (ms) => { const seconds = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; };
 
   const refreshRelay = async () => { state.relay = await screen.ask("service:link", "gateway.status", {}); };
@@ -118,8 +117,8 @@ export function connectPage(ctx, screen) {
     if (screen.alive() && changed) draw();
   };
 
-  const pairText = (shown, code, left) => code === "requested" ? "配对码已使用。新设备发来的连接请求在「她的手和眼」里，确认是你的设备再批准。"
-    : code === "expired" ? "配对码已过期。需要时再点「生成配对码」。" : `配对码：${shown.code}（还剩 ${countdown(left)}，只能用一次）。${!shown.url ? "" : shown.kind === "browser" ? "在新浏览器里打开下面的地址，把上面的配对码输进去，再回到「她的手和眼」批准：" : "在要连接的电脑上用浏览器打开下面的地址，按页面提示安装，再回到「她的手和眼」批准："}`;
+  const pairText = (shown, code, left) => code === "requested" ? "命令已运行。新设备发来的连接请求在「她的手和眼」里，确认是你的设备再批准。"
+    : code === "expired" ? "命令已过期。需要时再点「生成安装命令」。" : `在要连接的电脑上打开终端，粘贴下面这行命令回车（还剩 ${countdown(left)}，只能用一次；里面有一次性密钥，别发给别人），再回到「她的手和眼」批准：`;
   const tickText = () => {
     const shown = state.shown;
     const text = root.querySelector("#homePairText");
@@ -135,18 +134,17 @@ export function connectPage(ctx, screen) {
     const code = shown?.state === "waiting" && left <= 0 ? "expired" : shown?.state;
     const kinds = h("div", { class: "seg", role: "tablist" }, KINDS.map(([key, label]) => btn(label, state.kind === key ? "on" : "", () => { state.kind = key; draw(); }, { role: "tab", "aria-selected": String(state.kind === key), id: `homePairKind_${key}` })));
     const pairBox = shown ? card("hm-promise", h("p", { class: "hm-note", id: "homePairText" }, pairText(shown, code, left)),
-      code === "waiting" && shown.url ? h("pre", { class: "hm-pre", id: "homePairCommand" }, shown.url) : null,
-      code === "waiting" && shown.url ? btn(state.copy, "a-btn btn-neutral btn-sm hm-left", async () => { try { await globalThis.navigator.clipboard.writeText(shown.url); state.copy = "已复制"; } catch { state.copy = "长按上面的地址复制"; } draw(); }, { id: "homePairCopy" }) : null,
+      code === "waiting" ? h("pre", { class: "hm-pre", id: "homePairCommand" }, shown.command) : null,
+      code === "waiting" ? btn(state.copy, "a-btn btn-neutral btn-sm hm-left", async () => { try { await globalThis.navigator.clipboard.writeText(shown.command); state.copy = "已复制"; } catch { state.copy = "长按上面的命令复制"; } draw(); }, { id: "homePairCopy" }) : null,
       code === "requested" ? btn("去批准", "a-btn btn-primary btn-sm hm-left", () => ctx.back()) : null) : null;
     const relay = state.relay;
     fill(root, 
-      localHint(ctx), group("连一台新设备", h("div", { class: "hm-stack" }, kinds, btn("生成配对码", "a-btn btn-primary btn-block", async () => {
-        state.pairResult = "正在生成配对码…"; draw();
+      localHint(ctx), group("连一台新设备", h("div", { class: "hm-stack" }, kinds, btn("生成安装命令", "a-btn btn-primary btn-block", async () => {
+        state.pairResult = "正在生成安装命令…"; draw();
         try {
           const started = await screen.ask("service:devices", "pair_start", { kind: state.kind });
-          const issued = await screen.ask("service:devices", "pair_code", { pair_id: started.pair_id });
-          state.copy = "复制地址";
-          state.shown = { pair_id: started.pair_id, kind: state.kind, code: issued.code, url: typeof issued.url === "string" ? issued.url : "", deadline: Number(issued.expires_at ?? started.expires_at) || Date.now(), state: "waiting" };
+          state.copy = "复制命令";
+          state.shown = { pair_id: started.pair_id, kind: state.kind, command: started.command, deadline: Number(started.expires_at) || Date.now(), state: "waiting" };
           state.pairResult = "";
         } catch (error) { state.pairResult = error?.code === "stale" ? "" : "生成失败：中转站可能离线，请稍后重试。"; state.shown = null; }
         if (screen.alive()) draw();

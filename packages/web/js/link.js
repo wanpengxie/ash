@@ -1,4 +1,4 @@
-// The page's one connection to the kernel: the `human` channel of ash-link/1 (SPEC-03 §5).
+// The page's one connection to the kernel: the `human` channel of ash-link/2 (SPEC-03 §5).
 //
 // The page opens the WebSocket itself with the browser client of packages/link (the handshake, the heartbeat and the
 // reconnecting are the client's). (The phone app draws its own chat natively and does not run this page.)

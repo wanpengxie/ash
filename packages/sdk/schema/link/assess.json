@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ash-link/1 assess frame",
+  "title": "ash-link/2 assess frame",
   "type": "object",
   "properties": {
     "t": {

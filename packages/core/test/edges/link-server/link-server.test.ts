@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import test from "node:test";
 import { eventually } from "../../fixtures/wait";
+import { HandClient } from "../../../../link/src/hand";
+import { memoryPair } from "../../../../link/test/fixtures/memory";
 import { cap, connect, connected, connectViaRelay, newIdentity, startHub } from "./harness";
 
 const get = (port: number, path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -113,7 +115,7 @@ test("through the relay a hand gets exactly the channels the owner allowed it (S
   const identity = await newIdentity();
   const id = identity.handId;
   const all = { device: {}, human: {}, agent: {} };
-  const reply = async (permissions: { lend: boolean; web_ui: boolean; local_agents: boolean }, kind: "computer" | "phone" = "computer") => {
+  const reply = async (permissions: { lend: boolean; local_agents: boolean }, kind: "computer" | "phone" = "computer") => {
     hub.hands.register({ id, name: "远程电脑", kind, public_key: identity.publicKey, paired_by: "gateway", ...permissions });
     const hand = connectViaRelay(hub, id, identity, { kind, channels: all });
     const welcome = await hand.client.ready();
@@ -121,36 +123,71 @@ test("through the relay a hand gets exactly the channels the owner allowed it (S
     const c = welcome.channels;
     return { device: (c.device as { accepted: boolean }).accepted, human: Boolean(c.human && "client" in c.human && c.human.local === false), agent: (c.agent as { accepted: boolean }).accepted };
   };
-  assert.deepEqual(await reply({ lend: true, web_ui: false, local_agents: false }), { device: true, human: false, agent: false });
-  assert.deepEqual(await reply({ lend: false, web_ui: true, local_agents: false }), { device: false, human: true, agent: false }, "web_ui opens human with local=false");
-  assert.deepEqual(await reply({ lend: false, web_ui: false, local_agents: true }), { device: false, human: false, agent: true });
-  assert.deepEqual(await reply({ lend: false, web_ui: false, local_agents: true }, "phone"), { device: false, human: false, agent: false }, "only a computer runs local agents");
-
-  hub.hands.setAccess(id, { web_ui: true });
-  const hand = connectViaRelay(hub, id, identity, { channels: { human: {} } });
-  const human = (await hand.client.ready()).channels.human;
-  assert.ok(human && "client" in human && human.local === false);
+  assert.deepEqual(await reply({ lend: true, local_agents: false }), { device: true, human: false, agent: false });
+  assert.deepEqual(await reply({ lend: true, local_agents: true }), { device: true, human: false, agent: true }, "the human channel is not served through the relay");
+  assert.deepEqual(await reply({ lend: false, local_agents: true }), { device: false, human: false, agent: true });
+  assert.deepEqual(await reply({ lend: false, local_agents: true }, "phone"), { device: false, human: false, agent: false }, "only a computer runs local agents");
 });
 
 test("through the relay: an unknown device, a key that is not the device's, and a revoked device are refused", async (t) => {
   const hub = await startHub(); t.after(() => hub.stop());
   const identity = await newIdentity();
   const other = await newIdentity();
+  const refusals: { hand?: string; code: number; reason: string }[] = [];
+  hub.server.observe((event) => { if (event.type === "refused") refusals.push({ hand: event.hand, code: event.code, reason: event.reason }); });
 
+  // Refused before TLS, so the device only sees the tunnel end (a code in the clear could be the relay's) and tries again later.
   const unknown = connectViaRelay(hub, identity.handId, identity);
   await eventually(() => unknown.closes.length > 0, "unknown refused");
-  assert.equal(unknown.closes[0]!.code, 4001);
+  assert.deepEqual([unknown.closes[0]!.code, unknown.closes[0]!.willReconnect], [1006, true]);
+  assert.deepEqual(refusals.at(-1), { hand: identity.handId, code: 4001, reason: "unknown device" });
+  unknown.client.stop();
 
   hub.hands.register({ id: identity.handId, name: "r", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true });
   const wrongKey = connectViaRelay(hub, identity.handId, other);
   await eventually(() => wrongKey.closes.length > 0, "wrong key refused");
-  assert.equal(wrongKey.closes[0]!.code, 4001);
+  assert.equal(wrongKey.client.state === "ready", false);
+  assert.deepEqual(refusals.at(-1), { hand: identity.handId, code: 4001, reason: "the device's key is not the one that was paired" });
+  wrongKey.client.stop();
 
   hub.hands.revoke(identity.handId);
   const revoked = connectViaRelay(hub, identity.handId, identity);
   await eventually(() => revoked.closes.length > 0, "revoked refused");
   assert.equal(revoked.closes[0]!.code, 4003);
   assert.equal(revoked.client.stoppedBy, 4003);
+});
+
+test("the local link is in the clear on 127.0.0.1 with the token; a relay tunnel takes only TLS (docs/LINK-E2E.md §2)", async (t) => {
+  const hub = await startHub(); t.after(() => hub.stop());
+  // Local: plain ash-link/2 frames, the token and the signature.
+  const local = await connected(hub, { kind: "phone", name: "本机" });
+  assert.equal(hub.hands.via(local.identity.handId), "local");
+  assert.ok(hub.url.startsWith("ws://127.0.0.1:"));
+
+  // The same plain client on a relay tunnel is turned away before a frame of it is read.
+  const identity = await newIdentity();
+  hub.hands.register({ id: identity.handId, name: "r", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true });
+  const refusals: string[] = [];
+  hub.server.observe((event) => { if (event.type === "refused") refusals.push(event.reason); });
+  const plain = new HandClient({
+    url: "relay://tunnel/link",
+    connector: (_url, _headers, events) => {
+      const pair = memoryPair();
+      pair.hand.on("message", (data: string) => events.message(data, false));
+      pair.hand.on("close", (code: number, reason: Buffer) => events.close(code, reason.toString()));
+      hub.server.acceptGateway(pair.server, identity.handId, hub.relay.security);
+      queueMicrotask(() => events.open());
+      return pair.hand;
+    },
+    hand: { kind: "computer", name: "r", version: "0", platform: "test", public_key: identity.publicKey },
+    channels: { device: {} }, sign: (nonce) => identity.sign(nonce),
+  });
+  t.after(() => plain.stop());
+  plain.start();
+  await eventually(() => refusals.length > 0, "the plain device refused");
+  assert.equal(refusals[0], "the device spoke in the clear; a relay connection must be secured");
+  assert.equal(hub.hands.online(identity.handId), false);
+  assert.deepEqual(hub.server.connections().map((c) => c.via), ["local"]);
 });
 
 test("the device channel reaches the hand registry, and its end marks the hand offline", async (t) => {

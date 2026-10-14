@@ -3,9 +3,8 @@
  * the kernel's code meets the relay's client library (ASH-HUB §8.1 rule 2).
  *
  * The owner connects to the relay and stays connected. The relay reports which devices are online; for those the owner
- * opens a `/link` stream (a WebSocket tunnel) that the kernel's link server takes like any other connection. A browser
- * the relay lets in opens a stream the other way round; it is handed over with its path, and the caller decides.
- * Everything that reaches the caller is a [LinkSocket], so the link server does not know where it came from.
+ * opens a `/link` stream (a WebSocket tunnel), which the caller secures end to end before the link server takes it
+ * (docs/LINK-E2E.md). The relay serves nothing of the hub's: a browser's request or stream it sends is refused.
  */
 import { Connection, DeviceStream, GatewayClient, GatewayError, type DeviceKey } from "ash-gateway/client/client";
 import { derToRaw, shortFingerprint, type Permission } from "ash-gateway/src/protocol";
@@ -91,44 +90,12 @@ export interface RelayDevice { id: string; name: string; permissions: string[]; 
 /** A new device asked to pair with a ticket. The relay does not say which ticket, only its hash when it can. */
 export interface RelayPairRequest { request_id: string; client_id: string; name: string; pubkey: string; fingerprint: string; ticket_hash?: string }
 
-/** A browser asked the relay for a WebSocket to the kernel. Nothing is answered until [accept] or [reject]. */
-export interface BrowserOpen {
-  /** The device id the relay vouches for (its session). */
-  from: string;
-  /** The path the browser asked for; only the caller knows which are served. */
-  path: string;
-  accept(): LinkSocket;
-  reject(code: number, reason: string): void;
-}
-
-/** A browser's HTTP request (the web page and what it loads), whole: the relay sends it in pieces. */
-export interface RelayHttpRequest {
-  /** The device id the relay vouches for (its session). */
-  from: string;
-  method: string;
-  /** Path with query. */
-  path: string;
-  headers: [string, string][];
-  body: Uint8Array;
-  /** Aborts when the browser went away. */
-  signal: AbortSignal;
-}
-/** The answer; a body that is a stream is sent as it comes. */
-export interface RelayHttpResponse {
-  status: number;
-  headers: [string, string][];
-  body: Uint8Array | AsyncIterable<Uint8Array>;
-}
-
 export interface RelayHandlers {
   /** The owner's connection to the relay came up or went down. */
   connection?(connected: boolean): void;
   /** The device list was read again (after connecting, after a presence change, every [refreshMs]). */
   devices?(devices: RelayDevice[]): void;
   pairRequest?(request: RelayPairRequest): void;
-  browser?(open: BrowserOpen): void;
-  /** A browser's HTTP request. Without this the request is answered with an error, not left hanging. */
-  http?(request: RelayHttpRequest): Promise<RelayHttpResponse>;
 }
 
 export interface RelayOptions {
@@ -151,12 +118,6 @@ export interface RelayOptions {
   timeoutMs?: number;
 }
 
-const MAX_BROWSER_STREAMS = 64;
-const MAX_HTTP_REQUESTS = 32;
-/** The relay's own limit for a request body from a browser. */
-const MAX_HTTP_BODY = 8 * 1024 * 1024;
-/** Raw bytes per `http.body` frame (the relay holds 256 KiB per chunk). */
-const HTTP_CHUNK = 256 * 1024;
 const EXPIRES_IN_S = 299;
 
 const timeoutAfter = <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
@@ -194,8 +155,6 @@ export class Relay {
   private lastErrorStatus: number | null = null;
   private list: RelayDevice[] = [];
   private readonly requests = new Map<string, RelayPairRequest>();
-  private readonly browsers = new Map<string, DeviceStream>();
-  private readonly httpIn = new Map<string, { req: Omit<RelayHttpRequest, "signal" | "body">; chunks: Uint8Array[]; size: number; abort: AbortController }>();
   private syncTail: Promise<unknown> = Promise.resolve();
   private wake: (() => void) | null = null;
 
@@ -348,10 +307,6 @@ export class Relay {
       const was = this.ready;
       this.ready = false;
       if (this.conn === conn) this.conn = null;
-      for (const stream of [...this.browsers.values()]) stream.finish({ code: 1006, reason: "the relay connection ended" });
-      this.browsers.clear();
-      for (const pending of this.httpIn.values()) pending.abort.abort();
-      this.httpIn.clear();
       if (was) this.o.handlers?.connection?.(false);
     }
   }
@@ -366,88 +321,9 @@ export class Relay {
       return;
     }
     if (frame.t !== "tun" || typeof frame.sid !== "string") return;
-    const sid = frame.sid;
-    const op = String(frame.op);
-    if (op === "ws.open") return this.openBrowser(conn, sid, frame);
-    const stream = this.browsers.get(sid);
-    if (stream) return stream.accept(frame);
-    if (op.startsWith("http.")) this.onHttp(conn, sid, op, frame);
-  }
-
-  // ---- a browser's HTTP request ------------------------------------------------------------------------------------------
-
-  private onHttp(conn: Connection, sid: string, op: string, frame: Record<string, unknown>): void {
-    const fail = (message: string) => { this.httpIn.delete(sid); conn.send({ t: "tun", op: "http.error", sid, message }); };
-    if (op === "http.req") {
-      const from = typeof frame.from === "string" ? frame.from : "";
-      if (!this.o.handlers?.http) return fail("this relay tunnel does not serve web pages");
-      // A repeated sid is answered without touching the request already running under it.
-      if (this.httpIn.has(sid)) return void conn.send({ t: "tun", op: "http.error", sid, message: "sid in use" });
-      if (!from || !sid || sid.length > 128 || this.httpIn.size >= MAX_HTTP_REQUESTS) return fail("too many requests");
-      const headers = (Array.isArray(frame.headers) ? frame.headers : []).filter((h): h is [string, string] => Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "string");
-      this.httpIn.set(sid, { req: { from, method: String(frame.method ?? "GET"), path: String(frame.path ?? "/"), headers }, chunks: [], size: 0, abort: new AbortController() });
-      return;
-    }
-    const pending = this.httpIn.get(sid);
-    if (!pending) return;
-    if (op === "http.abort") { pending.abort.abort(); this.httpIn.delete(sid); return; }
-    if (op === "http.reqbody") {
-      let chunk: Uint8Array;
-      try { chunk = Buffer.from(String(frame.data ?? ""), "base64url"); } catch { return fail("invalid request body"); }
-      pending.size += chunk.byteLength;
-      if (pending.size > MAX_HTTP_BODY) return fail("the request body is too large");
-      pending.chunks.push(chunk);
-      return;
-    }
-    if (op !== "http.reqend") return;
-    const { req, chunks, abort } = pending;
-    void this.answer(conn, sid, { ...req, body: Buffer.concat(chunks), signal: abort.signal }).catch((error) => {
-      if (!abort.signal.aborted) { this.log("web request failed", error); fail("the hub could not answer"); }
-    }).finally(() => { if (this.httpIn.get(sid) === pending) this.httpIn.delete(sid); });
-  }
-
-  private async answer(conn: Connection, sid: string, request: RelayHttpRequest): Promise<void> {
-    const response = await this.o.handlers!.http!(request);
-    if (request.signal.aborted || this.conn !== conn) return;
-    conn.send({ t: "tun", op: "http.head", sid, status: response.status, headers: response.headers });
-    const send = (bytes: Uint8Array) => {
-      for (let i = 0; i < bytes.byteLength; i += HTTP_CHUNK) conn.send({ t: "tun", op: "http.body", sid, data: Buffer.from(bytes.subarray(i, i + HTTP_CHUNK)).toString("base64url") });
-    };
-    if (response.body instanceof Uint8Array) send(response.body);
-    else for await (const chunk of response.body) {
-      if (request.signal.aborted || this.conn !== conn) return;
-      send(chunk);
-    }
-    conn.send({ t: "tun", op: "http.end", sid });
-  }
-
-  private openBrowser(conn: Connection, sid: string, frame: Record<string, unknown>): void {
-    const from = typeof frame.from === "string" ? frame.from : "";
-    const path = typeof frame.path === "string" ? frame.path : "";
-    const close = (code: number, reason: string) => conn.send({ t: "tun", op: "ws.close", sid, code, reason });
-    if (!from || !sid || sid.length > 128 || this.browsers.has(sid)) return close(4400, "invalid stream");
-    if (this.browsers.size >= MAX_BROWSER_STREAMS) return close(1013, "too many browser streams");
-    const handler = this.o.handlers?.browser;
-    if (!handler) return close(4404, "no browser access here");
-    const stream = new DeviceStream(sid, from, path, (out) => conn.send(out), () => this.browsers.delete(sid));
-    this.browsers.set(sid, stream);
-    let decided = false;
-    try {
-      handler({
-        from, path,
-        accept: () => {
-          if (decided) throw new Error("already decided");
-          decided = true;
-          conn.send({ t: "tun", op: "ws.opened", sid });
-          return socketOf(stream);
-        },
-        reject: (code, reason) => { if (!decided) { decided = true; stream.close(code, reason); } },
-      });
-    } catch (error) {
-      this.log("browser tunnel handler failed", error);
-      if (!decided) stream.close(4500, "internal error");
-    }
-    if (!decided) { decided = true; stream.close(4404, "not served"); }
+    // The relay serves nothing of the hub's (docs/LINK-E2E.md §7): a browser's stream or request is refused, not left hanging.
+    if (frame.op === "ws.open") conn.send({ t: "tun", op: "ws.close", sid: frame.sid, code: 4404, reason: "not served through the relay" });
+    else if (frame.op === "http.req") conn.send({ t: "tun", op: "http.error", sid: frame.sid, message: "not served through the relay" });
   }
 
   private async addRequest(raw: Record<string, string>): Promise<void> {

@@ -1,5 +1,5 @@
 /**
- * SPEC-03 §11 (acceptance of `ash-link/1` on the local connection). Not in REGRESSION-0.3 by number: they are the rules
+ * SPEC-03 §11 (acceptance of `ash-link/2` on the local connection). Not in REGRESSION-0.3 by number: they are the rules
  * that make "手机启动和保活" (S168-S174) and "设备上线" (agent 7) hold from the outside.
  */
 import assert from "node:assert/strict";

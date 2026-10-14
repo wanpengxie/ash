@@ -1,6 +1,6 @@
 # Computer program (`ash-device`)
 
-A Node program that makes a Mac or Linux computer part of Ash. It speaks `ash-link/1` (SPEC-03) with the hub, through the
+A Node program that makes a Mac or Linux computer part of Ash. It speaks `ash-link/2` (SPEC-03) with the hub, through the
 relay, and has two channels:
 
 - **`device`**: the computer is a hand. It declares `workspace.*` and `body.info` (always; the hub registers them as

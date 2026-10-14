@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ash-link/1 presence frame",
+  "title": "ash-link/2 presence frame",
   "type": "object",
   "properties": {
     "t": {
