@@ -14,7 +14,6 @@ import { createLinkControl, type LinkControl, type LinkControlDeps } from "../..
 import type { OwnerIdentity } from "../../../src/edges/link-server/control/gateway";
 import { Devices } from "../../../src/edges/link-server/hands/devices";
 import { MAX_VALUE_LENGTH, REF_PATTERN } from "../../../src/kernel/vault";
-import { FakeCloudflare } from "./fake-cloudflare";
 import { startHub, newIdentity, type Hub, type Identity } from "./harness";
 
 export const owner: HandleContext = { signal: new AbortController().signal, caller: { member: "person:owner", via: "human", local: true }, raw: undefined };
@@ -73,45 +72,21 @@ export interface World {
   device(o: { capabilities?: CapabilitySpec[]; name: string; kind?: HandKind; permissions: string[]; lend?: boolean; local_agents?: boolean; web_ui?: boolean; online?: boolean }): Promise<{ identity: Identity; clients: HandClient[]; id: string }>;
   tell(): { to: string; text: string }[];
   events(word: string): any[];
-  /** Cloudflare and the sign-in's return port, when the world was asked for them. */
-  cf: FakeCloudflare;
-  port: number;
-  /** The card that asks the owner to sign in to Cloudflare, once shown. */
-  card(): { type: string; url: string; title: string } | undefined;
 }
 
-/** What the gateway's `npm run build:bundle` writes beside the program (scripts/build-bundle.ts there). */
-export const RELAY_METADATA = {
-  main_module: "ash-gateway.mjs",
-  compatibility_date: "2026-09-01",
-  compatibility_flags: ["enable_request_signal"],
-  bindings: [
-    { type: "durable_object_namespace", name: "HUB", class_name: "GatewayHub" },
-    { type: "plain_text", name: "INSTALL_SCRIPT_URL", text: "https://example.test/install.sh" },
-  ],
-  migrations: { new_tag: "v1", new_sqlite_classes: ["GatewayHub"] },
-  keep_bindings: ["plain_text", "secret_text"],
-  observability: { enabled: true },
-};
-
-export async function startWorld(t: { after(fn: () => unknown): void }, o: { gateway?: boolean; /** A relay nobody has claimed yet. */ fresh?: boolean; control?: Partial<LinkControlDeps>; cloudflare?: { bundle?: boolean; loginMs?: number; expiresIn?: number } } = {}): Promise<World> {
+export async function startWorld(t: { after(fn: () => unknown): void }, o: { gateway?: boolean; /** A relay nobody has claimed yet. */ fresh?: boolean; control?: Partial<LinkControlDeps> } = {}): Promise<World> {
   const hub = await startHub();
   const key = await hubKey();
   const gw = await FakeGateway.start(o.fresh ? { secret: null } : { claimedBy: { id: key.id, key: key.publicKey } });
   const vault = new MemoryVault();
-  const cf = await FakeCloudflare.start(gw);
-  if (o.cloudflare?.expiresIn !== undefined) cf.expiresIn = o.cloudflare.expiresIn;
-  const port = await freePort();
   const control = createLinkControl({
     db: hub.db, router: hub.router, link: hub.server, hands: hub.hands, vault, identity: key.identity, retryMs: 20,
-    cloudflare: cf.endpoints, callbackPort: port, callbackHost: "127.0.0.1", loginMs: o.cloudflare?.loginMs, reachable: { maxMs: 2000, everyMs: 10 },
-    bundle: o.cloudflare?.bundle === false ? undefined : async () => ({ source: "export default { fetch() { return new Response('relay') } }; export class GatewayHub {}", metadata: RELAY_METADATA }),
     ...o.control,
   });
   const devices = new Devices({ hands: hub.hands, router: hub.router, bodies: hub.bodies, gateway: control.pairing });
   control.bindDevices(devices);
   const clients: HandClient[] = [];
-  t.after(async () => { for (const c of clients) c.stop(); control.stop(); await cf.stop(); await gw.stop(); await hub.stop(); });
+  t.after(async () => { for (const c of clients) c.stop(); control.stop(); await gw.stop(); await hub.stop(); });
   await control.start();
   if (o.gateway !== false) {
     await control.gateway.use(gw.url);
@@ -153,10 +128,5 @@ export async function startWorld(t: { after(fn: () => unknown): void }, o: { gat
     },
     tell: () => hub.router.sent.filter((s) => s.msg.word === "tell").map((s) => ({ to: s.msg.to!, text: String((s.msg.body as { text: string }).text) })),
     events: (word) => hub.router.sent.filter((s) => s.msg.kind === "event" && s.msg.to === "service:link" && s.msg.word === word).map((s) => s.msg.body),
-    cf, port,
-    card: () => {
-      const sent = hub.router.sent.filter((s) => s.msg.to === "person:owner" && s.msg.word === "show");
-      return (sent.at(-1)?.msg.body as { card: { type: string; url: string; title: string } } | undefined)?.card;
-    },
   };
 }

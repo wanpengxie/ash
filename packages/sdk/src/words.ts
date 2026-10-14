@@ -278,9 +278,6 @@ add("service:devices", "codex.approval_pending", "event", obj({ thread: nonempty
 // ===================================================================================================================
 const LINK_CALLERS = OWNER_AGENT;
 const conn = obj({ conn: id, hand: handRef, name: str, kind: str, channels: strings, via: choice("local", "gateway"), since: nonnegativeSafe, heartbeat_ms: nonnegativeSafe, address: sensitive(str, "ip") }, ["conn", "hand"], true);
-const setupState = choice("waiting_login", "authorized", "deploying", "claimed", "connected", "failed");
-const setupAccount = obj({ id: str, name: sensitive(str, "email") }, ["id", "name"]);
-const setupInfo = obj({ setup_id: id, state: setupState, reason: str, accounts: array(setupAccount) }, ["setup_id", "state"], true);
 add("service:link", "list", "request", empty, obj({ connections: array(conn) }, ["connections"]),
   { callers: LINK_CALLERS, label: "在看当前连接", description: "Every live connection: which hand, which channels are open (device, human, agent), local or through the relay, since when, heartbeat delay." });
 add("service:link", "describe", "request", obj({ hand: handRef, conn: id }), conn,
@@ -294,16 +291,8 @@ add("service:link", "reconnect", "request", obj({ hand: handRef }, ["hand"]), ob
 add("service:link", "refresh_manifest", "request", obj({ hand: handRef }, ["hand"]), obj({ requested: bool }, ["requested"]),
   { callers: LINK_CALLERS, effect: "act", label: "在请手重发能力清单", description: "Ask a hand to send its capability list again, for example after you changed what it may lend." });
 add("service:link", "gateway.status", "request", empty,
-  obj({ configured: bool, url: str, claimed: bool, connected: bool, account_email: sensitive(str, "email"), last_error: str, setup_unavailable: str }, ["configured", "connected"], true),
-  { callers: LINK_CALLERS, label: "在看中转站", description: "The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, the latest error, and (setup_unavailable) why building a relay is not possible in this build." });
-add("service:link", "gateway.setup.start", "request", obj({ provider: { const: "cloudflare" } }, ["provider"]), setupInfo,
-  { callers: LINK_CALLERS, effect: "act", label: "在开始搭中转站", description: "Start building a relay in the owner's Cloudflare account: a 'sign in to Cloudflare' card goes to the owner. You get a setup_id and a background message at each step." });
-add("service:link", "gateway.setup.status", "request", obj({ setup_id: id }, ["setup_id"]), setupInfo,
-  { callers: LINK_CALLERS, label: "在看中转站搭建进展", description: "Where a relay setup is: waiting_login, authorized, deploying, claimed, connected, or failed with the reason. Once authorized it lists the Cloudflare accounts the owner's sign-in can build in (id and name)." });
-add("service:link", "gateway.setup.deploy", "request", obj({ setup_id: id, name: nonempty, account: nonempty }, ["setup_id"]), setupInfo,
-  { callers: LINK_CALLERS, effect: "write", risk: "structure", label: "在部署中转站", description: "Deploy the relay in the owner's account, claim it and connect. When the sign-in sees more than one Cloudflare account, `account` (an id from gateway.setup.status) is required: Ash never picks one. Ash does not write over a Worker it did not build: a name that is taken is refused; without a name one is made (ash-relay-xxxxxx). An agent asking for this is asked about by the owner." });
-add("service:link", "gateway.setup.cancel", "request", obj({ setup_id: id }, ["setup_id"]), setupInfo,
-  { callers: LINK_CALLERS, effect: "act", label: "在取消搭中转站", description: "Cancel a relay setup that is not finished." });
+  obj({ configured: bool, url: str, claimed: bool, connected: bool, account_email: sensitive(str, "email"), last_error: str }, ["configured", "connected"], true),
+  { callers: LINK_CALLERS, label: "在看中转站", description: "The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, and the latest error. The relay itself (deploying it, taking it back, its domain) is the agent's to run with wrangler: skill relay." });
 add("service:link", "gateway.use", "request", obj({ url: { type: "string", minLength: 1, maxLength: 2048 }, claim_secret: secret({ type: "string", minLength: 1, maxLength: 512 }) }, ["url"]), obj({ url: str }, ["url"]),
   { callers: LINK_CALLERS, effect: "write", risk: "structure", label: "在改用中转站", description: "Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed to claim a relay that has no owner; it is held sealed and never reaches the ledger. Without it the one in the vault (GATEWAY_BOOTSTRAP) is used. An agent asking for this is asked about by the owner." });
 const linkEvent = { hand: handRef, conn: id, channel: choice("device", "human", "agent"), code: integer, reason: str };

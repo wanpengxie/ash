@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `5e37eced3be17656`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `6a47814561a03669`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -12,7 +12,7 @@
 - [`service:gate`](#servicegate) (17)
 - [`service:vault`](#servicevault) (5)
 - [`service:devices`](#servicedevices) (17)
-- [`service:link`](#servicelink) (16)
+- [`service:link`](#servicelink) (12)
 - [`service:agents`](#serviceagents) (32)
 - [`service:apps`](#serviceapps) (17)
 - [`service:clock`](#serviceclock) (5)
@@ -141,11 +141,7 @@
 | `disconnect` | owner, agent | act / outward | - | conn*, reason | 在断开连接 | Close one connection. The hand may reconnect by itself unless it was revoked. |
 | `reconnect` | owner, agent | act / none | - | hand* | 在重连 | Ask the relay to open the tunnel again, or tell a local hand to reconnect. |
 | `refresh_manifest` | owner, agent | act / none | - | hand* | 在请手重发能力清单 | Ask a hand to send its capability list again, for example after you changed what it may lend. |
-| `gateway.status` | owner, agent | read / none | - | - | 在看中转站 | The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, the latest error, and (setup_unavailable) why building a relay is not possible in this build. |
-| `gateway.setup.start` | owner, agent | act / none | - | provider* | 在开始搭中转站 | Start building a relay in the owner's Cloudflare account: a 'sign in to Cloudflare' card goes to the owner. You get a setup_id and a background message at each step. |
-| `gateway.setup.status` | owner, agent | read / none | - | setup_id* | 在看中转站搭建进展 | Where a relay setup is: waiting_login, authorized, deploying, claimed, connected, or failed with the reason. Once authorized it lists the Cloudflare accounts the owner's sign-in can build in (id and name). |
-| `gateway.setup.deploy` | owner, agent | write / structure | - | setup_id*, name, account | 在部署中转站 | Deploy the relay in the owner's account, claim it and connect. When the sign-in sees more than one Cloudflare account, `account` (an id from gateway.setup.status) is required: Ash never picks one. Ash does not write over a Worker it did not build: a name that is taken is refused; without a name one is made (ash-relay-xxxxxx). An agent asking for this is asked about by the owner. |
-| `gateway.setup.cancel` | owner, agent | act / none | - | setup_id* | 在取消搭中转站 | Cancel a relay setup that is not finished. |
+| `gateway.status` | owner, agent | read / none | - | - | 在看中转站 | The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, and the latest error. The relay itself (deploying it, taking it back, its domain) is the agent's to run with wrangler: skill relay. |
 | `gateway.use` | owner, agent | write / structure | - | url*, claim_secret (secret) | 在改用中转站 | Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed to claim a relay that has no owner; it is held sealed and never reaches the ledger. Without it the one in the vault (GATEWAY_BOOTSTRAP) is used. An agent asking for this is asked about by the owner. |
 | `connected` | kernel | read / none | event out, record | hand*, conn*, channels | 在记下设备连上 | A hand finished the handshake and is connected. Goes into the ledger. |
 | `disconnected` | kernel | read / none | event out, record | hand*, conn, channel, code, reason | 在记下设备断开 | A hand's connection closed, with the close code and reason. Goes into the ledger. |

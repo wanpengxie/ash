@@ -8,9 +8,7 @@
 //   runtime/   Termux aarch64 packages (node, python, git, rg, bash, curl, pnpm …), made relocatable:
 //              RUNPATH=$ORIGIN/…/lib on every ELF (no LD_LIBRARY_PATH needed), Termux prefix in
 //              shebangs replaced by the @PAYLOAD@ placeholder that the host fills in on extraction.
-//   ash/       ash core bundle (ash-core.mjs), libashnodump.so, android-node-compat/ (the preload the host starts core with),
-//              and next to the bundle the relay program (ash-gateway.mjs and its upload metadata ash-gateway.metadata.json, built by the gateway repository:
-//              `npm run build:bundle` there, then --gateway <dir> or ASH_GATEWAY_DIR; default node_modules/ash-gateway).
+//   ash/       ash core bundle (ash-core.mjs), libashnodump.so, android-node-compat/ (the preload the host starts core with).
 //   ash-skills/  ash's skills, persona templates and agent templates (the hub reads them; the container carries its own copy as a DSH plugin).
 //   ash-apps/    first-party apps (packages/apps), one folder each: app.json, a bundled server.mjs, the icon.
 // DSH is not here: it runs in the agent container (tools/build-container-rootfs.mjs).
@@ -150,7 +148,6 @@ async function build() {
   } catch {
     throw new Error(`patchelf not found (${patchelf}); install it or set PATCHELF=…`);
   }
-  const relay = relayProgram(); // before anything is downloaded: a missing gateway build should not cost a whole assemble
   fs.mkdirSync(cache, { recursive: true });
   fs.rmSync(out, { recursive: true, force: true });
   const tree = path.join(out, "tree");
@@ -260,9 +257,6 @@ async function build() {
   if (!fs.existsSync(core)) throw new Error("build ash core first: npm run build:core");
   fs.mkdirSync(path.join(tree, "ash"), { recursive: true });
   fs.copyFileSync(core, path.join(tree, "ash/ash-core.mjs"));
-  // The relay program `gateway.setup.deploy` uploads; core looks for it next to its own file.
-  fs.copyFileSync(relay, path.join(tree, "ash/ash-gateway.mjs"));
-  fs.copyFileSync(relay.replace(/\.mjs$/, ".metadata.json"), path.join(tree, "ash/ash-gateway.metadata.json"));
   // Core marks itself non-dumpable with this library, so the agent container (same Linux user) cannot read its memory.
   fs.copyFileSync(buildNodump(), path.join(tree, "ash/libashnodump.so"));
 
@@ -295,28 +289,6 @@ async function build() {
   fs.copyFileSync(path.join(tree, "payload-index.json"), path.join(out, "payload-index.json"));
   const size = (fs.statSync(path.join(out, "payload.zip")).size / 1e6).toFixed(1);
   log(`done: ${out}/payload.zip (${size} MB), build ${index.build}, ${links.length} links, ${index.exec.length} executables`);
-}
-
-/**
- * The gateway repository's build output, `dist/ash-gateway.mjs` (its `npm run build:bundle`), checked against the
- * `dist/ash-gateway.mjs.sha256` written beside it, and the `dist/ash-gateway.metadata.json` it uploads with (the only
- * copy of that metadata: the hub adds just the claim secret and the first-deploy migration). The gateway is not built here.
- */
-function relayProgram() {
-  const dir = path.resolve(opt("--gateway", process.env.ASH_GATEWAY_DIR ?? path.join(ROOT, "node_modules/ash-gateway")));
-  const file = path.join(dir, "dist/ash-gateway.mjs");
-  const how = `build the gateway first: in ${dir} run \`npm run build:bundle\` (another checkout: --gateway <dir> or ASH_GATEWAY_DIR)`;
-  if (!fs.existsSync(file)) throw new Error(`the relay program ${file} does not exist; ${how}`);
-  const metadata = file.replace(/\.mjs$/, ".metadata.json");
-  if (!fs.existsSync(metadata)) throw new Error(`the relay metadata ${metadata} does not exist; ${how}`);
-  JSON.parse(fs.readFileSync(metadata, "utf8"));
-  const shaFile = `${file}.sha256`;
-  if (!fs.existsSync(shaFile)) throw new Error(`${shaFile} does not exist; ${how}`);
-  const expected = fs.readFileSync(shaFile, "utf8").trim().split(/\s+/)[0].toLowerCase();
-  const got = sha256(file);
-  if (expected !== got) throw new Error(`${file} has sha256 ${got}, its ${path.basename(shaFile)} says ${expected}; ${how}`);
-  log("relay program", file, got.slice(0, 12));
-  return file;
 }
 
 if (flag("--lock")) await lock();

@@ -444,17 +444,6 @@ object HomeModel {
         return "中转站暂时连不上$where$why。会自动重试，也请检查网络和地址。"
     }
 
-    val SETUP_ACTIVE = listOf("waiting_login", "authorized", "deploying", "claimed")
-    fun setupText(s: JSONObject?): String = when (s?.str("state")) {
-        "waiting_login" -> "等你在 Cloudflare 登录：登录卡片已经发到对话里。登录后回到这里点「看看进度」。"
-        "authorized" -> if ((s.optJSONArray("accounts")?.length() ?: 0) > 1) "已登录 Cloudflare。你的登录能看到多个账户，先选一个要搭在哪里，再点「开始搭建」。" else "已登录 Cloudflare，可以开始搭建了。"
-        "deploying" -> "正在搭建中转站，需要一两分钟…"
-        "claimed" -> "中转站已搭好，正在连接…"
-        "connected" -> "中转站已搭好，也连上了。"
-        "failed" -> "搭建没有成功${s.str("reason")?.takeIf { it.isNotEmpty() }?.let { "：$it" } ?: ""}。可以重新搭一次。"
-        else -> ""
-    }
-
     private val PROVIDER_NAMES = mapOf("deepseek" to "DeepSeek", "openrouter" to "OpenRouter")
     fun balanceSentence(data: JSONObject?): String {
         val parts = ArrayList<String>(); var unavailable = false

@@ -113,7 +113,7 @@ export class GatewayControl {
       relay.stop();
       const problem = error instanceof RelayError ? error.problem : "unreachable";
       throw new WordError(problem === "claimed_by_other" || problem === "missing_secret" || problem === "bad_secret" ? "forbidden" : "unavailable", PROBLEM_TEXT[problem] ?? "The relay cannot be used.", {
-        recovery_hint: problem === "missing_secret" ? "Store the relay's claim secret with service:vault/set (ref GATEWAY_BOOTSTRAP), then use it again." : "Check the address, or build a new relay with gateway.setup.start.",
+        recovery_hint: problem === "missing_secret" ? "Store the relay's claim secret with service:vault/set (ref GATEWAY_BOOTSTRAP), then use it again." : "Check the address; to build a new relay or take this one back, see skill relay.",
       });
     }
     this.end();

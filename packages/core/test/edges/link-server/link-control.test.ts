@@ -349,7 +349,7 @@ test("the relay is told the network changed: env.changed connects again", async 
 test("the words are the contract's, every one, and agents may use them", async (t) => {
   const w = await startWorld(t, { gateway: false });
   const words = w.control.member.words().map((x) => x.word);
-  for (const word of ["list", "describe", "diagnose", "disconnect", "reconnect", "refresh_manifest", "gateway.status", "gateway.setup.start", "gateway.setup.status", "gateway.setup.deploy", "gateway.setup.cancel", "gateway.use", "connected", "disconnected", "handshake_failed"]) {
+  for (const word of ["list", "describe", "diagnose", "disconnect", "reconnect", "refresh_manifest", "gateway.status", "gateway.use", "connected", "disconnected", "handshake_failed"]) {
     assert.ok(words.includes(word), word);
   }
   assert.deepEqual(await w.link("list", {}, agent), { connections: [] });

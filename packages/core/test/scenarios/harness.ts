@@ -730,12 +730,8 @@ export class Scenario {
     // calls and the host's events come over its private pipe (standard input and output), a new one for each start.
     const launch = this.host.writeLaunch();
     this.pipe = this.host.connect();
-    // The packaged relay program, as a stand-in: a setup is refused without one.
-    const relayBundle = join(this.dataDir, "ash-gateway.mjs");
-    writeFileSync(relayBundle, "export default {};\n");
-    writeFileSync(join(this.dataDir, "ash-gateway.metadata.json"), JSON.stringify({ main_module: "ash-gateway.mjs" }));
     const starting = startHub({
-      dataDir: this.dataDir, relayBundle, relaySetupPort: 0, port: 0, env: { ...launch.env }, stdin: this.pipe.stdin, stdout: this.pipe.stdout, drivers: this.driver.drivers,
+      dataDir: this.dataDir, port: 0, env: { ...launch.env }, stdin: this.pipe.stdin, stdout: this.pipe.stdout, drivers: this.driver.drivers,
       // Without a fake model server of its own a scenario still never reaches a real provider (a saved key is checked at once): a closed local port.
       llm: this.options.llm ?? { baseUrl: "http://127.0.0.1:9" },
       // The health meter ticks in real milliseconds but counts the hub's time: with the moved clock a tick closes the time `advance()` gave it.

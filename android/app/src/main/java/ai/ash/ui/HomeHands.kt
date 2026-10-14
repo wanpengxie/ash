@@ -17,7 +17,6 @@ import ai.ash.ui.design.AshUi.Kind
 import ai.ash.ui.design.Role
 import org.json.JSONObject
 
-private fun detach(v: View) { (v.parent as? ViewGroup)?.removeView(v) }
 
 /** 她的手和眼: the phone's checkup (drawn by the app itself; here only its state), the devices she can use, her browser, the apps, and a button to connect a new device. */
 class HmHands(env: HomeEnv, arg: String?) : HomePage(env, arg) {
@@ -209,24 +208,17 @@ class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private var shown: Shown? = null
     private var pairResult = ""
     private var relay: JSONObject? = null
-    private var relayResult = ""
-    private var setup: JSONObject? = null
-    private var account = ""
     private var copied = "复制地址"
     private var signature: String? = null
     private var tick = 0
-    private val urlField = Hk.field(ctx, "https://你的中转站地址", url = true)
-    private val nameField = Hk.field(ctx, "中转站的名字（可不填）")
     private var pairText: TextView? = null
-    private var warn = ""
     private val kinds = listOf("computer" to "电脑", "server" to "服务器", "browser" to "浏览器")
 
     init {
         every(1000) {
-            val running = setup?.str("state") in HomeModel.SETUP_ACTIVE
-            if (shown == null && !running) return@every
+            if (shown == null) return@every
             tickText()
-            if (++tick % 2 == 0) { readPairing(); if (running) readSetup() }
+            if (++tick % 2 == 0) readPairing()
         }
         draw()
     }
@@ -248,18 +240,7 @@ class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         if (code == "expired" && s.state == "waiting") draw()
     }
 
-    private fun readRelay() = call("service:link", "gateway.status") { r ->
-        if (r.ok) { relay = r.data; if (r.data.optBoolean("configured") && urlField.text.isNullOrEmpty()) r.data.str("url")?.let { urlField.setText(it) }; draw() }
-    }
-    private fun readSetup() {
-        val id = setup?.str("setup_id") ?: return
-        call("service:link", "gateway.setup.status", JSONObject().put("setup_id", id)) { r -> if (r.ok) adopt(r.data) else { relayResult = "没读到进度，请重试。"; draw() } }
-    }
-    private fun adopt(next: JSONObject) {
-        val merged = JSONObject(setup?.toString() ?: "{}"); next.keys().forEach { merged.put(it, next.get(it)) }
-        setup = merged
-        if (next.str("state") == "claimed" || next.str("state") == "connected") readRelay() else draw()
-    }
+    private fun readRelay() = call("service:link", "gateway.status") { r -> if (r.ok) { relay = r.data; draw() } }
     private fun readPairing() = call("service:devices", "pair_pending") { r ->
         if (!r.ok) return@call
         val pairs = r.data.list("pairs")
@@ -312,45 +293,14 @@ class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
             }
         }), iconInset = false))
 
-        val sState = setup?.str("state")
-        val active = sState in HomeModel.SETUP_ACTIVE
-        val accounts = if (sState == "authorized") setup?.list("accounts") ?: emptyList() else emptyList()
-        val many = accounts.size > 1
-        detach(urlField); detach(nameField)
+        val r = relay
         addView(AshUi.group(ctx, "中转站", rows = listOf(AshUi.vstack(ctx, 12).apply {
             setPadding(dp(14), dp(14), dp(14), dp(14))
-            addView(AshUi.text(ctx, relay?.let { HomeModel.relayText(it) } ?: "正在读取…", AshTokens.Type.sub))
-            addView(urlField)
-            addView(AshUi.button(ctx, "使用这个中转站", Kind.SECONDARY, block = true) {
-                val v = urlField.text.toString().trim()
-                if (v.isEmpty()) { relayResult = "请先填中转站的地址。"; draw(); return@button }
-                relayResult = "正在保存…"; draw()
-                call("service:link", "gateway.use", JSONObject().put("url", v)) { r ->
-                    if (r.ok) { relayResult = "已设置中转站：${r.data.str("url") ?: v}。"; r.data.str("url")?.let { urlField.setText(it) }; readRelay() } else { relayResult = "保存失败，请检查地址后重试。"; draw() }
-                }
+            addView(AshUi.text(ctx, r?.let { HomeModel.relayText(it) } ?: "正在读取…", AshTokens.Type.sub))
+            addView(AshUi.text(ctx, "中转站是你 Cloudflare 账号里的一个小程序，由她来搭、领回、换域名：你只需要授权一次，动你的东西之前她会先问你。", AshTokens.Type.caption))
+            addView(AshUi.button(ctx, if (r?.optBoolean("connected") == true) "让她管中转站" else "让她搭中转站", Kind.SECONDARY, block = true) {
+                env.nav.compose(if (r?.optBoolean("configured") == true) "帮我看看中转站" else "帮我搭中转站")
             })
-            if (relayResult.isNotEmpty()) addView(Hk.note(ctx, relayResult))
-            addView(AshUi.text(ctx, "没有中转站？可以在你的 Cloudflare 账号里搭一个。", AshTokens.Type.caption))
-            if (sState != null) addView(Hk.note(ctx, HomeModel.setupText(setup)))
-            if (many) addView(Flow(ctx, dp(8), dp(8)).apply { accounts.forEach { a -> addView(AshUi.button(ctx, a.str("name") ?: "", if (a.str("id") == account) Kind.PRIMARY else Kind.NEUTRAL, AshUi.BtnSize.SM) { account = a.str("id") ?: ""; draw() }) } })
-            if (sState == "authorized") addView(nameField)
-            if (!active && sState != "connected") addView(AshUi.button(ctx, "在 Cloudflare 搭一个", Kind.NEUTRAL, block = true) {
-                relayResult = ""; setup = JSONObject().put("state", "starting"); draw()
-                call("service:link", "gateway.setup.start", JSONObject().put("provider", "cloudflare")) { r -> if (r.ok) setup = r.data else { setup = null; relayResult = "没能开始，请稍后重试。" }; draw() }
-            })
-            if (sState == "authorized") addView(AshUi.button(ctx, "开始搭建", Kind.PRIMARY, block = true) {
-                val n = nameField.text.toString().trim()
-                if (many && account.isEmpty()) { relayResult = "先选一个要搭在哪个 Cloudflare 账户。"; draw(); return@button }
-                val b = JSONObject().put("setup_id", setup?.str("setup_id")).also { o -> if (n.isNotEmpty()) o.put("name", n); if (many) o.put("account", account) }
-                call("service:link", "gateway.setup.deploy", b) { r -> if (r.ok) adopt(r.data) else { relayResult = "没能开始搭建，请重试。"; draw() } }
-            })
-            if (sState in listOf("waiting_login", "deploying", "claimed")) addView(AshUi.button(ctx, "看看进度", Kind.NEUTRAL, block = true) { readSetup() })
-            if (sState in listOf("waiting_login", "authorized", "deploying")) {
-                addView(Hk.twoTap(ctx, "放弃搭建", "确定放弃？", "放弃后，已经搭到一半的东西不会继续。", { warn = it; draw() }) {
-                    call("service:link", "gateway.setup.cancel", JSONObject().put("setup_id", setup?.str("setup_id"))) { r -> if (r.ok) { setup = null; relayResult = "已放弃搭建。" } else relayResult = "没能放弃，请重试。"; draw() }
-                })
-                if (warn.isNotEmpty()) addView(Hk.note(ctx, warn, "err"))
-            }
         }), iconInset = false))
     }
 

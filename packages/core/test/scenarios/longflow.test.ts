@@ -1,42 +1,11 @@
 /**
- * HUB-MODULES §4 / SPEC-02 §4.1.1: a flow that takes minutes and waits for a person (building a relay, pairing a computer)
+ * HUB-MODULES §4 / SPEC-02 §4.1.1: a flow that takes minutes and waits for a person (pairing a computer)
  * tells whoever started it, with a background message at each step, and does not put those into the owner's conversation.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MAIN, accepted, byOwnerText, dataOf, errorCode, quiet, resultOf, startScenario, tellAbout, type ToolResult } from "./harness";
+import { accepted, byOwnerText, dataOf, errorCode, resultOf, startScenario, type ToolResult } from "./harness";
 import { eventually } from "../fixtures/wait";
-
-test("HUB-MODULES §4, SPEC-03 §9.5.2: a relay setup the agent started tells the agent when its state changes, not the owner", async (t) => {
-  const s = await startScenario(t);
-  const state: { started?: ToolResult } = {};
-  s.driver.script(byOwnerText({
-    "帮我搭中转站": async (turn) => {
-      state.started = await turn.call("service:link", "gateway.setup.start", { provider: "cloudflare" });
-    },
-  }));
-  const owner = await s.human();
-
-  accepted(await owner.say("帮我搭中转站"));
-
-  await eventually(() => state.started, "the agent's setup_id");
-  const setupId = resultOf(state.started!)?.setup_id as string;
-  assert.ok(setupId, "the agent gets a setup_id");
-  await owner.seen((m) => m.to === "person:owner" && /cloudflare/i.test(JSON.stringify(m.body)), "the sign-in card for the owner");
-
-  const cancelled = await owner.call("service:link", "gateway.setup.cancel", { setup_id: setupId });
-  assert.ok(cancelled.ok, "the owner cancels it");
-
-  const { delivery, message } = await s.driver.delivery(tellAbout(setupId), "a background message to the agent about the change");
-  assert.equal(message.word, "tell");
-  assert.equal(delivery.agent, MAIN, "to the agent that started it");
-  assert.equal(message.lane, "back");
-  await quiet();
-  assert.ok(
-    !owner.messages.some((m) => m.to === "person:owner" && m.word === "say" && JSON.stringify(m.body).includes(setupId)),
-    "the owner's conversation has no such message",
-  );
-});
 
 /** An agent starts a pairing on a relay the owner set up; the owner then reads the code, from this machine. */
 async function pairing(t: Parameters<typeof startScenario>[0]) {

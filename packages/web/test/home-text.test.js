@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { HELPER, appState, appBroken, appTrouble, isSystemEntry, SYSTEM_FILES, SYSTEM_FOLDERS, pluginName, providerName, appsSummary, balanceSentence, deviceDiagnosis, keyProblems, keyStateText, quietOf, relayText, setupText } from "../js/home-text.js";
+import { HELPER, appState, appBroken, appTrouble, isSystemEntry, SYSTEM_FILES, SYSTEM_FOLDERS, pluginName, providerName, appsSummary, balanceSentence, deviceDiagnosis, keyProblems, keyStateText, quietOf, relayText } from "../js/home-text.js";
 
 const dev = (letter) => `device:${letter.repeat(22)}`;
 
@@ -35,8 +35,6 @@ test("the relay, the setup state and the balances read in plain words", () => {
   assert.equal(relayText({ configured: false, connected: false }), "还没有设置中转站，其他设备暂时连不上。");
   assert.equal(relayText({ configured: true, connected: true, url: "https://r.test" }), "中转站已连接（https://r.test）。");
   assert.match(relayText({ configured: true, connected: false, last_error: "timed out" }), /暂时连不上：timed out/);
-  assert.equal(setupText(null), "");
-  assert.match(setupText({ state: "failed", reason: "no account" }), /没有成功：no account/);
   assert.equal(balanceSentence({ balances: [] }), "账户余额：无数据");
   assert.equal(balanceSentence({ balances: [{ provider: "openrouter", balance: { available: false, balances: [{ currency: "USD", total: "3" }] } }] }), "账户余额：OpenRouter 约 ¥20.22（账户当前不可用）");
 });

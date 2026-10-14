@@ -131,6 +131,6 @@ test("the checker catches what it is for", () => {
   assert.ok(TOOL_NAMES.includes("human_say") && !TOOL_NAMES.includes("human_notify"));
   assert.ok(allWords.has("apps.open_url") && !allWords.has("intent.view"));
   assert.ok(extensions.has("x.android.browser.run") && extensions.has("x.android.browser.show"));
-  assert.ok(wordsOf("service:link").has("diagnose") && wordsOf("service:link").has("gateway.setup.start"));
+  assert.ok(wordsOf("service:link").has("diagnose") && wordsOf("service:link").has("gateway.use"));
   assert.ok(wordsOf("body:*").has("body.info") && wordsOf("device:*").has("config.status"));
 });

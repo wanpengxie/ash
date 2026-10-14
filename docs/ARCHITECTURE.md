@@ -37,8 +37,8 @@ Rules about how the world works (approvals, data versus instructions, voice, the
 ## Build and checks
 
 `npm run build:core` bundles `main.ts` into `packages/core/dist/ash-core.mjs`. `npm run build:payload` assembles the payload
-(Node and tools, the bundle with `ash-skills/` and the bundled first-party apps `ash-apps/` beside it, and the relay program `ash-gateway.mjs` that the
-gateway repository builds with `npm run build:bundle`). DSH is not in the payload: it runs in the agent container, which `npm run build:container`
+(Node and tools, the bundle with `ash-skills/` and the bundled first-party apps `ash-apps/` beside it). The relay is not in it either: the agent
+deploys the gateway repository's release with wrangler (skill `relay`). DSH is not in the payload: it runs in the agent container, which `npm run build:container`
 builds (an arm64 Ubuntu root with Node, DSH as published and Ash's DSH plugins, pi (the second agent runtime) and v2rayA (the proxy of the container, run by a built-in app), plus proot, into `build/container/`). The Android Gradle build embeds the payload and the container in the APK.
 
 `npm run typecheck` and `npm test` run everything; `npm run test:smoke` runs the unit tests of every package and the hub's

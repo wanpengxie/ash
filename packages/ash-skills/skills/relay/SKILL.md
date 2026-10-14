@@ -27,7 +27,7 @@ sleep 5; grep -oE 'https://dash\.cloudflare\.com/oauth2/auth[^ ]+' ~/relay/login
 
 - 把那条链接发给主人（一句话：「请在手机上打开这个链接，登录你的 Cloudflare，选你自己的账号，点授权」）。他授权后浏览器会跳到 `localhost:8976`，那是你身体里正在等的 wrangler，登录就完成了（浏览器那页显示什么都不要紧）。
 - 等 `grep -q "Successfully logged in" ~/relay/login.log`，再 `npx wrangler@4 whoami` 看他的账号。**有几个账号就问他用哪个**，然后后面所有命令前加 `CLOUDFLARE_ACCOUNT_ID=<id>`。
-- 8976 端口被占（中枢自己的搭建流程在等登录）：先 `service:link/gateway.setup.cancel`。
+- 8976 端口被占：上一次 `wrangler login` 还在等，先结束它（`kill` 那个进程号）再来。
 - 令牌留在你身体的 `~/.config/.wrangler`，会自动续期。**不要读出、不要打印、不要发给任何人。**
 - npm 下载很慢或失败：加 `--registry=https://registry.npmmirror.com` 再试。
 

@@ -1,7 +1,7 @@
 import { fill } from "./home-dom.js";
 // The devices that connect to her: the list on 她的手和眼, one device's page (name, what it may do, diagnosis, removal), a request
 // waiting for your approval, and the pairing of a new one with the relay it goes through.
-import { deviceDiagnosis, handOf, KIND_NAMES, clock, relayText, setupText, SETUP_ACTIVE } from "./home-text.js";
+import { deviceDiagnosis, handOf, KIND_NAMES, clock, relayText } from "./home-text.js";
 import { readDevices } from "./home-data.js";
 import { btn, card, group, h, list, localHint, note, row, skeleton, twoTap } from "./home-ui.js";
 import { switchRow } from "./home-switch.js";
@@ -98,16 +98,10 @@ export function devicePage(ctx, screen, arg) {
 /** 连一台新设备: a pairing code for a computer, server or browser, and the relay it connects through. */
 export function connectPage(ctx, screen) {
   const root = h("div", { class: "hm-stack" });
-  const state = { kind: "computer", shown: null, pairResult: "", relay: null, relayUrl: "", relayResult: "", setup: null, account: "", setupBusy: false, copy: "复制地址", requested: 0, signature: null };
+  const state = { kind: "computer", shown: null, pairResult: "", relay: null, copy: "复制地址", requested: 0, signature: null };
   const countdown = (ms) => { const seconds = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; };
-  const setupFailed = (text) => (error) => { if (screen.alive()) { state.relayResult = error?.code === "stale" ? "" : text; draw(); } };
 
-  const refreshRelay = async () => { state.relay = await screen.ask("service:link", "gateway.status", {}); if (state.relay.configured === true && typeof state.relay.url === "string" && !state.relayUrl) state.relayUrl = state.relay.url; };
-  const readSetup = async () => {
-    if (!state.setup?.setup_id) return;
-    try { await adopt(await screen.ask("service:link", "gateway.setup.status", { setup_id: state.setup.setup_id })); } catch (error) { setupFailed("没读到进度，请重试。")(error); }
-  };
-  const adopt = async (next) => { state.setup = { ...state.setup, ...next }; if (next.state === "claimed" || next.state === "connected") await refreshRelay().catch(() => {}); if (screen.alive()) draw(); };
+  const refreshRelay = async () => { state.relay = await screen.ask("service:link", "gateway.status", {}); };
 
   const readPairing = async () => {
     let pairs;
@@ -145,18 +139,6 @@ export function connectPage(ctx, screen) {
       code === "waiting" && shown.url ? btn(state.copy, "a-btn btn-neutral btn-sm hm-left", async () => { try { await globalThis.navigator.clipboard.writeText(shown.url); state.copy = "已复制"; } catch { state.copy = "长按上面的地址复制"; } draw(); }, { id: "homePairCopy" }) : null,
       code === "requested" ? btn("去批准", "a-btn btn-primary btn-sm hm-left", () => ctx.back()) : null) : null;
     const relay = state.relay;
-    const setup = state.setup;
-    const sState = setup?.state;
-    const active = SETUP_ACTIVE.includes(sState);
-    const accounts = sState === "authorized" && Array.isArray(setup.accounts) ? setup.accounts : [];
-    const many = accounts.length > 1;
-    const url = h("input", { type: "url", id: "homeRelayUrl", placeholder: "https://你的中转站地址", value: state.relayUrl, "aria-label": "中转站地址" });
-    url.addEventListener("input", () => { state.relayUrl = url.value; });
-    const name = h("input", { type: "text", id: "homeSetupName", placeholder: "中转站的名字（可不填）", "aria-label": "中转站的名字", maxlength: 40 });
-    const cancel = h("button", { type: "button", class: "a-btn btn-neutral btn-block", id: "homeSetupCancel" });
-    const cancelNote = h("p", { class: "hm-note c-err" });
-    twoTap(cancel, { label: "放弃搭建", confirm: "确定放弃？", warn: "放弃后，已经搭到一半的东西不会继续。", onWarn: (text) => { cancelNote.textContent = text; }, run: async () => {
-      try { await screen.ask("service:link", "gateway.setup.cancel", { setup_id: setup.setup_id }); if (screen.alive()) { state.setup = null; state.relayResult = "已放弃搭建。"; draw(); } } catch (error) { setupFailed("没能放弃，请重试。")(error); } } });
     fill(root, 
       localHint(ctx), group("连一台新设备", h("div", { class: "hm-stack" }, kinds, btn("生成配对码", "a-btn btn-primary btn-block", async () => {
         state.pairResult = "正在生成配对码…"; draw();
@@ -170,40 +152,17 @@ export function connectPage(ctx, screen) {
         if (screen.alive()) draw();
       }, { id: "homePair" }), state.pairResult ? note(state.pairResult) : null, pairBox)),
       group("中转站", card("hm-promise", h("span", { class: "tx-sub", id: "homeRelayStatus" }, relay ? relayText(relay) : "正在读取…"),
-        url, btn("使用这个中转站", "a-btn btn-secondary btn-block", async () => {
-          const value = state.relayUrl.trim();
-          if (!value) { state.relayResult = "请先填中转站的地址。"; draw(); return; }
-          state.relayResult = "正在保存…"; draw();
-          try { const used = await screen.ask("service:link", "gateway.use", { url: value }); if (typeof used.url === "string") state.relayUrl = used.url; state.relayResult = `已设置中转站：${used.url ?? value}。`; await refreshRelay().catch(() => {}); }
-          catch (error) { state.relayResult = error?.code === "stale" ? "" : "保存失败，请检查地址后重试。"; }
-          if (screen.alive()) draw();
-        }, { id: "homeRelayUse" }), state.relayResult ? h("p", { class: "hm-note", id: "homeRelayResult", role: "status" }, state.relayResult) : null,
-        h("span", { class: "tx-caption" }, "没有中转站？可以在你的 Cloudflare 账号里搭一个。"),
-        sState ? h("p", { class: "hm-note", id: "homeSetupState", role: "status" }, setupText(setup)) : null,
-        many ? h("div", { class: "hm-actions", id: "homeSetupAccounts" }, accounts.map((account, index) => btn(account.name, `a-btn btn-sm ${account.id === state.account ? "btn-primary" : "btn-neutral"}`, () => { state.account = account.id; draw(); }, { "aria-pressed": String(account.id === state.account), id: `homeSetupAccount${index}` }))) : null,
-        sState === "authorized" ? name : null,
-        !active && sState !== "connected" ? btn("在 Cloudflare 搭一个", "a-btn btn-neutral btn-block", async () => {
-          state.relayResult = ""; state.setup = { state: "starting" };
-          try { state.setup = await screen.ask("service:link", "gateway.setup.start", { provider: "cloudflare" }); } catch (error) { state.setup = null; setupFailed("没能开始，请稍后重试。")(error); }
-          if (screen.alive()) draw();
-        }, { id: "homeSetupStart" }) : null,
-        sState === "authorized" ? btn("开始搭建", "a-btn btn-primary btn-block", async () => {
-          const nameText = name.value.trim();
-          if (many && !state.account) { state.relayResult = "先选一个要搭在哪个 Cloudflare 账户。"; draw(); return; }
-          try { await adopt(await screen.ask("service:link", "gateway.setup.deploy", { setup_id: setup.setup_id, ...(nameText ? { name: nameText } : {}), ...(many ? { account: state.account } : {}) })); } catch (error) { setupFailed("没能开始搭建，请重试。")(error); }
-        }, { id: "homeSetupDeploy" }) : null,
-        ["waiting_login", "deploying", "claimed"].includes(sState) ? btn("看看进度", "a-btn btn-neutral btn-block", () => void readSetup(), { id: "homeSetupCheck" }) : null,
-        ["waiting_login", "authorized", "deploying"].includes(sState) ? cancel : null, ["waiting_login", "authorized", "deploying"].includes(sState) ? cancelNote : null)));
+        h("span", { class: "tx-caption" }, "中转站是你 Cloudflare 账号里的一个小程序，由她来搭、领回、换域名：你只需要授权一次，动你的东西之前她会先问你。"),
+        btn(relay?.connected === true ? "让她管中转站" : "让她搭中转站", "a-btn btn-secondary btn-block", () => ctx.compose?.(relay?.configured === true ? "帮我看看中转站" : "帮我搭中转站"), { id: "homeRelayAsk" }))));
   };
   draw();
   let tick = 0;
-  // Only a pairing that is on the page, or a setup that is running, has anything to ask for: the countdown moves every second, the
-  // hub is asked every other second (nothing pushes a device's request to the page).
+  // Only a pairing that is on the page has anything to ask for: the countdown moves every second, the hub is asked every other
+  // second (nothing pushes a device's request to the page).
   screen.every(() => {
-    const setupRunning = SETUP_ACTIVE.includes(state.setup?.state);
-    if (!state.shown && !setupRunning) return;
+    if (!state.shown) return;
     tickText();
-    if (++tick % 2 === 0) { void readPairing(); if (setupRunning) void readSetup(); }
+    if (++tick % 2 === 0) void readPairing();
   }, 1000);
   return { title: "连一台新设备", body: root, refresh: async () => { await Promise.all([refreshRelay().catch(() => {}), readPairing()]); if (screen.alive()) draw(); } };
 }

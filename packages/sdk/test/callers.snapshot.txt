@@ -61,10 +61,6 @@
 * service:link/reconnect  owner,agent
 * service:link/refresh_manifest  owner,agent
 * service:link/gateway.status  owner,agent
-* service:link/gateway.setup.start  owner,agent
-* service:link/gateway.setup.status  owner,agent
-* service:link/gateway.setup.deploy  owner,agent
-* service:link/gateway.setup.cancel  owner,agent
 * service:link/gateway.use  owner,agent
 * service:link/connected  kernel  event-out
 * service:link/disconnected  kernel  event-out

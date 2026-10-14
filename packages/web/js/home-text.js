@@ -103,22 +103,6 @@ export function relayText(status) {
   return `中转站暂时连不上${where}${why}。会自动重试，也请检查网络和地址。`;
 }
 
-/** Where a Cloudflare setup stands, in words. */
-export function setupText(setup) {
-  switch (setup?.state) {
-    case "waiting_login": return "等你在 Cloudflare 登录：登录卡片已经发到对话里。登录后回到这里点「看看进度」。";
-    case "authorized": return Array.isArray(setup.accounts) && setup.accounts.length > 1
-      ? "已登录 Cloudflare。你的登录能看到多个账户，先选一个要搭在哪里，再点「开始搭建」。"
-      : "已登录 Cloudflare，可以开始搭建了。";
-    case "deploying": return "正在搭建中转站，需要一两分钟…";
-    case "claimed": return "中转站已搭好，正在连接…";
-    case "connected": return "中转站已搭好，也连上了。";
-    case "failed": return `搭建没有成功${setup.reason ? `：${setup.reason}` : ""}。可以重新搭一次。`;
-    default: return "";
-  }
-}
-export const SETUP_ACTIVE = ["waiting_login", "authorized", "deploying", "claimed"];
-
 /** What the account balances answer says, with an unreadable provider named rather than shown as zero. */
 export function balanceSentence(data) {
   const entries = Array.isArray(data?.balances) ? data.balances : [];

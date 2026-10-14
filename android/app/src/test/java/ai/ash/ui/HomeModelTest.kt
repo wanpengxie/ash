@@ -152,8 +152,6 @@ class HomeModelTest {
     @Test fun theRelayAndItsSetupAreSaidInOneSentence() {
         assertTrue(M.relayText(null).startsWith("还没有设置中转站"))
         assertEquals("中转站已连接（https://r.example），账号 a@b.c。", M.relayText(JSONObject().put("configured", true).put("connected", true).put("url", "https://r.example").put("account_email", "a@b.c")))
-        assertTrue(M.setupText(JSONObject().put("state", "failed").put("reason", "x")).contains("：x"))
-        assertEquals("", M.setupText(null))
     }
 
     @Test fun anEvidenceRecordReadsFromWhoAskedToWhetherItRan() {

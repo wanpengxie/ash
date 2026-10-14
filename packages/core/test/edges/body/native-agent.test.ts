@@ -32,7 +32,7 @@ test("native isolation: agent:main starts from the shipped main.json, and its AG
 
   const pipe = host.connect();
   // No drivers given: the real DSH driver, through the real body.
-  const hub = await startHub({ dataDir: join(dir, "state"), relaySetupPort: 0, port: 0, env: { ...launch.env }, stdin: pipe.stdin, stdout: pipe.stdout });
+  const hub = await startHub({ dataDir: join(dir, "state"), port: 0, env: { ...launch.env }, stdin: pipe.stdin, stdout: pipe.stdout });
   t.after(() => hub.stop());
 
   const baseline = join(workspace, "root", "work", "AGENTS.md");

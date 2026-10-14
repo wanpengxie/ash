@@ -42,7 +42,7 @@ test("the services of SPEC-02 §4.1 are all there, and the removed ones are not"
   has("service:gate", "rules.list", "rules.set", "rules.revoke", "mode.set", "audit", "history", "pending.list", "pending.get", "pending.redeem", "pending.skip", "pending.withdraw");
   has("service:vault", "list", "describe", "set", "delete");
   has("service:devices", "list", "describe", "pair_start", "pair_status", "pair_pending", "pair_approve", "pair_reject", "revoke", "rename", "access_set", "update", "pair_code", "restore");
-  has("service:link", "list", "describe", "diagnose", "disconnect", "reconnect", "refresh_manifest", "gateway.status", "gateway.setup.start", "gateway.setup.status", "gateway.setup.deploy", "gateway.setup.cancel", "gateway.use", "connected", "disconnected", "handshake_failed");
+  has("service:link", "list", "describe", "diagnose", "disconnect", "reconnect", "refresh_manifest", "gateway.status", "gateway.use", "connected", "disconnected", "handshake_failed");
   has("service:agents", "list", "runtimes", "threads", "thread.stop", "describe", "ask", "tell", "answer", "declare", "update", "start", "stop", "restart", "remove", "configure", "plugins", "spawn", "primary.set",
     "session.get", "session.set", "session.new", "session.reload", "session.compact", "session.send", "session.followup", "session.steer", "session.inject", "session.interrupt", "session.restart");
   has("service:bodies", "list", "describe", "bind", "unbind");

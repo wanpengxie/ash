@@ -68,8 +68,7 @@ T17 (agents + a driver). The "also needs" column lists only what a test needs on
 | | S100 stale source → wake; S098 calendar → wake | same |
 | | S102, S103 uninteresting reading wakes nobody, is archived | same |
 | | SPEC-03 §11.4a, SPEC-00 §6.12 `sense.*` not in the ledger | T4 `shouldRecord` |
-| longflow | HUB-MODULES §4 relay setup tells the initiator (`gateway.setup.start`/`cancel`) | T16 |
-| | SPEC-03 §9.5.4, SPEC-00 §6.9 pairing code never reaches agent or ledger | T16, T4 redact |
+| longflow | SPEC-03 §9.5.4, SPEC-00 §6.9 pairing code never reaches agent or ledger | T16, T4 redact |
 | ledger | SPEC-00 §6.12 what is recorded and what is not | T4 `shouldRecord`, T6 `service:history` |
 | | SPEC-00 §6.9, S159 vault secret not in the ledger | T6 `service:vault`, T4 redact |
 | | S011–S014 long text → summary + attachment, read back | T3 blobs, T6 `service:blobs` |
@@ -153,7 +152,7 @@ Rows are numbered in the order of the file (§1 = R1–R15, §2 = R16–R27, §3
 | R49 | model choice, plugins (S157, S158, S162, S163) | ✗ same as R48 (`configure`, `plugins`) |
 | R50 | usage and balance (S161) | ✗ `service:cost` needs driver usage reports (gap 6); the quota check before a turn is asserted as "not recorded" in ledger |
 | R51 | restart: no blind replay (S170, S171) | agents: S170, S171; approval: S040 |
-| R52 | gateway address, claim, reconnect (S148–S150) | ✗ gateway (gap 8). ~ longflow: `gateway.setup.start`/`cancel` |
+| R52 | gateway address, claim, reconnect (S148–S150) | ✗ gateway (gap 8) |
 | R53 | pair a computer, code only to the owner (S135–S140) | longflow: pairing code. ✗ the hand's side of pairing (gap 7) |
 | R54 | browser after pairing (S151–S156) | ✗ gateway (gap 8) |
 | R55 | device online, manifest (agent 7) | hands: agent 7 (declared risk drives asking: approval S044) |
@@ -203,8 +202,7 @@ Decisions of the coordinator (BUILD-PROGRESS §7, "T20 发现的规格缺口和�
    `tools:{mcp_url, tokens: {<lane>: token}}`, seeded `main` on runtime `dsh`. The harness registers only `dsh`; a scenario that declares another runtime lists it
    in `startScenario(t, { runtimes })`. The minimal types in `next.ts` are replaced by T17a's `sdk/driver.ts`.
 7. **A computer cannot pair through the local connection.** `hello` has no field for a pairing code; pairing (`waiting → requested →
-   approved → connected`) can only be driven through the gateway, so the "initiator is told at each step" rule is tested on the relay
-   setup instead (`gateway.setup.start`/`cancel`, which also opens `127.0.0.1:8976`, a fixed port: scenarios using it cannot run in parallel).
+   approved → connected`) can only be driven through the gateway, so the "initiator is told at each step" rule is not tested here.
 8. **No way to make a non-local channel or an `agent` channel.** Everything local is `local: true`, and the `agent` channel is "not
    applicable" locally (SPEC-03 §2.2.1). `local_only`, `web_ui`, pairing from a remote page, and the remote drivers (Codex/Claude) need either
    a fake gateway in `HubOptions` (the gateway client lives in `packages/link`) or a test hook for the origin of a connection.

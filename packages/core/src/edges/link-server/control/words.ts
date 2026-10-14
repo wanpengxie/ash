@@ -16,8 +16,6 @@ import type { Devices, PairingGateway } from "../hands/devices";
 import type { HandRegistry } from "../hands/registry";
 import type { HubLinkServer, LinkConnection, LinkEvent } from "../index";
 import { GatewayControl, type OwnerIdentity } from "./gateway";
-import { RelaySetup, type CloudflareEndpoints } from "./setup";
-import type { RelayProgram } from "./bundle";
 
 export const LINK_ID = "service:link";
 const SERVICE: Caller = { member: LINK_ID, via: "service", local: true };
@@ -49,7 +47,7 @@ export class LinkMember implements Member {
   private readonly refusals: Refusal[] = [];
   private stopObserving: (() => void) | null = null;
 
-  constructor(private readonly d: { router: Router; link: HubLinkServer; hands: HandRegistry; gateway: GatewayControl; setup: RelaySetup; now?: () => number }) {}
+  constructor(private readonly d: { router: Router; link: HubLinkServer; hands: HandRegistry; gateway: GatewayControl; now?: () => number }) {}
 
   words(): WordContract[] { return wordsOf(LINK_ID); }
 
@@ -88,11 +86,7 @@ export class LinkMember implements Member {
       }
       case "reconnect": return { data: { requested: this.cycle(input.hand, "reconnect requested", false) } };
       case "refresh_manifest": return { data: { requested: this.cycle(input.hand, "the hub asked for the capability list again", true) } };
-      case "gateway.status": { const why = this.d.setup.unavailable(); return { data: { ...this.d.gateway.status(), ...(why ? { setup_unavailable: why } : {}) } }; }
-      case "gateway.setup.start": return { data: await this.d.setup.start(ctx.caller.member) };
-      case "gateway.setup.status": return { data: this.d.setup.status(input.setup_id) };
-      case "gateway.setup.deploy": return { data: this.d.setup.deploy(input.setup_id, input.name, input.account) };
-      case "gateway.setup.cancel": return { data: this.d.setup.cancel(input.setup_id) };
+      case "gateway.status": return { data: this.d.gateway.status() };
       case "gateway.use": return { data: { url: await this.d.gateway.use(input.url, typeof input.claim_secret === "string" ? { claimSecret: input.claim_secret } : {}) } };
       case "env.changed": this.d.gateway.reconnectRelay(); return;
       case "connected": case "disconnected": case "handshake_failed": return;
@@ -175,24 +169,14 @@ export interface LinkControlDeps {
   router: Router;
   link: HubLinkServer;
   hands: HandRegistry;
-  /** Holds the Cloudflare sign-in and a claim secret the owner set for their own relay. */
+  /** Holds a claim secret the owner set for their own relay. */
   vault: Pick<Vault, "set" | "use">;
   /** The hub's key in the host's keystore. */
   identity: OwnerIdentity;
-  /** The relay program packaged in this build, as one module. */
-  bundle?: () => Promise<RelayProgram>;
-  /** Why the packaged relay program cannot be used right now, or null when it can. */
-  bundleMissing?: () => string | null;
   ownerName?: string;
   // Tests:
   retryMs?: number;
   relay?: (options: RelayOptions) => Relay;
-  cloudflare?: Partial<CloudflareEndpoints>;
-  callbackPort?: number;
-  callbackHost?: string;
-  loginMs?: number;
-  reachable?: { maxMs: number; everyMs: number };
-  fetch?: typeof fetch;
   now?: () => number;
   log?: (message: string, error?: unknown) => void;
 }
@@ -203,7 +187,6 @@ export interface LinkControl {
   /** The relay's side of pairing, for `new Devices({ gateway })`. */
   pairing: PairingGateway;
   gateway: GatewayControl;
-  setup: RelaySetup;
   /** `service:devices` is made with `pairing`, so it is given back here to be told of pairing requests. */
   bindDevices(devices: Pick<Devices, "pairs" | "pairingRequested">): void;
   /** Starts observing connections and connects to the relay that was set before. Never throws. */
@@ -213,22 +196,14 @@ export interface LinkControl {
 
 export function createLinkControl(deps: LinkControlDeps): LinkControl {
   const gateway = new GatewayControl({ db: deps.db, link: deps.link, hands: deps.hands, vault: deps.vault, identity: deps.identity, relay: deps.relay, ownerName: deps.ownerName, retryMs: deps.retryMs, log: deps.log });
-  const setup = new RelaySetup({
-    db: deps.db, router: deps.router, vault: deps.vault, bundle: deps.bundle, bundleMissing: deps.bundleMissing,
-    activate: async (url, claimSecret, account) => { await gateway.use(url, { claimSecret, account }); },
-    connected: (timeoutMs) => gateway.connected(timeoutMs),
-    cloudflare: deps.cloudflare, callbackPort: deps.callbackPort, callbackHost: deps.callbackHost, loginMs: deps.loginMs, reachable: deps.reachable,
-    fetch: deps.fetch, now: deps.now, log: deps.log,
-  });
-  const member = new LinkMember({ router: deps.router, link: deps.link, hands: deps.hands, gateway, setup, now: deps.now });
+  const member = new LinkMember({ router: deps.router, link: deps.link, hands: deps.hands, gateway, now: deps.now });
   return {
-    member, pairing: gateway.pairing, gateway, setup,
+    member, pairing: gateway.pairing, gateway,
     bindDevices: (devices) => gateway.bindDevices(devices),
     async start() {
       member.observe();
-      setup.recover();
       await gateway.start().catch((error) => deps.log?.("the relay could not be started", error));
     },
-    stop() { member.stop(); setup.stop(); gateway.stop(); },
+    stop() { member.stop(); gateway.stop(); },
   };
 }

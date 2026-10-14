@@ -29,7 +29,6 @@ import { createReviewer } from "./edges/llm/review";
 import { createLlmService } from "./edges/llm/service";
 import { createSummarizer } from "./edges/llm/summary";
 import { createLinkServer } from "./edges/link-server";
-import { relayBundleFile, RELAY_BUNDLE_FILE } from "./edges/link-server/control/bundle";
 import { createLinkControl } from "./edges/link-server/control/words";
 import { Devices } from "./edges/link-server/hands/devices";
 import { createBodies, splitBodyCapabilities } from "./edges/link-server/hands/bodies";
@@ -82,13 +81,6 @@ export interface HubOptions {
   llm?: { baseUrl: string };
   /** Drivers by runtime kind (`dsh`, `codex`, ...). Absent: the real ones. */
   drivers?: Record<string, AgentDriverFactory>;
-  /**
-   * The relay program (`ash-gateway.mjs`, from the gateway's `npm run build:bundle`) that `gateway.setup.deploy` uploads.
-   * Absent: `ash-gateway.mjs` next to the hub's own program. If the file is not there, deploy answers `unavailable`.
-   */
-  relayBundle?: string;
-  /** The local port the relay setup's sign-in returns to (default 8976; 0 = any free port, for tests). */
-  relaySetupPort?: number;
   /** The clock of everything that waits for a time (timers, approval expiry, pulse). Absent: the system clock. */
   now?: () => number;
   /** The time between the health meter's ticks in ms (default 10 000; scenarios shorten it). */
@@ -241,10 +233,8 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     if (event.type === "connected") health.noteLink("open", event.conn.hand);
     else health.noteLink(event.type, event.code);
   });
-  const relayBundle = relayBundleFile(opts.relayBundle ?? fileURLToPath(new URL(RELAY_BUNDLE_FILE, import.meta.url)));
   const linkControl = createLinkControl({
-    db: ledger.db(), router, link, hands, vault, now, log, bundle: relayBundle.read, bundleMissing: relayBundle.missing,
-    ...(opts.relaySetupPort === undefined ? {} : { callbackPort: opts.relaySetupPort }),
+    db: ledger.db(), router, link, hands, vault, now, log,
     identity: { key: () => host.identityKey(), sign: (data) => host.identitySign(data) },
   });
   const devices = new Devices({ hands, router, bodies, gateway: linkControl.pairing, now });
