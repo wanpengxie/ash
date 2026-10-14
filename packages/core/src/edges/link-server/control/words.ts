@@ -93,7 +93,7 @@ export class LinkMember implements Member {
       case "gateway.setup.status": return { data: this.d.setup.status(input.setup_id) };
       case "gateway.setup.deploy": return { data: this.d.setup.deploy(input.setup_id, input.name, input.account) };
       case "gateway.setup.cancel": return { data: this.d.setup.cancel(input.setup_id) };
-      case "gateway.use": return { data: { url: await this.d.gateway.use(input.url) } };
+      case "gateway.use": return { data: { url: await this.d.gateway.use(input.url, typeof input.claim_secret === "string" ? { claimSecret: input.claim_secret } : {}) } };
       case "env.changed": this.d.gateway.reconnectRelay(); return;
       case "connected": case "disconnected": case "handshake_failed": return;
       default: throw new WordError("not_found", `${LINK_ID} has no word ${msg.word}`);

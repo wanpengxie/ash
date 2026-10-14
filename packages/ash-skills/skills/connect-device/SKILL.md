@@ -1,7 +1,7 @@
 ---
 name: connect-device
 description: 把新电脑、网页或服务器接进 Ash，或排查设备连不上：查中转站、没有就搭、配对、等流程通知、验证，再按体检结果用一句大白话告诉主人哪里不通。
-whenToUse: 主人要接一台电脑或浏览器、想让电脑上的 Agent 干活、说某台设备连不上或断了，或设备列表里没有他说的那台；用 device_pair_start、service:link 的 gateway.setup.start、service:link/diagnose 之前。
+whenToUse: 主人要接一台电脑或浏览器、想让电脑上的 Agent 干活、说某台设备连不上或断了，或设备列表里没有他说的那台；用 device_pair_start、service:link/diagnose 之前；中转站没好时先用技能 relay。
 ---
 
 # 接设备
@@ -11,7 +11,7 @@ whenToUse: 主人要接一台电脑或浏览器、想让电脑上的 Agent 干�
 ## 做法：每步先看现状，再动手
 
 1. **看现状**：`device_list`（有哪些设备、在线与否、授了哪些权）；`capability_call {member: "service:link", word: "gateway.status"}`（`configured` 有没有中转站，`connected` 连着没有）。
-2. **没有中转站就搭**：`service:link/gateway.setup.start {provider: "cloudflare"}` 返回 `setup_id`。主人收到「登录 Cloudflare」卡，由他本人登录授权（你拿不到他的凭证）。授权好后 `service:link/gateway.setup.deploy {setup_id}` 部署（要过审批）；主人的登录能看到多个 Cloudflare 账户时必须带 `account`：先用 `gateway.setup.status {setup_id}` 看账户列表，问主人搭在哪个，再用它的 id 部署，不要替他选。主人已有中转站：`service:link/gateway.use {url}`（同样要过审批）。不搭了：`service:link/gateway.setup.cancel {setup_id}`。
+2. **中转站没好就先弄中转站**：没有、没认领、连不上，都按技能 `relay` 做（用 wrangler 部署新的或领回旧的，再 `service:link/gateway.use {url, claim_secret}` 交给中枢认领），好了再回来配对。
 3. **配对**：`device_pair_start {kind: "computer", name}`（`kind` 还有 `server`、`browser`）返回 `pair_id`。**配对码只给主人看**，你拿不到，也不用他念出来；告诉他去电脑上打开推给他的那个地址（Mac 和 Linux 能装，Windows 这一版还不支持）。新电脑请求接入后，主人会收到一张卡，有四个勾：出借能力、当作 body（文件和命令）、跑本地 Agent、网页对话。**批不批、勾哪些都由他定**，你替不了（`device_pair_approve` 你来调也会问他）。要交开发活（技能 `delegate-dev`），要勾「当作 body」和「跑本地 Agent」；只想网页聊天，勾网页对话就够。
 4. **等流程通知**：搭站和配对每走一步，你会收到一条后台消息：搭站是 `waiting_login`、`authorized`、`deploying`、`claimed`、`connected`，或 `failed` 带原因；配对是 `waiting`、`requested`、`approved`、`connected`，或 `rejected`、`expired`。发出后告诉主人你在等什么，然后做别的或结束这一轮，**不要轮询**。想主动看才用 `service:link/gateway.setup.status {setup_id}`、`device_pair_status {pair_id}`。过期了就重新发起一次。
 5. **验证**：别只信「connected」。`service:link/describe {hand}` 看各通道开着没有；再做一次只读调用：当 body 的电脑调 `body:<编号>` 的 `body.info`，其余在 `capability_list` 里看它的 `device:<编号>` 有没有词。刚改过权限词没出现，`service:link/refresh_manifest {hand}`；要当 body 却没有 `body:<编号>`，`service:bodies/bind {hand}`（会问主人）。验证过了，再对主人说接好了。

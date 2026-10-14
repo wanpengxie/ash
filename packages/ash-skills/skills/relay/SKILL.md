@@ -1,0 +1,99 @@
+---
+name: relay
+description: 用 wrangler 完整管理主人的中转站（他 Cloudflare 账号里的 ash-gateway Worker）：登录授权、查现状、部署新的、领回旧的（重置认领）、绑自己的域名、把认领交给中枢、验证。
+whenToUse: 主人要搭中转站、换中转站、领回旧中转站、换域名，或电脑/网页连不上而 gateway.status 说没有中转站、没认领、连不上；接电脑（技能 connect-device）之前中转站还没好时。
+---
+
+# 管理中转站
+
+中转站是主人自己 Cloudflare 账号里的一个 Worker，程序是公开仓库 `https://github.com/wanpengxie/ash-gateway`。手机（中枢）主动连它，电脑、网页经它连回手机。你在自己的 Linux 身体里用 **wrangler**（Cloudflare 官方命令行）管理它：部署、改密钥、绑域名、看日志都靠它。中枢只负责**认领**和**连接**：你把地址和认领密钥交给 `service:link/gateway.use`。
+
+工作目录统一用 `~/relay`。命令都在你的身体里跑（`bash`），长的放后台、写日志、再读日志，别让一条命令卡住你。身体里没有 curl 和 git，下载和访问网址都用 node 自带的 fetch（下面的写法照抄）。
+
+## 0. 先看现状（每次都先做）
+
+- `capability_call {member: "service:link", word: "gateway.status"}`：`configured` 有没有中转站、`url` 地址、`claimed` 被这台手机认领没有、`connected` 连着没有、`last_error`。
+- 有地址就看网关自己怎么说：`node -e 'fetch(process.argv[1]+"/v1/health").then(r=>r.text()).then(console.log)' <url>` → `claimed`（有没有主人）、`owner_online`、`bootstrap_configured`（有没有设认领密钥）。
+- 连着且认领的就是好的，别动。
+
+## 1. 登录 wrangler（只需主人授权一次）
+
+```bash
+mkdir -p ~/relay && cd ~/relay
+npx --yes wrangler@4 whoami 2>&1 | tail -5     # 已登录就直接用，跳过下面
+nohup npx --yes wrangler@4 login --browser=false > ~/relay/login.log 2>&1 &
+sleep 5; grep -oE 'https://dash\.cloudflare\.com/oauth2/auth[^ ]+' ~/relay/login.log | head -1
+```
+
+- 把那条链接发给主人（一句话：「请在手机上打开这个链接，登录你的 Cloudflare，选你自己的账号，点授权」）。他授权后浏览器会跳到 `localhost:8976`，那是你身体里正在等的 wrangler，登录就完成了（浏览器那页显示什么都不要紧）。
+- 等 `grep -q "Successfully logged in" ~/relay/login.log`，再 `npx wrangler@4 whoami` 看他的账号。**有几个账号就问他用哪个**，然后后面所有命令前加 `CLOUDFLARE_ACCOUNT_ID=<id>`。
+- 8976 端口被占（中枢自己的搭建流程在等登录）：先 `service:link/gateway.setup.cancel`。
+- 令牌留在你身体的 `~/.config/.wrangler`，会自动续期。**不要读出、不要打印、不要发给任何人。**
+- npm 下载很慢或失败：加 `--registry=https://registry.npmmirror.com` 再试。
+
+## 2. 部署一个新的
+
+先问主人两件事，**他确认了再动手**：
+1. **Worker 叫什么**（默认 `ash-gateway`；他账号里已经有同名 Worker 时要说清楚：会覆盖它）。
+2. **用什么地址**：默认 `https://<名字>.<他的子域>.workers.dev`；要用他自己的域名，问他具体用哪个子域名（必须是他 Cloudflare 账号里已有域名下的、没被别的服务占用的子域名）。
+
+```bash
+cd ~/relay && rm -rf ash-gateway-main
+node -e 'fetch("https://codeload.github.com/wanpengxie/ash-gateway/tar.gz/main").then(r=>r.arrayBuffer()).then(b=>require("fs").writeFileSync("gw.tgz",Buffer.from(b)))' && tar xzf gw.tgz && rm gw.tgz
+cd ash-gateway-main
+```
+
+源码只是给 wrangler 打包用的，放在你自己的身体里；仓库没有运行时依赖，不用 `npm ci`。
+
+- 改 `wrangler.jsonc`：`"name"` 改成定好的名字；`"routes"` 改成 `[{ "pattern": "<他的子域名>", "custom_domain": true }]`，只用 workers.dev 就把 `routes` 整行删掉。
+- `npx --yes wrangler@4 deploy > ~/relay/deploy.log 2>&1`（wrangler 自己打包 `src/worker.ts` 再上传），从日志里拿到地址（workers.dev 那条和自定义域名）。
+- 设认领密钥（见第 4 节），再交给中枢（第 5 节）。
+
+## 3. 领回旧的（换了手机、重装过、旧手机丢了）
+
+网关一次只认一个主人。`/v1/health` 显示 `claimed: true` 但不是这台手机（`gateway.status` 的 `claimed` 是 false），就要重置：
+
+- **先问主人，说清后果**：「重置 <Worker 名>（<地址>）会清掉它上面所有已配对的设备和授权，之后要在这台手机上重新认领、电脑网页要重新配对。确认吗？」他确认了才做。
+- `cd ~/relay && printf 'ash-%s' "$(date +%s)" | npx wrangler secret put RESET_EPOCH --name <Worker 名>`
+- 再设一个新的认领密钥（第 4 节，同样带 `--name <Worker 名>`），然后第 5 节。
+- 不知道是哪个 Worker：`npx wrangler deployments list --name <名字>` 或问主人；地址是自定义域名时，Cloudflare 后台该 Worker 的 Domains 里能看到。不要猜。
+
+## 4. 设认领密钥
+
+```bash
+cd ~/relay && umask 077 && head -c 32 /dev/urandom | base64 | tr -d '\n' > secret
+npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/secret.log 2>&1
+```
+
+几秒后看 `<地址>/v1/health`（第 0 节的写法）应是 `"claimed": false, "bootstrap_configured": true`。
+
+## 5. 交给中枢认领、连上
+
+- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_secret: "<secret 文件的内容>"}, purpose: "让这台手机认领中转站 <地址>"}`。这一步主人会收到一张卡，他点同意后中枢用手机自己的密钥完成认领并连上。`claim_secret` 不进账本。
+- 拿到结果后 **`rm -f ~/relay/secret`**。认领只能成功一次，之后这个密钥没用了。
+- 用自定义域名时，`url` 填自定义域名（国内网络更稳）；地址以后要换，再 `gateway.use` 一次新地址即可（同一个 Worker 不用重新认领）。
+
+## 6. 怎么核对
+
+- `gateway.status`：`configured`、`claimed`、`connected` 都是 true；`/v1/health` 的 `owner_online: true`。
+- 一句话告诉主人：中转站在哪个地址、好了；要接电脑就接着用技能 `connect-device` 配对。
+- 失败时说人话：哪一步、什么原因（wrangler 日志里的报错原文摘一句），下一步打算怎么做。
+
+## 好的样子
+
+主人说「搭个中转站，用我的 ash.onestudio.cc」。你先看 `gateway.status`（没有中转站），`whoami` 发现还没登录，就把授权链接发给他；他授权后你看到他账号里已经有 `ash-gateway` 绑着 ash.onestudio.cc、`/v1/health` 显示被别的手机认领着。你问他：「你账号里的 ash-gateway（ash.onestudio.cc）现在归旧手机，重置会清掉它上面所有已配对的设备，之后在这台手机上重新认领。重置吗？」他说重置。你设新的 `RESET_EPOCH` 和认领密钥，`/v1/health` 变成 `claimed: false`，再 `gateway.use` 交给中枢，他点了确认卡，`gateway.status` 显示已连接。你告诉他：「中转站好了，地址 ash.onestudio.cc。要接电脑吗？」
+
+## 常见错误
+
+- 没问主人就覆盖、重置或换域名。
+- 把认领密钥、wrangler 的令牌打进对话或笔记；用完没删 `~/relay/secret`。
+- 用 curl、git（身体里没有）；或者前台跑 `wrangler login` 把自己卡住。
+- 看到 `connected` 就说好了，没看 `/v1/health` 的 `owner_online`。
+- 主人有多个 Cloudflare 账号时自己挑了一个。
+
+## 规矩
+
+- **覆盖、重置、删除、换域名之前都先问主人**，说清是哪个账号、哪个 Worker、哪个地址、会影响什么。他说的名字或地址对不上他账号里的东西，停下来问，不要猜。
+- 只在主人选的那个 Cloudflare 账号里动手。
+- 令牌、认领密钥不打印、不写进对话和笔记；临时文件用完就删。
+- 查日志用 `npx wrangler tail <名字>`（看实时请求）或读 `~/relay/*.log`。
