@@ -9,7 +9,7 @@ export const ASH_SDK = 4;
 /** The one connection protocol between the kernel and every hand (packages/link). */
 export const LINK_PROTOCOL = "ash-link/2";
 /** The computer program (packages/device) this hub pairs: its release on GitHub (`device-v<version>`) is what the install command fetches. */
-export const DEVICE_VERSION = "0.2.3";
+export const DEVICE_VERSION = "0.2.4";
 /** Where its releases are published (`<this>/device-v<version>/<asset>`). */
 export const DEVICE_RELEASES = "https://github.com/wanpengxie/ash/releases/download";
 /** The kernel host contract (host.json, host interface, host events). */
