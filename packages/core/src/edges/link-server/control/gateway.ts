@@ -19,9 +19,6 @@ import type { Devices, PairKind, PairingGateway, RelayPermission } from "../hand
 import type { HandRegistry } from "../hands/registry";
 import type { HubLinkServer } from "../index";
 
-/** Where the vault keeps a claim secret the owner set for an unclaimed relay they run themselves. */
-export const BOOTSTRAP_REF = "GATEWAY_BOOTSTRAP";
-
 /** The hub's key. It lives in the host's keystore; only signing is asked of it. */
 export interface OwnerIdentity {
   key(): Promise<{ id: string; public_key: string }>;
@@ -102,12 +99,12 @@ export class GatewayControl {
   stop(): void { this.end(); }
 
   /**
-   * Makes [url] the relay: reaches it, claims it with [claimSecret] (or the vault's `GATEWAY_BOOTSTRAP`) when it is
+   * Makes [url] the relay: reaches it, claims it with [claimSecret] when it is
    * unclaimed, remembers it and connects. Throws a `WordError` saying what is wrong when it cannot be reached or claimed.
    */
   async use(url: string, opts: { claimSecret?: string; account?: { email?: string } } = {}): Promise<string> {
     const origin = this.normalize(url);
-    const relay = await this.build(origin, () => opts.claimSecret ?? this.d.vault.use(BOOTSTRAP_REF));
+    const relay = await this.build(origin, () => opts.claimSecret ?? null);
     try { await relay.ensureClaimed(); }
     catch (error) {
       relay.stop();
@@ -125,7 +122,7 @@ export class GatewayControl {
   }
 
   private async begin(url: string): Promise<void> {
-    this.relay = await this.build(url, () => this.d.vault.use(BOOTSTRAP_REF));
+    this.relay = await this.build(url, () => null);
     this.relay.start();
   }
 

@@ -26,7 +26,8 @@ sleep 2; head -1 ~/relay/login.log             # 授权链接
 ```
 
 - 用技能自带的 `login.mjs`，**不要用 `wrangler login`**：手机浏览器会把回调打开两次，wrangler 拿同一个授权码换两次，第二次 `invalid_grant`，令牌就坏了。`login.mjs` 只换一次，直接写好 wrangler 自己的令牌文件。
-- 把链接发给主人（一句话：「请在手机上打开这个链接，登录你的 Cloudflare，选你自己的账号，点授权」）。他授权后浏览器会跳到 `localhost:8976`，页面显示「授权成功」。
+- **授权你自己点，不要把链接丢给主人**：`capability_call {member: "device:<手机>", word: "apps.open_url", body: {uri: "<链接>", package: "com.android.chrome"}}` 在手机的 Chrome 里打开（主人的 Cloudflare 登录状态在那里），再按技能 `phone-operation` 看屏幕、点「Authorize / 授权」。跳到 `localhost:8976` 显示「授权成功」就完成了。
+- 只有页面要输密码、过验证码时，才告诉主人：「Chrome 里 Cloudflare 要你登录一下，登好跟我说」，他说好了你接着点授权。
 - 等 `grep -q LOGIN_OK ~/relay/login.log`（`LOGIN_FAILED`、`DENIED`、`TIMEOUT` 就重来一次，`PORT_BUSY` 是上一次的还在等，`kill` 掉它的进程再来）。再 `npx wrangler@4 whoami` 看他的账号。**有几个账号就问他用哪个**，然后后面所有命令前加 `CLOUDFLARE_ACCOUNT_ID=<id>`。
 - 令牌留在你身体的 `~/.config/.wrangler`，wrangler 会自动续期。**不要读出、不要打印、不要发给任何人。**
 - npm 下载很慢或失败：加 `--registry=https://registry.npmmirror.com` 再试。
@@ -68,8 +69,8 @@ npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/
 
 ## 5. 交给中枢认领、连上
 
-- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_secret: "<secret 文件的内容>"}, purpose: "让这台手机认领中转站 <地址>"}`。主人会收到一张确认卡（卡上不显示密钥），他点同意后中枢用手机自己的密钥完成认领并连上。密钥只在内存里等这张卡，不进账本；大脑在这期间重启了，就再调一次。
-- 认领密钥只走 `claim_secret` 这一条路：**不要**让主人去设置里存密钥，不要把它写进主人能打开的文件或发进对话。
+- `capability_call {member: "service:link", word: "gateway.use", body: {url: "<地址>", claim_secret: "<secret 文件的内容>"}, purpose: "让这台手机认领中转站 <地址>"}`。主人会收到一张确认卡，他点同意后中枢用手机自己的密钥完成认领并连上。认领密钥只能用一次，认领后就作废。
+- 认领密钥只走 `claim_secret` 这一条路：**不要**让主人去设置里存密钥，不要发进对话。
 - 拿到结果后 **`rm -f ~/relay/secret`**。认领只能成功一次，之后这个密钥没用了。
 - 用自定义域名时，`url` 填自定义域名（国内网络更稳）；地址以后要换，再 `gateway.use` 一次新地址即可（同一个 Worker 不用重新认领）。
 
@@ -81,12 +82,12 @@ npx wrangler secret put BOOTSTRAP_SECRET --name <Worker 名> < secret > ~/relay/
 
 ## 好的样子
 
-主人说「搭个中转站，用我的 ash.onestudio.cc」。你先看 `gateway.status`（没有中转站），`whoami` 发现还没登录，就把授权链接发给他；他授权后你看到他账号里已经有 `ash-gateway` 绑着 ash.onestudio.cc、`/v1/health` 显示被别的手机认领着。你问他：「你账号里的 ash-gateway（ash.onestudio.cc）现在归旧手机，重置会清掉它上面所有已配对的设备，之后在这台手机上重新认领。重置吗？」他说重置。你设新的 `RESET_EPOCH` 和认领密钥，`/v1/health` 变成 `claimed: false`，再 `gateway.use` 交给中枢，他点了确认卡，`gateway.status` 显示已连接。你告诉他：「中转站好了，地址 ash.onestudio.cc。要接电脑吗？」
+主人说「搭个中转站，用我的 ash.onestudio.cc」。你先看 `gateway.status`（没有中转站），`whoami` 发现还没登录，就起 `login.mjs`、在手机 Chrome 里打开授权页、自己点「授权」，登录成功后你看到他账号里已经有 `ash-gateway` 绑着 ash.onestudio.cc、`/v1/health` 显示被别的手机认领着。你问他：「你账号里的 ash-gateway（ash.onestudio.cc）现在归旧手机，重置会清掉它上面所有已配对的设备，之后在这台手机上重新认领。重置吗？」他说重置。你设新的 `RESET_EPOCH` 和认领密钥，`/v1/health` 变成 `claimed: false`，再 `gateway.use` 交给中枢，他点了确认卡，`gateway.status` 显示已连接。你告诉他：「中转站好了，地址 ash.onestudio.cc。要接电脑吗？」
 
 ## 常见错误
 
 - 没问主人就覆盖、重置或换域名。
-- 把认领密钥、wrangler 的令牌打进对话、笔记或主人能打开的文件；让主人去设置里存认领密钥；用完没删 `~/relay/secret`。
+- 把 wrangler 的令牌打进对话或笔记；让主人去设置里存认领密钥；把授权链接丢给主人自己点；用完没删 `~/relay/secret`。
 - 用 curl、git（身体里没有）；用 `wrangler login` 登录（回调会换两次码而失败），或者自己另写一个登录程序。
 - 看到 `connected` 就说好了，没看 `/v1/health` 的 `owner_online`。
 - 主人有多个 Cloudflare 账号时自己挑了一个。

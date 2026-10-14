@@ -394,21 +394,16 @@ test("an app is refused, not asked", async () => {
   assert.equal(s.store.waiting().length, 0);
 });
 
-test("a request with a secret waits for the owner with the secret in memory only: the card and the ledger never have it, the approved run does", async () => {
+test("a request with a secret cannot wait for the owner: nothing is parked, nothing is written down", async () => {
   const s = setup();
-  const id = success(await s.ask("with secret", { token: "tok-123456" })).pending_id;
+  const reply = await s.ask("with secret", { token: "tok-123456" });
+  assert.equal(failure(reply).code, "forbidden");
   await flush();
-  assert.equal(s.owner.cards.length, 1);
-  assert.equal(s.phone.calls.length, 0);
-  s.owner.answer("once"); await flush();
-  assert.deepEqual(success(await s.gateCall("pending.redeem", { id })).result, { sent: "with secret" });
-  assert.equal(s.phone.calls.length, 1);
-  assert.equal((s.phone.calls[0]!.ctx.raw as any).token, "tok-123456", "the member gets the secret");
-  assert.notEqual((s.phone.calls[0]!.msg.body as any).token, "tok-123456", "its message has it masked");
-  assert.ok(!JSON.stringify(s.owner.cards.map((c) => c.msg.body)).includes("tok-123456"));
-  assert.ok(!JSON.stringify(s.ledger.page({ limit: 50 })).includes("tok-123456"));
-  assert.ok(!JSON.stringify(s.ledger.db().prepare("SELECT * FROM gate_pending").all()).includes("tok-123456"));
+  assert.equal(s.owner.cards.length, 0);
+  assert.equal(s.store.waiting().length, 0);
+  assert.equal(s.ledger.page({ limit: 50 }).length, 0);
   assert.ok(!JSON.stringify(s.ledger.db().prepare("SELECT data FROM gate_audit").all()).includes("tok-123456"));
+  assert.equal(s.phone.calls.length, 0);
 });
 
 test("restart: the open questions get their cards again, and an answer then still lets the agent redeem", async () => {

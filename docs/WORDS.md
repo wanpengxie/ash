@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `33fa56456e261f1e`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `01e823791b1e1b76`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -142,7 +142,7 @@
 | `reconnect` | owner, agent | act / none | - | hand* | 在重连 | Ask the relay to open the tunnel again, or tell a local hand to reconnect. |
 | `refresh_manifest` | owner, agent | act / none | - | hand* | 在请手重发能力清单 | Ask a hand to send its capability list again, for example after you changed what it may lend. |
 | `gateway.status` | owner, agent | read / none | - | - | 在看中转站 | The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, and the latest error. The relay itself (deploying it, taking it back, its domain) is the agent's to run with wrangler: skill relay. |
-| `gateway.use` | owner, agent | write / structure | - | url*, claim_secret (secret) | 在改用中转站 | Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed to claim a relay that has no owner; it is held sealed and never reaches the ledger. An agent asking for this is asked about by the owner; the card never shows the secret. |
+| `gateway.use` | owner, agent | write / structure | - | url*, claim_secret | 在改用中转站 | Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed only to claim a relay that has no owner; it works once, so it is an ordinary argument. An agent asking for this is asked about by the owner. |
 | `connected` | kernel | read / none | event out, record | hand*, conn*, channels | 在记下设备连上 | A hand finished the handshake and is connected. Goes into the ledger. |
 | `disconnected` | kernel | read / none | event out, record | hand*, conn, channel, code, reason | 在记下设备断开 | A hand's connection closed, with the close code and reason. Goes into the ledger. |
 | `handshake_failed` | kernel | read / none | event out | hand, conn, channel, code*, reason | 在记下握手失败 | A connection attempt failed the handshake (4001 identity, 4003 revoked, 4008 version, ...). Not recorded; service:link/diagnose reports the recent ones. |

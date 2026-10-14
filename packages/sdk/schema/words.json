@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "33fa56456e261f1ec220f4b04a275c9dedea9784237010038b2ae5d7b0c0b594",
+ "hash": "01e823791b1e1b76d15c4343493aa04b7a1149a2d07ca3accbfdb687c2e6fb25",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -4095,7 +4095,7 @@
    "word": "gateway.use",
    "kind": "request",
    "direction": "in",
-   "description": "Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed to claim a relay that has no owner; it is held sealed and never reaches the ledger. An agent asking for this is asked about by the owner; the card never shows the secret.",
+   "description": "Use the relay at this address: claim it if it has no owner yet and connect. claim_secret is the relay's BOOTSTRAP_SECRET (what `wrangler secret put BOOTSTRAP_SECRET` set), needed only to claim a relay that has no owner; it works once, so it is an ordinary argument. An agent asking for this is asked about by the owner.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -4107,8 +4107,7 @@
      "claim_secret": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 512,
-      "x-ash-secret": true
+      "maxLength": 512
      }
     },
     "required": [
