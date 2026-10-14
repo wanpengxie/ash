@@ -207,7 +207,7 @@ export class HubRouter implements Router {
     if (invalid) return fail(invalid);
     // The gate, the ledger and the handler's message see the body with secrets masked; only `ctx.raw` has them.
     const view = redact.forLedger(stamped, contract);
-    const early = located.member?.precheck?.(view);
+    const early = await located.member?.precheck?.(view);
     if (early) return early;
 
     if (stamped.kind === "event") return this.deliverEvent(stamped, view, contract, caller, located.member);

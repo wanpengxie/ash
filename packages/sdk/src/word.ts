@@ -129,8 +129,8 @@ export interface Member {
    */
   handle(msg: Message, ctx: HandleContext): Promise<WordResult | void>;
   cancel?(requestId: string): void;
-  /** Runs before the gate: a Reply that is not null refuses the request without asking anyone. */
-  precheck?(msg: Message): Reply | null;
+  /** Runs before the gate: a Reply that is not null refuses the request without asking anyone (it may look outside first). */
+  precheck?(msg: Message): Reply | null | Promise<Reply | null>;
   /** What the approval card should add about this request (e.g. what an app install will be allowed to do), or null. */
   cardDetail?(msg: Message): string | null;
 }

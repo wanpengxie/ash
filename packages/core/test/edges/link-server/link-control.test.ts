@@ -339,6 +339,24 @@ test("an unclaimed relay is claimed with the secret in the vault entry claim_ref
   assert.ok(await w.control.gateway.connected(5000));
 });
 
+test("gateway.use is checked against the relay before the owner is asked: what cannot work is refused without a card", async (t) => {
+  const w = await startWorld(t, { gateway: false });
+  const { FakeGateway } = await import("../../../../link/test/fixtures/fake-gateway");
+  const fresh = await FakeGateway.start({ secret: "claim-secret-789" });
+  t.after(() => fresh.stop());
+  const pre = (body: unknown) => w.control.member.precheck!(msg("service:link", "gateway.use", body));
+  assert.equal((await pre({ url: fresh.url }))?.ok === false && ((await pre({ url: fresh.url })) as any).error.code, "forbidden", "unclaimed and no claim_ref");
+  assert.equal(((await pre({ url: fresh.url, claim_ref: "nothing_here" })) as any)?.error.code, "bad_request", "a claim_ref the vault does not have");
+  w.vault.set("relay_claim", "claim-secret-789");
+  assert.equal(await pre({ url: fresh.url, claim_ref: "relay_claim" }), null, "it would work: the owner is asked");
+  assert.equal(((await pre({ url: "https://127.0.0.1:1" })) as any)?.error.code, "unavailable", "the relay does not answer");
+  assert.equal(fresh.claimed, false, "nothing was claimed by asking");
+  await w.link("gateway.use", { url: fresh.url, claim_ref: "relay_claim" }, agent);
+  assert.equal(fresh.claimed, true);
+  assert.deepEqual(await pre({ url: fresh.url }), { ok: true, result: { data: { url: new URL(fresh.url).origin } } }, "the relay it already holds: no card, it only connects again");
+  assert.match(w.control.member.cardDetail!(msg("service:link", "gateway.use", { url: fresh.url }))!, /你自己的中转站/);
+});
+
 test("the relay is told the network changed: env.changed connects again", async (t) => {
   const w = await startWorld(t);
   const before = w.gw.ownerConnections;

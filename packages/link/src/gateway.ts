@@ -227,6 +227,20 @@ export class Relay {
    * Reads the relay's health and claims it with the saved secret when it is unclaimed. Throws a [RelayError]: the
    * caller can tell "cannot be reached" (try again) from "someone else owns it" or "no secret to claim with".
    */
+  /**
+   * What would stop [ensureClaimed], without claiming: null when this owner holds the relay or could claim it now
+   * (it answers, it is unclaimed and there is a claim secret). Asked before the owner is asked to approve a claim.
+   */
+  async check(): Promise<{ problem: RelayProblem; detail: string } | null> {
+    let health: Record<string, unknown>;
+    try { health = await timeoutAfter(this.client.health(), this.timeoutMs, "relay health"); }
+    catch (error) { return { problem: problemOf(error), detail: error instanceof Error ? error.message : String(error) }; }
+    if (health.protocol !== undefined && health.protocol !== "ash-gw/1") return { problem: "unsupported", detail: String(health.protocol) };
+    if (health.claimed === true) return health.owner_id === this.o.owner.id ? null : { problem: "claimed_by_other", detail: "claimed by another owner" };
+    if (health.claimed !== false) return { problem: "unreachable", detail: "the relay did not say whether it is claimed" };
+    return this.o.claimSecret?.() ? null : { problem: "missing_secret", detail: "no claim secret" };
+  }
+
   async ensureClaimed(): Promise<void> {
     let health: Record<string, unknown>;
     try { health = await timeoutAfter(this.client.health(), this.timeoutMs, "relay health"); }

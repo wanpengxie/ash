@@ -107,7 +107,7 @@ export function fakeRouter(registry: Registry): FakeRouter {
       // The gate for an app: only a read or a risk-none word, and only one that lists apps among its callers.
       if (caller.via === "app" && (!found.contract.callers.includes("app") || (found.contract.effect !== "read" && found.contract.risk !== "none")))
         return { ok: false, error: errorBody("forbidden", "an app may only use reads and harmless words", { recovery_hint: "ask the agent or the owner" }) };
-      const early = found.member.precheck?.(message);
+      const early = await found.member.precheck?.(message);
       if (early) return early;
       // An approval card for whoever is not the owner and asks for what needs one (here: an install): the member adds its detail.
       if (caller.member !== "person:owner" && caller.via !== "service" && found.contract.risk !== "none") {

@@ -67,6 +67,16 @@ const PROBLEM_TEXT: Record<string, string> = {
   unreachable: "The relay cannot be reached.",
 };
 
+/** The WordError for a relay that cannot be used, with what the relay or the network said. */
+function refusal(problem: string, detail: string): WordError {
+  return new WordError(problem === "claimed_by_other" || problem === "missing_secret" || problem === "bad_secret" ? "forbidden" : "unavailable",
+    `${PROBLEM_TEXT[problem] ?? "The relay cannot be used."} (${detail.slice(0, 200)})`, {
+      recovery_hint: problem === "missing_secret" ? "Store the relay's BOOTSTRAP_SECRET with service:vault/put and pass its name as claim_ref (skill relay)."
+        : problem === "unreachable" ? "Try again in a moment; if it keeps failing, check the address and the phone's network (skill relay)."
+        : "Check the address; to build a new relay or take this one back, see skill relay.",
+    });
+}
+
 export class GatewayControl {
   private relay: Relay | null = null;
   private devices: Pick<Devices, "pairs" | "pairingRequested"> | null = null;
@@ -108,10 +118,7 @@ export class GatewayControl {
     try { await relay.ensureClaimed(); }
     catch (error) {
       relay.stop();
-      const problem = error instanceof RelayError ? error.problem : "unreachable";
-      throw new WordError(problem === "claimed_by_other" || problem === "missing_secret" || problem === "bad_secret" ? "forbidden" : "unavailable", PROBLEM_TEXT[problem] ?? "The relay cannot be used.", {
-        recovery_hint: problem === "missing_secret" ? "Store the relay's BOOTSTRAP_SECRET with service:vault/put and pass its name as claim_ref (skill relay)." : "Check the address; to build a new relay or take this one back, see skill relay.",
-      });
+      throw refusal(error instanceof RelayError ? error.problem : "unreachable", error instanceof Error ? error.message : String(error));
     }
     this.end();
     this.relay = relay;
@@ -119,6 +126,23 @@ export class GatewayControl {
     this.put("account_email", opts.account?.email);
     relay.start();
     return origin;
+  }
+
+  /** [url] as the relay's origin, or null when it is not an address. */
+  origin(url: string): string | null { try { return this.normalize(url); } catch { return null; } }
+
+  /**
+   * Before the owner is asked to approve a gateway.use: would it work? The relay is asked (not claimed); the refusal
+   * the claim would end in is thrown now, so nobody approves something that cannot happen.
+   */
+  async precheckUse(url: string, claimRef?: string): Promise<void> {
+    const origin = this.normalize(url);
+    if (claimRef && this.d.vault.use(claimRef) === null) throw new WordError("bad_request", `the vault has no ${claimRef}`, { recovery_hint: "Store the relay's BOOTSTRAP_SECRET with service:vault/put under that name first (skill relay)." });
+    const relay = await this.build(origin, () => (claimRef ? this.d.vault.use(claimRef) : null));
+    try {
+      const found = await relay.check();
+      if (found) throw refusal(found.problem, found.detail);
+    } finally { relay.stop(); }
   }
 
   private async begin(url: string): Promise<void> {

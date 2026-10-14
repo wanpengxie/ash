@@ -55,7 +55,7 @@ test("install: the owner says no, or does not answer -> nothing is installed or 
 test("install: an app.json that fails the schema is refused with its problems, before any card", async () => {
   const w = world({ fixture: (app) => { delete app.summary; app.surprise = true; app.wake_events = ["fixture.other"]; } });
   await w.apps.start();
-  const pre = w.apps.service.precheck!({ seq: 1, id: "m", ts: 1, from: "agent:main", to: "service:apps", kind: "request", word: "apps.install", body: { id: "fixture" } });
+  const pre = await w.apps.service.precheck!({ seq: 1, id: "m", ts: 1, from: "agent:main", to: "service:apps", kind: "request", word: "apps.install", body: { id: "fixture" } });
   assert.ok(pre && !pre.ok);
   assert.equal(pre.error.code, "failed");
   const problems = (pre.error.detail as { problems: { where: string; problem: string }[] }).problems;

@@ -6,7 +6,7 @@
  * `createLinkControl` builds the whole of it from what the assembly has: the link server, the hand registry, the vault,
  * the host's key. Nothing here returns a credential: the local token and the Cloudflare sign-in are not reachable from a word.
  */
-import { WordError, type Caller, type HandleContext, type Message, type WordResult } from "../../../../../sdk/src/message";
+import { WordError, type Caller, type HandleContext, type Message, type Reply, type WordResult } from "../../../../../sdk/src/message";
 import type { Member, WordContract } from "../../../../../sdk/src/word";
 import { wordsOf } from "../../../../../sdk/src/words";
 import type { Db } from "../../../kernel/ledger";
@@ -72,6 +72,30 @@ export class LinkMember implements Member {
 
   private emit(word: string, body: Record<string, unknown>): void {
     void this.d.router.send({ to: LINK_ID, kind: "event", word, body }, SERVICE).catch(() => {});
+  }
+
+  /** gateway.use: the relay is asked before the owner is (would the claim work?), so a card is only shown for what can happen. */
+  async precheck(msg: Message): Promise<Reply | null> {
+    if (msg.word !== "gateway.use") return null;
+    const input = (msg.body ?? {}) as Record<string, any>;
+    // The relay this hub already holds: nothing to approve; it only connects again.
+    const now = this.d.gateway.status();
+    if (now.configured && now.claimed === true && typeof input.url === "string" && now.url === this.d.gateway.origin(input.url)) {
+      this.d.gateway.reconnectRelay();
+      return { ok: true, result: { data: { url: now.url } } };
+    }
+    try { await this.d.gateway.precheckUse(String(input.url), typeof input.claim_ref === "string" ? input.claim_ref : undefined); return null; }
+    catch (error) {
+      if (error instanceof WordError) return { ok: false, error: { code: error.code, message: error.message, ...(error.recovery_hint ? { recovery_hint: error.recovery_hint } : {}) } } as Reply;
+      throw error;
+    }
+  }
+
+  /** What the owner reads on the approval card for gateway.use: facts, not the reviewer's guess. */
+  cardDetail(msg: Message): string | null {
+    if (msg.word !== "gateway.use") return null;
+    const url = String((msg.body as { url?: unknown } | undefined)?.url ?? "");
+    return `这是你自己的中转站（部署在你的 Cloudflare 账号里）：${url}。同意后这台手机成为它唯一的主人，电脑和网页之后经它连回这台手机。`;
   }
 
   async handle(msg: Message, ctx: HandleContext): Promise<WordResult | void> {

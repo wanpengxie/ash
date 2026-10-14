@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "49f797f3764a86ae576eac4fb12a7f284f11c7527d62b1c8b3124a876dafbffc",
+ "hash": "9b1d9fa6321b7fa4a8534c6864c3a725407487556dcfdb2f983fed20e806b566",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -4653,7 +4653,7 @@
    "word": "gateway.use",
    "kind": "request",
    "direction": "in",
-   "description": "Use the relay at this address: claim it if it has no owner yet and connect. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. An agent asking for this is asked about by the owner.",
+   "description": "Use the relay at this address: claim it if it has no owner yet and connect. The relay is the owner's own gateway (deployed in the owner's Cloudflare account, skill relay), not a third party's; the hub asks it first and refuses at once what cannot work. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. An agent asking for this is asked about by the owner.",
    "input_schema": {
     "type": "object",
     "properties": {
