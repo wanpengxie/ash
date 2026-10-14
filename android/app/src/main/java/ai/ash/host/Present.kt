@@ -25,7 +25,7 @@ object Present {
     /** Who a retired presentation's reply goes to: a reply typed into the conversation notification still counts after it left it. */
     private const val TARGET = "target:"
     private const val AT = "at:"
-    private val kinds = setOf("reply", "approval", "due", "offer", "heads_up")
+    private val kinds = setOf("reply", "approval", "due", "offer", "heads_up", "notice")
     private val choices = setOf("once", "always", "deny")
     private val serial = PresentSerialGate()
     @Volatile private var flushing = false
@@ -47,7 +47,7 @@ object Present {
         val id = (input.opt("id") as? String)?.trim() ?: ""
         val kind = input.opt("kind") as? String ?: ""
         if (id.isEmpty() || id.length > 128 || kind !in kinds) return refuse("bad_request", "invalid_presentation")
-        val allowed = setOf("id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom", "alert")
+        val allowed = setOf("id", "kind", "title", "text", "options", "expires_at", "reply_to", "reply_target", "human_kind", "allow_custom", "alert", "open")
         if (input.keys().asSequence().any { it !in allowed }) return refuse("bad_request", "unsupported_field")
         if (!input.has("title") || !input.has("text") || input.opt("title") !is String || input.opt("text") !is String)
             return refuse("bad_request", "invalid_text")
@@ -71,7 +71,10 @@ object Present {
         } else if (record.has("options") || record.has("human_kind") || record.has("allow_custom")) return refuse("bad_request", "unexpected_reply_route")
         // Every notification says who its answer or reply goes to (the ask's sender, or the agent that spoke); it comes from
         // the delivery service, never from a notification intent.
-        if (!PresentRoutes.member.matches(record.opt("reply_target") as? String ?: "")) return refuse("bad_request", "reply_target_required")
+        // A notice (news outside the conversation) has nobody to answer; it only opens a page of the app.
+        if (kind == "notice") { if (record.has("reply_target") || record.has("reply_to")) return refuse("bad_request", "unexpected_reply_route") }
+        else if (!PresentRoutes.member.matches(record.opt("reply_target") as? String ?: "")) return refuse("bad_request", "reply_target_required")
+        if (record.has("open") && (kind != "notice" || record.opt("open") !in setOf("codex"))) return refuse("bad_request", "invalid_open")
         if (record.has("reply_to") && (record.opt("reply_to") as? String).isNullOrBlank()) return refuse("bad_request", "invalid_reply_to")
         if (record.has("alert") && (kind != "reply" || record.opt("alert") !in setOf("quiet", "strong"))) return refuse("bad_request", "invalid_alert")
         if (record.has("expires_at") && positiveSafeInteger(record.opt("expires_at")) == null) return refuse("bad_request", "invalid_expiry")

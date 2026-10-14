@@ -158,16 +158,15 @@ export class Devices implements Member {
       }
       case "codex.turn_ended":
       case "codex.approval_pending": {
-        // A computer's Codex app needs the owner: a short message, once per event (the hand's event id is the key).
+        // The owner's own Codex App: he is told on his phone, outside the conversation, and the notification opens the
+        // Codex page. It is his workbench, so neither the conversation nor Ash's context carries its turns.
+        const hand = msg.from.startsWith("device:") ? this.d.hands.get(msg.from.slice("device:".length)) : undefined;
         const title = typeof input.title === "string" && input.title ? `「${input.title}」` : "";
         const text = msg.word === "codex.turn_ended"
-          ? `Codex App 的会话${title}做完了一轮${input.said ? `：${input.said}` : ""}`
-          : `Codex App 的会话${title}在等你批准${input.summary ? `：${input.summary}` : ""}`;
+          ? `${title}做完了一轮${input.said ? `：${input.said}` : ""}`
+          : `${title}在等你批准${input.summary ? `：${input.summary}` : ""}`;
         const key = `codex-${msg.word === "codex.turn_ended" ? "end" : "ask"}-${String(msg.id).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80)}`;
-        await this.d.router.send({ to: OWNER_ID, kind: "request", word: "say", body: { text, kind: "heads_up", dedupe_key: key } }, SERVICE);
-        // Ash hears it too, with what it needs to act on it (the device and the event), not only the owner.
-        const agent = this.d.primaryAgent?.();
-        if (agent) await this.d.router.send({ to: agent, kind: "request", word: "tell", body: { text: `${text}（主人电脑上的 Codex App，不是你的帮手；${msg.from} 的 x.codex.session {thread} 可看全文。${msg.word}：${JSON.stringify(input).slice(0, 400)}）` } }, SERVICE).catch(() => {});
+        await this.d.router.send({ to: OWNER_ID, kind: "request", word: "notice", body: { title: `Codex${hand ? ` · ${hand.name}` : ""}`.slice(0, 60), text: text.slice(0, 500), open: "codex", dedupe_key: key } }, SERVICE);
         return;
       }
       default: throw new WordError("not_found", `${DEVICES_ID} has no word ${msg.word}`);

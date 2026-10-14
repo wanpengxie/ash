@@ -122,6 +122,12 @@ test("the session list: the last good one is kept when a read fails or is slow, 
   assert.equal((await fx.app.sessions()).sessions.length, 2, "a failed read does not shrink the list");
 });
 
+test("the owner's sessions only: those Ash's helper agents ran are left out unless asked for", async (t) => {
+  const fx = await fixture(t, { listed: [{ id: "t1", title: "Mine" }, { id: "h1", title: "[conversation batch]", helper: true }] });
+  assert.deepEqual((await fx.app.sessions()).sessions.map((s) => s.id), ["t1"]);
+  assert.deepEqual((await fx.app.sessions(30, true)).sessions.map((s) => s.id), ["t1", "h1"]);
+});
+
 test("a past session the app does not take up (the computer locked) is unavailable, not lost", async (t) => {
   const { app } = await fixture(t, { readThread: async (id: string) => ({ id, turns: [] }) });
   await assert.rejects(app.open("t2"), code("unavailable"));

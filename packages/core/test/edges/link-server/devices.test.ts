@@ -239,17 +239,16 @@ test("config.changed from a hand is kept for describe", async (t) => {
   assert.deepEqual((await call("describe", { device: dev(phone) })).config, { accessibility: "missing" });
 });
 
-test("a computer's Codex app needing the owner becomes a short message to the owner, once per event", async (t) => {
+test("a computer's Codex App needing the owner is a notification that opens the Codex page: no message in the conversation, nothing for Ash", async (t) => {
   const { hub, devices } = await setup(t);
   const computer = await connected(hub, { kind: "computer", name: "Mac" });
   const from = dev(computer);
   const event = (word: string, body: object, id: string) => devices.handle({ ...msg(word, body), id, from }, owner);
   await event("codex.turn_ended", { thread: "t1", title: "Fix the build", said: "all green" }, "e1");
   await event("codex.approval_pending", { thread: "t1", title: "Fix the build", request_id: "5", summary: "make deploy" }, "e2");
-  const says = hub.router.sent.filter((s) => s.msg.word === "say");
-  assert.equal(says.length, 2);
-  assert.ok(says.every((s) => s.msg.to === "person:owner" && s.caller.member === "service:devices"));
-  assert.deepEqual(says.map((s) => (s.msg.body as any).text), ["Codex App 的会话「Fix the build」做完了一轮：all green", "Codex App 的会话「Fix the build」在等你批准：make deploy"]);
-  assert.deepEqual(says.map((s) => (s.msg.body as any).kind), ["heads_up", "heads_up"]);
-  assert.notEqual((says[0]!.msg.body as any).dedupe_key, (says[1]!.msg.body as any).dedupe_key);
+  const sent = hub.router.sent.filter((s) => s.caller.member === "service:devices");
+  assert.deepEqual(sent.map((s) => [s.msg.to, s.msg.word]), [["person:owner", "notice"], ["person:owner", "notice"]], "no say, no tell to an agent");
+  assert.deepEqual(sent.map((s) => (s.msg.body as any).text), ["「Fix the build」做完了一轮：all green", "「Fix the build」在等你批准：make deploy"]);
+  assert.deepEqual(sent.map((s) => [(s.msg.body as any).title, (s.msg.body as any).open]), [["Codex · Mac", "codex"], ["Codex · Mac", "codex"]]);
+  assert.notEqual((sent[0]!.msg.body as any).dedupe_key, (sent[1]!.msg.body as any).dedupe_key);
 });

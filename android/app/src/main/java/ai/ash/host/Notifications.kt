@@ -114,8 +114,9 @@ object Notifications {
         return out
     }
 
-    private fun openApp(ctx: Context, req: Int): PendingIntent =
-        PendingIntent.getActivity(ctx, req, Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    private fun openApp(ctx: Context, req: Int, tab: String? = null): PendingIntent =
+        PendingIntent.getActivity(ctx, req, Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .apply { if (tab != null) putExtra(ai.ash.ui.HomeRoute.EXTRA_TAB, tab) }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
     private fun action(ctx: Context, id: String, choice: String, mutable: Boolean = false): PendingIntent {
         val uri = Uri.Builder().scheme("ash").authority("present-action").appendPath(id).appendPath(choice).build()
@@ -131,13 +132,13 @@ object Notifications {
         val text = p.optString("text")
         val channel = when (kind) { "approval", "due" -> CH_IMPORTANT; else -> CH_NORMAL }
         // Core names the kind ("Due", "Reply"); the owner reads who it is from and what it is.
-        val title = when (kind) { "approval" -> p.optString("title").ifBlank { "需要你确认" }; "due" -> "Ash · 提醒"; else -> "Ash" }
+        val title = when (kind) { "approval" -> p.optString("title").ifBlank { "需要你确认" }; "due" -> "Ash · 提醒"; "notice" -> p.optString("title").ifBlank { "Ash" }; else -> "Ash" }
         val b = builder(ctx, channel)
             .setContentTitle(title)
             .setLargeIcon(face(ctx))
             .setCategory(if (kind == "approval" || kind == "due") Notification.CATEGORY_REMINDER else Notification.CATEGORY_MESSAGE)
             .setContentText(text)
-            .setContentIntent(openApp(ctx, id.hashCode()))
+            .setContentIntent(openApp(ctx, id.hashCode(), p.optString("open").ifEmpty { null }))
             .setAutoCancel(kind != "approval")
         if (kind == "reply") {
             b.setStyle(Notification.MessagingStyle("Ash").addMessage(text, System.currentTimeMillis(), "Ash"))

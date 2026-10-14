@@ -4,6 +4,7 @@ import { checkTools, type AgentSession, type OpenOptions } from "./types";
 import { AshTools } from "./mcp";
 import { redactText } from "../redact";
 import { findRuntime } from "./detect";
+import { HELPER_ORIGINATOR } from "../codex-app";
 
 const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
@@ -36,7 +37,7 @@ export class CodexSession implements AgentSession {
     const command = given ?? { command: (await findRuntime("codex")) ?? "codex", args: ["app-server", "--stdio"], env: childEnv(options.env) };
     const session = new CodexSession(options, command);
     try {
-      await session.process.request("initialize", { clientInfo: { name: "ash", version: "0.1.0" }, capabilities: { experimentalApi: true } });
+      await session.process.request("initialize", { clientInfo: { name: HELPER_ORIGINATOR, version: "0.1.0" }, capabilities: { experimentalApi: true } });
       session.process.write({ jsonrpc: "2.0", method: "initialized", params: {} });
       if (options.onModels) {
         const models: { id: string; efforts?: string[] }[] = [];

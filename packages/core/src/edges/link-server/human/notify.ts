@@ -89,6 +89,13 @@ export class Notifier {
     if (turn && kind === "reply") { if (quiet && reached.length) this.quietReplies.set(turn, { id: msg.id, clients: reached.map((c) => c.client) }); else this.quietReplies.delete(turn); }
   }
 
+  /** `person:owner/notice`: a notification outside the conversation, that opens a page of the app. */
+  async notice(msg: Message): Promise<void> {
+    const body = msg.body as { title: string; text: string; open?: string; dedupe_key?: string };
+    if (!(await this.rings("heads_up", body.dedupe_key))) return;
+    await this.showTo({ id: msg.id, kind: "notice", title: body.title, text: clip(body.text), ...(body.open ? { open: body.open } : {}) });
+  }
+
   /** An open question or approval card. Returns the channels that were notified (to take it down when it ends). */
   async ask(ask: PendingAsk): Promise<string[]> {
     if (!(await this.rings("ask", undefined))) return [];

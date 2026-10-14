@@ -33,7 +33,7 @@ const REMOTE = { risk: "none" as const, callers: ["owner", "agent", "app"] as ("
 
 export const CODEX_CAPABILITIES: CapabilitySpec[] = [
   { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The owner's own Codex App (the desktop app on this computer, his workbench, not your helper agents): its sessions, past ones included: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open now; x.codex.send and x.codex.open open it there.",
-    input_schema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many (default 30)." } } },
+    input_schema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many (default 30)." }, helpers: { type: "boolean", description: "Also the sessions your own helper agents ran on this computer's Codex runtime (default false: the owner's only)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
   { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread"], properties: { thread: THREAD, turns: { type: "integer", minimum: 1, maximum: 20, description: "How many of the last turns (default 6)." }, max_chars: { type: "integer", minimum: 40, maximum: 4000, description: "Cut each text to this length (default 600)." } } },
@@ -84,7 +84,15 @@ const rec = (v: unknown): Rec | null => (v && typeof v === "object" && !Array.is
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
 const clip = (v: unknown, max: number): string => { const s = typeof v === "string" ? v : ""; return s.length > max ? `${s.slice(0, max)}…` : s; };
 
-export interface Listed { id: string; title: string; cwd?: string; updated_at?: number }
+/** A saved session. [helper]: made by one of Ash's own helper agents (the Codex runtime it runs), not by the owner. */
+export interface Listed { id: string; title: string; cwd?: string; updated_at?: number; helper?: boolean }
+
+/**
+ * Who starts a Codex runtime says so (`clientInfo.name`), and Codex records it on the session (`originator`). Ash's helper
+ * agents start theirs as "ash"; a session this program makes for the owner (x.codex.new) is his, so it says otherwise.
+ */
+export const HELPER_ORIGINATOR = "ash";
+const OWNER_CLIENT = "ash-for-owner";
 interface Conv { id: string; hostId: string; raw: Rec; owner?: string; revision?: number }
 interface Follow { hostId: string; owner?: string }
 interface Pending { method: string; owner: string; resolve(v: Rec): void; reject(e: Error): void; timer: NodeJS.Timeout }
@@ -363,7 +371,7 @@ export class CodexApp {
    */
   private async listRows(limit: number): Promise<Listed[]> {
     const fresh = () => {
-      this.listing ??= (this.o.listThreads ?? listWithAppServer)(Math.max(limit, 50))
+      this.listing ??= (this.o.listThreads ?? listWithAppServer)(Math.max(limit, 100))
         .then((rows) => { this.listed = { at: this.o.now(), rows }; return rows; })
         .catch((error) => { this.o.log?.("codex app: listing sessions failed", error); return this.listed?.rows ?? []; })
         .finally(() => { this.listing = null; });
@@ -381,12 +389,12 @@ export class CodexApp {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  async sessions(limit = 30) {
+  async sessions(limit = 30, helpers = false) {
     this.requireOnline();
     await this.discover();
     const rows = await this.listRows(limit);
     const out = new Map<string, Rec>();
-    for (const r of rows) out.set(r.id, { id: r.id, title: r.title, state: "idle", open: false, ...(r.cwd ? { cwd: r.cwd } : {}), ...(r.updated_at ? { updated_at: r.updated_at } : {}) });
+    for (const r of rows) if (helpers || !r.helper) out.set(r.id, { id: r.id, title: r.title, state: "idle", open: false, ...(r.cwd ? { cwd: r.cwd } : {}), ...(r.updated_at ? { updated_at: r.updated_at } : {}) });
     for (const conv of this.convs.values()) {
       const v = this.view(conv, 0);
       const prior = out.get(conv.id) ?? {};
@@ -577,7 +585,7 @@ export class CodexApp {
     const thread = (): string => { const t = str(args.thread); if (!t) throw new WordError("bad_request", "thread is required"); return t; };
     let data: unknown;
     switch (name) {
-      case "x.codex.sessions": data = await this.sessions(typeof args.limit === "number" ? args.limit : 30); break;
+      case "x.codex.sessions": data = await this.sessions(typeof args.limit === "number" ? args.limit : 30, args.helpers === true); break;
       case "x.codex.session": data = await this.session(thread(), typeof args.turns === "number" ? args.turns : 6, typeof args.max_chars === "number" ? args.max_chars : 600); break;
       case "x.codex.approvals": data = await this.approvals(); break;
       case "x.codex.open": data = await this.open(thread()); break;
@@ -725,14 +733,14 @@ async function openWithLink(id: string): Promise<void> {
   await new Promise<void>((resolve, reject) => execFile(command, args, { timeout: 15_000 }, (error) => (error ? reject(error) : resolve())));
 }
 
-async function withRuntime<T>(use: (p: JsonProcess) => Promise<T>): Promise<T> {
+async function withRuntime<T>(use: (p: JsonProcess) => Promise<T>, client = OWNER_CLIENT): Promise<T> {
   const p = new JsonProcess({ command: (await findRuntime("codex")) ?? "codex", args: ["app-server", "--stdio"], env: childEnv({}) }, homedir());
   p.onFrame = (frame: Frame) => {
     if (frame.id !== undefined && !frame.method) p.settle(frame.id, frame.result, frame.error);
     else if (frame.id !== undefined) p.response(frame.id, undefined, { code: -32601, message: "unsupported" });
   };
   try {
-    await p.request("initialize", { clientInfo: { name: "ash", version: "0.1.0" }, capabilities: { experimentalApi: true } }, 15_000);
+    await p.request("initialize", { clientInfo: { name: client, version: "0.1.0" }, capabilities: { experimentalApi: true } }, 15_000);
     p.write({ jsonrpc: "2.0", method: "initialized", params: {} });
     return await use(p);
   } finally { await p.close(); }
@@ -748,6 +756,7 @@ async function listWithAppServer(limit: number): Promise<Listed[]> {
       title: clip((str(t.name) ?? str(t.preview) ?? "").split("\n")[0], 80) || "（未命名）",
       ...(str(t.cwd) ? { cwd: t.cwd as string } : {}),
       ...(seconds(t.updatedAt) ? { updated_at: seconds(t.updatedAt) } : {}),
+      ...(t.originator === HELPER_ORIGINATOR ? { helper: true } : {}),
     }));
   });
 }

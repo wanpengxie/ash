@@ -78,6 +78,7 @@
   service:bodies/bind  owner,agent,app
   service:bodies/unbind  owner,agent,app
 * person:owner/say  agent,app
+* person:owner/notice  agent,app
 * person:owner/react  agent,app
 * person:owner/show  agent,app
 * person:owner/ask  agent

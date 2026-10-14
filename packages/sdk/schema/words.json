@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "b4e0ee5f44384ded3b3ac6197964ecc64dbd99f61bc53483369729e853b0f705",
+ "hash": "6674b8d105a9a712710913f347a757e8ac1d85c49bbfbb9259700859fba837fd",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -16059,6 +16059,66 @@
    ],
    "label": {
     "doing": "在回你消息"
+   }
+  },
+  {
+   "member": "person:owner",
+   "word": "notice",
+   "kind": "request",
+   "direction": "in",
+   "description": "A notification on the owner's phone that is not part of the conversation: no message is added, nobody answers it, and it rings as a heads-up does (quiet hours, dedupe_key). Opening it opens the page named by open (codex: the Codex page). For news of his own tools, such as his Codex App, that neither the conversation nor an agent needs to keep.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+     },
+     "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "open": {
+      "type": "string",
+      "enum": [
+       "codex"
+      ]
+     },
+     "dedupe_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+     }
+    },
+    "required": [
+     "title",
+     "text"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "accepted": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "accepted"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "act",
+   "risk": "none",
+   "callers": [
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在给你发通知"
    }
   },
   {

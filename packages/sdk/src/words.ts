@@ -358,6 +358,8 @@ export const CARD_SCHEMA: JsonSchema = { oneOf: [
 ] };
 add("person:owner", "say", "request", obj({ text: nonempty, kind: choice("reply", "due", "offer", "heads_up"), facts: strings, dedupe_key: deliveryDedupeKey }, ["text"]), accepted,
   { callers: TO_OWNER, effect: "act", label: "在回你消息", description: "Send the owner a short message; it is acknowledged when recorded and does not wait for a reply or replace ask. kind (default reply): reply, due (a reminder), offer or heads_up (unprompted; an opaque stable dedupe_key keeps a repeat from showing twice). facts are source message or fact ids." });
+add("person:owner", "notice", "request", obj({ title: { type: "string", minLength: 1, maxLength: 60 }, text: { type: "string", minLength: 1, maxLength: 500 }, open: choice("codex"), dedupe_key: deliveryDedupeKey }, ["title", "text"]), accepted,
+  { callers: TO_OWNER, effect: "act", label: "在给你发通知", description: "A notification on the owner's phone that is not part of the conversation: no message is added, nobody answers it, and it rings as a heads-up does (quiet hours, dedupe_key). Opening it opens the page named by open (codex: the Codex page). For news of his own tools, such as his Codex App, that neither the conversation nor an agent needs to keep." });
 add("person:owner", "react", "request", obj({ message_id: id, emoji: nonempty }, ["message_id", "emoji"]), accepted,
   { callers: TO_OWNER, effect: "act", label: "在给消息加表情", description: "React to one existing message with an emoji; an unknown message id fails. Not for a new explanation: use say for that." });
 add("person:owner", "show", "request", obj({ card: CARD_SCHEMA }, ["card"]), accepted,

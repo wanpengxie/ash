@@ -145,6 +145,9 @@ export function createHuman(deps: HumanDeps): HumanEdge {
         case "say":
           void notifier.say(msg).catch((error) => log("notification failed", error));
           return { data: { accepted: true } };
+        case "notice":
+          void notifier.notice(msg).catch((error) => log("notification failed", error));
+          return { data: { accepted: true } };
         case "show":
           return { data: { accepted: true } };
         case "react":
