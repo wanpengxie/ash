@@ -75,15 +75,20 @@ test("validate and put refuse what the phone cannot draw, with the reason", asyn
   assert.equal((await call(s.svc, owner, "widget.list")).cards.length, 0);
 });
 
-test("only the creator or the owner may replace or remove a card", async () => {
+test("the creator, the owner or any agent may replace or remove a card; an app only its own", async () => {
   const s = setup("silent");
+  const anApp = { member: "app:notes", via: "app" as const, local: false };
   await call(s.svc, agent("a"), "widget.card.put", put("c"));
-  assert.equal(await code(call(s.svc, agent("b"), "widget.card.put", put("c"))), "forbidden");
-  assert.equal(await code(call(s.svc, agent("b"), "widget.card.remove", { id: "c" })), "forbidden");
+  assert.equal(await code(call(s.svc, anApp, "widget.card.put", put("c"))), "forbidden");
+  assert.equal(await code(call(s.svc, anApp, "widget.card.remove", { id: "c" })), "forbidden");
+  const byOther = await call(s.svc, agent("b"), "widget.card.put", put("c", text("v1b")));
+  assert.equal(byOther.card.owner, "agent:a", "another agent replaces it; the creator stays");
   await call(s.svc, agent("a"), "widget.card.put", put("c", text("v2")));
   const byOwner = await call(s.svc, owner, "widget.card.put", put("c", text("v3")));
   assert.equal(byOwner.card.owner, "agent:a", "the creator stays");
   assert.deepEqual(await call(s.svc, owner, "widget.card.remove", { id: "c" }), { removed: true });
+  await call(s.svc, agent("a"), "widget.card.put", put("d"));
+  assert.deepEqual(await call(s.svc, agent("b"), "widget.card.remove", { id: "d" }), { removed: true }, "another agent removes it");
 });
 
 test("put reports whether the hand drew the card, with the preview picture; a failure comes back with its problem", async () => {

@@ -21,7 +21,7 @@ const service = createDirectoryService({
 const words = (data: any, id: string): string[] => (data.members.find((m: any) => m.id === id)?.words ?? []).map((w: any) => w.name);
 const remoteOwner: Caller = { ...owner, local: false };
 
-test("the owner on this machine sees what its kind may call, local_only words included", async () => {
+test("the owner sees what its kind may call", async () => {
   const list = await call(service, owner, "list");
   assert.ok(words(list, "service:vault").includes("set"));
   assert.ok(words(list, "service:clock").includes("set"));
@@ -29,14 +29,15 @@ test("the owner on this machine sees what its kind may call, local_only words in
   assert.ok(!words(list, "service:vault").includes("vault.changed"), "events are not words to call");
 });
 
-test("a remote owner does not see local_only words", async () => {
-  assert.ok(!words(await call(service, remoteOwner, "list"), "service:vault").includes("set"));
+test("nothing is local-only: a remote owner sees what the owner on this machine sees", async () => {
+  assert.deepEqual(await call(service, remoteOwner, "list"), await call(service, owner, "list"));
+  assert.ok(words(await call(service, remoteOwner, "list"), "service:vault").includes("set"));
 });
 
-test("an agent sees what callers allows; the kernel sees all, including kernel-only words", async () => {
+test("an agent sees what callers allows (what the owner can call, but the owner's typing of a secret); the kernel sees all, including kernel-only words", async () => {
   const a = await call(service, agent("main"), "list");
-  assert.deepEqual(words(a, "service:vault").sort(), ["connect", "describe", "generate", "list", "provider", "put", "request", "services"]);
-  assert.ok(!a.members.some((m: any) => m.id === "service:host"));
+  assert.deepEqual(words(a, "service:vault").sort(), ["connect", "delete", "describe", "generate", "list", "provider", "put", "request", "services"]);
+  assert.deepEqual(words(a, "service:host").sort(), ["restart", "update.install"], "the host's words an agent may call, not its kernel-only ones");
   const k = await call(service, kernel, "list");
   assert.ok(words(k, "service:host").includes("wake.at"));
   assert.ok(words(k, "service:vault").includes("set"));
@@ -60,7 +61,8 @@ test("an app sees only what it was granted; a hand nothing", async () => {
 test("list {member} narrows, and an unknown or invisible member is not_found", async () => {
   const one = await call(service, agent("main"), "list", { member: "service:vault" });
   assert.deepEqual(one.members.map((m: any) => m.id), ["service:vault"]);
-  await assert.rejects(call(service, agent("main"), "list", { member: "service:host" }), (e: any) => e.code === "not_found");
+  await assert.rejects(call(service, agent("main"), "list", { member: "service:nope" }), (e: any) => e.code === "not_found");
+  await assert.rejects(call(service, agent("narrow"), "list", { member: "service:host" }), (e: any) => e.code === "not_found", "outside its declaration");
 });
 
 test("describe gives the full contract and marks words that need approval", async () => {

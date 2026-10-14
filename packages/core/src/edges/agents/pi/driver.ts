@@ -642,7 +642,7 @@ export function createPiDriver(deps: PiDriverDeps): AgentDriver {
 
   // -- the catalog -------------------------------------------------------------------------------------------------
 
-  const LOGIN_HOW = "Codex needs the owner's login (ChatGPT subscription). Ask the owner to turn on the phone's VPN for a minute, then call service:agents/configure {agent, config: {login: \"openai-codex\"}}: it returns a link and a code. Send both to the owner with human_say and ask them to open the link in the phone's browser and type the code. You are told when it is done; do not poll. The VPN can be turned off afterwards.";
+  const LOGIN_HOW = "Codex needs the owner's login (ChatGPT subscription). Turn on the phone's VPN for a minute (open the VPN app with a screen lease, or ask the owner), then call service:agents/configure {agent, config: {login: \"openai-codex\"}}: it returns a link and a code. Open the link in the phone's Chrome yourself (apps.open_url) and type the code; only the sign-in (password, verification) is the owner's. You are told when it is done; do not poll. The VPN can be turned off afterwards.";
   let tables: Promise<Array<{ id: string; name: string; models: CatalogModel[] }>> | null = null;
   /** What pi's store says of the tables it holds: when upstream was last asked and the date of the newest list received. Null: never asked. */
   let tableStore: { checked_at?: number | null; upstream_at?: number | null } | null = null;

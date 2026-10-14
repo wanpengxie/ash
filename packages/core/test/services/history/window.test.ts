@@ -42,7 +42,7 @@ test("windows hydrate distant answers, first valid options, reads and reactions 
   assert.ok(!JSON.stringify(result).includes("must-not-leak"));
 });
 
-test("page cursors count visible entities, give both neighbours, and around does not replay intervening rows", async () => {
+test("page cursors count visible entities, give both neighbours, and around does not replay intervening rows; an agent reads the same pages", async () => {
   const { ledger } = openLedger();
   const ids: string[] = [];
   ledger.tx(() => { for (let i = 0; i < 100; i++) { ids.push(ledger.append(say(String(i))).id); ledger.append({ from: "service:test", to: null, word: "noise", kind: "event", body: {} }); } });
@@ -60,7 +60,7 @@ test("page cursors count visible entities, give both neighbours, and around does
   assert.equal(await code(call(service, owner, "window", { before: 10, after: 0 })), "bad_request");
   assert.equal(await code(call(service, owner, "window", { around_id: "not_here" })), "not_found");
   assert.equal(await code(call(service, owner, "window", { snapshot_seq: 999999 })), "bad_request");
-  assert.equal(await code(call(service, agent(), "window", {})), "forbidden");
+  assert.deepEqual((await call(service, agent(), "window", { limit: 10 })).items, tail.items, "an agent reads the same window the owner does");
 });
 
 test("safe DTO is the existing projector's output; private tool arguments and raw results never escape", async () => {

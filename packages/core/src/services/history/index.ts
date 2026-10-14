@@ -122,7 +122,6 @@ export function createHistoryService(options: HistoryOptions): Member {
     words: (): WordContract[] => wordsOf(HISTORY_ID),
     async handle(msg: Message, _ctx: HandleContext): Promise<WordResult | void> {
       const body = (msg.body ?? {}) as Record<string, unknown>;
-      if (["window", "current", "activity.page", "confirm"].includes(msg.word) && _ctx.caller.member !== "person:owner") throw new WordError("forbidden", "only the owner may read display history");
       switch (msg.word) {
         case "confirm": return { data: windows.confirm(body) };
         case "window": return { data: windows.window(body) };

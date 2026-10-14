@@ -6,7 +6,7 @@
  *   describe {member, word?}    the full contracts (description, schemas, effect, risk) of those words
  *
  * A word is visible when it is a request someone can call, the caller's kind passes the contract's `callers`
- * (`mayCall`; the kernel sees everything), a human on a remote channel does not see `local_only` words, and for an
+ * (`mayCall`; the kernel sees everything), and for an
  * agent also its own declaration (`tools` and `words`) allows it. That is the same decision as step 3 of the router.
  * Words that need the owner's approval are listed and marked `needs_approval` in `describe`.
  */
@@ -45,14 +45,13 @@ export function createDirectoryService(options: DirectoryOptions): Member {
     if (caller.via === "agent" && !policy) return [];
     return (registry.describe(member)?.words ?? []).filter((c) =>
       c.kind === "request" && c.direction === "in" && mayCall(c.callers, kind)
-      && !(c.local_only && caller.via === "human" && !caller.local)
       && (!policy || agentMay(policy, member, c.word, options.toolWords ?? (() => [])))
       && (caller.via !== "app" || options.appGranted?.(caller.member, member, c.word) === true));
   }
 
   const describeWord = (c: WordContract, flag: boolean) => ({
     word: c.word, label: c.label.doing, description: c.description, input_schema: c.input_schema, result_schema: c.result_schema ?? null,
-    effect: wordEffect(c), risk: c.risk, ...(c.per_call_risk ? { per_call_risk: true } : {}), ...(c.local_only ? { local_only: true } : {}),
+    effect: wordEffect(c), risk: c.risk, ...(c.per_call_risk ? { per_call_risk: true } : {}),
     ...(flag && needsApproval(c) ? { needs_approval: needsApproval(c) } : {}), timeout_ms: c.timeout_ms ?? null,
   });
 

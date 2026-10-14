@@ -32,12 +32,13 @@ class ShellNodeLauncher(
     private val runDir: File,
     private val hostVersion: String,
 ) : NodeLauncher {
-    private val log = RotatingLog(File(runDir, "logs"))
+    private val logs = File(runDir, "logs")
+    private val log = RotatingLog(logs)
 
     override fun launch(): NodeHandle {
         val proxy = sys.proxy()
         val spec = HostSpecWriter.build(
-            HostSpecInput(paths, hostVersion, sys.platform(), proxy, sys.dnsServers(), api.capabilities),
+            HostSpecInput(paths, hostVersion, sys.platform(), proxy, sys.dnsServers(), api.capabilities, logs = logs),
         )
         bridge.writeHostSpec(spec.toString(2))
         val env = NodeEnv.build(paths, paths.hostSpec.path, proxy, System.getenv("ANDROID_DATA") ?: "/data", System.getenv("ANDROID_ROOT") ?: "/system")

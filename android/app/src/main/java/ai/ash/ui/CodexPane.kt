@@ -207,7 +207,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         if (dt == null) { if (note == null) content.addView(hint("正在读取…")); return }
         title.text = dt.session.title
         stop.visibility = if (dt.session.running || dt.session.waiting) View.VISIBLE else View.GONE
-        input.hint = if (dt.session.open) "跟 Codex 说…" else "这个会话没在 Codex App 里打开，先在电脑上打开它"
+        input.hint = if (dt.session.open) "跟 Codex 说…" else "跟 Codex 说…（会先在电脑上打开这个会话）"
         for (turn in dt.turns) for (item in turn.items) item(item)?.let { content.addView(it, side(item.kind == "user")) }
         if (dt.session.running && dt.approvals.isEmpty()) content.addView(AshUi.text(activity, "在做事…", AshTokens.Type.caption, c.text3), side(false))
         for (a in dt.approvals) content.addView(approvalCard(a))

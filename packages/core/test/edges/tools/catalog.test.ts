@@ -33,7 +33,7 @@ test("capability_list shows the words whose callers include an agent, and none o
   // the words an agent may not call are not
   assert.equal(wordsIn(data, "service:pulse").includes("pulse.due"), false, "pulse.due is for the kernel");
   assert.equal(wordsIn(data, "service:vault").includes("set"), false, "vault set is for the owner");
-  assert.equal(wordsIn(data, "service:admin").includes("pause"), false);
+  assert.equal(wordsIn(data, "service:admin").includes("pause"), true, "what the owner can call, an agent can too");
   assert.deepEqual(wordsIn(data, PHONE).sort(), ["location.get", "screen.tap", "x.test.install"]);
   // events are not words to call
   for (const m of data.members) for (const c of m.capabilities) assert.notEqual(c.word, "typing");
@@ -60,7 +60,7 @@ test("the declaration cuts the catalog down: tools stand for their words, words 
   assert.deepEqual(wordsIn(data, "service:gate").sort(), ["pending.get", "pending.list", "pending.redeem", "pending.skip", "pending.withdraw"], "an agent always has the words of its own pending requests");
   assert.deepEqual(wordsIn(data, PHONE), ["location.get"]);
   assert.deepEqual(wordsIn(data, "service:clock").sort(), ["cancel", "list", "set"]);
-  assert.deepEqual(wordsIn(data, "service:vault").sort(), ["connect", "describe", "generate", "list", "provider", "put", "request", "services"], "vault set, delete and token are not for an agent whatever the pattern says");
+  assert.deepEqual(wordsIn(data, "service:vault").sort(), ["connect", "delete", "describe", "generate", "list", "provider", "put", "request", "services"], "vault set (the owner typing a value) and token (an app's) are not for an agent whatever the pattern says");
   // a declaration with no limit sees everything the contracts allow; an empty list sees nothing
   r.policies.set(MAIN, { tools: ["capability_list"], words: [] });
   assert.deepEqual((await tools.call("capability_list")).data.members.map((m: any) => m.id), ["service:gate"], "only the words of its own pending requests, which every agent has");

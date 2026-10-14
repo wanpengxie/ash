@@ -575,10 +575,8 @@ export class AppRuntime {
     if (caller.member !== OWNER_ID) {
       const shown = this.shown.get(request);
       this.shown.delete(request);
-      // The gate always asks the owner for an agent's install, and the card is remembered under the request's id (a redeem keeps it).
-      if (shown === undefined)
-        throw fail("conflict", "这次安装没有经过主人的审批卡（或中枢重启过，卡片记录没了）；没有安装", { recovery_hint: "Call apps.install again; the owner will be asked." });
-      if (shown !== JSON.stringify([manifest.needs ?? [], manifest.listens ?? []]))
+      // When the gate asked the owner, what was approved is what gets installed.
+      if (shown !== undefined && shown !== JSON.stringify([manifest.needs ?? [], manifest.listens ?? []]))
         throw fail("conflict", `${this.agentPath(id)}/app.json 的 needs 或 listens 在主人批准之后变了；没有安装`, { recovery_hint: "Call apps.install again so the owner sees the current ones." });
     }
     await this.stop(id);

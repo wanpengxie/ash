@@ -202,7 +202,7 @@ test("human_ask: a question to the owner is answered by the owner; the answer co
   assert.equal(done.data?.choice, "rice");
 });
 
-test("SPEC-00 §6.4: an agent proposing to change the persona is always asked about; refusing changes nothing", async (t) => {
+test("SPEC-00 §6.4: an agent proposing to change the persona is asked about by the gate like any structural change; refusing changes nothing", async (t) => {
   const s = await startScenario(t);
   const state: { proposed?: ToolResult } = {};
   s.driver.script(byOwnerText({
@@ -214,7 +214,7 @@ test("SPEC-00 §6.4: an agent proposing to change the persona is always asked ab
 
   accepted(await owner.say("改一下人格"));
   const card = await owner.seen(isApprovalAsk, "the card for the persona change");
-  assert.deepEqual([...owner.optionIds(card)].sort(), ["deny", "once"], "no 'always' on a change that is always asked about");
+  assert.deepEqual([...owner.optionIds(card)].sort(), ["always", "deny", "once"], "no word always asks: 「以后都可以」 is offered as for any other");
   await eventually(() => state.proposed, "the receipt");
   assert.equal(resultOf(state.proposed!).status, "waiting_owner");
   accepted(await owner.answer(card, "deny"));
@@ -225,7 +225,7 @@ test("SPEC-00 §6.4: an agent proposing to change the persona is always asked ab
   assert.ok(!JSON.stringify(dataOf(now)).includes("全新的人格"), "the approved persona did not change");
 });
 
-test("SPEC-02 §3.2: an agent only sees the words its contract lets it call; the owner-only ones are not in its directory", async (t) => {
+test("SPEC-02 §3.2: an agent sees what the owner can call except the owner's own typing of a secret, which is not in its directory", async (t) => {
   const s = await startScenario(t);
   const state: { listed?: ToolResult; direct?: ToolResult } = {};
   s.driver.script(byOwnerText({
@@ -241,7 +241,8 @@ test("SPEC-02 §3.2: an agent only sees the words its contract lets it call; the
   await eventually(() => state.direct, "the agent's attempts");
   const words = JSON.stringify(state.listed!.data);
   assert.ok(words.includes("list") && words.includes("describe"), "it can see the read words");
-  assert.ok(!/"(set|delete)"/.test(words), "it cannot see set and delete");
+  assert.ok(words.includes('"delete"'), "it sees delete, as the owner does");
+  assert.ok(!/"set"/.test(words), "it cannot see set (the owner typing the value)");
   assert.ok(state.direct!.isError);
   assert.equal(errorCode(state.direct!), "forbidden", "and calling set is refused");
 });

@@ -10,6 +10,7 @@
  * Not on the channel: the list of sessions. That is read from the Codex runtime (`app-server`, read only), merged with
  * what the app tells us about the sessions it has open (running, waiting for an approval).
  */
+import { execFile } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -17,6 +18,7 @@ import { join } from "node:path";
 import type { CapabilitySpec } from "../../sdk/src/link";
 import { WordError } from "../../sdk/src/message";
 import type { CallOutcome } from "../../link/src/hand";
+import { findRuntime } from "./agents/detect";
 import { JsonProcess, childEnv, type Frame } from "./agents/process";
 import { redactText } from "./redact";
 
@@ -29,7 +31,7 @@ const THREAD = { type: "string", minLength: 1, description: "The session id from
 const REMOTE = { risk: "none" as const, callers: ["owner", "agent", "app"] as ("owner" | "agent" | "app")[] };
 
 export const CODEX_CAPABILITIES: CapabilitySpec[] = [
-  { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The sessions of the Codex desktop app on this computer: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open, so it cannot be messaged until it is opened there.",
+  { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The sessions of the Codex desktop app on this computer, past ones included: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open now; x.codex.send and x.codex.open open it there.",
     input_schema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many (default 30)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
   { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for.",
@@ -38,7 +40,10 @@ export const CODEX_CAPABILITIES: CapabilitySpec[] = [
   { name: "x.codex.approvals", label: "在看 Codex 等的批准", description: "The requests Codex is waiting for the owner to approve, across the sessions the app has open: which session, what it wants to run or change.",
     input_schema: { type: "object", additionalProperties: false, properties: {} },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 30_000 },
-  { name: "x.codex.send", label: "在给 Codex 发消息", description: "Say something to a Codex session: a new turn when it is idle, added to the running turn when it is busy. If the answer is lost the result is unknown and nothing is sent again by itself; read the session before repeating. Pass the same client_id to repeat safely.",
+  { name: "x.codex.open", label: "在打开 Codex 会话", description: "Open a session (a past one too) in the Codex app on this computer, so it can be messaged, stopped and approved from here and is seen on the computer's screen.",
+    input_schema: { type: "object", additionalProperties: false, required: ["thread"], properties: { thread: THREAD } },
+    effect: "act", timeout_ms: 60_000, ...REMOTE },
+  { name: "x.codex.send", label: "在给 Codex 发消息", description: "Say something to a Codex session, a past one too (it is opened in the app first): a new turn when it is idle, added to the running turn when it is busy. If the answer is lost the result is unknown and nothing is sent again by itself; read the session before repeating. Pass the same client_id to repeat safely.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread", "text"], properties: { thread: THREAD, text: { type: "string", minLength: 1, maxLength: 20_000 }, client_id: { type: "string", minLength: 1, maxLength: 80, description: "Makes a repeat of the same send a no-op." } } },
     effect: "act", timeout_ms: 130_000, ...REMOTE },
   { name: "x.codex.stop", label: "在停下 Codex 的任务", description: "Stop the turn a Codex session is running now.",
@@ -96,6 +101,10 @@ export interface CodexAppOptions {
   reconnectMs?: number;
   /** How long to wait for the app to say it has a session open (default 2.5 s). */
   ownerWaitMs?: number;
+  /** Have the app open a session (default: its own link codex://threads/<id>, opened in the background). */
+  openThread?: (id: string) => Promise<void>;
+  /** How long to wait for the app to take up a session it was asked to open (default 20 s). */
+  openWaitMs?: number;
   now?: () => number;
 }
 
@@ -121,10 +130,10 @@ export class CodexApp {
   private readonly seen = new Map<string, Seen>();
   private readonly sends = new Map<string, { at: number; done: Promise<Rec> }>();
   private listed: { at: number; rows: Listed[] } | null = null;
-  private readonly o: Required<Pick<CodexAppOptions, "socketPath" | "reconnectMs" | "ownerWaitMs" | "now">> & CodexAppOptions;
+  private readonly o: Required<Pick<CodexAppOptions, "socketPath" | "reconnectMs" | "ownerWaitMs" | "openWaitMs" | "openThread" | "now">> & CodexAppOptions;
 
   constructor(options: CodexAppOptions = {}) {
-    this.o = { socketPath: defaultSocket(), reconnectMs: 2000, ownerWaitMs: 2500, now: Date.now, ...options };
+    this.o = { socketPath: defaultSocket(), reconnectMs: 2000, ownerWaitMs: 2500, openWaitMs: 20_000, openThread: openWithLink, now: Date.now, ...options };
   }
 
   get online(): boolean { return this.clientId !== null && this.socket?.writable === true; }
@@ -407,6 +416,30 @@ export class CodexApp {
     });
   }
 
+  /** The session as the app has it open; asked to open it first when it does not (a past session). */
+  private async opened(id: string): Promise<Conv> {
+    const have = await this.owned(id, this.o.ownerWaitMs);
+    if (have) return have;
+    const saved = this.convs.has(id) || (await this.listRows(50)).some((r) => r.id === id) || !!(await (this.o.readThread ?? readWithAppServer)(id).catch(() => null));
+    if (!saved) throw new WordError("not_found", `Codex has no session ${id}`, { recovery_hint: "x.codex.sessions" });
+    try { await this.o.openThread(id); }
+    catch (error) { throw new WordError("failed", `the Codex app could not be asked to open the session: ${clip(errorText(error), 200)}`); }
+    const until = this.o.now() + this.o.openWaitMs;
+    while (this.o.now() < until) {
+      await this.discover();
+      const conv = await this.owned(id, 1000);
+      if (conv) return conv;
+    }
+    throw new WordError("unavailable", "The Codex app was asked to open the session but has not taken it up", { recovery_hint: "the computer may be locked or asleep; try again, or open the session in the Codex app" });
+  }
+
+  async open(id: string) {
+    this.requireOnline();
+    const was = !!(await this.owned(id, this.o.ownerWaitMs));
+    const conv = was ? this.convs.get(id)! : await this.opened(id);
+    return { opened: true, already: was, ...this.view(conv, 0) };
+  }
+
   private async toOwner(id: string, method: string, params: Rec, timeoutMs = 30_000): Promise<Rec> {
     const conv = await this.owned(id, this.o.ownerWaitMs);
     const owner = conv?.owner;
@@ -436,8 +469,7 @@ export class CodexApp {
 
   private async deliver(id: string, text: string, messageId: string): Promise<Rec> {
     const input = [{ type: "text", text, text_elements: [] }];
-    const conv = await this.owned(id, this.o.ownerWaitMs);
-    if (!conv) throw new WordError("unavailable", "The Codex app does not have this session open", { recovery_hint: "open the session in the Codex app" });
+    const conv = await this.opened(id);
     const uncertain = (error: unknown): never => {
       throw new WordError("result_unknown", `Codex did not confirm the message (${errorText(error)}); read the session before sending again`, { recovery_hint: "x.codex.session" });
     };
@@ -513,6 +545,7 @@ export class CodexApp {
       case "x.codex.sessions": data = await this.sessions(typeof args.limit === "number" ? args.limit : 30); break;
       case "x.codex.session": data = await this.session(thread(), typeof args.turns === "number" ? args.turns : 6, typeof args.max_chars === "number" ? args.max_chars : 600); break;
       case "x.codex.approvals": data = await this.approvals(); break;
+      case "x.codex.open": data = await this.open(thread()); break;
       case "x.codex.send": { const text = str(args.text); if (!text) throw new WordError("bad_request", "text is required"); data = await this.send(thread(), text, str(args.client_id) ?? undefined); break; }
       case "x.codex.stop": data = await this.stop(thread()); break;
       case "x.codex.approve": {
@@ -645,8 +678,15 @@ function index(segment: string | number, length: number, allowEnd: boolean): num
 // the Codex runtime, read only: the list of sessions, and a saved session
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** The app's own link for a session, opened in the background (`open -g`) so the computer's front window is left alone. */
+async function openWithLink(id: string): Promise<void> {
+  const url = `codex://threads/${encodeURIComponent(id)}`;
+  const [command, args] = process.platform === "darwin" ? ["open", ["-g", url]] : ["xdg-open", [url]];
+  await new Promise<void>((resolve, reject) => execFile(command, args, { timeout: 15_000 }, (error) => (error ? reject(error) : resolve())));
+}
+
 async function withRuntime<T>(use: (p: JsonProcess) => Promise<T>): Promise<T> {
-  const p = new JsonProcess({ command: "codex", args: ["app-server", "--stdio"], env: childEnv({ PATH: `${process.env.PATH ?? ""}:/opt/homebrew/bin:/usr/local/bin` }) }, homedir());
+  const p = new JsonProcess({ command: (await findRuntime("codex")) ?? "codex", args: ["app-server", "--stdio"], env: childEnv({}) }, homedir());
   p.onFrame = (frame: Frame) => {
     if (frame.id !== undefined && !frame.method) p.settle(frame.id, frame.result, frame.error);
     else if (frame.id !== undefined) p.response(frame.id, undefined, { code: -32601, message: "unsupported" });

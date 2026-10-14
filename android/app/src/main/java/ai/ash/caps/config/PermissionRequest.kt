@@ -17,15 +17,21 @@ import android.provider.Settings
  */
 object PermissionRequest {
     const val EXTRA_NAME = "name"
+    const val EXTRA_REVOKE = "revoke"
+
+    /** The app's own settings page, where every permission it holds can be turned off. */
+    fun appDetails(a: Activity) {
+        a.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", a.packageName, null)))
+    }
 
     /**
      * Starts the request for [name] (one of [ConfigStatus.NAMES]); false when the name is not one. When Ash is in the
      * background with no exemption to start a screen, the request waits behind a notice the owner taps ([BackgroundLaunch]).
      */
-    fun start(ctx: Context, name: String): Boolean {
+    fun start(ctx: Context, name: String, revoke: Boolean = false): Boolean {
         if (name !in ConfigStatus.NAMES) return false
-        BackgroundLaunch.start(ctx, Intent(ctx, PermissionRequestActivity::class.java).putExtra(EXTRA_NAME, name).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION),
-            "Ash 需要你授权", "点一下，继续给 Ash 开这项权限")
+        BackgroundLaunch.start(ctx, Intent(ctx, PermissionRequestActivity::class.java).putExtra(EXTRA_NAME, name).putExtra(EXTRA_REVOKE, revoke).addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION),
+            if (revoke) "Ash 要收回一项权限" else "Ash 需要你授权", if (revoke) "点一下，去关掉这项权限" else "点一下，继续给 Ash 开这项权限")
         return true
     }
 
@@ -56,6 +62,10 @@ class PermissionRequestActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra(PermissionRequest.EXTRA_NAME).orEmpty()
+        if (name in ConfigStatus.NAMES && intent.getBooleanExtra(PermissionRequest.EXTRA_REVOKE, false)) {
+            runCatching { Permissions.all.firstOrNull { p -> p.key == (ConfigStatus.PERMISSION_KEY[name] ?: name) }?.revoke?.invoke(this) ?: PermissionRequest.appDetails(this) }
+            finish(); return
+        }
         if (name in ConfigStatus.NAMES) runCatching {
             PermissionRequest.open(this, name) { permissions -> asked = true; requestPermissions(permissions, REQUEST) }
         }

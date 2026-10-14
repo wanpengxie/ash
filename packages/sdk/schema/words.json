@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "a5e65c2cb8bf5d89843344505b07954f4e39e0492853710c5db43881c9ba4f11",
+ "hash": "8ae143876855871b55b51d4ed45605710b02de241b95dffdef38fc21f5d966a6",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -26,7 +26,7 @@
    "word": "pause",
    "kind": "request",
    "direction": "in",
-   "description": "Durably pause all activity (agent turns, timers that would wake an agent). Like resume, only the owner from a channel on this machine: `by` cites the one owner message that said stop.",
+   "description": "Durably pause all activity (agent turns, timers that would wake an agent). An agent pauses when the owner says stop: `by` cites that owner message. Resuming is the owner's.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -53,9 +53,9 @@
    "effect": "write",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
-   "local_only": true,
    "label": {
     "doing": "在暂停"
    }
@@ -65,7 +65,7 @@
    "word": "resume",
    "kind": "request",
    "direction": "in",
-   "description": "Resume after a pause. Only the owner can, from a channel on this machine, after an explicit confirmation.",
+   "description": "Resume after a pause, after an explicit confirmation.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -93,9 +93,9 @@
    "effect": "write",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
-   "local_only": true,
    "label": {
     "doing": "在恢复"
    }
@@ -141,7 +141,7 @@
    "word": "settings.set",
    "kind": "request",
    "direction": "in",
-   "description": "Change settings: the body is the keys to change and their new values. Agents asking for this are asked about by the owner.",
+   "description": "Change settings: the body is the keys to change and their new values. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {},
@@ -256,7 +256,7 @@
    "word": "plugins.op",
    "kind": "request",
    "direction": "in",
-   "description": "Enable or disable a plugin of the agent runtime. Plugins change what an agent can do, so an agent asking for this is asked about by the owner.",
+   "description": "Enable or disable a plugin of the agent runtime. Plugins change what an agent can do; the gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "oneOf": [
@@ -382,7 +382,7 @@
    "word": "logs",
    "kind": "request",
    "direction": "in",
-   "description": "The tail of the hub's log file (default 200 lines, newest last; the lines carry no level or time yet, so level and since do not narrow them). Only the owner, from a channel on this machine: logs can hold things nobody else should see.",
+   "description": "The tail of the hub's log file (default 200 lines, newest last; the lines carry no level or time yet, so level and since do not narrow them). For diagnosing the hub.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -427,9 +427,9 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
-   "local_only": true,
    "label": {
     "doing": "在看日志"
    }
@@ -1191,7 +1191,7 @@
    "word": "rules.set",
    "kind": "request",
    "direction": "in",
-   "description": "Allow one agent to use one outside capability without asking, for up to 30 days, optionally only for one target (site:<host>, a calendar id, a recipient id, browse). The owner is always asked when an agent requests it.",
+   "description": "Allow one agent to use one outside capability without asking, for up to 30 days, optionally only for one target (site:<host>, a calendar id, a recipient id, browse). The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -1258,7 +1258,7 @@
    "word": "rules.revoke",
    "kind": "request",
    "direction": "in",
-   "description": "Remove a known approval rule. It changes future decisions, not past actions. The owner is always asked when an agent requests it.",
+   "description": "Remove a known approval rule. It changes future decisions, not past actions. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -1299,7 +1299,7 @@
    "word": "mode.set",
    "kind": "request",
    "direction": "in",
-   "description": "Switch the approval mode: auto asks only when an outside action needs it; always asks about every outside action that is not a read. The owner is always asked when an agent requests it.",
+   "description": "Switch the approval mode: auto asks only when an outside action needs it; always asks about every outside action that is not a read. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -2128,7 +2128,8 @@
    "effect": "write",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在收回屏幕授权"
@@ -2217,7 +2218,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在看屏幕授权"
@@ -2581,7 +2583,6 @@
    "callers": [
     "owner"
    ],
-   "local_only": true,
    "label": {
     "doing": "在保存密钥"
    }
@@ -2591,7 +2592,7 @@
    "word": "put",
    "kind": "request",
    "direction": "in",
-   "description": "Store a key you obtained yourself (one you created in the service's console, an OAuth app's client secret) for the hub's connections to use. Write-only: nobody can read it back, you included. You cannot replace a credential the owner saved or a connection's token.",
+   "description": "Store a key you obtained yourself (one you created in the service's console, an OAuth app's client secret) for the hub's connections to use. Write-only: nobody can read it back, you included. You may replace any key (a new one you made, a model key that stopped working); a connection's token is the hub's to renew.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -2713,7 +2714,7 @@
    "word": "request",
    "kind": "request",
    "direction": "in",
-   "description": "Ask the owner for a key or password you cannot get yourself: the entry shows as waiting on the keys page and the owner gets a card to fill it in; the value goes from the page straight into the vault and never to you. Answers at once with status waiting; you are told (vault.changed) when it is saved. Try to obtain a key yourself first.",
+   "description": "Ask the owner for a key or password you cannot get yourself: the entry shows as waiting on the keys page and the owner gets a card to fill it in; the value goes from the page straight into the vault and never to you. Answers at once with status waiting; you are told when it is saved. replace: true asks again for a key that is set but no longer works (rejected, out of balance). Try to obtain a key yourself first.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -2741,6 +2742,9 @@
      },
      "service": {
       "type": "string"
+     },
+     "replace": {
+      "type": "boolean"
      }
     },
     "required": [
@@ -2814,9 +2818,9 @@
    "effect": "write",
    "risk": "structure",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
-   "local_only": true,
    "label": {
     "doing": "在删除凭据"
    }
@@ -3205,10 +3209,7 @@
          ]
         },
         "ip": {
-         "type": "string",
-         "x-ash-sensitive": {
-          "mask": "ip"
-         }
+         "type": "string"
         },
         "last_seen": {
          "type": "integer",
@@ -3308,10 +3309,7 @@
       ]
      },
      "ip": {
-      "type": "string",
-      "x-ash-sensitive": {
-       "mask": "ip"
-      }
+      "type": "string"
      },
      "last_seen": {
       "type": "integer",
@@ -3484,7 +3482,7 @@
    "word": "pair_pending",
    "kind": "request",
    "direction": "in",
-   "description": "The pairing requests that are waiting for the owner's decision.",
+   "description": "The pairings a device has answered, waiting for pair_approve or pair_reject.",
    "input_schema": {
     "type": "object",
     "properties": {},
@@ -3564,7 +3562,7 @@
    "word": "pair_approve",
    "kind": "request",
    "direction": "in",
-   "description": "Approve a pairing request, with what the new hand may do: lend capabilities, serve as a body, run local agents, web chat; and its tier. An agent asking for this is always asked about by the owner.",
+   "description": "Let in the device that answered a pairing, with what it may do: lend capabilities, serve as a body, run local agents, web chat; and its tier. The one who started the pairing approves it (the owner asked for this device), right away.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3647,7 +3645,7 @@
     "additionalProperties": false
    },
    "effect": "write",
-   "risk": "structure",
+   "risk": "none",
    "callers": [
     "owner",
     "agent",
@@ -3722,7 +3720,7 @@
     "additionalProperties": false
    },
    "effect": "write",
-   "risk": "structure",
+   "risk": "none",
    "callers": [
     "owner",
     "agent",
@@ -3737,7 +3735,7 @@
    "word": "revoke",
    "kind": "request",
    "direction": "in",
-   "description": "Disconnect a hand and revoke it: it can no longer connect, and its capabilities and body go away. An agent asking for this is always asked about by the owner.",
+   "description": "Disconnect a hand and revoke it: it can no longer connect, and its capabilities and body go away. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3779,7 +3777,7 @@
    "word": "restore",
    "kind": "request",
    "direction": "in",
-   "description": "Let a revoked hand pair again, with the permissions it had. Only the owner.",
+   "description": "Let a revoked hand pair again, with the permissions it had. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3808,7 +3806,8 @@
    "effect": "write",
    "risk": "structure",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在恢复已撤销的设备"
@@ -3856,7 +3855,7 @@
     "additionalProperties": false
    },
    "effect": "write",
-   "risk": "structure",
+   "risk": "none",
    "callers": [
     "owner",
     "agent",
@@ -3871,7 +3870,7 @@
    "word": "access_set",
    "kind": "request",
    "direction": "in",
-   "description": "Change what a hand may do (lend capabilities, serve as a body, run local agents, web chat) and its tier (ask, full). An agent asking for this is always asked about by the owner.",
+   "description": "Change what a hand may do (lend capabilities, serve as a body, run local agents, web chat) and its tier (ask, full): the same choices pair_approve makes.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3947,10 +3946,7 @@
       ]
      },
      "ip": {
-      "type": "string",
-      "x-ash-sensitive": {
-       "mask": "ip"
-      }
+      "type": "string"
      },
      "last_seen": {
       "type": "integer",
@@ -3971,7 +3967,7 @@
     "additionalProperties": true
    },
    "effect": "write",
-   "risk": "structure",
+   "risk": "none",
    "callers": [
     "owner",
     "agent",
@@ -3986,7 +3982,7 @@
    "word": "update",
    "kind": "request",
    "direction": "in",
-   "description": "Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. An agent asking for this is always asked about by the owner.",
+   "description": "Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -4038,7 +4034,7 @@
    "word": "pair_code",
    "kind": "request",
    "direction": "in",
-   "description": "The one-time code of a pairing still waiting, with the address to open on the new device. The owner's approval card is what lets a device in, not the code.",
+   "description": "The one-time code of a pairing still waiting, with the address to open on the new device. The code only lets the device ask; pair_approve lets it in.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -4298,10 +4294,7 @@
          "maximum": 9007199254740991
         },
         "address": {
-         "type": "string",
-         "x-ash-sensitive": {
-          "mask": "ip"
-         }
+         "type": "string"
         }
        },
        "required": [
@@ -4389,10 +4382,7 @@
       "maximum": 9007199254740991
      },
      "address": {
-      "type": "string",
-      "x-ash-sensitive": {
-       "mask": "ip"
-      }
+      "type": "string"
      }
     },
     "required": [
@@ -4624,10 +4614,7 @@
       "type": "boolean"
      },
      "account_email": {
-      "type": "string",
-      "x-ash-sensitive": {
-       "mask": "email"
-      }
+      "type": "string"
      },
      "last_error": {
       "type": "string"
@@ -4654,7 +4641,7 @@
    "word": "gateway.use",
    "kind": "request",
    "direction": "in",
-   "description": "Use the relay at this address: claim it if it has no owner yet and connect. The relay is the owner's own gateway (deployed in the owner's Cloudflare account, skill relay), not a third party's; the hub asks it first and refuses at once what cannot work. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. An agent asking for this is asked about by the owner.",
+   "description": "Use the relay at this address: claim it if it has no owner yet and connect. The relay is the owner's own gateway (deployed in the owner's Cloudflare account, skill relay), not a third party's; the hub asks it first and refuses at once what cannot work. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -5211,7 +5198,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在看交出去的事"
@@ -5251,7 +5239,8 @@
    "effect": "act",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在停下交出去的事"
@@ -6644,7 +6633,7 @@
    "word": "stop",
    "kind": "request",
    "direction": "in",
-   "description": "Stop an agent: its current turn is cancelled and it leaves the registry, so words sent to it answer offline until it starts again. Only the owner can stop the primary agent.",
+   "description": "Stop an agent: its current turn is cancelled and it leaves the registry, so words sent to it answer offline until it starts again.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -7124,7 +7113,7 @@
    "word": "primary.set",
    "kind": "request",
    "direction": "in",
-   "description": "Make another agent the primary one: the owner's words, the notification and island replies, and the semantic layer's wake-ups go to it. Only the owner.",
+   "description": "Make another agent the primary one: the owner's words, the notification and island replies, and the semantic layer's wake-ups go to it. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -7330,7 +7319,8 @@
    "effect": "write",
    "risk": "structure",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在换主 agent"
@@ -8145,7 +8135,7 @@
    "word": "plugins",
    "kind": "request",
    "direction": "in",
-   "description": "List, enable or disable the plugins of one agent's runtime. Plugins change what the agent can do, so an agent asking for this is asked about by the owner.",
+   "description": "List, enable or disable the plugins of one agent's runtime. Plugins change what the agent can do; the gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -10765,7 +10755,7 @@
    "word": "propose",
    "kind": "request",
    "direction": "in",
-   "description": "Propose a new SOUL.md or IDENTITY.md with the reason. The owner is always asked when an agent proposes; a change the owner makes takes effect at once. It shows in new sessions after the next reload.",
+   "description": "Propose a new SOUL.md or IDENTITY.md with the reason. The gate decides whether the owner is asked; a change the owner makes takes effect at once. It shows in new sessions after the next reload.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -11712,7 +11702,7 @@
    "word": "widget.card.remove",
    "kind": "request",
    "direction": "in",
-   "description": "Remove a card you created (the owner may remove any). Widgets that showed it ask the owner to pick another card.",
+   "description": "Remove a card (yours, or any other that is stale). Widgets that showed it ask the owner to pick another card.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -12602,7 +12592,7 @@
    "word": "pulse.switch",
    "kind": "request",
    "direction": "in",
-   "description": "Owner only: switch the whole pulse on or off. Off keeps PULSE.md, history and feedback.",
+   "description": "Switch the whole pulse on or off (an agent does it when the owner says so). Off keeps PULSE.md, history and feedback.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -12630,7 +12620,8 @@
    "effect": "write",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在开关主动更新"
@@ -12714,6 +12705,7 @@
    "risk": "none",
    "callers": [
     "owner",
+    "agent",
     "app"
    ],
    "label": {
@@ -12741,7 +12733,9 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent",
+    "app"
    ],
    "label": {
     "doing": "在看余额"
@@ -13019,7 +13013,8 @@
    "effect": "act",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "timeout_ms": 3000,
    "label": {
@@ -13070,7 +13065,8 @@
    "effect": "act",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "timeout_ms": 5000,
    "label": {
@@ -13927,7 +13923,7 @@
    "word": "read",
    "kind": "request",
    "direction": "in",
-   "description": "Read ledger messages by sequence range, as recorded (secret and sensitive fields masked).",
+   "description": "Read ledger messages by sequence range, as recorded (secret values masked).",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -14242,7 +14238,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在翻聊天记录"
@@ -14407,7 +14404,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在看现在的事"
@@ -14540,7 +14538,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在看她做过的事"
@@ -14591,6 +14590,7 @@
    "risk": "none",
    "callers": [
     "owner",
+    "agent",
     "app"
    ],
    "label": {
@@ -14655,7 +14655,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在确认消息已送达"
@@ -15068,7 +15069,7 @@
    "word": "restart",
    "kind": "request",
    "direction": "in",
-   "description": "Have the host restart the kernel: it is away for about ten seconds and what it was doing is cut off. The caller has asked the owner first (an app puts the question on its own screen); an agent cannot call it.",
+   "description": "Have the host restart the kernel: it is away for about ten seconds and what it was doing is cut off (the calling agent's turn too). The gate decides whether the owner is asked; an app puts the question on its own screen.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -15093,9 +15094,10 @@
     "additionalProperties": false
    },
    "effect": "act",
-   "risk": "none",
+   "risk": "structure",
    "callers": [
     "owner",
+    "agent",
     "app"
    ],
    "label": {
@@ -15157,7 +15159,7 @@
    "word": "update.install",
    "kind": "request",
    "direction": "in",
-   "description": "Have the host download and install a new kernel package (checked against sha256). Only the owner.",
+   "description": "Have the host download and install a new kernel package (checked against sha256). The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -15190,7 +15192,8 @@
    "effect": "execute",
    "risk": "structure",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在安装大脑更新"
@@ -15894,7 +15897,7 @@
    "word": "bind",
    "kind": "request",
    "direction": "in",
-   "description": "Bind a paired computer as a body: its workspace.* capabilities become available as body:<hand>. An agent asking for this goes through the gate.",
+   "description": "Bind a paired computer as a body: its workspace.* capabilities become available as body:<hand> (what pair_approve and access_set do with body: true).",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -15944,7 +15947,7 @@
     "additionalProperties": true
    },
    "effect": "write",
-   "risk": "structure",
+   "risk": "none",
    "callers": [
     "owner",
     "agent",
@@ -15986,7 +15989,7 @@
     "additionalProperties": false
    },
    "effect": "write",
-   "risk": "structure",
+   "risk": "none",
    "callers": [
     "owner",
     "agent",
@@ -21202,6 +21205,165 @@
    ],
    "label": {
     "doing": "在看保活状态"
+   }
+  },
+  {
+   "member": "device:*",
+   "word": "config.permission.revoke",
+   "kind": "request",
+   "direction": "in",
+   "description": "Give one permission or switch back: the system page where it is turned off, or the app turns it off itself.",
+   "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "name"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "enum": [
+       "accessibility",
+       "notification_listener",
+       "notifications",
+       "exact_alarm",
+       "battery_optimization",
+       "kernel_battery_optimization",
+       "location",
+       "location_background",
+       "activity_recognition",
+       "health",
+       "calendar",
+       "photos",
+       "all_files",
+       "overlay",
+       "write_settings",
+       "host_shell",
+       "usage_access"
+      ],
+      "description": "Which permission or switch."
+     }
+    }
+   },
+   "result_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": [],
+    "properties": {
+     "requested": {
+      "type": "boolean"
+     }
+    }
+   },
+   "effect": "act",
+   "risk": "none",
+   "foreground": true,
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在收回权限"
+   }
+  },
+  {
+   "member": "device:*",
+   "word": "config.owner_said",
+   "kind": "request",
+   "direction": "in",
+   "description": "Record that the owner says a switch the app cannot read is on (the maker's auto-start, the locked recents card); on: false takes it back.",
+   "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "item"
+    ],
+    "properties": {
+     "item": {
+      "type": "string",
+      "description": "The item of config.keepalive.status."
+     },
+     "on": {
+      "type": "boolean",
+      "description": "false takes it back (default true)."
+     }
+    }
+   },
+   "result_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": [],
+    "properties": {
+     "item": {
+      "type": "string"
+     },
+     "on": {
+      "type": "boolean"
+     }
+    }
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在记下你说已开"
+   }
+  },
+  {
+   "member": "device:*",
+   "word": "config.switch.set",
+   "kind": "request",
+   "direction": "in",
+   "description": "Turn one of the app's own switches on or off: notifications_read (read new notifications as a sense), island_resident (the always-on island entry).",
+   "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "name",
+     "on"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "enum": [
+       "notifications_read",
+       "island_resident"
+      ],
+      "description": "Which switch."
+     },
+     "on": {
+      "type": "boolean",
+      "description": "On or off."
+     }
+    }
+   },
+   "result_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "required": [],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "on": {
+      "type": "boolean"
+     }
+    }
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在改App开关"
    }
   },
   {

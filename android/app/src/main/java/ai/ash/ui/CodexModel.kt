@@ -48,7 +48,7 @@ object CodexModel {
     fun computer(data: JSONObject?): String? =
         data?.optJSONArray("devices").mapObjects { it }.firstOrNull { it.optString("kind") == "computer" && it.optBoolean("online") && it.optString("device").isNotEmpty() }?.optString("device")
 
-    fun stateLabel(s: Session): String = when { s.waiting -> "等你批准"; s.running -> "在跑"; !s.open -> "未打开"; else -> "空闲" }
+    fun stateLabel(s: Session): String = when { s.waiting -> "等你批准"; s.running -> "在跑"; !s.open -> "历史"; else -> "空闲" }
 
     /** The line under a title: where it works, and when it last changed. */
     fun subtitle(s: Session, now: Long): String {
@@ -70,7 +70,7 @@ object CodexModel {
     /** What to tell the owner when sending or answering did not go through. */
     fun failure(code: String, message: String): String = when (code) {
         "result_unknown" -> "没有收到确认，先看看过程再决定要不要重发。"
-        "unavailable" -> "Codex App 里没有打开这个会话，先在电脑上打开它。"
+        "unavailable" -> "电脑上的 Codex App 没能打开这个会话（电脑可能锁屏或睡着了），稍后再试。"
         "not_found" -> "这个请求已经不在等了。"
         else -> message.ifEmpty { "没有成功" }
     }

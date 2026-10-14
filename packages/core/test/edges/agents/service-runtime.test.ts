@@ -58,7 +58,7 @@ test("runtime.catalog: providers with ready flag, auth, what to do when not read
   assert.deepEqual(by.codex.auth, { kind: "login", method: "browser", state: "none" });
   assert.equal(by.codex.how, "Ask the owner to log in.");
   assert.equal(by.openrouter.ready, false);
-  assert.match(by.openrouter.how, /Only the owner can save it.*幕后 → 密钥/);
+  assert.match(by.openrouter.how, /service:vault\/put.*service:vault\/request/);
   assert.deepEqual(by.openrouter.models, []);
   assert.equal(by.openrouter.models_total, 25);
   assert.match(by.openrouter.models_hidden, /provider: "openrouter"/);

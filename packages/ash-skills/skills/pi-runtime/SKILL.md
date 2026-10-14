@@ -26,7 +26,7 @@ whenToUse: 主人想换模型或换运行时、要用 Codex、问为什么被切
 
 ## 供应商不能用时，引导主人
 
-- **要密钥**（DeepSeek、OpenRouter）：`ready: false` 且 `auth.kind` 是 `key`。密钥只有主人能存，你代存不了，也不要让他把密钥发给你：告诉他「请打开 App 的 幕后 → 密钥，粘贴 XX 的 Key」。他说好了，再读一次目录确认 `ready`。
+- **要密钥**（DeepSeek、OpenRouter）：`ready: false` 且 `auth.kind` 是 `key`（没存、被拒、余额不足都算）。主人在 Chrome 里已登录服务商后台时，你自己去建一把新密钥，`service:vault/put {ref: "DEEPSEEK_API_KEY"（或 OPENROUTER_API_KEY）, value, label}` 存进去（只写，读不回来）；建不了就 `service:vault/request {ref, label, why, help_url, replace: true}`，主人收到卡，点「去填写」直接在密钥页填。存好后再读一次目录确认 `ready`。
 - **要登录**（Codex，用 ChatGPT 订阅）：`auth.kind` 是 `login`。先请主人**临时打开手机的全局 VPN**（他的浏览器要能打开 OpenAI 的页面，你开不了），然后 `configure {agent, config: {login: "openai-codex"}}`，返回登录链接 `url`（pi 标准的网页登录）。用 `human_say` 把链接发给他，请他点开、用 ChatGPT 账号登录；登录完页面会跳回手机本机（localhost:1455），不用他再做什么。不要轮询，登录好了你会收到一条「Codex 登录成功」，那时才告诉他可以关 VPN。返回 `unavailable` 说明现在到不了 OpenAI（VPN 没开，或 v2rayA 应用里的订阅没配好，先看 `v2raya.status`）。
 - **日常出去的路**（只有用 Codex 才需要，DeepSeek 不用）：Codex 要经容器里的代理，代理见 v2rayA 应用（`v2raya.status`）。
   pi 不自己连 Codex：中枢里有一个 Codex 网关，替 pi 经这条路保持到 Codex 的长连接（每个会话一条，轮与轮之间不断），新一轮不用重新握手、也不用重传整段上下文；一次请求失败会先换一条连接再试一次。代理节点一抖，慢的是这一段，不是 pi。
@@ -43,7 +43,7 @@ Codex 中途连不上（网关已换连接试过一次、这一轮又原样重�
 
 - 不看目录就猜模型名或强度：会被拒绝；`efforts` 空的模型不能设强度。
 - 选了 `ready: false` 的供应商还以为生效：看 `update` 返回的 `notes` 和读回的 `effective.model`。
-- 让主人把密钥发给你、或自己去找密钥：密钥只能主人在 幕后 → 密钥 里存。
+- 让主人把密钥发在对话里，或让他自己去设置里找填的地方：自己建了 `put`，建不了 `request`，卡会带他过去。
 - 没让主人开 VPN 就发起 Codex 登录；或者不停地读状态等登录，等通知就行。
 - 把「被切到 DeepSeek」当成故障去重试；或者以为换模型会丢记忆（会话是接着的）。
 - 用 `configure` 当长期设置：中枢重启就没了，长期的要用 `update`。

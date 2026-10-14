@@ -1,6 +1,6 @@
 /**
  * A hub for the human edge: the real link server, a real ledger, the real `person:owner` member, and a small router that
- * does what the real one does for these tests (authorizes `local_only`, records, announces, delivers) and keeps what it was asked.
+ * does what the real one does for these tests (records, announces, delivers) and keeps what it was asked.
  */
 import { randomBytes } from "node:crypto";
 import { errorBody, WordError, type Caller, type Message, type Outgoing, type Reply } from "../../../../../sdk/src/message";
@@ -54,7 +54,6 @@ export class MiniRouter implements Router {
     }
     if (!member) return { ok: false, error: errorBody("offline", `${msg.to} is not connected`) };
     if (!contract) return { ok: false, error: errorBody("not_found", `${msg.to} has no word ${msg.word}`) };
-    if (contract.local_only && caller.via === "human" && !caller.local) return { ok: false, error: errorBody("forbidden", "only from a channel on this machine") };
     const origin = caller.origin;
     const stored = this.ledger.append({ ...(opts.id ? { id: opts.id } : {}), from: caller.member, to: msg.to, kind: "request", word: msg.word, body: msg.body, ...(msg.reply_to ? { reply_to: msg.reply_to } : {}), ...(origin ? { origin } : {}), ...(caller.turn ? { turn: caller.turn } : {}) });
     this.publish(stored);

@@ -163,13 +163,30 @@ test("pairing: a ticket is registered by its hash, a request arrives, approval a
   assert.equal(gw.grantVersion, 1);
   await assert.rejects(relay.approve("nope", []), /unknown pairing request/);
 
+  // An approval whose answer was lost did reach the relay: trying again finds it approved, which is done, not a failure.
+  gw.pairRequest({ request_id: "req2", client_id: "mac2", name: "Mac 2", pubkey: "PUB2" });
+  await eventually(() => requests.length > 1, "the second request");
+  gw.approveUnanswered("req2", ["expose_capability"]);
+  await relay.approve("req2", ["expose_capability"]);
+  assert.deepEqual(gw.devices.get("mac2")!.permissions, ["expose_capability"]);
+
   await relay.setPermissions("mac1", (cur) => [...cur, "web_ui", "chat"]);
   assert.deepEqual(gw.devices.get("mac1")!.permissions, ["expose_capability", "web_ui", "chat"]);
-  assert.equal(gw.grantVersion, 2);
+  assert.equal(gw.grantVersion, 3);
 
   await relay.revoke("mac1");
   assert.equal(gw.devices.get("mac1")!.revoked, true);
   assert.equal(relay.devices().find((d) => d.id === "mac1")!.revoked, true);
+});
+
+test("a connection that answers nothing (half open) is ended and made again", async (t) => {
+  const { gw, relay, connection } = await setup(t, { claimed: true }, { refreshMs: 100 });
+  relay.start();
+  assert.ok(await relay.waitConnected(5000));
+  gw.mute = true;
+  await eventually(() => connection.includes(false), "the silent connection given up", 30_000);
+  gw.mute = false;
+  await eventually(() => gw.ownerConnections >= 2 && relay.connected, "connected again", 30_000);
 });
 
 test("a dropped connection is made again by itself, and stop ends it", async (t) => {

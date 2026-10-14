@@ -40,6 +40,9 @@ export function rawSignature(sig: string): string {
 }
 /** True when a request to the relay got no answer (a slow or lost connection): the relay is unavailable for now, not broken. */
 export const relayUnanswered = (error: unknown): boolean => error instanceof GatewayError && (error.code === "timeout" || error.code === "ws_error");
+/** The relay answered and said no (`not_pending`, `stale_grant`, …): its code and words, or null for any other failure. */
+export const relayRefused = (error: unknown): { code: string; message: string } | null =>
+  error instanceof GatewayError && !relayUnanswered(error) ? { code: error.code, message: error.message } : null;
 const problemOf = (error: unknown): RelayProblem => {
   if (error instanceof RelayError) return error.problem;
   if (error instanceof GatewayError) {
@@ -327,11 +330,20 @@ export class Relay {
       if (this.conn !== conn) return;
       this.ready = true;
       this.o.handlers?.connection?.(true);
-      timers.push(setInterval(() => void this.refreshDevices().catch((e) => this.log("device list failed", e)), this.o.refreshMs ?? 30_000));
+      // A connection a lossy network has left half open stays "open" and answers nothing: two unanswered device lists in a
+      // row end it, and a new one is made.
+      let misses = 0;
+      let markDead!: () => void;
+      const dead = new Promise<void>((resolve) => { markDead = resolve; });
+      timers.push(setInterval(() => void this.refreshDevices().then(() => { misses = 0; }, (e) => {
+        this.log("device list failed", e);
+        if (relayUnanswered(e) && ++misses === 2) { this.log("the relay connection answers nothing; connecting again"); markDead(); }
+      }), this.o.refreshMs ?? 30_000));
       timers.push(setInterval(() => { try { conn.send("ping"); } catch { /* closing */ } }, this.o.pingMs ?? 30_000));
       for (const timer of timers) timer.unref();
-      await conn.closed;
+      await Promise.race([conn.closed, dead]);
     } finally {
+      try { conn.close(); } catch { /* already closed */ }
       for (const timer of timers) clearInterval(timer);
       const was = this.ready;
       this.ready = false;
@@ -490,12 +502,18 @@ export class Relay {
     }
     if (!item) throw new Error("unknown pairing request");
     const grant = await this.grantVersion();
-    await this.client.approve(this.requireConn(), { request_id: item.request_id, client_id: item.client_id, pubkey: item.pubkey }, permissions as Permission[], grant + 1);
+    try {
+      await this.client.approve(this.requireConn(), { request_id: item.request_id, client_id: item.client_id, pubkey: item.pubkey }, permissions as Permission[], grant + 1);
+    } catch (error) {
+      // An earlier approve whose answer was lost (a slow network) did reach the relay: only this hub's key signs approvals, so it is done.
+      if (!(error instanceof GatewayError && error.code === "not_pending" && /approved/.test(error.message))) throw error;
+    }
     this.requests.delete(requestId);
   }
 
   async reject(requestId: string): Promise<void> {
-    await this.requireConn().request({ op: "pair.reject", request_id: requestId });
+    try { await this.requireConn().request({ op: "pair.reject", request_id: requestId }); }
+    catch (error) { if (!(error instanceof GatewayError && error.code === "not_pending" && /rejected/.test(error.message))) throw error; }
     this.requests.delete(requestId);
   }
 

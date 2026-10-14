@@ -1,5 +1,6 @@
 package ai.ash.ui
 
+import ai.ash.link.Link
 import ai.ash.R
 import ai.ash.caps.Capabilities
 import ai.ash.caps.config.ConfigStatus
@@ -96,6 +97,11 @@ class ConsoleActivity : Activity() {
     override fun onBackPressed() {
         if (part != null && intent?.getStringExtra(EXTRA_PART) == null) { part = null; render() } else finish()
     }
+
+    /** The page's way to the hub: a switch here is the same word Ash calls on this phone. */
+    private val hub: HumanPort by lazy { HumanPort(Link.get(this).chat).also { it.start() } }
+    private fun phone(word: String, body: JSONObject, done: (Boolean) -> Unit = {}) =
+        hub.call(Link.get(this).deviceId, word, body) { _, failure -> runOnUiThread { if (failure != null) Toast.makeText(this, "没改成：${failure.message}", Toast.LENGTH_SHORT).show(); done(failure == null) } }
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
@@ -210,7 +216,7 @@ class ConsoleActivity : Activity() {
         blocks += AshUi.group(this, "其他", rows = listOf(
             AshUi.row(this, "再走一遍引导", "一项一项看哪些还没开", AshPage.icon(this, R.drawable.ash_ic_list), trailing = chevron()) { startActivity(Intent(this, OnboardingActivity::class.java)) },
             AshUi.row(this, "显示虚拟屏预览", "Ash 在后台操作应用时，小窗里看她的屏幕", AshPage.icon(this, R.drawable.ash_ic_eye), trailing = chevron()) { showPreview() },
-            switchRow("灵动岛常驻入口", residentLine(), TaskCapsule.residentKept(this), true) { TaskCapsule.setResidentKept(this, it); render() },
+            switchRow("灵动岛常驻入口", residentLine(), TaskCapsule.residentKept(this), true) { on -> phone("config.switch.set", JSONObject().put("name", "island_resident").put("on", on)) { render() } },
             switchRow("读取通知（可选）", notificationLine(), NotificationSenseSettings.enabled(this), true) { setNotificationSense(it) },
             AshUi.row(this, "系统的通知读取权限", null, AshPage.icon(this, R.drawable.ash_ic_bell), trailing = chevron()) { openNotificationAccess() },
         ), footer = appLine.ifEmpty { null }, iconInset = false)
@@ -291,14 +297,13 @@ class ConsoleActivity : Activity() {
                     // the owner opened it and Ash still does not see it on: look again, or take their word for it
                     if (item.canRecheck && !on) addView(AshPage.smallButton(this@ConsoleActivity, OnboardingContent.Words.RECHECK, AshUi.Kind.NEUTRAL) { recheck.start() })
                     if (item.canSay) addView(AshPage.smallButton(this@ConsoleActivity, OnboardingContent.Words.SAID_BUTTON, AshUi.Kind.NEUTRAL) {
-                        OwnerWord.of(this@ConsoleActivity).say(item.id); shown = ""; refresh()
+                        phone("config.owner_said", JSONObject().put("item", item.id)) { shown = ""; refresh() }
                     })
                     if (item.testable) addView(AshPage.smallButton(this@ConsoleActivity, "测试", AshUi.Kind.NEUTRAL) {
                         Permissions.all.firstOrNull { p -> p.key == item.id }?.test?.invoke(this@ConsoleActivity)
                     })
                     if (item.revocable) addView(AshPage.smallButton(this@ConsoleActivity, "撤销", AshUi.Kind.NEUTRAL) {
-                        Permissions.all.firstOrNull { p -> p.key == (ConfigStatus.PERMISSION_KEY[item.id] ?: item.id) }?.revoke?.invoke(this@ConsoleActivity)
-                        shown = ""; refresh()
+                        phone("config.permission.revoke", JSONObject().put("name", item.id)) { shown = ""; refresh() }
                     })
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = d(AshTokens.Space.xs) })
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -339,20 +344,14 @@ class ConsoleActivity : Activity() {
     }
 
     private fun setNotificationSense(on: Boolean) {
-        if (!on) {
-            if (!NotificationSenseSettings.setEnabled(this, false)) Toast.makeText(this, "没保存上", Toast.LENGTH_SHORT).show()
-            shown = ""; render()
-            return
-        }
+        if (!on) { phone("config.switch.set", JSONObject().put("name", "notifications_read").put("on", false)) { shown = ""; render() }; return }
         AlertDialog.Builder(this)
             .setTitle("让她读新来的通知？")
             .setMessage("只有你开了这个开关、又在系统里给了读取权限，她才会读新通知的应用、标题和正文，并交给这台手机上的大脑。关掉开关或收回系统权限就停；已经在通知栏里的不会补读。")
             .setNegativeButton("取消") { _, _ -> shown = ""; render() }
             .setOnCancelListener { shown = ""; render() }
             .setPositiveButton("继续") { _, _ ->
-                if (!NotificationSenseSettings.setEnabled(this, true)) Toast.makeText(this, "没保存上", Toast.LENGTH_SHORT).show()
-                shown = ""; render()
-                if (NotificationSenseSettings.enabled(this) && !NotificationSenseSettings.granted(this)) openNotificationAccess()
+                phone("config.switch.set", JSONObject().put("name", "notifications_read").put("on", true)) { shown = ""; render() }
             }.show()
     }
 

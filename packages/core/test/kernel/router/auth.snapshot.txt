@@ -7,4 +7,3 @@ kernel             owner:no agent:no app:no kernel:yes
 owner              owner:yes agent:no app:no kernel:yes
 owner,agent        owner:yes agent:yes app:no kernel:yes
 owner,agent,app    owner:yes agent:yes app:yes kernel:yes
-owner,app          owner:yes agent:no app:yes kernel:yes

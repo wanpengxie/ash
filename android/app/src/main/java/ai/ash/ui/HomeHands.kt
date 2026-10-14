@@ -1,5 +1,6 @@
 package ai.ash.ui
 
+import ai.ash.link.Link
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -321,10 +322,7 @@ class HmBrowser(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         })
         body.addView(Hk.twoTap(ctx, "清除浏览器里的所有登录", "再点一次确认清除", "会清掉所有网站的登录并关闭浏览器，之后她需要你重新登录。", { status.text = it }) {
             status.text = "正在清除…"
-            Thread {
-                val ok = runCatching { BrowserSession.clearLogins(ctx) }.getOrDefault(false)
-                ctx.runOnUiThread { if (alive) status.text = if (ok) "已清除所有登录。" else "清除失败，请重试。" }
-            }.start()
+            call(Link.get(ctx).deviceId, "x.android.browser.clear_logins") { r -> status.text = if (r.ok) "已清除所有登录。" else "清除失败，请重试。" }
         })
         body.addView(status)
     }

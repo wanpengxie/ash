@@ -22,10 +22,9 @@ function setup(options: { logs?: string[] } = {}) {
 const settle = () => new Promise((r) => setImmediate(r));
 const events = (s: ReturnType<typeof setup>) => s.router.sent.filter((x) => x.msg.kind === "event").map((x) => x.msg);
 
-test("contracts: pause, resume and logs are for the owner on this machine; the router enforces local_only", () => {
+test("contracts: pause, resume and logs are the owner's and an agent's alike, from anywhere (nothing is local-only)", () => {
   const w = (n: string) => setup().service.words().find((x) => x.word === n)!;
-  for (const n of ["pause", "resume", "logs"]) { assert.deepEqual(w(n).callers, ["owner"]); assert.equal(w(n).local_only, true); }
-  assert.equal(w("settings.get").local_only, undefined);
+  for (const n of ["pause", "resume", "logs"]) { assert.deepEqual(w(n).callers, ["owner", "agent"], n); assert.ok(!w(n).local_only, n); }
   for (const n of ["settings.get", "settings.set", "status", "model.set", "plugins.list", "plugins.op", "settings.changed"]) assert.ok(w(n), n);
 });
 

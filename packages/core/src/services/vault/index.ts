@@ -162,10 +162,10 @@ export function createVaultService(options: VaultServiceOptions): Member & { oau
           const ref = refOf(raw);
           const r = row(ref);
           const set = vault.list().some((e) => e.ref === ref);
-          if (set && (r?.origin === "owner" || r?.origin === "hub" || KNOWN[ref] || (!r && set))) throw new WordError("forbidden", `${ref} was saved by the owner or is a connection's; it is not yours to replace`, { recovery_hint: "Use another name, or ask the owner to replace it." });
+          if (set && kindOf(r?.kind) === "oauth") throw new WordError("conflict", `${ref} is a connection's token, kept and renewed by the hub`, { recovery_hint: "Connect it again with service:vault/connect to replace it." });
           if (typeof raw.value !== "string") throw new WordError("bad_request", "value must be the secret text");
           store(ref, raw.value);
-          upsert(ref, { label: String(raw.label), kind: kindOf(String(raw.kind ?? "key")), status: "ok", origin: "agent", ...(typeof raw.service === "string" ? { service: raw.service } : {}) });
+          upsert(ref, { label: String(raw.label ?? r?.label ?? KNOWN[ref]?.label ?? ref), kind: kindOf(String(raw.kind ?? r?.kind ?? "key")), status: "ok", origin: "agent", ...(typeof raw.service === "string" ? { service: raw.service } : {}) });
           announce(ref, "saved");
           return { data: { ref, configured: true } };
         }
@@ -179,7 +179,8 @@ export function createVaultService(options: VaultServiceOptions): Member & { oau
         }
         case "request": {
           const ref = refOf(body);
-          if (vault.list().some((e) => e.ref === ref) && row(ref)?.status !== "broken") return { data: { ref, status: "ok" } };
+          // A key that is set is asked for again only when it no longer works (replace: the provider rejected it, it ran out).
+          if (vault.list().some((e) => e.ref === ref) && row(ref)?.status !== "broken" && body.replace !== true) return { data: { ref, status: "ok" } };
           const label = String(body.label), why = String(body.why);
           const help = typeof body.help_url === "string" && /^https:\/\//.test(body.help_url) ? body.help_url : undefined;
           upsert(ref, { label, kind: kindOf(String(body.kind ?? "key")), why, status: "waiting", origin: "owner", requested_by: ctx.caller.member,

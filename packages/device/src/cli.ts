@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile, rename, access } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, access, rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -17,6 +17,15 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
   const root = resolve(option("--root") ?? join(homedir(), ".ash-device")), configPath = resolve(option("--config") ?? join(root, "device.json"));
   if (command === "run") { const log = deviceLogger(join(dirname(configPath), "logs")); console.log = log; console.error = log; }
   const serviceFile = process.platform === "darwin" ? join(homedir(), "Library/LaunchAgents/ai.ash.device.plist") : join(homedir(), ".config/systemd/user/ash-device.service");
+  // The Codex App on this computer gets Ash (its MCP server and skill) with the device itself: at setup, and each time the
+  // service starts (an update, or Codex installed later). `ash-device codex uninstall` turns this off until `codex install`.
+  const codexOff = join(root, "codex-off");
+  const hookCodex = async (say: (line: string) => void) => {
+    const home = codexHome();
+    if (!(await access(home).then(() => true, () => false)) || (await access(codexOff).then(() => true, () => false))) return;
+    try { for (const line of await installCodex({ codexHome: home, command: join(root, "current", "bin", "ash-device"), args: ["mcp", "--config", configPath] })) say(`Codex: ${line}`); }
+    catch (error) { say(`Codex: not connected to Ash: ${(error as Error).message}`); }
+  };
   if (command === "setup") {
     const gateway = option("--gateway"), pair = option("--pair");
     if (!gateway || !pair) throw new Error("setup requires --gateway URL --pair CODE");
@@ -38,6 +47,7 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
       await exec("systemctl", ["--user", "daemon-reload"]); await exec("systemctl", ["--user", "enable", "--now", "ash-device.service"]);
       console.log("For service after logout, enable lingering if desired: loginctl enable-linger");
     }
+    await hookCodex(console.log);
     console.log("Ash device is paired and its user service is running."); return;
   }
   if (command === "mcp") {
@@ -52,9 +62,10 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
       const program = option("--command") ?? join(root, "current", "bin", "ash-device");
       if (!option("--command") && !(await access(program).then(() => true, () => false))) throw new Error(`${program} does not exist; give the ash-device program with --command PATH`);
       for (const line of await installCodex({ codexHome: home, command: resolve(program), args: ["mcp", "--config", configPath] })) console.log(line);
+      await rm(codexOff, { force: true });
       return;
     }
-    if (action === "uninstall") { for (const line of await uninstallCodex({ codexHome: home })) console.log(line); return; }
+    if (action === "uninstall") { for (const line of await uninstallCodex({ codexHome: home })) console.log(line); await mkdir(root, { recursive: true, mode: 0o700 }); await writeFile(codexOff, ""); return; }
     if (action === "status") { console.log(JSON.stringify(await codexStatus({ codexHome: home, command: "", args: [] }))); return; }
     console.log("ash-device codex install [--command PATH] [--codex-home DIR] | uninstall | status"); return;
   }
@@ -76,6 +87,7 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
   }
   if (command !== "run") { console.log("ash-device setup --gateway URL --pair CODE [--name NAME] [--workdir PATH]\nash-device run | status | update --version-to VERSION --sha256 HASH | uninstall\nash-device codex install | uninstall | status   (let the Codex App use Ash)\nash-device mcp   (the MCP server the Codex App starts)"); return; }
   const config = JSON.parse(await readFile(configPath, "utf8"));
+  await hookCodex(console.log);
   const running = await start(config, option("--pair"), { restart: () => { void running.close().then(() => process.exit(0)); } });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void running.close().then(() => process.exit(0)); });
   await running.run;

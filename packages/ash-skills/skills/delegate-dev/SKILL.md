@@ -15,7 +15,7 @@ whenToUse: 主人要做一个需要在电脑上写代码、跑测试或编译的
 
 ## 做法
 
-1. **找电脑。** `agent_runtimes`：列出在线、且主人已允许使用本地 Agent 的电脑，以及上面装了什么 runtime、能选哪些模型。没有想要的那台（没连上、没配对、没勾「使用本地 Agent」、没绑成 body），接设备的全部步骤在技能 `connect-device`，先读它；授权要主人点头，**不要绕开**。`logged_in: false` 就请主人先在电脑上登录那个 runtime。
+1. **找电脑。** `agent_runtimes`：列出在线、且主人已允许使用本地 Agent 的电脑，以及上面装了什么 runtime、能选哪些模型。没有想要的那台（没连上、没配对、没勾「使用本地 Agent」、没绑成 body），接设备的全部步骤在技能 `connect-device`，先读它；`logged_in: false` 就在那台电脑上自己跑那个 runtime 的登录命令（如 `codex login`），把要主人确认的页面或码发给他，只有输密码、过验证这一下由他来。
 2. **找或建 Agent。** 先 `agent_list`，有合适的、空闲的（`idle`）就复用。没有就 `agent_create`：`id`（`agent:` 加小写名字）、`name`、`summary`（一句话擅长什么）、`brief`（长期的职责和规矩，见 `brief-template.md` 上半）、`runtime: {kind, model?, effort?}`、`native: {on: "body:<编号>", cwd}`（编号是 `device_list` 里 `device:` 后面那一串）。`cwd` 用一个专门给这件事建的目录，建在这台电脑的工作目录（`body.info` 里写着，默认 `~/ash-shared`）下面，例如 `<workdir>/ledger`；别用主人的主目录。
 3. **备料。** 开发 Agent 看不到你的容器，所以把要它读的东西写到它的 `cwd`：用 `capability_call {member: "body:<编号>", word: "workspace.write", body: {workdir: <cwd>, path: "SPEC.md", content}}` 写 `SPEC.md`（要什么）、`ACCEPTANCE.md`（验收清单）；要写 Ash 应用就把 `apps.contract` 返回的契约存成 `APP-CONTRACT.md` 一并写过去，并说明模板在契约里。写进工作目录里面不用问主人；写到工作目录外面，由审核模型判断，拿不准会问主人，照审批流程来。电脑档位是 `full` 时都直接执行；`workspace.bash` 这类命令先过审核模型。
 4. **交办。** 用 `agent_tell` 发任务（它做多久都行，回话会作为一条消息回到你这里）。不要用 `agent_ask` 等：它只等 50 秒，之后只给回执，结果晚点自己回来；开发活还是用 `agent_tell`。任务正文按 `brief-template.md` 下半写：目标、背景、约束、验收清单、要交回哪些文件、怎么汇报。**同一个 Agent 同一时间只能做一件事**，上一件没完发新的会失败（「Previous remote task is still running」）；要换方向先 `agent_stop`。

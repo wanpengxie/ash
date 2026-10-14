@@ -20,11 +20,12 @@ function setup() {
   return { ledger, path, vault, vaultFile, router, logs, service };
 }
 
-test("the words: the owner sets and deletes, an agent puts, generates and requests, both list, describe and connect", () => {
+test("the words: the owner sets, an agent puts, generates and requests, both delete, list, describe and connect", () => {
   const { service } = setup();
   const w = (name: string) => service.words().find((x) => x.word === name)!;
   assert.deepEqual(service.words().filter((x) => x.kind === "request").map((x) => x.word).sort(), ["connect", "delete", "describe", "generate", "list", "provider", "put", "request", "services", "set", "token"]);
-  for (const name of ["set", "delete"]) assert.deepEqual(w(name).callers, ["owner"]);
+  assert.deepEqual(w("set").callers, ["owner"], "the owner typing a secret's value");
+  assert.deepEqual(w("delete").callers, ["owner", "agent"]);
   for (const name of ["put", "request"]) assert.deepEqual(w(name).callers, ["agent"]);
   for (const name of ["set", "put"]) assert.equal((w(name).input_schema.properties as any).value["x-ash-secret"], true);
 });

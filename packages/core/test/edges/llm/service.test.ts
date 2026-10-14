@@ -125,13 +125,13 @@ test("the member listens for vault.changed", () => {
   assert.deepEqual(service().member.listens, ["vault.changed"]);
 });
 
-test("keys.check: an agent asking again within 30 s gets the last answer; the owner always asks the provider", async () => {
+test("keys.check: an agent asks the provider every time, the same as the owner", async () => {
   const f = checked(() => new Response("{}"));
   const call = (who: string, via: Caller["via"]) => f.member.handle(msg("keys.check", { provider: "deepseek" }), ctx(who, via)) as Promise<{ data: { keys: { checked_at?: number; status: string }[] } }>;
   const first = await call("agent:main", "agent");
-  for (let i = 0; i < 3; i++) await call("agent:main", "agent");
-  assert.equal(f.urls.length, 1, "no loop reaches the provider");
   assert.deepEqual([first.data.keys[0]!.status, first.data.keys[0]!.checked_at], ["ok", 5]);
+  await call("agent:main", "agent");
+  assert.equal(f.urls.length, 2, "no cooldown for an agent");
   await call("person:owner", "human");
-  assert.equal(f.urls.length, 2);
+  assert.equal(f.urls.length, 3);
 });

@@ -18,6 +18,8 @@ data class HostSpecInput(
     val storageBinds: List<String> = listOf("/sdcard:/sdcard", "/storage/emulated/0:/storage/emulated/0"),
     /** A debug build of this package: the core then declares the script agent (`agent:script`) used for device verification. Never true in a release build. */
     val debuggable: Boolean = BuildConfig.DEBUG,
+    /** Where the core's log is written: the core reads it back for service:admin/logs. */
+    val logs: java.io.File = paths.logs,
 )
 
 /** Writes the launch description of `ash-host/1` (packages/sdk/schema/host.json). */
@@ -37,7 +39,7 @@ object HostSpecWriter {
             .put(
                 "dirs",
                 JSONObject().put("state", p.state.path).put("home", p.home.path).put("tmp", p.tmp.path)
-                    .put("runtime", p.payload.path).put("logs", p.logs.path),
+                    .put("runtime", p.payload.path).put("logs", i.logs.path),
             )
             .put(
                 "isolation",

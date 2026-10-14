@@ -8,7 +8,7 @@ import { referencingMessages, type Ledger } from "../ledger";
 import type { Caller } from "../types";
 
 export function mayReadAttachment(ledger: Pick<Ledger, "db" | "get">, caller: Caller, hash: string): boolean {
-  if (caller.member === OWNER_ID) return true;
+  if (caller.member === OWNER_ID || caller.via === "agent") return true;
   const ids = referencingMessages(ledger, hash);
   if (ids.length === 0) return true;
   return ids.some((id) => {

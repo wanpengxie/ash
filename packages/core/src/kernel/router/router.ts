@@ -274,7 +274,7 @@ export class HubRouter implements Router {
 
   private park(stamped: Message, view: Message, raw: unknown, contract: WordContract, caller: Caller, offerAlways: boolean, opts: SendOptions, member: Member, reviewReason?: string): Reply {
     // A secret is never written down, so a request that carries one cannot wait for the owner.
-    if (JSON.stringify(view.body) !== JSON.stringify(raw)) return fail(errorBody("forbidden", "a request that carries a secret cannot wait for the owner's approval", { recovery_hint: "The owner can do this directly; an agent cannot." }));
+    if (JSON.stringify(view.body) !== JSON.stringify(raw)) return fail(errorBody("forbidden", "a request that carries a secret cannot wait for the owner's approval", { recovery_hint: "Pass the secret by its vault name instead: store it with service:vault/put first." }));
     const ttl = Math.min(Math.max(Math.trunc(opts.approval?.ttl_minutes ?? DEFAULT_TTL_MINUTES) || DEFAULT_TTL_MINUTES, 1), 10_080);
     const expires = stamped.ts + ttl * 60_000;
     // The member may say more about what this request will do (an app install: the permissions it takes); the card carries it.

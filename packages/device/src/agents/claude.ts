@@ -3,6 +3,7 @@ import { childEnv, JsonProcess, type Command, type Frame } from "./process";
 import type { AgentSession, OpenOptions } from "./types";
 import { AshTools } from "./mcp";
 import { redactText } from "../redact";
+import { findRuntime } from "./detect";
 
 export class ClaudeSession implements AgentSession {
   private process: JsonProcess;
@@ -10,7 +11,7 @@ export class ClaudeSession implements AgentSession {
   private active?: { id: string; uuid: string; started: boolean; interrupted: boolean; settling?: boolean; reply: string; tools: Map<string, string>; queued: Set<string> };
   private unavailable = false;
   private readonly session: string;
-  private constructor(private options: OpenOptions, command?: Command) {
+  private constructor(private options: OpenOptions, command?: Command, program = "claude") {
     this.session = options.seed ?? randomUUID();
     if (!/^[a-f0-9-]{36}$/i.test(this.session)) throw new Error("invalid Claude session seed");
     this.tools = new AshTools(options, () => !this.unavailable && this.active?.started ? this.active.id : undefined);
@@ -21,7 +22,7 @@ export class ClaudeSession implements AgentSession {
     if (options.model) args.push("--model", options.model);
     if (options.effort) args.push("--effort", options.effort);
     if (options.system) args.push("--append-system-prompt", options.system);
-    this.process = new JsonProcess(command ?? { command: "claude", args, env: childEnv(options.env) }, options.cwd);
+    this.process = new JsonProcess(command ?? { command: program, args, env: childEnv(options.env) }, options.cwd);
     this.process.onFrame = frame => this.receive(frame);
     this.process.onExit = reason => {
       this.unavailable = true;
@@ -30,8 +31,8 @@ export class ClaudeSession implements AgentSession {
       options.onEvent({ type: "ended", reason });
     };
   }
-  static async open(options: OpenOptions, command?: Command): Promise<ClaudeSession> {
-    const session = new ClaudeSession(options, command);
+  static async open(options: OpenOptions, given?: Command): Promise<ClaudeSession> {
+    const session = new ClaudeSession(options, given, (await findRuntime("claude")) ?? "claude");
     try {
       const initialized = await session.control("initialize", { sdkMcpServers: ["ash"] });
       options.onModels?.((initialized?.models ?? []).filter((m: Frame) => typeof (m.value ?? m.id) === "string").map((m: Frame) => ({ id: m.value ?? m.id, ...(Array.isArray(m.supportedEffortLevels) ? { efforts: m.supportedEffortLevels } : {}) })));

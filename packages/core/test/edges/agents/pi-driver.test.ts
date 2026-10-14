@@ -105,7 +105,7 @@ test("a front turn: one process on the lane's session with its own token and no 
   assert.deepEqual(order, ["turn.started", "tool", "tool", "thought", "output", "turn.ended"]);
   assert.deepEqual(t.of("turn.started")[0]!.ids, ["m_hello "]);
   assert.equal(t.of("output")[0]!.text, "echo[deepseek/deepseek-flash]: hello THINK TOOL");
-  assert.deepEqual(t.of("tool").map((e) => [e.phase, e.name, e.summary, e.ok]), [["start", "bash", "在跑命令", undefined], ["end", "bash", "在跑命令", true]]);
+  assert.deepEqual(t.of("tool").map((e) => [e.phase, e.name, e.summary, e.ok]), [["start", "bash", "跑 ls", undefined], ["end", "bash", "跑 ls", true]]);
   assert.equal(t.of("turn.ended")[0]!.outcome, "completed");
   assert.match(t.prompts()[0]!.prompt, /^\[ash\] 2023-11-15 Wed 06:13:20 Asia\/Shanghai \(UTC\+08:00\) · 手机 · 对话 · lane front · say · id m_hello /);
 });
@@ -484,7 +484,7 @@ test("the catalog: the providers Ash offers with pi's own model tables, what eac
   assert.equal(by["openai-codex"]!.needs_proxy, true);
   assert.equal(by["openai-codex"]!.auth.kind, "login");
   assert.equal((by["openai-codex"]!.auth as any).state, "none");
-  assert.match((by["openai-codex"]!.auth as any).how, /human_say/);
+  assert.match((by["openai-codex"]!.auth as any).how, /apps.open_url/);
   assert.deepEqual(by.openrouter!.auth, { kind: "key", ref: "OPENROUTER_API_KEY" });
   assert.equal(by.openrouter!.models.length, 25);
   assert.equal((c.effective as any).model, "deepseek/deepseek-flash");

@@ -252,5 +252,15 @@ object BrowserCapabilities {
         if (image != null) CapResult.textAndImage(text, image, "image/jpeg", data) else CapResult.text(text, data)
     } }
 
-    val list: List<Capability> = listOf(open, read, click, type, scroll, back, screenshot, show, close, spaces, run)
+    private val clearLogins = Cap(
+        name = "x.android.browser.clear_logins",
+        description = "Forget every login and everything else Ash's own browser stored (cookies, storage), and close its spaces. Sites will ask to log in again.",
+        effect = Effect.WRITE, risk = Risk.NONE, label = "在清空浏览器登录",
+        result = result("cleared:boolean"),
+    ) { ctx, _ -> guarded {
+        val cleared = BrowserSession.clearLogins(ctx)
+        CapResult.text(if (cleared) "Ash's browser is empty now." else "Not everything could be cleared.", JSONObject().put("cleared", cleared))
+    } }
+
+    val list: List<Capability> = listOf(open, read, click, type, scroll, back, screenshot, show, close, spaces, run, clearLogins)
 }

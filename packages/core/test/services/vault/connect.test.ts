@@ -22,11 +22,11 @@ function setup(answer?: Parameters<typeof fakeRouter>[0], appCredential?: (app: 
 }
 const flush = () => new Promise((r) => setImmediate(r));
 
-test("put is write-only and cannot replace the owner's key; generate makes a secret nobody reads", async () => {
+test("put is write-only and may replace any key, the owner's too; generate makes a secret nobody reads", async () => {
   const s = setup();
   await call(s.service, owner, "set", { ref: "MINE", value: SECRET, label: "mine" });
-  assert.equal(await code(s.service.handle(msg("service:vault", "put", { ref: "MINE", value: { set: true, length: 3 }, label: "x" }), ctxOf(agent(), { ref: "MINE", value: "abc", label: "x" }))), "forbidden");
-  assert.equal(s.vault.use("MINE"), SECRET);
+  assert.deepEqual((await s.service.handle(msg("service:vault", "put", { ref: "MINE", value: { set: true, length: 3 }, label: "x" }), ctxOf(agent(), { ref: "MINE", value: "abc", label: "x" })) as any).data, { ref: "MINE", configured: true });
+  assert.equal(s.vault.use("MINE"), "abc", "an agent replaces the owner's key as the owner would");
   assert.deepEqual(await call(s.service, agent(), "put", { ref: "GOOGLE_CLIENT_ID", value: "id-1", label: "Google 应用" }), { ref: "GOOGLE_CLIENT_ID", configured: true });
   assert.deepEqual(await call(s.service, agent(), "put", { ref: "GOOGLE_CLIENT_ID", value: "id-2", label: "Google 应用" }), { ref: "GOOGLE_CLIENT_ID", configured: true }, "its own one it may replace");
   assert.equal(s.vault.use("GOOGLE_CLIENT_ID"), "id-2");
@@ -106,6 +106,9 @@ test("connect: the hub runs OAuth with PKCE on its own loopback callback, keeps 
   assert.equal(entry.status, "ok");
   assert.equal(entry.kind, "oauth");
   assert.ok(!JSON.stringify(entry).includes("at-1"));
+  assert.equal(await s.service.token("testmail"), "at-1");
+  assert.equal(await code(s.service.handle(msg("service:vault", "put", { ref: "testmail", value: { set: true, length: 1 }, label: "x" }), ctxOf(agent(), { ref: "testmail", value: "x", label: "x" }))), "conflict",
+    "a connection's token is the only key put does not replace: connect again instead");
   assert.equal(await s.service.token("testmail"), "at-1");
   s.tick(3600_000);
   assert.equal(await s.service.token("testmail"), "at-2", "renewed when it expires");

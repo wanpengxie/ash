@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { WordError } from "../../../../../sdk/src/message";
 import type { Db } from "../../../kernel/ledger";
 import type { Vault } from "../../../kernel/types";
-import { Relay, RelayError, relayUnanswered, type BrowserOpen, type RelayDevice, type RelayHttpRequest, type RelayHttpResponse, type RelayOptions, type RelayPairRequest } from "../../../../../link/src/gateway";
+import { Relay, RelayError, relayRefused, relayUnanswered, type BrowserOpen, type RelayDevice, type RelayHttpRequest, type RelayHttpResponse, type RelayOptions, type RelayPairRequest } from "../../../../../link/src/gateway";
 import type { LinkSocket } from "../../../../../link/src/socket";
 import type { Devices, PairKind, PairingGateway, RelayPermission } from "../hands/devices";
 import type { HandRegistry } from "../hands/registry";
@@ -328,6 +328,8 @@ export class GatewayControl {
       if (relayUnanswered(error)) {
         throw new WordError("unavailable", "the relay did not answer in time", { recovery_hint: "稍后重试：the connection to the relay is slow or was interrupted; try again in a moment." });
       }
+      const refused = relayRefused(error);
+      if (refused) throw new WordError("conflict", `the relay refused: ${refused.message}`, { detail: { relay_code: refused.code }, recovery_hint: "Look with service:devices/pair_status or list: the change may already be in place." });
       throw error;
     }
   }

@@ -88,11 +88,12 @@ test("install by an agent: app.json asking for more after the owner saw the card
   assert.equal(w.apps.runtime.grants.get("fixture"), null);
 });
 
-test("install by an agent with no card remembered (the hub restarted since) -> conflict; the owner installing by hand needs no card", async () => {
+test("install by an agent with no card shown (the gate did not ask) installs; the owner installing by hand needs no card either", async () => {
   const w = world();
   await w.apps.start();
-  await assert.rejects(w.apps.runtime.install("fixture", AGENT, "m_lost"), (error: { code: string; message: string }) => error.code === "conflict" && /没有经过主人的审批卡/.test(error.message));
-  assert.equal(w.apps.runtime.grants.get("fixture"), null);
+  const by_agent = await w.apps.runtime.install("fixture", AGENT, "m_no_card");
+  assert.equal(by_agent.running, true);
+  assert.ok(w.apps.runtime.grants.get("fixture"));
   const by_hand = await call(w, "service:apps", "apps.install", { id: "fixture" }, OWNER);
   assert.equal(by_hand.ok, true);
   assert.equal(w.router.cards.length, 0, "no card: doing it by hand is the approval");

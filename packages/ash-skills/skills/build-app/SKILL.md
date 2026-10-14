@@ -54,5 +54,5 @@ whenToUse: 主人想要一个长期用的小工具（记账、书单、习惯、
 1. `apps.validate` 返回 `ok: true` 且 `problems` 为空，`tools` 里有你设计的全部工具，`surfaces` 里有全部页面。
 2. 装好后，亲自 `capability_call {member: "app:<id>", word: …}` 用示例数据把每个读写工具各调一次：加一条、改一条、查出来、删掉，看结果和 `activity`。
 3. `apps.describe` 里 `cards[].problem` 为空；`widget.list` 里 `<应用 id>.<卡片 id>` 这张卡的 `problem` 为 `null`。也可以自己调 `<id>.card` 取回卡片内容交给 `widget.card.validate`，并数一数行数，对照 `widgets-design` 里 4x2 能放几行。
-4. `apps.logs` 里没有报错；页面你看不到图，所以保持页面简单，并请主人打开看一眼、说哪里不顺，再改。
+4. `apps.logs` 里没有报错；自己看一眼页面：在虚拟屏里打开应用（技能 `phone-operation`，`vscreen.*`）截屏看，哪里不顺先改；看不了再请主人看。
 5. 用一句话告诉主人：做了什么、记在哪、桌面上怎么放。

@@ -16,7 +16,7 @@ class CodexModelTest {
         val list = CodexModel.sessions(data)
         assertEquals(listOf("t1", "t2"), list.map { it.id })
         assertTrue(list[0].running); assertFalse(list[1].open)
-        assertEquals("在跑", CodexModel.stateLabel(list[0])); assertEquals("未打开", CodexModel.stateLabel(list[1]))
+        assertEquals("在跑", CodexModel.stateLabel(list[0])); assertEquals("历史", CodexModel.stateLabel(list[1]))
         assertEquals("app · 1 分钟前", CodexModel.subtitle(list[0], 61_000))
         assertEquals("", CodexModel.subtitle(list[1], 61_000))
         assertTrue(CodexModel.sessions(null).isEmpty())

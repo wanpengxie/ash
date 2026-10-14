@@ -70,6 +70,8 @@ export interface DevicesDeps {
   bodies: { isBound(hand: string): boolean };
   gateway?: PairingGateway;
   now?: () => number;
+  /** The primary agent: what a device reports reaches it as well as the owner. */
+  primaryAgent?: () => string | null | undefined;
 }
 
 const SERVICE: Caller = { member: DEVICES_ID, via: "service", local: true };
@@ -163,6 +165,9 @@ export class Devices implements Member {
           : `Codex ${title}在等你批准${input.summary ? `：${input.summary}` : ""}`;
         const key = `codex-${msg.word === "codex.turn_ended" ? "end" : "ask"}-${String(msg.id).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80)}`;
         await this.d.router.send({ to: OWNER_ID, kind: "request", word: "say", body: { text, kind: "heads_up", dedupe_key: key } }, SERVICE);
+        // Ash hears it too, with what it needs to act on it (the device and the event), not only the owner.
+        const agent = this.d.primaryAgent?.();
+        if (agent) await this.d.router.send({ to: agent, kind: "request", word: "tell", body: { text: `${text}（${msg.from}，${msg.word}：${JSON.stringify(input).slice(0, 400)}）` } }, SERVICE).catch(() => {});
         return;
       }
       default: throw new WordError("not_found", `${DEVICES_ID} has no word ${msg.word}`);
@@ -257,7 +262,7 @@ export class Devices implements Member {
     void this.d.router.send({ to: DEVICES_ID, kind: "event", word: "pair.changed", body: { pair_id: pair.pair_id, state, ...(pair.device ? { device: pair.device } : {}) } }, SERVICE).catch(() => {});
     if (pair.initiator.startsWith("agent:")) {
       const outcome: Record<PairState, string> = {
-        waiting: "is waiting for the code", requested: "has a device asking to pair; the owner decides", approved: "was approved; the device can connect now",
+        waiting: "is waiting for the code", requested: "has a device asking to join: let it in now with device_pair_approve {pair_id, lend, body, local_agents} (what the owner wants it for; skill connect-device)", approved: "was approved; the device can connect now",
         connected: "is done: the device has connected", rejected: "was rejected by the owner", expired: "ran out of time before it finished",
       };
       void this.d.router.send({ to: pair.initiator, kind: "request", word: "tell", body: { text: `Pairing ${pair.pair_id} (${name}) ${outcome[state]}. Use service:devices/pair_status to look.` } }, SERVICE).catch(() => {});

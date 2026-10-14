@@ -68,6 +68,7 @@ test("sample calls validate against the standard input and result schemas", () =
 });
 
 test("one-sided browser capabilities are x.* and not in the standard", () => {
+  assert.deepEqual([...BROWSER_EXTENSIONS], ["x.android.browser.show", "x.android.browser.run", "x.android.browser.clear_logins", "x.kimi.browser.upload", "x.kimi.browser.network", "x.ego.browser.script"]);
   const standard = new Set(BROWSER_ACTIONS.map((action) => action.name));
   for (const name of BROWSER_EXTENSIONS) {
     assert.match(name, /^x\.[a-z0-9_-]+\.browser\.[a-z_]+$/);
@@ -97,7 +98,7 @@ test("the namespaces of SPEC-02 §4.3 are all there with the actions the phone a
     health: ["sources", "read", "summary", "sync"],
     sensors: ["steps"],
     sense: ["status", "configure", "delete"],
-    config: ["status", "permission.request", "keepalive.status"],
+    config: ["status", "permission.request", "keepalive.status", "permission.revoke", "owner_said", "switch.set"],
     decision: ["surface", "screen", "return"],
   };
   assert.deepEqual(Object.keys(STANDARD_NAMESPACES), Object.keys(expected));
@@ -151,6 +152,7 @@ test("effect and risk follow the phone's CapabilityPolicy and the computer's wor
     "workspace.write": ["write", "structure"], "workspace.edit": ["write", "structure"], "workspace.bash": ["execute", "structure"],
     "workspace.poll": ["read", "none"], "workspace.signal": ["act", "structure"], "body.info": ["read", "none"],
     "config.status": ["read", "none"], "config.permission.request": ["act", "none"], "config.keepalive.status": ["read", "none"],
+    "config.permission.revoke": ["act", "none"], "config.owner_said": ["write", "none"], "config.switch.set": ["write", "none"],
   };
   for (const [name, [effect, risk]] of Object.entries(table)) {
     const item = standardAction(name);
@@ -164,7 +166,7 @@ test("effect and risk follow the phone's CapabilityPolicy and the computer's wor
 test("foreground, per-call risk and kernel-only marks", () => {
   const foreground = STANDARD_ACTIONS.filter((item) => item.foreground).map((item) => item.name).sort();
   assert.deepEqual(foreground, [
-    "apps.open", "apps.open_direct", "apps.open_url", "config.permission.request", "input.key",
+    "apps.open", "apps.open_direct", "apps.open_url", "config.permission.request", "config.permission.revoke", "input.key",
     "screen.gesture", "screen.global_action", "screen.hold", "screen.scroll", "screen.swipe", "screen.tap", "screen.touch", "screen.type", "settings.open",
   ]);
   assert.deepEqual(STANDARD_ACTIONS.filter((item) => item.per_call_risk).map((item) => item.name), ["workspace.write", "workspace.edit"]);
@@ -189,6 +191,9 @@ test("sample calls of the new namespaces validate", () => {
   assert.ok(input("sense.configure", { recording: true, geofences: [{ name: "home", lat: 1, lon: 2, radius_m: 100 }], stale_hours: { gadgetbridge: 12 } }) && !input("sense.configure", { geofences: [{ name: "x", lat: 1, lon: 2, radius_m: 5 }] }));
   assert.ok(input("sense.delete", { kind: "all" }) && !input("sense.delete", {}));
   assert.ok(input("config.permission.request", { name: "accessibility" }) && !input("config.permission.request", { name: "nope" }));
+  assert.ok(input("config.permission.revoke", { name: "accessibility" }) && !input("config.permission.revoke", {}));
+  assert.ok(input("config.owner_said", { item: "autostart" }) && input("config.owner_said", { item: "autostart", on: false }) && !input("config.owner_said", { on: true }));
+  assert.ok(input("config.switch.set", { name: "island_resident", on: true }) && !input("config.switch.set", { name: "other", on: true }) && !input("config.switch.set", { name: "notifications_read" }));
   assert.ok(input("vscreen.tap", { x: 1, y: 2 }) && !input("vscreen.tap", { x: 1 }));
   assert.ok(input("decision.return", { expected_package: "p", expected_state_epoch: 1, decision_id: "d" }));
   const result = (name: string, value: unknown) => ajv.compile(standardAction(name)!.result_schema)(value);

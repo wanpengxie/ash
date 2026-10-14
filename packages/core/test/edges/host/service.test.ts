@@ -118,13 +118,14 @@ test("env.changed/network also reaches onNetwork, with the proxy as the host gav
   assert.equal(s.sent.filter((x) => x.msg.to === "service:agents").length, 3, "the words still go out as before");
 });
 
-test("service:host restart: the answer goes first, the host is asked to restart a moment later; apps and the owner may ask, an agent may not", async () => {
+test("service:host restart: the answer goes first, the host is asked to restart a moment later; the owner, an agent and an app may all ask", async () => {
   const s = setup();
   assert.deepEqual(await s.service.member.handle(msg("restart", { reason: "the owner asked in her status" }), ctx), { data: { restarting: true } });
   assert.deepEqual(s.calls, [], "not before the answer is out");
   await new Promise((resolve) => setTimeout(resolve, 450));
   assert.deepEqual(s.calls, [["restart", "the owner asked in her status"]]);
-  assert.deepEqual(s.service.member.words().find((w) => w.word === "restart")!.callers, ["owner", "app"]);
+  assert.deepEqual(s.service.member.words().find((w) => w.word === "restart")!.callers, ["owner", "agent", "app"]);
+  assert.equal(s.service.member.words().find((w) => w.word === "restart")!.risk, "structure", "an agent's restart goes through the gate");
 });
 
 test("service:host apps.open: unpaired it goes to the hand app (one word for the agent), paired it goes to the host", async () => {

@@ -27,8 +27,8 @@ android {
         minSdk = 26
         // 35, as SPEC-05 asks. What cannot run from files/ at 35 (the payload's executables) lives in the kernel package, which stays on 28.
         targetSdk = 35
-        versionCode = 55
-        versionName = "0.4.42"
+        versionCode = 57
+        versionName = "0.4.44"
         buildConfigField("boolean", "ISOLATED_PROBE", "false")
         buildConfigField("long", "SENSE_RESCAN_MS", "21600000L")
         // Where the guide downloads the kernel package from when it is not installed (https; empty = no download offered). Set with -PashKernelApkUrl=...

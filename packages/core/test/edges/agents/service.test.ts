@@ -11,7 +11,7 @@ test("primary: exactly one; it cannot be removed or declared twice; primary.set 
   const f = fixture();
   await f.start();
   await assert.rejects(f.service("declare", decl("agent:b", { primary: true })), code("conflict"));
-  await assert.rejects(f.service("declare", decl("agent:b", { primary: true }), caller("agent:x")), code("forbidden"));
+  await assert.rejects(f.service("declare", decl("agent:b", { primary: true }), caller("agent:x")), code("conflict")); // an agent may declare the primary, but there is one already
   await f.service("declare", decl("agent:b"));
   await assert.rejects(f.service("remove", { agent: M }), code("conflict"));
   await assert.rejects(f.service("update", { agent: "agent:b", primary: true }), code("bad_request"));
@@ -384,14 +384,16 @@ test("threads: a question waiting for an answer can be listed and stopped", asyn
   assert.deepEqual((await f.service("thread.stop", { thread: "gone" }))!.data, { cancelled: false });
 });
 
-test("the primary agent can be stopped only by the owner", async () => {
+test("an agent stops an agent the way the owner does, the primary one included", async () => {
   const f = fixture();
   await f.start();
   await f.service("declare", decl("agent:b"));
-  await assert.rejects(f.service("stop", { agent: M }, caller("agent:b")), code("forbidden"));
-  assert.ok(f.registry.members.has(M));
-  await f.service("stop", { agent: "agent:b" }, caller("agent:b")); // any other agent is fine
-  await f.service("stop", { agent: M }, OWNER);
+  await f.service("declare", decl("agent:c"));
+  await f.service("stop", { agent: "agent:c" }, OWNER);
+  assert.ok(!f.registry.members.has("agent:c"));
+  await f.service("stop", { agent: "agent:b" }, caller("agent:b"));
+  assert.ok(!f.registry.members.has("agent:b"));
+  await f.service("stop", { agent: M }, caller("agent:b"));
   assert.ok(!f.registry.members.has(M));
 });
 

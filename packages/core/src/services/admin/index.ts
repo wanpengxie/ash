@@ -1,7 +1,7 @@
 /**
  * `service:admin`: switches and settings (HUB-MODULES §3).
  *
- *   pause {by?} / resume {confirmed}     owner, this machine (the router enforces `local_only`). The state is kept in `kv`
+ *   pause {by?} / resume {confirmed}     the owner or an agent. The state is kept in `kv`
  *                                        (`admin.paused`) and announced as `settings.changed {keys: ["paused"], by}`; the
  *                                        agents module listens, interrupts the running turns and opens no new ones.
  *   settings.get {keys?} / settings.set {<key>: <value>, ...}

@@ -71,7 +71,7 @@ test("the owner's words are stamped person:owner with the channel they came from
   assert.equal(far!.caller.origin!.channel, "web");
 });
 
-test("a local_only word from a remote channel is forbidden, from the local channel it passes", async (t) => {
+test("no word is local-only: the owner's word from a remote channel passes as from the local one", async (t) => {
   const hub = await startHumanHub(); t.after(() => hub.stop());
   const phone = await Channel.open(hub);
   const remote = await Channel.openRemote(hub);
@@ -80,7 +80,7 @@ test("a local_only word from a remote channel is forbidden, from the local chann
   const far = await remote.send(set);
   const near = await phone.send(set);
 
-  assert.ok(!far.ok && far.error.code === "forbidden");
+  assert.ok(far.ok);
   assert.ok(near.ok);
 });
 

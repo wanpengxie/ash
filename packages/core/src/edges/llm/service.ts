@@ -41,8 +41,7 @@ export function createLlmService(llm: Pick<Llm, "complete"> & Partial<Pick<Llm, 
         if (!llm.keys || !llm.verify) throw new WordError("unavailable", "key checks are not available");
         const only = (msg.body as { provider?: Provider } | null)?.provider;
         if (msg.word === "keys.check") {
-          const cooldown = ctx.caller.via === "human" ? {} : { maxAgeMs: KEY_CHECK_COOLDOWN_MS };
-          await Promise.all((only ? [only] : (Object.keys(KEY_REF) as Provider[])).map((p) => llm.verify!(p, cooldown)));
+          await Promise.all((only ? [only] : (Object.keys(KEY_REF) as Provider[])).map((p) => llm.verify!(p, {})));
         }
         return { data: { keys: llm.keys().filter((k) => !only || k.provider === only) } };
       }

@@ -194,7 +194,7 @@ export class WidgetsService implements Member {
     }
   }
 
-  private mayChange(card: Card, from: string): boolean { return card.owner === from || from === OWNER_ID; }
+  private mayChange(card: Card, from: string): boolean { return card.owner === from || from === OWNER_ID || isAgentId(from); }
 
   private async put(from: string, body: Record<string, any>): Promise<WordResult> {
     const id = String(body.id);

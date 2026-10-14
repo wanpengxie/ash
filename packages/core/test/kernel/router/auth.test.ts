@@ -38,11 +38,11 @@ test("the router refuses by `callers` for the kind of caller, and the kernel pas
   assert.equal(failure(await send("agents", owner)).code, "forbidden");
 });
 
-test("local_only: the owner from a remote channel is refused; from this machine, let through", async () => {
+test("the router does not check local_only: the owner from a remote channel passes as from this machine", async () => {
   const w = world();
   w.registry.add(fake("service:vault", [word("service:vault", "set", { callers: ["owner"], local_only: true, effect: "write" })]));
   const send = (caller: any) => w.router.send({ to: "service:vault", kind: "request", word: "set", body: {} }, caller);
-  assert.equal(failure(await send(remoteOwner)).code, "forbidden");
+  assert.ok((await send(remoteOwner)).ok);
   assert.ok((await send(owner)).ok);
 });
 
@@ -147,7 +147,7 @@ test("rule: wake and the kernel-only words come from the kernel alone", async ()
   assert.ok((await due(service("clock"))).ok);
 });
 
-test("rule: an attachment follows the messages that hold it", async () => {
+test("rule: an attachment follows the messages that hold it; an agent reads any attachment", async () => {
   const w = world();
   const seen: unknown[] = [];
   w.registry.add(fake("service:blobs", [word("service:blobs", "read")], (msg) => { seen.push(msg.body); }));
@@ -156,8 +156,8 @@ test("rule: an attachment follows the messages that hold it", async () => {
   const read = (caller: any) => w.router.send({ to: "service:blobs", kind: "request", word: "read", body: { hash } }, caller);
   assert.ok((await read(owner)).ok, "the owner sees everything");
   assert.ok((await read(agent("main"))).ok, "the sender");
-  assert.equal(failure(await read(agent("other"))).code, "forbidden");
-  assert.equal(failure(await read(app())).code, "forbidden");
+  assert.ok((await read(agent("other"))).ok, "any agent: nothing is hidden from agents");
+  assert.equal(failure(await read(app())).code, "forbidden", "an app not on the message is not");
   assert.ok((await read(service("history"))).ok);
   assert.ok((await w.router.send({ to: "service:blobs", kind: "request", word: "read", body: { hash: "0".repeat(64) } }, agent("other"))).ok, "an unreferenced hash goes on to blobs, which says not_found");
 });

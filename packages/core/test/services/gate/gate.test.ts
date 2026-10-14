@@ -421,7 +421,7 @@ test("restart: the open questions get their cards again, and an answer then stil
   s.svc.stop();
 });
 
-test("rules.set / revoke / mode.set: the owner does them directly, an agent is asked every time", async () => {
+test("rules.set / revoke / mode.set: the owner does them directly, an agent goes through the gate like any other word", async () => {
   const s = setup();
   const set = await s.gateCall("rules.set", { agent: "agent:main", member: DEVICE, word: "message.send", days: 3 }, owner);
   const ruleId = success(set).id;
@@ -437,7 +437,7 @@ test("rules.set / revoke / mode.set: the owner does them directly, an agent is a
   assert.equal(s.store.mode(), "auto", "nothing changed yet");
   await flush();
   const card = s.owner.cards.at(-1)!;
-  assert.deepEqual((card.msg.body as any).options.map((o: any) => o.id), ["once", "deny"], "no 「以后都可以」 for the gate's own words");
+  assert.deepEqual((card.msg.body as any).options.map((o: any) => o.id), ["once", "always", "deny"], "no word always asks: 「以后都可以」 is offered for the gate's own words too");
   card.answer({ data: { choice: "once" } }); await flush();
   assert.ok((await s.gateCall("pending.redeem", { id: success(viaAgent).pending_id })).ok);
   assert.equal(s.store.mode(), "always");
@@ -459,7 +459,7 @@ test("audit and history show what was decided", async () => {
   assert.deepEqual([history.items[0].word, history.items[0].decision], ["workspace.bash", "review"]);
 });
 
-test("attachments: only the owner and the two sides of a message can read what it holds", async () => {
+test("attachments: the owner, any agent and the two sides of a message can read what it holds", async () => {
   const s = setup();
   const reads: string[] = [];
   s.registry.add(fake("service:blobs", [word("service:blobs", "read")], (m) => { reads.push(m.from); }));
@@ -467,8 +467,8 @@ test("attachments: only the owner and the two sides of a message can read what i
   const hash = (m.body as any).text.$blob;
   const read = (caller: any) => s.router.send({ to: "service:blobs", kind: "request", word: "read", body: { hash } }, caller);
   assert.ok((await read(agent("main"))).ok);
-  assert.equal(failure(await read(agent("other"))).code, "forbidden");
-  assert.deepEqual(reads, ["agent:main"]);
+  assert.ok((await read(agent("other"))).ok, "nothing is hidden from an agent");
+  assert.deepEqual(reads, ["agent:main", "agent:other"]);
 });
 
 test("a member that has a cardDetail adds that to the card, and a cardDetail that fails does not stop the question", async () => {

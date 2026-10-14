@@ -129,7 +129,6 @@ export function startKernel({ local = true, grant = null, owner = "person:owner"
       const contract = request.to ? contractOf(request.to, request.word) : undefined;
       if (request.kind === "event") return refuse("forbidden", "the owner sends no events");
       if (!contract) return refuse("not_found", `${request.to} has no word ${request.word}`);
-      if (request.kind === "request" && contract.local_only && !kernel.local) return refuse("forbidden", `${request.word} can only be done from a channel on the hub's machine`);
       if (request.kind === "request" && !contract.callers.includes("owner")) return refuse("forbidden", `${request.word} is not for the owner`);
       if (request.kind === "request" && !validator(contract)(request.body)) return refuse("bad_request", `${request.to}/${request.word}: ${ajv.errorsText(validator(contract).errors)}`);
       if (request.client_id) {

@@ -427,12 +427,11 @@ test("pulse: get, set, note, history; set has no guidance and note has no review
   assert.deepEqual(hub.invalid, []);
 });
 
-test("pulse: only the owner switches it; off removes the timers and wakes nothing; on again brings them back", async () => {
+test("pulse: the owner or an agent switches it; off removes the timers and wakes nothing; on again brings them back", async () => {
   const hub = await startedHub();
   const timers = async () => ((await hub.send("service:clock", "list")) as any).result.data.timers.filter((t: any) => t.label.startsWith("pulse:wake:")).length;
   assert.ok((await timers()) > 20);
-  assert.equal(await refused(hub, "pulse.switch", { enabled: false }, "agent:main"), "forbidden");
-  await hub.send("service:pulse", "pulse.switch", { enabled: false }, OWNER);
+  assert.ok(((await hub.send("service:pulse", "pulse.switch", { enabled: false }, AGENT)) as any).ok, "an agent switches it as the owner would");
   assert.equal(await timers(), 0);
   await run(hub, MON(6, 30), MON(12));
   assert.equal(pulseWakes(hub).length, 1);

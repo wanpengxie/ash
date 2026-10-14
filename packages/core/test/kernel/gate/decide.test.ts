@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Message } from "../../../../sdk/src/message";
 import { createGate, GateStore } from "../../../src/kernel/gate";
+import { ALWAYS_ASK } from "../../../src/kernel/gate/decide";
 import type { GateDeps } from "../../../src/kernel/types";
 import { openLedger } from "../ledger/helpers";
 import { agent, app, BODY, DEVICE, hand, owner, remoteOwner, service, word } from "../router/world";
@@ -79,16 +80,16 @@ test("agent step 3: a payment always asks, with no 「以后都可以」", async
   assert.equal((await verdict(g, req("agent:main", DEVICE, "order.place"), byLabel)).by, "payment");
 });
 
-test("agent step 4: the words that always ask the owner, and only those", async () => {
+test("agent step 4: no word always asks; rules, devices, persona and installs are decided by the owner's mode and review like any other", async () => {
+  assert.equal(ALWAYS_ASK.size, 0);
   const g = make({ review: async () => ({ verdict: "allow" }), tier: () => "full" });
   for (const [member, w] of [["service:gate", "rules.set"], ["service:gate", "rules.revoke"], ["service:gate", "mode.set"], ["service:devices", "access_set"],
     ["service:devices", "revoke"], ["service:devices", "pair_approve"], ["service:devices", "update"], ["service:persona", "propose"], ["service:apps", "apps.install"]] as const) {
     const c = word(member, w, { effect: "write", risk: "structure" });
     const d = await verdict(g, req("agent:main", member, w), c);
-    assert.deepEqual([d.verdict, d.by, d.offer_always], ["ask", "always_ask", false], `${member}/${w}`);
+    assert.equal(d.verdict, "allow", `${member}/${w}`);
+    assert.notEqual(d.by, "always_ask", `${member}/${w}`);
   }
-  const other = word("service:devices", "rename", { effect: "write", risk: "structure" });
-  assert.notEqual((await verdict(g, req("agent:main", "service:devices", "rename"), other)).by, "always_ask");
 });
 
 test("agent step 5: no risk, declared or assessed", async () => {

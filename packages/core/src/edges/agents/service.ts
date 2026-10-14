@@ -23,7 +23,6 @@ const data = (value: unknown): WordResult => ({ data: value });
 export function createAgentsService(manager: AgentManager): Member {
   const { runs } = manager;
 
-  const isOwner = (ctx: HandleContext) => ctx.caller.via === "human";
   /** The caller's own declaration when the caller is an agent. */
   const own = (ctx: HandleContext): AgentDecl | null => (ctx.caller.via === "agent" ? runs.get(ctx.caller.member)?.spec.decl ?? null : null);
   const power = (ctx: HandleContext) => callerPower(ctx.caller, own(ctx));
@@ -55,7 +54,6 @@ export function createAgentsService(manager: AgentManager): Member {
     if (depth > MAX_DEPTH) throw new WordError("forbidden", `delegation goes at most ${MAX_DEPTH} levels deep`);
     const decl = readDecl(body, ctx.caller.member, depth);
     if (runs.get(decl.id)) throw new WordError("conflict", `${decl.id} is already declared; use update`);
-    if (decl.primary && !isOwner(ctx)) throw new WordError("forbidden", "only the owner makes an agent primary");
     if (decl.primary && runs.primary()) throw new WordError("conflict", "there is a primary agent already; use primary.set to hand it over");
     checkPower(ctx, decl);
     await checkRuntime(decl.id, decl.runtime);
@@ -94,7 +92,7 @@ export function createAgentsService(manager: AgentManager): Member {
   // -- what a runtime can use --------------------------------------------------------------------------------------
 
   const BIG_LIST = 20;
-  const KEY_HOW = (ref: string) => `No key is saved (vault ${ref}). Only the owner can save it: ask them to open 幕后 → 密钥 in the Ash app and paste it there. You cannot save it for them and it never passes through you. Read this catalog again after they say it is done.`;
+  const KEY_HOW = (ref: string) => `No key is saved (vault ${ref}). Make one in the provider's console (in the owner's Chrome, where he is signed in) and store it with service:vault/put {ref: "${ref}"}; if you cannot, ask him with service:vault/request {ref: "${ref}", replace: true}: his card opens the keys page. Read this catalog again once it is stored.`;
 
   /** The catalog of a runtime kind: the driver's own, or a plain list built from the models the runtime reports. */
   async function catalogOf(agent: string, saved: RuntimeSettings, full: boolean): Promise<RuntimeCatalog> {
@@ -287,7 +285,6 @@ export function createAgentsService(manager: AgentManager): Member {
       case "update": return update(body, ctx);
       case "start": manager.run(body.agent); manager.runs.setDesired(body.agent, "on"); await manager.startAgent(body.agent, "启动"); return data(info(manager.run(body.agent)));
       case "stop":
-        if (manager.run(body.agent).spec.decl.primary && !isOwner(ctx)) throw new WordError("forbidden", "only the owner can stop the primary agent");
         await manager.stopAgent(manager.run(body.agent).id, "stopped"); return data(info(manager.run(body.agent)));
       case "restart": manager.run(body.agent); await manager.restartAgent(body.agent); return data(info(manager.run(body.agent)));
       case "remove": return remove(body.agent);

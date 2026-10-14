@@ -54,6 +54,8 @@ export class FakeGateway {
   readonly ops: Frame[] = [];
   grantVersion = 0;
   requests: Frame[] = [];
+  /** Requests already decided, as the relay keeps them: a second decision is refused with not_pending. */
+  decided = new Map<string, string>();
   readonly tickets: string[] = [];
   /** Called with each tunnel a device is asked to take. */
   onDeviceStream: ((deviceId: string, endpoint: Endpoint, sid: string) => void) | null = null;
@@ -62,6 +64,8 @@ export class FakeGateway {
   readonly browsers = new Map<string, Endpoint>();
   owner: WebSocket | null = null;
   ownerConnections = 0;
+  /** A half-open connection: requests arrive and nothing is answered (a lossy network). */
+  mute = false;
   private readonly challenges = new Map<string, string>();
   private readonly tokens = new Set<string>();
 
@@ -155,18 +159,25 @@ export class FakeGateway {
     if (f.t === "tun") return this.onTunnel(f);
     if (f.t !== "gw") return;
     this.ops.push(f);
+    if (this.mute) return;
     const ok = (op: string, extra: Frame = {}) => ws.send(JSON.stringify({ t: "gw", op, ref: f.id, ...extra }));
     switch (f.op) {
       case "device.list": return ok("device.list.ok", { grant_version: this.grantVersion, devices: [...this.devices.values()].map((d) => ({ ...d, grant_version: this.grantVersion, created_at: 0 })) });
       case "pair.pending": return ok("pair.pending.ok", { requests: this.requests });
       case "pair.ticket": this.tickets.push(String(f.ticket_hash)); return ok("pair.ticket.ok");
-      case "pair.reject": this.requests = this.requests.filter((r) => r.request_id !== f.request_id); return ok("pair.reject.ok");
+      case "pair.reject": {
+        const status = this.decided.get(String(f.request_id));
+        if (status) return ws.send(JSON.stringify({ t: "gw", op: "error", ref: f.id, code: "not_pending", message: `request is ${status}` }));
+        this.requests = this.requests.filter((r) => r.request_id !== f.request_id);
+        this.decided.set(String(f.request_id), "rejected");
+        return ok("pair.reject.ok");
+      }
       case "pair.approve": {
+        const status = this.decided.get(String(f.request_id));
+        if (status) return ws.send(JSON.stringify({ t: "gw", op: "error", ref: f.id, code: "not_pending", message: `request is ${status}` }));
         const request = this.requests.find((r) => r.request_id === f.request_id);
         if (!request || Number(f.grant_version) <= this.grantVersion) return ws.send(JSON.stringify({ t: "gw", op: "error", ref: f.id, code: request ? "stale_grant" : "unknown_request", message: "no" }));
-        this.grantVersion = Number(f.grant_version);
-        this.devices.set(String(request.client_id), { id: String(request.client_id), name: String(request.name), permissions: f.permissions as string[], online: false, revoked: false });
-        this.requests = this.requests.filter((r) => r !== request);
+        this.approveRequest(request, f.permissions as string[], Number(f.grant_version));
         return ok("pair.approve.ok");
       }
       case "device.permissions": {
@@ -238,6 +249,19 @@ export class FakeGateway {
   }
 
   /** A new device asks to pair. */
+  /** An approval that reached the relay but whose answer the owner never got (a slow network). */
+  approveUnanswered(requestId: string, permissions: string[]): void {
+    const request = this.requests.find((r) => r.request_id === requestId)!;
+    this.approveRequest(request, permissions, this.grantVersion + 1);
+  }
+
+  private approveRequest(request: Frame, permissions: string[], grantVersion: number): void {
+    this.grantVersion = grantVersion;
+    this.devices.set(String(request.client_id), { id: String(request.client_id), name: String(request.name), permissions, online: false, revoked: false });
+    this.requests = this.requests.filter((r) => r !== request);
+    this.decided.set(String(request.request_id), "approved");
+  }
+
   pairRequest(request: { request_id: string; client_id: string; name: string; pubkey: string; ticket_hash?: string }): void {
     const frame = { ...request, fingerprint: "AAAA-BBBB-CCCC-DDDD" };
     this.requests.push(frame);

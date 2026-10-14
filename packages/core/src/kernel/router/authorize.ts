@@ -1,6 +1,6 @@
 /**
  * Step 3 of `send` (SPEC-01 §5.2). An event is allowed when the sender's own words declare it. A request first meets the
- * contract's `callers` and `local_only`, then what the caller's own declaration allows (agents), then the few
+ * contract's `callers`, then what the caller's own declaration allows (agents), then the few
  * structural rules, each of which has a test. Returns the refusal or null.
  */
 import { isAgentId, OWNER_ID } from "../../../../sdk/src/ids";
@@ -42,7 +42,6 @@ export function authorize(msg: Pick<Message, "to" | "word" | "kind" | "body">, c
   if (contract) {
     const kind = KIND[caller.via]!;
     if (!mayCall(contract.callers, kind)) return forbid(`${msg.to}/${msg.word} is not for a ${kind}`);
-    if (contract.local_only && caller.via === "human" && !caller.local) return forbid(`${msg.to}/${msg.word} can only be done from a channel on this machine`);
   }
 
   if (caller.via === "agent") {

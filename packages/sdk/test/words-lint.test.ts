@@ -82,9 +82,6 @@ test("wake, say and the kernel-only words have the callers the spec gives", () =
   assert.deepEqual([wake.effect, wake.risk], ["act", "none"]);
   assert.deepEqual(wake.callers, ["agent", "app"]);
   assert.deepEqual(wordContract("service:vault", "set")?.callers, ["owner"]);
-  assert.equal(wordContract("service:vault", "set")?.local_only, true);
-  assert.equal(wordContract("service:admin", "resume")?.local_only, true);
-  assert.equal(wordContract("service:admin", "logs")?.local_only, true);
   assert.deepEqual(wordContract("service:devices", "pair_code")?.callers, ["owner", "agent"], "agent first: the agent can hand the owner the pairing address");
   assert.deepEqual(wordContract("service:pulse", "pulse.due")?.callers, ["kernel"]);
   assert.deepEqual(wordContract("service:cost", "quota.check")?.callers, ["kernel"]);
@@ -101,8 +98,6 @@ test("secrets and masks sit where SPEC-01 §10.0 says", () => {
   const set = wordContract("service:vault", "set")!;
   assert.equal(set.input_schema.properties.value["x-ash-secret"], true);
   assert.ok(!JSON.stringify(set.result_schema).includes("x-ash-secret"));
-  assert.ok(JSON.stringify(wordContract("service:devices", "list")!.result_schema).includes('"x-ash-sensitive":{"mask":"ip"}'));
-  assert.ok(JSON.stringify(wordContract("service:link", "gateway.status")!.result_schema).includes('"mask":"email"'));
   for (const word of wordsOf("service:vault")) assert.ok(!/value/.test(JSON.stringify(word.result_schema ?? {})) || word.word === "set" || word.word === "token", word.word);
   // token hands a value to an app only: an app's read is never recorded.
   const token = wordContract("service:vault", "token")!;
@@ -216,15 +211,12 @@ test("the kernel passes the first layer for every word; ['kernel'] is for the ke
   }
 });
 
-test("pause is the owner's from this machine, like resume (the kernel's reflex may call it anyway)", () => {
+test("pause and resume: the owner's and an agent's alike (the kernel's reflex may call pause too)", () => {
   const pause = wordContract("service:admin", "pause")!;
   const resume = wordContract("service:admin", "resume")!;
-  assert.deepEqual(pause.callers, ["owner"]);
+  assert.deepEqual(pause.callers, ["owner", "agent"]);
   assert.deepEqual(pause.callers, resume.callers);
   assert.equal(mayCall(pause.callers, "kernel"), true);
-  assert.equal(pause.local_only, true);
-  assert.equal(resume.local_only, true);
-  assert.equal(mayCall(pause.callers, "agent"), false);
 });
 
 test("pulse has no guidance field any more", () => {
@@ -282,4 +274,13 @@ test("the host events and the usage event take the shapes their producers have",
   assert.ok(usage({ caller: "service:gate", provider: "deepseek", model: "m", input_tokens: 1, output_tokens: 2, ok: true, at: 5 }));
   assert.ok(usage({ caller: "agent:x", provider: "openrouter", model: "m", input_tokens: 1, output_tokens: 2, cost: 0.01, ok: false, at: 5 }));
   assert.ok(usage({ caller: "a", provider: "other", model: "m", input_tokens: 1, output_tokens: 2, ok: true, at: 5 }) && !usage({ caller: "a", provider: "", model: "m", input_tokens: 1, output_tokens: 2, ok: true, at: 5 }) && !usage({ caller: "a", provider: "deepseek", model: "m", ok: true, at: 5 }));
+});
+
+test("the one checkpoint is the narrow waist: what the owner can call, an agent can too; nothing is local-only or masked from it", () => {
+  // The only words an agent may not call: the owner's own voice (what he says, taps, answers) and his typing a secret's value.
+  const OWNERS_OWN = new Set(["agent:*/say", "service:widgets/widget.tap", "service:vault/set"]);
+  const shut = ALL.filter((w) => w.callers.includes("owner") && !w.callers.includes("agent")).map((w) => `${w.member}/${w.word}`);
+  assert.deepEqual(shut.filter((k) => !OWNERS_OWN.has(k)), [], "an owner-only word: open it to agents (approval happens at the gate, not here)");
+  assert.deepEqual(ALL.filter((w) => w.local_only).map((w) => `${w.member}/${w.word}`), [], "no word is local-only");
+  assert.deepEqual(ALL.filter((w) => JSON.stringify(w.result_schema ?? {}).includes("x-ash-sensitive")).map((w) => `${w.member}/${w.word}`), [], "no result is masked from an agent; only secret values are kept from it");
 });

@@ -343,13 +343,11 @@ export class PulseService implements Member {
   }
 
   private async switchTo(msg: Message, ctx: HandleContext, body: Record<string, unknown>) {
-    // The router already refuses anyone but the local owner; the member does not trust that alone.
-    if (ctx.caller.via !== "human" && msg.from !== "person:owner") throw new WordError("forbidden", "only the owner switches the pulse");
     if (typeof body.enabled !== "boolean") bad("enabled must be true or false");
     const enabled = body.enabled === true;
     if (enabled !== this.state.enabled) {
       this.state.enabled = enabled; this.save();
-      this.record("switch", { enabled, by: "owner" });
+      this.record("switch", { enabled, by: msg.from === "person:owner" ? "owner" : msg.from });
       await this.serial(async () => {
         if (this.state.active) { if (enabled) await this.seedGuidance(); await this.reconcile(); }
       });

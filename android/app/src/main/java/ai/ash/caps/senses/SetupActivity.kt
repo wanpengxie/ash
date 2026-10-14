@@ -1,5 +1,7 @@
 package ai.ash.caps.senses
 
+import ai.ash.ui.HumanPort
+import ai.ash.link.Link
 import ai.ash.caps.senses.health.GadgetbridgeSource
 import ai.ash.caps.senses.health.HealthConnectSource
 import ai.ash.caps.senses.health.XiaomiScale
@@ -137,6 +139,8 @@ class SetupActivity : Activity() {
             },
         )
         setContentView(build())
+        // Ash opened this to set up the scale: the address is filled in, the owner types the key.
+        intent.getStringExtra(EXTRA_SCALE_MAC)?.let { mac -> intent.removeExtra(EXTRA_SCALE_MAC); addScale(mac) }
     }
 
     private fun build(): View {
@@ -196,11 +200,11 @@ class SetupActivity : Activity() {
     }
 
     /** The scale's address and key, typed (or pasted) by the owner; checked before anything is saved. */
-    private fun addScale() {
+    private fun addScale(prefill: String? = null) {
         val density = resources.displayMetrics.density
         // No suggestions: the keyboard must not learn the key.
         val plain = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        val mac = EditText(this).apply { hint = "如 A4:C1:38:12:34:56"; isSingleLine = true; inputType = plain }
+        val mac = EditText(this).apply { hint = "如 A4:C1:38:12:34:56"; isSingleLine = true; inputType = plain; prefill?.let { setText(it) } }
         val key = EditText(this).apply { hint = "32 位，0-9 和 a-f"; isSingleLine = true; inputType = plain }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; val p = (20 * density).toInt(); setPadding(p, (8 * density).toInt(), p, 0)
@@ -239,7 +243,7 @@ class SetupActivity : Activity() {
     private fun removeScale() {
         AlertDialog.Builder(this).setTitle("移除体重秤？").setMessage("停止收听，删除本机保存的地址和密钥；已有的称重记录保留。")
             .setPositiveButton("移除") { _, _ ->
-                Thread { XiaomiScaleSource.remove(this); runOnUiThread { refresh() } }.start()
+                HumanPort(Link.get(this).chat).also { it.start() }.call(Link.get(this).deviceId, "x.android.health.scale.remove") { _, _ -> runOnUiThread { refresh() } }
             }.setNegativeButton("取消", null).show()
     }
 
@@ -254,6 +258,7 @@ class SetupActivity : Activity() {
     private fun appDetails() = startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
 
     companion object {
+        const val EXTRA_SCALE_MAC = "ai.ash.extra.SCALE_MAC"
         private const val SCALE = "小米体重秤"
         private const val REQ_PERMS = 1
         private const val REQ_HEALTH = 2

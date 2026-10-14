@@ -270,21 +270,21 @@ test("a timer an app set is sent as the app: only what it was granted, and no wo
   assert.equal(h.logs.filter((l) => /answered (denied|forbidden)/.test(l)).length, 1);
 });
 
-test("cancel: one's own timer, any timer for the owner, someone else's is forbidden", async () => {
+test("cancel: one's own timer; the owner and any agent cancel any timer; a service or an app may not cancel someone else's", async () => {
   const h = hub();
   const mine = success(await h.setTimerAs(agent("main"), "service:quiet", "tick", "mine")).id;
   const other = success(await h.setTimerAs(agent("main"), "service:quiet", "tick", "other")).id;
+  const third = success(await h.setTimerAs(agent("main"), "service:quiet", "tick", "third")).id;
   const cancel = (id: string, caller: Caller) => h.router.send({ to: CLOCK_ID, kind: "request", word: "cancel", body: { id } }, caller);
-  assert.equal(failure(await cancel(mine, agent("helper"))).code, "forbidden");
   assert.equal(failure(await cancel(mine, service("semantic"))).code, "forbidden");
   assert.equal(failure(await cancel(mine, app())).code, "forbidden");
-  assert.equal(success(await h.router.send({ to: CLOCK_ID, kind: "request", word: "list", body: {} }, agent("helper"))).timers.length, 0, "an agent lists only its own");
   assert.deepEqual(success(await cancel(mine, agent("main"))), { cancelled: true });
   assert.deepEqual(success(await cancel(other, owner)), { cancelled: true });
-  assert.deepEqual(success(await cancel(other, agent("helper"))), { cancelled: false }, "gone: nothing to forbid");
+  assert.deepEqual(success(await cancel(third, agent("helper"))), { cancelled: true }, "another agent cancels it as the owner would");
+  assert.deepEqual(success(await cancel(other, agent("helper"))), { cancelled: false }, "gone: nothing to cancel");
 });
 
-test("list: an agent or an app sees only its own timers; the owner and a service see all", async () => {
+test("list: an app sees only its own timers; the owner, an agent and a service see all", async () => {
   const h = hub({ appGranted: (id, to) => id === "app:todo" && to === CLOCK_ID });
   await h.setTimerAs(agent("main"), "service:quiet", "tick", "a-main");
   await h.setTimerAs(agent("helper"), "service:quiet", "tick", "a-helper");
@@ -292,8 +292,8 @@ test("list: an agent or an app sees only its own timers; the owner and a service
   await h.setTimerAs(owner, "service:quiet", "tick", "o");
   const labels = async (caller: Caller) =>
     success(await h.router.send({ to: CLOCK_ID, kind: "request", word: "list", body: {} }, caller)).timers.map((t: any) => t.label).sort();
-  assert.deepEqual(await labels(agent("main")), ["a-main"]);
-  assert.deepEqual(await labels(agent("helper")), ["a-helper"]);
+  assert.deepEqual(await labels(agent("main")), ["a-helper", "a-main", "o", "s"]);
+  assert.deepEqual(await labels(agent("helper")), ["a-helper", "a-main", "o", "s"]);
   assert.deepEqual(await labels(app()), []);
   assert.deepEqual(await labels(owner), ["a-helper", "a-main", "o", "s"]);
   assert.deepEqual(await labels(service("other")), ["a-helper", "a-main", "o", "s"]);
@@ -634,7 +634,8 @@ test("a one-time timer cancelled while its send is in flight is not brought back
   const rows = () => (svc as any).rows().length;
   svc.check();
   assert.equal(rows(), 0, "the row is gone while the send waits");
-  await assert.rejects(svc.handle(msg("cancel", { id: data.id }, "request", "agent:other"), as("agent:other")), (e: any) => e.code === "forbidden", "someone else still may not cancel it");
+  const anApp: HandleContext = { ...ctx, caller: { member: "app:other", via: "app", local: false } };
+  await assert.rejects(svc.handle(msg("cancel", { id: data.id }, "request", "app:other"), anApp), (e: any) => e.code === "forbidden", "an app that did not set it still may not cancel it");
   const cancelled = await svc.handle(msg("cancel", { id: data.id }), as("agent:main")) as { data: { cancelled: boolean; inflight?: boolean } };
   assert.equal(cancelled.data.cancelled, true, "found in flight");
   assert.equal(cancelled.data.inflight, true, "and says so: the send is out and is not taken back");

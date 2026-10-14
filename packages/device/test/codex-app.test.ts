@@ -18,7 +18,7 @@ async function fixture(t: { after(fn: () => unknown): void }, over: F = {}) {
   const events: [string, F][] = [];
   const changes: boolean[] = [];
   const listed: Listed[] = over.listed ?? [{ id: "t1", title: "Fix the build", cwd: "/work/app", updated_at: 2000 }, { id: "t2", title: "Old idea", updated_at: 1000 }];
-  const app = new CodexApp({ socketPath: desktop.path, reconnectMs: 30, ownerWaitMs: 200, listThreads: async () => listed, readThread: over.readThread ?? (async () => null), onChange: () => changes.push(app.online), onEvent: (w, b) => events.push([w, b]) });
+  const app = new CodexApp({ socketPath: desktop.path, reconnectMs: 30, ownerWaitMs: 200, openWaitMs: 1500, openThread: over.openThread ?? (async () => {}), listThreads: async () => listed, readThread: over.readThread ?? (async () => null), onChange: () => changes.push(app.online), onEvent: (w, b) => events.push([w, b]) });
   app.start();
   t.after(async () => { await app.close(); await desktop.stop().catch(() => {}); });
   await until(() => app.online, "joining the app");
@@ -71,11 +71,29 @@ test("one session: the last turns with what was said and run (long texts cut), a
   assert.equal(canonicalTurns(desktop.state.get("t1")!.raw).length, 2);
 });
 
-test("a session the app does not have open is read from the runtime, and cannot be messaged", async (t) => {
-  const { app } = await fixture(t, { readThread: async (id: string) => id === "t2" ? { id, name: "Old idea", turns: [turn("u1", "completed", [{ type: "agentMessage", text: "saved" }])] } : null });
-  const saved = await app.session("t2");
+test("a past session is read from the runtime; sending to it has the app open it first", async (t) => {
+  const asked: string[] = [];
+  let desktop!: Desktop;
+  const fx = await fixture(t, {
+    readThread: async (id: string) => id === "t2" ? { id, name: "Old idea", turns: [turn("u1", "completed", [{ type: "agentMessage", text: "saved" }])] } : null,
+    // The app takes the session up when its link is opened.
+    openThread: async (id: string) => { asked.push(id); desktop.state.set(id, { revision: 1, raw: snapshot({ id, name: "Old idea" }) }); },
+  });
+  desktop = fx.desktop;
+  const saved = await fx.app.session("t2");
   assert.deepEqual([saved.open, saved.state, saved.turns[0].items[0].text], [false, "idle", "saved"]);
-  await assert.rejects(app.session("nope"), code("not_found"));
+  await assert.rejects(fx.app.session("nope"), code("not_found"));
+  await assert.rejects(fx.app.send("nope", "hi"), code("not_found"), "no such session: nothing is opened");
+  assert.deepEqual(asked, []);
+  const sent = await fx.app.send("t2", "carry on", "m-9");
+  assert.deepEqual([sent.sent, sent.mode, asked], [true, "start", ["t2"]]);
+  const opened = await fx.app.open("t2");
+  assert.deepEqual([opened.opened, opened.already, asked.length], [true, true, 1], "already open: not asked again");
+});
+
+test("a past session the app does not take up (the computer locked) is unavailable, not lost", async (t) => {
+  const { app } = await fixture(t, { readThread: async (id: string) => ({ id, turns: [] }) });
+  await assert.rejects(app.open("t2"), code("unavailable"));
   await assert.rejects(app.send("t2", "hi"), code("unavailable"));
 });
 
@@ -228,7 +246,7 @@ test("the capabilities are valid, extensions, need no approval card, and are off
     assert.ok(isExtensionName(cap.name), cap.name);
     assert.equal(cap.risk, "none", `${cap.name}: remote control of the owner's own app asks nothing`);
   }
-  assert.deepEqual(CODEX_CAPABILITIES.map((c) => [c.name, c.effect]), [["x.codex.sessions", "read"], ["x.codex.session", "read"], ["x.codex.approvals", "read"], ["x.codex.send", "act"], ["x.codex.stop", "act"], ["x.codex.approve", "act"]]);
+  assert.deepEqual(CODEX_CAPABILITIES.map((c) => [c.name, c.effect]), [["x.codex.sessions", "read"], ["x.codex.session", "read"], ["x.codex.approvals", "read"], ["x.codex.open", "act"], ["x.codex.send", "act"], ["x.codex.stop", "act"], ["x.codex.approve", "act"]]);
 
   const { app, desktop } = await fixture(t);
   const hand = createHand({ workspace: {} as any, codex: app });

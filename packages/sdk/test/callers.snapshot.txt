@@ -1,15 +1,15 @@
 # Who may call each word (the `callers` of its contract), one line per word: member/word  callers  [flags].
 # Words that say nothing get the default (owner, agent, app); they are listed too so a review sees what a new word got.
 # `*` marks a line that is not the default. Change it on purpose: UPDATE_SNAPSHOT=1 node --import tsx --test packages/sdk/test/callers.test.ts
-* service:admin/pause  owner  local_only
-* service:admin/resume  owner  local_only
+* service:admin/pause  owner,agent
+* service:admin/resume  owner,agent
   service:admin/settings.get  owner,agent,app
   service:admin/settings.set  owner,agent,app
   service:admin/model.set  owner,agent,app
   service:admin/plugins.list  owner,agent,app
   service:admin/plugins.op  owner,agent,app
   service:admin/status  owner,agent,app
-* service:admin/logs  owner  local_only
+* service:admin/logs  owner,agent
 * service:admin/checkup.changed  kernel  event-in
   service:admin/checkup  owner,agent,app
 * service:admin/settings.changed  kernel  event-out
@@ -29,16 +29,16 @@
 * service:gate/lease.request  agent
 * service:gate/lease.status  agent
 * service:gate/lease.release  agent
-* service:gate/lease.revoke  owner
-* service:gate/lease.list  owner
+* service:gate/lease.revoke  owner,agent
+* service:gate/lease.list  owner,agent
 * service:gate/lease.state  kernel  event-out
 * service:vault/list  owner,agent
 * service:vault/describe  owner,agent
-* service:vault/set  owner  local_only
+* service:vault/set  owner
 * service:vault/put  agent
 * service:vault/generate  owner,agent
 * service:vault/request  agent
-* service:vault/delete  owner  local_only
+* service:vault/delete  owner,agent
 * service:vault/connect  owner,agent
 * service:vault/provider  owner,agent
 * service:vault/token  app
@@ -52,7 +52,7 @@
   service:devices/pair_approve  owner,agent,app
   service:devices/pair_reject  owner,agent,app
   service:devices/revoke  owner,agent,app
-* service:devices/restore  owner
+* service:devices/restore  owner,agent
   service:devices/rename  owner,agent,app
   service:devices/access_set  owner,agent,app
   service:devices/update  owner,agent,app
@@ -92,8 +92,8 @@
 * agent:*/agent.tool  kernel  event-out
   service:agents/list  owner,agent,app
   service:agents/runtimes  owner,agent,app
-* service:agents/threads  owner
-* service:agents/thread.stop  owner
+* service:agents/threads  owner,agent
+* service:agents/thread.stop  owner,agent
   service:agents/describe  owner,agent,app
   service:agents/ask  owner,agent,app
   service:agents/tell  owner,agent,app
@@ -105,7 +105,7 @@
   service:agents/stop  owner,agent,app
   service:agents/restart  owner,agent,app
   service:agents/remove  owner,agent,app
-* service:agents/primary.set  owner
+* service:agents/primary.set  owner,agent
   service:agents/spawn  owner,agent,app
   service:agents/session.get  owner,agent,app
   service:agents/session.set  owner,agent,app
@@ -131,14 +131,14 @@
 * service:llm/keys.check  owner,agent
   service:persona/get  owner,agent,app
 * service:persona/propose  owner,agent
-* service:cost/usage.get  owner,app
-* service:cost/balance.get  owner
+  service:cost/usage.get  owner,agent,app
+  service:cost/balance.get  owner,agent,app
 * service:cost/quota.check  kernel
 * service:cost/usage.recorded  kernel  event-in
 * service:reflex/conversation.control  kernel
 * service:reflex/task.outcome  kernel
-* service:reflex/task.stop  owner
-* service:reflex/task.end  owner
+* service:reflex/task.stop  owner,agent
+* service:reflex/task.end  owner,agent
   service:senses/query  owner,agent,app
   service:senses/daily  owner,agent,app
   service:senses/now  owner,agent,app
@@ -157,11 +157,11 @@
   service:history/read  owner,agent,app
   service:history/turn  owner,agent,app
   service:history/activity  owner,agent,app
-* service:history/window  owner
-* service:history/current  owner
-* service:history/activity.page  owner
-* service:history/activity.count  owner,app
-* service:history/confirm  owner
+* service:history/window  owner,agent
+* service:history/current  owner,agent
+* service:history/activity.page  owner,agent
+  service:history/activity.count  owner,agent,app
+* service:history/confirm  owner,agent
   service:blobs/read  owner,agent,app
   service:blobs/get  owner,agent,app
 * service:host/wake.at  kernel
@@ -171,9 +171,9 @@
 * service:host/wake.fired  kernel  event-out
 * service:host/vscreen.state  kernel  event-out
 * service:host/env.changed  kernel  event-out
-* service:host/restart  owner,app
+  service:host/restart  owner,agent,app
 * service:host/hands.handoff  kernel
-* service:host/update.install  owner
+* service:host/update.install  owner,agent
 * app:*/ash.on_event  kernel
   service:widgets/widget.list  owner,agent,app
   service:widgets/widget.card.put  owner,agent,app
@@ -198,7 +198,7 @@
   service:pulse/pulse.history  owner,agent,app
   service:pulse/pulse.note  owner,agent,app
   service:pulse/pulse.fire  owner,agent,app
-* service:pulse/pulse.switch  owner
+* service:pulse/pulse.switch  owner,agent
 * service:pulse/pulse.due  kernel
   service:apps/apps.list  owner,agent,app
   service:apps/apps.describe  owner,agent,app
@@ -297,6 +297,9 @@
   device:*/config.status  owner,agent,app
   device:*/config.permission.request  owner,agent,app
   device:*/config.keepalive.status  owner,agent,app
+  device:*/config.permission.revoke  owner,agent,app
+  device:*/config.owner_said  owner,agent,app
+  device:*/config.switch.set  owner,agent,app
 * device:*/decision.surface  kernel
 * device:*/decision.screen  kernel
 * device:*/decision.return  kernel

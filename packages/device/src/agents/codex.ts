@@ -3,6 +3,7 @@ import { childEnv, JsonProcess, type Command, type Frame } from "./process";
 import { checkTools, type AgentSession, type OpenOptions } from "./types";
 import { AshTools } from "./mcp";
 import { redactText } from "../redact";
+import { findRuntime } from "./detect";
 
 const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
 
@@ -31,7 +32,8 @@ export class CodexSession implements AgentSession {
     };
   }
 
-  static async open(options: OpenOptions, command: Command = { command: "codex", args: ["app-server", "--stdio"], env: childEnv(options.env) }): Promise<CodexSession> {
+  static async open(options: OpenOptions, given?: Command): Promise<CodexSession> {
+    const command = given ?? { command: (await findRuntime("codex")) ?? "codex", args: ["app-server", "--stdio"], env: childEnv(options.env) };
     const session = new CodexSession(options, command);
     try {
       await session.process.request("initialize", { clientInfo: { name: "ash", version: "0.1.0" }, capabilities: { experimentalApi: true } });

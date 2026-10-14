@@ -79,7 +79,7 @@ const realTimer = (fn: () => void, ms: number): (() => void) => {
 };
 
 /** The owner and the hub's services see every timer; an agent or an app only its own. */
-const seesAll = (caller: Caller): boolean => caller.member === OWNER_ID || caller.via === "service";
+const seesAll = (caller: Caller): boolean => caller.member === OWNER_ID || caller.via === "service" || caller.via === "agent";
 
 /** The clock's own identity: only for its own calls to the host. */
 const SELF: Caller = { member: CLOCK_ID, via: "service", local: true };
@@ -166,8 +166,8 @@ export class ClockService implements Member {
     const row = this.db.prepare("SELECT created_by FROM timers WHERE id=?").get(body.id as string) as { created_by: string } | undefined;
     const inflight = row ? undefined : this.sending.get(body.id as string);
     const by = row?.created_by ?? inflight?.by;
-    if (by !== undefined && by !== caller.member && caller.member !== OWNER_ID) {
-      throw new WordError("forbidden", "this timer was set by someone else; only its owner or the person:owner can cancel it");
+    if (by !== undefined && by !== caller.member && caller.member !== OWNER_ID && caller.via !== "agent") {
+      throw new WordError("forbidden", "this timer was set by someone else; only its owner, an agent or the person:owner can cancel it");
     }
     // A one-time timer being sent right now has no row, and the send is already out: it is not taken back and arrives if it
     // succeeds. Cancelling only means it is not put back for another try if the send is refused; `inflight` tells the asker so.

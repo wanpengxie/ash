@@ -54,6 +54,8 @@ object Link {
         @Volatile private var endpoint: Endpoint? = null
         @Volatile private var lastManifest = ""
         private val identity = HandIdentity(KeystoreKeyBackend())
+        /** This phone as the hub knows it: pages change the phone's state through the hub with it, like Ash does. */
+        val deviceId: String get() = "device:${identity.handId}"
         private val refresher = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "ash-link-manifest").apply { isDaemon = true } }
         private val calls = DeviceCalls(ctx)
         private val debugLink = DebugLocalLink(

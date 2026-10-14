@@ -221,7 +221,7 @@ export const BROWSER_ACTION_NAMES: readonly string[] = Object.freeze(BROWSER_ACT
 
 /** Non-standard browser capabilities that exist today; they stay out of the standard because only one kind of hand can do them. */
 export const BROWSER_EXTENSIONS: readonly string[] = Object.freeze([
-  "x.android.browser.show", "x.android.browser.run", "x.kimi.browser.upload", "x.kimi.browser.network", "x.ego.browser.script",
+  "x.android.browser.show", "x.android.browser.run", "x.android.browser.clear_logins", "x.kimi.browser.upload", "x.kimi.browser.network", "x.ego.browser.script",
 ]);
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -590,6 +590,15 @@ const CONFIG_ACTIONS: readonly StandardAction[] = [
     loose({ requested: bool() }), "act", "none", { foreground: true, errors: ["bad_request"] }),
   action("config.keepalive.status", "在看保活状态", "The vendor's auto-start and background-limit switches for Ash's apps, and whether each is on.",
     object({}), loose({ supported: bool(), items: list(configItem()) }, ["items"]), "read", "none"),
+  action("config.permission.revoke", "在收回权限", "Give one permission or switch back: the system page where it is turned off, or the app turns it off itself.",
+    object({ name: choice(CONFIG_PERMISSIONS, "Which permission or switch.") }, ["name"]),
+    loose({ requested: bool() }), "act", "none", { foreground: true, errors: ["bad_request"] }),
+  action("config.owner_said", "在记下你说已开", "Record that the owner says a switch the app cannot read is on (the maker's auto-start, the locked recents card); on: false takes it back.",
+    object({ item: str("The item of config.keepalive.status."), on: bool("false takes it back (default true).") }, ["item"]),
+    loose({ item: str(), on: bool() }), "write", "none", { errors: ["bad_request"] }),
+  action("config.switch.set", "在改App开关", "Turn one of the app's own switches on or off: notifications_read (read new notifications as a sense), island_resident (the always-on island entry).",
+    object({ name: choice(["notifications_read", "island_resident"], "Which switch."), on: bool("On or off.") }, ["name", "on"]),
+    loose({ name: str(), on: bool() }), "write", "none", { errors: ["bad_request", "failed"] }),
 ];
 
 // ---- decision: the hub's reflex asks the hand; never for agents (callers: kernel) -----------------------------------------

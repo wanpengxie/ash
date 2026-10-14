@@ -10,6 +10,8 @@ import ai.ash.caps.prop
 import ai.ash.caps.schema
 import ai.ash.caps.senses.health.GadgetbridgeSource
 import ai.ash.caps.senses.health.HealthHub
+import ai.ash.caps.senses.health.XiaomiScale
+import ai.ash.caps.senses.health.XiaomiScaleSource
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
@@ -35,7 +37,32 @@ object SenseCapabilities {
 
     private fun now() = System.currentTimeMillis()
 
-    val list: List<Capability> = listOf(
+    private val scaleSetup = Cap(
+        name = "x.android.health.scale.setup",
+        description = "Set up the Xiaomi scale (S200, weight only): opens its setup on the phone with the Bluetooth address filled in, where the " +
+            "owner types the scale's key (a secret: it goes straight into the phone's encrypted store). Check health status afterwards.",
+        schema = schema("mac" to prop("string", "The scale's Bluetooth address, like A4:C1:38:12:34:56.", required = true)),
+        effect = Effect.ACT, risk = Risk.NONE, label = "在设置体重秤", foreground = true,
+        result = result("opened:boolean"),
+    ) { ctx, args ->
+        val mac = XiaomiScale.normalizeMac(args.optString("mac")) ?: return@Cap CapResult.error("bad_request", "mac must be 12 hex digits, like A4:C1:38:12:34:56")
+        ai.ash.host.BackgroundLaunch.start(ctx, android.content.Intent(ctx, SetupActivity::class.java).putExtra(SetupActivity.EXTRA_SCALE_MAC, mac),
+            "设置体重秤", "点一下，填体重秤的密钥")
+        CapResult.text("The scale setup is in front of the owner with $mac filled in.", JSONObject().put("opened", true))
+    }
+
+    private val scaleRemove = Cap(
+        name = "x.android.health.scale.remove",
+        description = "Remove the Xiaomi scale: stop listening for it and delete its saved address and key. Weighings already recorded stay.",
+        effect = Effect.WRITE, risk = Risk.NONE, label = "在移除体重秤",
+        result = result("removed:boolean"),
+    ) { ctx, _ ->
+        val had = XiaomiScaleSource.configured(ctx)
+        if (had) XiaomiScaleSource.remove(ctx)
+        CapResult.text(if (had) "The scale is removed." else "No scale was set up.", JSONObject().put("removed", had))
+    }
+
+    val list: List<Capability> = listOf(scaleSetup, scaleRemove, 
         Cap("location.get", "The phone's location now: the fused, GPS and network providers are asked together and the first fix good enough for the accuracy wins (a fix from the last 2 minutes may answer at once). The result says which provider answered, its accuracy, the fix's age, whether the accuracy asked for was met, and why other providers gave nothing (e.g. GPS switched off by the system). Nothing is stored. Errors: forbidden (no location permission), unavailable (location off, or no fix; the message gives each provider's reason).",
             schema(
                 "accuracy" to prop("string", "high (GPS), balanced (default) or low (network)", enum = SenseConfig.ACCURACIES),
