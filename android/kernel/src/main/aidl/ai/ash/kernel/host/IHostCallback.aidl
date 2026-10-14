@@ -5,4 +5,6 @@ package ai.ash.kernel.host;
 interface IHostCallback {
     oneway void wakeFired(long atMs);
     oneway void shutdown(String reason);
+    // The owner paused or resumed the context probe on the kernel page.
+    oneway void setProbe(boolean on);
 }

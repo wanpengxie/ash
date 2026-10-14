@@ -35,6 +35,8 @@ open class StatusActivity : Activity() {
     private lateinit var hostState: TextView
     private lateinit var pairingState: TextView
     private lateinit var runMode: TextView
+    private lateinit var probeState: TextView
+    private lateinit var probeToggle: Button
     private lateinit var progress: TextView
     private lateinit var code: EditText
     private lateinit var submit: Button
@@ -61,6 +63,12 @@ open class StatusActivity : Activity() {
         root.addView(pairingState)
         runMode = text("", 16f).also { it.setPadding(0, dp(8), 0, 0) }
         root.addView(runMode)
+        probeState = text("", 15f).also { it.setPadding(0, dp(8), 0, 0) }
+        root.addView(probeState)
+        probeToggle = Button(this).apply {
+            setOnClickListener { HostPresence.setProbe(HostPresence.probe.contains("已暂停")) }
+        }
+        root.addView(probeToggle)
         root.addView(text("打开系统配对框后，下拉通知点「输入配对码」。系统分屏时也可以在这里输入。", 15f)
             .also { it.setPadding(0, dp(24), 0, dp(8)) })
         notice = text("", 15f)
@@ -144,6 +152,10 @@ open class StatusActivity : Activity() {
             else -> "未配对"
         }
         runMode.text = "运行模式：" + if (host) "调试权限（shell）" else "普通应用权限"
+        probeState.text = if (!host) "上下文探针：没在记录（宿主未连接，重新连接后自动启动）"
+            else HostPresence.probe.ifEmpty { "上下文探针：正在启动" }
+        probeToggle.visibility = if (host && HostPresence.probe.isNotEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        probeToggle.text = if (HostPresence.probe.contains("已暂停")) "继续记录" else "暂停记录"
         if (host && HostPresence.coreReady && !pairing) {
             progress.text = "宿主已连接，中枢已就绪。可以关闭无线调试"
             if (p.stage == PairingStage.READY && lastStage != PairingStage.READY) code.text.clear()
