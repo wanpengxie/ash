@@ -60,7 +60,7 @@ test("the names the spec lists are all there, once each, and TOOL_NAMES is the w
 test("device_* tools are made from the words of service:devices an agent may call, and only those", () => {
   const names = TOOL_NAMES.filter((n) => n.startsWith("device_"));
   assert.ok(names.includes("device_pair_start") && names.includes("device_access_set") && names.includes("device_list"));
-  assert.equal(names.includes("device_pair_code"), false, "pair_code is for the owner only");
+  assert.equal(names.includes("device_pair_code"), true, "an agent reads the code of a pairing it started");
   assert.equal(names.includes("device_restore"), false, "restore is for the owner only");
 });
 

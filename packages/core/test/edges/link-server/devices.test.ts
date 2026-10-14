@@ -163,11 +163,12 @@ test("update has the computer's x.ash.update run, asked by this service", async 
   assert.equal(await refused("update", body), "offline");
 });
 
-test("pairing: the code is never in a result; requested, approved, then connected when the computer arrives", async (t) => {
+test("pairing: whoever starts it gets the code and the address; requested, approved, then connected when the computer arrives", async (t) => {
   const { hub, devices, call, refused, gateway } = await setup(t);
 
   const started = await call("pair_start", { kind: "computer", name: "书房电脑" }, agent);
-  assert.deepEqual(Object.keys(started).sort(), ["expires_at", "pair_id"]);
+  assert.deepEqual(Object.keys(started).sort(), ["code", "expires_at", "pair_id", "url"]);
+  assert.deepEqual([started.code, started.url], ["TICKET-123", "https://relay.example/p/TICKET-123"], "an agent that starts a pairing can tell the owner where to go");
   const pair = devices.pairs.get(started.pair_id)!;
   assert.equal(pair.initiator, "agent:main");
   assert.equal(pair.ticket, "TICKET-123");
@@ -176,7 +177,7 @@ test("pairing: the code is never in a result; requested, approved, then connecte
   assert.deepEqual((await call("pair_pending")).pairs, []);
   assert.equal(await refused("pair_approve", { pair_id: started.pair_id }), "conflict", "nobody has asked yet");
 
-  // the owner reads the code and where to enter it; nobody else may
+  // the code again, while it waits (owner or agent); what lets the device in is the owner's approval below
   assert.deepEqual(await call("pair_code", { pair_id: started.pair_id }), { code: "TICKET-123", url: "https://relay.example/p/TICKET-123", expires_at: pair.expires_at });
 
   const identity = await newIdentity();

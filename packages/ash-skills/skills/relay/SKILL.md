@@ -45,7 +45,7 @@ node -e 'const b="https://github.com/wanpengxie/ash-gateway/releases/latest/down
 
 这是网关仓库发布好的构建结果（一个模块加一份可直接部署的配置），不用源码、不用打包。
 
-- 改 `wrangler.jsonc`：`"name"` 改成定好的名字；用他自己的域名就加一项 `"routes": [{ "pattern": "<他的子域名>", "custom_domain": true }]`，只用 workers.dev 就不加。
+- 改 `wrangler.jsonc`：`"name"` 改成定好的名字（`vars.INSTALL_SCRIPT_URL` 是电脑配对页给出的安装包地址，跟着网关版本发布，**不要自己改**；装不上就告诉主人）；用他自己的域名就加一项 `"routes": [{ "pattern": "<他的子域名>", "custom_domain": true }]`，只用 workers.dev 就不加。
 - 在 `~/relay/release` 里 `npx --yes wrangler@4 deploy > ~/relay/deploy.log 2>&1`（按配置原样上传），从日志里拿到地址（workers.dev 那条和自定义域名）。
 - 设认领密钥（见第 4 节），再交给中枢（第 5 节）。
 

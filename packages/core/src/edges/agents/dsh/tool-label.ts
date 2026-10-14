@@ -54,14 +54,48 @@ function calledWord(rawInput: unknown): string | undefined {
   return wordContract(member, word)?.label.doing || undefined;
 }
 
+const MAX = 48;
+/** One line, at most MAX characters. */
+const clip = (text: string): string => {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > MAX ? `${one.slice(0, MAX - 1)}…` : one;
+};
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+const base = (path: string): string => path.replace(/\/+$/, "").split("/").pop() || path;
+const host = (url: string): string => { try { return new URL(url).host; } catch { return url; } };
+
+/** What this call is about, from its arguments: the step the owner can check, not just its kind. */
+function detail(name: string, input: Record<string, unknown>): string | undefined {
+  switch (name) {
+    case "bash": case "pwsh": case "terminal_send": {
+      const said = str(input.description);
+      if (said) return clip(said);
+      const command = str(input.command) ?? str(input.input);
+      return command ? clip(`跑 ${command}`) : undefined;
+    }
+    case "read": case "read_image": { const p = str(input.file_path) ?? str(input.path); return p ? clip(`读 ${base(p)}`) : undefined; }
+    case "write": case "edit": case "str_replace_editor": { const p = str(input.file_path) ?? str(input.path); return p ? clip(`改 ${base(p)}`) : undefined; }
+    case "grep": case "glob": { const q = str(input.pattern) ?? str(input.query); return q ? clip(`找 ${q}`) : undefined; }
+    case "web_fetch": { const u = str(input.url); return u ? clip(`看网页 ${host(u)}`) : undefined; }
+    case "web_search": { const q = str(input.query); return q ? clip(`搜 ${q}`) : undefined; }
+    case "skill": { const n = str(input.name); return n ? clip(`查技能 ${n}`) : undefined; }
+    case "job_output": case "job_kill": { const j = str(input.job_id); return j ? clip(`看后台任务 ${j}`) : undefined; }
+    default: return undefined;
+  }
+}
+
 /** One line for a tool call: `title` is DSH's tool name, `kind` the ACP kind, `rawInput` the call's arguments. */
 export function toolSummary(title: string | undefined, kind?: unknown, rawInput?: unknown): string {
   const name = (title ?? "").trim();
+  const input = rawInput && typeof rawInput === "object" ? rawInput as Record<string, unknown> : {};
   const ash = ashTool(name);
   if (ash !== undefined) {
-    if (ash === "capability_call") return calledWord(rawInput) ?? "在用手机/设备能力";
+    // The agent says what the call is for (purpose); that is the most telling line. Else the word's own label.
+    const purpose = str(input.purpose);
+    if (ash === "capability_call") return purpose ? clip(purpose) : calledWord(rawInput) ?? "在用手机/设备能力";
+    if (purpose) return clip(purpose);
     return ASH_TOOLS[ash] ?? ASH_FAMILIES.find(([prefix]) => ash.startsWith(prefix))?.[1] ?? GENERIC_STEP;
   }
   if (name.startsWith("mcp__")) return GENERIC_STEP; // a plugin's tool: its name is not for the owner either
-  return DSH_TOOLS[name] ?? (typeof kind === "string" ? BY_KIND[kind] : undefined) ?? GENERIC_STEP;
+  return detail(name, input) ?? DSH_TOOLS[name] ?? (typeof kind === "string" ? BY_KIND[kind] : undefined) ?? GENERIC_STEP;
 }

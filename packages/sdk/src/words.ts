@@ -266,8 +266,8 @@ add("service:devices", "list", "request", empty, obj({ devices: array(deviceInfo
 add("service:devices", "describe", "request", obj({ device: deviceRef }, ["device"]), deviceInfo,
   { label: "在看设备详情", description: "One hand in detail: how it connects, what it was allowed, when it was last seen." });
 add("service:devices", "pair_start", "request", obj({ kind: pairKind, name: nonempty }),
-  obj({ pair_id: id, expires_at: nonnegativeSafe }, ["pair_id", "expires_at"]),
-  { effect: "act", label: "在开始设备配对", description: "Start pairing a new computer or browser. The pairing code is shown only to the owner; you get a pair_id and, as the pairing moves on, a background message. Use pair_status to look." });
+  obj({ pair_id: id, expires_at: nonnegativeSafe, code: nonempty, url: str }, ["pair_id", "expires_at"]),
+  { effect: "act", label: "在开始设备配对", description: "Start pairing a new computer, server or browser. You get the pair_id, the one-time code and the address to open on the new device (its page gives the install command for a computer and asks a browser for the code); hand them to the owner, or run it yourself on a device you can already use. Nothing joins without the owner: the new device's request comes to the owner as a card, who decides what it may do. As the pairing moves on you get a background message; pair_status to look." });
 add("service:devices", "pair_status", "request", obj({ pair_id: id }, ["pair_id"]), pairInfo,
   { label: "在看配对进展", description: "Where a pairing is: waiting for the code, requested (the owner is asked), approved, connected, rejected or expired." });
 add("service:devices", "pair_pending", "request", empty, obj({ pairs: array(pairInfo) }, ["pairs"]),
@@ -286,8 +286,8 @@ add("service:devices", "access_set", "request", obj({ device: deviceRef, ...acce
   { effect: "write", risk: "structure", label: "在调整设备权限", description: "Change what a hand may do (lend capabilities, serve as a body, run local agents, web chat) and its tier (ask, full). An agent asking for this is always asked about by the owner." });
 add("service:devices", "update", "request", obj({ device: deviceRef, version: { type: "string", pattern: "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" }, sha256: sha }, ["device", "version", "sha256"]), obj({ started: bool }, ["started"]),
   { effect: "write", risk: "structure", label: "在更新设备程序", description: "Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. An agent asking for this is always asked about by the owner." });
-add("service:devices", "pair_code", "request", obj({ pair_id: id }, ["pair_id"]), obj({ code: sensitive(nonempty, "hidden"), url: sensitive(str, "hidden"), expires_at: nonnegativeSafe }, ["code"]),
-  { callers: OWNER, local_only: true, label: "在看配对码", description: "Show the pairing code of a pairing the owner started, with the address to open on the new computer. Only the owner, from a channel on this machine." });
+add("service:devices", "pair_code", "request", obj({ pair_id: id }, ["pair_id"]), obj({ code: nonempty, url: str, expires_at: nonnegativeSafe }, ["code"]),
+  { callers: OWNER_AGENT, label: "在看配对码", description: "The one-time code of a pairing still waiting, with the address to open on the new device. The owner's approval card is what lets a device in, not the code." });
 add("service:devices", "pair.changed", "event", obj({ pair_id: id, state: pairState, device: deviceRef }, ["pair_id", "state"]), undefined,
   { record: true, label: "在记下配对进展", description: "A pairing moved on (requested, approved, rejected, connected, expired). The one who started it is told by a background message." });
 add("service:devices", "config.changed", "event", obj({ item: nonempty, state: nonempty }, ["item", "state"]), undefined,

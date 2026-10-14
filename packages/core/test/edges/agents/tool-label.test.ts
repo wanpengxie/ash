@@ -29,3 +29,13 @@ test("ash's tools: capability_call is the called word's own label, the rest are 
   assert.equal(toolSummary("mcp__ash__something_new"), "在处理");
   assert.equal(toolSummary("mcp__other__thing", "execute"), "在处理");
 });
+
+test("the line says what the step is about: the agent's purpose or description, the command, the file, the site", () => {
+  assert.equal(toolSummary("mcp__ash__capability_call", undefined, { member: "service:link", word: "gateway.use", purpose: "让这台手机认领中转站 ash.onestudio.cc" }), "让这台手机认领中转站 ash.onestudio.cc");
+  assert.equal(toolSummary("bash", undefined, { command: "npx --yes wrangler@4 deploy", description: "部署网关" }), "部署网关");
+  assert.equal(toolSummary("bash", undefined, { command: "npx --yes wrangler@4 deploy > ~/relay/deploy.log 2>&1" }), "跑 npx --yes wrangler@4 deploy > ~/relay/deploy.log 2>&1".slice(0, 47) + "…");
+  assert.equal(toolSummary("read", undefined, { file_path: "/root/relay/release/wrangler.jsonc" }), "读 wrangler.jsonc");
+  assert.equal(toolSummary("web_fetch", undefined, { url: "https://ash.onestudio.cc/v1/health" }), "看网页 ash.onestudio.cc");
+  assert.equal(toolSummary("skill", undefined, { name: "relay" }), "查技能 relay");
+  assert.equal(toolSummary("bash"), "在跑命令", "nothing to tell: the kind");
+});

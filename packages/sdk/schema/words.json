@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "9b1d9fa6321b7fa4a8534c6864c3a725407487556dcfdb2f983fed20e806b566",
+ "hash": "a5e65c2cb8bf5d89843344505b07954f4e39e0492853710c5db43881c9ba4f11",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -3347,7 +3347,7 @@
    "word": "pair_start",
    "kind": "request",
    "direction": "in",
-   "description": "Start pairing a new computer or browser. The pairing code is shown only to the owner; you get a pair_id and, as the pairing moves on, a background message. Use pair_status to look.",
+   "description": "Start pairing a new computer, server or browser. You get the pair_id, the one-time code and the address to open on the new device (its page gives the install command for a computer and asks a browser for the code); hand them to the owner, or run it yourself on a device you can already use. Nothing joins without the owner: the new device's request comes to the owner as a card, who decides what it may do. As the pairing moves on you get a background message; pair_status to look.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3378,6 +3378,13 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
+     },
+     "code": {
+      "type": "string",
+      "minLength": 1
+     },
+     "url": {
+      "type": "string"
      }
     },
     "required": [
@@ -4031,7 +4038,7 @@
    "word": "pair_code",
    "kind": "request",
    "direction": "in",
-   "description": "Show the pairing code of a pairing the owner started, with the address to open on the new computer. Only the owner, from a channel on this machine.",
+   "description": "The one-time code of a pairing still waiting, with the address to open on the new device. The owner's approval card is what lets a device in, not the code.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -4050,16 +4057,10 @@
     "properties": {
      "code": {
       "type": "string",
-      "minLength": 1,
-      "x-ash-sensitive": {
-       "mask": "hidden"
-      }
+      "minLength": 1
      },
      "url": {
-      "type": "string",
-      "x-ash-sensitive": {
-       "mask": "hidden"
-      }
+      "type": "string"
      },
      "expires_at": {
       "type": "integer",
@@ -4075,9 +4076,9 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
-   "local_only": true,
    "label": {
     "doing": "在看配对码"
    }

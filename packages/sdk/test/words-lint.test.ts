@@ -85,7 +85,7 @@ test("wake, say and the kernel-only words have the callers the spec gives", () =
   assert.equal(wordContract("service:vault", "set")?.local_only, true);
   assert.equal(wordContract("service:admin", "resume")?.local_only, true);
   assert.equal(wordContract("service:admin", "logs")?.local_only, true);
-  assert.equal(wordContract("service:devices", "pair_code")?.local_only, true);
+  assert.deepEqual(wordContract("service:devices", "pair_code")?.callers, ["owner", "agent"], "agent first: the agent can hand the owner the pairing address");
   assert.deepEqual(wordContract("service:pulse", "pulse.due")?.callers, ["kernel"]);
   assert.deepEqual(wordContract("service:cost", "quota.check")?.callers, ["kernel"]);
   assert.deepEqual(wordContract("service:gate", "rules.set")?.callers, ["owner", "agent"]);

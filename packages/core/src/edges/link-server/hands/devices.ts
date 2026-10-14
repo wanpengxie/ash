@@ -56,7 +56,7 @@ export interface Pair {
   expires_at: number;
   /** Who asked for the pairing (a member id), to be told when it moves on. */
   initiator: string;
-  /** The code. Only the owner may see it (`pair_code`): never in any other result. */
+  /** The one-time code: given to whoever starts the pairing, owner or agent; the owner's approval card is the gate. */
   ticket: string;
   /** Where the code is entered (the relay's install page). */
   url?: string;
@@ -232,7 +232,7 @@ export class Devices implements Member {
   private pairStart(kind: PairKind, name: string, initiator: string, issued: { ticket: string; expires_in: number; url?: string }) {
     const pair: Pair = { pair_id: `p_${randomBytes(6).toString("base64url")}`, kind, name, state: "waiting", expires_at: this.now() + issued.expires_in * 1000, initiator, ticket: issued.ticket, ...(issued.url ? { url: issued.url } : {}) };
     this.pairs.set(pair.pair_id, pair);
-    return { pair_id: pair.pair_id, expires_at: pair.expires_at };
+    return { pair_id: pair.pair_id, expires_at: pair.expires_at, code: pair.ticket, ...(pair.url ? { url: pair.url } : {}) };
   }
 
   private pair(pairId: string): Pair {

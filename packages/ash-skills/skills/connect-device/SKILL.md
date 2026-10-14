@@ -11,8 +11,12 @@ whenToUse: 主人要接一台电脑或浏览器、想让电脑上的 Agent 干�
 ## 做法：每步先看现状，再动手
 
 1. **看现状**：`device_list`（有哪些设备、在线与否、授了哪些权）；`capability_call {member: "service:link", word: "gateway.status"}`（`configured` 有没有中转站，`connected` 连着没有）。
-2. **中转站没好就先弄中转站**：没有、没认领、连不上，都按技能 `relay` 做（用 wrangler 部署新的或领回旧的，再 `service:link/gateway.use {url, claim_secret}` 交给中枢认领），好了再回来配对。
-3. **配对**：`device_pair_start {kind: "computer", name}`（`kind` 还有 `server`、`browser`）返回 `pair_id`。**配对码只给主人看**，你拿不到，也不用他念出来；告诉他去电脑上打开推给他的那个地址（Mac 和 Linux 能装，Windows 这一版还不支持）。新电脑请求接入后，主人会收到一张卡，有四个勾：出借能力、当作 body（文件和命令）、跑本地 Agent、网页对话。**批不批、勾哪些都由他定**，你替不了（`device_pair_approve` 你来调也会问他）。要交开发活（技能 `delegate-dev`），要勾「当作 body」和「跑本地 Agent」；只想网页聊天，勾网页对话就够。
+2. **中转站没好就先弄中转站**：没有、没认领、连不上，都按技能 `relay` 做（用 wrangler 部署新的或领回旧的，认领密钥 `put` 进保险箱，再 `service:link/gateway.use {url, claim_ref}` 交给中枢认领），好了再回来配对。
+3. **配对**：`device_pair_start {kind: "computer", name}`（`kind` 还有 `server`、`browser`）返回 `pair_id`、一次性配对码 `code` 和地址 `url`（`device_pair_code {pair_id}` 也能再看）。
+   - **电脑/服务器**：把地址发给主人：「在 Mac 上用浏览器打开 <url>，复制页面里 macOS 那一行命令，粘到终端回车。」（Mac 和 Linux 能装，Windows 这一版还不支持。）全新的电脑你碰不到，这一下只能他来；如果那台电脑已经是你能用的设备，就自己在上面跑那行命令。
+   - **浏览器**：把地址发给主人，在新浏览器里打开、填配对码 `code`。
+   - 地址和码只用一次、几分钟过期；**真正放行的是主人**：新设备请求接入后，主人会收到一张卡，有四个勾：出借能力、当作 body（文件和命令）、跑本地 Agent、网页对话。**批不批、勾哪些都由他定**，你替不了（`device_pair_approve` 你来调也会问他）。要交开发活（技能 `delegate-dev`），要勾「当作 body」和「跑本地 Agent」；只想网页聊天，勾网页对话就够。
+   - 页面上的安装命令装不上（下载 404、版本不对）：告诉主人原因，**不要自己改中转站的配置或重新部署**；要改，先按技能 `relay` 问他。
 4. **等配对通知**：配对每走一步，你会收到一条后台消息：`waiting`、`requested`、`approved`、`connected`，或 `rejected`、`expired`。发出后告诉主人你在等什么，然后做别的或结束这一轮，**不要轮询**。想主动看才用 `device_pair_status {pair_id}`。过期了就重新发起一次。
 5. **验证**：别只信「connected」。`service:link/describe {hand}` 看各通道开着没有；再做一次只读调用：当 body 的电脑调 `body:<编号>` 的 `body.info`，其余在 `capability_list` 里看它的 `device:<编号>` 有没有词。刚改过权限词没出现，`service:link/refresh_manifest {hand}`；要当 body 却没有 `body:<编号>`，`service:bodies/bind {hand}`（会问主人）。验证过了，再对主人说接好了。
 
@@ -37,12 +41,13 @@ whenToUse: 主人要接一台电脑或浏览器、想让电脑上的 Agent 干�
 
 ## 好的样子
 
-主人：「把我书房的 Mac 接上，以后让 Codex 在上面写代码。」`device_list` 没有 Mac；`gateway.status` 说 `configured: false`。你说「你还没有中转站，我先帮你搭」，按技能 `relay` 登录 wrangler、问清名字和地址、部署、`gateway.use` 交给中枢，`gateway.status` 显示连上了。然后 `device_pair_start {kind: "computer", name: "书房 Mac"}`，告诉他在 Mac 上打开推给他的地址、装好后在卡上勾「当作 body」和「跑本地 Agent」。收到 `connected`，`body:<编号>` 的 `body.info` 回得出系统和工作目录。再说「接好了」，并转到 `delegate-dev`。
+主人：「把我书房的 Mac 接上，以后让 Codex 在上面写代码。」`device_list` 没有 Mac；`gateway.status` 说 `configured: false`。你说「你还没有中转站，我先帮你搭」，按技能 `relay` 登录 wrangler、问清名字和地址、部署、`gateway.use` 交给中枢，`gateway.status` 显示连上了。然后 `device_pair_start {kind: "computer", name: "书房 Mac"}`，把返回的地址发给他：「在 Mac 上打开这个地址，复制 macOS 那行命令粘到终端」，装好后在卡上勾「当作 body」和「跑本地 Agent」。收到 `connected`，`body:<编号>` 的 `body.info` 回得出系统和工作目录。再说「接好了」，并转到 `delegate-dev`。
 
 ## 常见错误
 
 - 有中转站还重搭；没问主人就当他同意了。
-- 向主人要配对码，或替他批准接入、勾权限。
+- 让主人自己去找配对码或地址（你拿得到，直接给他）；替他批准接入、勾权限。
+- 安装不了就自己改中转站配置、重新部署，没先问主人。
 - 发出后反复 `device_pair_status` 轮询。
 - 看到 `connected` 就说接好了，没做只读验证。
 - 把 `handshake.4003` 说成「连不上」，其实是被撤销了。

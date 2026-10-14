@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `9b1d9fa6321b7fa4`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `a5e65c2cb8bf5d89`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -122,7 +122,7 @@
 |---|---|---|---|---|---|---|
 | `list` | owner, agent, app | read / none | - | - | 在看已连接设备 | Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents, web chat) and its tier. |
 | `describe` | owner, agent, app | read / none | - | device* | 在看设备详情 | One hand in detail: how it connects, what it was allowed, when it was last seen. |
-| `pair_start` | owner, agent, app | act / none | - | kind, name | 在开始设备配对 | Start pairing a new computer or browser. The pairing code is shown only to the owner; you get a pair_id and, as the pairing moves on, a background message. Use pair_status to look. |
+| `pair_start` | owner, agent, app | act / none | - | kind, name | 在开始设备配对 | Start pairing a new computer, server or browser. You get the pair_id, the one-time code and the address to open on the new device (its page gives the install command for a computer and asks a browser for the code); hand them to the owner, or run it yourself on a device you can already use. Nothing joins without the owner: the new device's request comes to the owner as a card, who decides what it may do. As the pairing moves on you get a background message; pair_status to look. |
 | `pair_status` | owner, agent, app | read / none | - | pair_id* | 在看配对进展 | Where a pairing is: waiting for the code, requested (the owner is asked), approved, connected, rejected or expired. |
 | `pair_pending` | owner, agent, app | read / none | - | - | 在看配对申请 | The pairing requests that are waiting for the owner's decision. |
 | `pair_approve` | owner, agent, app | write / structure | - | pair_id*, name, tier, lend, body, local_agents, web_ui | 在批准设备配对 | Approve a pairing request, with what the new hand may do: lend capabilities, serve as a body, run local agents, web chat; and its tier. An agent asking for this is always asked about by the owner. |
@@ -132,7 +132,7 @@
 | `rename` | owner, agent, app | write / structure | - | device*, name* | 在修改设备名称 | Change the name a hand is shown with. |
 | `access_set` | owner, agent, app | write / structure | - | device*, tier, lend, body, local_agents, web_ui | 在调整设备权限 | Change what a hand may do (lend capabilities, serve as a body, run local agents, web chat) and its tier (ask, full). An agent asking for this is always asked about by the owner. |
 | `update` | owner, agent, app | write / structure | - | device*, version*, sha256* | 在更新设备程序 | Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. An agent asking for this is always asked about by the owner. |
-| `pair_code` | owner | read / none | local_only | pair_id* | 在看配对码 | Show the pairing code of a pairing the owner started, with the address to open on the new computer. Only the owner, from a channel on this machine. |
+| `pair_code` | owner, agent | read / none | - | pair_id* | 在看配对码 | The one-time code of a pairing still waiting, with the address to open on the new device. The owner's approval card is what lets a device in, not the code. |
 | `pair.changed` | kernel | read / none | event out, record | pair_id*, state*, device | 在记下配对进展 | A pairing moved on (requested, approved, rejected, connected, expired). The one who started it is told by a background message. |
 | `config.changed` | kernel | read / none | event in | item*, state* | 在记下手机设置变化 | A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded. |
 | `codex.turn_ended` | kernel | read / none | event in | thread*, title, outcome, said | 在记下 Codex 做完一轮 | A computer reports that a session of its Codex app finished a turn. The owner is told in a short message; not recorded. |

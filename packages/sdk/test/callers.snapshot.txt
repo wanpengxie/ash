@@ -56,7 +56,7 @@
   service:devices/rename  owner,agent,app
   service:devices/access_set  owner,agent,app
   service:devices/update  owner,agent,app
-* service:devices/pair_code  owner  local_only
+* service:devices/pair_code  owner,agent
 * service:devices/pair.changed  kernel  event-out
 * service:devices/config.changed  kernel  event-in
 * service:devices/codex.turn_ended  kernel  event-in
