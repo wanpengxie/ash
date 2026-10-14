@@ -4,6 +4,6 @@
   "kernel": {
     "id": "kernel-1",
     "version": "0.4.0",
-    "protocol": "ash-link/1"
+    "protocol": "ash-link/2"
   }
 }

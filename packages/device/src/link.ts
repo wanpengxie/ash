@@ -1,10 +1,11 @@
 /**
- * The computer program's connection (SPEC-03): `ash-link/1` with the hub, over the relay.
+ * The computer program's connection (SPEC-03): `ash-link/2` with the hub, over the relay, secured end to end
+ * (docs/LINK-E2E.md).
  *
  * The program is a hand. It signs in to the relay as itself (`GatewayLine`: the relay protocol `ash-gw/1`, unchanged);
- * when the hub wants it, the relay hands over a tunnelled WebSocket for path `/link`, and the hub speaks first
- * (`challenge`). `TunnelPort` makes that tunnel look like the WebSocket `HandClient` (packages/link) opens by itself, so
- * the handshake, the channels, the reconnecting and the manifest are the link package's, not written again here.
+ * when the hub wants it, the relay hands over a tunnelled WebSocket for path `/link`. `TunnelPort` makes that tunnel look
+ * like the WebSocket `HandClient` (packages/link) opens by itself, and the link package's `secureConnector` runs TLS on it
+ * and checks the hub against the owner key pinned in `paired.json` ([PairingFile]) before the handshake begins.
  */
 import { createPrivateKey, sign as signBytes, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -13,6 +14,7 @@ import { Connection, DeviceKey, DeviceStream, GatewayClient, GatewayError } from
 import { shortFingerprint } from "ash-gateway/src/protocol";
 import { base64url } from "../../sdk/src/ids";
 import type { Connector, SocketEvents } from "../../link/src/hand";
+import { linkKey, type LinkKey } from "../../link/src/secure";
 import type { RawSocket } from "../../link/src/socket";
 import { bounded, STEP_MS } from "./bounded";
 
@@ -34,6 +36,8 @@ export interface Identity {
   readonly id: string;
   /** Signs the hub's challenge nonce: ECDSA P-256 over its UTF-8 bytes, ASN.1 DER, base64url (SPEC-03 §2.2). */
   signNonce(nonce: string): string;
+  /** The same key for TLS, with its certificate. */
+  readonly link: LinkKey;
 }
 
 /** The identity key lives in `<stateDir>/device.jwk` (created on first use, owner-only). */
@@ -52,9 +56,29 @@ export async function loadIdentity(stateDir: string): Promise<Identity> {
   }
   const priv: KeyObject = createPrivateKey({ key: jwk as never, format: "jwk" });
   return {
-    key, publicKey: key.publicKey, id: key.id,
+    key, publicKey: key.publicKey, id: key.id, link: linkKey(priv),
     signNonce: (nonce) => base64url(signBytes("sha256", Buffer.from(nonce, "utf8"), { key: priv, dsaEncoding: "der" })),
   };
+}
+
+/**
+ * `<stateDir>/paired.json`: the owner key this computer pinned, the relay's grant, whether it was revoked, and the one-time
+ * pairing secret until the hub proved it on the first connection. Until then the owner key is only what the relay said.
+ */
+export class PairingFile {
+  constructor(readonly file: string) {}
+  read(): Record<string, unknown> { return existsSync(this.file) ? JSON.parse(readFileSync(this.file, "utf8")) : {}; }
+  write(value: Record<string, unknown>): void { writeFileSync(this.file, JSON.stringify(value), { mode: 0o600 }); }
+  /** What the secure connection checks the hub against. */
+  trust(): { ownerKey: string; pairSecret: string | null } {
+    const pairing = this.read();
+    return { ownerKey: typeof pairing.owner_key === "string" ? pairing.owner_key : "", pairSecret: typeof pairing.secret === "string" ? pairing.secret : null };
+  }
+  /** The hub proved the pairing secret: [ownerKey] is the owner's. The secret is not needed any more. */
+  pin(ownerKey: string): void {
+    const { secret: _secret, ...rest } = this.read();
+    this.write({ ...rest, owner_key: ownerKey, proved_at: Date.now() });
+  }
 }
 
 /** What `hello.hand` says about this program. */
@@ -163,13 +187,13 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 /**
  * Signs in to the relay (`ash-gw/1`) and stays signed in, handing every tunnel the hub opens on `/link` to [port].
- * This is only the road; what travels on it is `ash-link/1`.
+ * This is only the road; what travels on it is TLS, and inside it `ash-link/2`.
  */
 export class GatewayLine {
   private readonly gateway: GatewayClient;
   private conn: Connection | null = null;
   private stopped = false;
-  private pairFile?: string;
+  private pairing?: PairingFile;
   private readonly tunnels = new Map<string, DeviceStream>();
   connected = false;
   lastError = "";
@@ -178,28 +202,27 @@ export class GatewayLine {
     this.gateway = new GatewayClient(url, identity.key);
   }
 
-  /** Pairs on the first run (the owner approves on their side); later runs only check that the pairing was not revoked. */
-  async pair(stateDir: string, code: string | undefined, name: string): Promise<void> {
-    const file = join(stateDir, "paired.json");
-    this.pairFile = file;
-    if (existsSync(file) && !code) {
-      if (JSON.parse(readFileSync(file, "utf8")).revoked) throw new Error("Device revoked; explicitly pair again to reconnect");
+  /**
+   * Pairs on the first run (the device asks the relay with the code; Ash lets it in); later runs only check that the pairing was
+   * not revoked. The owner key the relay names is kept with the secret: the first secure connection proves which key is real.
+   */
+  async pair(pairing: PairingFile, ask: { code: string; secret: string } | undefined, name: string): Promise<void> {
+    this.pairing = pairing;
+    if (existsSync(pairing.file) && !ask) {
+      if (pairing.read().revoked) throw new Error("Device revoked; explicitly pair again to reconnect");
       return;
     }
-    if (!code) throw new Error("not paired: use --pair once");
-    const request = await this.gateway.requestPairing(code, name);
+    if (!ask) throw new Error("not paired: run the install command Ash gives (setup --pair CODE --secret SECRET) once");
+    const request = await this.gateway.requestPairing(ask.code, name);
     this.log("pairing requested", await shortFingerprint(this.identity.publicKey), request.owner_fingerprint);
     const grant = await this.gateway.waitForApproval(request.request_id, request.owner_key, 10 * 60_000);
-    writeFileSync(file, JSON.stringify({ owner_key: request.owner_key, ...grant }), { mode: 0o600 });
+    pairing.write({ owner_key: request.owner_key, ...grant, secret: ask.secret });
   }
 
   /** Remember that the owner revoked this computer: it will not reconnect until it is paired again. */
   markRevoked(): void {
     this.stopped = true;
-    if (this.pairFile && existsSync(this.pairFile)) {
-      const old = JSON.parse(readFileSync(this.pairFile, "utf8"));
-      writeFileSync(this.pairFile, JSON.stringify({ ...old, revoked: true }), { mode: 0o600 });
-    }
+    if (this.pairing && existsSync(this.pairing.file)) this.pairing.write({ ...this.pairing.read(), revoked: true });
   }
 
   async run(): Promise<void> {

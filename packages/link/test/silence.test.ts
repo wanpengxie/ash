@@ -22,7 +22,7 @@ function rawHand(socket: MemorySocket) {
   socket.on("message", (data: string) => {
     const frame = JSON.parse(data) as Frame;
     frames.push(frame);
-    if (frame.t === "challenge") socket.send(JSON.stringify({ t: "hello", protocol: "ash-link/1", hand: { kind: "computer", name: "raw", version: "1", platform: "x" }, channels: { device: {} } }));
+    if (frame.t === "challenge") socket.send(JSON.stringify({ t: "hello", protocol: "ash-link/2", hand: { kind: "computer", name: "raw", version: "1", platform: "x" }, channels: { device: {} } }));
   });
   return frames;
 }

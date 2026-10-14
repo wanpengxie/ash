@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, copyFileSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-// The version is the program's own (DEVICE_VERSION), so the package, its manifest and install.sh can never disagree.
-const version = readFileSync('packages/device/src/install.ts','utf8').match(/DEVICE_VERSION = "([0-9.]+)"/)[1], nodeVersion = '22.22.1';
+// The version is the program's own (DEVICE_VERSION), so the package, its manifest, install.sh and the hub's install command can never disagree.
+const version = readFileSync('packages/sdk/src/versions.ts','utf8').match(/DEVICE_VERSION = "([0-9.]+)"/)[1], nodeVersion = '22.22.1';
 const out = resolve('build/device'); mkdirSync(out, { recursive: true });
 const targets = process.argv.includes('--all') ? [['linux','x64'],['linux','arm64'],['darwin','x64'],['darwin','arm64']] : [[process.platform,process.arch]];
 const sums = [];

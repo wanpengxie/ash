@@ -2,9 +2,10 @@
  * A kernel for the computer program to talk to: the link server and the hand registry (T5) with the bodies service (T18)
  * on a database of its own, and a stand-in for the agents module that drives the computer's runtimes over the agent
  * channel. The tunnel to the computer is the relay's: a `DeviceStream` over an in-memory socket, handed to the program's
- * `TunnelPort` while the kernel `accept`s the other end the way it accepts a relay tunnel.
+ * `TunnelPort` while the kernel `accept`s the other end the way it accepts a relay tunnel, secured end to end.
  */
 import { delimiter, join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { DeviceStream } from "ash-gateway/client/client";
@@ -16,7 +17,7 @@ import { memoryPair } from "../../link/test/fixtures/memory";
 import { createLinkServer, type HubLinkServer } from "../../core/src/edges/link-server";
 import { createBodies, splitBodyCapabilities, type Bodies } from "../../core/src/edges/link-server/hands/bodies";
 import { HandRegistry } from "../../core/src/edges/link-server/hands/registry";
-import { FakeRegistry, FakeRouter } from "../../core/test/edges/link-server/harness";
+import { FakeRegistry, FakeRouter, relaySecurity } from "../../core/test/edges/link-server/harness";
 import { eventually } from "../../core/test/fixtures/wait";
 import type { RunningDevice } from "../src/main";
 
@@ -83,9 +84,14 @@ export interface Kernel {
   bodies: Bodies;
   server: HubLinkServer;
   remote: RemoteDrivers;
+  /** How the relay's tunnels to this kernel are secured, and the owner key a paired computer pins. */
+  relay: ReturnType<typeof relaySecurity>;
   stop(): Promise<void>;
-  /** The owner pairs a computer (what `pair_approve` writes) with the permissions that are ticked. */
-  pair(device: { id: string; publicKey: string }, permissions?: { lend?: boolean; local_agents?: boolean; web_ui?: boolean; name?: string }): void;
+  /**
+   * The owner pairs a computer: what `pair_approve` writes, with the permissions that are ticked, and on the computer's side
+   * (its [stateDir]) the owner key it pinned.
+   */
+  pair(device: { id: string; publicKey: string; stateDir: string }, permissions?: { lend?: boolean; local_agents?: boolean; name?: string }): void;
   /** Calls a word of a registered member as `agent:main` would after the router let it through. */
   call(to: string, word: string, body?: Record<string, unknown>): Promise<WordResult>;
   /** `service:bodies` words. */
@@ -111,13 +117,18 @@ export async function startKernel(): Promise<Kernel> {
   const server = createLinkServer({ hands, hostClient: { handsHandoff: async () => ({ supported: false }) } });
   server.onChannel("agent", (session) => remote.attach(session));
   await server.start();
+  const relay = relaySecurity();
   return {
-    db, registry, router, hands, bodies, server, remote,
+    db, registry, router, hands, bodies, server, remote, relay,
     stop: () => server.stop(),
-    pair: (device, permissions = {}) => void hands.register({
-      id: device.id, name: permissions.name ?? "Test Mac", kind: "computer", public_key: device.publicKey, paired_by: "gateway",
-      lend: permissions.lend ?? true, local_agents: permissions.local_agents ?? true, web_ui: permissions.web_ui ?? false,
-    }),
+    pair: (device, permissions = {}) => {
+      hands.register({
+        id: device.id, name: permissions.name ?? "Test Mac", kind: "computer", public_key: device.publicKey, paired_by: "gateway",
+        lend: permissions.lend ?? true, local_agents: permissions.local_agents ?? true,
+      });
+      mkdirSync(device.stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(device.stateDir, "paired.json"), JSON.stringify({ owner_key: relay.ownerKey }), { mode: 0o600 });
+    },
     call,
     body: async (word, body) => ((await bodies.handle(request("service:bodies", word, body, "person:owner"), context({ caller: { member: "person:owner", via: "human", local: true } }))) as WordResult).data,
   };
@@ -128,7 +139,7 @@ let tunnels = 0;
  * The relay opens a tunnel for the hub: the kernel accepts one end as it does a relay tunnel for device [from], and the
  * other end is a `DeviceStream` handed to the program. Returns a way to cut the tunnel from the relay's side.
  */
-export function openTunnel(kernel: Pick<Kernel, "server">, device: Pick<RunningDevice, "port">, from: string): { cut(code?: number, reason?: string): void } {
+export function openTunnel(kernel: Pick<Kernel, "server" | "relay">, device: Pick<RunningDevice, "port">, from: string): { cut(code?: number, reason?: string): void } {
   const pair = memoryPair();
   const sid = `o-test-tunnel-${++tunnels}-xxxxxxxxxxxxxxxx`;
   let parts: string[] = [];
@@ -140,7 +151,7 @@ export function openTunnel(kernel: Pick<Kernel, "server">, device: Pick<RunningD
   }, () => {});
   pair.hand.on("message", (data: string) => stream.accept({ op: "ws.msg", text: data, more: false, from: "kernel" }));
   pair.hand.on("close", (code: number, reason: Buffer) => stream.finish({ code, reason: reason.toString() }));
-  kernel.server.acceptGateway(pair.server, from);
+  kernel.server.acceptGateway(pair.server, from, kernel.relay.security);
   device.port.adopt(stream);
   return { cut: (code = 1006, reason = "tunnel lost") => pair.server.close(code, reason) };
 }

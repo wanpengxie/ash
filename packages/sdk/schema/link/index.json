@@ -1,5 +1,5 @@
 {
-  "protocol": "ash-link/1",
+  "protocol": "ash-link/2",
   "limits": {
     "frameBytes": 4194304,
     "streamChunkBytes": 262144,

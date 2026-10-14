@@ -204,7 +204,7 @@ Decisions of the coordinator (BUILD-PROGRESS §7, "T20 发现的规格缺口和�
 7. **A computer cannot pair through the local connection.** `hello` has no field for a pairing code; pairing (`waiting → requested →
    approved → connected`) can only be driven through the gateway, so the "initiator is told at each step" rule is not tested here.
 8. **No way to make a non-local channel or an `agent` channel.** Everything local is `local: true`, and the `agent` channel is "not
-   applicable" locally (SPEC-03 §2.2.1). `local_only`, `web_ui`, pairing from a remote page, and the remote drivers (Codex/Claude) need either
+   applicable" locally (SPEC-03 §2.2.1). `local_only`, pairing through the relay, and the remote drivers (Codex/Claude) need either
    a fake gateway in `HubOptions` (the gateway client lives in `packages/link`) or a test hook for the origin of a connection.
 9. **Apps have no fixture.** Installing a test app (a directory with `app.json` + a stdio MCP server) is possible via `service:apps`, but
    nothing in SPEC-06 owns a shared fixture. R20, R23, R39, R58, R70–R74 wait for one (T7 is the natural owner).

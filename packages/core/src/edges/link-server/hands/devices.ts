@@ -1,6 +1,6 @@
 /**
  * `service:devices` (SPEC-02 §4.1, HUB-MODULES §2.3): who may connect. The owner's view of the hand registry:
- * the list, names, the three permissions and the tier, revoking, and pairing a computer or browser through the relay.
+ * the list, names, the three permissions and the tier, revoking, and pairing a computer through the relay.
  *
  * The relay's side of pairing (issuing a code, granting a request) is the `PairingGateway` it is given. Every
  * change of a pairing is an event `pair.changed`, and its initiator, if an agent, is told by `tell`.
@@ -16,18 +16,21 @@ import type { Access, HandRecord, HandRegistry } from "./registry";
 
 export const DEVICES_ID = "service:devices";
 
-export type PairKind = "computer" | "server" | "browser";
-export type PairState = "waiting" | "requested" | "approved" | "connected" | "rejected" | "expired";
-export type RelayPermission = "chat" | "web_ui" | "expose_capability";
+export type PairKind = "computer" | "server";
+export type PairState = "waiting" | "requested" | "approved" | "connected" | "rejected" | "expired" | "failed";
+export type RelayPermission = "expose_capability";
 
 /** The relay as pairing needs it (the gateway client is behind this; the link control module provides it). */
 export interface PairingGateway {
-  /** A one-time code a new computer or browser uses to ask to pair, and the address where it is entered. */
-  issue(kind: PairKind): Promise<{ ticket: string; expires_in: number; url?: string }>;
-  approve(requestId: string, permissions: RelayPermission[]): Promise<void>;
+  /**
+   * A one-time code a new computer uses to ask to pair, a one-time secret it proves on its first connection (docs/LINK-E2E.md
+   * §5), and the command that installs and pairs it, which carries both.
+   */
+  issue(kind: PairKind): Promise<{ ticket: string; expires_in: number; secret: string; command: string }>;
+  /** Lets the device in; [pairing.secret] is kept until the device [pairing.hand] proved it. */
+  approve(requestId: string, permissions: RelayPermission[], pairing: { hand: string; secret: string }): Promise<void>;
   reject(requestId: string): Promise<void>;
   revoke(handId: string): Promise<void>;
-  setWebUi(handId: string, allow: boolean): Promise<void>;
   /**
    * The relay only knows `expose_capability` (it keeps the tunnel from reaching a device that may not be reached). It is held
    * while the device may lend capabilities, serve as a body or run local agents, and not otherwise.
@@ -56,12 +59,16 @@ export interface Pair {
   expires_at: number;
   /** Who asked for the pairing (a member id), to be told when it moves on. */
   initiator: string;
-  /** The one-time code: given to whoever starts the pairing, owner or agent; the owner's approval card is the gate. */
+  /** The one-time code the relay knows (by its hash). */
   ticket: string;
-  /** Where the code is entered (the relay's install page). */
-  url?: string;
+  /** The one-time secret the relay never sees; in [command] only. */
+  secret: string;
+  /** What is run on the new computer: install and pair. Given to whoever starts the pairing, owner or agent. */
+  command: string;
   request?: PairRequest;
   device?: string;
+  /** Why it failed. */
+  reason?: string;
 }
 
 export interface DevicesDeps {
@@ -75,7 +82,7 @@ export interface DevicesDeps {
 }
 
 const SERVICE: Caller = { member: DEVICES_ID, via: "service", local: true };
-const PERMISSIONS = ["lend", "local_agents", "web_ui"] as const;
+const PERMISSIONS = ["lend", "local_agents"] as const;
 
 const failure = (error: ErrorBody) => new WordError(error.code, error.message, { detail: error.detail, recovery_hint: error.recovery_hint });
 
@@ -96,6 +103,17 @@ export class Devices implements Member {
 
   words(): WordContract[] { return wordsOf(DEVICES_ID); }
 
+  /**
+   * The device that was let in could not prove the pairing secret on its first connection: the key that connected is not the
+   * one that asked to pair (the relay swapped it). Its record is revoked and the pairing fails, with [reason].
+   */
+  pairingFailed(handId: string, reason: string): void {
+    this.d.hands.revoke(handId);
+    void this.d.gateway?.revoke(handId).catch(() => {});
+    const pair = [...this.pairs.values()].find((p) => p.device === deviceId(handId) && (p.state === "approved" || p.state === "connected"));
+    if (pair) { pair.reason = reason; this.move(pair, "failed"); }
+  }
+
   /** A device asked to pair with a code: the pairing that issued it now waits for the owner. */
   pairingRequested(request: PairRequest): Pair | null {
     const pair = [...this.pairs.values()].find((p) => p.ticket === request.ticket && this.stateOf(p) === "waiting");
@@ -114,8 +132,8 @@ export class Devices implements Member {
       case "pair_code": {
         const pair = this.pair(input.pair_id);
         if (!this.d.gateway) throw new WordError("unavailable", "no relay is set up");
-        if (this.stateOf(pair) !== "waiting") throw new WordError("conflict", `pairing ${pair.pair_id} is ${pair.state}; its code can no longer be used`);
-        return { data: { code: pair.ticket, ...(pair.url ? { url: pair.url } : {}), expires_at: pair.expires_at } };
+        if (this.stateOf(pair) !== "waiting") throw new WordError("conflict", `pairing ${pair.pair_id} is ${pair.state}; its command can no longer be used`);
+        return { data: { command: pair.command, expires_at: pair.expires_at } };
       }
       case "pair_status": return { data: this.pairInfo(this.pair(input.pair_id)) };
       case "pair_pending": return { data: { pairs: [...this.pairs.values()].filter((p) => this.stateOf(p) === "requested").map((p) => this.pairInfo(p)) } };
@@ -178,7 +196,7 @@ export class Devices implements Member {
   private info(h: HandRecord) {
     return {
       device: deviceId(h.id), name: h.name, kind: h.kind, online: this.d.hands.online(h.id), tier: h.tier,
-      lend: h.lend, body: this.d.bodies.isBound(h.id), local_agents: h.local_agents, web_ui: h.web_ui,
+      lend: h.lend, body: this.d.bodies.isBound(h.id), local_agents: h.local_agents,
       via: this.d.hands.via(h.id) ?? h.paired_by,
       ...(h.last_seen !== null ? { last_seen: h.last_seen } : {}), ...(h.revoked_at !== null ? { revoked_at: h.revoked_at } : {}),
     };
@@ -205,10 +223,9 @@ export class Devices implements Member {
 
   private async accessSet(hand: HandRecord, input: Record<string, any>) {
     const access: Access = {};
-    for (const key of ["tier", "lend", "local_agents", "web_ui"] as const) if (input[key] !== undefined) (access as Record<string, unknown>)[key] = input[key];
+    for (const key of ["tier", "lend", "local_agents"] as const) if (input[key] !== undefined) (access as Record<string, unknown>)[key] = input[key];
     if (hand.kind === "browser" && (access.lend || access.local_agents || access.tier === "full")) throw new WordError("forbidden", "a browser cannot lend capabilities, run local agents or have full tier");
     this.d.hands.setAccess(hand.id, access);
-    if (access.web_ui !== undefined && access.web_ui !== hand.web_ui && hand.paired_by === "gateway") await this.d.gateway?.setWebUi(hand.id, access.web_ui);
     const exposed = hand.lend || hand.local_agents || this.d.bodies.isBound(hand.id);
     if (input.body !== undefined && input.body !== this.d.bodies.isBound(hand.id)) await this.bindBody(hand.id, input.body);
     const exposing = (access.lend ?? hand.lend) || (access.local_agents ?? hand.local_agents) || this.d.bodies.isBound(hand.id);
@@ -229,14 +246,14 @@ export class Devices implements Member {
   // ---- pairing -------------------------------------------------------------------------------------------------------
 
   private gateway(): PairingGateway {
-    if (!this.d.gateway) throw new WordError("unavailable", "no relay is set up, so computers and browsers cannot be paired");
+    if (!this.d.gateway) throw new WordError("unavailable", "no relay is set up, so computers cannot be paired");
     return this.d.gateway;
   }
 
-  private pairStart(kind: PairKind, name: string, initiator: string, issued: { ticket: string; expires_in: number; url?: string }) {
-    const pair: Pair = { pair_id: `p_${randomBytes(6).toString("base64url")}`, kind, name, state: "waiting", expires_at: this.now() + issued.expires_in * 1000, initiator, ticket: issued.ticket, ...(issued.url ? { url: issued.url } : {}) };
+  private pairStart(kind: PairKind, name: string, initiator: string, issued: { ticket: string; expires_in: number; secret: string; command: string }) {
+    const pair: Pair = { pair_id: `p_${randomBytes(6).toString("base64url")}`, kind, name, state: "waiting", expires_at: this.now() + issued.expires_in * 1000, initiator, ticket: issued.ticket, secret: issued.secret, command: issued.command };
     this.pairs.set(pair.pair_id, pair);
-    return { pair_id: pair.pair_id, expires_at: pair.expires_at, code: pair.ticket, ...(pair.url ? { url: pair.url } : {}) };
+    return { pair_id: pair.pair_id, expires_at: pair.expires_at, command: pair.command };
   }
 
   private pair(pairId: string): Pair {
@@ -258,32 +275,31 @@ export class Devices implements Member {
     if (pair.state === state) return;
     pair.state = state;
     const name = pair.name || pair.kind;
-    void this.d.router.send({ to: DEVICES_ID, kind: "event", word: "pair.changed", body: { pair_id: pair.pair_id, state, ...(pair.device ? { device: pair.device } : {}) } }, SERVICE).catch(() => {});
+    void this.d.router.send({ to: DEVICES_ID, kind: "event", word: "pair.changed", body: { pair_id: pair.pair_id, state, ...(pair.device ? { device: pair.device } : {}), ...(pair.reason ? { reason: pair.reason } : {}) } }, SERVICE).catch(() => {});
     if (pair.initiator.startsWith("agent:")) {
       const outcome: Record<PairState, string> = {
-        waiting: "is waiting for the code", requested: "has a device asking to join: let it in now with device_pair_approve {pair_id, lend, body, local_agents} (what the owner wants it for; skill connect-device)", approved: "was approved; the device can connect now",
+        waiting: "is waiting for the command to be run", requested: "has a device asking to join: let it in now with device_pair_approve {pair_id, lend, body, local_agents} (what the owner wants it for; skill connect-device)", approved: "was approved; the device can connect now",
         connected: "is done: the device has connected", rejected: "was rejected by the owner", expired: "ran out of time before it finished",
+        failed: `failed: ${pair.reason ?? "the pairing secret did not hold"}. Its record was revoked; start a new pairing`,
       };
       void this.d.router.send({ to: pair.initiator, kind: "request", word: "tell", body: { text: `Pairing ${pair.pair_id} (${name}) ${outcome[state]}. Use service:devices/pair_status to look.` } }, SERVICE).catch(() => {});
     }
   }
 
   private pairInfo(pair: Pair) {
-    return { pair_id: pair.pair_id, state: this.stateOf(pair), name: pair.name, kind: pair.kind, expires_at: pair.expires_at, ...(pair.device ? { device: pair.device } : {}) };
+    return { pair_id: pair.pair_id, state: this.stateOf(pair), name: pair.name, kind: pair.kind, expires_at: pair.expires_at, ...(pair.device ? { device: pair.device } : {}), ...(pair.reason ? { reason: pair.reason } : {}) };
   }
 
   private async pairApprove(pair: Pair, input: Record<string, any>) {
     this.requested(pair.pair_id);
     const request = pair.request!;
-    const browser = pair.kind === "browser";
-    if (browser && (input.lend || input.local_agents || input.body || input.tier === "full")) throw new WordError("forbidden", "a browser cannot lend capabilities, run local agents or have full tier");
-    const access = { tier: input.tier ?? "ask", lend: !browser && input.lend !== false, local_agents: !browser && input.local_agents === true, web_ui: browser || input.web_ui === true };
-    // The relay has one permission for everything that is not the web page: any of the three non-web ones needs a tunnel to the device.
+    const access = { tier: input.tier ?? "ask", lend: input.lend !== false, local_agents: input.local_agents === true };
+    // The relay has one permission: any of the three needs a tunnel to the device.
     const exposed = access.lend || access.local_agents || input.body === true;
-    const permissions: RelayPermission[] = [...(exposed ? ["expose_capability" as const] : []), ...(access.web_ui ? ["chat" as const, "web_ui" as const] : [])];
+    const permissions: RelayPermission[] = exposed ? ["expose_capability"] : [];
     // Registered first: the device connects the moment the relay lets it, and must already be known.
-    this.d.hands.register({ id: request.hand_id, name: (input.name ?? pair.name).trim(), kind: browser ? "browser" : "computer", public_key: request.public_key, paired_by: "gateway", ...access });
-    await this.gateway().approve(request.request_id, permissions);
+    this.d.hands.register({ id: request.hand_id, name: (input.name ?? pair.name).trim(), kind: "computer", public_key: request.public_key, paired_by: "gateway", ...access });
+    await this.gateway().approve(request.request_id, permissions, { hand: request.hand_id, secret: pair.secret });
     pair.device = deviceId(request.hand_id);
     this.move(pair, "approved");
     if (input.body === true) await this.bindBody(request.hand_id, true);

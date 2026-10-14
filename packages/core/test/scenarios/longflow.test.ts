@@ -7,7 +7,7 @@ import test from "node:test";
 import { accepted, byOwnerText, dataOf, resultOf, startScenario, type ToolResult } from "./harness";
 import { eventually } from "../fixtures/wait";
 
-/** An agent starts a pairing on a relay the owner set up; the agent and the owner both read the code. */
+/** An agent starts a pairing on a relay the owner set up; the agent and the owner both read the install command. */
 async function pairing(t: Parameters<typeof startScenario>[0]) {
   const s = await startScenario(t);
   const relay = await s.relay();
@@ -31,17 +31,17 @@ async function pairing(t: Parameters<typeof startScenario>[0]) {
   const started = resultOf(state.started!);
   const code = await owner.call("service:devices", "pair_code", { pair_id: started.pair_id });
   assert.ok(code.ok, "the owner can see it");
-  const secret = (dataOf(code) as { code: string }).code;
-  assert.ok(secret.length > 0);
-  return { owner, state, started, secret };
+  const command = (dataOf(code) as { command: string }).command;
+  assert.ok(command.length > 0);
+  return { owner, state, started, command };
 }
 
-test("SPEC-03 §9.5.4, agent first: an agent starts a pairing and gets the code and the address to hand the owner; pair_code gives it the same", async (t) => {
-  const { state, started, secret } = await pairing(t);
+test("SPEC-03 §9.5.4, agent first: an agent starts a pairing and gets the install command to hand the owner; pair_code gives it the same", async (t) => {
+  const { state, started, command } = await pairing(t);
 
   assert.ok(started.pair_id && started.expires_at, "the agent gets pair_id and expires_at");
-  assert.equal(started.code, secret, "and the code: nothing in a result is hidden from an agent");
-  assert.equal(typeof started.url, "string", "and the address the owner opens");
-  assert.equal(state.peek!.isError, false, "an agent may ask for the code again");
-  assert.equal((resultOf(state.peek!) as { code: string }).code, secret);
+  assert.equal(started.command, command, "and the command with its code and secret: nothing in a result is hidden from an agent");
+  assert.match(command, /install\.sh \| sh -s -- \S+ \S+ \S+$/);
+  assert.equal(state.peek!.isError, false, "an agent may ask for the command again");
+  assert.equal((resultOf(state.peek!) as { command: string }).command, command);
 });

@@ -89,7 +89,7 @@ export interface HubOptions {
 }
 
 export interface Hub {
-  /** `http://127.0.0.1:<port>`. `/link` (WebSocket, `ash-link/1`), `/mcp` and the web page hang off it. */
+  /** `http://127.0.0.1:<port>`. `/link` (WebSocket, `ash-link/2`), `/mcp` and the web page hang off it. */
   url: string;
   /** Stops the hub; the second call waits for the first. */
   stop(): Promise<void>;
@@ -295,7 +295,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   const hostService = createHostService({ client: host, router, registry, virtual, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);
   link.mount("/mcp", tools.handler);
-  link.mount("/", staticWeb(), { relay: true });
+  link.mount("/", staticWeb());
 
   // 7. everybody into the registry
   for (const member of [

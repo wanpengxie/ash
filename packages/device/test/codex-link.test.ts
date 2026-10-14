@@ -32,7 +32,7 @@ async function running(t: { after(fn: () => unknown): void }) {
   const stateDir = join(dir, "state");
   const kernel = await startKernel();
   const identity = await loadIdentity(stateDir);
-  kernel.pair({ id: identity.id, publicKey: identity.publicKey });
+  kernel.pair({ id: identity.id, publicKey: identity.publicKey, stateDir });
   const device = await startDevice({ gateway: "", name: "Test Mac", stateDir, workdir: join(dir, "work") }, undefined, { relay: false, detect: codexOnly, ego: null, kimiPorts: [0] });
   t.after(async () => { await device.close(); await kernel.stop(); });
   openTunnel(kernel, device, identity.id);

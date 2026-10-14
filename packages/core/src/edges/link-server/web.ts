@@ -1,7 +1,6 @@
 /**
  * The web client as static files (HUB-MODULES §2.1): the page, its manifest and icon, and the faces of the agent. The page
- * talks to the hub only over `/link`; nothing here is data. Mount it at `/` with `relay: true`, so a browser can also get
- * it through the relay.
+ * talks to the hub only over `/link`; nothing here is data. Mounted at `/` on 127.0.0.1; the relay does not carry it.
  */
 import { createHash } from "node:crypto";
 import { AVATARS, ICON_SVG, UI_HTML, UI_JS, UI_JS_FILE, WEB_MANIFEST } from "./ui.generated";

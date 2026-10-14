@@ -21,7 +21,7 @@ main.ts     the program the host starts: harden the process, call startHub, wait
 The import rules (kernel imports sdk only; edges and services import kernel and sdk, not each other) are checked by
 `packages/core/test/arch/imports.test.ts`. Services and edges talk to each other only by sending words through the router.
 
-Other packages: `sdk` (the contracts), `link` (`ash-link/1`), `workspace` (file and shell operations), `web` (the page the
+Other packages: `sdk` (the contracts), `link` (`ash-link/2`; on relay tunnels inside TLS, docs/LINK-E2E.md), `workspace` (file and shell operations), `web` (the page the
 hub serves), `device` (the computer program), `ash-skills` (rules, skills, persona templates), `dsh-ash-control` and
 `ash-cost` (DSH plugins), `pi-login` (Codex's device-code login for the pi runtime), `apps` (first-party apps), `android-compat` (the Node preload the Android host starts core with).
 

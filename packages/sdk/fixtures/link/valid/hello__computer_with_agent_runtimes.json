@@ -1,6 +1,6 @@
 {
   "t": "hello",
-  "protocol": "ash-link/1",
+  "protocol": "ash-link/2",
   "hand": {
     "kind": "computer",
     "name": "Phone",

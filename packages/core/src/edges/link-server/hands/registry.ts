@@ -25,10 +25,9 @@ export interface HandRecord {
   public_key: string;
   paired_by: "local" | "gateway";
   tier: "ask" | "full";
-  /** The three permissions (SPEC-03 §2.2.1). Only a hand that came through the gateway is held to them. */
+  /** The permissions (SPEC-03 §2.2.1); being a body is the third (service:bodies). Only a hand that came through the gateway is held to them. */
   lend: boolean;
   local_agents: boolean;
-  web_ui: boolean;
   version: string | null;
   platform: string | null;
   manifest_rev: number | null;
@@ -38,8 +37,8 @@ export interface HandRecord {
   revoked_at: number | null;
 }
 
-export type NewHand = Pick<HandRecord, "id" | "name" | "kind" | "public_key" | "paired_by"> & Partial<Pick<HandRecord, "tier" | "lend" | "local_agents" | "web_ui" | "version" | "platform">>;
-export type Access = Partial<Pick<HandRecord, "tier" | "lend" | "local_agents" | "web_ui">>;
+export type NewHand = Pick<HandRecord, "id" | "name" | "kind" | "public_key" | "paired_by"> & Partial<Pick<HandRecord, "tier" | "lend" | "local_agents" | "version" | "platform">>;
+export type Access = Partial<Pick<HandRecord, "tier" | "lend" | "local_agents">>;
 
 /** `splitBodyCapabilities` of `bodies.ts`, injected so this module does not know the body rules. */
 export type SplitBodyCapabilities = <C extends { name: string }>(
@@ -66,7 +65,7 @@ export interface LinkControl { closeHand(handId: string, code: number, reason: s
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS hands (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, public_key TEXT NOT NULL, paired_by TEXT NOT NULL,
-  tier TEXT NOT NULL DEFAULT 'ask', lend INTEGER NOT NULL DEFAULT 0, local_agents INTEGER NOT NULL DEFAULT 0, web_ui INTEGER NOT NULL DEFAULT 0,
+  tier TEXT NOT NULL DEFAULT 'ask', lend INTEGER NOT NULL DEFAULT 0, local_agents INTEGER NOT NULL DEFAULT 0,
   version TEXT, platform TEXT, manifest_rev INTEGER, manifest_hash TEXT,
   paired_at INTEGER NOT NULL, last_seen INTEGER, revoked_at INTEGER);
 CREATE TABLE IF NOT EXISTS hand_capabilities (
@@ -85,7 +84,7 @@ interface Live {
 }
 
 const row = (r: Record<string, unknown> | undefined): HandRecord | null => r ? ({
-  ...r, lend: r.lend === 1, local_agents: r.local_agents === 1, web_ui: r.web_ui === 1,
+  ...r, lend: r.lend === 1, local_agents: r.local_agents === 1,
 }) as unknown as HandRecord : null;
 
 export class HandRegistry {
@@ -117,18 +116,18 @@ export class HandRegistry {
 
   /** Writes a hand (or, for a hand that is known, its name, kind, key and permissions again). Never un-revokes. */
   register(hand: NewHand): HandRecord {
-    this.d.db.prepare(`INSERT INTO hands (id, name, kind, public_key, paired_by, tier, lend, local_agents, web_ui, version, platform, paired_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.d.db.prepare(`INSERT INTO hands (id, name, kind, public_key, paired_by, tier, lend, local_agents, version, platform, paired_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, public_key = excluded.public_key, paired_by = excluded.paired_by,
-        tier = excluded.tier, lend = excluded.lend, local_agents = excluded.local_agents, web_ui = excluded.web_ui`)
-      .run(hand.id, hand.name, hand.kind, hand.public_key, hand.paired_by, hand.tier ?? "ask", hand.lend ? 1 : 0, hand.local_agents ? 1 : 0, hand.web_ui ? 1 : 0,
+        tier = excluded.tier, lend = excluded.lend, local_agents = excluded.local_agents`)
+      .run(hand.id, hand.name, hand.kind, hand.public_key, hand.paired_by, hand.tier ?? "ask", hand.lend ? 1 : 0, hand.local_agents ? 1 : 0,
         hand.version ?? null, hand.platform ?? null, this.now());
     return this.get(hand.id)!;
   }
 
   /** The first time this machine's own hand connects (`paired_by=local`, tier `ask`). */
   registerLocal(id: string, hello: HelloFrame["hand"]): HandRecord {
-    return this.register({ id, name: hello.name, kind: hello.kind, public_key: hello.public_key ?? "", paired_by: "local", lend: true, web_ui: true, version: hello.version, platform: hello.platform });
+    return this.register({ id, name: hello.name, kind: hello.kind, public_key: hello.public_key ?? "", paired_by: "local", lend: true, version: hello.version, platform: hello.platform });
   }
 
   /** A connection of this hand is up: when it was last seen, which version it runs. */
@@ -140,7 +139,7 @@ export class HandRegistry {
 
   setAccess(id: string, access: Access): void {
     const next = { ...this.get(id)!, ...access };
-    this.d.db.prepare("UPDATE hands SET tier = ?, lend = ?, local_agents = ?, web_ui = ? WHERE id = ?").run(next.tier, next.lend ? 1 : 0, next.local_agents ? 1 : 0, next.web_ui ? 1 : 0, id);
+    this.d.db.prepare("UPDATE hands SET tier = ?, lend = ?, local_agents = ? WHERE id = ?").run(next.tier, next.lend ? 1 : 0, next.local_agents ? 1 : 0, id);
   }
 
   /** The record stays (it is how a later connection from this machine is refused); connections close with 4003. */

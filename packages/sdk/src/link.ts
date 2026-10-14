@@ -1,5 +1,6 @@
 /**
- * `ash-link/1`: the one connection protocol between the kernel and every hand (phone app, computer program, browser).
+ * `ash-link/2`: the one connection protocol between the kernel and every hand (phone app, computer program, browser).
+ * On a relay tunnel it runs inside TLS (packages/link/src/secure.ts, docs/LINK-E2E.md); on the local link in the clear.
  *
  * This file is the only definition of the protocol's frames. Each frame is written once, as a small schema builder
  * value; the TypeScript type, the JSON Schema (generated into `schema/link/`) and the runtime validator all come from
@@ -381,10 +382,10 @@ export function linkSchemaFiles(): Record<string, string> {
   const frames: Record<string, { file: string; channel: FrameChannel; from: FrameFrom }> = {};
   for (const t of FRAME_TYPES) {
     const { schema, from, channel } = FRAME_DEFS[t];
-    files[fileOf(t)] = text({ $schema: DRAFT, title: `ash-link/1 ${t} frame`, ...schema.json });
+    files[fileOf(t)] = text({ $schema: DRAFT, title: `${LINK_PROTOCOL} ${t} frame`, ...schema.json });
     frames[t] = { file: fileOf(t), channel, from };
   }
-  files["capability-spec.json"] = text({ $schema: DRAFT, title: "ash-link/1 CapabilitySpec", ...capabilitySpec.json });
+  files["capability-spec.json"] = text({ $schema: DRAFT, title: `${LINK_PROTOCOL} CapabilitySpec`, ...capabilitySpec.json });
   files["index.json"] = text({ protocol: LINK_PROTOCOL, limits: LIMITS, close_codes: CLOSE_CODES, no_reconnect: NO_RECONNECT_CODES, agent_ops: AGENT_OPS, frames });
   return files;
 }

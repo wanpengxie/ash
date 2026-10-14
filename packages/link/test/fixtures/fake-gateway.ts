@@ -35,7 +35,7 @@ export class Endpoint {
   onClose(cb: (code: number, reason: string) => void): void { this.onEnd.push(cb); if (this.closedWith) cb(this.closedWith.code, this.closedWith.reason); }
 }
 
-/** A hand connector over an endpoint: the hand speaks `ash-link/1` through the tunnel. */
+/** A hand connector over an endpoint: the hand speaks `ash-link/2` through the tunnel. */
 export const connectorOver = (endpoint: Endpoint): Connector => (_url, _headers, events): RawSocket => {
   endpoint.onClose((code, reason) => events.close(code, reason));
   // The hand reads its first frame only once it has the socket in hand: what came earlier is delivered then.

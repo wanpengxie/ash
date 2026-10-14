@@ -128,15 +128,15 @@ test("设备 8: the owner renames a hand and changes what it may do; the list sh
   const owner = await s.human();
 
   const renamed = await owner.call("service:devices", "rename", { device: phone.member, name: "客厅的手机" });
-  const access = await owner.call("service:devices", "access_set", { device: phone.member, tier: "full", web_ui: true });
+  const access = await owner.call("service:devices", "access_set", { device: phone.member, tier: "full", local_agents: true });
 
   assert.ok(renamed.ok && access.ok);
   const listed = await owner.call("service:devices", "list");
   assert.ok(listed.ok);
-  const mine = (dataOf(listed) as { devices: { device: string; name: string; tier: string; web_ui: boolean }[] }).devices.find((d) => d.device === phone.member);
+  const mine = (dataOf(listed) as { devices: { device: string; name: string; tier: string; local_agents: boolean }[] }).devices.find((d) => d.device === phone.member);
   assert.equal(mine?.name, "客厅的手机");
   assert.equal(mine?.tier, "full");
-  assert.equal(mine?.web_ui, true);
+  assert.equal(mine?.local_agents, true);
 });
 
 test("设备 15: the owner updates a computer program: the hub calls x.ash.update on it, nobody else can", async (t) => {

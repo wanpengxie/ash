@@ -39,10 +39,10 @@ export function homeHub(kernel) {
   on("service:apps", "apps.disable", ({ id }) => { state.apps.find((a) => a.id === id).enabled = false; return {}; });
   on("service:devices", "list", () => ({ devices: state.devices }));
   on("service:devices", "pair_pending", () => ({ pairs: state.pairs }));
-  on("service:devices", "pair_start", ({ kind }) => { state.pairs.push({ pair_id: "pair1", state: "waiting", kind }); return { pair_id: "pair1", expires_at: Date.now() + 600_000 }; });
-  on("service:devices", "pair_code", () => ({ code: "ABCD-1234", url: "https://relay.example/p/ABCD-1234", expires_at: Date.now() + 600_000 }));
+  on("service:devices", "pair_start", ({ kind }) => { state.pairs.push({ pair_id: "pair1", state: "waiting", kind }); return { pair_id: "pair1", expires_at: Date.now() + 600_000, command: "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.2.3/install.sh | sh -s -- https://relay.example ABCD-1234 SECRET-5678" }; });
+  on("service:devices", "pair_code", () => ({ command: "curl -fsSL https://github.com/wanpengxie/ash/releases/download/device-v0.2.3/install.sh | sh -s -- https://relay.example ABCD-1234 SECRET-5678", expires_at: Date.now() + 600_000 }));
   on("service:devices", "pair_status", ({ pair_id }) => state.pairs.find((p) => p.pair_id === pair_id) ?? { pair_id, state: "expired" });
-  on("service:devices", "pair_approve", ({ pair_id }) => { state.pairs = []; state.devices.push({ device: `device:${"N".repeat(22)}`, name: "我的电脑", kind: "computer", online: true, tier: "ask", lend: true, body: false, local_agents: false, web_ui: false, via: "gateway" }); return { pair_id, state: "approved" }; });
+  on("service:devices", "pair_approve", ({ pair_id }) => { state.pairs = []; state.devices.push({ device: `device:${"N".repeat(22)}`, name: "我的电脑", kind: "computer", online: true, tier: "ask", lend: true, body: false, local_agents: false, via: "gateway" }); return { pair_id, state: "approved" }; });
   on("service:devices", "revoke", ({ device }) => { state.devices.find((d) => d.device === device).revoked_at = Date.now(); return { revoked: true }; });
   on("service:devices", "restore", ({ device }) => { delete state.devices.find((d) => d.device === device).revoked_at; return {}; });
   on("service:link", "gateway.status", () => state.relay);

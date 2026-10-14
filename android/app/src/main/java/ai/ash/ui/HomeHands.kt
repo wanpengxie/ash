@@ -91,8 +91,8 @@ class HmHands(env: HomeEnv, arg: String?) : HomePage(env, arg) {
 private class Perms(private val page: HomePage, private val ctx: android.app.Activity, device: JSONObject, private val browser: Boolean) {
     private val c = AshUi.p(ctx)
     private var tier = if (device.str("tier") == "full") "full" else "ask"
-    private val keys = listOf(Triple("lend", "借出它的能力", "让她能用它"), Triple("body", "当作身体", "让她读写它的文件、执行命令"), Triple("local_agents", "允许本地 Agent", "使用电脑本地完整权限"), Triple("web_ui", "允许访问聊天和网页界面", null))
-    private val switches = keys.associate { (k, _, _) -> k to AshUi.AshSwitch(ctx).apply { set(if (browser) k == "web_ui" else device.optBoolean(k)); if (browser) { isEnabled = false; alpha = 0.4f } } }
+    private val keys = listOf(Triple("lend", "借出它的能力", "让她能用它"), Triple("body", "当作身体", "让她读写它的文件、执行命令"), Triple("local_agents", "允许本地 Agent", "使用电脑本地完整权限"))
+    private val switches = keys.associate { (k, _, _) -> k to AshUi.AshSwitch(ctx).apply { set(!browser && device.optBoolean(k)); if (browser) { isEnabled = false; alpha = 0.4f } } }
     val root = AshUi.vstack(ctx, 14)
     private val tierSlot = android.widget.FrameLayout(ctx)
 
@@ -106,7 +106,7 @@ private class Perms(private val page: HomePage, private val ctx: android.app.Act
         tierSlot.removeAllViews()
         tierSlot.addView(AshUi.segmented(ctx, listOf("按规则和影响审批", "完全放开"), if (tier == "full") 1 else 0) { i -> if (!browser) { tier = if (i == 1) "full" else "ask"; drawTier() } }.also { if (browser) it.alpha = 0.4f })
     }
-    fun read(): JSONObject = JSONObject().put("tier", if (browser) "ask" else tier).also { o -> keys.forEach { (k, _, _) -> o.put(k, if (browser) k == "web_ui" else switches.getValue(k).checked) } }
+    fun read(): JSONObject = JSONObject().put("tier", if (browser) "ask" else tier).also { o -> keys.forEach { (k, _, _) -> o.put(k, !browser && switches.getValue(k).checked) } }
 }
 
 /** One device (`d/<device>`) or one request waiting to be approved (`p/<pair id>`). */
@@ -148,7 +148,7 @@ class HmDevice(env: HomeEnv, arg: String?) : HomePage(env, arg) {
             val pair = pairs.firstOrNull { it.str("pair_id") == pairId && it.str("state") == "requested" }
             if (pair == null) { addView(Hk.list(ctx, listOf(Hk.row(ctx, "check", "这个请求已经处理了", tone = "ok")))); addView(AshUi.button(ctx, "回到她的手和眼", Kind.NEUTRAL, block = true) { env.nav.pop() }); return@redraw }
             val kind = HomeModel.KIND_NAMES[pair.str("kind")] ?: "设备"
-            val p = Perms(this@HmDevice, ctx, JSONObject().put("tier", "ask").put("lend", pair.str("kind") != "browser"), pair.str("kind") == "browser").also { perms = it }
+            val p = Perms(this@HmDevice, ctx, JSONObject().put("tier", "ask").put("lend", true), false).also { perms = it }
             addView(AshUi.card(ctx).apply { addView(AshUi.text(ctx, pair.str("name")?.ifEmpty { null } ?: "新$kind", AshType(20f, 28f, 700, Role.INK))); addView(AshUi.text(ctx, "$kind · 先确认它是你的设备，再选它能做什么", AshTokens.Type.sub)) })
             addView(p.root)
             addView(AshUi.button(ctx, "批准", Kind.PRIMARY, block = true) { act("pair_approve", p.read().put("pair_id", pairId), "批准未确认，请刷新状态后检查。") { env.nav.pop() } })
@@ -204,16 +204,16 @@ class HmDevice(env: HomeEnv, arg: String?) : HomePage(env, arg) {
 /** 连一台新设备: a pairing code for a computer, server or browser, and the relay it goes through. */
 class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     override val title = "连一台新设备"
-    private class Shown(val pairId: String, val kind: String, val code: String, val url: String, val deadline: Long, var state: String = "waiting")
+    private class Shown(val pairId: String, val kind: String, val command: String, val deadline: Long, var state: String = "waiting")
     private var kind = "computer"
     private var shown: Shown? = null
     private var pairResult = ""
     private var relay: JSONObject? = null
-    private var copied = "复制地址"
+    private var copied = "复制命令"
     private var signature: String? = null
     private var tick = 0
     private var pairText: TextView? = null
-    private val kinds = listOf("computer" to "电脑", "server" to "服务器", "browser" to "浏览器")
+    private val kinds = listOf("computer" to "电脑", "server" to "服务器")
 
     init {
         every(1000) {
@@ -227,9 +227,9 @@ class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private fun countdown(ms: Long): String { val s = maxOf(0L, Math.ceil(ms / 1000.0).toLong()); return "${s / 60}:${"%02d".format(s % 60)}" }
 
     private fun textOf(s: Shown, code: String?, left: Long): String = when (code) {
-        "requested" -> "配对码已使用。新设备发来的连接请求在「她的手和眼」里，确认是你的设备再批准。"
-        "expired" -> "配对码已过期。需要时再点「生成配对码」。"
-        else -> "配对码：${s.code}（还剩 ${countdown(left)}，只能用一次）。${if (s.url.isEmpty()) "" else if (s.kind == "browser") "在新浏览器里打开下面的地址，把上面的配对码输进去，再回到「她的手和眼」批准：" else "在要连接的电脑上用浏览器打开下面的地址，按页面提示安装，再回到「她的手和眼」批准："}"
+        "requested" -> "命令已运行。新设备发来的连接请求在「她的手和眼」里，确认是你的设备再批准。"
+        "expired" -> "命令已过期。需要时再点「生成安装命令」。"
+        else -> "在要连接的电脑上打开终端，粘贴下面这行命令回车（还剩 ${countdown(left)}，只能用一次；里面有一次性密钥，别发给别人），再回到「她的手和眼」批准："
     }
     private fun codeOf(s: Shown, left: Long) = if (s.state == "waiting" && left <= 0) "expired" else s.state
 
@@ -258,16 +258,14 @@ class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     }
 
     private fun startPairing() {
-        pairResult = "正在生成配对码…"; draw()
+        pairResult = "正在生成安装命令…"; draw()
         call("service:devices", "pair_start", JSONObject().put("kind", kind)) { a ->
             val id = a.data.str("pair_id")
-            if (!a.ok || id == null) { pairResult = "生成失败：中转站可能离线，请稍后重试。"; shown = null; draw(); return@call }
-            call("service:devices", "pair_code", JSONObject().put("pair_id", id)) { b ->
-                if (!b.ok) { pairResult = "生成失败：中转站可能离线，请稍后重试。"; shown = null; draw(); return@call }
-                copied = "复制地址"
-                shown = Shown(id, kind, b.data.str("code") ?: "", b.data.str("url") ?: "", b.data.num("expires_at") ?: a.data.num("expires_at") ?: System.currentTimeMillis())
-                pairResult = ""; draw()
-            }
+            val command = a.data.str("command")
+            if (!a.ok || id == null || command == null) { pairResult = "生成失败：中转站可能离线，请稍后重试。"; shown = null; draw(); return@call }
+            copied = "复制命令"
+            shown = Shown(id, kind, command, a.data.num("expires_at") ?: System.currentTimeMillis())
+            pairResult = ""; draw()
         }
     }
 
@@ -279,15 +277,15 @@ class HmConnect(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         addView(AshUi.group(ctx, "连一台新设备", rows = listOf(AshUi.vstack(ctx, 14).apply {
             setPadding(dp(14), dp(14), dp(14), dp(14))
             addView(AshUi.segmented(ctx, kinds.map { it.second }, kinds.indexOfFirst { it.first == kind }) { i -> kind = kinds[i].first; draw() })
-            addView(AshUi.button(ctx, "生成配对码", Kind.PRIMARY, block = true) { startPairing() })
+            addView(AshUi.button(ctx, "生成安装命令", Kind.PRIMARY, block = true) { startPairing() })
             if (pairResult.isNotEmpty()) addView(Hk.note(ctx, pairResult))
             if (s != null) {
                 val t = AshUi.text(ctx, textOf(s, code, left), AshTokens.Type.sub); pairText = t
                 addView(t)
-                if (code == "waiting" && s.url.isNotEmpty()) {
-                    addView(Hk.pre(ctx, s.url))
+                if (code == "waiting") {
+                    addView(Hk.pre(ctx, s.command))
                     addView(AshUi.button(ctx, copied, Kind.NEUTRAL, AshUi.BtnSize.SM) {
-                        ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("", s.url)); copied = "已复制"; draw()
+                        ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("", s.command)); copied = "已复制"; draw()
                     })
                 }
                 if (code == "requested") addView(AshUi.button(ctx, "去批准", Kind.PRIMARY, AshUi.BtnSize.SM) { env.nav.pop() })

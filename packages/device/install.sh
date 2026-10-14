@@ -1,9 +1,10 @@
 #!/bin/sh
 # Release bootstrap. Does not remove existing state, keys, or workspaces.
 set -eu
-gateway=${1:?Usage: install.sh GATEWAY PAIR_CODE [setup options]}
+gateway=${1:?Usage: install.sh GATEWAY PAIR_CODE PAIR_SECRET [setup options]}
 pair=${2:?Pairing code required}
-shift 2
+secret=${3:?Pairing secret required}
+shift 3
 version=${ASH_DEVICE_VERSION:-0.2.3}
 case "$version" in *[!0-9.]*|'') echo "Invalid release version" >&2; exit 1;; esac
 case "$(uname -s)" in Darwin) os=darwin;; Linux) os=linux;; *) echo "macOS or Linux required" >&2; exit 1;; esac
@@ -27,4 +28,4 @@ tar -xzf "$ash_stage/$asset" --strip-components=1 -C "$ash_release"
 ln -s "$ash_release" "$ash_install_root/current-$$"
 # rename() replaces the link itself, not the directory it points to.
 "$ash_release/node" -e 'require("node:fs").renameSync(process.argv[1],process.argv[2])' "$ash_install_root/current-$$" "$ash_install_root/current"
-exec "$ash_install_root/current/bin/ash-device" setup --root "$ash_install_root" --gateway "$gateway" --pair "$pair" "$@"
+exec "$ash_install_root/current/bin/ash-device" setup --root "$ash_install_root" --gateway "$gateway" --pair "$pair" --secret "$secret" "$@"

@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `6674b8d105a9a712`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `6e1113c650a5fc48`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -120,20 +120,20 @@
 
 | 词 | 调用方 | effect / risk | 标记 | 输入 | 进行时 | 说明 |
 |---|---|---|---|---|---|---|
-| `list` | owner, agent, app | read / none | - | - | 在看已连接设备 | Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents, web chat) and its tier. |
+| `list` | owner, agent, app | read / none | - | - | 在看已连接设备 | Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. |
 | `describe` | owner, agent, app | read / none | - | device* | 在看设备详情 | One hand in detail: how it connects, what it was allowed, when it was last seen. |
-| `pair_start` | owner, agent, app | act / none | - | kind, name | 在开始设备配对 | Start pairing a new computer, server or browser. You get the pair_id, the one-time code and the address to open on the new device (its page gives the install command for a computer and asks a browser for the code); hand them to the owner, or run it yourself on a device you can already use. Nothing joins without the owner: the new device's request comes to the owner as a card, who decides what it may do. As the pairing moves on you get a background message; pair_status to look. |
-| `pair_status` | owner, agent, app | read / none | - | pair_id* | 在看配对进展 | Where a pairing is: waiting for the code, requested (the owner is asked), approved, connected, rejected or expired. |
+| `pair_start` | owner, agent, app | act / none | - | kind, name | 在开始设备配对 | Start pairing a new computer or server. You get the pair_id and the whole install command to run in the new computer's terminal: it downloads Ash's program from its GitHub release, checks it, and pairs with a one-time code and a one-time secret. The secret never goes to the relay, so the relay cannot swap either side's key; it lives only in this command, so give the command to the owner in the conversation (or run it yourself on a computer you can already use), nowhere else. The device's request comes back to you; pair_approve lets it in. As the pairing moves on you get a background message; pair_status to look. |
+| `pair_status` | owner, agent, app | read / none | - | pair_id* | 在看配对进展 | Where a pairing is: waiting for the command to be run, requested (a device asked to join), approved, connected, rejected, expired, or failed (with the reason: the device or the hub could not prove the pairing secret on the first connection, so a key was swapped on the way; pair again). |
 | `pair_pending` | owner, agent, app | read / none | - | - | 在看配对申请 | The pairings a device has answered, waiting for pair_approve or pair_reject. |
-| `pair_approve` | owner, agent, app | write / none | - | pair_id*, name, tier, lend, body, local_agents, web_ui | 在批准设备配对 | Let in the device that answered a pairing, with what it may do: lend capabilities, serve as a body, run local agents, web chat; and its tier. The one who started the pairing approves it (the owner asked for this device), right away. |
+| `pair_approve` | owner, agent, app | write / none | - | pair_id*, name, tier, lend, body, local_agents | 在批准设备配对 | Let in the device that answered a pairing, with what it may do: lend capabilities, serve as a body, run local agents; and its tier. The one who started the pairing approves it (the owner asked for this device), right away. The pairing is done when the device connects and proves the pairing secret. |
 | `pair_reject` | owner, agent, app | write / none | - | pair_id* | 在拒绝设备配对 | Reject a pairing request. |
 | `revoke` | owner, agent, app | write / structure | - | device* | 在断开并撤销设备 | Disconnect a hand and revoke it: it can no longer connect, and its capabilities and body go away. The gate decides whether the owner is asked. |
 | `restore` | owner, agent | write / structure | - | device* | 在恢复已撤销的设备 | Let a revoked hand pair again, with the permissions it had. The gate decides whether the owner is asked. |
 | `rename` | owner, agent, app | write / none | - | device*, name* | 在修改设备名称 | Change the name a hand is shown with. |
-| `access_set` | owner, agent, app | write / none | - | device*, tier, lend, body, local_agents, web_ui | 在调整设备权限 | Change what a hand may do (lend capabilities, serve as a body, run local agents, web chat) and its tier (ask, full): the same choices pair_approve makes. |
+| `access_set` | owner, agent, app | write / none | - | device*, tier, lend, body, local_agents | 在调整设备权限 | Change what a hand may do (lend capabilities, serve as a body, run local agents) and its tier (ask, full): the same choices pair_approve makes. |
 | `update` | owner, agent, app | write / structure | - | device*, version*, sha256* | 在更新设备程序 | Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked. |
-| `pair_code` | owner, agent | read / none | - | pair_id* | 在看配对码 | The one-time code of a pairing still waiting, with the address to open on the new device. The code only lets the device ask; pair_approve lets it in. |
-| `pair.changed` | kernel | read / none | event out, record | pair_id*, state*, device | 在记下配对进展 | A pairing moved on (requested, approved, rejected, connected, expired). The one who started it is told by a background message. |
+| `pair_code` | owner, agent | read / none | - | pair_id* | 在看配对命令 | The install command of a pairing still waiting, again. It only lets the device ask; pair_approve lets it in. |
+| `pair.changed` | kernel | read / none | event out, record | pair_id*, state*, device, reason | 在记下配对进展 | A pairing moved on (requested, approved, rejected, connected, expired, failed with its reason). The one who started it is told by a background message. |
 | `config.changed` | kernel | read / none | event in | item*, state* | 在记下手机设置变化 | A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded. |
 | `codex.turn_ended` | kernel | read / none | event in | thread*, title, outcome, said | 在记下 Codex 做完一轮 | A computer reports that a session of its Codex app finished a turn. The owner is told in a short message; not recorded. |
 | `codex.approval_pending` | kernel | read / none | event in | thread*, title, request_id*, kind, summary | 在记下 Codex 等批准 | A computer reports that a session of its Codex app is waiting for an approval. The owner is told in a short message; not recorded. |

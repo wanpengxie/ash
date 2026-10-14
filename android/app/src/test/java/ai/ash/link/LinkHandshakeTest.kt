@@ -20,7 +20,7 @@ class LinkHandshakeTest {
         val conn = link.kernel.awaitConn()
         assertEquals("Bearer test-token", conn.authorization)
         val hello = conn.awaitFrame("hello")
-        assertEquals("ash-link/1", hello.getString("protocol"))
+        assertEquals("ash-link/2", hello.getString("protocol"))
         val hand = hello.getJSONObject("hand")
         assertEquals("phone", hand.getString("kind"))
         assertEquals(link.identity.publicKey, hand.getString("public_key"))

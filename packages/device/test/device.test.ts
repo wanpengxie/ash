@@ -27,12 +27,40 @@ async function setup(t: { after(fn: () => unknown): void }, o: { installRoot?: s
   const stateDir = join(dir, "state"), workdir = join(dir, "work");
   const kernel = await startKernel();
   const identity = await loadIdentity(stateDir);
-  kernel.pair({ id: identity.id, publicKey: identity.publicKey }, o.permissions);
+  kernel.pair({ id: identity.id, publicKey: identity.publicKey, stateDir }, o.permissions);
   const device = await startDevice({ gateway: "", name: "Test Mac", stateDir, workdir, installRoot: o.installRoot }, undefined, { relay: false, detect: o.detect ?? nothing, ego: null, kimiPorts: [0], codexApp: false, ...o.deps });
   t.after(async () => { await device.close(); await kernel.stop(); });
   const tunnel = o.connect === false ? { cut() {} } : openTunnel(kernel, device, identity.id);
   return { kernel, device, id: identity.id, dir, workdir, stateDir, tunnel };
 }
+
+test("the first connection after pairing: the hub proves the secret, the computer pins its owner key and forgets the secret", async (t) => {
+  const s = await setup(t, { connect: false });
+  const file = join(s.stateDir, "paired.json");
+  // What setup writes: the owner key the relay named (not trusted yet) and the secret from the install command.
+  const told = (await loadIdentity(join(s.dir, "someone-else"))).publicKey;
+  await writeFile(file, JSON.stringify({ owner_key: told, permissions: ["expose_capability"], secret: "one-time-secret" }));
+  s.kernel.relay.security.pairSecret = "one-time-secret";
+  openTunnel(s.kernel, s.device, s.id);
+  await s.device.client.ready();
+  const pinned = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(pinned.owner_key, s.kernel.relay.ownerKey, "the key the secret proved, not the one the relay named");
+  assert.equal(pinned.secret, undefined);
+  assert.deepEqual(pinned.permissions, ["expose_capability"]);
+  assert.equal(s.device.lastRefusal, null);
+});
+
+test("a hub that cannot prove the pairing secret is not let in, and the computer says why", async (t) => {
+  const s = await setup(t, { connect: false });
+  const file = join(s.stateDir, "paired.json");
+  await writeFile(file, JSON.stringify({ owner_key: s.kernel.relay.ownerKey, secret: "the-real-secret" }));
+  s.kernel.relay.security.pairSecret = "not-the-secret";
+  openTunnel(s.kernel, s.device, s.id);
+  await eventually(() => s.device.lastRefusal, "the refusal");
+  assert.deepEqual(s.device.lastRefusal, { message: "the hub could not prove the pairing secret: the relay may have swapped the owner's key", pairing: true });
+  assert.equal(JSON.parse(await readFile(file, "utf8")).secret, "the-real-secret", "nothing pinned");
+  assert.equal(s.kernel.hands.online(s.id), false);
+});
 
 test("the handshake: this computer signs in as a computer, with the device channel and, when a runtime is installed, the agent channel", async (t) => {
   const s = await setup(t, { detect: codexOnly });

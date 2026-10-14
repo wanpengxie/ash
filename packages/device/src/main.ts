@@ -2,9 +2,10 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { HelloChannels } from "../../sdk/src/link";
 import { HandClient } from "../../link/src/hand";
+import { secureConnector } from "../../link/src/secure";
 import { createWorkspace } from "./workspace";
 import { createHand } from "./hand";
-import { GatewayLine, TunnelPort, helloHand, loadIdentity } from "./link";
+import { GatewayLine, PairingFile, TunnelPort, helloHand, loadIdentity } from "./link";
 import { detectRuntimes } from "./agents/detect";
 import { runtimeCatalog } from "./agents/catalog";
 import { AgentChannel } from "./agents/channel";
@@ -46,6 +47,8 @@ export interface RunningDevice {
   readonly handId: string;
   /** Where the hub's tunnels arrive. */
   readonly port: TunnelPort;
+  /** Why the last connection could not be secured (the hub did not prove itself), if it could not. */
+  readonly lastRefusal: { message: string; pairing: boolean } | null;
   /** Ends when the connection is over for good (stopped, revoked, or refused). */
   run: Promise<void>;
   close(): Promise<void>;
@@ -54,7 +57,8 @@ export interface RunningDevice {
 const defaultFactory = (kind: Kind, options: OpenOptions): Promise<AgentSession> =>
   ({ codex: CodexSession, claude: ClaudeSession, workbuddy: WorkBuddySession })[kind].open(options);
 
-export async function startDevice(config: DeviceConfig, pairCode?: string, dependencies: DeviceDeps = {}): Promise<RunningDevice> {
+/** [pair]: the code and the one-time secret of the install command, on the first run only. */
+export async function startDevice(config: DeviceConfig, pair?: { code: string; secret: string }, dependencies: DeviceDeps = {}): Promise<RunningDevice> {
   if (!config.name || !config.stateDir || !config.workdir || (!config.gateway && dependencies.relay !== false)) throw new Error("gateway, name, stateDir and workdir are required");
   const stateDir = resolve(config.stateDir), workdir = resolve(config.workdir);
   mkdirSync(stateDir, { recursive: true, mode: 0o700 }); mkdirSync(workdir, { recursive: true });
@@ -104,9 +108,17 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
     log,
   });
 
-  // The connection.
+  // The connection: the relay's tunnels, secured end to end, the hub judged by the owner key pinned at pairing.
   const port = new TunnelPort();
+  const pairing = new PairingFile(join(stateDir, "paired.json"));
   const line = dependencies.relay === false ? null : new GatewayLine(config.gateway, identity, port, log);
+  let lastRefusal: RunningDevice["lastRefusal"] = null;
+  const connector = secureConnector(port.connector, {
+    key: identity.link,
+    trust: () => pairing.trust(),
+    paired: (ownerKey) => { pairing.pin(ownerKey); log("the hub proved the pairing secret; its owner key is pinned"); },
+    refused: (refusal) => { lastRefusal = { message: refusal.message, pairing: refusal.pairing }; log("the connection was not secured:", refusal.message); },
+  });
   // `agent` is asked for only while some runtime is installed; it is read again on every handshake.
   const channels = { device: {} } as HelloChannels;
   Object.defineProperty(channels, "agent", { enumerable: true, get: () => { const list = runtimeInfos(runtimes.get()); return list.length ? { runtimes: list } : undefined; } });
@@ -114,7 +126,7 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
   const finished = new Promise<void>((resolve) => { finish = resolve; });
   client = new HandClient({
     url: "relay://tunnel/link",
-    connector: port.connector,
+    connector,
     hand: helloHand(identity, { name: config.name, version: DEVICE_VERSION }),
     channels,
     sign: (nonce) => identity.signNonce(nonce),
@@ -122,7 +134,7 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
       call: hand.handlers.call,
       assess: hand.handlers.assess,
       agent: (frame) => void agents.handle(frame),
-      welcome: (welcome) => { if (welcome.channels.agent && "accepted" in welcome.channels.agent && welcome.channels.agent.accepted) agents.opened(); },
+      welcome: (welcome) => { lastRefusal = null; if (welcome.channels.agent && "accepted" in welcome.channels.agent && welcome.channels.agent.accepted) agents.opened(); },
       closed: ({ code, reason, willReconnect }) => {
         agents.closed();
         log("hub connection closed", code, reason);
@@ -148,12 +160,12 @@ export async function startDevice(config: DeviceConfig, pairCode?: string, depen
     await agents.close(); await workspace.close(); await bridge.close(); await codex?.close(); await runtimes.close();
     finish();
   };
-  try { if (line) await line.pair(stateDir, pairCode, config.name); } catch (error) { await stopAll(); throw error; }
+  try { if (line) await line.pair(pairing, pair, config.name); } catch (error) { await stopAll(); throw error; }
   declare();
   client.start();
   codex?.start();
   const run = Promise.all([line ? line.run() : Promise.resolve(), finished]).then(() => {});
-  return { client, agents, handId: identity.id, port, run, close: stopAll };
+  return { client, agents, handId: identity.id, port, get lastRefusal() { return lastRefusal; }, run, close: stopAll };
 }
 
 if (process.argv[1] && /(?:^|[/\\])(?:main\.ts|ash-device\.mjs)$/.test(process.argv[1])) {

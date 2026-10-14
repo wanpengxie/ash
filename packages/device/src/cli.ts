@@ -27,15 +27,21 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
     catch (error) { say(`Codex: not connected to Ash: ${(error as Error).message}`); }
   };
   if (command === "setup") {
-    const gateway = option("--gateway"), pair = option("--pair");
-    if (!gateway || !pair) throw new Error("setup requires --gateway URL --pair CODE");
+    const gateway = option("--gateway"), code = option("--pair"), secret = option("--secret");
+    if (!gateway || !code || !secret) throw new Error("setup requires --gateway URL --pair CODE --secret SECRET (run the install command Ash gives)");
     const url = new URL(gateway); if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("Use HTTPS for the gateway");
     await mkdir(root, { recursive: true, mode: 0o700 });
     const config: DeviceConfig = { gateway, name: option("--name") ?? hostname(),
       stateDir: join(root, "state"), workdir: resolve(option("--workdir") ?? join(homedir(), "ash-shared")), installRoot: root };
     await writeFile(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
-    console.log("Open Ash and approve this computer's pairing request. Choose what it may do: lend its abilities, be a body, run local agents, web access.");
-    const running = await start(config, pair); await running.close();
+    console.log("Waiting for Ash to let this computer in…");
+    const running = await start(config, { code, secret });
+    // Approved by the relay; now the hub must prove the pairing secret on the first secure connection (and this computer, its own).
+    const proved = await Promise.race([running.client.ready().then(() => true, () => false), new Promise<false>((resolve) => setTimeout(resolve, 120_000, false))]);
+    const refusal = running.lastRefusal;
+    await running.close();
+    if (!proved && refusal?.pairing) throw new Error(`Pairing failed: ${refusal.message}. Ask Ash for a new install command.`);
+    console.log(proved ? "Paired: the hub proved the pairing secret, and this computer pinned its owner key." : `Paired with the relay, but the hub has not connected yet${refusal ? ` (${refusal.message})` : ""}; the service will keep trying.`);
     if (args.includes("--no-service")) { console.log(`Paired. Start with: ash-device run --config ${configPath}`); return; }
     await mkdir(dirname(serviceFile), { recursive: true });
     await writeFile(serviceFile, serviceDefinition(root, process.platform, process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"), { mode: 0o600 });
@@ -85,10 +91,11 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
     console.log(await installRelease(root, version, hash));
     console.log("Restart the ash-device user service to use the update."); return;
   }
-  if (command !== "run") { console.log("ash-device setup --gateway URL --pair CODE [--name NAME] [--workdir PATH]\nash-device run | status | update --version-to VERSION --sha256 HASH | uninstall\nash-device codex install | uninstall | status   (let the Codex App use Ash)\nash-device mcp   (the MCP server the Codex App starts)"); return; }
+  if (command !== "run") { console.log("ash-device setup --gateway URL --pair CODE --secret SECRET [--name NAME] [--workdir PATH]\nash-device run | status | update --version-to VERSION --sha256 HASH | uninstall\nash-device codex install | uninstall | status   (let the Codex App use Ash)\nash-device mcp   (the MCP server the Codex App starts)"); return; }
   const config = JSON.parse(await readFile(configPath, "utf8"));
   await hookCodex(console.log);
-  const running = await start(config, option("--pair"), { restart: () => { void running.close().then(() => process.exit(0)); } });
+  const code = option("--pair"), secret = option("--secret");
+  const running = await start(config, code && secret ? { code, secret } : undefined, { restart: () => { void running.close().then(() => process.exit(0)); } });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void running.close().then(() => process.exit(0)); });
   await running.run;
   // The connection is over for good (revoked, or the hub speaks another protocol): leave the service stopped, not retrying.

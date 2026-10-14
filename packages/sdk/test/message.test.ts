@@ -9,7 +9,7 @@ test("the versions are the ones the spec names", () => {
   assert.equal(API_VERSION, "ash-api/3");
   assert.equal(WORD_CONTRACT_VERSION, 4);
   assert.equal(ASH_SDK, 4);
-  assert.equal(LINK_PROTOCOL, "ash-link/1");
+  assert.equal(LINK_PROTOCOL, "ash-link/2");
   assert.equal(HOST_CONTRACT, "ash-host/1");
   assert.equal(APP_CONTRACT, "ash-app/1");
   assert.equal(MCP_SERVER_NAME, "ash");

@@ -1,6 +1,6 @@
 /**
  * The link control module with a hub around it: the real link server and hand registry, a fake relay (the owner's side of
- * `ash-gw/1`), and devices and browsers that reach the hub through that relay's tunnels.
+ * `ash-gw/1`), and devices that reach the hub through that relay's tunnels, secured end to end as `ash-device` does.
  */
 import { generateKeyPairSync, sign as signBytes } from "node:crypto";
 import { connect, createServer } from "node:net";
@@ -9,6 +9,7 @@ import type { HandKind } from "../../../../sdk/src/link";
 import { WordError, type HandleContext, type Message } from "../../../../sdk/src/message";
 import type { CapabilitySpec } from "../../../../sdk/src/link";
 import { HandClient } from "../../../../link/src/hand";
+import { secureConnector, type SecureRefusal } from "../../../../link/src/secure";
 import { Endpoint, FakeGateway, connectorOver } from "../../../../link/test/fixtures/fake-gateway";
 import { createLinkControl, type LinkControl, type LinkControlDeps } from "../../../src/edges/link-server/control/words";
 import type { OwnerIdentity } from "../../../src/edges/link-server/control/gateway";
@@ -56,6 +57,16 @@ let n = 0;
 export const msg = (to: string, word: string, body: unknown = {}, from = "person:owner"): Message =>
   ({ seq: ++n, id: `m${n}`, ts: 0, from, to, kind: "request", word, body });
 
+export interface TestDevice {
+  identity: Identity;
+  clients: HandClient[];
+  id: string;
+  /** Owner keys it pinned when the hub proved a pairing secret. */
+  pinned: string[];
+  /** Connections it did not let through, and why. */
+  refusals: SecureRefusal[];
+}
+
 export interface World {
   hub: Hub;
   gw: FakeGateway;
@@ -68,8 +79,15 @@ export interface World {
   link(word: string, body?: unknown, ctx?: HandleContext): Promise<any>;
   /** The error code of a refused call. */
   refused(word: string, body?: unknown, ctx?: HandleContext): Promise<string>;
-  /** A device that the owner paired (`lend`: may lend capabilities), known to the relay with [permissions]. It speaks `ash-link/1` on every tunnel the hub opens to it. */
-  device(o: { capabilities?: CapabilitySpec[]; name: string; kind?: HandKind; permissions: string[]; lend?: boolean; local_agents?: boolean; web_ui?: boolean; online?: boolean }): Promise<{ identity: Identity; clients: HandClient[]; id: string }>;
+  /** A device that the owner paired (`lend`: may lend capabilities), known to the relay with [permissions]. It speaks `ash-link/2` in TLS on every tunnel the hub opens to it. */
+  device(o: {
+    capabilities?: CapabilitySpec[]; name: string; kind?: HandKind; permissions: string[]; lend?: boolean; local_agents?: boolean; online?: boolean;
+    identity?: Identity;
+    /** False: the hub has no record of it yet (a pairing writes it). */
+    register?: boolean;
+    /** What the device checks the hub against (default: the hub's own key, no pairing secret). */
+    trust?: { ownerKey: string; pairSecret: string | null };
+  }): Promise<TestDevice>;
   tell(): { to: string; text: string }[];
   events(word: string): any[];
 }
@@ -93,12 +111,17 @@ export async function startWorld(t: { after(fn: () => unknown): void }, o: { gat
     if (!await control.gateway.connected(5000)) throw new Error("the hub did not connect to the fake relay");
   }
 
-  const identities = new Map<string, { identity: Identity; kind: HandKind; name: string; clients: HandClient[]; capabilities?: CapabilitySpec[] }>();
+  const identities = new Map<string, TestDevice & { kind: HandKind; name: string; capabilities?: CapabilitySpec[]; trust: { ownerKey: string; pairSecret: string | null } }>();
   gw.onDeviceStream = (id, endpoint: Endpoint) => {
     const who = identities.get(id);
     if (!who) return endpoint.close(4404, "no such device");
     const client = new HandClient({
-      url: "relay://tunnel/link", connector: connectorOver(endpoint),
+      url: "relay://tunnel/link",
+      connector: secureConnector(connectorOver(endpoint), {
+        key: who.identity.link, trust: () => who.trust,
+        paired: (ownerKey) => { who.pinned.push(ownerKey); who.trust = { ownerKey, pairSecret: null }; },
+        refused: (refusal) => who.refusals.push(refusal),
+      }),
       hand: { kind: who.kind, name: who.name, version: "0.0.1", platform: "test", public_key: who.identity.publicKey },
       channels: { device: {} }, sign: (nonce) => who.identity.sign(nonce),
     });
@@ -118,13 +141,13 @@ export async function startWorld(t: { after(fn: () => unknown): void }, o: { gat
       return "none";
     },
     async device(d) {
-      const identity = await newIdentity();
+      const identity = d.identity ?? await newIdentity();
       const kind = d.kind ?? "computer";
-      hub.hands.register({ id: identity.handId, name: d.name, kind, public_key: identity.publicKey, paired_by: "gateway", lend: d.lend ?? true, local_agents: d.local_agents ?? false, web_ui: d.web_ui ?? false });
-      const who = { identity, kind, name: d.name, clients: [] as HandClient[], capabilities: d.capabilities };
+      if (d.register !== false) hub.hands.register({ id: identity.handId, name: d.name, kind, public_key: identity.publicKey, paired_by: "gateway", lend: d.lend ?? true, local_agents: d.local_agents ?? false });
+      const who = { identity, id: identity.handId, kind, name: d.name, clients: [] as HandClient[], pinned: [] as string[], refusals: [] as SecureRefusal[], capabilities: d.capabilities, trust: d.trust ?? { ownerKey: key.publicKey, pairSecret: null } };
       identities.set(identity.handId, who);
       gw.setDevice(identity.handId, { name: d.name, permissions: d.permissions, online: d.online ?? true });
-      return { identity, clients: who.clients, id: identity.handId };
+      return who;
     },
     tell: () => hub.router.sent.filter((s) => s.msg.word === "tell").map((s) => ({ to: s.msg.to!, text: String((s.msg.body as { text: string }).text) })),
     events: (word) => hub.router.sent.filter((s) => s.msg.kind === "event" && s.msg.to === "service:link" && s.msg.word === word).map((s) => s.msg.body),
