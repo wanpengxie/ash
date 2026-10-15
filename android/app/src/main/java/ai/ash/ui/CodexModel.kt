@@ -19,12 +19,8 @@ object CodexModel {
         val running get() = state == "running"
         val waiting get() = state == "waiting_approval"
     }
-    /**
-     * One item of a turn. [at]: its place in the whole turn (the computer shows the last 30, so a place in what is shown
-     * would point at another item as the turn grows); [id]: Codex's own id, when it has one; [clientId]: on an owner's
-     * message sent from here, the client id it was sent with. Older computers send none of the three.
-     */
-    data class Item(val kind: String, val text: String, val at: Int? = null, val id: String? = null, val clientId: String? = null)
+    /** One item of a turn; [id] is Codex's own id, when it has one. */
+    data class Item(val kind: String, val text: String, val id: String? = null)
     data class Turn(val id: String, val status: String, val items: List<Item>)
     data class Approval(val requestId: String, val kind: String, val summary: String)
     data class Detail(val session: Session, val turns: List<Turn>, val approvals: List<Approval>)
@@ -48,7 +44,7 @@ object CodexModel {
         if (data == null || data.optString("id").isEmpty()) return null
         val turns = data.optJSONArray("turns").mapObjects { t ->
             Turn(t.optString("id"), t.str("status") ?: "unknown", t.optJSONArray("items").mapObjects {
-                Item(it.optString("kind"), it.optString("text"), if (it.has("at")) it.optInt("at") else null, it.str("id"), it.str("client_id"))
+                Item(it.optString("kind"), it.optString("text"), it.str("id"))
             })
         }
         val approvals = data.optJSONArray("approvals").mapObjects { Approval(it.optString("request_id"), it.optString("kind"), it.optString("summary")) }
@@ -75,28 +71,20 @@ object CodexModel {
     }
 
     /**
-     * The row key of an item (MOBILE-ARCH §2.2): an owner's message sent from here is keyed by its client id — the key its
-     * waiting row had, so it becomes that row; else Codex's own id; else its place in the whole turn. [shown] (its place
-     * among what is shown) is only for computers too old to say any of these.
+     * The row key of item [i] of [turn] (MOBILE-ARCH §2.2): the first message of a turn sent from here keeps the key of the
+     * row it waited in (its client id, by the turn it started: [sentAs]); others are keyed by Codex's id, else their place.
      */
-    fun itemKey(turn: String, item: Item, shown: Int): String =
-        item.clientId ?: item.id?.let { "id:$it" } ?: item.at?.let { "$turn@$it" } ?: "$turn~$shown"
+    fun itemKey(turn: Turn, i: Int, sentAs: (String) -> String?): String {
+        val item = turn.items[i]
+        if (item.kind == "user" && turn.items.indexOfFirst { it.kind == "user" } == i) sentAs(turn.id)?.let { return it }
+        return item.id?.let { "id:$it" } ?: "${turn.id}~$i"
+    }
 
-    /** The client ids a session read shows (its owner's messages sent from here). */
-    fun clientIds(d: Detail): Set<String> = d.turns.flatMap { t -> t.items.mapNotNull { it.clientId } }.toSet()
-
-    /**
-     * Which waiting operations a successful read of [thread] settles: a message is settled only when the session shows the
-     * message it became (by its client id) — never because some read worked or enough time passed. Computers that cannot
-     * name the message leave it waiting for explicit reconciliation; age is not evidence of delivery.
-     */
-    fun settled(ops: List<Pending>, device: String, thread: String, shown: Set<String>): List<String> = ops.filter { op ->
-        op.to == device && op.body.optString("op") == "send" && op.body.optString("thread") == thread &&
-            op.clientId in shown
-    }.map { it.clientId }
-
-    /** Operations stored while they were going out when the app went: not known to have arrived, so not sent again by themselves (§6.2). */
-    fun interrupted(ops: List<Pending>): List<String> = ops.filter { it.status == Pending.SENDING }.map { it.clientId }
+    /** The messages sent to [thread] on [device] whose turn the session now shows: they no longer wait apart. */
+    fun settled(ops: List<Pending>, device: String, thread: String, d: Detail): List<String> {
+        val turns = d.turns.map { it.id }.toSet()
+        return ops.filter { it.to == device && it.body.optString("op") == "send" && it.body.optString("thread") == thread && it.ledgerId in turns }.map { it.clientId }
+    }
 
     /** The new session's id from x.codex.new. */
     fun created(data: JSONObject?): String? = data?.str("thread")
@@ -130,14 +118,11 @@ object CodexModel {
 }
 
 /**
- * Where the Codex page is and what it last read (MOBILE-ARCH §3.2, §11.1), as plain data. Every read carries a [Ticket] —
- * the generation, the computer and the session it was asked for — and is taken only while all three still hold: an answer
- * about a session the owner already left (or another computer) is dropped, success or failure. A failed read keeps what is
- * shown and says why ([problem]); only a successful read replaces it.
+ * Where the Codex page is and what it last read (MOBILE-ARCH §3.2, §11.1), as plain data. Every change of route bumps the
+ * [generation]; a read is taken only in the generation it was asked in, so an answer about a page the owner left is dropped,
+ * success or failure. A failed read keeps what is shown and says why ([problem]); only a successful read replaces it.
  */
 class CodexState {
-    data class Ticket(val gen: Int, val device: String?, val thread: String?)
-
     var computers: List<CodexModel.Computer> = emptyList(); private set
     var device: String? = null; private set
     var chosen: String? = null; private set
@@ -156,8 +141,6 @@ class CodexState {
     /** The page went away: what is being read now no longer counts. */
     fun invalidate() { generation++ }
 
-    fun ticket() = Ticket(generation, device, thread)
-    private fun holds(t: Ticket) = t.gen == generation && t.device == device && t.thread == thread
     private fun moved() { generation++; problem = null }
 
     /** The computers were read: the one chosen before while it is there, else the first. */
@@ -187,16 +170,16 @@ class CodexState {
     }
 
     /** The list, read with [t]: false when it no longer counts. */
-    fun listRead(t: Ticket, data: org.json.JSONObject?, failure: String?): Boolean {
-        if (!holds(t) || t.thread != null) return false
+    fun listRead(gen: Int, data: org.json.JSONObject?, failure: String?): Boolean {
+        if (gen != generation || thread != null) return false
         if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
         else { sessions = CodexModel.sessions(data); problem = null }
         return true
     }
 
     /** A session, read with [t]: false when it no longer counts. */
-    fun detailRead(t: Ticket, data: org.json.JSONObject?, failure: String?): Boolean {
-        if (!holds(t) || t.thread == null) return false
+    fun detailRead(gen: Int, data: org.json.JSONObject?, failure: String?): Boolean {
+        if (gen != generation || thread == null) return false
         if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
         else { CodexModel.detail(data)?.let { detail = it; title = it.session.title }; problem = null }
         return true

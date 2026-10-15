@@ -77,12 +77,13 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         layoutManager = talkLm; adapter = talkRows
         setPadding(d(14), 0, d(14), d(12)); clipToPadding = false
         addItemDecoration(gap(10))
+        // A drag of the session puts the keyboard away; its own scrolling never does (§4.3).
+        addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: RecyclerView, st: Int) { if (st == RecyclerView.SCROLL_STATE_DRAGGING) dropKeyboard() }
+        })
     }
-    /** When to move the session (decided as its rows land, §2.4); a drag puts the keyboard away (§4.3) and gives up a place being restored. */
-    private val follow = FollowEnd(talkList, talkLm, talkRows) { dropKeyboard(); talkPlace.cancel() }
-    /** Reading places to bring back after the activity was made again: in the list of sessions, and in the session. */
-    private var listPlace = AnchorRestore(null)
-    private var talkPlace = AnchorRestore(null)
+    /** Where the session was read, to bring back once it is read again after the activity was made again. */
+    private var place: Anchor? = null
     /**
      * Why the last read failed, floating over the top of the lists (§1.2): it covers their top — the oldest rows — while it
      * shows, and lays nothing out coming and going.
@@ -116,22 +117,16 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         column.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         view.addView(column, FrameLayout.LayoutParams(-1, -1))
         saved?.getBundle(STATE)?.let { b ->
-            state.restore(b.keySet().filter { !it.startsWith("place.") }.associateWith { b.getString(it).orEmpty() })
-            listPlace = AnchorRestore(placeOf(b, "place.list"))
-            talkPlace = AnchorRestore(placeOf(b, "place.talk"))
+            state.restore(b.keySet().filter { it != PLACE && it != OFFSET }.associateWith { b.getString(it).orEmpty() })
+            place = b.getString(PLACE)?.let { Anchor(it, b.getInt(OFFSET)) }
         }
-        sessionList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrollStateChanged(rv: RecyclerView, st: Int) { if (st == RecyclerView.SCROLL_STATE_DRAGGING) listPlace.cancel() }
-        })
         moved()
-        // Stored operations come back: one that was going out when the app went is not known to have arrived (§6.2).
+        // Stored operations come back; one that was going out when the app went is shown as not sent (重发 keeps its id).
         ops.whenReady {
-            CodexModel.interrupted(ops.items()).forEach { ops.mark(it, Pending.UNKNOWN) }
+            ops.items().filter { it.status == Pending.SENDING }.forEach { ops.mark(it.clientId, Pending.FAILED) }
             paint()
         }
     }
-
-    private fun placeOf(b: Bundle, k: String) = b.getString("$k.key")?.let { AnchorRestore.Anchor(it, null, b.getInt("$k.offset")) }
 
     fun close() { closed = true; main.removeCallbacksAndMessages(null) }
 
@@ -158,15 +153,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     fun save(out: Bundle) {
         out.putBundle(STATE, Bundle().apply {
             state.route().forEach { (k, v) -> putString(k, v) }
-            fun place(k: String, list: RecyclerView, lm: LinearLayoutManager, rows: KeyedRowsAdapter, atEndIsNone: Boolean) {
-                if (atEndIsNone && !list.canScrollVertically(1)) return
-                if (!atEndIsNone && !list.canScrollVertically(-1)) return
-                val pos = lm.findFirstVisibleItemPosition().takeIf { it >= 0 } ?: return
-                val row = lm.findViewByPosition(pos) ?: return
-                putString("$k.key", rows.currentList.getOrNull(pos)?.key ?: return); putInt("$k.offset", lm.getDecoratedTop(row) - list.paddingTop)
-            }
-            if (state.inTalk) place("place.talk", talkList, talkLm, talkRows, atEndIsNone = true)
-            place("place.list", sessionList, sessionLm, sessionRows, atEndIsNone = false)
+            if (state.inTalk) Anchor.of(talkList, talkLm, talkRows)?.let { putString(PLACE, it.key); putInt(OFFSET, it.offset) }
         })
     }
 
@@ -192,23 +179,24 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
             }
             return
         }
-        val t = state.ticket()
-        val dev = t.device ?: return
+        val gen = state.generation
+        val dev = state.device ?: return
+        val thread = state.thread
         loading = true
         val done: (JSONObject?, HumanPort.Failure?) -> Unit = { data, failure ->
             loading = false
-            val counted = if (t.thread == null) state.listRead(t, data, failure?.code) else state.detailRead(t, data, failure?.code)
+            val counted = if (thread == null) state.listRead(gen, data, failure?.code) else state.detailRead(gen, data, failure?.code)
             if (counted) {
-                // A message the session now shows (by its client id) is no longer shown apart: its row becomes the session's.
+                // A message whose turn the session now shows is no longer shown apart: the turn's first message takes its row.
                 val d = state.detail
-                if (t.thread != null && failure == null && d != null && ops.ready)
-                    CodexModel.settled(ops.items(), dev, t.thread, CodexModel.clientIds(d)).forEach(ops::remove)
+                if (thread != null && failure == null && d != null && ops.ready)
+                    CodexModel.settled(ops.items(), dev, thread, d).forEach(ops::remove)
                 paint()
             }
             again()
         }
-        if (t.thread == null) port.call(dev, CodexModel.SESSIONS, JSONObject().put("limit", 50), done)
-        else port.call(dev, CodexModel.SESSION, JSONObject().put("thread", t.thread).put("turns", 8).put("max_chars", 1200), done)
+        if (thread == null) port.call(dev, CodexModel.SESSIONS, JSONObject().put("limit", 50), done)
+        else port.call(dev, CodexModel.SESSION, JSONObject().put("thread", thread).put("turns", 8).put("max_chars", 1200), done)
     }
 
     private fun again() { if (readAgain) { readAgain = false; refresh() } }
@@ -263,7 +251,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
             storing = false
             if (!kept) { toast("没能存下来，还在输入框里，再点一次试试"); return@add }
             if (draftKey() == key && input.text.toString().trim() == text) input.setText("")
-            talkPlace.cancel()
+            place = null
             paintTalk(toEnd = true)
             go(op)
         }
@@ -300,8 +288,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
                     if (thread != null && state.device == to && state.newIn?.cwd == b.optString("cwd")) { state.open(thread, null); moved(); main.postDelayed({ refresh() }, 600) }
                     else paint()
                 }
-                failure == null -> { ops.mark(op.clientId, Pending.SENT); paint(); main.postDelayed({ refresh() }, 600) }
-                failure.code == "result_unknown" -> { ops.mark(op.clientId, Pending.UNKNOWN); paint() }
+                // Sent: kept (by the turn it started) until the session shows that turn; without a turn, gone now, and read again.
+                failure == null -> { ops.taken(op.clientId, data?.optString("turn")?.ifEmpty { null }); paint(); refresh() }
                 else -> { ops.mark(op.clientId, Pending.FAILED); paint() }
             }
         }
@@ -394,12 +382,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
                 }
             }
         }
-        sessionRows.submitList(rows) {
-            when (val step = listPlace.onRows(rows.map { it.key }, read = state.sessions != null, canFetch = false)) {
-                is AnchorRestore.Step.Go -> sessionLm.scrollToPositionWithOffset(step.index, step.offset)
-                else -> {}
-            }
-        }
+        sessionRows.submitList(rows)
     }
 
     private fun projectView(p: CodexModel.Project, now: Long): View {
@@ -431,7 +414,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
                 input.hint = if (dt.session.open) "跟 Codex 说…" else "跟 Codex 说…（会先在电脑上打开这个会话）"
                 for (turn in dt.turns) turn.items.forEachIndexed { i, item ->
                     if (item.kind == "thinking" || (item.kind in setOf("user", "agent") && item.text.isBlank())) return@forEachIndexed
-                    rows += ChatRow(CodexModel.itemKey(turn.id, item, i), item.kind + "|" + item.text) { itemView(item) }
+                    rows += ChatRow(CodexModel.itemKey(turn, i, ops::sentAs), item.kind + "|" + item.text) { itemView(item) }
                 }
                 if (dt.session.running && dt.approvals.isEmpty()) rows += ChatRow("running", "running") { AshUi.text(activity, "在做事…", AshTokens.Type.caption, c.text3).apply { layoutParams = side(false) } }
                 for (a in dt.approvals) rows += ChatRow("approval:" + a.requestId, a.summary + "|" + (a.requestId in answering)) { approvalCard(a) }
@@ -442,14 +425,10 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
             for (op in ops.items()) if (op.to == state.device && op.body.optString("op") == "send" && op.body.optString("thread") == state.thread && op.clientId !in shown)
                 rows += ChatRow(op.clientId, op.status + "|" + op.text) { opView(op) }
         }
-        val readNow = if (newIn != null) true else state.detail != null
-        follow.submit(rows, toEnd, hold = { talkPlace.pending }) {
-            when (val step = talkPlace.onRows(rows.map { it.key }, readNow, canFetch = false)) {
-                is AnchorRestore.Step.Go -> talkLm.scrollToPositionWithOffset(step.index, step.offset)
-                // Further back than the turns shown: stay at the oldest there is, not at the newest.
-                AnchorRestore.Step.Oldest -> talkLm.scrollToPositionWithOffset(0, 0)
-                else -> {}
-            }
+        val read = newIn != null || state.detail != null
+        FollowEnd.submit(talkList, talkLm, talkRows, rows, toEnd) {
+            // Made again: back to the row that was at the top, if the session still shows it; else the newest.
+            if (read) place?.let { a -> place = null; a.indexIn(rows)?.let { talkLm.scrollToPositionWithOffset(it, a.offset) } }
         }
     }
 
@@ -476,14 +455,13 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         addView(AshUi.bubbleText(activity, op.text, true).apply { alpha = 0.7f }, side(true))
         val status = when (op.status) {
             Pending.FAILED -> "没发出去"
-            Pending.UNKNOWN -> "不确定发出去没有，先看看上面再决定"
             Pending.SENT -> "已发出"
             else -> if (op.body.optString("op") == "new") "正在电脑上开新会话…" else "发送中…"
         }
         addView(AshUi.hstack(activity, 12).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(AshUi.text(activity, status, AshTokens.Type.caption, c.text3))
-            if (op.status == Pending.FAILED || op.status == Pending.UNKNOWN) {
+            if (op.status == Pending.FAILED) {
                 addView(AshUi.button(activity, "重发", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.get(op.clientId)?.let(::go) })
                 addView(AshUi.button(activity, "删掉", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.remove(op.clientId); paint() })
             }
@@ -509,5 +487,9 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         override fun getItemOffsets(out: android.graphics.Rect, v: View, parent: RecyclerView, s: RecyclerView.State) { out.top = d(dp) }
     }
 
-    companion object { const val STATE = "ai.ash.codex.route" }
+    companion object {
+        const val STATE = "ai.ash.codex.route"
+        private const val PLACE = "place"
+        private const val OFFSET = "place.offset"
+    }
 }

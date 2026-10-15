@@ -33,8 +33,6 @@ data class Pending(val clientId: String, val to: String?, val body: JSONObject, 
         const val UNSENT = "unsent"
         const val FAILED = "failed"
         const val SENT = "sent"
-        /** Sent, and no answer came: it may have been done. Not sent again by itself; again only with the same id (§6.2). */
-        const val UNKNOWN = "unknown"
 
         fun fromStored(meta: JSONObject, attachments: JSONArray?): Pending? {
             val id = meta.optString("client_id").ifEmpty { return null }

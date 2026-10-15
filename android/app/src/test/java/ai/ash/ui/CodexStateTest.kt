@@ -17,33 +17,33 @@ class CodexStateTest {
 
     @Test fun aFailedReadKeepsTheListAndSaysWhy() {
         val s = ready()
-        assertTrue(s.listRead(s.ticket(), list, null))
-        assertTrue(s.listRead(s.ticket(), null, "timeout"))
+        assertTrue(s.listRead(s.generation, list, null))
+        assertTrue(s.listRead(s.generation, null, "timeout"))
         assertEquals(listOf("t1", "t2"), s.sessions!!.map { it.id })
         assertEquals(CodexModel.unreachable("timeout"), s.problem)
-        assertTrue(s.listRead(s.ticket(), list, null))
+        assertTrue(s.listRead(s.generation, list, null))
         assertNull(s.problem)
     }
 
     @Test fun anAnswerAboutASessionLeftBehindIsDroppedSuccessOrFailure() {
         val s = ready()
         s.open("t1", "One")
-        val asked = s.ticket()
+        val asked = s.generation
         s.back(); s.open("t2", "Two")
         assertFalse(s.detailRead(asked, detail("t1"), null))
         assertFalse(s.detailRead(asked, null, "unavailable"))
         assertNull(s.detail); assertNull(s.problem)
-        assertTrue(s.detailRead(s.ticket(), detail("t2"), null))
+        assertTrue(s.detailRead(s.generation, detail("t2"), null))
         assertEquals("t2", s.detail!!.session.id)
         // The list asked for before a session was opened does not land on the session either.
-        val listTicket = CodexState().apply { computersRead(devices, null, 1) }.ticket()
-        assertFalse(s.listRead(listTicket, list, null))
+        val l = ready(); val listAsked = l.generation; l.open("t1", "One")
+        assertFalse(l.listRead(listAsked, list, null))
     }
 
     @Test fun anotherComputerDropsWhatTheFirstOneAnswers() {
         val s = ready()
         assertEquals("device:mac", s.device)
-        val asked = s.ticket()
+        val asked = s.generation
         assertTrue(s.choose("device:mini"))
         assertFalse(s.listRead(asked, list, null))
         assertNull(s.sessions)
@@ -52,8 +52,8 @@ class CodexStateTest {
     @Test fun aFailedSessionReadKeepsWhatItShowed() {
         val s = ready()
         s.open("t1", "One")
-        s.detailRead(s.ticket(), detail("t1"), null)
-        assertTrue(s.detailRead(s.ticket(), null, "result_unknown"))
+        s.detailRead(s.generation, detail("t1"), null)
+        assertTrue(s.detailRead(s.generation, null, "result_unknown"))
         assertEquals("t1", s.detail!!.session.id)
         assertEquals(CodexModel.unreachable("result_unknown"), s.problem)
     }

@@ -96,8 +96,6 @@ class ChatScreen(
             }
         })
     }
-    /** When to move the conversation (decided as the rows land); a drag also gives up a reading place being restored. */
-    private val follow = FollowEnd(list, lm, rowsAdapter, EMPTY) { place.cancel() }
     /** Ids of the long messages the owner opened; kept here so a repaint or a page of older messages does not fold them again. */
     private val unfolded = HashSet<String>()
     /** New rows that came while the owner was reading further up: the 「回到底部」 button wears a dot until the bottom is reached. */
@@ -349,19 +347,19 @@ class ChatScreen(
     private fun send(text: String, attachments: JSONArray) {
         if (storing) return
         val key = draftKey()
-        // What is sent is a copy: files picked while it is being stored are not part of it, and stay picked.
+        // What is sent is a copy; picking only adds at the end, so the first [n] picked are the ones it took.
         val sending = JSONArray(attachments.toString())
-        val taken = Picked.entries(attachments)
+        val n = sending.length()
         val body = JSONObject().put("text", text)
-        if (sending.length() > 0) body.put("attachments", sending)
+        if (n > 0) body.put("attachments", sending)
         storing = true
-        place.cancel()
+        place = null
         post(chosen, body) { kept ->
             storing = false
             if (!kept) { toast("这条消息没能存下来，还在输入框里，再点一次发送试试"); return@post }
             if (draftKey() == key && input.text.toString().trim() == text) input.setText("")
-            if (draftKey() == key && sending.length() > 0) {
-                picked = Picked.afterSend(picked, taken)
+            if (draftKey() == key && n > 0) {
+                picked = JSONArray().apply { for (i in n until picked.length()) put(picked.get(i)) }
                 paintPicked(); keepPicked()
             }
         }
@@ -664,8 +662,9 @@ class ChatScreen(
                 }
             })
         }
-        follow.submit(next, toEnd, hold = { place.pending }, onUnseen = { unseenBelow = true }) {
-            restorePlace(next)
+        FollowEnd.submit(list, lm, rowsAdapter, next, toEnd, onUnseen = { unseenBelow = true }) {
+            // Made again: back to the row that was at the top, once the conversation is read — if it is among the rows.
+            if (window.read) place?.let { a -> place = null; a.indexIn(next)?.let { lm.scrollToPositionWithOffset(it, a.offset) } }
             then?.invoke()
             paintToBottom()
             if (first) reportSeen()
@@ -851,45 +850,18 @@ class ChatScreen(
     /** The agent talked to and where the conversation was read, for the activity to keep across its being made again. */
     fun save(out: android.os.Bundle) {
         chosen?.let { out.putString(STATE_TARGET, it) }
-        anchor()?.let { a -> out.putString(STATE_ANCHOR, a.key); a.id?.let { out.putString(STATE_ANCHOR_ID, it) }; out.putInt(STATE_OFFSET, a.offset) }
+        Anchor.of(list, lm, rowsAdapter)?.let { a -> out.putString(STATE_ANCHOR, a.key); out.putInt(STATE_OFFSET, a.offset) }
     }
 
     fun restore(saved: android.os.Bundle?) {
         saved ?: return
         val target = saved.getString(STATE_TARGET)
         if (target != chosen) { chosen = target; loadDraft(); paintTarget() }
-        place = AnchorRestore(saved.getString(STATE_ANCHOR)?.let { AnchorRestore.Anchor(it, saved.getString(STATE_ANCHOR_ID), saved.getInt(STATE_OFFSET)) })
+        place = saved.getString(STATE_ANCHOR)?.let { Anchor(it, saved.getInt(STATE_OFFSET)) }
     }
 
-    /** The row at the top of the conversation and how far below the list's top it starts; null at the newest message (it follows it). */
-    private fun anchor(): AnchorRestore.Anchor? {
-        if (!list.canScrollVertically(1)) return null
-        val pos = lm.findFirstVisibleItemPosition().takeIf { it >= 0 } ?: return null
-        val row = lm.findViewByPosition(pos) ?: return null
-        val r = rowsAdapter.currentList.getOrNull(pos) ?: return null
-        return AnchorRestore.Anchor(r.key, r.id.ifEmpty { null }, lm.getDecoratedTop(row) - list.paddingTop)
-    }
-
-    /** Where to put the conversation once its row is there again (after the activity was made again); kept until it is, or is clearly not coming. */
-    private var place = AnchorRestore(null)
-
-    /** One step of bringing the reading place back, each time rows land (§3.4). */
-    private fun restorePlace(rows: List<ChatRow>) {
-        when (val step = place.onRows(rows.map { it.key }, window.read, port.open)) {
-            is AnchorRestore.Step.Go -> lm.scrollToPositionWithOffset(step.index, step.offset)
-            // Further back than the newest window: read the window around it, then look again.
-            is AnchorRestore.Step.Fetch -> {
-                val restoring = place
-                port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", step.id)) { data, _ ->
-                    restoring.fetchFinished()
-                    if (place === restoring) { window.older(data, keepMore = true); paintList() }
-                }
-            }
-            // Not coming: stay at the oldest row there is, never at the newest.
-            AnchorRestore.Step.Oldest -> lm.scrollToPositionWithOffset(0, 0)
-            else -> {}
-        }
-    }
+    /** Where to put the conversation once it is read again (after the activity was made again). */
+    private var place: Anchor? = null
 
     /** Her name changed (her home page read IDENTITY.md): the bar and the hint say it. */
     fun setName(name: String) { herName = name; nameLine.text = name; paintTarget() }
@@ -899,12 +871,12 @@ class ChatScreen(
 
     /** Shows message [id]: where it is when it is on screen, otherwise after reading the window around it. */
     fun jumpTo(id: String) {
-        place.cancel()
+        place = null
         fun show() { rowsAdapter.currentList.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { lm.scrollToPositionWithOffset(it, dp(60)) } }
         if (rowsAdapter.currentList.any { it.id == id }) { show(); return }
         port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", id)) { data, _ ->
             if (data == null) return@call
-            window.older(data, keepMore = true)
+            window.older(data)
             paintList(then = ::show)
         }
     }
@@ -958,7 +930,6 @@ class ChatScreen(
         private const val EMPTY = "empty"
         private const val STATE_TARGET = "ai.ash.chat.target"
         private const val STATE_ANCHOR = "ai.ash.chat.anchor"
-        private const val STATE_ANCHOR_ID = "ai.ash.chat.anchor_id"
         private const val STATE_OFFSET = "ai.ash.chat.offset"
         private const val SEEN_DEBOUNCE_MS = 500L
         private const val SEEN_EVERY_MS = 60_000L
