@@ -202,7 +202,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
                 // A message the session now shows (by its client id) is no longer shown apart: its row becomes the session's.
                 val d = state.detail
                 if (t.thread != null && failure == null && d != null && ops.ready)
-                    CodexModel.settled(ops.items(), dev, t.thread, CodexModel.clientIds(d), System.currentTimeMillis()).forEach(ops::remove)
+                    CodexModel.settled(ops.items(), dev, t.thread, CodexModel.clientIds(d)).forEach(ops::remove)
                 paint()
             }
             again()
@@ -295,7 +295,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
                 failure == null && new -> {
                     // The session exists: the operation is done; the session opens if the owner is still on that new page.
                     ops.remove(op.clientId)
-                    drafts.clear(Drafts.codexNew(to, b.optString("cwd")))
+                    // store() already cleared only the submitted draft. A later draft belongs to the owner, not this reply.
                     val thread = CodexModel.created(data)
                     if (thread != null && state.device == to && state.newIn?.cwd == b.optString("cwd")) { state.open(thread, null); moved(); main.postDelayed({ refresh() }, 600) }
                     else paint()

@@ -29,9 +29,14 @@ class ReviewFixesTest {
     // 2. A waiting message is settled only by the session showing it (its client id), not by any read that worked.
     @Test fun aReadThatDoesNotShowTheMessageDoesNotSettleIt() {
         val ops = listOf(send("c1", "t1", "same"), send("c2", "t1", "same"), send("c3", "t2", "other"), send("c4", "t1", "x", device = "device:mini"))
-        assertEquals("a read from before the send settles nothing", emptyList<String>(), CodexModel.settled(ops, "device:mac", "t1", CodexModel.clientIds(detail("old" to null)), now = 1_000))
-        assertEquals("the same words twice: only the one shown", listOf("c1"), CodexModel.settled(ops, "device:mac", "t1", CodexModel.clientIds(detail("same" to "c1", "same" to null)), now = 1_000))
-        assertEquals("a computer that cannot name it lets it go only after a while", listOf("c1", "c2"), CodexModel.settled(ops, "device:mac", "t1", emptySet(), now = CodexModel.GIVE_UP_MS + 1))
+        assertEquals("a read from before the send settles nothing", emptyList<String>(), CodexModel.settled(ops, "device:mac", "t1", CodexModel.clientIds(detail("old" to null))))
+        assertEquals("the same words twice: only the one shown", listOf("c1"), CodexModel.settled(ops, "device:mac", "t1", CodexModel.clientIds(detail("same" to "c1", "same" to null))))
+        assertEquals("a computer that cannot name it settles nothing", emptyList<String>(), CodexModel.settled(ops, "device:mac", "t1", emptySet()))
+    }
+
+    @Test fun oldSentMessagesAreNotSettledByAnUnrelatedRead() {
+        val old = send("old", "t1", "keep this", at = System.currentTimeMillis() - 86_400_000)
+        assertEquals(emptyList<String>(), CodexModel.settled(listOf(old), "device:mac", "t1", emptySet()))
     }
 
     @Test fun theSessionsCopyTakesTheWaitingRowsKeyAndAPlaceIsInTheWholeTurn() {
@@ -63,9 +68,13 @@ class ReviewFixesTest {
         assertEquals("rows before the conversation was read do not count", AnchorRestore.Step.Wait, r.onRows(listOf("out:1"), read = false, canFetch = true))
         assertEquals(AnchorRestore.Step.Fetch("m5"), r.onRows(listOf("m90", "m91"), read = true, canFetch = true))
         assertTrue(r.pending)
+        assertEquals("a refresh or card patch while around is in flight must wait", AnchorRestore.Step.Wait, r.onRows(listOf("m90", "m91"), true, true))
+        assertTrue(r.pending)
+        r.fetchFinished()
         assertEquals(AnchorRestore.Step.Go(1, 12), r.onRows(listOf("m4", "m5", "m90"), read = true, canFetch = true))
         val gone = AnchorRestore(AnchorRestore.Anchor("m5", "m5", 12))
         gone.onRows(listOf("m90"), true, true)
+        gone.fetchFinished()
         assertEquals(AnchorRestore.Step.Oldest, gone.onRows(listOf("m90"), true, true))
         assertFalse(gone.pending)
     }

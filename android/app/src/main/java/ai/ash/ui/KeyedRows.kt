@@ -83,17 +83,22 @@ class AnchorRestore(private var want: Anchor?) {
     }
 
     private var fetched = false
+    private var fetching = false
     val pending get() = want != null
 
     /** The owner took over (dragged, sent, jumped): the place is no longer wanted. */
     fun cancel() { want = null }
+
+    /** An unrelated refresh must not consume the anchor while its around-window is still on the way. */
+    fun fetchFinished() { fetching = false }
 
     fun onRows(keys: List<String>, read: Boolean, canFetch: Boolean): Step {
         val w = want ?: return Step.None
         if (!read) return Step.Wait
         val at = keys.indexOf(w.key)
         if (at >= 0) { want = null; return Step.Go(at, w.offset) }
-        if (!fetched && canFetch && w.id != null) { fetched = true; return Step.Fetch(w.id) }
+        if (fetching) return Step.Wait
+        if (!fetched && canFetch && w.id != null) { fetched = true; fetching = true; return Step.Fetch(w.id) }
         want = null
         return Step.Oldest
     }

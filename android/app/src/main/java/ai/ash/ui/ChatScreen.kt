@@ -878,8 +878,12 @@ class ChatScreen(
         when (val step = place.onRows(rows.map { it.key }, window.read, port.open)) {
             is AnchorRestore.Step.Go -> lm.scrollToPositionWithOffset(step.index, step.offset)
             // Further back than the newest window: read the window around it, then look again.
-            is AnchorRestore.Step.Fetch -> port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", step.id)) { data, _ ->
-                window.older(data, keepMore = true); paintList()
+            is AnchorRestore.Step.Fetch -> {
+                val restoring = place
+                port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", step.id)) { data, _ ->
+                    restoring.fetchFinished()
+                    if (place === restoring) { window.older(data, keepMore = true); paintList() }
+                }
             }
             // Not coming: stay at the oldest row there is, never at the newest.
             AnchorRestore.Step.Oldest -> lm.scrollToPositionWithOffset(0, 0)

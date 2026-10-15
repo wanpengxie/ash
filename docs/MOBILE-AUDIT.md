@@ -153,3 +153,33 @@ ANDROID_HOME=/home/xiewanpeng/android-sdk ./gradlew \
 | UiIo 任务吞异常 | 任务异常改为记日志；待发写入不论成败都会回调 | 已修 |
 | UiIo / HumanCall 队列无界 | 磁盘写入和收到的帧丢不得，没改成有界丢弃 | 未修（下一轮：按来源限流） |
 | HumanPort 流聚合和最终复制在主线程，没有总字节预算 | — | 未修 |
+
+## 七、合入主线后的独立复审（Codex，2026-10-15）
+
+基线：`f030d549`，包含 `17ea9f8d`、`679f3161`、`fcbff4b7` 及卡片运行时合并。结论：**否，仍有两项会误结算 / 重复执行的阻断**，见 7.2。旧待发数据不迁移已获主人确认，不再作为阻断；卡片子树增量 patch（#5）属于另一施工分支，不在本次验收范围。
+
+### 7.1 五项复核及本次小修
+
+| 原项 | 本次结论 |
+|---|---|
+| Codex 持久待发 | 手机已先存再清稿，目标电脑 / 会话 / client_id 固定，恢复 SENDING 为 UNKNOWN；电脑新建操作的部分成功仍不安全（7.2）。本次删掉 `CodexPane.go` 新建成功时无条件清项目草稿：原稿在入队时已按内容清过，迟到的回执不应再清掉之后输入的草稿。 |
+| 精确对账、同 key | 手机正式消息与待发已沿用 client_id，其余项用实体 id / 整轮绝对位置；但电脑端仍按文本猜归属（7.2）。本次去掉手机 SENT 超三分钟即删除的分支：时间不能证明消息已出现在会话里，包括旧电脑也不能静默删除；只按明确 client_id 对账。 |
+| 状态槽 | 聊天和 Codex 都已改顶部浮层，列表 padding 不随状态变化；未发现合并恢复旧 padding 写法。顶部覆盖和大字体可达性继续留设备验证，不据此阻断本次。 |
+| FollowEnd | 在 diff commit 时读取是否在末尾，toEnd 有拖动代次、恢复中有 hold，原先 submit 时捕获旧 atEnd 的路径已去掉。真实 RecyclerView 布局时序仍需设备验证。 |
+| 阅读锚点 | 已存路由 / key / offset，聊天有 around 补窗、待发先到不会消耗恢复。本次修复补窗在途竞态：普通刷新或 card.patch 再次提交缺少锚点的行时保持 Wait，只有 around 完成后才判断找不到并回退最早处；加入回归断言。 |
+
+### 7.2 仍须施工方处理的两项阻断
+
+以下为实际 `CodexApp` 类的确定性源码 / 运行反例，不是声称在手机上复现。测试桩只替换传输和新建入口，没有改写被测的对账与新建算法。
+
+1. **P1 · 误认另一来源消息，删除自己的未决待发**。`packages/device/src/codex-app.ts:591` 的 `claimed` 在没有回显 id 时，仍以发送点后的「同文本 + 顺序」认领。反例：`claim("t", "phone-op", "continue", {turns: []})`，随后读取一条只有 `id: "desktop-op"`、文本同为 `continue` 的桌面用户消息；实际 `claimed` 返回 `phone-op`。手机拿到这个伪造关联即删掉自己的未决操作，违反精确对账；原测试只证明能按同文排队，没有证明不会误认。要求：不能以文本猜身份；依赖经协议证实的精确回显 / 发送结果实体映射，无法确认时保留 UNKNOWN / 待对账，并补其他窗口同文消息的负例。原生回显字段目前仍标注 UNVERIFIED，不能当作已验证。
+
+2. **P1 · 新建部分成功后，同 client_id 重试仍新建两次**。同文件 `create:492` / `make:504`：startThread 已成功后，open / 首条 send 失败仍会使 `creates` 的去重项被 `done.catch` 删除，已创建 thread 没有绑定到持久操作。运行反例：第一次 startThread 返回 t1、send 抛 `result_unknown`；同 cwd / client_id 再调 create，实际又 startThread，返回 t2，累计 `[t1, t2]`。手机 UNKNOWN 和 FAILED 均有「重发」入口，可以到达该路径；第一次可能已开始工作，第二次重复执行。要求：将操作身份与已分配的 thread 分开记账，部分成功只对该 thread 继续对账 / 恢复，不重新分配；未知结果不可作可安全重建处理。补首发失败、未知结果、重连后的同 id 重试测试，不只测完整成功后的重复调用。这涉及电脑侧跨阶段操作恢复，本次不做大改。
+
+### 7.3 合并意图和验证边界
+
+- 两处冲突已对照两侧检查：HumanPort 保留 `card.patch` 收取、监听清理及关闭封端；ChatScreen 保留补丁覆盖旧窗口、可见卡上报 / 停止上报、标题行「做了 N 步」，同时保留 ChatWindow 的代次与失败保快照、持久待发和附件快照。未发现这些接线被冲突解决丢掉。
+- 键盘仍由 WindowInsetsOwner 单一处理；聊天与 Codex 的 deck 只设 translationY，IME 终态未改成重排归零；发送不 clearFocus / 收键盘。状态浮层不再改列表 padding。此为静态链路复核，不能替代真机开收、反转和输入法候选验证。
+- 独立强制重跑 Kotlin 编译与指定 `ai.ash.ui.*`、`ai.ash.apps.*`、`ai.ash.human.*` 单测，BUILD SUCCESSFUL（26 任务执行）；小修后再次执行编译及三组过滤，读取 JUnit XML 为 **32 suite、261 tests、0 failures / errors / skipped**。
+- 独立执行 `node --import tsx --test packages/device/test/codex-app.test.ts`：**21/21 通过**。另运行以上两个反例得到错误认领和 `[t1,t2]`，说明现有绿测不足以放行。未修改电脑端实现。
+- 未打包、未安装、未推送、未合并。IME / 预测返回 / 字体与真实布局仍待设备验收；前述非阻断遗留继续留清单，不因本次复审扩项。

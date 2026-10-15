@@ -87,15 +87,13 @@ object CodexModel {
 
     /**
      * Which waiting operations a successful read of [thread] settles: a message is settled only when the session shows the
-     * message it became (by its client id) — never because some read worked. A sent message the computer cannot name (an
-     * older computer) is let go after [GIVE_UP_MS], so it does not wait forever.
+     * message it became (by its client id) — never because some read worked or enough time passed. Computers that cannot
+     * name the message leave it waiting for explicit reconciliation; age is not evidence of delivery.
      */
-    fun settled(ops: List<Pending>, device: String, thread: String, shown: Set<String>, now: Long): List<String> = ops.filter { op ->
+    fun settled(ops: List<Pending>, device: String, thread: String, shown: Set<String>): List<String> = ops.filter { op ->
         op.to == device && op.body.optString("op") == "send" && op.body.optString("thread") == thread &&
-            (op.clientId in shown || (op.status == Pending.SENT && now - op.at > GIVE_UP_MS))
+            op.clientId in shown
     }.map { it.clientId }
-
-    const val GIVE_UP_MS = 180_000L
 
     /** Operations stored while they were going out when the app went: not known to have arrived, so not sent again by themselves (§6.2). */
     fun interrupted(ops: List<Pending>): List<String> = ops.filter { it.status == Pending.SENDING }.map { it.clientId }
