@@ -33,7 +33,8 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS card_runtime (
   fed_at INTEGER, kept INTEGER NOT NULL DEFAULT 0)`;
 
 /** The defaults of the hub settings `cards.*`. */
-export const CARD_LIMITS_DEFAULT = { idle_minutes: 2, dormant_minutes: 30, max_active: 8, max_sources: 16, max_temporary_apps: 5 };
+/** Every card's default lifecycle (the owner's rule: a card stops by itself unless he pins it): the hub settings `cards.*`. */
+export const CARD_LIMITS_DEFAULT = { idle_minutes: 1, dormant_minutes: 30, closed_hours: 24, max_active: 8, max_sources: 16, max_temporary_apps: 5 };
 const TICK_MS = 10_000;
 /** A card reported on screen counts as seen for this long (the screens report again at least once a minute). */
 const SEEN_MS = 75_000;
@@ -112,14 +113,16 @@ export class CardRuntime {
   private limits() {
     const s = this.d.settings();
     const n = (key: keyof typeof CARD_LIMITS_DEFAULT) => { const v = s[`cards.${key}`]; return typeof v === "number" && v >= 0 ? v : CARD_LIMITS_DEFAULT[key]; };
-    return { idle_minutes: n("idle_minutes"), dormant_minutes: n("dormant_minutes"), max_active: n("max_active"), max_sources: n("max_sources"), max_temporary_apps: n("max_temporary_apps") };
+    return { idle_minutes: n("idle_minutes"), dormant_minutes: n("dormant_minutes"), closed_hours: n("closed_hours"), max_active: n("max_active"), max_sources: n("max_sources"), max_temporary_apps: n("max_temporary_apps") };
   }
 
   /** A card was shown: it is registered, active (it is on the screen now). */
   register(row: CardRow, o: { app?: string; temporary?: boolean; ttl_min?: number }): void {
     const now = this.d.now();
+    // ttl only ever makes a card stop sooner: never past the default life (longer is pinning, the owner's to decide).
+    const ttl = o.ttl_min ? Math.min(o.ttl_min, this.limits().closed_hours * 60) : null;
     this.save({ id: row.id, app: o.app ?? null, temporary: !!o.app && o.temporary === true, life: "active", pinned: false, last_seen: now, last_used: now,
-      expires_at: o.ttl_min ? now + o.ttl_min * 60_000 : null, actions: {}, fed_at: null, kept: false });
+      expires_at: ttl ? now + ttl * 60_000 : null, actions: {}, fed_at: null, kept: false });
     this.reconcile();
   }
 
@@ -172,22 +175,22 @@ export class CardRuntime {
     const changed: string[] = [];
     const runs = this.all();
     for (const r of runs) {
-      if (r.expires_at !== null && r.expires_at <= now) { this.closeRun(r, false); changed.push(r.id); continue; }
       const onScreen = viewing && now - r.last_seen < SEEN_MS;
       const quiet = now - Math.max(r.last_seen, r.last_used);
+      // Past its ttl, or untouched for a day: closed (a pinned card only by its ttl).
+      if ((r.expires_at !== null && r.expires_at <= now) || (!r.pinned && !onScreen && quiet >= l.closed_hours * 3_600_000)) { this.closeRun(r, false); changed.push(r.id); continue; }
       const want: Life = r.pinned || onScreen || quiet < l.idle_minutes * 60_000 ? "active" : quiet < (l.idle_minutes + l.dormant_minutes) * 60_000 ? "idle" : "dormant";
       if (want !== r.life) { r.life = want; this.save(r); changed.push(r.id); }
     }
     // Limits: the least recently used go to sleep first.
     const recent = (r: Run) => Math.max(r.last_seen, r.last_used);
-    const active = this.all().filter((r) => r.life === "active" && !r.pinned).sort((a, b) => recent(a) - recent(b));
-    while (active.length + this.all().filter((r) => r.life === "active" && r.pinned).length > l.max_active && active.length) {
-      const r = active.shift()!; r.life = "dormant"; this.save(r); changed.push(r.id);
-    }
+    // A pinned card counts too, and goes last (it stays pinned: it runs again when there is room).
+    const active = this.all().filter((r) => r.life === "active").sort((a, b) => Number(a.pinned) - Number(b.pinned) || recent(a) - recent(b));
+    while (active.length > l.max_active) { const r = active.shift()!; r.life = "dormant"; this.save(r); changed.push(r.id); }
     let sources = 0;
     for (const r of this.all().filter((x) => x.life === "active").sort((a, b) => recent(b) - recent(a))) {
       const n = Object.keys(this.sourcesOf(r)).length;
-      if (sources + n > l.max_sources && !r.pinned) { r.life = "idle"; this.save(r); changed.push(r.id); continue; }
+      if (sources + n > l.max_sources) { r.life = "idle"; this.save(r); changed.push(r.id); continue; }
       sources += n;
     }
     const temporary = [...new Set(this.all().filter((r) => r.temporary && !r.kept && r.life === "active" && r.app).map((r) => r.app!))];
@@ -380,9 +383,14 @@ export class CardRuntime {
   private info(r: Run): Record<string, unknown> {
     const row = this.d.cards.get(r.id);
     return { id: r.id, message: row?.message ?? "", owner: row?.owner ?? "", ...(r.app ? { app: r.app } : {}), temporary_app: r.temporary && !r.kept, life: r.life,
-      pinned: r.pinned, text: row?.text ?? "", sources: Object.keys(this.sourcesOf(r)), last_seen: r.last_seen, last_used: r.last_used,
+      pinned: r.pinned, text: row?.text ?? "", sources: Object.keys(this.sourcesOf(r)), reads_per_hour: this.readsPerHour(r), last_seen: r.last_seen, last_used: r.last_used,
       ...(r.expires_at !== null ? { expires_at: r.expires_at } : {}), updated_at: row?.updated_at ?? 0 };
   }
+  /** What a card costs while it runs: reads of its timed sources per hour (events cost what they bring). */
+  private readsPerHour(r: Run): number {
+    return Math.round(Object.values(this.sourcesOf(r)).reduce((n, s) => n + ("every_s" in s ? 3600 / s.every_s : 0), 0));
+  }
+
   private need(id: unknown): Run {
     const r = typeof id === "string" ? this.run(id) : null;
     if (!r) throw new WordError("not_found", `no card ${String(id)} in the registry`);

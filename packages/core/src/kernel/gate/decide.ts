@@ -14,7 +14,12 @@ import { contractFingerprint, objectOf, stable, type GateStore } from "./store";
 
 
 /** Words an agent can never get approved for good: it asks the owner every time, and 「以后都可以」 is not offered. Installing an app grants an organ its powers, so the review model cannot pass it either. */
-export const ALWAYS_ASK: ReadonlySet<string> = new Set([]);
+export const ALWAYS_ASK: ReadonlySet<string> = new Set([
+  // Keeping a card running off screen is the owner's decision (it costs battery): an agent's pin is only a suggestion on a card he taps.
+  "service:cards/pin",
+  // The same through the owner's 「卡片」 page app: an agent calling its tool is asked too.
+  "app:cards/cards.pin",
+]);
 
 const PAYMENT = /\b(pay|payment|purchase|checkout|transfer)\b|支付|付款|购买|下单|转账|充值|买单/i;
 /** Payments always reach the owner: no review, no carry-over, no 「以后都可以」. A click on the browser is judged by the button's text. */

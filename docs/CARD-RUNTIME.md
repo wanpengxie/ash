@@ -49,17 +49,24 @@ active; each change re-draws the card on the hub and is pushed to the screens as
 ## 4. `service:cards`: registry and lifecycle
 
 Every card shown is registered (id, message, creator, app, temporary app, sources, lifecycle, pinned, last seen, last
-used, expiry, the state of its buttons). Lifecycle:
+used, expiry, the state of its buttons). **Every card has a default life and stops by itself**; nothing has to be written
+for it (hub settings `cards.idle_minutes` 1, `cards.dormant_minutes` 30, `cards.closed_hours` 24):
 
 | state | when | what runs |
 |---|---|---|
-| active | on a screen now (reported), or used in the last 2 minutes | sources run; its app runs |
-| idle | off screen for more than 2 minutes | sources paused (timers stopped, events not taken) |
-| dormant | idle for 30 minutes (`cards.dormant_minutes`) | data frozen as a snapshot (「已休眠 · HH:MM 的数据」); a temporary app whose cards are all dormant is put to sleep (`service:apps/apps.sleep`) |
-| closed | `card.close` by its creator or the owner, `ttl_min` passed, a form answered | static snapshot; actions refused |
+| active | on a screen now (reported), or used in the last minute | sources run; its app runs |
+| idle | off screen for a minute | sources paused (timers stopped, events not taken) |
+| dormant | idle for 30 minutes | data frozen as a snapshot (「已休眠 · HH:MM 的数据」); a temporary app whose cards are all dormant is put to sleep (`service:apps/apps.sleep`) |
+| closed | not seen or used for 24 hours, `card.close` by its creator or the owner, `ttl_min` passed, a form answered | static snapshot; actions refused; a temporary app is removed |
 
 Seeing or pressing a dormant card wakes it: the app is woken (`apps.wake`; a call to a sleeping app also wakes it),
-the sources run again, the card is refreshed. A pinned card is never put to sleep and keeps its sources running off screen.
+the sources run again, the card is refreshed.
+
+**Only the owner keeps a card running.** A pinned card (「常驻」) does not go idle, dormant or closed by time and keeps its
+sources running off screen, but it still counts against the limits (when they are exceeded it is the last to sleep).
+The owner pins with the switch on the card or on the 「卡片」 page; an agent can only suggest it: its
+`service:cards/pin` (or the page app's `cards.pin`) always puts an approval card in front of the owner (the gate's
+always-ask list, no 「以后都可以」). `ttl_min` only makes a card stop sooner (at most the default day); longer is pinning.
 
 Limits (hub settings): `cards.max_active` 8, `cards.max_sources` 16, `cards.max_temporary_apps` 5; over a limit the least
 recently used goes dormant first (its temporary app sleeps). A temporary app is removed when all its cards are closed.

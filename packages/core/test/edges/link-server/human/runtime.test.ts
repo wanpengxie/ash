@@ -64,3 +64,18 @@ test("off screen a card goes idle then dormant, its sources stop; over the limit
   assert.ok(w.runtime.closeCard("a"));
   assert.equal(w.runtime.run("a")!.life, "closed");
 });
+
+test("every card stops by itself: closed after a day untouched unless the owner pinned it; ttl only makes it sooner", () => {
+  const w = setup();
+  w.show("quiet", live, "hr");
+  w.show("kept", live, "hr");
+  w.show("short", { components: [{ id: "root", component: "Text", text: "hi" }] });
+  w.runtime.register(w.cards.get("short")!, { ttl_min: 5 * 24 * 60 });
+  assert.equal(w.runtime.run("short")!.expires_at, 1_000_000 + 24 * 3_600_000, "a ttl past the default day is cut to it");
+  w.runtime.member.handle({ word: "pin", body: { id: "kept", pinned: true } } as Message, {} as never);
+  w.advance(25 * 3_600_000);
+  w.runtime.seen([]);
+  assert.equal(w.runtime.run("quiet")!.life, "closed");
+  assert.equal(w.runtime.run("short")!.life, "closed");
+  assert.equal(w.runtime.run("kept")!.life, "active", "pinned: still running off screen");
+});
