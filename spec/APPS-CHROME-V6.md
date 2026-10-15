@@ -19,6 +19,7 @@ override fun build(saved: Bundle?) {
 - showPage(label, detail=false, showNavigation=true)：根页应用标识无返回箭头，详情显示返回，底部选中目的地不变；业务仍实现原 canGoBack/goBack。
 - setDestinations(items, selected, onSelect)：固定2–3目的地，只触发业务选择，不自动导航或存储业务。selectDestination(id)只更新选中，不触发回调。
 - setStatus(text, action?, onAction?)：标题下真实状态/最后确认/实际待处理数。新应用不留原离线大白条；连接问题替换此状态，不增加一行。先在build设置真实加载文案。
+- 启用的状态槽固定预算为 `max(48dp, 当前字号两行高度+8dp)`，短确认、可选动作显隐、离线/恢复和长状态不挤内容。状态摘要最多两行，关键业务后果在正文；`setStatus(null)` 仅供页面明确切换时收起。正常字体下48dp，大字随当前字体尺度预留，不靠异步延时。
 - setBottomAction(view?)：固定非输入动作，例如保存；不盖住主内容。详情按需隐藏导航，回原空间恢复。
 - **带输入的dock继续置于业务 KeyboardDeck 内**，沿既定translation；不把输入单独放bottomActions，避免列表与输入分离。
 - AppUi：icon(ctx,res,color,size=22)、surface(ctx,decision=false)、section(ctx,label)、button(ctx,label,accent,primary=true,click)。均无业务状态；按钮用既有触控/字体规格，卡无阴影。

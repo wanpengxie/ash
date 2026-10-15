@@ -112,12 +112,19 @@ abstract class SystemAppActivity : Activity() {
             addView(title, LinearLayout.LayoutParams(0, -2, 1f))
             addView(actions)
         }
-        summaryText = AshUi.text(this, "", AshTokens.Type.sub, c.text2)
+        summaryText = AshUi.text(this, "", AshTokens.Type.sub, c.text2).apply {
+            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        // Reserve two status lines at the current font scale and one accessible action. The budget
+        // belongs to the enabled slot, not its current wording/action; business consequences stay in content.
+        val summaryHeight = maxOf(dp(48), summaryText.lineHeight * 2 + dp(8))
         summaryAction = AshUi.text(this, "", AshTokens.Type.sub, appIdentity?.accent?.color(this) ?: c.text2).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL; minimumHeight = dp(48); minimumWidth = dp(48)
+            maxLines = 1; maxWidth = dp(120); ellipsize = android.text.TextUtils.TruncateAt.END
         }
         summary = AshUi.hstack(this, 8).apply {
-            minimumHeight = dp(32); setPadding(dp(16), 0, dp(16), 0); visibility = View.GONE
+            gravity = Gravity.CENTER_VERTICAL; minimumHeight = summaryHeight
+            setPadding(dp(16), 0, dp(16), 0); visibility = View.GONE
             addView(summaryText, LinearLayout.LayoutParams(0, -2, 1f)); addView(summaryAction)
         }
         navigation = AshUi.hstack(this, 0).apply {
@@ -138,7 +145,7 @@ abstract class SystemAppActivity : Activity() {
         val root = AshUi.vstack(this).apply {
             setBackgroundColor(c.bg)
             addView(header, LinearLayout.LayoutParams(-1, -2))
-            addView(summary, LinearLayout.LayoutParams(-1, -2))
+            addView(summary, LinearLayout.LayoutParams(-1, summaryHeight))
             addView(offline, LinearLayout.LayoutParams(-1, -2))
             addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(bottomActions, LinearLayout.LayoutParams(-1, -2))
