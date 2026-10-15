@@ -180,11 +180,13 @@ class CodexActivityAcceptanceTest {
         val client = requests.last { it.optString("word") == "x.codex.send" }.getJSONObject("body").getString("client_id")
         event(from = "person:owner", body = JSONObject().put("client_id", client))
         details["t1"] = detail("t1", "修复结算页重复扣款", JSONArray().put(item("agent-same-text", "先跑退款回归，再提交")))
-        event(); waitFor("agent text does not settle owner operation") { texts().count { it == "先跑退款回归，再提交" } >= 2 }
+        event(body = JSONObject().put("client_id", "agent-same-text")); waitFor("agent text does not settle owner operation") { texts().count { it == "先跑退款回归，再提交" } >= 2 }
         assertEquals(1, pending().size)
         details["t1"]!!.getJSONArray("turns").getJSONObject(0).getJSONArray("items").put(item(client, "先跑退款回归，再提交"))
         details["t1"]!!.put("approvals", JSONArray().put(JSONObject().put("request_id", "refund-test").put("summary", "运行退款回归测试")))
         event(); waitFor("exact pending settled and approval shown") { pending().isEmpty() && texts().contains("运行退款回归测试") }
+        assertTrue("owner origin visible", texts().contains("你"))
+        assertTrue("Ash origin visible", texts().contains("Ash"))
         capture("refunds-waiting-approval")
         click("批准"); waitFor("visible result") { texts().any { it.contains("重复扣款已修复") } }
         capture("refunds-completed")
