@@ -547,12 +547,22 @@
             {
               "required": [
                 "target"
-              ]
+              ],
+              "properties": {
+                "target": {
+                  "type": "string"
+                }
+              }
             },
             {
               "required": [
                 "app"
-              ]
+              ],
+              "properties": {
+                "app": {
+                  "type": "string"
+                }
+              }
             }
           ]
         }

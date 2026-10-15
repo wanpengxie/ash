@@ -227,7 +227,7 @@ const present = union(
   presentOf("chat", "card.preview", obj({ card: record(), theme: string() })),
   presentOf("chat", "card.patch", obj({ card: record() })),
   // A page (target) or an app (app, with what it is asked to show: arg); the hub sends one of the two.
-  presentOf("chat", "open", obj({}, { target: string({ minLength: 1 }), app: string({ minLength: 1 }), arg: string(), id: string(), mode: string() }, { anyOf: [{ required: ["target"] }, { required: ["app"] }] })),
+  presentOf("chat", "open", obj({}, { target: string({ minLength: 1 }), app: string({ minLength: 1 }), arg: string(), id: string(), mode: string() }, { anyOf: [{ required: ["target"], properties: { target: { type: "string" } } }, { required: ["app"], properties: { app: { type: "string" } } }] })),
 );
 const presentResult = union(
   obj({ t: lit("present.result"), id, ok: lit(true) }, { data: anything() }),
