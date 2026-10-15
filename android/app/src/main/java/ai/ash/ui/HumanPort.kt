@@ -209,21 +209,27 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
 object HumanCall {
     private val queue = java.util.concurrent.Executors.newFixedThreadPool(2) { r -> Thread(r, "ash-ui-call").apply { isDaemon = true } }
 
-    fun call(ctx: android.content.Context, to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) {
+    /** A complete human request, including wait:false/client_id. Returns the send.result receipt unchanged. */
+    fun request(ctx: android.content.Context, request: JSONObject, done: (JSONObject?, HumanPort.Failure?) -> Unit) {
         val app = ctx.applicationContext
-        val request = JSONObject().put("to", to).put("kind", "request").put("word", word).put("body", body).put("wait", true)
+        val snapshot = JSONObject(request.toString())
         queue.execute {
-            val (data, failure) = try {
-                val sent = ai.ash.human.HumanSend.send(app, request)
-                val reply = ai.ash.human.HumanSend.reply(sent)
-                when {
-                    reply == null -> null to HumanPort.Failure("result_unknown", "还没有收到结果")
-                    reply.optBoolean("ok") -> (reply.optJSONObject("result")?.optJSONObject("data") ?: JSONObject()) to null
-                    else -> null to reply.optJSONObject("error").let { HumanPort.Failure(it?.optString("code").orEmpty().ifEmpty { "failed" }, it?.optString("message").orEmpty().ifEmpty { "没有成功" }) }
-                }
+            val (sent, failure) = try {
+                ai.ash.human.HumanSend.send(app, snapshot) to null
             } catch (e: ai.ash.human.HumanSend.Refused) { null to HumanPort.Failure(e.code, e.message.orEmpty()) }
             catch (e: Exception) { null to HumanPort.Failure("offline", e.message ?: "还没连上") }
-            UiIo.ui { done(data, failure) }
+            UiIo.ui { done(sent, failure) }
         }
     }
+
+    fun call(ctx: android.content.Context, to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
+        request(ctx, JSONObject().put("to", to).put("kind", "request").put("word", word).put("body", body).put("wait", true)) { sent, failure ->
+            if (failure != null) { done(null, failure); return@request }
+            val reply = sent?.let(ai.ash.human.HumanSend::reply)
+            when {
+                reply == null -> done(null, HumanPort.Failure("result_unknown", "还没有收到结果"))
+                reply.optBoolean("ok") -> done(reply.optJSONObject("result")?.optJSONObject("data") ?: JSONObject(), null)
+                else -> done(null, reply.optJSONObject("error").let { HumanPort.Failure(it?.optString("code").orEmpty().ifEmpty { "failed" }, it?.optString("message").orEmpty().ifEmpty { "没有成功" }) })
+            }
+        }
 }

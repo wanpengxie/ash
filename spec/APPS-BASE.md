@@ -5,6 +5,7 @@
 每个应用继承 `ai.ash.sysapps.SystemAppActivity`，实现 `build(saved: Bundle?)`，把页面加入 `content: FrameLayout`。`title` 和 `actions` 是共用标题与右侧动作位。列表使用已有 `ai.ash.ui.KeyedRowsAdapter`；共用层不另存业务快照。
 
 - `call(to, word, body = JSONObject(), done)`：经 HumanCall 发主人请求，不占 ChatBridge 的 page；完成在主线程，Activity 销毁后不再回调 View。
+- `HumanCall.request(ctx, request: JSONObject, done)`：可带 `wait:false` 和持久 `client_id`；返回完整 `send.result`（含请求消息/receipt），长委托不占住等最终回答的线程。原有 `call` 保持兼容。
 - `onLedger(message: JSONObject)`：STARTED 时收到完整账本消息（from/to/word/body/payload 等），自行按成员和词筛选。不是无参数变更提示，也不抹掉消息内容。
 - `onConnectionChanged(connected: Boolean)`：进入页面立即给当前连接状态，其后断开/恢复也通知。应用进入前台、连接恢复时重读自己的状态。
 - `onStart/onStop` 自动注册/注销共享 LedgerFeed。Feed 在现有 LinkClient 上独立 openSync，不依赖聊天 Activity，也不接管聊天 page。最后一个应用离开关闭 sync；重连重新订阅。所有监听在主线程。
