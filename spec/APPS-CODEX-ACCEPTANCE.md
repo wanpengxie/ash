@@ -44,7 +44,7 @@ TMPDIR=/data/atoll/tmp node --expose-internals --import tsx --test packages/core
 |---|---|---|
 | 向进行中的工作补一句话 | `steer` 回执没有 turn，旧 Pane 直接删除待发项；电脑原来又丢掉 clientUserMessageId，无法精确对账 | 回执只标记已发；等相同电脑、会话、client_id 的 user item 才核销。没有编号就继续保留，不按文字猜 |
 | 我与 Ash 发同样文字 | 用真实 Codex IPC 测旧设备实现，输出 `[undefined,undefined,undefined]`，无法区别两条有编号的消息与一条无编号消息 | 独立设备窄补保留上游真实 user / steering user 编号；不为无编号记录编造身份 |
-| 刷新或断线时还在输入中文 | 实际 Activity 测试发现离线后列表高度由 1678 变1664 | 状态栏固定占一行；替换文字保留 AshUi 原行高 span。焦点、composing、选区断言均保留，修后尚待串行复验 |
+| 刷新或断线时还在输入中文 | 实际 Activity 测试发现离线后列表高度由 1678 变1664 | 状态栏固定占一行；替换文字保留 AshUi 原行高 span。焦点、composing、选区断言均保留，修后该几何断言已实际通过；焦点路径仍待下轮整体通过 |
 | 切电脑时旧操作回执回来 | 原发送成功可能把当前路由重新打开成旧会话 | 回执更新原操作；仅原导航仍有效时自动打开新会话。每台电脑和会话草稿独立 |
 | 旧电脑下线 | 原读取失败把当前 device 清空 | 保留原工作、电脑名称和草稿，提示离线；主动退回列表才重新选择在线电脑 |
 | 换会话后回来读原位置 | 原来仅重建 Activity 有单个锚点 | 切路由前记当前首行键和偏移，按电脑+会话恢复；仍遵守在底部时跟随最新 |
@@ -54,7 +54,7 @@ TMPDIR=/data/atoll/tmp node --expose-internals --import tsx --test packages/core
 
 ## Android 验证范围
 
-标准资源 gate、真实 WebSocket Feed 回归和既有状态/发送回归已实际执行。`CodexActivityAcceptanceTest` 直接创建生产 Activity/Views，接生产 HumanCall、LinkClient、磁盘待发与本地 WebSocket，只有远端电脑应答脚本化；截图用原 View 树的原生 Canvas 渲染，不能当真机截图。新增测试尚待当前串行时段运行，结果随后补齐。
+标准资源 gate、真实 WebSocket Feed 回归和既有状态/发送回归已实际执行。`CodexActivityAcceptanceTest` 直接创建生产 Activity/Views，接生产 HumanCall、LinkClient、磁盘待发与本地 WebSocket，只有远端电脑应答脚本化；截图用原 View 树的原生 Canvas 渲染，不能当真机截图。第二轮已实际运行，跨电脑草稿/迟到回执通过，入口两项通过；离线几何不再变化。仍有四条失败：两个窗口焦点前置与 Shadow 字段不一致、停止前在途请求的计数边界、阅读锚点。正在定位，不算产品通过。焦点测试新增真实 decor.findFocus 断言，并按 Robolectric 4.14.1 的 ShadowActivity 独立 currentFocus 字段设置前置；没有删除原焦点/composing/选区断言。调度器每轮推进16ms，避免停住 RecyclerView 动画而把其过渡态当终态；停止测试先等在途调用排空，保留停止后不再新发的断言。
 
 `SystemAppsEntryTest` 直接走 `SystemApps.open`：有前台 Activity 时检查系统收到的 Intent；后台检查通知，点通知后检查 Activity 类、参数和 SINGLE_TOP/CLEAR_TOP 路由。
 

@@ -58,11 +58,11 @@ class CodexActivityAcceptanceTest {
         } })
         conn = link.connect(); Screen.client = link.client
         details["t1"] = detail("t1", "修复结算页重复扣款")
-        details["t2"] = detail("t2", "整理跑步计划")
+        details["t2"] = detail("t2", "整理跑步计划", JSONArray().put(JSONObject().put("kind", "agent").put("text", "明天先跑三公里，轻松配速；周末再回顾跑量和膝盖的感觉。")))
         controller = Robolectric.buildActivity(Screen::class.java, intent(mac, "t1")).create().start().resume().visible().windowFocusChanged(true)
         waitFor("existing work") { texts().contains("修复结算页重复扣款") }
         input = views().filterIsInstance<EditText>().single()
-        layout()
+        layout(); settleWire()
     }
     @After fun end() {
         if (::controller.isInitialized) controller.pause().stop().destroy()
@@ -107,11 +107,35 @@ class CodexActivityAcceptanceTest {
     private fun waitFor(what: String, check: () -> Boolean) {
         val deadline = System.nanoTime() + 15_000_000_000L
         while (true) {
-            pumpWire(); shadowOf(Looper.getMainLooper()).idle(); layout()
+            pumpWire(); shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)); layout()
             if (check()) return
             if (System.nanoTime() > deadline) error("Timed out: $what; text=${texts()}; requests=${requests.map { it.optString("word") }}")
             Thread.sleep(5)
         }
+    }
+    private fun settleWire() {
+        var stableAt = System.nanoTime(); var count = requests.size
+        val end = System.nanoTime() + 3_000_000_000L
+        while (System.nanoTime() < end) {
+            pumpWire(); shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)); layout()
+            if (requests.size != count) { count = requests.size; stableAt = System.nanoTime() }
+            if (System.nanoTime() - stableAt > 60_000_000L) return
+            Thread.sleep(5)
+        }
+        error("wire did not settle")
+    }
+    private fun focusInput() {
+        assertTrue(input.requestFocus())
+        assertSame("actual decor focus", input, controller.get().window.decorView.findFocus())
+        // ShadowActivity.getCurrentFocus is an independent field in Robolectric 4.14.1.
+        // Seed its window precondition, then keep testing the actual View focus after every operation.
+        shadowOf(controller.get()).setCurrentFocus(input)
+        assertSame(input, controller.get().currentFocus)
+    }
+    private fun assertEditorFocus() {
+        assertTrue(input.hasFocus())
+        assertSame(input, controller.get().window.decorView.findFocus())
+        assertSame(input, controller.get().currentFocus)
     }
     private fun event(word: String = "x.codex.send", from: String = "agent:main", body: JSONObject = JSONObject()) {
         val sync = conn.framesOf("sync").last()
@@ -139,7 +163,7 @@ class CodexActivityAcceptanceTest {
 
     @Test fun existingWorkSendApprovalAndResultPreserveTheActualChineseEditor() {
         assertTrue(texts().any { it.contains("工作 Mac") && it.contains("修复结算页") })
-        input.setText("先跑退款回归，再提交"); input.requestFocus(); input.setSelection(4)
+        input.setText("先跑退款回归，再提交"); focusInput(); input.setSelection(4)
         BaseInputConnection(input, true).setComposingRegion(1, 4)
         val composing = BaseInputConnection.getComposingSpanStart(input.text)
         assertTrue("editor focus precondition", input.hasFocus())
@@ -148,7 +172,7 @@ class CodexActivityAcceptanceTest {
         assertSame(input, controller.get().currentFocus)
         assertEquals(composing, BaseInputConnection.getComposingSpanStart(input.text))
         event(); waitFor("refresh without replacing editor") { texts().any { it.contains("Ash 发起") } }
-        assertSame(input, views().filterIsInstance<EditText>().single()); assertSame(input, controller.get().currentFocus)
+        assertSame(input, views().filterIsInstance<EditText>().single()); assertEditorFocus()
         assertEquals(4, input.selectionStart); assertEquals(composing, BaseInputConnection.getComposingSpanStart(input.text))
         click("发送")
         waitFor("message acknowledged without a turn id") { requests.any { it.optString("word") == "x.codex.send" } && texts().contains("已发出，等待电脑显示") }
@@ -185,6 +209,7 @@ class CodexActivityAcceptanceTest {
     }
 
     @Test fun stoppingAndResumingTheActivityClosesAndReopensItsOwnFollowWithoutAChatPage() {
+        settleWire()
         val before = requests.size
         controller.pause().stop()
         waitFor("system app follow closed") { conn.framesOf("sync.close").isNotEmpty() }
@@ -194,10 +219,11 @@ class CodexActivityAcceptanceTest {
         val follows = conn.framesOf("sync").size
         controller.start().resume().visible().windowFocusChanged(true)
         waitFor("new follow and fresh work") { conn.framesOf("sync").size == follows + 1 && requests.size > before }
+        settleWire()
         val stable = requests.size
         // A read request in the ledger is not a reason to issue that read again forever.
         event(word = "x.codex.session", from = "person:owner")
-        pumpWire(); shadowOf(Looper.getMainLooper()).idle(); layout()
+        settleWire()
         assertEquals(stable, requests.size)
         assertFalse("system app never acquires the primary chat page", requests.any { it.optString("to") == "service:agents" })
     }
@@ -216,7 +242,11 @@ class CodexActivityAcceptanceTest {
         assertNotNull("reading older work", before)
         controller.newIntent(intent(mini, "t2")); waitFor("other work") { texts().contains("整理跑步计划") }
         controller.newIntent(intent(mac, "t1"))
-        waitFor("same visible work restored") { ai.ash.ui.Anchor.of(list, lm, rows) == before }
+        try {
+            waitFor("same visible work restored") { ai.ash.ui.Anchor.of(list, lm, rows) == before }
+        } catch (e: IllegalStateException) {
+            throw AssertionError("expected reading place=$before; actual=${ai.ash.ui.Anchor.of(list, lm, rows)}", e)
+        }
         capture("returned-to-reading-place")
     }
 
@@ -228,13 +258,13 @@ class CodexActivityAcceptanceTest {
         waitFor("one explicit retry") { requests.count { it.optString("word") == "x.codex.send" } == 2 }
         val second = requests.last { it.optString("word") == "x.codex.send" }.getJSONObject("body").getString("client_id")
         assertEquals(first, second); assertEquals(1, pending().size)
-        input.setText("拼音还在输入"); input.requestFocus(); input.setSelection(2)
+        input.setText("拼音还在输入"); focusInput(); input.setSelection(2)
         BaseInputConnection(input, true).setComposingRegion(0, 2)
         val bounds = views().filterIsInstance<RecyclerView>().map { listOf(it.top, it.height) }
         conn.close(1000)
         waitFor("offline banner") { texts().contains("暂时连不上 Ash，连上后会自动恢复") && !link.client.channelOpen("human") }
         assertEquals(bounds, views().filterIsInstance<RecyclerView>().map { listOf(it.top, it.height) })
-        assertEquals("拼音还在输入", input.text.toString()); assertSame(input, controller.get().currentFocus)
+        assertEquals("拼音还在输入", input.text.toString()); assertEditorFocus()
         assertEquals(2, input.selectionStart); assertEquals(0, BaseInputConnection.getComposingSpanStart(input.text))
         capture("offline-keeps-editor-and-content")
     }

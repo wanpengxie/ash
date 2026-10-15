@@ -241,7 +241,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             loading = false
             val counted = if (thread == null) state.listRead(gen, data, failure?.code) else state.detailRead(gen, data, failure?.code)
             if (counted) {
-                // A message whose turn the session now shows is no longer shown apart: the turn's first message takes its row.
+                // Only the exact client id from this computer and session can replace its pending row.
                 val d = state.detail
                 if (thread != null && failure == null && d != null && ops.ready)
                     CodexModel.settled(ops.items(), dev, thread, d).forEach(ops::remove)
@@ -542,7 +542,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         val status = when (op.status) {
             Pending.FAILED -> "没发出去"
             Pending.SENT -> "已发出，等待电脑显示"
-            Pending.UNSENT -> "没有收到确认，可用同一编号核对重试"
+            Pending.UNSENT -> "没有收到确认，可以重试"
             else -> if (op.body.optString("op") == "new") "正在电脑上开新会话…" else "发送中…"
         }
         addView(AshUi.hstack(activity, 12).apply {
