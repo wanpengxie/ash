@@ -121,8 +121,11 @@ public class TeamActivityAcceptanceTest {
     }
     static void layout(TeamActivity a) {
         idle(); View decor=a.getWindow().getDecorView();
+        assertEquals("Phone resource width",360,a.getResources().getConfiguration().screenWidthDp);
+        assertEquals("mdpi fixture density",1f,a.getResources().getDisplayMetrics().density,0.001f);
         decor.measure(View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));
         decor.layout(0,0,360,800); idle();
+        assertEquals("Measured phone width in dp",360f,decor.getWidth()/a.getResources().getDisplayMetrics().density,0.01f);
     }
     static boolean visible(View v) { Rect r=new Rect(); return v!=null && v.isShown() && v.getGlobalVisibleRect(r) && r.width()>0 && r.height()>=Math.min(v.getHeight(),40); }
     static TextView screenText(TeamActivity a,String value,boolean scroll) throws Exception {
@@ -137,6 +140,8 @@ public class TeamActivityAcceptanceTest {
     }
     static void touch(TeamActivity a,View v) {
         assertTrue("Touch target must be visible",visible(v));
+        Rect local=new Rect();assertTrue(v.getLocalVisibleRect(local));
+        assertTrue("Touch center must be inside the visible part of the control",local.contains(v.getWidth()/2,v.getHeight()/2));
         int[] at=new int[2];v.getLocationInWindow(at);float x=at[0]+v.getWidth()/2f,y=at[1]+v.getHeight()/2f;
         long now=SystemClock.uptimeMillis();View decor=a.getWindow().getDecorView();
         MotionEvent down=MotionEvent.obtain(now,now,MotionEvent.ACTION_DOWN,x,y,0),up=MotionEvent.obtain(now,now+20,MotionEvent.ACTION_UP,x,y,0);
