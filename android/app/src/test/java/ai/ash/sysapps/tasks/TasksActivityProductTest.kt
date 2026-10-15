@@ -89,9 +89,9 @@ class TasksActivityProductTest {
         val button=views(a.window.decorView).filterIsInstance<TextView>().first { it.tag=="task.time.due_at" }
         button.performClick();choice(0)
         val date=ShadowDialog.getLatestDialog() as DatePickerDialog
-        date.updateDate(2026,10,11);date.getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        date.updateDate(2026,10,11);date.getButton(DialogInterface.BUTTON_POSITIVE).performClick();ShadowLooper.idleMainLooper()
         val time=ShadowDialog.getLatestDialog() as TimePickerDialog
-        time.updateTime(20,15);time.getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        time.updateTime(20,15);time.getButton(DialogInterface.BUTTON_POSITIVE).performClick();ShadowLooper.idleMainLooper()
         val expected=LocalDateTime.of(2026,11,11,20,15).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         assertEquals(expected,(get(a,"times") as Map<*,*>)["due_at"])
         text(a,"保存").performClick()
