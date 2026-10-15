@@ -360,7 +360,7 @@ open class DevicesActivity : SystemAppActivity() {
                     val shownPair = pairing!!
                     shownPair.bind()
                     contentRows += ChatRow("pair/${pair.pairId}", flow.toString()) { shownPair.root }
-                } else if (pairsLoaded && model.requests.isEmpty()) {
+                } else if (pairsLoaded && model.requests.isEmpty() && Refresh.PAIRS !in readErrors) {
                     contentRows += ChatRow("quiet", "quiet") { AshUi.text(this, getString(R.string.dev_quiet), AshTokens.Type.sub, c.text2).apply { setPadding(0, dp(12), 0, dp(16)) } }
                 }
             }
@@ -388,7 +388,7 @@ open class DevicesActivity : SystemAppActivity() {
         AshUi.role(this, android.widget.Button::class.java.name)
         addView(DeviceObjectView(this@DevicesActivity, d.kind), LinearLayout.LayoutParams(-1, dp(72)))
         addView(AshUi.text(this@DevicesActivity, d.name, AshTokens.Type.headline, c.ink))
-        addView(AshUi.text(this@DevicesActivity, presence, AshTokens.Type.sub, if (d.online && !d.revoked) accent else c.text2))
+        addView(AshUi.text(this@DevicesActivity, devicePresence(d), AshTokens.Type.sub, if (d.online && !d.revoked) accent else c.text2))
         val names = abilities.take(2)
         if (names.isNotEmpty()) addView(AshUi.hstack(this@DevicesActivity, 8).apply {
             setPadding(0, dp(8), 0, 0)
@@ -966,11 +966,7 @@ open class DevicesActivity : SystemAppActivity() {
         setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
     }
     private fun rule() = View(this).apply { setBackgroundColor(c.line); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) }
-    private fun icon(resource: Int, size: Int = 22) = ImageView(this).apply {
-        setImageDrawable(getDrawable(resource)?.mutate()?.apply { setTint(c.text2) })
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
-    }
+    private fun icon(resource: Int, size: Int = 22) = AppUi.icon(this, resource, c.text2, size)
     private fun sectionHeading(label: String, note: String? = null) = AshUi.hstack(this, 8).apply {
         setPadding(0, dp(20), 0, dp(8))
         addView(AshUi.text(this@DevicesActivity, label, AshTokens.Type.headline, c.ink), LinearLayout.LayoutParams(0, -2, 1f))
