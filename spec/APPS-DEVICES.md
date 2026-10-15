@@ -9,7 +9,7 @@
 ## 页面与状态
 
 - 首屏是稳定 key 的 RecyclerView：中转站、待批准请求、手机及在线设备、版本与能力、可展开的已撤销设备。版本和能力不会被单行副标题截掉。
-- 详情是固定表单：名称、访问范围、升级、连接诊断、撤销/恢复及最后变更者。名称草稿按设备保存在本地 UI 草稿存储，磁盘读取走 UiIo；账本刷新不重建表单、不盖掉输入。保存旧名称的回执不会清掉后来输入的新稿。
+- 详情先展示状态、对 Ash 能力的影响和恢复行动；改名、访问范围、版本、升级及撤销放在可展开的设备设置中。本地帮手和完全放开审批再收进高级选项，已开启时折叠入口会提示。名称草稿按设备保存在本地 UI 草稿存储，磁盘读取走 UiIo；账本刷新不重建表单、不盖掉输入。保存旧名称的回执不会清掉后来输入的新稿。
 - 名称保存、访问范围、升级、撤销各有处理中/错误提示。未知结果不自动重发；刷新核对后由用户决定重试。跨重建的未确认操作留下提示。
 - 配对在同一屏完成：安装命令 → 请求名称和访问范围 → 批准/拒绝 → 等连接/完成。只订阅 `pair.changed` 后读权威状态，不轮询。每秒仅在本地更新剩余时间。
 - 安装命令含一次性密钥，仅留当前内存；不进 Bundle、Preferences、日志。配对页设置截屏保护，重建只恢复 ID，再经 `pair_status` / `pair_code` 取回仍有效命令。复制经手机的 `clipboard.set` 词。
@@ -19,10 +19,11 @@
 
 ## 验证
 
-- Android：`compileDebugKotlin`；`testDebugUnitTest` 定向运行 `DevicesModelTest`、`LedgerMessagesTest`、`McpHostTest`。
+- Android：前期编译与 `DevicesModelTest`、`LedgerMessagesTest`、`McpHostTest` 通过；最终集成的真实 View 验证见下节。
 - Model 覆盖排序/撤销筛选、版本/能力文案、失败保留、旧读取丢弃、事件刷新、按设备记录变更者、配对全过程与结束态、未知结果、只按 ID 恢复配对和迟到命令、历史变更不覆盖新事件。
-- TypeScript：`tsc --noEmit -p .`。
+- 初次集成 TypeScript：`tsc --noEmit -p .` 通过。
 - 中枢定向回归：devices 与 link-control，共 43 项。
+- 独立 RTT 修改：五项新增可控测试与现有 silence/protocol/link-control，共 45 项通过；详见 `DEVICE-LATENCY.md`。
 
 未操作手机，未打包、安装、推送或合主线。中文输入组合态、IME/预测返回、主题重建、200% 字体、TalkBack 和真实设备配对尚未真机验证。诊断先展示结论和恢复步骤，原始 findings 默认折叠；RTT 使用既有心跳的同设备执行连接样本，附样本年龄，无样本明确未知，见 `DEVICE-LATENCY.md`。
 
@@ -35,7 +36,23 @@
 
 `DevicesActivityAcceptanceTest` 使用真实 DevicesActivity、布局、RecyclerView、Switch、EditText、AlertDialog 与 Intent；只在既有 request 边界提供确定性中枢响应，生产 request 仍只调用共享中枢端口。测试不启动真实 LedgerFeed，不证明真实配对网络、Android 权限弹窗、系统输入法或 OEM 行为。
 
-截至 `4aa442cc`，标准统一 Robolectric 配置下 Activity 10/10、Model 10/10 通过；`RobolectricResourcesTest` 在前一轮通过。人工查看发现首页截图只绘制标题栏、诊断截图未滚动到结论，不能把这批断言通过冒充完整产品验收。`470747bc` 增加真实动画帧等待、排除标题栏的截图内容检查、诊断区域滚动，并根据截图补充命令运行步骤和接通后的主操作，尚待总控串行复验。截图目录 `/data/atoll/tmp/devices-acceptance/`；必须人工看图，不以颜色数代替内容验收。
+最终集成验收：总控集成共享按钮布局修复与 `96003037` 后，设备 Activity 11/11、Model 10/10 全过，并人工核对首页、离线恢复、配对三阶段、失败诊断与 RTT 图。连接失败不再同时声称可操作；旧的 online 读取不能抹掉较新的失败，后续被接受的当前设备新读取或成功诊断可恢复页面声明，不改写设备的 online 事实。`808e18ed` 去除重复恢复步骤后，总控再运行该条真实 View 回归，EXIT 0，并人工确认新版诊断图保留次级指标和原文入口。
+
+本轮通过的产品路径：接入、授权、在线能力、离线恢复、撤销/恢复、诊断。截图包括 `devices-home.png`、`devices-offline-row.png`、`offline-recovery.png`、`pairing-install-command.png`、`pairing-confirm-abilities.png`、`pairing-connected.png`、`diagnosis-conclusion.png`、`measured-device-latency.png`。它们由真实 Activity/View 以确定性端口回执绘制；配对命令和 RTT 数值为验收数据，未执行真实跨设备安装、配对或网络性能基准。系统权限、IME、OEM 行为与真实设备安装不属于本轮已验证范围。未重新运行全量测试矩阵。
+
+## 最终任务提交链
+
+以下为本任务业务与验收提交，按分支顺序列出；不应直接合并含公共底座副本的整条分支：
+
+- 前置事件与 Model：`b299f871`、`e403fa19`。
+- 原生页面、旧入口清理、草稿和回执、命令脱敏：`f47ecc32`、`60ff019d`、`a0a19ce3`。
+- warm open 与旧回调隔离：`2495d8cb`。
+- 独立连接层 RTT（单独复审的业务提交）：`6095e8f5`。
+- 接入/恢复产品路径与真实 Activity 验收：`0264a4c6`、`4aa442cc`、`470747bc`、`194fe95e`（阶段记录）、`ef7cf4eb`、`cac26b7c`。
+- 诊断一致性、读取新鲜度与断言修正：`01f133c0`、`570f898a`、`96003037`。
+- 诊断文案视觉去重：`808e18ed`。
+
+排除的公共依赖副本：`b073fdab`（底座 `68655210`）、`6c01c204`（公共 schema 修复 `28deec0e`）、`bbaeb13e`（统一 View 测试配置 `bd76b539`）。公共注册表、Manifest、共享按钮布局由总控使用公共作者提交统一集成，不属于设备应用的独立提交链。
 
 ## 配对命令脱敏补充
 
