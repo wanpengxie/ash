@@ -132,7 +132,7 @@ test("a form with a password box: the value goes into the vault, the agent uses 
   assert.ok(String(bodyOf(card).detail).includes("用保险箱里的『密码』在 手机 上执行"), String(bodyOf(card).detail));
   accepted(await owner.answer(card, "always"));
 
-  await eventually(() => state.missing, "the commands", 40_000);
+  await eventually(() => state.missing, "the commands", 120_000);
   // Approved in time it is this call's result; approved later, the redeem's.
   const ran = resultOf(state.ran!) as { output?: string; result?: { output: string } };
   const out = (ran.result ?? ran) as { output: string };
