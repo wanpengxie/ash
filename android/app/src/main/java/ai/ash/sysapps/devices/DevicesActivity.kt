@@ -3,6 +3,10 @@ package ai.ash.sysapps.devices
 import ai.ash.R
 import ai.ash.link.Link
 import ai.ash.sysapps.SystemAppActivity
+import ai.ash.sysapps.AppAccent
+import ai.ash.sysapps.AppIdentity
+import ai.ash.sysapps.AppDestination
+import ai.ash.sysapps.AppUi
 import ai.ash.ui.ChatRow
 import ai.ash.ui.KeyedRowsAdapter
 import ai.ash.ui.HumanPort
@@ -34,6 +38,7 @@ import org.json.JSONObject
 
 /** Device app, APPS-R1 §1; MOBILE-ARCH §2–3, §5–6. All business actions use the hub. */
 open class DevicesActivity : SystemAppActivity() {
+    override val appIdentity = AppIdentity("设备", R.drawable.ash_ic_laptop, AppAccent.TEAL)
     private lateinit var model: DevicesState
     private val pair = PairFlow()
     private lateinit var list: RecyclerView
@@ -100,6 +105,8 @@ open class DevicesActivity : SystemAppActivity() {
         }
         rows = KeyedRowsAdapter(this).apply { stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY }
         list.adapter = rows
+        setDestinations(listOf(AppDestination("now", getString(R.string.dev_now), R.drawable.ash_ic_laptop), AppDestination("permissions", getString(R.string.dev_permissions), R.drawable.ash_ic_shield)), space, ::switchSpace)
+        setStatus(getString(R.string.dev_loading))
         showRoute(route)
     }
 
@@ -204,21 +211,26 @@ open class DevicesActivity : SystemAppActivity() {
         })
         when {
             route.isEmpty() -> {
-                title.text = getString(R.string.dev_title)
+                showPage(getString(R.string.dev_title))
+                selectDestination(space)
                 actions.removeAllViews()
-                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_more)!!, getString(R.string.dev_more)) { showRootMenu() })
+                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_slider)!!, getString(R.string.dev_more)) { showRootMenu() })
                 anchors[space]?.let { restoreKey = it.first; restoreOffset = it.second }
                 (list.parent as? android.view.ViewGroup)?.removeView(list)
                 content.addView(list)
             }
             route.startsWith("d/") -> {
-                title.text = getString(R.string.dev_detail_title)
+                showPage(getString(R.string.dev_detail_title), detail = true, showNavigation = false)
+                setStatus(null)
+                actions.removeAllViews()
+                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_more)!!, getString(R.string.dev_detail_more)) { detail?.more() })
                 detail = Detail(route.removePrefix("d/"))
                 content.addView(scroll(detail!!.root))
                 readChanges(route.removePrefix("d/"))
             }
             else -> {
-                title.text = getString(R.string.dev_connect)
+                showPage(getString(R.string.dev_connect), detail = true, showNavigation = false)
+                setStatus(null)
                 pairing = Pairing()
                 content.addView(scroll(pairing!!.root))
                 // One-time commands are sensitive even while this screen is merely waiting for approval.
@@ -305,6 +317,15 @@ open class DevicesActivity : SystemAppActivity() {
             3 -> { model.showRevoked = true; switchSpace("permissions"); render() }
         } }.show()
     }
+    private fun showPairRequests() {
+        val pending = model.requests.toList()
+        if (pending.isEmpty()) return
+        AlertDialog.Builder(this).setTitle(R.string.dev_requests).setItems(pending.map { it.name.ifEmpty { DevicesText.kind(it.kind) } }.toTypedArray()) { _, which ->
+            val requested = pending[which]
+            if (requested.pairId != pair.pairId) { pairDraft = null; pairUncertain = false; pair.reset(); pair.resume(requested.pairId) }
+            showRoute("p/${requested.pairId}"); readPair()
+        }.setNegativeButton(R.string.dev_cancel, null).show()
+    }
     private fun showRelay() {
         val relay = model.relay
         AlertDialog.Builder(this).setTitle(R.string.dev_relay_title)
@@ -331,13 +352,8 @@ open class DevicesActivity : SystemAppActivity() {
         if (route.isEmpty()) {
             ensureHomePair()
             val contentRows = ArrayList<ChatRow>()
-            contentRows += ChatRow("status", "${model.relay}/${model.requests.size}") {
-                AshUi.hstack(this, 8).apply {
-                    setPadding(0, dp(8), 0, dp(12))
-                    addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_recent_confirm, relaySummary()), AshTokens.Type.sub, c.text2), LinearLayout.LayoutParams(0, -2, 1f))
-                    if (model.requests.isNotEmpty()) addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_request_count, model.requests.size), AshTokens.Type.sub, accent))
-                }
-            }
+            setStatus(getString(R.string.dev_recent_confirm, relaySummary()),
+                if (model.requests.isNotEmpty()) getString(R.string.dev_request_count, model.requests.size) else null) { showPairRequests() }
             if (space == "now") {
                 val flow = pair.step
                 if (pairing?.compact == true && flow !is PairFlow.Step.Connected && flow !is PairFlow.Step.Ended) {
@@ -452,7 +468,7 @@ open class DevicesActivity : SystemAppActivity() {
             read(Refresh.DEVICES); read(Refresh.RELAY); diagnose()
         }
         private val revokeNote = text("")
-        private val restore: TextView = AshUi.button(this@DevicesActivity, getString(R.string.dev_restore), AshUi.Kind.NEUTRAL, block = true) {
+        private val restore: TextView = AppUi.button(this@DevicesActivity, getString(R.string.dev_restore), AppAccent.TEAL, primary = false) {
             run("restore", restoreButton(), revokeNote)
         }.apply { visibility = View.GONE }
         private fun restoreButton() = restore
@@ -503,6 +519,14 @@ open class DevicesActivity : SystemAppActivity() {
                     }
                 }
             }
+        }
+        fun more() {
+            val d = model.device(id) ?: return
+            AlertDialog.Builder(this@DevicesActivity).setTitle(d.name).setItems(arrayOf(getString(R.string.dev_rename_action), getString(R.string.dev_diagnose), getString(if (d.revoked) R.string.dev_restore else R.string.dev_revoke))) { _, which -> when (which) {
+                0 -> { if (!settingsOpen) settingsToggle.performClick(); name.requestFocus(); name.post { name.requestRectangleOnScreen(Rect(0, 0, name.width, name.height), true) } }
+                1 -> diagnose.performClick()
+                2 -> if (d.revoked) restore.performClick() else revoke.performClick()
+            } }.setNegativeButton(R.string.dev_cancel, null).show()
         }
         private fun keepDraft(value: String?) { UiIo.disk { prefs.edit().apply { if (value == null) remove("name/$id") else putString("name/$id", value) }.apply() } }
         private fun setName(value: String) { settingName = true; name.setText(value); settingName = false; nameLoaded = true }
@@ -738,8 +762,8 @@ open class DevicesActivity : SystemAppActivity() {
         private val kinds = AshUi.hstack(this@DevicesActivity, AshTokens.Space.xs).apply {
             addView(computer, LinearLayout.LayoutParams(0, -2, 1f)); addView(server, LinearLayout.LayoutParams(0, -2, 1f))
         }
-        private val issue = AshUi.button(this@DevicesActivity, getString(R.string.dev_issue), AshUi.Kind.PRIMARY, block = true) { issue() }
-        private val copy: TextView = AshUi.button(this@DevicesActivity, getString(R.string.dev_copy), AshUi.Kind.PRIMARY, block = true) {
+        private val issue = AppUi.button(this@DevicesActivity, getString(R.string.dev_issue), AppAccent.TEAL) { issue() }
+        private val copy: TextView = AppUi.button(this@DevicesActivity, getString(R.string.dev_copy), AppAccent.TEAL) {
             val waiting = pair.step as? PairFlow.Step.Waiting ?: return@button
             if (waiting.command.isEmpty() || pair.expiredBy(System.currentTimeMillis())) return@button
             copyButton().isEnabled = false
@@ -748,11 +772,11 @@ open class DevicesActivity : SystemAppActivity() {
             }
         }
         private fun copyButton() = copy
-        private val permissions = AccessForm { _, _, _, _ -> bind() }
-        private val approve = AshUi.button(this@DevicesActivity, getString(R.string.dev_allow_connection), AshUi.Kind.PRIMARY, block = true) { decide(true) }
+        private val permissions: AccessForm = AccessForm { _, _, _, _ -> pairDraft = permissions.args().toString(); bind() }
+        private val approve = AppUi.button(this@DevicesActivity, getString(R.string.dev_allow_connection), AppAccent.TEAL) { decide(true) }
         private val reject = button(R.string.dev_reject) { decide(false) }
         private val restart = button(R.string.dev_restart) { pair.reset(); pairUncertain = false; result.text = ""; bind() }
-        private val open = AshUi.button(this@DevicesActivity, getString(R.string.dev_open_device), AshUi.Kind.PRIMARY, block = true) {
+        private val open = AppUi.button(this@DevicesActivity, getString(R.string.dev_open_device), AppAccent.TEAL) {
             val id = (pair.step as? PairFlow.Step.Connected)?.device ?: (pair.step as? PairFlow.Step.Approved)?.device
             if (!id.isNullOrEmpty()) showRoute("d/$id")
         }
@@ -932,10 +956,9 @@ open class DevicesActivity : SystemAppActivity() {
         else -> ""
     }
     private fun newerRelease(d: Device) = d.latest == false && !model.release.isNullOrEmpty() && model.release != d.version
-    private val accent get() = if (AshUi.night(this)) c.her else c.helperTeal
-    private fun surface(padding: Int = 16) = AshUi.vstack(this, 8).apply {
-        background = AshUi.rounded(c.surface, dp(22).toFloat(), c.line2, dp(1))
-        setPadding(dp(padding), dp(padding), dp(padding), dp(padding)); elevation = 0f
+    private val accent get() = AppAccent.TEAL.color(this)
+    private fun surface(padding: Int = 16) = AppUi.surface(this, decision = true).apply {
+        setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
     }
     private fun rule() = View(this).apply { setBackgroundColor(c.line); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) }
     private fun icon(resource: Int, size: Int = 22) = ImageView(this).apply {
@@ -948,9 +971,10 @@ open class DevicesActivity : SystemAppActivity() {
         addView(AshUi.text(this@DevicesActivity, label, AshTokens.Type.headline, c.ink), LinearLayout.LayoutParams(0, -2, 1f))
         note?.let { addView(AshUi.text(this@DevicesActivity, it, AshTokens.Type.sub, c.text2)) }
     }
-    private fun linkButton(label: Int, image: Int, action: () -> Unit): TextView = AshUi.button(this, getString(label), AshUi.Kind.GHOST, block = true, onClick = action).apply {
+    private fun linkButton(label: Int, image: Int, action: () -> Unit): TextView = AppUi.button(this, getString(label), AppAccent.TEAL, primary = false, click = action).apply {
+        setBackgroundColor(android.graphics.Color.TRANSPARENT)
         setTextColor(c.text2); compoundDrawablePadding = dp(8)
-        setCompoundDrawablesRelativeWithIntrinsicBounds(getDrawable(image)?.mutate()?.apply { setTint(c.text2); setBounds(0, 0, dp(20), dp(20)) }, null, null, null)
+        setCompoundDrawablesRelative(getDrawable(image)?.mutate()?.apply { setTint(c.text2); setBounds(0, 0, dp(20), dp(20)) }, null, null, null)
     }
     private fun abilityIcon(name: String) = when (name) { "Codex" -> R.drawable.ash_ic_cpu; "文件和命令" -> R.drawable.ash_ic_folder; "日历" -> R.drawable.ash_ic_clock; else -> R.drawable.ash_ic_eye }
     private fun devicePresence(d: Device) = if (!d.online && !d.revoked && d.lastSeen != null)
@@ -961,11 +985,9 @@ open class DevicesActivity : SystemAppActivity() {
     private fun subText(value: String) = AshUi.text(this, value, AshTokens.Type.sub).apply {
         setPadding(0, dp(AshTokens.Space.xs), 0, dp(AshTokens.Space.xs))
     }
-    private fun text(value: String, heading: Boolean = false) = AshUi.text(this, value, if (heading) AshTokens.Type.headline else AshTokens.Type.body).apply {
-        setPadding(0, dp(AshTokens.Space.xs), 0, dp(AshTokens.Space.xs))
-    }
+    private fun text(value: String, heading: Boolean = false) = AshUi.text(this, value, if (heading) AshTokens.Type.headline else AshTokens.Type.body)
     private fun column() = AshUi.vstack(this, AshTokens.Space.xs).apply { setPadding(dp(AshTokens.Space.pageX), 0, dp(AshTokens.Space.pageX), dp(AshTokens.Space.lg)) }
     private fun section(value: String) = column().apply { addView(text(value)) }
     private fun scroll(child: View) = ScrollView(this).apply { isFillViewport = true; addView(child) }
-    private fun button(label: Int, vararg args: Any, action: () -> Unit) = AshUi.button(this, getString(label, *args), AshUi.Kind.NEUTRAL, block = true, onClick = action)
+    private fun button(label: Int, vararg args: Any, action: () -> Unit) = AppUi.button(this, getString(label, *args), AppAccent.TEAL, primary = false, click = action).apply { layoutParams = ViewGroup.LayoutParams(-1, -2) }
 }
