@@ -108,6 +108,8 @@ class ChatScreen(
         setOnClickListener { scroll.smoothScrollBy(0, list.height - scroll.scrollY - scroll.height) }
     }
     private val scrollHost = FrameLayout(ctx)
+    private val deck = AshUi.vstack(ctx, 0)
+    private val stage = FrameLayout(ctx).apply { clipChildren = true }
     /** While the owner has lent the screen: who, how long is left, and a tap takes it back. */
     private val leaseBar = AshUi.text(ctx, "", AshType(12.5f, 16f, 500, Role.TEXT)).apply {
         gravity = Gravity.CENTER; visibility = View.GONE; setPadding(dp(12), dp(7), dp(12), dp(7)); contentDescription = "屏幕授权中，点这里收回"
@@ -168,9 +170,13 @@ class ChatScreen(
         LeaseState.onChange(onLease)
         scrollHost.addView(scroll, FrameLayout.LayoutParams(-1, -1))
         scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), dp(10)) })
-        view.addView(scrollHost, LinearLayout.LayoutParams(-1, 0, 1f))
-        view.addView(pillSlot, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(6) })
-        view.addView(composer(), LinearLayout.LayoutParams(-1, -2))
+        // The conversation and the input are one piece standing on the keyboard: [deck] holds them, and the keyboard moves it
+        // (see [keyboard]); [stage] is the room under the header, so the piece slides under the header, not over it.
+        deck.addView(scrollHost, LinearLayout.LayoutParams(-1, 0, 1f))
+        deck.addView(pillSlot, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(6) })
+        deck.addView(composer(), LinearLayout.LayoutParams(-1, -2))
+        stage.addView(deck, FrameLayout.LayoutParams(-1, -1))
+        view.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         port.onChange(onChange)
         port.onLink { open ->
             paintPresence()
@@ -718,6 +724,13 @@ class ChatScreen(
             paintList(); show()
         }
     }
+
+    /**
+     * The keyboard is moving and stands [px] above where the page's bottom is laid out: the conversation and the input ride on
+     * it as one piece (a move of the drawing only, no layout). When it stops, the page is laid out for it and this is 0 again;
+     * the conversation keeps its distance from the bottom through that layout, so nothing on screen changes.
+     */
+    fun keyboard(px: Int) { deck.translationY = -px.toFloat() }
 
     /** Put the keyboard away: the owner left the chat (another tab) or dragged the conversation, as in any chat app. */
     fun dropKeyboard() {

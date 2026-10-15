@@ -8,6 +8,9 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.widget.FrameLayout
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
+import androidx.core.view.WindowInsetsCompat
 import ai.ash.R
 import ai.ash.apps.Ash
 import ai.ash.apps.AppsPane
@@ -56,7 +59,7 @@ class HomeActivity : Activity() {
             addView(chatScreen.view, FrameLayout.LayoutParams(-1, -1))
             addView(home.view, FrameLayout.LayoutParams(-1, -1))
         }
-        ai.ash.apps.Ui.insets(content)
+        keyboardInsets()
         setContentView(content)
         val saved = HomeTab.of(savedInstanceState?.getString(STATE_TAB))
         val focus = intent?.getBooleanExtra(EXTRA_FOCUS_INPUT, false) == true
@@ -92,6 +95,39 @@ class HomeActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_TAB, tab.key)
+    }
+
+    /**
+     * The frame keeps clear of the bars and the keyboard, as [ai.ash.apps.Ui.insets] does, except while the keyboard moves:
+     * then the page is laid out without it and the chat's conversation-and-input piece rides on the keyboard frame by frame
+     * ([ChatScreen.keyboard]: a move of the drawing, never a layout per frame). When the keyboard stops, the frame is laid
+     * out once for where it stopped and the piece is put back.
+     */
+    private fun keyboardInsets() {
+        var moving = false
+        var laidFor = 0
+        val ime = WindowInsetsCompat.Type.ime()
+        ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val keyboard = (insets.getInsets(ime).bottom - bars.bottom).coerceAtLeast(0)
+            // Moving: lay out without the keyboard and keep the piece where the keyboard was (it is about to move it).
+            if (moving) chatScreen.keyboard(laidFor) else { laidFor = keyboard; chatScreen.keyboard(0) }
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom + if (moving) 0 else keyboard)
+            WindowInsetsCompat.CONSUMED
+        }
+        ViewCompat.setWindowInsetsAnimationCallback(content, object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) { if (animation.typeMask and ime != 0) moving = true }
+            override fun onProgress(insets: WindowInsetsCompat, running: MutableList<WindowInsetsAnimationCompat>): WindowInsetsCompat {
+                if (moving) chatScreen.keyboard((insets.getInsets(ime).bottom - insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom).coerceAtLeast(0))
+                return insets
+            }
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                if (animation.typeMask and ime == 0) return
+                moving = false
+                ViewCompat.requestApplyInsets(content)
+            }
+        })
+        ViewCompat.requestApplyInsets(content)
     }
 
     /** Brings [next] to the front: the chat, or the apps over it (made the first time it is wanted). */
