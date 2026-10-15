@@ -716,6 +716,16 @@ class ChatScreen(
      */
     fun keyboard(px: Int) { deck.translationY = -px.toFloat() }
 
+    /**
+     * The keyboard has stopped [px] high: the piece stands that much higher, so the top [px] of the conversation is under the
+     * header; that much room at the top of the list lets its oldest rows be scrolled into sight. The list is laid out from its
+     * end, so this changes nothing on screen. Only when the keyboard stops, never per frame.
+     */
+    fun keyboardAtRest(px: Int) {
+        val top = px
+        if (list.paddingTop != top) list.setPadding(list.paddingLeft, top, list.paddingRight, list.paddingBottom)
+    }
+
     /** Put the keyboard away: the owner left the chat (another tab) or dragged the conversation, as in any chat app. */
     fun dropKeyboard() {
         if (!input.hasFocus()) return

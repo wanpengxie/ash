@@ -97,28 +97,34 @@ class HomeActivity : Activity() {
         outState.putString(STATE_TAB, tab.key)
     }
 
+    /** The chat is what the owner sees (not another tab, not a home page over it). */
+    private fun chatInFront() = tab == HomeTab.CHAT && home.view.visibility != View.VISIBLE
+
     /**
-     * The frame keeps clear of the bars and the keyboard, as [ai.ash.apps.Ui.insets] does, except while the keyboard moves:
-     * then the page is laid out without it and the chat's conversation-and-input piece rides on the keyboard frame by frame
-     * ([ChatScreen.keyboard]: a move of the drawing, never a layout per frame). When the keyboard stops, the frame is laid
-     * out once for where it stopped and the piece is put back.
+     * The keyboard never lays the chat out again. The frame keeps clear of the bars only, and the chat's
+     * conversation-and-input piece stands on the keyboard: while it moves, frame by frame ([ChatScreen.keyboard], a move of
+     * the drawing); when it has stopped, the same, plus room at the top of the conversation so its oldest rows can still be
+     * scrolled to ([ChatScreen.keyboardAtRest]). There is no moment where a move is swapped for a layout, so nothing
+     * flickers. Other tabs and the home pages are laid out above the keyboard, as before.
      */
     private fun keyboardInsets() {
         var moving = false
-        var laidFor = 0
         val ime = WindowInsetsCompat.Type.ime()
+        fun keyboardOf(insets: WindowInsetsCompat) =
+            (insets.getInsets(ime).bottom - insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom).coerceAtLeast(0)
         ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            val keyboard = (insets.getInsets(ime).bottom - bars.bottom).coerceAtLeast(0)
-            // Moving: lay out without the keyboard and keep the piece where the keyboard was (it is about to move it).
-            if (moving) chatScreen.keyboard(laidFor) else { laidFor = keyboard; chatScreen.keyboard(0) }
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom + if (moving) 0 else keyboard)
+            val keyboard = keyboardOf(insets)
+            val chat = chatInFront()
+            // While the keyboard moves, the piece follows it in onProgress; this answer is where it will end.
+            if (!moving) { chatScreen.keyboard(if (chat) keyboard else 0); chatScreen.keyboardAtRest(if (chat) keyboard else 0) }
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom + if (chat) 0 else keyboard)
             WindowInsetsCompat.CONSUMED
         }
         ViewCompat.setWindowInsetsAnimationCallback(content, object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
             override fun onPrepare(animation: WindowInsetsAnimationCompat) { if (animation.typeMask and ime != 0) moving = true }
             override fun onProgress(insets: WindowInsetsCompat, running: MutableList<WindowInsetsAnimationCompat>): WindowInsetsCompat {
-                if (moving) chatScreen.keyboard((insets.getInsets(ime).bottom - insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom).coerceAtLeast(0))
+                if (moving && chatInFront()) chatScreen.keyboard(keyboardOf(insets))
                 return insets
             }
             override fun onEnd(animation: WindowInsetsAnimationCompat) {
@@ -148,6 +154,7 @@ class HomeActivity : Activity() {
         codexPane?.shown(next == HomeTab.CODEX && resumed)
         if (next == HomeTab.APPS && resumed) appsPane?.refresh()
         syncFront()
+        ViewCompat.requestApplyInsets(content)
     }
 
     /** What the rest of Ash goes by to know the owner is looking at the chat: not when the apps tab is in front. */
