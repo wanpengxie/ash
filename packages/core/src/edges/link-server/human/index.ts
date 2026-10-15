@@ -55,6 +55,14 @@ export interface HumanDeps {
   now?: () => number;
   /** Is this vault entry set? A form's password fields must be in the vault when the owner answers it. */
   vaultHas?: (ref: string) => boolean;
+  /**
+   * May agent [agent] make a card that belongs to app [app]? Only an app it published itself, or one whose every word its
+   * declaration lets it call: a card runs as its app, so a narrowed agent cannot borrow an app's grants through one.
+   * Not given: no agent attaches a card to an app.
+   */
+  /** Is a temporary app still used by a page or a home-screen widget (service:cards does not remove it then)? */
+  appInUse?: (app: string) => Promise<boolean>;
+  mayUseApp?: (agent: string, app: string) => boolean;
   /** Whether app [app] was approved to hear event [word] (its card's event sources); not given: no card hears events. */
   appHears?(app: string, word: string): boolean;
   /** IANA zone for quiet hours; default the host's local time. */
@@ -124,7 +132,7 @@ export function createHuman(deps: HumanDeps): HumanEdge {
   const cards = new Cards(db, now);
   // The conversation's live cards: each change goes to every screen that shows the conversation, as one present frame.
   const runtime = new CardRuntime({
-    db, cards, router: deps.router, settings: deps.settings, now, log, ...(deps.appHears ? { hears: deps.appHears } : {}),
+    db, cards, router: deps.router, ...(deps.appInUse ? { inUse: deps.appInUse } : {}), settings: deps.settings, now, log, ...(deps.appHears ? { hears: deps.appHears } : {}),
     viewing: () => clients.all().some((c) => c.visible),
     push: (card) => { for (const c of clients.withSurface("chat")) void presenter.send(c, { surface: "chat", op: "card.patch", body: { card } as never }); },
   });
@@ -185,8 +193,13 @@ export function createHuman(deps: HumanDeps): HumanEdge {
         case "show": {
           if (body.a2ui === undefined) return { data: { accepted: true } };
           const row = cards.put({ id: typeof body.id === "string" ? body.id : msg.id, message: msg.id, owner: msg.from, a2ui: body.a2ui, ...(typeof body.text === "string" ? { text: body.text } : {}) });
-          // An app showing its own card is its app; an agent names the app the card belongs to.
-          const app = typeof body.app === "string" ? body.app : msg.from.startsWith("app:") ? msg.from.slice(4) : undefined;
+          // An app showing a card is the card's app (it cannot name another); an agent names an app it may use, else the card has none.
+          let app = msg.from.startsWith("app:") ? msg.from.slice(4) : typeof body.app === "string" ? body.app : undefined;
+          if (msg.from.startsWith("app:") && typeof body.app === "string" && body.app !== app) row.plan.problems.push(`app: an app's card belongs to the app itself (${app}), not to ${body.app}`);
+          if (app && isAgentId(msg.from) && !(deps.mayUseApp?.(msg.from, app) ?? false)) {
+            row.plan.problems.push(`app: ${msg.from} may not make cards of ${app} (only of an app it published, or one whose words its declaration covers), so this card has no app: its calls and live data do not run`);
+            app = undefined;
+          }
           // Only an app written for this card may go with it (removed when its cards close): never the owner's own apps.
           const temporary = !!app && body.temporary_app === true && await runtime.mayBeTemporary(app);
           if (app && body.temporary_app === true && !temporary) row.plan.problems.push(`temporary_app: ${app} is not an app written for this card (an agent's new app no lasting card uses), so it stays as it is; drop temporary_app`);

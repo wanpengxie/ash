@@ -44,6 +44,7 @@ import { Ledger } from "./kernel/ledger";
 import { createRedact } from "./kernel/redact";
 import { createRegistry } from "./kernel/registry";
 import { createRouter } from "./kernel/router";
+import { agentMay } from "./kernel/router/policy";
 import { openVault } from "./kernel/vault";
 import { bodySecrets, refsIn } from "./kernel/vault/refs";
 import type { Vault } from "./kernel/types";
@@ -305,6 +306,23 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
     summarize: createSummarizer({ llm }), vaultHas: (ref) => vault.list().some((entry) => entry.ref === ref),
     appHears: (app, word) => late.apps?.runtime.hears(app, word) ?? false,
+    // A temporary app still in use: a page of it opened in the last hour, or a home-screen widget showing one of its cards.
+    appInUse: async (app) => {
+      if (now() - (late.apps?.runtime.pageOpenedAt(app) ?? 0) < 3_600_000) return true;
+      const reply = await router.send({ to: "service:widgets", kind: "request", word: "widget.list", body: {} }, service("service:cards"));
+      const state = reply.ok ? reply.result?.data as { cards?: { id: string; owner: string }[]; widgets?: { card: string | null }[] } | undefined : undefined;
+      if (!state) return true;
+      const mine = new Set((state.cards ?? []).filter((c) => c.owner === `app:${app}`).map((c) => c.id));
+      return (state.widgets ?? []).some((w) => w.card !== null && mine.has(w.card));
+    },
+    mayUseApp: (agent, app) => {
+      const info = late.apps?.runtime.info(app);
+      if (!info) return false;
+      if (info.publisher === agent) return true;
+      const policy = policyOf(agent);
+      const words = (registry.describe(`app:${app}`)?.words ?? []).filter((w) => w.kind === "request");
+      return !!policy && words.length > 0 && words.every((w) => agentMay(policy, `app:${app}`, w.word, toolWords));
+    },
   });
   const hostService = createHostService({ client: host, router, registry, virtual, vault, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);

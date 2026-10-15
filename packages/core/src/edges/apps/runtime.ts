@@ -123,6 +123,11 @@ export class AppRuntime {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Apps put to sleep (apps.sleep): turned on but not running; the first call to one of their words starts them again. */
   private readonly sleeping = new Set<string>();
+  /** When a page of each app was last opened on a screen (apps.surface): a temporary app whose page is open is not removed. */
+  private readonly pageOpened = new Map<string, number>();
+
+  /** When a page of [id] was last opened (0: not since the hub started). */
+  pageOpenedAt(id: string): number { return this.pageOpened.get(id) ?? 0; }
   private readonly lastError = new Map<string, string>();
   /** The dot an app asked for on its icon (apps.badge); memory only, shown while it runs. */
   private readonly badges = new Map<string, "warn" | "err" | "paused">();
@@ -837,6 +842,7 @@ export class AppRuntime {
     if (!manifest) throw fail("not_found", `no app ${id}`);
     const surface = manifest.surfaces?.find((item) => item.id === surfaceId);
     if (!surface) throw fail("not_found", `${id} has no surface ${surfaceId}`);
+    this.pageOpened.set(id, this.now());
     const state = this.running.get(id);
     if (!state?.online) throw fail("offline", `app:${id} is not running`, { recovery_hint: "apps.enable or apps.restart starts it." });
     let read: Awaited<ReturnType<Client["readResource"]>>;
