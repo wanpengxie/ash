@@ -687,10 +687,12 @@ function textOf(v: unknown): string {
 }
 
 /** One item of a turn, with the app's own `id` when it has one. */
-function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string; id?: string } {
+function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string; id?: string; client_id?: string } {
   const type = String(item.type ?? "item");
   const status = str(item.status) ?? undefined;
-  const ids = str(item.id) ? { id: item.id as string } : {};
+  const clientId = str(item.clientUserMessageId) ?? str(item.client_user_message_id);
+  const ids = { ...(str(item.id) ? { id: item.id as string } : {}),
+    ...((type === "userMessage" || type === "steeringUserMessage") && clientId ? { client_id: clientId } : {}) };
   const text = (kind: string, t: unknown) => ({ kind, text: redactText(clip(textOf(t), max)), ...(status ? { status } : {}), ...ids });
   switch (type) {
     case "userMessage": return text("user", item.content ?? item.text);

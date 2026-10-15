@@ -322,3 +322,17 @@ test("the app installed but not running: the words are offered, the sessions are
   assert.deepEqual(launched, ["/Applications/ChatGPT.app"], "acting starts the app in the background");
   assert.equal(app.online, true);
 });
+
+
+test("a running turn preserves each exact clientUserMessageId; equal text does not merge owner and agent", async (t) => {
+  const { desktop, app } = await fixture(t);
+  desktop.change("t1", snapshot({ turns: [turn("busy", "inProgress", [
+    { type: "userMessage", id: "desktop-item", clientUserMessageId: "owner-exact", text: "same text" },
+    { type: "steeringUserMessage", id: "steered-item", clientUserMessageId: "agent-exact", text: "same text" },
+    { type: "userMessage", id: "unrelated-item", text: "same text" },
+  ])] }));
+  const data = await app.session("t1");
+  assert.deepEqual(data.turns[0].items.map((item) => item.client_id), ["owner-exact", "agent-exact", undefined]);
+  // Let the real IPC follow handshake finish before its two sockets are closed.
+  await until(() => desktop.got.some((frame) => frame.method === "thread-stream-state-changed" && frame.targetClientIds?.length), "the subscribed snapshot");
+});
