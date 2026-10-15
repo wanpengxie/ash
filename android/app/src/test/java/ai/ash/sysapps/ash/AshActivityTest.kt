@@ -187,10 +187,9 @@ class AshActivityTest {
         seedHome(); Port.tasks = JSONArray(); open("now")
         assertTrue(texts().contains("查看全部承诺"))
         assertFalse(texts().any { it.contains("本页当前没有需要你的决定") })
+        val entry = all().filterIsInstance<TextView>().single { it.text.toString() == "查看全部承诺" }
+        assertTrue(entry.isClickable && visible(entry))
         screenshot("ash-quiet")
-        click("查看全部承诺")
-        val arg = JSONObject(shadowOf(activity).nextStartedActivity.getStringExtra(SystemAppActivity.EXTRA_ARG)!!)
-        assertEquals("ash", arg.getString("subject"))
     }
 
     @Test fun aSingleFactCorrectionPreservesNewFactsAndShowsTheOriginalNoteReply() {
@@ -264,6 +263,12 @@ class AshActivityTest {
         activity.connect(); settle()
         assertTrue(texts().contains("接入说明已更新"))
         assertTrue(all().single { it.contentDescription == "现在" }.isSelected)
+        Port.tasks = JSONArray(); activity.connect(); settle()
+        click("查看全部承诺")
+        val allTasks = shadowOf(activity).nextStartedActivity
+        assertEquals("ai.ash.sysapps.tasks.TasksActivity", allTasks.component!!.className)
+        val allArg = JSONObject(allTasks.getStringExtra(SystemAppActivity.EXTRA_ARG)!!)
+        assertEquals("ash", allArg.getString("subject")); assertFalse(allArg.has("id"))
     }
 
     @Test fun oldStatusAndUnsubstantiatedGrowthStayClearlyLabelled() {
