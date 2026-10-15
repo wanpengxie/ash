@@ -215,7 +215,10 @@ public class TeamActivityAcceptanceTest {
             assertNotNull(screenText(a,"成员与交付",false));
             assertNotNull(screenText(a,"发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。",false));
             screenshot(a,"v6-team-detail");
-            touch(a,screenText(a,"继续问",true));
+            assertNull(label(a.getWindow().getDecorView(),"继续问"));
+            assertNull(label(a.getWindow().getDecorView(),"成员管理"));
+            assertNull(screenText(a,"本次委托关系",true).getBackground());
+            touch(a,input(a));
             assertTrue(input(a).hasFocus());input(a).setText("这个问题会丢掉我刚输入的内容吗？"); input(a).setSelection(3);
             Read priorMembers=last("list"),priorExchanges=last("exchanges");
             Feed.listener.invoke(session.getJSONObject("answerEvent"));

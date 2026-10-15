@@ -73,7 +73,7 @@ class TeamActivity : SystemAppActivity() {
         set(value) { pendingLoaded = value }
     private var restoringTarget = false
     private var restoringDraft = false
-    private var moreMember = false
+    private lateinit var management: android.widget.FrameLayout
     private lateinit var list: RecyclerView
     private lateinit var lm: LinearLayoutManager
     private lateinit var rows: KeyedRowsAdapter
@@ -108,7 +108,8 @@ class TeamActivity : SystemAppActivity() {
         saved?.getStringArrayList("opened")?.let(opened::addAll)
         saved?.getBundle("configNotes")?.let { notes -> notes.keySet().forEach { id -> notes.getString(id)?.let { configNotes[id] = it } } }
         title.text = "团队"
-        actions.addView(AshUi.iconButton(this,getDrawable(R.drawable.ash_ic_slider)!!,"团队管理") { move(selected,"manage") })
+        management=AshUi.iconButton(this,getDrawable(R.drawable.ash_ic_slider)!!,"团队管理") { move(selected,"manage") }
+        actions.addView(management)
         setDestinations(listOf(
             AppDestination("team","现在",R.drawable.ash_ic_pulse),
             AppDestination("exchanges","往来",R.drawable.ash_ic_msg),
@@ -301,7 +302,7 @@ class TeamActivity : SystemAppActivity() {
             focused=exchange ?: if(previous==id && (restore==null || focused?.id==restore.exchange)) focused else null
             exchangeId=restore?.exchange ?: focused?.id
         } else if(next in setOf("team","exchanges","members")) { focused=null; exchangeId=null }
-        extra = emptyList(); moreExtra = null; savedKey = restore?.key; savedOffset=restore?.offset ?: 0; sourceRequest = null; armedAction = null; resetPosition = restore==null; moreMember = false
+        extra = emptyList(); moreExtra = null; savedKey = restore?.key; savedOffset=restore?.offset ?: 0; sourceRequest = null; armedAction = null; resetPosition = restore==null
         list.visibility = View.VISIBLE; formSlot.visibility = View.GONE
         if (id != null) switchTarget(id)
         updateTargets()
@@ -317,6 +318,8 @@ class TeamActivity : SystemAppActivity() {
     private fun render() {
         if (!::rows.isInitialized || route == "edit") return
         title.text = when (route) { "team" -> "团队"; "members" -> "团队成员"; "exchanges" -> "团队往来"; "member" -> "成员与交付"; "manage" -> "团队管理"; "relations" -> "委托关系"; "logs" -> "成员日志"; "memory" -> "载入的记忆"; "original" -> "原始往来"; else -> "往来原文" }
+        management.contentDescription=if(route=="member") "更多成员操作" else "团队管理"
+        management.getChildAt(0).background=getDrawable(if(route=="member")R.drawable.ash_ic_more else R.drawable.ash_ic_slider)?.mutate()?.apply{setTint(c.text2)}
         showPage(title.text.toString(),detail=route !in setOf("team","members","exchanges"),showNavigation=route in setOf("team","members","exchanges"))
         composer.visibility = if (route == "member") View.VISIBLE else View.GONE
         if(route!="member")stage.translationY=0f
@@ -385,14 +388,19 @@ class TeamActivity : SystemAppActivity() {
                         built.add(ChatRow("relation:${e.id}",e.toString()+opened.contains(e.id)) {
                             AshUi.vstack(this).apply {
                                 addView(views.divider())
-                                addView(button(if(e.id in opened) "收起委托关系" else "本次委托关系") { if(!opened.add(e.id))opened.remove(e.id);render() })
+                                addView(views.text(if(e.id in opened) "收起委托关系" else "本次委托关系").apply {
+                                    setTextIsSelectable(false); minimumHeight=dp(48); gravity=android.view.Gravity.CENTER_VERTICAL
+                                    val arrow=getDrawable(R.drawable.ash_ic_down)?.mutate()?.apply{setTint(c.text2);setBounds(0,0,dp(22),dp(22))}
+                                    setCompoundDrawablesRelative(null,null,arrow,null)
+                                    isClickable=true;isFocusable=true;AshUi.role(this,android.widget.Button::class.java.name)
+                                    setOnClickListener { if(!opened.add(e.id))opened.remove(e.id);render() }
+                                })
                                 if(e.id in opened) {
                                     addView(text("${TeamModel.label(e.from,all)} → ${m.name}：${e.text}"))
                                     a?.let{ addView(text("${m.name}：${it.error.ifBlank{it.text}}")) }
                                 }
                             }
                         })
-                        built.add(ChatRow("follow:focus:${e.id}",e.id) { button("继续问") { input.requestFocus(); input.hint="问原来的${m.name}…" } })
                     } else {
                         built.add(note("member:work",m.status(names)))
                         built.add(ChatRow("member:configure",m.id) { button("角色与模型") { edit(m) } })
@@ -400,18 +408,7 @@ class TeamActivity : SystemAppActivity() {
                     }
                     configNotes[m.id]?.let { built.add(note("config:note:${m.id}","配置已保存，中枢提示：$it")) }
                     addPending(built)
-                    built.add(ChatRow("member:more:${m.id}",m.id+moreMember+m.state+armedAction) {
-                        AshUi.vstack(this).apply {
-                            addView(button(if(moreMember)"收起成员管理" else "成员管理") { moreMember=!moreMember;render() })
-                            if(moreMember) {
-                                addView(button("修改配置") { edit(m) })
-                                addView(button(if(m.state=="stopped" || m.state=="error")"启动" else if(armedAction=="${m.id}:state")"确认停下，会中断工作" else "停下") { action("state",m.id,if(m.state=="stopped" || m.state=="error")"start" else "stop") })
-                                addView(button("重启") { action("restart",m.id,"restart") })
-                                addView(button("记忆") { memory(m) })
-                                addView(button("日志") { parents.add(place());route="logs";routeGeneration++;extra=emptyList();moreExtra=null;resetPosition=true;logs();render();syncBack() })
-                            }
-                        }
-                    })
+
                 }
             }
             "original" -> {
