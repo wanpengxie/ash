@@ -42,11 +42,14 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
 
     private val state = CodexState()
     private val drafts = UiDrafts.get(activity)
-    /** What the owner sent from here that the session does not show yet. */
-    private var sends: List<CodexSend> = emptyList()
+    /**
+     * What the owner sent or asked for from here (a message to a session, a new session) that the computer has not shown
+     * yet (MOBILE-ARCH §3.5, §6.2): stored before it leaves the box, each with its computer, its session (or project) and
+     * its client id fixed, so a retry — also after the app was closed — goes to the same place with the same id.
+     */
+    private val ops = ChatOutbox(activity, "codex-outbox")
     /** Approvals being answered (their buttons wait). */
     private val answering = HashSet<String>()
-    private var creating = false
     private var loading = false
     private var readAgain = false
     private var shown = false
@@ -74,15 +77,18 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         layoutManager = talkLm; adapter = talkRows
         setPadding(d(14), 0, d(14), d(12)); clipToPadding = false
         addItemDecoration(gap(10))
-        // A drag of the session puts the keyboard away; its own scrolling never does (§4.3).
-        addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrollStateChanged(rv: RecyclerView, s: Int) { if (s == RecyclerView.SCROLL_STATE_DRAGGING) dropKeyboard() }
-        })
     }
-    /** Why the last read failed, floating over the top of the lists (their top padding keeps clear of it; §1.2). */
+    /** When to move the session (decided as its rows land, §2.4); a drag puts the keyboard away (§4.3) and gives up a place being restored. */
+    private val follow = FollowEnd(talkList, talkLm, talkRows) { dropKeyboard(); talkPlace.cancel() }
+    /** Reading places to bring back after the activity was made again: in the list of sessions, and in the session. */
+    private var listPlace = AnchorRestore(null)
+    private var talkPlace = AnchorRestore(null)
+    /**
+     * Why the last read failed, floating over the top of the lists (§1.2): it covers their top — the oldest rows — while it
+     * shows, and lays nothing out coming and going.
+     */
     private val problemLine = AshUi.text(activity, "", AshTokens.Type.callout, c.text2).apply {
         gravity = Gravity.CENTER; setPadding(d(14), d(6), d(14), d(6)); setBackgroundColor(c.bg); visibility = View.GONE
-        addOnLayoutChangeListener { _, _, t, _, b, _, _, _, _ -> keepClear(if (visibility == View.VISIBLE) b - t else 0) }
     }
     private val deck = AshUi.vstack(activity, 0)
 
@@ -109,9 +115,23 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         val stage = FrameLayout(activity).apply { clipChildren = true; addView(deck, FrameLayout.LayoutParams(-1, -1)) }
         column.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         view.addView(column, FrameLayout.LayoutParams(-1, -1))
-        saved?.getBundle(STATE)?.let { b -> state.restore(b.keySet().associateWith { b.getString(it).orEmpty() }) }
+        saved?.getBundle(STATE)?.let { b ->
+            state.restore(b.keySet().filter { !it.startsWith("place.") }.associateWith { b.getString(it).orEmpty() })
+            listPlace = AnchorRestore(placeOf(b, "place.list"))
+            talkPlace = AnchorRestore(placeOf(b, "place.talk"))
+        }
+        sessionList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: RecyclerView, st: Int) { if (st == RecyclerView.SCROLL_STATE_DRAGGING) listPlace.cancel() }
+        })
         moved()
+        // Stored operations come back: one that was going out when the app went is not known to have arrived (§6.2).
+        ops.whenReady {
+            CodexModel.interrupted(ops.items()).forEach { ops.mark(it, Pending.UNKNOWN) }
+            paint()
+        }
     }
+
+    private fun placeOf(b: Bundle, k: String) = b.getString("$k.key")?.let { AnchorRestore.Anchor(it, null, b.getInt("$k.offset")) }
 
     fun close() { closed = true; main.removeCallbacksAndMessages(null) }
 
@@ -119,7 +139,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     fun shown(visible: Boolean) {
         shown = visible
         main.removeCallbacks(tick)
-        if (!visible) dropKeyboard()
+        // Gone: what is being read no longer counts, and no read follows it.
+        if (!visible) { dropKeyboard(); state.invalidate(); readAgain = false }
         if (visible && !closed) { refresh(); main.postDelayed(tick, 3_000) }
     }
 
@@ -134,7 +155,20 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     /** Whether [back] would do something (the back gesture is offered to the page only then). */
     fun canGoBack() = state.inTalk
 
-    fun save(out: Bundle) { out.putBundle(STATE, Bundle().apply { state.route().forEach { (k, v) -> putString(k, v) } }) }
+    fun save(out: Bundle) {
+        out.putBundle(STATE, Bundle().apply {
+            state.route().forEach { (k, v) -> putString(k, v) }
+            fun place(k: String, list: RecyclerView, lm: LinearLayoutManager, rows: KeyedRowsAdapter, atEndIsNone: Boolean) {
+                if (atEndIsNone && !list.canScrollVertically(1)) return
+                if (!atEndIsNone && !list.canScrollVertically(-1)) return
+                val pos = lm.findFirstVisibleItemPosition().takeIf { it >= 0 } ?: return
+                val row = lm.findViewByPosition(pos) ?: return
+                putString("$k.key", rows.currentList.getOrNull(pos)?.key ?: return); putInt("$k.offset", lm.getDecoratedTop(row) - list.paddingTop)
+            }
+            if (state.inTalk) place("place.talk", talkList, talkLm, talkRows, atEndIsNone = true)
+            place("place.list", sessionList, sessionLm, sessionRows, atEndIsNone = false)
+        })
+    }
 
     override fun keyboard(px: Int) { deck.translationY = -px.toFloat() }
 
@@ -165,8 +199,10 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
             loading = false
             val counted = if (t.thread == null) state.listRead(t, data, failure?.code) else state.detailRead(t, data, failure?.code)
             if (counted) {
-                // What the session now shows, the phone no longer shows apart.
-                if (t.thread != null && failure == null) sends = sends.filterNot { it.thread == t.thread && it.status == CodexSend.SENT }
+                // A message the session now shows (by its client id) is no longer shown apart: its row becomes the session's.
+                val d = state.detail
+                if (t.thread != null && failure == null && d != null && ops.ready)
+                    CodexModel.settled(ops.items(), dev, t.thread, CodexModel.clientIds(d), System.currentTimeMillis()).forEach(ops::remove)
                 paint()
             }
             again()
@@ -212,55 +248,63 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         if (state.newIn != null) create(t) else say(t)
     }
 
-    /** A new session: the words stay in the box until the computer has made it (then the session opens, empty box). */
-    private fun create(text: String) {
+    /**
+     * A new session or a message (MOBILE-ARCH §3.5): stored first, with its computer, its session (or project) and its client
+     * id; only once it is kept do the words leave the box. Then it goes out, and waits as its own row until the computer
+     * shows what it became.
+     */
+    private fun store(body: JSONObject, text: String) {
         val dev = state.device ?: return
+        if (storing) return
+        storing = true
+        val key = draftKey()
+        val op = Pending(UUID.randomUUID().toString(), dev, body, at = System.currentTimeMillis())
+        ops.add(op) { kept ->
+            storing = false
+            if (!kept) { toast("没能存下来，还在输入框里，再点一次试试"); return@add }
+            if (draftKey() == key && input.text.toString().trim() == text) input.setText("")
+            talkPlace.cancel()
+            paintTalk(toEnd = true)
+            go(op)
+        }
+    }
+    private var storing = false
+
+    private fun create(text: String) {
         val p = state.newIn ?: return
         val cwd = p.cwd ?: return
-        if (creating) return
-        creating = true
-        val key = draftKey()
-        problem("正在电脑上开新会话…")
-        port.call(dev, CodexModel.NEW, JSONObject().put("cwd", cwd).put("text", text)) { data, failure ->
-            creating = false
-            val id = CodexModel.created(data)
-            if (failure != null || id == null) {
-                // The words are still in the box: nothing to put back.
-                problemLine.visibility = View.GONE
-                toast(failure?.let { CodexModel.failure(it.code, it.message) } ?: "没能开新会话")
-                return@call
-            }
-            key?.let(drafts::clear)
-            if (state.newIn == p) { state.open(id, null); moved(); main.postDelayed({ refresh() }, 600) }
-        }
+        store(JSONObject().put("op", "new").put("cwd", cwd).put("name", p.name).put("text", text), text)
     }
 
-    /** A message to the session: it leaves the box at once and waits as its own row; failing, it stays there to send again (§4.2). */
     private fun say(text: String) {
         val id = state.thread ?: return
-        val s = CodexSend(UUID.randomUUID().toString(), id, text, CodexSend.SENDING)
-        sends = sends + s
-        input.setText("")
-        paintTalk(toEnd = true)
-        go(s)
+        store(JSONObject().put("op", "send").put("thread", id).put("text", text), text)
     }
 
-    /** Sends [s] with its own client id (the same on every try). */
-    private fun go(s: CodexSend) {
-        val dev = state.device ?: return set(s, CodexSend.FAILED)
-        set(s, CodexSend.SENDING)
-        port.call(dev, CodexModel.SEND, JSONObject().put("thread", s.thread).put("text", s.text).put("client_id", s.clientId)) { _, failure ->
+    /** Sends [op] to the computer it was stored for, with its own client id — the same on every try (§6.2). */
+    private fun go(op: Pending) {
+        val to = op.to ?: return
+        ops.mark(op.clientId, Pending.SENDING); paint()
+        val b = op.body
+        val new = b.optString("op") == "new"
+        val word = if (new) CodexModel.NEW else CodexModel.SEND
+        val req = if (new) JSONObject().put("cwd", b.optString("cwd")).put("text", b.optString("text")).put("client_id", op.clientId)
+            else JSONObject().put("thread", b.optString("thread")).put("text", b.optString("text")).put("client_id", op.clientId)
+        port.call(to, word, req) { data, failure ->
             when {
-                failure == null -> { set(s, CodexSend.SENT); main.postDelayed({ refresh() }, 600) }
-                failure.code == "result_unknown" -> set(s, CodexSend.UNKNOWN)
-                else -> set(s, CodexSend.FAILED)
+                failure == null && new -> {
+                    // The session exists: the operation is done; the session opens if the owner is still on that new page.
+                    ops.remove(op.clientId)
+                    drafts.clear(Drafts.codexNew(to, b.optString("cwd")))
+                    val thread = CodexModel.created(data)
+                    if (thread != null && state.device == to && state.newIn?.cwd == b.optString("cwd")) { state.open(thread, null); moved(); main.postDelayed({ refresh() }, 600) }
+                    else paint()
+                }
+                failure == null -> { ops.mark(op.clientId, Pending.SENT); paint(); main.postDelayed({ refresh() }, 600) }
+                failure.code == "result_unknown" -> { ops.mark(op.clientId, Pending.UNKNOWN); paint() }
+                else -> { ops.mark(op.clientId, Pending.FAILED); paint() }
             }
         }
-    }
-
-    private fun set(s: CodexSend, status: String) {
-        sends = sends.map { if (it.clientId == s.clientId) it.copy(status = status) else it }
-        paintTalk()
     }
 
     private fun stopTurn() {
@@ -325,13 +369,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         talkList.visibility = if (talk) View.VISIBLE else View.GONE
         val p = state.problem
         problemLine.visibility = if (p == null) View.GONE else View.VISIBLE
-        if (p != null) problemLine.text = p else keepClear(0)
+        if (p != null) problemLine.text = p
         if (talk) paintTalk() else paintSessions()
-    }
-
-    /** The lists keep their top clear of the problem line while it shows (set after this layout, never inside it). */
-    private fun keepClear(height: Int) {
-        for (l in listOf(sessionList, talkList)) if (l.paddingTop != height) l.post { l.setPadding(l.paddingLeft, height, l.paddingRight, l.paddingBottom) }
     }
 
     private fun paintSessions() {
@@ -355,7 +394,12 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
                 }
             }
         }
-        sessionRows.submitList(rows)
+        sessionRows.submitList(rows) {
+            when (val step = listPlace.onRows(rows.map { it.key }, read = state.sessions != null, canFetch = false)) {
+                is AnchorRestore.Step.Go -> sessionLm.scrollToPositionWithOffset(step.index, step.offset)
+                else -> {}
+            }
+        }
     }
 
     private fun projectView(p: CodexModel.Project, now: Long): View {
@@ -375,7 +419,9 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         val newIn = state.newIn
         if (newIn != null) {
             title.text = "新对话 · ${newIn.name}"; stop.visibility = View.GONE; input.hint = "第一句话…"
-            if (state.problem == null) rows += hintRow("在 ${newIn.cwd} 里开一个新的 Codex 会话，写下第一句话发出去。")
+            val mine = ops.items().filter { it.to == state.device && it.body.optString("op") == "new" && it.body.optString("cwd") == newIn.cwd }
+            if (state.problem == null && mine.isEmpty()) rows += hintRow("在 ${newIn.cwd} 里开一个新的 Codex 会话，写下第一句话发出去。")
+            for (op in mine) rows += ChatRow(op.clientId, op.status + "|" + op.text) { opView(op) }
         } else {
             title.text = state.title ?: "Codex"
             val dt = state.detail
@@ -383,18 +429,28 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
             else {
                 stop.visibility = if (dt.session.running || dt.session.waiting) View.VISIBLE else View.GONE
                 input.hint = if (dt.session.open) "跟 Codex 说…" else "跟 Codex 说…（会先在电脑上打开这个会话）"
-                // The computer gives its items no ids; within a turn they only ever add up, so turn and place name one.
                 for (turn in dt.turns) turn.items.forEachIndexed { i, item ->
                     if (item.kind == "thinking" || (item.kind in setOf("user", "agent") && item.text.isBlank())) return@forEachIndexed
-                    rows += ChatRow("${turn.id}:$i", item.kind + "|" + item.text) { itemView(item) }
+                    rows += ChatRow(CodexModel.itemKey(turn.id, item, i), item.kind + "|" + item.text) { itemView(item) }
                 }
                 if (dt.session.running && dt.approvals.isEmpty()) rows += ChatRow("running", "running") { AshUi.text(activity, "在做事…", AshTokens.Type.caption, c.text3).apply { layoutParams = side(false) } }
                 for (a in dt.approvals) rows += ChatRow("approval:" + a.requestId, a.summary + "|" + (a.requestId in answering)) { approvalCard(a) }
                 if (dt.turns.isEmpty() && dt.approvals.isEmpty()) rows += hintRow("这个会话还没有内容")
             }
-            for (s in sends) if (s.thread == state.thread) rows += ChatRow("send:" + s.clientId, s.status) { sendView(s) }
+            // What waits keeps its client id as its key: the session's copy of it takes over the same row.
+            val shown = rows.map { it.key }.toSet()
+            for (op in ops.items()) if (op.to == state.device && op.body.optString("op") == "send" && op.body.optString("thread") == state.thread && op.clientId !in shown)
+                rows += ChatRow(op.clientId, op.status + "|" + op.text) { opView(op) }
         }
-        FollowEnd.submit(talkList, talkLm, talkRows, rows, toEnd)
+        val readNow = if (newIn != null) true else state.detail != null
+        follow.submit(rows, toEnd, hold = { talkPlace.pending }) {
+            when (val step = talkPlace.onRows(rows.map { it.key }, readNow, canFetch = false)) {
+                is AnchorRestore.Step.Go -> talkLm.scrollToPositionWithOffset(step.index, step.offset)
+                // Further back than the turns shown: stay at the oldest there is, not at the newest.
+                AnchorRestore.Step.Oldest -> talkLm.scrollToPositionWithOffset(0, 0)
+                else -> {}
+            }
+        }
     }
 
     private fun hintRow(s: String) = ChatRow("hint", s) {
@@ -414,22 +470,22 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         return LinearLayout(activity).apply { gravity = if (mine) Gravity.END else Gravity.START; addView(v, side(mine)) }
     }
 
-    /** A message sent from here that the session does not show yet: sending, sent, or not sent with 「重发」 and 「删掉」 beside it. */
-    private fun sendView(s: CodexSend): View = AshUi.vstack(activity, 2).apply {
+    /** A message (or a new session) sent from here that the computer does not show yet: sending, sent, or not sent with 「重发」 and 「删掉」 (same client id). */
+    private fun opView(op: Pending): View = AshUi.vstack(activity, 2).apply {
         gravity = Gravity.END
-        addView(AshUi.bubbleText(activity, s.text, true).apply { alpha = 0.7f }, side(true))
-        val status = when (s.status) {
-            CodexSend.FAILED -> "没发出去"
-            CodexSend.UNKNOWN -> "不确定发出去没有，先看看上面"
-            CodexSend.SENT -> "已发出"
-            else -> "发送中…"
+        addView(AshUi.bubbleText(activity, op.text, true).apply { alpha = 0.7f }, side(true))
+        val status = when (op.status) {
+            Pending.FAILED -> "没发出去"
+            Pending.UNKNOWN -> "不确定发出去没有，先看看上面再决定"
+            Pending.SENT -> "已发出"
+            else -> if (op.body.optString("op") == "new") "正在电脑上开新会话…" else "发送中…"
         }
         addView(AshUi.hstack(activity, 12).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(AshUi.text(activity, status, AshTokens.Type.caption, c.text3))
-            if (s.status == CodexSend.FAILED || s.status == CodexSend.UNKNOWN) {
-                addView(AshUi.button(activity, "重发", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { go(s) })
-                addView(AshUi.button(activity, "删掉", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { sends = sends.filterNot { it.clientId == s.clientId }; paintTalk() })
+            if (op.status == Pending.FAILED || op.status == Pending.UNKNOWN) {
+                addView(AshUi.button(activity, "重发", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.get(op.clientId)?.let(::go) })
+                addView(AshUi.button(activity, "删掉", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.remove(op.clientId); paint() })
             }
         }, side(true))
     }

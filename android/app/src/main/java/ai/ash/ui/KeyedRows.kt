@@ -34,24 +34,91 @@ class KeyedRowsAdapter(private val ctx: Context) : ListAdapter<ChatRow, KeyedRow
 }
 
 /**
- * The scroll rule of a conversation laid out from its end (MOBILE-ARCH §2.4): it moves only when asked ([toEnd]: the owner
- * sent, or 「回到最新」), on its first fill, or when a new row comes at the end while the end is in sight — judged when
- * the rows are handed over, against what the owner sees then. Everything else (pages above, a row growing, the keyboard)
- * keeps the bottom row where it is. [onUnseen] hears that a new row came while the owner reads further up.
+ * The scroll intent of a conversation laid out from its end (MOBILE-ARCH §2.4), as plain data. Rows are handed over
+ * ([submit]) and land later ([commit], after the diff); what to do is decided when they land, from where the owner is then
+ * — not from where they were when the rows were handed over, so someone who scrolled up meanwhile is not pulled back.
+ * The list moves only on its first fill, for a [submit] asked with toEnd (sending, 回到最新) unless the owner dragged
+ * since, or for a new row at the end while the end is in sight; a new row at the end while reading further up is "unseen".
+ * While [hold] is set (a reading place is being restored) it does not move by itself at all.
  */
-object FollowEnd {
-    fun submit(
-        list: RecyclerView, lm: LinearLayoutManager, adapter: KeyedRowsAdapter, rows: List<ChatRow>,
-        toEnd: Boolean = false, placeholder: String? = null, onUnseen: () -> Unit = {}, then: (first: Boolean) -> Unit = {},
-    ) {
-        val before = adapter.currentList
-        val first = before.none { it.key != placeholder } && rows.firstOrNull()?.key != placeholder
-        val atEnd = !list.canScrollVertically(1)
-        val newAtEnd = !first && rows.isNotEmpty() && before.none { it.key == rows.last().key }
-        if (newAtEnd && !atEnd && !toEnd) onUnseen()
+class FollowIntent(private val placeholder: String? = null) {
+    data class Ticket(val toEnd: Boolean, val drags: Int)
+    data class Decision(val scrollToEnd: Boolean, val unseen: Boolean, val first: Boolean)
+
+    private var drags = 0
+    private var committed: List<String> = emptyList()
+
+    /** The owner put a finger on the list and moved it. */
+    fun dragged() { drags++ }
+
+    fun submit(toEnd: Boolean) = Ticket(toEnd, drags)
+
+    fun commit(t: Ticket, keys: List<String>, atEndNow: Boolean, hold: Boolean = false): Decision {
+        val before = committed
+        committed = keys
+        val first = before.none { it != placeholder } && keys.firstOrNull()?.let { it != placeholder } == true
+        val asked = t.toEnd && t.drags == drags
+        val newAtEnd = !first && keys.isNotEmpty() && keys.last() !in before
+        if (hold && !asked) return Decision(false, newAtEnd && !atEndNow, first)
+        val scroll = keys.isNotEmpty() && (asked || first || (newAtEnd && atEndNow))
+        return Decision(scroll, newAtEnd && !atEndNow && !asked, first)
+    }
+}
+
+/**
+ * A reading place to come back to (MOBILE-ARCH §3.4, §2.6): a row's key, its message id when it has one, and how far below
+ * the list's top it started. It is kept until the row is there to go to, or it is clearly not coming (then the list stays at
+ * the oldest row it has, never jumps to the newest): rows that arrive before the conversation was read do not count, and a
+ * row that is not among them may be fetched once by its id.
+ */
+class AnchorRestore(private var want: Anchor?) {
+    data class Anchor(val key: String, val id: String?, val offset: Int)
+    sealed class Step {
+        object None : Step()
+        object Wait : Step()
+        data class Go(val index: Int, val offset: Int) : Step()
+        data class Fetch(val id: String) : Step()
+        /** Not coming: stay at the oldest row there is. */
+        object Oldest : Step()
+    }
+
+    private var fetched = false
+    val pending get() = want != null
+
+    /** The owner took over (dragged, sent, jumped): the place is no longer wanted. */
+    fun cancel() { want = null }
+
+    fun onRows(keys: List<String>, read: Boolean, canFetch: Boolean): Step {
+        val w = want ?: return Step.None
+        if (!read) return Step.Wait
+        val at = keys.indexOf(w.key)
+        if (at >= 0) { want = null; return Step.Go(at, w.offset) }
+        if (!fetched && canFetch && w.id != null) { fetched = true; return Step.Fetch(w.id) }
+        want = null
+        return Step.Oldest
+    }
+}
+
+/**
+ * A keyed list laid out from its end with its [FollowIntent]: rows are handed over with [submit]; the decision is taken in
+ * the commit callback, against where the list is then. A drag tells the intent (and calls [onDrag]).
+ */
+class FollowEnd(private val list: RecyclerView, private val lm: LinearLayoutManager, private val adapter: KeyedRowsAdapter, placeholder: String? = null, onDrag: () -> Unit = {}) {
+    val intent = FollowIntent(placeholder)
+
+    init {
+        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: RecyclerView, state: Int) { if (state == RecyclerView.SCROLL_STATE_DRAGGING) { intent.dragged(); onDrag() } }
+        })
+    }
+
+    fun submit(rows: List<ChatRow>, toEnd: Boolean = false, hold: () -> Boolean = { false }, onUnseen: () -> Unit = {}, then: (first: Boolean) -> Unit = {}) {
+        val ticket = intent.submit(toEnd)
         adapter.submitList(rows) {
-            if (rows.isNotEmpty() && (toEnd || first || (newAtEnd && atEnd))) lm.scrollToPosition(rows.size - 1)
-            then(first)
+            val d = intent.commit(ticket, rows.map { it.key }, !list.canScrollVertically(1), hold())
+            if (d.scrollToEnd) lm.scrollToPosition(rows.size - 1)
+            if (d.unseen) onUnseen()
+            then(d.first)
         }
     }
 }

@@ -16,6 +16,8 @@ class ChatWindow {
     /** When the last read failed (0: the last read worked); the screen says the conversation may be behind. */
     var failedAt = 0L; private set
     var generation = 0; private set
+    /** A newest window has been read successfully at least once (before that the rows are only what waits to be sent). */
+    var read = false; private set
 
     /** A new read of the newest window starts: what an older one answers no longer counts. */
     fun begin(): Int = ++generation
@@ -27,6 +29,7 @@ class ChatWindow {
         if (gen != generation) return false
         if (window == null) { failedAt = now; return true }
         failedAt = 0
+        read = true
         val got = window.optJSONArray("items") ?: JSONArray()
         val from = (0 until got.length()).mapNotNull { got.optJSONObject(it)?.optLong("seq") }.minOrNull()
         // A successful window replaces what it covers; a successful empty one means the conversation is empty.
@@ -70,4 +73,12 @@ class Drafts(private val store: Store) {
         fun codex(device: String, thread: String) = "codex:$device:$thread"
         fun codexNew(device: String, cwd: String) = "codex-new:$device:$cwd"
     }
+}
+
+/** The picked files once a send took [sent] of them (the very entries, MOBILE-ARCH §3.5): what was picked meanwhile stays. */
+object Picked {
+    fun entries(a: JSONArray): List<Any> = (0 until a.length()).map { a.get(it) }
+
+    fun afterSend(picked: JSONArray, sent: List<Any>): JSONArray =
+        JSONArray().apply { for (e in entries(picked)) if (sent.none { it === e }) put(e) }
 }

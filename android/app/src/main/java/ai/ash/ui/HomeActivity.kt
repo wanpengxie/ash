@@ -57,6 +57,7 @@ class HomeActivity : Activity() {
         home.onName = { name -> chatScreen.setName(name) }
         home.onShownChange = {
             backRouter.sync()
+            syncChatShown()
             // Opening/closing the home overlay changes the IME owner even if the tab did not change.
             if (::content.isInitialized) ViewCompat.requestApplyInsets(content)
         }
@@ -138,8 +139,15 @@ class HomeActivity : Activity() {
         if (next == HomeTab.APPS && resumed) appsPane?.refresh()
         syncFront()
         backRouter.sync()
+        syncChatShown()
         ViewCompat.requestApplyInsets(content)
     }
+
+    /**
+     * The chat reads, ticks and tells the kernel it is seen only while it is: the activity in front and the chat its visible
+     * route (not another tab, not her pages over it; MOBILE-ARCH §3.6).
+     */
+    private fun syncChatShown() { if (::chatScreen.isInitialized) chatScreen.shown(resumed && chatInFront()) }
 
     /** What the rest of Ash goes by to know the owner is looking at the chat: not when the apps tab is in front. */
     private fun syncFront() {
@@ -157,7 +165,7 @@ class HomeActivity : Activity() {
         LeaseState.refresh()
         HandRuntime.appOpened(this)
         Link.get(this).presence.tell()
-        chatScreen.shown(true)
+        syncChatShown()
         if (tab == HomeTab.APPS) appsPane?.refresh()
         codexPane?.shown(tab == HomeTab.CODEX)
         // The kernel package: not installed, the guide's first step offers to install it (once); not running, it is started from here (in front, the app may).

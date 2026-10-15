@@ -76,7 +76,7 @@ class ChatScreen(
      */
     private val list = RecyclerView(ctx).apply {
         layoutManager = lm; adapter = rowsAdapter; itemAnimator = animator
-        // Every row stands 8 above the one under it. The top padding is the status slot's height ([statusSlot]).
+        // Every row stands 8 above the one under it.
         setPadding(dp(14), 0, dp(14), PILL_ROOM); clipToPadding = false
         setItemViewCacheSize(12)
         addItemDecoration(object : RecyclerView.ItemDecoration() {
@@ -91,6 +91,8 @@ class ChatScreen(
             }
         })
     }
+    /** When to move the conversation (decided as the rows land); a drag also gives up a reading place being restored. */
+    private val follow = FollowEnd(list, lm, rowsAdapter, EMPTY) { place.cancel() }
     /** Ids of the long messages the owner opened; kept here so a repaint or a page of older messages does not fold them again. */
     private val unfolded = HashSet<String>()
     /** New rows that came while the owner was reading further up: the 「回到底部」 button wears a dot until the bottom is reached. */
@@ -116,9 +118,9 @@ class ChatScreen(
     }
     private val onLease: () -> Unit = { paintLease() }
     /**
-     * The link and lease lines (MOBILE-ARCH §1.2): a slot floating over the top of the conversation, not a row above it, so
-     * their coming and going changes no layout of the page. The list keeps its top clear by as much as the slot shows, as
-     * padding (the bottom row stays put, so nothing the owner reads moves); scrolled up, the conversation passes under it.
+     * The link and lease lines (MOBILE-ARCH §1.2): a slot floating over the top of the conversation, not a row above it and
+     * not padding of the list, so their coming and going lays nothing out and moves nothing the owner reads. While it shows
+     * it covers the top of the conversation — the older messages, which a scroll brings out from under it.
      */
     private val statusSlot = AshUi.vstack(ctx, 4).apply { setPadding(dp(14), dp(4), dp(14), dp(4)); setBackgroundColor(c.bg); visibility = View.GONE }
     private val pillSlot = FrameLayout(ctx)
@@ -178,7 +180,6 @@ class ChatScreen(
         LeaseState.onChange(onLease)
         scrollHost.addView(list, FrameLayout.LayoutParams(-1, -1))
         scrollHost.addView(statusSlot, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
-        statusSlot.addOnLayoutChangeListener { _, _, t, _, b, _, _, _, _ -> keepClearOfSlot(b - t) }
         scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(AshTokens.Size.touch), dp(AshTokens.Size.touch), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), PILL_ROOM) })
         // The progress pill floats over the bottom of the conversation, in room the list always keeps for it: its coming and
         // going changes no layout, so the conversation never moves for it.
@@ -209,19 +210,14 @@ class ChatScreen(
         paintSlot()
     }
 
-    /** The slot shows while one of its lines does; the list's top follows its height (after this layout, never inside it). */
+    /** The slot shows while one of its lines does. */
     private fun paintSlot() {
         val on = banner.visibility == View.VISIBLE || leaseBar.visibility == View.VISIBLE
         statusSlot.visibility = if (on) View.VISIBLE else View.GONE
-        if (!on) keepClearOfSlot(0)
-    }
-
-    private fun keepClearOfSlot(height: Int) {
-        val top = if (statusSlot.visibility == View.VISIBLE) height else 0
-        if (list.paddingTop != top) list.post { list.setPadding(list.paddingLeft, top, list.paddingRight, list.paddingBottom) }
     }
 
     fun shown(visible: Boolean) {
+        if (visible == shown) return
         shown = visible
         port.presence(visible = visible)
         main.removeCallbacks(tick)
@@ -235,7 +231,8 @@ class ChatScreen(
      * A failed read keeps what is shown and says so ([paintStatus]); an answer from before the link changed is dropped.
      */
     private fun refresh() {
-        if (!port.open) return
+        // Not seen (another tab, her pages over it, the app behind): nothing is read; coming back reads at once (shown).
+        if (!port.open || !shown) return
         if (reading) { readAgain = true; return }
         if (refreshQueued) return
         refreshQueued = true
@@ -290,14 +287,21 @@ class ChatScreen(
     private fun send(text: String, attachments: JSONArray) {
         if (storing) return
         val key = draftKey()
+        // What is sent is a copy: files picked while it is being stored are not part of it, and stay picked.
+        val sending = JSONArray(attachments.toString())
+        val taken = Picked.entries(attachments)
         val body = JSONObject().put("text", text)
-        if (attachments.length() > 0) body.put("attachments", attachments)
+        if (sending.length() > 0) body.put("attachments", sending)
         storing = true
+        place.cancel()
         post(chosen, body) { kept ->
             storing = false
             if (!kept) { toast("这条消息没能存下来，还在输入框里，再点一次发送试试"); return@post }
             if (draftKey() == key && input.text.toString().trim() == text) input.setText("")
-            if (picked === attachments) { picked = JSONArray(); paintPicked(); keepPicked() }
+            if (draftKey() == key && sending.length() > 0) {
+                picked = Picked.afterSend(picked, taken)
+                paintPicked(); keepPicked()
+            }
         }
     }
 
@@ -580,10 +584,8 @@ class ChatScreen(
                 }
             })
         }
-        FollowEnd.submit(list, lm, rowsAdapter, next, toEnd, EMPTY, onUnseen = { unseenBelow = true }) { filled ->
-            // Made again (theme, rotation): back to the row that was at the top, where it was.
-            if (filled) restoreAnchor?.let { (key, offset) -> next.indexOfFirst { it.key == key }.takeIf { it >= 0 && !toEnd }?.let { lm.scrollToPositionWithOffset(it, offset) } }
-            if (filled) restoreAnchor = null
+        follow.submit(next, toEnd, hold = { place.pending }, onUnseen = { unseenBelow = true }) {
+            restorePlace(next)
             then?.invoke()
             paintToBottom()
         }
@@ -768,26 +770,41 @@ class ChatScreen(
     /** The agent talked to and where the conversation was read, for the activity to keep across its being made again. */
     fun save(out: android.os.Bundle) {
         chosen?.let { out.putString(STATE_TARGET, it) }
-        anchor()?.let { (key, offset) -> out.putString(STATE_ANCHOR, key); out.putInt(STATE_OFFSET, offset) }
+        anchor()?.let { a -> out.putString(STATE_ANCHOR, a.key); a.id?.let { out.putString(STATE_ANCHOR_ID, it) }; out.putInt(STATE_OFFSET, a.offset) }
     }
 
     fun restore(saved: android.os.Bundle?) {
         saved ?: return
         val target = saved.getString(STATE_TARGET)
         if (target != chosen) { chosen = target; loadDraft(); paintTarget() }
-        restoreAnchor = saved.getString(STATE_ANCHOR)?.let { it to saved.getInt(STATE_OFFSET) }
+        place = AnchorRestore(saved.getString(STATE_ANCHOR)?.let { AnchorRestore.Anchor(it, saved.getString(STATE_ANCHOR_ID), saved.getInt(STATE_OFFSET)) })
     }
 
     /** The row at the top of the conversation and how far below the list's top it starts; null at the newest message (it follows it). */
-    private fun anchor(): Pair<String, Int>? {
+    private fun anchor(): AnchorRestore.Anchor? {
         if (!list.canScrollVertically(1)) return null
         val pos = lm.findFirstVisibleItemPosition().takeIf { it >= 0 } ?: return null
         val row = lm.findViewByPosition(pos) ?: return null
-        return rowsAdapter.currentList.getOrNull(pos)?.key?.let { it to (lm.getDecoratedTop(row) - list.paddingTop) }
+        val r = rowsAdapter.currentList.getOrNull(pos) ?: return null
+        return AnchorRestore.Anchor(r.key, r.id.ifEmpty { null }, lm.getDecoratedTop(row) - list.paddingTop)
     }
 
-    /** Where to put the conversation once its rows are there again (after the activity was made again). */
-    private var restoreAnchor: Pair<String, Int>? = null
+    /** Where to put the conversation once its row is there again (after the activity was made again); kept until it is, or is clearly not coming. */
+    private var place = AnchorRestore(null)
+
+    /** One step of bringing the reading place back, each time rows land (§3.4). */
+    private fun restorePlace(rows: List<ChatRow>) {
+        when (val step = place.onRows(rows.map { it.key }, window.read, port.open)) {
+            is AnchorRestore.Step.Go -> lm.scrollToPositionWithOffset(step.index, step.offset)
+            // Further back than the newest window: read the window around it, then look again.
+            is AnchorRestore.Step.Fetch -> port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", step.id)) { data, _ ->
+                window.older(data, keepMore = true); paintList()
+            }
+            // Not coming: stay at the oldest row there is, never at the newest.
+            AnchorRestore.Step.Oldest -> lm.scrollToPositionWithOffset(0, 0)
+            else -> {}
+        }
+    }
 
     /** Her name changed (her home page read IDENTITY.md): the bar and the hint say it. */
     fun setName(name: String) { herName = name; nameLine.text = name; paintTarget() }
@@ -797,6 +814,7 @@ class ChatScreen(
 
     /** Shows message [id]: where it is when it is on screen, otherwise after reading the window around it. */
     fun jumpTo(id: String) {
+        place.cancel()
         fun show() { rowsAdapter.currentList.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { lm.scrollToPositionWithOffset(it, dp(60)) } }
         if (rowsAdapter.currentList.any { it.id == id }) { show(); return }
         port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", id)) { data, _ ->
@@ -855,6 +873,7 @@ class ChatScreen(
         private const val EMPTY = "empty"
         private const val STATE_TARGET = "ai.ash.chat.target"
         private const val STATE_ANCHOR = "ai.ash.chat.anchor"
+        private const val STATE_ANCHOR_ID = "ai.ash.chat.anchor_id"
         private const val STATE_OFFSET = "ai.ash.chat.offset"
         private val RETRY = setOf("offline", "unavailable", "timeout", "result_unknown", "internal")
         private val PERMISSIONS = mapOf("calendar" to "日历", "notifications" to "通知", "battery" to "后台运行", "accessibility" to "无障碍",

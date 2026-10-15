@@ -19,7 +19,12 @@ object CodexModel {
         val running get() = state == "running"
         val waiting get() = state == "waiting_approval"
     }
-    data class Item(val kind: String, val text: String)
+    /**
+     * One item of a turn. [at]: its place in the whole turn (the computer shows the last 30, so a place in what is shown
+     * would point at another item as the turn grows); [id]: Codex's own id, when it has one; [clientId]: on an owner's
+     * message sent from here, the client id it was sent with. Older computers send none of the three.
+     */
+    data class Item(val kind: String, val text: String, val at: Int? = null, val id: String? = null, val clientId: String? = null)
     data class Turn(val id: String, val status: String, val items: List<Item>)
     data class Approval(val requestId: String, val kind: String, val summary: String)
     data class Detail(val session: Session, val turns: List<Turn>, val approvals: List<Approval>)
@@ -42,7 +47,9 @@ object CodexModel {
     fun detail(data: JSONObject?): Detail? {
         if (data == null || data.optString("id").isEmpty()) return null
         val turns = data.optJSONArray("turns").mapObjects { t ->
-            Turn(t.optString("id"), t.str("status") ?: "unknown", t.optJSONArray("items").mapObjects { Item(it.optString("kind"), it.optString("text")) })
+            Turn(t.optString("id"), t.str("status") ?: "unknown", t.optJSONArray("items").mapObjects {
+                Item(it.optString("kind"), it.optString("text"), if (it.has("at")) it.optInt("at") else null, it.str("id"), it.str("client_id"))
+            })
         }
         val approvals = data.optJSONArray("approvals").mapObjects { Approval(it.optString("request_id"), it.optString("kind"), it.optString("summary")) }
         return Detail(session(data), turns, approvals.filter { it.requestId.isNotEmpty() })
@@ -66,6 +73,32 @@ object CodexModel {
         return groups.map { (cwd, list) -> Project(cwd, cwd?.substringAfterLast('/')?.ifEmpty { cwd } ?: "其他", list) }
             .sortedWith(compareByDescending<Project> { p -> p.sessions.any { it.running || it.waiting } }.thenByDescending { p -> p.sessions.maxOf { it.updatedAt ?: 0L } })
     }
+
+    /**
+     * The row key of an item (MOBILE-ARCH §2.2): an owner's message sent from here is keyed by its client id — the key its
+     * waiting row had, so it becomes that row; else Codex's own id; else its place in the whole turn. [shown] (its place
+     * among what is shown) is only for computers too old to say any of these.
+     */
+    fun itemKey(turn: String, item: Item, shown: Int): String =
+        item.clientId ?: item.id?.let { "id:$it" } ?: item.at?.let { "$turn@$it" } ?: "$turn~$shown"
+
+    /** The client ids a session read shows (its owner's messages sent from here). */
+    fun clientIds(d: Detail): Set<String> = d.turns.flatMap { t -> t.items.mapNotNull { it.clientId } }.toSet()
+
+    /**
+     * Which waiting operations a successful read of [thread] settles: a message is settled only when the session shows the
+     * message it became (by its client id) — never because some read worked. A sent message the computer cannot name (an
+     * older computer) is let go after [GIVE_UP_MS], so it does not wait forever.
+     */
+    fun settled(ops: List<Pending>, device: String, thread: String, shown: Set<String>, now: Long): List<String> = ops.filter { op ->
+        op.to == device && op.body.optString("op") == "send" && op.body.optString("thread") == thread &&
+            (op.clientId in shown || (op.status == Pending.SENT && now - op.at > GIVE_UP_MS))
+    }.map { it.clientId }
+
+    const val GIVE_UP_MS = 180_000L
+
+    /** Operations stored while they were going out when the app went: not known to have arrived, so not sent again by themselves (§6.2). */
+    fun interrupted(ops: List<Pending>): List<String> = ops.filter { it.status == Pending.SENDING }.map { it.clientId }
 
     /** The new session's id from x.codex.new. */
     fun created(data: JSONObject?): String? = data?.str("thread")
@@ -121,6 +154,9 @@ class CodexState {
     var generation = 0; private set
 
     val inTalk get() = thread != null || newIn != null
+
+    /** The page went away: what is being read now no longer counts. */
+    fun invalidate() { generation++ }
 
     fun ticket() = Ticket(generation, device, thread)
     private fun holds(t: Ticket) = t.gen == generation && t.device == device && t.thread == thread
@@ -183,9 +219,4 @@ class CodexState {
             cwd != null -> startNew(CodexModel.Project(cwd, route["new_name"] ?: cwd.substringAfterLast('/'), emptyList()))
         }
     }
-}
-
-/** A message to a Codex session the phone sent (or is sending): kept as its own row until the session shows it, never put back over the box (§4.2). */
-data class CodexSend(val clientId: String, val thread: String, val text: String, val status: String) {
-    companion object { const val SENDING = "sending"; const val SENT = "sent"; const val FAILED = "failed"; const val UNKNOWN = "unknown" }
 }

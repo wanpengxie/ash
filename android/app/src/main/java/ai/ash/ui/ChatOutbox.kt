@@ -33,6 +33,8 @@ data class Pending(val clientId: String, val to: String?, val body: JSONObject, 
         const val UNSENT = "unsent"
         const val FAILED = "failed"
         const val SENT = "sent"
+        /** Sent, and no answer came: it may have been done. Not sent again by itself; again only with the same id (§6.2). */
+        const val UNKNOWN = "unknown"
 
         fun fromStored(meta: JSONObject, attachments: JSONArray?): Pending? {
             val id = meta.optString("client_id").ifEmpty { return null }
@@ -81,13 +83,14 @@ class OutboxModel {
 }
 
 /**
- * The outbox kept on the phone (MOBILE-ARCH §3.5, §7.2): each message is a small file `<client_id>.json` and, once, its
- * attachments `<client_id>.att`, written whole (temporary file, renamed) on the disk queue, never on the main thread. A
- * message is shown and sent only after it is stored, so the owner's text leaves the box only once it cannot be lost; a
- * crash leaves either the whole message or nothing, and files with no message are swept at the next start.
+ * An outbox kept on the phone (MOBILE-ARCH §3.5, §7.2), one per kind of conversation ([name]: the chat's, Codex's): each
+ * operation is a small file `<client_id>.json` and, once, its attachments `<client_id>.att`, written whole (temporary file,
+ * renamed) on the disk queue, never on the main thread. An operation is shown and sent only after it is stored, so the
+ * owner's text leaves the box only once it cannot be lost; a crash leaves either the whole operation or nothing, and files
+ * with no operation are swept at the next start. What it is addressed to and its client id are fixed when it is stored.
  */
-class ChatOutbox(ctx: Context) {
-    private val dir = File(ctx.filesDir, "chat-outbox")
+class ChatOutbox(ctx: Context, name: String = "chat-outbox") {
+    private val dir = File(ctx.filesDir, name)
     private val model = OutboxModel()
     var ready = false; private set
     private var onReady: (() -> Unit)? = null
@@ -97,10 +100,12 @@ class ChatOutbox(ctx: Context) {
             val loaded = load()
             UiIo.ui { loaded.forEach(model::put); ready = true; onReady?.invoke() }
         }
-        // The outbox of earlier builds (a list in the preferences and files in outbox/) is not carried over (not released yet).
-        val old = File(ctx.filesDir, "outbox")
-        val prefs = ctx.getSharedPreferences("ash.chat.outbox", Context.MODE_PRIVATE)
-        UiIo.disk { old.deleteRecursively(); prefs.edit().clear().apply() }
+        // The chat's outbox of earlier builds (a list in the preferences and files in outbox/) is not carried over (not released yet; the owner's call).
+        if (name == "chat-outbox") {
+            val old = File(ctx.filesDir, "outbox")
+            val prefs = ctx.getSharedPreferences("ash.chat.outbox", Context.MODE_PRIVATE)
+            UiIo.disk { old.deleteRecursively(); prefs.edit().clear().apply() }
+        }
     }
 
     /** Runs [then] once what was stored is loaded (at once when it is). */
@@ -113,13 +118,17 @@ class ChatOutbox(ctx: Context) {
     /** Stores [p] (its attachments first), then shows it: [done] says whether it is kept. */
     fun add(p: Pending, done: (Boolean) -> Unit) {
         UiIo.disk {
-            val atts = p.attachments()
-            val ok = (atts == null || atts.length() == 0 || UiIo.writeAtomically(attFile(p.clientId), atts.toString())) &&
-                UiIo.writeAtomically(metaFile(p.clientId), p.meta().toString())
-            if (!ok) forgetFiles(p.clientId)
+            // Whatever happens here, [done] is told (a failure must never leave the send button waiting).
+            val ok = try {
+                val atts = p.attachments()
+                ((atts == null || atts.length() == 0 || UiIo.writeAtomically(attFile(p.clientId), atts.toString())) &&
+                    UiIo.writeAtomically(metaFile(p.clientId), p.meta().toString())).also { if (!it) forgetFiles(p.clientId) }
+            } catch (e: Exception) { runCatching { forgetFiles(p.clientId) }; false }
             UiIo.ui { if (ok) model.put(p); done(ok) }
         }
     }
+
+    fun get(clientId: String): Pending? = model.items().firstOrNull { it.clientId == clientId }
 
     fun mark(clientId: String, status: String) { model.mark(clientId, status)?.let(::store) }
 

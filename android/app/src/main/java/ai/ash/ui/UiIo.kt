@@ -15,8 +15,9 @@ object UiIo {
     private val diskQueue = Executors.newSingleThreadExecutor { r -> Thread(r, "ash-ui-disk").apply { isDaemon = true } }
     private val decodeQueue = Executors.newSingleThreadExecutor { r -> Thread(r, "ash-ui-decode").apply { isDaemon = true } }
 
-    fun disk(work: () -> Unit) { diskQueue.execute { runCatching(work) } }
-    fun decode(work: () -> Unit) { decodeQueue.execute { runCatching(work) } }
+    // A task that throws is logged, never silent; each caller still answers its own completion (it catches what it must).
+    fun disk(work: () -> Unit) { diskQueue.execute { runCatching(work).onFailure { android.util.Log.w("ash.ui.io", "disk task failed", it) } } }
+    fun decode(work: () -> Unit) { decodeQueue.execute { runCatching(work).onFailure { android.util.Log.w("ash.ui.io", "decode task failed", it) } } }
     fun ui(work: () -> Unit) { main.post(work) }
 
     /** Writes [text] to [file] whole or not at all (a temporary file renamed over it). Disk thread only. */
