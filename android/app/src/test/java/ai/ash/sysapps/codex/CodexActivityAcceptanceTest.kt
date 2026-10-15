@@ -112,7 +112,9 @@ class CodexActivityAcceptanceTest {
                 "x.codex.session" -> answer(f, details[body.getString("thread")])
                 "x.codex.sessions" -> {
                     val ids = if (req.optString("to") == mini) listOf("t2") else listOf("t1", "t3")
-                    answer(f, JSONObject().put("sessions", JSONArray().apply { ids.mapNotNull(details::get).forEach { put(JSONObject(it.toString()).put("turns", null).put("approvals", null).put("cwd", it.optString("cwd", "/work/shop"))) } }))
+                    answer(f, JSONObject().put("sessions", JSONArray().apply { ids.mapNotNull(details::get).forEach { original ->
+                        put(JSONObject(original.toString()).apply { remove("turns"); remove("approvals"); put("cwd", original.optString("cwd", "/work/shop")) })
+                    } }))
                 }
                 "x.codex.approvals" -> answer(f, JSONObject().put("approvals", JSONArray().apply {
                     for (id in if (req.optString("to") == mini) listOf("t2") else listOf("t1", "t3")) {
