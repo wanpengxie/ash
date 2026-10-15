@@ -40,6 +40,8 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
     var composeHook: ((text: String, turn: String?) -> Unit)? = null
     var jumpHook: ((id: String) -> Unit)? = null
     var onName: ((String) -> Unit)? = null
+    /** The pages opened or closed (the activity offers back to them only while they are open). */
+    var onShownChange: (() -> Unit)? = null
     val name: String get() = names.name
 
     override val view: View get() = root
@@ -68,6 +70,7 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
         if (!shown) { shown = true; port.onChange(onChange) }
         banner.visibility = if (port.open) View.GONE else View.VISIBLE
         root.visibility = View.VISIBLE
+        onShownChange?.invoke()
         push("home", null, false)
         if (section != null && section != "home" && make(section, arg) != null) push(section, arg, false)
         names.refresh()
@@ -96,7 +99,7 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
         shown = false
         port.removeChange(onChange)
         stack.forEach { it.page.dispose() }
-        val done = { if (!shown) { stack.clear(); stage.removeAllViews(); root.visibility = View.GONE; root.alpha = 1f; root.translationY = 0f } }
+        val done = { if (!shown) { stack.clear(); stage.removeAllViews(); root.visibility = View.GONE; root.alpha = 1f; root.translationY = 0f; onShownChange?.invoke() } }
         if (AshUi.motionOn(activity)) root.animate().alpha(0f).translationY(AshUi.dpF(activity, 24f)).setDuration(AshTokens.Motion.sheet).setInterpolator(AshTokens.Motion.easing()).withEndAction(done).start() else done()
     }
 

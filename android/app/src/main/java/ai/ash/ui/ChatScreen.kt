@@ -50,7 +50,7 @@ class ChatScreen(
     private val home: ChatHooks.Home,
     private val onApps: () -> Unit,
     private val onCodex: () -> Unit = {},
-) {
+) : KeyboardDeck {
     private val ctx: Context = activity
     private val c = AshUi.p(ctx)
     private val main = Handler(Looper.getMainLooper())
@@ -64,7 +64,7 @@ class ChatScreen(
     private val banner = AshUi.text(ctx, "", AshType(12.5f, 17f, 400, Role.TEXT_2)).apply {
         background = AshUi.rounded(c.surface2, AshUi.dpF(ctx, 12f)); setPadding(dp(12), dp(8), dp(12), dp(8)); visibility = View.GONE
     }
-    private val rowsAdapter = Rows()
+    private val rowsAdapter = KeyedRowsAdapter(ctx)
     private val lm = LinearLayoutManager(ctx).apply { stackFromEnd = true }
     private val animator = DefaultItemAnimator().apply { supportsChangeAnimations = false; addDuration = AshTokens.Motion.message }
     /**
@@ -76,7 +76,7 @@ class ChatScreen(
      */
     private val list = RecyclerView(ctx).apply {
         layoutManager = lm; adapter = rowsAdapter; itemAnimator = animator
-        // Every row stands 8 above the one under it (the first one's 8 is the list's top padding).
+        // Every row stands 8 above the one under it. The top padding is the status slot's height ([statusSlot]).
         setPadding(dp(14), 0, dp(14), PILL_ROOM); clipToPadding = false
         setItemViewCacheSize(12)
         addItemDecoration(object : RecyclerView.ItemDecoration() {
@@ -114,6 +114,12 @@ class ChatScreen(
         setOnClickListener { LeaseState.revoke(ctx) }
     }
     private val onLease: () -> Unit = { paintLease() }
+    /**
+     * The link and lease lines (MOBILE-ARCH §1.2): a slot floating over the top of the conversation, not a row above it, so
+     * their coming and going changes no layout of the page. The list keeps its top clear by as much as the slot shows, as
+     * padding (the bottom row stays put, so nothing the owner reads moves); scrolled up, the conversation passes under it.
+     */
+    private val statusSlot = AshUi.vstack(ctx, 4).apply { setPadding(dp(14), dp(4), dp(14), dp(4)); setBackgroundColor(c.bg); visibility = View.GONE }
     private val pillSlot = FrameLayout(ctx)
     private val input = EditText(ctx)
     private val target = AshUi.text(ctx, "", AshType(12f, 16f, 500, Role.TEXT_2)).apply { visibility = View.GONE }
@@ -166,10 +172,12 @@ class ChatScreen(
 
     init {
         view.addView(header(), LinearLayout.LayoutParams(-1, dp(56)))
-        view.addView(banner, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(14), 0, dp(14), dp(4)) })
-        view.addView(leaseBar, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(14), 0, dp(14), dp(4)) })
+        statusSlot.addView(banner, LinearLayout.LayoutParams(-1, -2))
+        statusSlot.addView(leaseBar, LinearLayout.LayoutParams(-1, -2))
         LeaseState.onChange(onLease)
         scrollHost.addView(list, FrameLayout.LayoutParams(-1, -1))
+        scrollHost.addView(statusSlot, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        statusSlot.addOnLayoutChangeListener { _, _, t, _, b, _, _, _, _ -> keepClearOfSlot(b - t) }
         scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), PILL_ROOM) })
         // The progress pill floats over the bottom of the conversation, in room the list always keeps for it: its coming and
         // going changes no layout, so the conversation never moves for it.
@@ -197,6 +205,19 @@ class ChatScreen(
         val first = LeaseState.leases.firstOrNull()
         leaseBar.visibility = if (first == null) View.GONE else View.VISIBLE
         if (first != null) leaseBar.text = "屏幕授权中 · ${first.name} · 剩 ${first.clock()} · 点这里收回"
+        paintSlot()
+    }
+
+    /** The slot shows while one of its lines does; the list's top follows its height (after this layout, never inside it). */
+    private fun paintSlot() {
+        val on = banner.visibility == View.VISIBLE || leaseBar.visibility == View.VISIBLE
+        statusSlot.visibility = if (on) View.VISIBLE else View.GONE
+        if (!on) keepClearOfSlot(0)
+    }
+
+    private fun keepClearOfSlot(height: Int) {
+        val top = if (statusSlot.visibility == View.VISIBLE) height else 0
+        if (list.paddingTop != top) list.post { list.setPadding(list.paddingLeft, top, list.paddingRight, list.paddingBottom) }
     }
 
     fun shown(visible: Boolean) {
@@ -493,6 +514,7 @@ class ChatScreen(
         }
         banner.text = text.orEmpty()
         banner.visibility = if (text == null) View.GONE else View.VISIBLE
+        paintSlot()
     }
 
     private fun paintProgress() {
@@ -546,12 +568,9 @@ class ChatScreen(
         val emptyText = when { !port.open -> "正在连接…"; window.failedAt > 0 -> "暂时读不到消息，稍后会再试。"; else -> "还没有消息，跟她说点什么吧。" }
         val next = ChatRows.build(window.items.values, outbox.items(), window.moreBefore, { note("往上翻看更早的消息") }, ::row, ::pending, outbox::sentAs)
             .ifEmpty { listOf(ChatRow(EMPTY, emptyText) { empty(emptyText) }) }
-        val before = rowsAdapter.currentList
-        val first = before.none { it.key != EMPTY } && next.first().key != EMPTY
-        val atEnd = !list.canScrollVertically(1)
-        val newAtEnd = !first && before.none { it.key == next.last().key }
-        if (newAtEnd && !atEnd && !toEnd) unseenBelow = true
+        val first = rowsAdapter.currentList.none { it.key != EMPTY } && next.first().key != EMPTY
         if (first) {
+            // The first fill opens at the end without rows rising in.
             list.itemAnimator = null
             list.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
                 override fun onLayoutChange(v: View, l: Int, t: Int, r: Int, b: Int, ol: Int, ot: Int, or: Int, ob: Int) {
@@ -559,11 +578,10 @@ class ChatScreen(
                 }
             })
         }
-        rowsAdapter.submitList(next) {
-            val back = if (first) restoreAnchor?.let { (key, offset) -> next.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.let { it to offset } } else null
-            if (first) restoreAnchor = null
-            if (back != null && !toEnd) lm.scrollToPositionWithOffset(back.first, back.second)
-            else if (toEnd || first || (newAtEnd && atEnd)) lm.scrollToPosition(next.size - 1)
+        FollowEnd.submit(list, lm, rowsAdapter, next, toEnd, EMPTY, onUnseen = { unseenBelow = true }) { filled ->
+            // Made again (theme, rotation): back to the row that was at the top, where it was.
+            if (filled) restoreAnchor?.let { (key, offset) -> next.indexOfFirst { it.key == key }.takeIf { it >= 0 && !toEnd }?.let { lm.scrollToPositionWithOffset(it, offset) } }
+            if (filled) restoreAnchor = null
             then?.invoke()
             paintToBottom()
         }
@@ -576,24 +594,6 @@ class ChatScreen(
         val row = list.findContainingItemView(v) ?: return
         val pos = list.getChildAdapterPosition(row).takeIf { it >= 0 } ?: return
         lm.scrollToPositionWithOffset(pos, lm.getDecoratedTop(row) - list.paddingTop)
-    }
-
-    private class Holder(val box: FrameLayout) : RecyclerView.ViewHolder(box)
-
-    /** One holder per row on screen; binding draws the row with its own function ([ChatRow.make]), keeping the view's own size. */
-    private inner class Rows : ListAdapter<ChatRow, Holder>(ChatRows.diff) {
-        override fun onCreateViewHolder(parent: ViewGroup, type: Int) = Holder(FrameLayout(ctx).apply { layoutParams = RecyclerView.LayoutParams(-1, -2) })
-        override fun onBindViewHolder(h: Holder, position: Int) {
-            h.box.removeAllViews()
-            val v = getItem(position).make() ?: return
-            (v.parent as? ViewGroup)?.removeView(v)
-            val lp = when (val own = v.layoutParams) {
-                null -> FrameLayout.LayoutParams(-1, -2)
-                is ViewGroup.MarginLayoutParams -> FrameLayout.LayoutParams(own)
-                else -> FrameLayout.LayoutParams(own)
-            }
-            h.box.addView(v, lp)
-        }
     }
 
     /** One item of the window (the projected conversation: `say`, `ask`, `card`, `failed`). */
@@ -805,11 +805,10 @@ class ChatScreen(
     }
 
     /**
-     * The keyboard is moving and stands [px] above where the page's bottom is laid out: the conversation and the input ride on
-     * it as one piece (a move of the drawing only, no layout). When it stops, the page is laid out for it and this is 0 again;
-     * the conversation keeps its distance from the bottom through that layout, so nothing on screen changes.
+     * The keyboard stands [px] above the bottom the window keeps clear: the conversation and the input ride on it as one
+     * piece, moved (drawing only, never laid out) at every frame of its animation and kept there when it stops (§4.4).
      */
-    fun keyboard(px: Int) { deck.translationY = -px.toFloat() }
+    override fun keyboard(px: Int) { deck.translationY = -px.toFloat() }
 
     /** Put the keyboard away: the owner left the chat (another tab) or dragged the conversation, as in any chat app. */
     fun dropKeyboard() {

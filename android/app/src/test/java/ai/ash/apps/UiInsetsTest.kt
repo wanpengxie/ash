@@ -34,4 +34,10 @@ class UiInsetsTest {
         assertEquals("⚪️ 精确闹钟\n让日历提醒准时响起", OnboardingPlan.rowText("⚪️", "精确闹钟", "让日历提醒准时响起"))
         assertEquals("✅ 位置", OnboardingPlan.rowText("✅", "位置", ""))
     }
+
+    @Test fun aDeckIsMovedOnlyByWhatTheKeyboardAddsOverTheKeptBottom() {
+        assertEquals(774, Ui.keyboardOver(126, 900))
+        assertEquals("a floating or tiny keyboard moves nothing", 0, Ui.keyboardOver(126, 40))
+        assertEquals(0, Ui.keyboardOver(126, 0))
+    }
 }

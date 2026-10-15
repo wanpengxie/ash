@@ -97,3 +97,95 @@ object CodexModel {
         else -> message.ifEmpty { "没有成功" }
     }
 }
+
+/**
+ * Where the Codex page is and what it last read (MOBILE-ARCH §3.2, §11.1), as plain data. Every read carries a [Ticket] —
+ * the generation, the computer and the session it was asked for — and is taken only while all three still hold: an answer
+ * about a session the owner already left (or another computer) is dropped, success or failure. A failed read keeps what is
+ * shown and says why ([problem]); only a successful read replaces it.
+ */
+class CodexState {
+    data class Ticket(val gen: Int, val device: String?, val thread: String?)
+
+    var computers: List<CodexModel.Computer> = emptyList(); private set
+    var device: String? = null; private set
+    var chosen: String? = null; private set
+    var thread: String? = null; private set
+    var title: String? = null; private set
+    var newIn: CodexModel.Project? = null; private set
+    var sessions: List<CodexModel.Session>? = null; private set
+    var detail: CodexModel.Detail? = null; private set
+    /** Why the last read failed (what is shown is from before it), or null. */
+    var problem: String? = null; private set
+    var computersAt = 0L; private set
+    var generation = 0; private set
+
+    val inTalk get() = thread != null || newIn != null
+
+    fun ticket() = Ticket(generation, device, thread)
+    private fun holds(t: Ticket) = t.gen == generation && t.device == device && t.thread == thread
+    private fun moved() { generation++; problem = null }
+
+    /** The computers were read: the one chosen before while it is there, else the first. */
+    fun computersRead(data: org.json.JSONObject?, failure: String?, now: Long) {
+        computersAt = now
+        if (failure != null && data == null) { problem = CodexModel.unreachable(failure); return }
+        computers = CodexModel.computers(data)
+        val next = CodexModel.pick(computers, chosen)
+        if (next != device) { device = next; sessions = null; detail = null; moved() }
+        if (device == null) problem = "没有在线的电脑。电脑上的 Ash 连上以后，这里就能看到 Codex。"
+    }
+
+    fun choose(computer: String): Boolean {
+        if (computer == device) return false
+        chosen = computer; device = computer; sessions = null; detail = null; moved()
+        return true
+    }
+
+    fun open(id: String, title: String?) { thread = id; this.title = title; newIn = null; detail = null; moved() }
+    fun startNew(p: CodexModel.Project) { newIn = p; thread = null; title = null; detail = null; moved() }
+
+    /** Back from a session (or a new one) to the list; false when the list is showing. */
+    fun back(): Boolean {
+        if (!inTalk) return false
+        thread = null; newIn = null; title = null; detail = null; moved()
+        return true
+    }
+
+    /** The list, read with [t]: false when it no longer counts. */
+    fun listRead(t: Ticket, data: org.json.JSONObject?, failure: String?): Boolean {
+        if (!holds(t) || t.thread != null) return false
+        if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
+        else { sessions = CodexModel.sessions(data); problem = null }
+        return true
+    }
+
+    /** A session, read with [t]: false when it no longer counts. */
+    fun detailRead(t: Ticket, data: org.json.JSONObject?, failure: String?): Boolean {
+        if (!holds(t) || t.thread == null) return false
+        if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
+        else { CodexModel.detail(data)?.let { detail = it; title = it.session.title }; problem = null }
+        return true
+    }
+
+    /** Where to come back to when the page is made again. */
+    fun route(): Map<String, String> = buildMap {
+        (chosen ?: device)?.let { put("device", it) }
+        thread?.let { put("thread", it) }; title?.let { put("title", it) }
+        newIn?.cwd?.let { put("new_cwd", it); put("new_name", newIn!!.name) }
+    }
+
+    fun restore(route: Map<String, String>) {
+        route["device"]?.let { chosen = it }
+        val cwd = route["new_cwd"]
+        when {
+            route["thread"] != null -> open(route.getValue("thread"), route["title"])
+            cwd != null -> startNew(CodexModel.Project(cwd, route["new_name"] ?: cwd.substringAfterLast('/'), emptyList()))
+        }
+    }
+}
+
+/** A message to a Codex session the phone sent (or is sending): kept as its own row until the session shows it, never put back over the box (§4.2). */
+data class CodexSend(val clientId: String, val thread: String, val text: String, val status: String) {
+    companion object { const val SENDING = "sending"; const val SENT = "sent"; const val FAILED = "failed"; const val UNKNOWN = "unknown" }
+}
