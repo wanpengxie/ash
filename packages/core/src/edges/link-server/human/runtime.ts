@@ -78,6 +78,8 @@ export class CardRuntime {
   private readonly lastEvent = new Map<string, number>();
   private readonly running = new Set<string>();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
+  /** The event sources of the active cards, rebuilt when the lifecycle is (every hub event is matched against these only). */
+  private listening: { card: string; path: string; src: Extract<CardSource, { event: string }>; member: string; word: string }[] = [];
   private readonly unsubscribe: () => void;
 
   constructor(private readonly d: CardRuntimeDeps) {
@@ -195,6 +197,8 @@ export class CardRuntime {
     }
     // Sources run for the active cards only; a temporary app whose cards all sleep sleeps too.
     for (const r of this.all()) this.schedule(r);
+    this.listening = this.all().filter((r) => r.life === "active").flatMap((r) => Object.entries(this.sourcesOf(r)).flatMap(([path, src]) =>
+      "event" in src ? [{ card: r.id, path, src, member: src.event.slice(0, src.event.indexOf("/")), word: src.event.slice(src.event.indexOf("/") + 1) }] : []));
     for (const id of [...this.timers.keys()]) { const card = id.slice(0, id.indexOf("\0")); const r = this.run(card); if (!r || r.life !== "active") { clearInterval(this.timers.get(id)); this.timers.delete(id); } }
     for (const app of new Set(this.all().filter((r) => r.temporary && !r.kept && r.app).map((r) => r.app!))) {
       if (this.all().filter((r) => r.app === app).every((r) => r.life === "dormant")) void this.call("service:apps", "apps.sleep", { id: app });
@@ -263,18 +267,13 @@ export class CardRuntime {
   }
 
   private onEvent(m: Message): void {
-    for (const r of this.all()) {
-      if (r.life !== "active" || !r.app) continue;
-      for (const [path, src] of Object.entries(this.sourcesOf(r))) {
-        if (!("event" in src)) continue;
-        const [member, word] = [src.event.slice(0, src.event.indexOf("/")), src.event.slice(src.event.indexOf("/") + 1)];
-        if (word !== m.word || !(member === m.from || (member.endsWith(":*") && m.from.startsWith(member.slice(0, -1))))) continue;
-        const key = `${r.id}\0${path}`;
-        const now = this.d.now();
-        if (now - (this.lastEvent.get(key) ?? 0) < EVENT_GAP_MS) continue;
-        this.lastEvent.set(key, now);
-        this.feed(r.id, path, src, m.body);
-      }
+    for (const { card, path, src, member, word } of this.listening) {
+      if (word !== m.word || !(member === m.from || (member.endsWith(":*") && m.from.startsWith(member.slice(0, -1))))) continue;
+      const key = `${card}\0${path}`;
+      const now = this.d.now();
+      if (now - (this.lastEvent.get(key) ?? 0) < EVENT_GAP_MS) continue;
+      this.lastEvent.set(key, now);
+      this.feed(card, path, src, m.body);
     }
   }
 
