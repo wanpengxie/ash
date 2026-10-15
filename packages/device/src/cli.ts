@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { setDefaultResultOrder } from "node:dns";
 import { mkdir, readFile, writeFile, rename, access, rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +11,9 @@ import { callLocal } from "./local";
 import { serveMcp } from "./mcp";
 import { codexHome, codexStatus, installCodex, uninstallCodex } from "./codex-install";
 const exec = promisify(execFile);
+// IPv4 first: on networks where IPv6 resolves but does not route (common on servers in mainland China), Node tries the
+// IPv6 address and the relay connection times out.
+setDefaultResultOrder("ipv4first");
 export async function deviceCli(start: typeof startDevice, args = process.argv.slice(2)): Promise<void> {
   const option = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   if (args.includes("--version")) { console.log(DEVICE_VERSION); return; }
