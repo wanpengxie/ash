@@ -1,0 +1,19 @@
+{
+  "contract": "ash-app/1",
+  "id": "cards",
+  "name": "卡片",
+  "version": "1.0.0",
+  "icon": "icon.svg",
+  "summary": "对话里正在运行的卡片：是谁的、在不在跑、有几项实时数据，可以让它休眠、唤醒、收起或固定",
+  "role": "主人问对话里有哪些卡片在跑、想让卡片停下或一直跑时用它：cards.list 看，cards.sleep / cards.wake / cards.close / cards.pin 管",
+  "publisher": "ash",
+  "server": { "command": "node", "args": ["server.mjs"] },
+  "data_dir": "data",
+  "surfaces": [
+    { "id": "home", "title": "运行中的卡片", "resource": "ui://cards/home" }
+  ],
+  "needs": [
+    { "member": "service:cards", "words": ["list", "sleep", "wake", "close", "pin"], "why": "列出对话里正在运行的卡片，并按你的意思让它们休眠、唤醒、收起或固定" },
+    { "member": "service:apps", "words": ["apps.list"], "why": "写出每张卡片是哪个应用的" }
+  ]
+}

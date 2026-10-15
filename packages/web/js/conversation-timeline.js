@@ -138,6 +138,19 @@ export class ConversationTimeline {
     this.queueTarget(id);
     this.scheduleLive();
   }
+  /** The hub pushed a card whole (`card.patch`): every item showing it takes it as it is, and only those rows are drawn again. */
+  patchCard(card) {
+    if (!card || typeof card.id !== "string") return new Set();
+    const dirty = new Set();
+    for (const item of this.store.items) {
+      if (item.type !== "card" || item.card?.type !== "a2ui" || item.card.id !== card.id) continue;
+      const entry = this.store.byId.get(item.id);
+      const { byte_size: _size, ...rest } = item;
+      for (const id of this.store.update({ ...rest, card: { ...card, type: "a2ui" } }, entry?.revision ?? this.store.snapshot)) dirty.add(id);
+    }
+    if (dirty.size) this.onChange(this.view, true, dirty);
+    return dirty;
+  }
   queueTarget(id) {
     if (this.targets.size < this.store.maxItems) this.targets.add(id);
     else this.reloadNeeded = true;

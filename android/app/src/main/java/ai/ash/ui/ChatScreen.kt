@@ -60,7 +60,8 @@ class ChatScreen(
     val view = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(c.bg) }
     private val avatar = OnboardingViews.avatar(ctx, "default", 36)
     private val nameLine = AshUi.text(ctx, "Ash", AshType(16f, 20f, 650, Role.INK))
-    private val stateLine = AshUi.text(ctx, "", AshType(12f, 16f, 400, Role.TEXT_2))
+    /** The line under her name: how she is, or, while a turn runs and for a minute after, what it does (tap: its steps). */
+    private val stateLine = AshUi.text(ctx, "", AshType(12f, 16f, 400, Role.TEXT_2)).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
     private val dots = Dots(ctx, c.her)
     private val banner = AshUi.text(ctx, "", AshType(12.5f, 17f, 400, Role.TEXT_2)).apply {
         background = AshUi.rounded(c.surface2, AshUi.dpF(ctx, 12f)); setPadding(dp(12), dp(8), dp(12), dp(8)); visibility = View.GONE
@@ -78,14 +79,18 @@ class ChatScreen(
     private val list = RecyclerView(ctx).apply {
         layoutManager = lm; adapter = rowsAdapter; itemAnimator = animator
         // Every row stands 8 above the one under it (the first one's 8 is the list's top padding).
-        setPadding(dp(14), 0, dp(14), PILL_ROOM); clipToPadding = false
+        setPadding(dp(14), 0, dp(14), BOTTOM_ROOM); clipToPadding = false
         setItemViewCacheSize(12)
         addItemDecoration(object : RecyclerView.ItemDecoration() {
             override fun getItemOffsets(out: android.graphics.Rect, v: View, parent: RecyclerView, state: RecyclerView.State) { out.top = dp(8) }
         })
         addOnScrollListener(object : RecyclerView.OnScrollListener() {
             // A drag of the conversation puts the keyboard away; the list's own scrolling never does.
-            override fun onScrollStateChanged(rv: RecyclerView, state: Int) { if (state == RecyclerView.SCROLL_STATE_DRAGGING) dropKeyboard() }
+            // When it stops, the cards on screen are reported (they run their live data while seen).
+            override fun onScrollStateChanged(rv: RecyclerView, state: Int) {
+                if (state == RecyclerView.SCROLL_STATE_DRAGGING) dropKeyboard()
+                if (state == RecyclerView.SCROLL_STATE_IDLE) reportSeen()
+            }
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 if (lm.findFirstVisibleItemPosition() in 0..2) loadOlder()
                 paintToBottom()
@@ -115,7 +120,6 @@ class ChatScreen(
         setOnClickListener { LeaseState.revoke(ctx) }
     }
     private val onLease: () -> Unit = { paintLease() }
-    private val pillSlot = FrameLayout(ctx)
     private val input = EditText(ctx)
     private val target = AshUi.text(ctx, "", AshType(12f, 16f, 500, Role.TEXT_2)).apply { visibility = View.GONE }
     /** Files chosen so far (photos, videos, files), sent with the next message. */
@@ -159,6 +163,18 @@ class ChatScreen(
     private var flushing = false
     private val tick = object : Runnable { override fun run() { paintProgress(); paintLease(); if (shown) main.postDelayed(this, 1_000) } }
     private val onChange: () -> Unit = { refresh() }
+    /** A card that changed (`card.patch`): only its row is drawn again. */
+    private val onCard: (JSONObject) -> Unit = { patch(it) }
+    /** Cards changed by a patch lately, by card id, with when: a window read that started before it does not undo it. */
+    private val patched = HashMap<String, Pair<JSONObject, Long>>()
+    /** The cards on screen, reported once the list rests ([reportSeen]), and once a minute while the chat is visible. */
+    private val seenNow = Runnable { sendSeen() }
+    private val seenEvery = object : Runnable { override fun run() { reportSeen(); if (shown) main.postDelayed(this, SEEN_EVERY_MS) } }
+    /** What the header's line says of the turn now (null: nothing), and the turn, for its steps. */
+    private var progressLine: String? = null
+    private var progressTurn: JSONObject? = null
+    private var presenceText = ""
+    private var presenceColor = 0
 
     init {
         view.addView(header(), LinearLayout.LayoutParams(-1, dp(56)))
@@ -166,10 +182,7 @@ class ChatScreen(
         view.addView(leaseBar, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(14), 0, dp(14), dp(4)) })
         LeaseState.onChange(onLease)
         scrollHost.addView(list, FrameLayout.LayoutParams(-1, -1))
-        scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), PILL_ROOM) })
-        // The progress pill floats over the bottom of the conversation, in room the list always keeps for it: its coming and
-        // going changes no layout, so the conversation never moves for it.
-        scrollHost.addView(pillSlot, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(6) })
+        scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), BOTTOM_ROOM) })
         // The conversation and the input are one piece standing on the keyboard: [deck] holds them, and the keyboard moves it
         // (see [keyboard]); [stage] is the room under the header, so the piece slides under the header, not over it.
         deck.addView(scrollHost, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -177,13 +190,17 @@ class ChatScreen(
         stage.addView(deck, FrameLayout.LayoutParams(-1, -1))
         view.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         port.onChange(onChange)
+        port.onCard(onCard)
         port.onLink { open ->
             paintPresence()
             if (open) { loadAgents(); refresh(); flush() }
         }
     }
 
-    fun close() { port.removeChange(onChange); LeaseState.removeChange(onLease); cards.close() }
+    fun close() {
+        port.removeChange(onChange); port.removeCard(onCard); LeaseState.removeChange(onLease); cards.close()
+        main.removeCallbacks(seenNow); main.removeCallbacks(seenEvery)
+    }
 
     private fun paintLease() {
         val first = LeaseState.leases.firstOrNull()
@@ -195,7 +212,52 @@ class ChatScreen(
         shown = visible
         port.presence(visible = visible)
         main.removeCallbacks(tick)
-        if (visible) { refresh(); tick.run() }
+        main.removeCallbacks(seenEvery); main.removeCallbacks(seenNow)
+        if (visible) { refresh(); tick.run(); seenEvery.run() }
+    }
+
+    // --- the cards' runtime ---
+
+    /** The hub changed card [card] (live data, a button's state, its lifecycle): the items showing it take it, and only their rows are drawn again. */
+    private fun patch(card: JSONObject) {
+        val id = card.optString("id").ifEmpty { return }
+        patched[id] = card to android.os.SystemClock.uptimeMillis()
+        var hit = false
+        for (e in items.entries) if (cardIdOf(e.value) == id) { e.setValue(JSONObject(e.value.toString()).put("card", card)); hit = true }
+        if (hit) paintList()
+    }
+
+    private fun cardIdOf(item: JSONObject): String? = item.takeIf { it.optString("type") == "card" }?.optJSONObject("card")
+        ?.takeIf { it.optString("type") == "a2ui" }?.optString("id")?.ifEmpty { null }
+
+    /** A window's card older than a patch that came lately (the read started before it) is the patched card. */
+    private fun withPatches(item: JSONObject): JSONObject {
+        val id = cardIdOf(item) ?: return item
+        val (card, at) = patched[id] ?: return item
+        val shown = item.optJSONObject("card")!!
+        if (android.os.SystemClock.uptimeMillis() - at > PATCH_HOLD_MS || shown.optLong("updated_at") > card.optLong("updated_at")) { patched.remove(id); return item }
+        return JSONObject(item.toString()).put("card", card)
+    }
+
+    /** Reports the cards on screen soon (a burst of reasons is one report); only while the chat is visible. */
+    private fun reportSeen() {
+        main.removeCallbacks(seenNow)
+        if (shown && port.open) main.postDelayed(seenNow, SEEN_DEBOUNCE_MS)
+    }
+
+    private fun sendSeen() {
+        if (!shown || !port.open) return
+        val rows = rowsAdapter.currentList
+        val byId = items.values.associateBy { it.optString("id") }
+        val visible = ArrayList<JSONObject>()
+        for (i in 0 until list.childCount) {
+            val v = list.getChildAt(i)
+            if (v.bottom <= 0 || v.top >= list.height) continue
+            val row = rows.getOrNull(list.getChildAdapterPosition(v)) ?: continue
+            byId[row.id]?.let(visible::add)
+        }
+        val ids = ChatCardModel.seenIds(visible)
+        if (ids.isNotEmpty()) port.call("service:cards", "seen", JSONObject().put("cards", JSONArray(ids))) { _, _ -> }
     }
 
     // --- reading ---
@@ -221,7 +283,7 @@ class ChatScreen(
             if (from != null) items.tailMap(from, true).clear() else if (got.length() == 0) items.clear()
             if (items.isEmpty()) moreBefore = window.optBoolean("has_more_before")
         } else moreBefore = window.optBoolean("has_more_before")
-        for (i in 0 until got.length()) got.optJSONObject(i)?.let { items[it.optLong("seq")] = it }
+        for (i in 0 until got.length()) got.optJSONObject(i)?.let { items[it.optLong("seq")] = withPatches(it) }
         // A message of the outbox that the kernel now shows is no longer waiting.
         outbox.drop(items.values.mapNotNull { it.optString("client_id").ifEmpty { null } }.toSet(), items.values.map { it.optString("id") }.toSet())
     }
@@ -441,29 +503,47 @@ class ChatScreen(
         val text = presence?.optString("text").orEmpty().ifEmpty {
             when (state) { "thinking" -> "正在想"; "working" -> "在忙"; "waiting_you" -> "等你一句话"; "listening" -> "在听"; "resting" -> "休息中"; null -> "状态待同步"; else -> "在线" }
         }
-        stateLine.text = if (port.open) text else "连接中…"
-        stateLine.setTextColor(when { !port.open -> c.text3; state == "waiting_you" -> c.warn; state in setOf("thinking", "working", "listening") -> c.her; else -> c.text2 })
+        presenceText = text
+        presenceColor = when { state == "waiting_you" -> c.warn; state in setOf("thinking", "working", "listening") -> c.her; else -> c.text2 }
+        paintState()
         dots.visibility = if (port.open && state == "thinking") View.VISIBLE else View.GONE
         banner.text = "暂时连不上 Ash。你写的消息会先存着，连上就发。"
         banner.visibility = if (port.open) View.GONE else View.VISIBLE
     }
 
+    /**
+     * What the front turn does, in the header's line under her name (nothing floats over the conversation): its step now and
+     * the seconds while it runs, 「做了 N 步」 for a minute after it ended. A tap shows its steps.
+     */
     private fun paintProgress() {
-        pillSlot.removeAllViews()
         paintAction()
-        val p = current?.optJSONObject("progress") ?: return
-        if (p.optBoolean("background")) return
+        progressLine = null; progressTurn = null
+        progress()?.let { (line, p) -> progressLine = line; progressTurn = p }
+        paintState()
+    }
+
+    private fun progress(): Pair<String, JSONObject>? {
+        val p = current?.optJSONObject("progress") ?: return null
+        if (p.optBoolean("background")) return null
         val now = System.currentTimeMillis()
         val ended = if (p.has("ended") && !p.isNull("ended")) p.optLong("ended") else null
-        if (ended != null && now - ended >= 60_000) return
+        if (ended != null && now - ended >= 60_000) return null
         val steps = p.optJSONArray("steps") ?: JSONArray()
         val count = p.optInt("step_count", steps.length())
-        if (ended != null && count == 0) return
+        if (ended != null && count == 0) return null
         val seconds = ((minOf(now, ended ?: now) - p.optLong("started")) / 1000).coerceAtLeast(0)
         val label = if (ended != null) "做了 $count 步" else steps.optJSONObject(steps.length() - 1)?.optString("label").orEmpty().ifEmpty { "正在处理" }
-        val pill = AshUi.progressPill(ctx, label, "$seconds 秒 ›", running = ended == null)
-        pill.setOnClickListener { activitySheet(p) }
-        pillSlot.addView(pill)
+        return "$label · $seconds 秒 ›" to p
+    }
+
+    /** The header's line: the connection, else the turn's progress, else how she is. */
+    private fun paintState() {
+        val turn = progressTurn
+        val line = progressLine
+        stateLine.text = when { !port.open -> "连接中…"; line != null -> line; else -> presenceText }
+        stateLine.setTextColor(when { !port.open -> c.text3; line != null -> if (turn?.has("ended") == true && !turn.isNull("ended")) c.text2 else c.her; else -> presenceColor })
+        if (port.open && turn != null) { stateLine.setOnClickListener { activitySheet(turn) }; stateLine.contentDescription = "看她这一轮做了什么" }
+        else { stateLine.setOnClickListener(null); stateLine.isClickable = false; stateLine.contentDescription = null }
     }
 
     /** What she did in this turn (`activity.page`), newest last. */
@@ -515,6 +595,7 @@ class ChatScreen(
             if (toEnd || first || (newAtEnd && atEnd)) lm.scrollToPosition(next.size - 1)
             then?.invoke()
             paintToBottom()
+            if (first) reportSeen()
         }
     }
 
@@ -810,12 +891,16 @@ class ChatScreen(
         }
     }
 
-    /** Room the conversation always keeps at its bottom for the progress pill floating there (12 under the last row + the pill). */
-    private val PILL_ROOM get() = dp(52)
+    /** Room under the last row. */
+    private val BOTTOM_ROOM get() = dp(12)
 
     companion object {
         private const val PAGE = 60
         private const val EMPTY = "empty"
+        private const val SEEN_DEBOUNCE_MS = 500L
+        private const val SEEN_EVERY_MS = 60_000L
+        /** How long a patched card outranks a window read of the same version (a read that started before the patch). */
+        private const val PATCH_HOLD_MS = 10_000L
         private val RETRY = setOf("offline", "unavailable", "timeout", "result_unknown", "internal")
         private val PERMISSIONS = mapOf("calendar" to "日历", "notifications" to "通知", "battery" to "后台运行", "accessibility" to "无障碍",
             "photos" to "照片和文件", "all_files" to "所有文件", "usage" to "使用情况", "write_settings" to "系统设置", "overlay" to "悬浮窗")

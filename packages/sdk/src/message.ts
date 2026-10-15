@@ -169,6 +169,11 @@ export interface Caller {
   turn?: string;
   /** Where the owner's message came from, as the human edge knows it; the router stamps it on the message as is. */
   origin?: HumanOrigin;
+  /**
+   * An app's call made because the owner pressed a button of this card on his screen (service:cards/act): the owner is there,
+   * so the gate may ask him about it, as for an agent's call. Without it an app is never asked about.
+   */
+  card?: string;
 }
 
 
