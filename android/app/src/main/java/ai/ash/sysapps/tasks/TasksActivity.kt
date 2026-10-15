@@ -408,6 +408,7 @@ open class TasksActivity : SystemAppActivity() {
             item("刷新事项"){quickReceipt=null;refresh()}
             item("Ash 自己的承诺"){changeSpace(TasksModel.View.ASH)}
             item("已完成与不做了"){changeSpace(TasksModel.View.CLOSED)}
+            if(view!=TasksModel.View.ALL)item("显示全部事项"){changeSpace(TasksModel.View.ALL)}
         }else{
             item("完整设置"){beginEdit(task)}
             if(task.open){
@@ -456,7 +457,7 @@ open class TasksActivity : SystemAppActivity() {
         })
         val statusLabel = AshUi.text(this, "状态：${TasksModel.status(task.copy(status = status))}", AshTokens.Type.callout, c.text2)
         form.addView(statusLabel)
-        listOf("todo" to "待做", "doing" to "在做", "waiting" to "等对方", "done" to "完成", "dropped" to "不做了").forEach { (code, label) ->
+        listOf("todo" to "待做", "doing" to "在做", "waiting" to "等待", "done" to "完成", "dropped" to "不做了").forEach { (code, label) ->
             form.addView(AshUi.button(this, label, AshUi.Kind.NEUTRAL).apply {
                 isSelected = status == code
                 setOnClickListener { status = code; statusLabel.text = "状态：$label"; saveEditor(); feedback.text = "状态选为 $label · 保存后生效" }
