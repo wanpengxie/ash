@@ -19,3 +19,11 @@
 旧外壳没有独立团队管理页面，原以 agent id 打开的帮手主页改向团队成员详情。Ash / 设备旧页由各自 worker 清理，避免争写。
 
 验证覆盖问答关联、主对话隔离、成员筛选、分页、长文引用、变更作者和今日成本。JVM 覆盖乱序 / 失败不清空、状态、稳定身份与 blob 定位。真机键盘、200% 字体、TalkBack、窗口恢复本轮未操作手机验证。
+
+## 交付验证
+
+- 中枢：`node --import tsx --test` 定向执行 agents 的 service / flow / team、history 的 history / exchanges、cost、SDK words，共 71 项通过。
+- `tsc --noEmit -p .` 通过。
+- Android：`compileDebugKotlin`、`testDebugUnitTest --tests 'ai.ash.sysapps.team.*' --tests ai.ash.human.HumanSendTest --tests ai.ash.ui.ChatStateTest` 通过（24 项 JVM）。
+- 独立底座依赖：`68655210`；异步 send.result / client_id 端口：`a1714cd9`。应用注册和 Manifest 由底座批次统一登记；此应用不改公共注册表。
+- 未打包、未安装、未推送、未操作手机。键盘、200% 字体、TalkBack、预测返回和真实窗口恢复未做真机验证。

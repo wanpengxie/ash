@@ -346,7 +346,7 @@ export function createAgentsService(manager: AgentManager): Member {
     if (manager.settle(row.id, String(body.text))) return data({ accepted: true });
     // News (tell): what the agent says back goes to the sender as a message of its own.
     if (row.from.startsWith("agent:") && row.from !== row.agent)
-      await manager.deps.router.send({ to: row.from, kind: "request", word: "tell", body: { text: String(body.text) }, ...(row.thread ? { thread: row.thread } : {}) }, agentCaller(row.agent, ctx.caller.turn));
+      await manager.deps.router.send({ to: row.from, kind: "request", word: "tell", reply_to: row.id, body: { text: String(body.text) }, ...(row.thread ? { thread: row.thread } : {}) }, agentCaller(row.agent, ctx.caller.turn));
     return data({ accepted: true });
   }
 

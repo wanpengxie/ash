@@ -97,7 +97,7 @@ object TeamModel {
     /** Raw request / response text, or a blob reference that the view reads through service:blobs/read. */
     data class TextSource(val text: String, val hash: String? = null, val json: Boolean = false, val path: List<String> = emptyList())
     fun source(raw: JSONObject, response: Boolean, word: String): TextSource {
-        val path = if (response) listOf("result", "data", "answer") else listOf(if (word == "spawn") "task" else "text")
+        val path = if (response && raw.optString("kind") != "request") listOf("result", "data", "answer") else listOf(if (word == "spawn") "task" else "text")
         var current: Any? = raw.opt("body")
         for (i in 0..path.size) {
             if (current is JSONObject && current.opt("\$blob") is String) return TextSource(current.text("summary"), current.text("\$blob"), current.text("mime") == "application/json", path.drop(i))

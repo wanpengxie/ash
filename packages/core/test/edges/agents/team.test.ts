@@ -37,3 +37,13 @@ test("doing and waiting identify real work; an owner ask stays off the front con
   assert.deepEqual(f.agents.manager.waitingOn("agent:main"), []);
   await f.agents.stopAll();
 });
+
+test("answering news sends the sender a tell linked to that original question", async () => {
+  const f = fixture(); await f.start();
+  const result: any = (await f.service("tell", { agent: "agent:main", text: "留意这个" }, caller("agent:h")))!.data;
+  await waitFor(() => f.driver().running.has("agent:main/back"));
+  const turn = f.agents.currentTurn("agent:main", "back")!;
+  await f.call("service:agents", "answer", { in_reply_to: result.message_id, text: "记下了" }, { ...caller("agent:main"), turn });
+  assert.equal(f.router.to("agent:h", "tell").at(-1)!.msg.reply_to, result.message_id);
+  f.driver().finish("agent:main", "back"); await f.agents.stopAll();
+});

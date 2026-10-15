@@ -41,3 +41,18 @@ test("direct asks, failed replies, spawn recipient filtering and original long m
   assert.ok(raw.messages[0].body.text.$blob); // expansion can use the existing blobs.read word
   assert.equal((await call(service, owner, "exchanges", { agent: "agent:w-one" })).items[0].id, spawned.id);
 });
+
+test("a later tell answer is attached to the original news, without a duplicate root row", async () => {
+  const { ledger } = openLedger();
+  const note = ledger.append({ from: "agent:main", to: "service:agents", kind: "request", word: "tell", body: { agent: "agent:h", text: "留意价格" } });
+  ledger.append({ from: "service:agents", to: "agent:main", kind: "response", word: "tell", reply_to: note.id, body: { ok: true, result: { data: { sent: true, message_id: note.id } } } });
+  const answer = ledger.append({ from: "agent:h", to: "agent:main", kind: "request", word: "tell", reply_to: note.id, body: { text: "价格降了" } });
+  const service = createHistoryService({ ledger });
+  const page = await call(service, owner, "exchanges");
+  assert.equal(page.items.length, 1);
+  assert.equal(page.items[0].id, note.id);
+  assert.equal(page.items[0].state, "answered");
+  assert.equal(page.items[0].answer.text, "价格降了");
+  assert.equal(page.items[0].answer.seq, answer.seq);
+  assert.equal((await call(service, owner, "exchanges", { agent: "agent:h" })).items.length, 1);
+});

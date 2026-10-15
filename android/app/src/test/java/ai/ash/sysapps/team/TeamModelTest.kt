@@ -35,6 +35,10 @@ class TeamModelTest {
         val a = TeamModel.source(JSONObject("""{"body":{"result":{"${'$'}blob":"def","mime":"application/json","summary":"结果"}}}"""), true, "ask")
         assertEquals(listOf("data", "answer"), a.path)
     }
+    @Test fun laterTellAnswerUsesTheRequestTextAsItsOriginal() {
+        val raw = JSONObject("""{"kind":"request","body":{"text":"后来回答"}}""")
+        assertEquals("后来回答", TeamModel.source(raw, true, "tell").text)
+    }
     @Test fun eventsRefreshOnlyTheRelevantSources() {
         assertTrue(TeamModel.refresh(JSONObject("""{"from":"agent:a","word":"turn.ended"}""")).members)
         assertTrue(TeamModel.refresh(JSONObject("""{"from":"service:cost","word":"usage.recorded"}""")).costs)

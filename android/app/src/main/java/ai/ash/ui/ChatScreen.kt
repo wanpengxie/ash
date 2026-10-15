@@ -544,8 +544,11 @@ class ChatScreen(
         AlertDialog.Builder(ctx).setTitle("跟谁说").setItems(names.toTypedArray()) { _, i ->
             if (input.text.toString().startsWith("@")) input.setText(input.text.toString().removePrefix("@").trimStart())
             val next = agents.optJSONObject(i)?.optString("id")?.takeIf { it != port.primary }
-            // Each agent has its own draft: switching puts this one away and brings that one back.
-            if (next != chosen) { chosen = next; loadDraft() }
+            if (next != null) {
+                activity.startActivity(ai.ash.sysapps.SystemApps.intent(ctx, "team", JSONObject().put("agent", next).toString()))
+                return@setItems
+            }
+            if (chosen != null) { chosen = null; loadDraft() }
             paintTarget(); focusInput()
         }.show()
     }
@@ -855,7 +858,10 @@ class ChatScreen(
     fun restore(saved: android.os.Bundle?) {
         saved ?: return
         val target = saved.getString(STATE_TARGET)
-        if (target != chosen) { chosen = target; loadDraft(); paintTarget() }
+        if (target != null) {
+            activity.startActivity(ai.ash.sysapps.SystemApps.intent(ctx, "team", JSONObject().put("agent", target).toString()))
+        }
+        if (chosen != null) { chosen = null; loadDraft(); paintTarget() }
         place = saved.getString(STATE_ANCHOR)?.let { Anchor(it, saved.getInt(STATE_OFFSET)) }
     }
 

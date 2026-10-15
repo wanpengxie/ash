@@ -101,6 +101,7 @@ export function createHistoryService(options: HistoryOptions): Member {
     const limit = (body.limit as number | undefined) ?? DEFAULT_EXCHANGES;
     const agent = body.agent as string | undefined;
     const rows = db.prepare(`SELECT id FROM messages WHERE kind='request' AND seq<? AND word IN ('ask','tell','spawn')
+      AND NOT (word='tell' AND reply_to IS NOT NULL)
       AND (("to"='service:agents') OR ("to" LIKE 'agent:%' AND word<>'spawn')) AND ("from" LIKE 'agent:%' OR "from"='person:owner')
       ${agent ? `AND ("from"=? OR "to"=? OR json_extract(body,'$.agent')=? OR EXISTS
         (SELECT 1 FROM messages r WHERE r.reply_to=messages.id AND r.kind='response' AND json_extract(r.body,'$.result.data.agent')=?))` : ""}
@@ -113,12 +114,15 @@ export function createHistoryService(options: HistoryOptions): Member {
       const reply = (r?.body ?? {}) as { ok?: boolean; result?: { data?: Record<string, unknown> }; error?: { code?: string; message?: string } };
       const data = reply.result?.data ?? {};
       const to = m.to === "service:agents" ? textOf(b.agent) || textOf(data.agent) || "agent:worker" : m.to!;
-      const answer = r ? (reply.ok === false ? { error: textOf(reply.error?.message) || textOf(reply.error?.code) || "failed" } : { text: cut(textOf(data.answer)) }) : null;
-      const state = !r ? "waiting" : reply.ok === false ? "failed" : m.word === "tell" ? "sent" : "answered";
+      const toldRow = m.word === "tell" ? db.prepare("SELECT id FROM messages WHERE reply_to=? AND kind='request' AND word='tell' AND \"from\"=? ORDER BY seq LIMIT 1").get(id, to) as { id: string } | undefined : undefined;
+      const told = toldRow ? ledger.get(toldRow.id) : null;
+      const answerMessage = told ?? r;
+      const answer = told ? { text: cut(textOf((told.body as Record<string, unknown>)?.text)) } : r ? (reply.ok === false ? { error: textOf(reply.error?.message) || textOf(reply.error?.code) || "failed" } : { text: cut(textOf(data.answer)) }) : null;
+      const state = told ? "answered" : !r ? "waiting" : reply.ok === false ? "failed" : m.word === "tell" ? "sent" : "answered";
       return {
         id: m.id, seq: m.seq, ts: m.ts, from: m.from, to, word: m.word, text: cut(textOf(m.word === "spawn" ? b.task : b.text)),
         ...(m.thread ? { thread: m.thread } : {}), ...(m.turn ? { turn: m.turn } : {}), state,
-        ...(r && answer && (m.word !== "tell" || "error" in answer) ? { answer: { seq: r.seq, ts: r.ts, ...answer } } : {}),
+        ...(answerMessage && answer && (told || m.word !== "tell" || "error" in answer) ? { answer: { seq: answerMessage.seq, ts: answerMessage.ts, ...answer } } : {}),
       };
     });
     const last = items[items.length - 1];

@@ -63,6 +63,16 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
 
     /** Opens the home page (of the agent [agent], or of her), and [section] on top of it ([arg]: what that page was asked about). */
     fun openPage(section: String?, agent: String?, arg: String? = null) {
+        if (agent != null && agent != port.primary) {
+            close()
+            activity.startActivity(ai.ash.sysapps.SystemApps.intent(activity, "team", org.json.JSONObject().put("agent", agent).toString()))
+            return
+        }
+        if (section == "team") {
+            close()
+            activity.startActivity(ai.ash.sysapps.SystemApps.intent(activity, "team", arg))
+            return
+        }
         if (section == "apps") { apps(); return }
         // Old app links/notifications still open the device app; no device page remains in the shell.
         if (section in setOf("device", "hands", "connect")) {
