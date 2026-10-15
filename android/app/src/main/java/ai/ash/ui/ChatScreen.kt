@@ -78,7 +78,7 @@ class ChatScreen(
     private val list = RecyclerView(ctx).apply {
         layoutManager = lm; adapter = rowsAdapter; itemAnimator = animator
         // Every row stands 8 above the one under it (the first one's 8 is the list's top padding).
-        setPadding(dp(14), 0, dp(14), dp(12)); clipToPadding = false
+        setPadding(dp(14), 0, dp(14), PILL_ROOM); clipToPadding = false
         setItemViewCacheSize(12)
         addItemDecoration(object : RecyclerView.ItemDecoration() {
             override fun getItemOffsets(out: android.graphics.Rect, v: View, parent: RecyclerView, state: RecyclerView.State) { out.top = dp(8) }
@@ -164,11 +164,13 @@ class ChatScreen(
         view.addView(leaseBar, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(14), 0, dp(14), dp(4)) })
         LeaseState.onChange(onLease)
         scrollHost.addView(list, FrameLayout.LayoutParams(-1, -1))
-        scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), dp(10)) })
+        scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), PILL_ROOM) })
+        // The progress pill floats over the bottom of the conversation, in room the list always keeps for it: its coming and
+        // going changes no layout, so the conversation never moves for it.
+        scrollHost.addView(pillSlot, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(6) })
         // The conversation and the input are one piece standing on the keyboard: [deck] holds them, and the keyboard moves it
         // (see [keyboard]); [stage] is the room under the header, so the piece slides under the header, not over it.
         deck.addView(scrollHost, LinearLayout.LayoutParams(-1, 0, 1f))
-        deck.addView(pillSlot, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(6) })
         deck.addView(composer(), LinearLayout.LayoutParams(-1, -2))
         stage.addView(deck, FrameLayout.LayoutParams(-1, -1))
         view.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -309,7 +311,6 @@ class ChatScreen(
 
     private fun composer(): View = AshUi.vstack(ctx, 4).apply {
         setPadding(dp(12), dp(4), dp(12), dp(10))
-        addView(target, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(52) })
         target.setOnClickListener { pickTarget() }
         addView(pickedChip, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(52) })
         addView(AshUi.hstack(ctx, 8).apply {
@@ -339,6 +340,8 @@ class ChatScreen(
                     }
                 })
             }
+            // Whom the message goes to sits in the row, beside the box: shown or not, it never changes the composer's height.
+            addView(target, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(12) })
             addView(input, LinearLayout.LayoutParams(0, -2, 1f))
             addView(action)
             input.addTextChangedListener(object : TextWatcher {
@@ -393,7 +396,7 @@ class ChatScreen(
 
     private fun paintTarget() {
         val name = nameOf(chosen ?: port.primary)
-        target.text = "跟 $name 说 ›"
+        target.text = "$name ›"
         target.visibility = if (agents.length() > 1) View.VISIBLE else View.GONE
         input.hint = "跟 $name 说点什么…"
     }
@@ -792,6 +795,9 @@ class ChatScreen(
             if (gone.isNotEmpty()) { list.removeAll(gone.toSet()); gone.forEach(::forget); save() }
         }
     }
+
+    /** Room the conversation always keeps at its bottom for the progress pill floating there (12 under the last row + the pill). */
+    private val PILL_ROOM get() = dp(52)
 
     companion object {
         private const val PAGE = 60
