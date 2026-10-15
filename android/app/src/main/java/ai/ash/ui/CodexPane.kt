@@ -83,7 +83,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
     /** The back key: from a session to the list; false when the list itself is showing. */
     fun back(): Boolean {
         if (detailId == null && newIn == null) return false
-        detailId = null; detail = null; newIn = null; note = null; stop.visibility = View.GONE
+        detailId = null; detail = null; newIn = null; note = null; stop.visibility = View.GONE; lastSaid = null
         render(); refresh()
         return true
     }
@@ -111,13 +111,19 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         val id = detailId
         val done: (JSONObject?, HumanPort.Failure?) -> Unit = { data, failure ->
             loading = false
-            when {
-                // The computer went away: find the computers again. A computer without Codex keeps its place, so another can be chosen.
-                failure != null -> { if (failure.code == "offline") device = null; note = CodexModel.unreachable(failure.code); if (id == null) sessions = null }
-                id == null -> { sessions = CodexModel.sessions(data); note = null }
-                id == detailId -> { detail = CodexModel.detail(data); note = null }
+            // The page is polled every few seconds: an answer that says what the last one said changes nothing on screen
+            // (redrawing it would rebuild every bubble under the owner's typing).
+            val said = "${id ?: "list"}|${failure?.code}|$data"
+            if (said != lastSaid) {
+                lastSaid = said
+                when {
+                    // The computer went away: find the computers again. A computer without Codex keeps its place, so another can be chosen.
+                    failure != null -> { if (failure.code == "offline") device = null; note = CodexModel.unreachable(failure.code); if (id == null) sessions = null }
+                    id == null -> { sessions = CodexModel.sessions(data); note = null }
+                    id == detailId -> { detail = CodexModel.detail(data); note = null }
+                }
+                render()
             }
-            render()
         }
         if (id == null) port.call(dev, CodexModel.SESSIONS, JSONObject().put("limit", 50), done)
         else port.call(dev, CodexModel.SESSION, JSONObject().put("thread", id).put("turns", 8).put("max_chars", 1200), done)
@@ -125,6 +131,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
 
     private var chosen: String? = null
     private var computersAt = 0L
+    /** What the last poll answered (see [refresh]). */
+    private var lastSaid: String? = null
 
     private fun choose(computer: String) {
         if (computer == device) return
@@ -133,7 +141,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
     }
 
     private fun startNew(p: CodexModel.Project) {
-        newIn = p; detailId = null; detail = null; note = null
+        newIn = p; detailId = null; detail = null; note = null; lastSaid = null
         render(); input.requestFocus()
     }
 
@@ -148,14 +156,14 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
             busy = false
             val id = CodexModel.created(data)
             if (failure != null || id == null) { note = null; render(); toast(failure?.let { CodexModel.failure(it.code, it.message) } ?: "没能开新会话"); input.setText(text); return@call }
-            newIn = null; detailId = id; detail = null; note = null; sessions = null
+            newIn = null; detailId = id; detail = null; note = null; sessions = null; lastSaid = null
             render(); main.postDelayed({ refresh() }, 600)
         }
         input.setText("")
     }
 
     private fun open(s: CodexModel.Session) {
-        detailId = s.id; detail = null; note = null; title.text = s.title
+        detailId = s.id; detail = null; note = null; title.text = s.title; lastSaid = null
         render(); refresh()
     }
 
@@ -271,7 +279,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, pri
         if (dt.session.running && dt.approvals.isEmpty()) content.addView(AshUi.text(activity, "在做事…", AshTokens.Type.caption, c.text3), side(false))
         for (a in dt.approvals) content.addView(approvalCard(a))
         if (dt.turns.isEmpty() && dt.approvals.isEmpty()) content.addView(hint("这个会话还没有内容"))
-        if (toBottom) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        // Not fullScroll: it also moves the focus to the last bubble, which takes it from the input and closes the keyboard.
+        if (toBottom) scroll.post { scroll.scrollTo(0, content.height) }
     }
 
     private fun side(mine: Boolean) = LinearLayout.LayoutParams(-2, -2).apply { gravity = if (mine) Gravity.END else Gravity.START }
