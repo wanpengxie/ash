@@ -51,4 +51,12 @@ class ChatRowsTest {
         assertEquals(260 to 130, ChatFiles.cardBox(1000, 500))
         assertEquals(100 to 200, ChatFiles.cardBox(500, 1000))
     }
+
+    @Test fun aSentMessageKeepsItsRowWhenTheWindowCopyHasNoClientId() {
+        val outbox = listOf(JSONObject().put("client_id", "c1").put("id", "m1").put("status", "sent").put("body", JSONObject().put("text", "hi")))
+        val pendingOnly = ChatRows.build(emptyList(), outbox, false, { throw AssertionError("not drawn") }, { null }, { null })
+        val window = listOf(JSONObject().put("id", "m1").put("seq", 9).put("type", "say").put("text", "hi"))
+        val withCopy = ChatRows.build(window, emptyList(), false, { throw AssertionError("not drawn") }, { null }, { null }, sentAs = { if (it == "m1") "c1" else null })
+        org.junit.Assert.assertEquals(pendingOnly.single().key, withCopy.single().key)
+    }
 }

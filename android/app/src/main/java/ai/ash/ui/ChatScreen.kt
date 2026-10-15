@@ -492,7 +492,7 @@ class ChatScreen(
      * [then] runs once the list has the rows.
      */
     private fun paintList(toEnd: Boolean = false, then: (() -> Unit)? = null) {
-        val next = ChatRows.build(items.values, outbox.items(), moreBefore, { note("往上翻看更早的消息") }, ::row, ::pending)
+        val next = ChatRows.build(items.values, outbox.items(), moreBefore, { note("往上翻看更早的消息") }, ::row, ::pending, outbox::sentAs)
             .ifEmpty { listOf(ChatRow(EMPTY, port.open.toString()) { empty() }) }
         val before = rowsAdapter.currentList
         val first = before.none { it.key != EMPTY } && next.first().key != EMPTY
@@ -761,7 +761,13 @@ class ChatScreen(
         private val dir = java.io.File(ctx.filesDir, "outbox").apply { mkdirs() }
         private val list = runCatching { JSONArray(prefs.getString("items", "[]")) }.getOrDefault(JSONArray())
             .let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.toMutableList() }
-        init { list.forEach(::load); dir.listFiles()?.forEach { f -> if (list.none { f.name.startsWith(it.optString("client_id") + ".") }) f.delete() } }
+        /** Ledger id → the client id it was sent with: the window's copy of a sent message stays in the row it waited in. */
+        private val sent = HashMap<String, String>()
+        fun sentAs(id: String): String? = sent[id]
+        init {
+            list.forEach(::load); dir.listFiles()?.forEach { f -> if (list.none { f.name.startsWith(it.optString("client_id") + ".") }) f.delete() }
+            list.forEach { o -> o.optString("id").takeIf { it.isNotEmpty() }?.let { sent[it] = o.optString("client_id") } }
+        }
 
         private fun attachments(o: JSONObject) = o.optJSONObject("body")?.optJSONArray("attachments")
         private fun fileOf(o: JSONObject, i: Int) = java.io.File(dir, "${o.optString("client_id")}.$i")
@@ -787,7 +793,10 @@ class ChatScreen(
         fun add(o: JSONObject) { o.put("status", "sending"); list.add(o); save() }
         fun next(): JSONObject? = list.firstOrNull { it.optString("status") != "failed" && !it.has("id") }
         fun mark(o: JSONObject, status: String) { o.put("status", status); save() }
-        fun sent(o: JSONObject, id: String?) { if (id.isNullOrEmpty()) { list.remove(o); forget(o) } else o.put("id", id).put("status", "sent"); save() }
+        fun sent(o: JSONObject, id: String?) {
+            if (id.isNullOrEmpty()) { list.remove(o); forget(o) } else { o.put("id", id).put("status", "sent"); sent[id] = o.optString("client_id") }
+            save()
+        }
         fun remove(o: JSONObject) { list.remove(o); forget(o); save() }
         /** Drops what the window now shows (by its ledger id or its client id). */
         fun drop(clientIds: Set<String>, ids: Set<String>) {

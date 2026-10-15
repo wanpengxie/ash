@@ -19,8 +19,12 @@ object ChatRows {
     /** Item types and card types the chat draws; anything else is not a row (a newer kernel's kinds wait for a newer app). */
     private val CARDS = setOf("options", "file", "image", "link", "permission", "app")
 
-    /** The row key of a window item: its client id when it has one (so a sent message keeps the row it waited in), else its id. */
-    fun key(item: JSONObject): String = item.optString("client_id").ifEmpty { item.optString("id") }
+    /**
+     * The row key of a window item: the client id it was sent with, so the owner's message keeps the row it waited in —
+     * from the item itself, or else from [sentAs] (the client id the phone sent it with, by ledger id) — else its id.
+     */
+    fun key(item: JSONObject, sentAs: (String) -> String? = { null }): String =
+        item.optString("client_id").ifEmpty { sentAs(item.optString("id")) ?: item.optString("id") }
 
     /** The row key of an outbox entry: the client id the kernel's copy will carry. */
     fun outboxKey(o: JSONObject): String = o.optString("client_id")
@@ -40,12 +44,13 @@ object ChatRows {
     fun build(
         items: Collection<JSONObject>, outbox: List<JSONObject>, moreBefore: Boolean,
         more: () -> View, item: (JSONObject) -> View?, pending: (JSONObject) -> View?,
+        sentAs: (String) -> String? = { null },
     ): List<ChatRow> {
         val out = ArrayList<ChatRow>()
         val keys = HashSet<String>()
         for (it in items) {
             if (!shows(it)) continue
-            val key = key(it).ifEmpty { "seq:" + it.optLong("seq") }
+            val key = key(it, sentAs).ifEmpty { "seq:" + it.optLong("seq") }
             if (keys.add(key)) out.add(ChatRow(key, it.toString(), it.optString("id")) { item(it) })
         }
         for (o in outbox) {
