@@ -167,7 +167,7 @@ open class DevicesActivity : SystemAppActivity() {
         when {
             route.isEmpty() -> {
                 title.text = getString(R.string.dev_title)
-                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_plus)!!, getString(R.string.dev_connect)) { pair.reset(); pairUncertain = false; pairDraft = null; showRoute("connect") })
+                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_plus)!!, getString(R.string.dev_connect)) { startPairing() })
                 (list.parent as? android.view.ViewGroup)?.removeView(list)
                 content.addView(list)
             }
@@ -255,7 +255,13 @@ open class DevicesActivity : SystemAppActivity() {
             val snapshot = model.rows(System.currentTimeMillis())
             val errors = readErrors.filterKeys { it != Refresh.DEVICES }.map { (key, message) -> ChatRow("error/$key", message) { text(message) } }
             val feedback = if (note.isEmpty()) emptyList() else listOf(ChatRow("feedback", note) { text(note) })
-            rows.submitList(snapshot.map { row -> ChatRow(row.key, row.toString() + if (row is DevicesState.Row.Status) primary.orEmpty() else "") { listRow(row) } } + errors + feedback) {
+            val contentRows = snapshot.map { row -> ChatRow(row.key, row.toString() + if (row is DevicesState.Row.Status) primary.orEmpty() else "") { listRow(row) } }.toMutableList()
+            contentRows.add(1.coerceAtMost(contentRows.size), ChatRow("connect-device", "connect-device") {
+                section(getString(R.string.dev_product_title)).apply {
+                    addView(AshUi.button(this@DevicesActivity, getString(R.string.dev_product_connect), AshUi.Kind.PRIMARY, block = true) { startPairing() })
+                }
+            })
+            rows.submitList(contentRows + errors + feedback) {
                 restoreKey?.let { key ->
                     val position = rows.currentList.indexOfFirst { it.key == key }
                     if (position >= 0) { (list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, restoreOffset); restoreKey = null }
@@ -264,8 +270,9 @@ open class DevicesActivity : SystemAppActivity() {
         } else { detail?.bind(); pairing?.bind() }
     }
     private fun listRow(row: DevicesState.Row): View = when (row) {
-        is DevicesState.Row.Status -> section(relaySummary()).apply {
-            addView(button(R.string.dev_relay_help) {
+        is DevicesState.Row.Status -> column().apply {
+            addView(subText(relaySummary()))
+            if (row.problem) addView(button(R.string.dev_relay_help) {
                 val agent = primary
                 if (agent == null) { note = getString(R.string.dev_agent_unavailable); render() }
                 else request("service:agents", "tell", JSONObject().put("agent", agent).put("text", getString(R.string.dev_relay_request))) { _, failure ->
@@ -278,12 +285,17 @@ open class DevicesActivity : SystemAppActivity() {
             pair.resume(row.pair.pairId); showRoute("p/${row.pair.pairId}"); readPair()
         })
         is DevicesState.Row.Item -> column().apply {
-            addView(text(row.device.name, true)); addView(text(row.presence))
-            addView(text(attention(row.device)))
-            row.version?.let { addView(text(it)) }
-            addView(text(capabilities(row.device)))
-            addView(text(accessDescription(row.device)))
-            addView(button(R.string.dev_open_device) { showRoute("d/${row.device.id}") })
+            addView(text(row.device.name, true)); addView(subText(row.presence))
+            val summary = useSummary(row.device)
+            addView(text(summary))
+            attention(row.device).takeIf { it.isNotEmpty() && it != summary }?.let { addView(text(it)) }
+            row.version?.let { addView(subText(it)) }
+            addView(button(when {
+                row.device.revoked -> R.string.dev_product_restore
+                !row.device.online -> R.string.dev_product_recover
+                !row.device.lend && !row.device.body && !row.device.localAgents -> R.string.dev_product_choose
+                else -> R.string.dev_open_device
+            }) { showRoute("d/${row.device.id}") })
         }
         is DevicesState.Row.ShowRevoked -> button(if (row.shown) R.string.dev_hide_revoked else R.string.dev_show_revoked, row.count) { model.showRevoked = !model.showRevoked; render() }
         is DevicesState.Row.Note -> text(row.text)
@@ -294,8 +306,9 @@ open class DevicesActivity : SystemAppActivity() {
         val root = column()
         private val header = text(getString(R.string.dev_loading), true)
         private val status = text("")
-        private val change = text("")
-        private val abilities = text("")
+        private val change = subText("")
+        private val abilities = subText("")
+        private val versionInfo = subText("")
         private val name = EditText(this@DevicesActivity).apply {
             hint = getString(R.string.dev_name); contentDescription = hint
             minimumHeight = dp(AshTokens.Size.touch); setTextColor(c.text); setHintTextColor(c.text3)
@@ -326,6 +339,7 @@ open class DevicesActivity : SystemAppActivity() {
         private val update: TextView = button(R.string.dev_update) { run("update", updateButton(), updateNote) }
         private fun updateButton() = update
         private val diagnosis = text("")
+        private var diagnosisState: Pair<Boolean, Boolean>? = null
         private val diagnosisRaw = text("").apply { setTextIsSelectable(true); visibility = View.GONE }
         private var rawOpen = false
         private val diagnosisToggle: TextView = button(R.string.dev_diag_details) {
@@ -347,7 +361,7 @@ open class DevicesActivity : SystemAppActivity() {
         private val pending = HashSet<String>()
         private val unknown = HashSet<String>()
         init {
-            root.addView(header); root.addView(status); root.addView(change); root.addView(abilities)
+            root.addView(header); root.addView(status); root.addView(change); root.addView(abilities); root.addView(versionInfo)
             root.addView(name); root.addView(saveName); root.addView(nameNote); root.addView(access.root)
             root.addView(update); root.addView(updateNote); root.addView(diagnose); root.addView(diagnosis)
             root.addView(diagnosisToggle.apply { visibility = View.GONE }); root.addView(diagnosisRaw)
@@ -378,9 +392,10 @@ open class DevicesActivity : SystemAppActivity() {
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; return }
             header.text = d.name
             title.text = d.name
-            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), attention(d), accessDescription(d), DevicesText.version(d, model.release), readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.joinToString("\n")
+            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), useSummary(d), attention(d), readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.distinct().joinToString("\n")
             change.text = model.changes[id]?.let { DevicesText.change(it, primary, System.currentTimeMillis()) }.orEmpty()
             abilities.text = capabilities(d)
+            versionInfo.text = DevicesText.version(d, model.release).orEmpty()
             if (awaitingName == d.name && name.text.toString().trim() == awaitingName) { nameDirty = false; awaitingName = null }
             if (!nameLoaded || (!nameDirty && !name.hasFocus() && name.text.toString() != d.name)) setName(d.name)
             else if (nameDirty && sourceName != null && sourceName != d.name) nameNote.text = getString(R.string.dev_rename_external)
@@ -394,7 +409,11 @@ open class DevicesActivity : SystemAppActivity() {
             revoke.text = getString(if (d.revoked) R.string.dev_restore else R.string.dev_revoke)
             revoke.isEnabled = "revoke" !in pending && "restore" !in pending && "revoke" !in unknown && "restore" !in unknown
             diagnose.isEnabled = "diagnose" !in pending
-            listOf(nameNote, change, updateNote, diagnosis, revokeNote).forEach { it.visibility = visible(it.text.isNotEmpty()) }
+            if (diagnosisState != null && diagnosisState != (d.online to d.revoked) && "diagnose" !in pending) {
+                diagnosis.text = ""; diagnosisRaw.text = ""; diagnosisRaw.visibility = View.GONE; diagnosisToggle.visibility = View.GONE
+                diagnosisState = null; rawOpen = false
+            }
+            listOf(nameNote, change, versionInfo, updateNote, diagnosis, revokeNote).forEach { it.visibility = visible(it.text.isNotEmpty()) }
             if (restoring) { name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; revoke.isEnabled = false }
         }
         private fun run(word: String, control: View, message: TextView, args: JSONObject = JSONObject(), done: () -> Unit = {}) {
@@ -439,7 +458,7 @@ open class DevicesActivity : SystemAppActivity() {
                 request("service:link", "list") { links, linkFailure ->
                     pending.remove("diagnose")
                     if (detail !== this) return@request
-                    val conns = links?.optJSONArray("connections")
+                    val conns = links?.optJSONArray("connections") ?: data.optJSONArray("connections")
                     val count = if (conns == null) getString(R.string.dev_diag_connections_unknown) else (0 until conns.length()).count { conns.optJSONObject(it)?.optString("hand") == id.removePrefix("device:") }.toString()
                     val findings = data.optJSONArray("findings")
                     val lines = (0 until (findings?.length() ?: 0)).mapNotNull { findings?.optJSONObject(it)?.optString("message") }.joinToString("\n")
@@ -457,10 +476,11 @@ open class DevicesActivity : SystemAppActivity() {
                         d?.online == true -> R.string.dev_diag_connected
                         else -> R.string.dev_diag_incomplete
                     }
-                    diagnosis.text = getString(R.string.dev_diag_layout, getString(conclusion), relaySummary(), count, getString(R.string.dev_diag_latency_unknown))
+                    diagnosis.text = getString(R.string.dev_diag_layout, getString(conclusion), relaySummary(), count, latencyText(conns, id))
                     diagnosisRaw.text = listOfNotNull(lines.takeIf { it.isNotEmpty() }, model.relay?.error, linkFailure?.let(::error)).joinToString("\n")
                     diagnosisToggle.visibility = visible(diagnosisRaw.text.isNotEmpty())
                     diagnosisToggle.text = getString(R.string.dev_diag_details)
+                    diagnosisState = d?.let { it.online to it.revoked }
                     bind()
                 }
             }
@@ -512,9 +532,13 @@ open class DevicesActivity : SystemAppActivity() {
         val result = text("")
         private val explanation = text(getString(R.string.dev_pair_intro))
         private val command = text("").apply { setTextIsSelectable(true); isSaveEnabled = false }
+        private val connectedAbilities = text("")
         private val computer = button(R.string.dev_computer) { pairingKind = "computer"; kindState() }
         private val server = button(R.string.dev_server) { pairingKind = "server"; kindState() }
-        private val issue = button(R.string.dev_issue) { issue() }
+        private val kinds = AshUi.hstack(this@DevicesActivity, AshTokens.Space.xs).apply {
+            addView(computer, LinearLayout.LayoutParams(0, -2, 1f)); addView(server, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        private val issue = AshUi.button(this@DevicesActivity, getString(R.string.dev_issue), AshUi.Kind.PRIMARY, block = true) { issue() }
         private val copy: TextView = button(R.string.dev_copy) {
             val waiting = pair.step as? PairFlow.Step.Waiting ?: return@button
             if (waiting.command.isEmpty() || pair.expiredBy(System.currentTimeMillis())) return@button
@@ -525,7 +549,7 @@ open class DevicesActivity : SystemAppActivity() {
         }
         private fun copyButton() = copy
         private val permissions = AccessForm()
-        private val approve = button(R.string.dev_approve) { decide(true) }
+        private val approve = AshUi.button(this@DevicesActivity, getString(R.string.dev_approve), AshUi.Kind.PRIMARY, block = true) { decide(true) }
         private val reject = button(R.string.dev_reject) { decide(false) }
         private val restart = button(R.string.dev_restart) { pair.reset(); pairUncertain = false; result.text = ""; bind() }
         private val open = button(R.string.dev_open_device) {
@@ -533,13 +557,13 @@ open class DevicesActivity : SystemAppActivity() {
             if (!id.isNullOrEmpty()) showRoute("d/$id")
         }
         private var deciding = false
-        init { permissions.restore(pairDraft); listOf(computer, server, explanation, issue, command, copy, permissions.root, approve, reject, result, restart, open).forEach(root::addView); kindState() }
+        init { permissions.restore(pairDraft); listOf(kinds, explanation, issue, command, copy, permissions.root, approve, reject, connectedAbilities, result, restart, open).forEach(root::addView); kindState() }
         fun accessDraft() = permissions.args().toString()
         private fun kindState() { computer.isSelected = pairingKind == "computer"; server.isSelected = pairingKind == "server"; computer.alpha = if (computer.isSelected) 1f else 0.5f; server.alpha = if (server.isSelected) 1f else 0.5f }
         fun bind() {
             val s = pair.step
             val idle = s is PairFlow.Step.Idle || s is PairFlow.Step.Ended
-            computer.visibility = visible(idle); server.visibility = visible(idle); issue.visibility = visible(idle)
+            kinds.visibility = visible(idle); issue.visibility = visible(idle)
             issue.isEnabled = s !is PairFlow.Step.Issuing
             val waiting = s as? PairFlow.Step.Waiting
             command.visibility = visible(waiting != null && waiting.command.isNotEmpty() && !pair.expiredBy(System.currentTimeMillis()))
@@ -547,6 +571,10 @@ open class DevicesActivity : SystemAppActivity() {
             copy.visibility = command.visibility
             val asking = s is PairFlow.Step.Asking || s is PairFlow.Step.Approving
             permissions.root.visibility = visible(asking)
+            permissions.enabled(!deciding && !pairUncertain && s is PairFlow.Step.Asking)
+            val connectedDevice = (s as? PairFlow.Step.Connected)?.device?.let(model::device)?.takeIf { it.online && !it.revoked }
+            connectedAbilities.visibility = visible(s is PairFlow.Step.Connected)
+            connectedAbilities.text = connectedDevice?.let(::useSummary) ?: getString(R.string.dev_product_syncing)
             approve.visibility = visible(asking); reject.visibility = visible(asking)
             approve.isEnabled = !deciding && !pairUncertain && s is PairFlow.Step.Asking
             reject.isEnabled = approve.isEnabled
@@ -616,6 +644,38 @@ open class DevicesActivity : SystemAppActivity() {
         f?.code == "unavailable" -> getString(R.string.dev_unavailable)
         else -> getString(R.string.dev_retry, f?.message.orEmpty())
     }
+    private fun startPairing() { pair.reset(); pairUncertain = false; pairDraft = null; showRoute("connect") }
+    private fun useSummary(d: Device): String {
+        if (d.revoked) return getString(R.string.dev_access_revoked)
+        val actions = ArrayList<String>()
+        fun has(vararg prefixes: String) = d.capabilities.any { capability -> prefixes.any(capability::startsWith) }
+        if (d.lend) {
+            if (has("screen.read", "vscreen.read")) actions += getString(R.string.dev_use_screen)
+            if (has("screen.tap", "input.", "vscreen.tap")) actions += getString(R.string.dev_use_input)
+            if (has("x.codex.")) actions += getString(R.string.dev_use_codex)
+            if (has("browser.", "x.android.browser.", "x.kimi.", "x.ego.")) actions += getString(R.string.dev_use_browser)
+            if (has("camera.")) actions += getString(R.string.dev_use_camera)
+            if (has("media.")) actions += getString(R.string.dev_use_media)
+        }
+        if (d.body) actions += getString(R.string.dev_allowed_body)
+        if (d.localAgents) actions += getString(R.string.dev_allowed_agents)
+        if (actions.isEmpty()) return accessDescription(d)
+        return getString(if (d.online) R.string.dev_use_now else R.string.dev_use_when_online, actions.joinToString("、"))
+    }
+    private fun latencyText(connections: org.json.JSONArray?, device: String): String {
+        val samples = (0 until (connections?.length() ?: 0)).mapNotNull { connections?.optJSONObject(it) }
+            .filter { connection ->
+                val channels = connection.optJSONArray("channels")
+                connection.optString("hand") == device.removePrefix("device:") &&
+                    (0 until (channels?.length() ?: 0)).any { channels?.optString(it) in setOf("device", "agent") }
+            }.mapNotNull { connection ->
+                val sample = connection.optJSONObject("latency") ?: return@mapNotNull null
+                val rtt = sample.optDouble("rtt_ms", Double.NaN); val age = sample.optDouble("age_ms", Double.NaN)
+                if (!rtt.isFinite() || !age.isFinite() || rtt < 0 || age < 0) null
+                else getString(R.string.dev_diag_latency_sample, rtt, (age / 1000).toLong())
+            }
+        return samples.joinToString("\n").ifEmpty { getString(R.string.dev_diag_latency_unknown) }
+    }
     private fun relaySummary(): String {
         val relay = model.relay
         return if (relay?.configured == true && !relay.connected) getString(R.string.dev_relay_down_next)
@@ -643,6 +703,9 @@ open class DevicesActivity : SystemAppActivity() {
     }
     private fun isUnknown(f: HumanPort.Failure?) = f?.code in setOf("result_unknown", "timeout", "offline")
     private fun visible(show: Boolean) = if (show) View.VISIBLE else View.GONE
+    private fun subText(value: String) = AshUi.text(this, value, AshTokens.Type.sub).apply {
+        setPadding(0, dp(AshTokens.Space.xs), 0, dp(AshTokens.Space.xs))
+    }
     private fun text(value: String, heading: Boolean = false) = AshUi.text(this, value, if (heading) AshTokens.Type.headline else AshTokens.Type.body).apply {
         setPadding(0, dp(AshTokens.Space.xs), 0, dp(AshTokens.Space.xs))
     }

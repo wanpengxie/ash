@@ -69,7 +69,7 @@
     <string name="dev_allowed_capabilities">设备交出的能力</string>
     <string name="dev_allowed_body">文件和命令</string>
     <string name="dev_allowed_agents">本地帮手</string>
-    <string name="dev_diag_latency_unknown">延迟：尚无可用测量</string>
+    <string name="dev_diag_latency_unknown">延迟：尚无可用测量，稍后可再点连接诊断。</string>
     <string name="dev_diag_details">查看诊断原文</string>
     <string name="dev_diag_hide_details">收起诊断原文</string>
     <string name="dev_diag_connected">设备与 Ash 已连通。</string>
@@ -87,4 +87,19 @@
     <string name="dev_restored_done">已恢复。请在设备上打开 Ash，连上后刷新查看。</string>
     <string name="dev_update_started">已请求升级。设备重启并连回后会更新版本状态。</string>
     <string name="dev_relay_down_next">中转站未连通，请让 Ash 检查后刷新。</string>
+    <string name="dev_diag_latency_sample">延迟：%1$.1f 毫秒（%2$d 秒前的心跳样本）</string>
+    <string name="dev_product_title">让 Ash 用上你的设备</string>
+    <string name="dev_product_connect">接入一台电脑</string>
+    <string name="dev_product_restore">查看并恢复设备</string>
+    <string name="dev_product_recover">查看如何恢复连接</string>
+    <string name="dev_product_choose">选择交给 Ash 的能力</string>
+    <string name="dev_product_syncing">已接好，正在同步它交给 Ash 的能力。可点查看设备确认。</string>
+    <string name="dev_use_screen">看屏幕</string>
+    <string name="dev_use_input">操作屏幕</string>
+    <string name="dev_use_codex">使用 Codex</string>
+    <string name="dev_use_browser">使用浏览器</string>
+    <string name="dev_use_camera">拍照</string>
+    <string name="dev_use_media">查看照片和媒体</string>
+    <string name="dev_use_now">Ash 现在可以：%1$s</string>
+    <string name="dev_use_when_online">连上后，Ash 可以：%1$s</string>
 </resources>

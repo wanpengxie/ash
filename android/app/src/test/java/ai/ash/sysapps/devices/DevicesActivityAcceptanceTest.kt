@@ -202,4 +202,42 @@ class DevicesActivityAcceptanceTest {
         assertTrue(activity.texts().any { it.contains("新电脑 想连上来") })
         activity.button("批准连接").performClick(); assertEquals("new-pair", activity.take("pair_approve").body.optString("pair_id"))
     }
+
+    @Test fun theHomeScreenExplainsWhatAshCanDoAndLeadsAnOfflineDeviceToRecovery() {
+        val activity = screen("")
+        val data = devices(); data.getJSONArray("devices").getJSONObject(1).put("online", false).put("lend", false).put("latest", false)
+        activity.answer("list", data); activity.capture("devices-home")
+        assertTrue(activity.texts().contains("接入一台电脑"))
+        assertTrue(activity.texts().any { it.contains("Ash 现在可以：看屏幕") })
+        val list = views(activity.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().single()
+        (list.layoutManager as androidx.recyclerview.widget.LinearLayoutManager).scrollToPositionWithOffset(3, 0)
+        activity.capture("devices-offline-row")
+        activity.button("查看如何恢复连接").performClick(); flushDisk()
+        assertTrue(activity.texts().contains("Beta"))
+        assertTrue(activity.texts().any { it.contains("请在这台设备打开 Ash 并检查网络") })
+        assertFalse(activity.texts().any { it.contains("Ash 现在可以") })
+        activity.capture("offline-recovery")
+    }
+
+    @Test fun diagnosticLatencyUsesOnlyThisDevicesExecutorConnectionAndKeepsUnknownExplicit() {
+        val activity = screen("d/device:a"); activity.answer("list", devices())
+        fun connection(hand: String, channel: String, rtt: Double?): JSONObject = JSONObject().put("hand", hand).put("channels", JSONArray().put(channel))
+            .put("latency", if (rtt == null) JSONObject.NULL else JSONObject().put("rtt_ms", rtt).put("age_ms", 12_000))
+        fun diagnose(connections: JSONArray) {
+            activity.button("连接诊断").performClick()
+            activity.take("diagnose").done(JSONObject().put("ok", true).put("findings", JSONArray()), null)
+            activity.take("list", "service:link").done(JSONObject().put("connections", connections), null)
+        }
+        diagnose(JSONArray().put(connection("b", "device", 2.0)).put(connection("a", "human", 7.0)).put(connection("a", "device", null)))
+        assertTrue(activity.texts().any { it.contains("延迟：尚无可用测量") })
+        diagnose(JSONArray().put(connection("b", "device", 2.0)).put(connection("a", "human", 7.0)).put(connection("a", "device", 42.0)))
+        assertTrue(activity.texts().any { it.contains("延迟：42") && it.contains("12 秒前的心跳样本") })
+        assertFalse(activity.texts().any { it.contains("延迟：2.0") || it.contains("延迟：7.0") })
+        activity.capture("measured-device-latency")
+        activity.connect()
+        val offline = devices(); offline.getJSONArray("devices").getJSONObject(0).put("online", false)
+        activity.take("list", "service:devices").done(offline, null)
+        assertFalse(activity.texts().any { it.contains("延迟：42") })
+    }
+
 }
