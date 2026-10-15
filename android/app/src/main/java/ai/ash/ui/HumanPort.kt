@@ -161,3 +161,30 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
         const val TIMEOUT_MS = 45_000L
     }
 }
+
+/**
+ * A word from a screen that is not the chat (the checkup, the guide, the sensor setup): sent straight on the link, on a
+ * small queue of its own, without taking the chat's place as the human channel's page — there is one page, and a second
+ * [HumanPort] would push the chat off it (no more messages or answers until it was made again). [done] runs on the main thread.
+ */
+object HumanCall {
+    private val queue = java.util.concurrent.Executors.newFixedThreadPool(2) { r -> Thread(r, "ash-ui-call").apply { isDaemon = true } }
+
+    fun call(ctx: android.content.Context, to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) {
+        val app = ctx.applicationContext
+        val request = JSONObject().put("to", to).put("kind", "request").put("word", word).put("body", body).put("wait", true)
+        queue.execute {
+            val (data, failure) = try {
+                val sent = ai.ash.human.HumanSend.send(app, request)
+                val reply = ai.ash.human.HumanSend.reply(sent)
+                when {
+                    reply == null -> null to HumanPort.Failure("result_unknown", "还没有收到结果")
+                    reply.optBoolean("ok") -> (reply.optJSONObject("result")?.optJSONObject("data") ?: JSONObject()) to null
+                    else -> null to reply.optJSONObject("error").let { HumanPort.Failure(it?.optString("code").orEmpty().ifEmpty { "failed" }, it?.optString("message").orEmpty().ifEmpty { "没有成功" }) }
+                }
+            } catch (e: ai.ash.human.HumanSend.Refused) { null to HumanPort.Failure(e.code, e.message.orEmpty()) }
+            catch (e: Exception) { null to HumanPort.Failure("offline", e.message ?: "还没连上") }
+            UiIo.ui { done(data, failure) }
+        }
+    }
+}

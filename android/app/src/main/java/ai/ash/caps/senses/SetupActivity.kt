@@ -243,7 +243,7 @@ class SetupActivity : Activity() {
     private fun removeScale() {
         AlertDialog.Builder(this).setTitle("移除体重秤？").setMessage("停止收听，删除本机保存的地址和密钥；已有的称重记录保留。")
             .setPositiveButton("移除") { _, _ ->
-                HumanPort(Link.get(this).chat).also { it.start() }.call(Link.get(this).deviceId, "x.android.health.scale.remove") { _, _ -> runOnUiThread { refresh() } }
+                ai.ash.ui.HumanCall.call(this, Link.get(this).deviceId, "x.android.health.scale.remove") { _, _ -> if (!isDestroyed) refresh() }
             }.setNegativeButton("取消", null).show()
     }
 

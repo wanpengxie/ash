@@ -13,8 +13,22 @@ object WidgetActions {
         is CAction.OpenApp ->
             Intent(Intent.ACTION_VIEW, Uri.parse("ash-app://open?app=${Uri.encode(target.app)}" + (target.surface?.let { "&surface=${Uri.encode(it)}" } ?: "")))
                 .setClass(ctx, OpenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        is CAction.OpenUrl -> Intent(Intent.ACTION_VIEW, Uri.parse(target.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        is CAction.OpenUrl -> link(ctx, target.url)
         else -> ash(ctx)
+    }
+
+    /**
+     * A card's link opens only what the owner can see and back out of (MOBILE-ARCH §6.3): a web page in the browser, a
+     * number in the dialer (not called), a mail draft. Anything else (another app's scheme, a file, an intent:) opens Ash.
+     */
+    fun link(ctx: Context, url: String): Intent {
+        val uri = runCatching { Uri.parse(url) }.getOrNull()
+        return when (uri?.scheme?.lowercase()) {
+            "https", "http" -> Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "tel" -> Intent(Intent.ACTION_DIAL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "mailto" -> Intent(Intent.ACTION_SENDTO, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            else -> ash(ctx)
+        }
     }
 
     fun ash(ctx: Context): Intent = Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
