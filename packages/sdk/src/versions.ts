@@ -14,7 +14,7 @@ export const LINK_PROTOCOL = "ash-link/2";
  */
 export const LINK_TUNNEL = "ash-link/2";
 /** The computer program (packages/device) this hub pairs: its release on GitHub (`device-v<version>`) is what the install command fetches. */
-export const DEVICE_VERSION = "0.2.5";
+export const DEVICE_VERSION = "0.2.6";
 /** The oldest computer program this hub talks with: an older one is closed with 4008 and told which release to install. */
 export const DEVICE_MIN_VERSION = "0.2.4";
 /** Where its releases are published (`<this>/device-v<version>/<asset>`). */
