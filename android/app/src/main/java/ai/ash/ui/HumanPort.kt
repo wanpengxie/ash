@@ -26,6 +26,7 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     data class Failure(val code: String, val message: String)
 
     private val main = Handler(Looper.getMainLooper())
+    @Volatile private var stopped = false
     var open = false; private set
     /** The primary agent (`service:agents list`), the one the owner talks to. */
     var primary: String? = null; private set
@@ -38,20 +39,38 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     private val arrived = LinkedHashMap<String, Pair<String, ByteArray>>()
     private val streamWaiters = HashMap<String, (String?, ByteArray?, Failure?) -> Unit>()
 
-    fun start() = bridge.attach(this)
-    fun stop() = bridge.detach(this)
+    fun start() { if (!stopped) bridge.attach(this) }
+
+    /** The activity is gone: no worker, timeout or already-decoding frame may wake its views again. */
+    fun stop() {
+        if (stopped) return
+        stopped = true
+        open = false
+        primary = null
+        bridge.detach(this)
+        main.removeCallbacksAndMessages(null)
+        waiting.clear()
+        streamWaiters.clear()
+        incoming.clear()
+        arrived.clear()
+        linkListeners.clear()
+        changeListeners.clear()
+        outQueue.shutdownNow()
+    }
 
     fun onLink(l: (Boolean) -> Unit) { linkListeners.add(l); l(open) }
     fun onChange(l: () -> Unit) { changeListeners.add(l) }
     fun removeChange(l: () -> Unit) { changeListeners.remove(l) }
 
     override fun post(message: String) {
+        if (stopped) return
         UiIo.decode {
+            if (stopped) return@decode
             val m = runCatching { JSONObject(message) }.getOrNull() ?: return@decode
             val f = m.optJSONObject("frame")
             val bytes = if (f != null && f.optString("t") == "stream" && f.optString("op") == "data")
                 runCatching { Base64.decode(f.optString("b64"), Base64.DEFAULT) }.getOrDefault(ByteArray(0)) else null
-            main.post { receive(m, bytes) }
+            main.post { if (!stopped) receive(m, bytes) }
         }
     }
 
@@ -93,7 +112,10 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
         }
     }
 
-    private fun out(frame: JSONObject) { outQueue.execute { runCatching { bridge.fromPage(frame) } } }
+    private fun out(frame: JSONObject) {
+        if (stopped) return
+        outQueue.execute { if (!stopped) runCatching { bridge.fromPage(frame) } }
+    }
 
     /**
      * Sends one request (`{to, kind, word, body, ...}`); [done] gets the `send.result` frame. No answer within [timeoutMs]:

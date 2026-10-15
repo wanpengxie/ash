@@ -4,6 +4,8 @@
 
 **状态**：已修（提交号）· 部分 · 未修（下一轮）· 待定（要主人定）。“已修”只表示编译通过、相关 JVM 单测通过；涉及系统交互的一律**未验证**（见文末），要主人在真机上看。
 
+**第一轮独立验收：不通过，暂不能合并。** 以下“一、二、三、四”为施工自述，不能据“已修”认定行为验收通过；源码反例、小修和独立测试结果见“五”。
+
 ## 一、§15.2 最严重的十项
 
 | # | 页面 | 条款 | 现状 | 改法 | 状态 |
@@ -81,3 +83,55 @@
 | 返回 / 预测返回 | 未验证：要 Android 13+ 真机 |
 | 深浅色、200% 字体、TalkBack、48dp、对比度 | 未验证：48dp 已落到令牌和组件；对比度没测 |
 | 离页停轮询 / 动画 | 未验证：Codex 离页时停轮询并收键盘；主页轮询未修 |
+
+## 五、第一轮独立验收（Codex，2026-10-15）
+
+基线：`3ba7b67d..dad456ab` 的七个提交，分支 `feat/mobile-r1`。结论：**否，暂不能合**。下面是源码可走到的反例，不冒充设备复现；#5 卡片子树复用按原任务继续暂缓，不是本次唯一否决理由。
+
+### 5.1 合并前须处理的阻断
+
+路径仍相对 `android/app/src/main/java/ai/ash/`；源码行号为本次复核时快照。
+
+| 级别 / 条款 | 位置 | 反例及影响 | 施工要求 |
+|---|---|---|---|
+| P0 · §3.5、§9.4 | `ui/ChatOutbox.kt:100–103` | 初始化无条件删除旧 `files/outbox` 并清 `ash.chat.outbox`，没有迁移。只要旧安装有未发送消息 / 附件，覆盖升级即丢失；“未发布”注释不能作为删除用户数据的依据。 | 按原 client_id、目标、状态、ledger id、附件迁移并校验；成功提交新队列后才可回收旧项。加旧版本待发的升级回归。不能只删清理语句就称已完成迁移。 |
+| P0 · §3.5、§6.2 | `ui/CodexPane.kt:45–46、239–244、249–255`；`ui/CodexModel.kt:189` | Codex 发送先清持久草稿，`sends`、client_id 和状态只留 Pane 内存。发出后旋转 / 切主题 / 回收进程，在途或未知结果全部丢失。CodexSend 还未绑定 device，重试用当前 state.device，不能保证回到原电脑。新建会话的写请求也没有持久操作身份。 | Codex 与新建操作建立持久待发 / 结果对账，操作固定原 device + thread / project + client_id；落盘后清稿。应用退出和未知结果后必须能继续对账，不用新 id 重发。 |
+| P1 · §2.2–2.4 | `ui/CodexPane.kt:169、386–395`；仓库 `packages/device/src/codex-app.ts:685–705` | 任意成功详情读取就删除所有 SENT 待发，没有验证对应消息已出现在响应。读到发送前快照时待发行先消失，之后正式行才出现；即使同次出现，`send:<client_id>` 与 `<turn>:<index>` 也不是同一 key。另一个确定反例：后端 `items.slice(-30)`，第 31 项到达后同一 index 指向另一条消息，“turn 内只追加”的注释不成立。 | 后端保留消息稳定 id / 发送关联 id，客户端精确对账并沿用同一 key；未证实出现不删除待发。不以重复文本或窗口内 index 猜身份。测旧快照、同文连发、单 turn 超过 30 项。 |
+| P1 · §1.2、§2.4、§2.6 | `ui/ChatScreen.kt:181、219–221`；`ui/CodexPane.kt:85、332–334` | 状态槽并非稳定预留：显示 / 隐藏后 post 改列表 top padding，既没有固定槽高，也没有 key / offset 补偿。已上翻历史时改变可用总空间，LinearLayoutManager 的 end anchor 会计入 totalSpaceChange，内容仍可能整体上移 / 下移。“stackFromEnd 自动保住最底行”不足以保证历史阅读位置。异步 post 的旧高度也未校验是否仍有效。 | 稳定预留槽，或共用显式锚点补偿；合并槽尺寸提交、校验当前状态，覆盖聊天和 Codex。测长历史、非末尾、断连 / 恢复 / 授权变化和大字体，不只测列表到底。 |
+| P1 · §2.4 | `ui/KeyedRows.kt:49–53` | `atEnd` 在 submitList 前读取，异步 diff 后仍照旧值滚到底；期间用户已经上滑也会被拉回。规范明确禁止的旧滚动意图仍存在，抽成 FollowEnd 没有修掉。 | 共用滚动意图 / 用户滚动代次，提交时废弃过期自动跟随，保可见锚点；测 diff 计算期间上滑及连续提交。 |
+| P1 · §3.4、§11.1 | `ui/ChatScreen.kt:583–586、769–786`；`ui/CodexPane.kt:137` | 聊天只存 key / offset，重建只拉最新 60 条；原锚点在更早历史时找不到却立刻清 restoreAnchor，不再读取 around / 历史。待发先填充也会提前消耗恢复机会。Codex 仅存路由，没存列表锚点 / 选区。不能认定原 #3 的阅读恢复已修完。 | 先按持久实体定位补齐窗口，锚点实际恢复成功后才清待恢复意图；Codex 分列表 / 会话保存锚点。测上翻超过一页后主题重建、有待发时重建。 |
+
+状态槽判断另核对了实际依赖 RecyclerView 1.3.2 的 `AnchorInfo.assignFromView` 字节码：从末尾定位时使用 decoratedEnd + totalSpaceChange，不是无条件保绝对屏幕坐标；[AndroidX 源码](https://github.com/androidx/androidx/blob/androidx-main/recyclerview/recyclerview/src/main/java/androidx/recyclerview/widget/LinearLayoutManager.java)亦可对照。该证据是布局机制核对，仍不是实际设备截图测试。
+
+### 5.2 本次直接修复的小问题
+
+- `ui/HumanPort.kt`：stop 幂等地封端，置 open=false，清超时、待处理 / stream 与监听，关闭每实例 outQueue；在解码入口、回主线程和出站前拦住关闭后的工作。原先只 detach，Activity 销毁后旧线程 / 超时仍存活，旧页面还可继续重试。
+- `ui/design/AshUi.kt`：分段项自己的可点高度由 42dp 改为至少 48dp；父容器的 3dp padding 不算子项命中区。令牌测试的最低断言同步从 44 改为 48。
+- `ui/CodexPane.kt`：显式返回会话列表前清输入焦点并收键盘，避免顶栏返回隐藏 composer 后遗留 IME。发送路径不主动清焦点。
+- `ui/HomeActivity.kt`：主页浮层开 / 关时显式请求 Insets，让布局所有者在 chat deck 与普通表单间切换；不只在切 tab 时重算。
+
+这些是局部安全修补，**没有**修复上表的大问题，也不等于所有生命周期泄漏已清零。
+
+### 5.3 独立编译、单测和验收边界
+
+在 `android/` 下执行（不是只读取施工方报告）：
+
+```sh
+ANDROID_HOME=/home/xiewanpeng/android-sdk ./gradlew \
+  -Dorg.gradle.java.home=/home/xiewanpeng/ashwork/jdk21 \
+  :app:compileDebugKotlin :app:testDebugUnitTest \
+  --tests 'ai.ash.ui.*' --tests 'ai.ash.apps.*' --rerun-tasks
+```
+
+- 强制重跑：BUILD SUCCESSFUL，26 个任务实际执行；读取 JUnit XML：28 个 suite，210 tests，0 failures / errors / skipped。
+- 四处小修最终版本又执行同一编译 / 指定测试命令（不加 rerun），Kotlin 与测试确实执行，仍为 210/210；`git diff --check` 通过。
+- 未运行 assemble / APK 构建、设备安装、模拟器矩阵；未推送、未合并。现有 JVM 测试以数据 / reducer 为主，不覆盖真实 View 布局、IME、预测返回和上述关闭竞态；新增令牌断言也不能证明命中区测量。
+- 键盘源码：聊天和 Codex 的 keyboard() 均只设 deck.translationY，WindowInsetsOwner 对 deck 不叠加 IME padding，终态没有改成重排归零；发送未主动 clearFocus / hide IME。这部分静态链路成立，但动画反转 / 收回不闪和锚点不跳尚未设备验证，不能直接报通过。
+- 返回源码：主页仅在有子路由时注册，聊天根交系统；未发现一个系统返回直接跳过 Codex 子页的确定路径。根返回本来允许系统离开 App；Android 13+ / IME 优先和手势取消仍待定向验证。AppActivity 的旧返回未修仍是已知遗留。
+
+### 5.4 其他风险，不能称已解决
+
+- `HomeActivity.onResume` 仍无条件 `chatScreen.shown(true)`；切 tab / 打开主页未同步聊天 shown，隐藏聊天会继续报可见 / tick / 读数据。Codex 隐藏仅停 tick，未使在途票据失效，回调的 again 仍可能继续请求。需按 Window + 当前路由统一暂停 / 恢复。
+- UiIo 的 newSingleThreadExecutor 只是线程数为一，任务队列仍无界；HumanCall 同理。UiIo.disk / decode 的 runCatching 吞错误，任务异常可能永不回传，让 loading / storing 卡死。HumanPort 的流聚合和最终复制仍在主线程，且没有总字节预算。
+- ChatScreen.send 的 attachments 仍是可变 JSONArray 引用：磁盘存储期间选择更多附件会修改同一数组，完成后按对象身份清掉 picked，可能把未包含在写盘快照里的新附件一并清掉。需要不可变发送快照及独立编辑代次。
+- 卡片 #5、主页各编辑器 / Web 生命周期、对比度、200% 字体及短窗口降级维持原盘点的未完成 / 未验证，不因本次测试全绿改成已完成。

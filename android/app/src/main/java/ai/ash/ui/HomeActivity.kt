@@ -55,7 +55,11 @@ class HomeActivity : Activity() {
         home.composeHook = { text, _ -> showTab(HomeTab.CHAT); chatScreen.compose(text) }
         home.jumpHook = { id -> showTab(HomeTab.CHAT); chatScreen.jumpTo(id) }
         home.onName = { name -> chatScreen.setName(name) }
-        home.onShownChange = { backRouter.sync() }
+        home.onShownChange = {
+            backRouter.sync()
+            // Opening/closing the home overlay changes the IME owner even if the tab did not change.
+            if (::content.isInitialized) ViewCompat.requestApplyInsets(content)
+        }
         chatScreen.restore(savedInstanceState)
         // Edge to edge (targetSdk 35): the frame keeps clear of the bars and the keyboard; the chat is laid out in what is left.
         content = FrameLayout(this).apply {

@@ -297,7 +297,8 @@ object AshUi {
                 // A tab to TalkBack, and which one is chosen; at least as tall as a finger needs, taller with a large font.
                 isSelected = on
                 role(this, "android.widget.RadioButton") { if (on) "已选中" else null }
-                minHeight = dp(ctx, AshTokens.Size.touch) - dp(ctx, 6)
+                // The parent's 3dp padding is not part of this child's clickable bounds.
+                minHeight = dp(ctx, AshTokens.Size.touch)
                 setOnClickListener { onSelect(i) }
             }, LinearLayout.LayoutParams(0, -2, 1f))
         }

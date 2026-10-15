@@ -126,6 +126,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     /** The back key: from a session to the list; false when the list itself is showing. */
     fun back(): Boolean {
         if (!state.back()) return false
+        dropKeyboard()
         moved(); refresh()
         return true
     }
