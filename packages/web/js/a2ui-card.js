@@ -3,8 +3,9 @@
 // data kept here per card id, so it survives the timeline drawing its rows again; a password box keeps its text in memory
 // only and sends it nowhere but the vault. A button's action is the owner's own message to the card's creator, the answer
 // of a form, or (docs/CARD-RUNTIME.md) a press the hub runs for the card (`service:cards/act`: call / ask / tell), whose
-// outcome the hub writes on the card itself and pushes as `card.patch`. A mini app (Html) runs in a sandboxed frame with no
-// network and one way out: `ash.send`, and `ash.call` / `ash.ask` / `ash.tell`, which are presses of the card too.
+// outcome the hub writes on the card itself and pushes as `card.patch`. A card whose layout stays (the same components, only
+// their values changed) is patched in place; anything else draws it anew. A mini app (Html) runs in a sandboxed frame with
+// no network and one way out: `ash.send`, and on a card of an app `ash.call` / `ash.ask` / `ash.tell`, presses of the card.
 import { addIcon, avatarUrl, button, text } from "./chat-ui.js";
 import { ICON_SHAPES } from "./ash-icons.js";
 import { markdownUrl } from "./markdown.js";
@@ -299,7 +300,12 @@ function editing(s) {
   return Boolean(s.timer || s.inflight > 0 || (active && s.root?.contains?.(active) && active !== s.root));
 }
 
-/** The state of [card], following the hub's newer version unless the owner is editing the card right now. */
+/** Inputs the owner is composing in (IME) or dragging right now. */
+const held = new WeakSet();
+/** Whether the owner is editing [el] right now: it has the focus, an IME composes in it, or a slider is dragged. */
+const editingNow = (el) => held.has(el) || (el.ownerDocument ?? globalThis.document)?.activeElement === el;
+
+/** The state of [card], following the hub's newer version; a control the owner is editing right now keeps its value. */
 function stateFor(item) {
   const card = item.card;
   const server = Number.isFinite(card.updated_at) ? card.updated_at : 0;
@@ -307,7 +313,7 @@ function stateFor(item) {
   let s = states.get(card.id);
   if (!s) {
     if (states.size >= MAX_STATES) for (const [id, old] of states) { if (!editing(old)) { clearTimeout(old.timer); states.delete(id); secrets.delete(id); } if (states.size < MAX_STATES) break; }
-    s = { id: card.id, data: clone(data), seen: server, hold: null, plan: null, tabs: {}, version: 0, inflight: 0, timer: null,
+    s = { id: card.id, data: clone(data), seen: server, plan: null, tabs: {}, version: 0, inflight: 0, timer: null, inputs: [],
       sent: false, cancelled: false, busy: false, error: "", answer: null, root: null, item, ctx: null, lastSend: 0, feedback: undefined,
       // The card runtime: presses on their way, their outcomes as answered here, 「已复制」, mini app calls in the last second.
       pressing: new Set(), outcomes: {}, copied: {}, runningSince: new Map(), calls: [], kept: false, keeping: false,
@@ -315,8 +321,9 @@ function stateFor(item) {
       pinned: undefined, pinning: false, pinError: "" };
     states.set(card.id, s);
   } else if (server > s.seen) {
-    if (editing(s) || (s.hold !== null && server <= s.hold)) s.hold = Math.max(s.hold ?? 0, server);
-    else { s.data = clone(data); s.seen = server; s.plan = null; s.hold = null; }
+    const next = clone(data);
+    for (const { el, bind } of s.inputs) if (editingNow(el)) { const mine = readPointer(s.data, bind); if (mine !== undefined) writePointer(next, bind, clone(mine)); }
+    s.data = next; s.seen = server; s.plan = null;
   }
   if (s.feedback !== undefined && card.feedback === s.feedback) s.feedback = undefined;
   if (s.pinned !== undefined && !s.pinning && (card.pinned === true) === s.pinned) s.pinned = undefined;
@@ -326,14 +333,15 @@ function stateFor(item) {
 }
 
 /**
- * The hub pushed [card] whole (`card.patch`: live data, a button's state, the lifecycle). Its state follows now; the row
- * itself is drawn again by the timeline, unless the owner's focus holds it (a button just pressed): then it is drawn here.
- * Not while an input has the focus: the timeline draws it when the owner leaves it.
+ * The hub pushed [card] whole (`card.patch`: live data, a button's state, the lifecycle). Its state follows now and a card
+ * whose layout stays is patched in place. Otherwise the timeline draws the row again, unless the owner's focus holds it (a
+ * button just pressed): then it is drawn here. Not while an input has the focus: the timeline draws it when the owner leaves.
  */
 export function patchA2uiCard(card) {
   const s = plain(card) && typeof card.id === "string" ? states.get(card.id) : null;
   if (!s || !plain(card.plan)) return false;
   stateFor({ ...s.item, card });
+  if (patch(s)) return true;
   const root = s.root;
   const active = (root?.ownerDocument ?? globalThis.document)?.activeElement;
   const tag = String(active?.tagName ?? active?.tag ?? "").toLowerCase();
@@ -603,6 +611,10 @@ function ticking(el, paint) {
 // The mini app: one sandboxed frame per Html node, with the theme and `ash.send` put in front of its document.
 
 export const MINI_APP_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+/** The most one message of a mini app may hold (characters of its JSON). */
+export const MINI_APP_MAX_BYTES = 64 * 1024;
+/** What a mini app may ask for: `ash/send` always; `ash/call`, `ash/ask`, `ash/tell` only on a card of an app. */
+export const MINI_APP_METHODS = Object.freeze(["ash/send", "ash/call", "ash/ask", "ash/tell"]);
 const frames = new Set();
 let listening = false;
 
@@ -618,26 +630,31 @@ function themeVars() {
 }
 
 /**
- * `window.ash` in the mini app: `send(action, context)` (the owner's say), and `call(member, word, body)`, `ask(text)`,
- * `tell(text)`, each a press of the card that resolves to the hub's answer `{state, text, result?}` (never rejects).
+ * `window.ash` in the mini app, posting JSON-RPC to this page: `send(action, context)` (the owner's say), and on a card of
+ * an app ([full]) `call(member, word, body)`, `ask(text)`, `tell(text)`, each a press of the card that resolves to the
+ * hub's answer `{state, text, result?}` (never rejects).
  */
-export const MINI_APP_BRIDGE = "(function(){var p=window.parent,n=0,w={};" +
-  "function c(v){return v&&typeof v===\"object\"?JSON.parse(JSON.stringify(v)):{}}" +
-  "function r(q){return new Promise(function(ok){var id=\"r\"+(++n);w[id]=ok;p.postMessage({ash:\"act\",id:id,request:q},\"*\")})}" +
-  "window.addEventListener(\"message\",function(e){var d=e.data;if(e.source!==p||!d||d.ash!==\"answer\"||!w[d.id])return;var f=w[d.id];delete w[d.id];f(d.answer)});" +
-  "window.ash=Object.freeze({send:function(action,context){p.postMessage({ash:\"send\",action:String(action),context:c(context)},\"*\")}," +
-  "call:function(member,word,body){return r({call:{member:String(member),word:String(word),body:c(body)}})}," +
-  "ask:function(text){return r({ask:{text:String(text)}})},tell:function(text){return r({tell:{text:String(text)}})}})})();";
+export function miniAppBridge(full = false) {
+  return "(function(){var p=window.parent,n=0,w={};" +
+    "function c(v){return v&&typeof v===\"object\"&&!Array.isArray(v)?JSON.parse(JSON.stringify(v)):{}}" +
+    "function o(m){m.jsonrpc=\"2.0\";p.postMessage(m,\"*\")}" +
+    "function r(k,q){return new Promise(function(ok){var id=\"r\"+(++n);w[id]=ok;o({id:id,method:\"ash/\"+k,params:q})})}" +
+    "window.addEventListener(\"message\",function(e){var d=e.data;if(e.source!==p||!d||d.jsonrpc!==\"2.0\"||!Object.prototype.hasOwnProperty.call(w,d.id))return;var f=w[d.id];delete w[d.id];f(d.result)});" +
+    "var a={send:function(action,context){o({method:\"ash/send\",params:{action:String(action),context:c(context)}})}};" +
+    (full ? "a.call=function(member,word,body){return r(\"call\",{member:String(member),word:String(word),body:c(body)})};" +
+      "a.ask=function(text){return r(\"ask\",{text:String(text)})};a.tell=function(text){return r(\"tell\",{text:String(text)})};" : "") +
+    "window.ash=Object.freeze(a)})();";
+}
 
-/** The mini app's document: the CSP, the theme as CSS variables and the `ash.send` bridge, ahead of the agent's HTML. */
-export function miniAppDocument(html, vars = themeVars(), accent = null) {
+/** The mini app's document: the CSP, the theme as CSS variables and the bridge ([full]: a card of an app), ahead of the agent's HTML. */
+export function miniAppDocument(html, vars = themeVars(), accent = null, full = false) {
   const safe = (v) => String(v).replace(/[<>;{}]/g, "");
   const theme = { ...vars, ...(accent ? { "--ash-accent": accent } : {}) };
   const declarations = Object.entries(theme).filter(([k]) => k.startsWith("--")).map(([k, v]) => `${k}:${safe(v)}`).join(";");
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MINI_APP_CSP}">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<style>:root{${declarations};color-scheme:${vars.scheme === "dark" ? "dark" : "light"}}html,body{margin:0;background:var(--ash-bg);color:var(--ash-text);font-family:system-ui,-apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}</style>` +
-    `<script>${MINI_APP_BRIDGE}</script>`;
+    `<script>${miniAppBridge(full)}</script>`;
   const source = String(html ?? "");
   const doctype = /^\s*<!doctype[^>]*>/i.exec(source);
   return doctype ? `${doctype[0]}${head}${source.slice(doctype[0].length)}` : `<!doctype html>${head}${source}`;
@@ -660,8 +677,9 @@ export function miniAppRequest(request) {
 }
 
 /**
- * A message from a mini app: only from a frame this page made, only `{ash: "send", action, context}` or
- * `{ash: "act", id, request}` (answered into the frame as `{ash: "answer", id, answer}`).
+ * A message from a mini app: only from the window of a frame this page made, at most 64 KB, `{jsonrpc: "2.0", method,
+ * params, id?}` with a method of MINI_APP_METHODS (`call` / `ask` / `tell` only on a card of an app, answered into the
+ * frame as `{jsonrpc: "2.0", id, result}`). Who speaks (the card, the component) is what this page bound to the frame.
  */
 export function frameMessage(event) {
   for (const entry of frames) {
@@ -669,17 +687,20 @@ export function frameMessage(event) {
     if (entry.frame.isConnected) entry.mounted = true;
     if (!event?.source || entry.frame.contentWindow !== event.source) continue;
     const data = event.data;
-    if (plain(data) && data.ash === "act" && typeof data.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(data.id)) {
-      const request = miniAppRequest(data.request);
-      entry.act?.(data.id, request);
-      return request !== null;
+    let size = Infinity; try { size = JSON.stringify(data).length; } catch { /* not JSON */ }
+    if (!plain(data) || data.jsonrpc !== "2.0" || size > MINI_APP_MAX_BYTES || !MINI_APP_METHODS.includes(data.method)) return false;
+    const params = plain(data.params) ? data.params : {};
+    if (data.method === "ash/send") {
+      const context = plain(params.context) ? params.context : {};
+      if (typeof params.action !== "string" || !EVENT_NAME.test(params.action) || JSON.stringify(context).length > 16 * 1024) return false;
+      entry.send({ name: params.action, ...(Object.keys(context).length ? { context: clone(context) } : {}) });
+      return true;
     }
-    if (!plain(data) || data.ash !== "send" || typeof data.action !== "string" || !EVENT_NAME.test(data.action)) return false;
-    const context = plain(data.context) ? data.context : {};
-    let size = 0; try { size = JSON.stringify(context).length; } catch { return false; }
-    if (size > 16 * 1024) return false;
-    entry.send({ name: data.action, ...(Object.keys(context).length ? { context } : {}) });
-    return true;
+    if (typeof data.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(data.id)) return false;
+    if (!entry.full) { entry.answer(data.id, { state: "failed", text: "这张卡不能这样做。" }); return false; }
+    const request = miniAppRequest({ [data.method.slice(4)]: params });
+    entry.act(data.id, request);
+    return request !== null;
   }
   return false;
 }
@@ -733,7 +754,55 @@ export function renderA2uiCard(parent, item, ctx = null) {
   return root;
 }
 
-/** Draws the card of state [s] into [root] again (after a local change), keeping the focused input focused with its caret. */
+/** Patches the card drawn in [root] with [item] in place; false when its layout changed (or it is not drawn there): draw the row anew. */
+export function updateA2uiCard(root, item, ctx = null) {
+  const s = plain(item?.card) ? states.get(item.card.id) : null;
+  if (!s || !root || s.root !== root || !parsePlan(item.card.plan)) return false;
+  stateFor(item);
+  s.ctx = ctx;
+  return patch(s);
+}
+
+/** The fields of a component that are its values: written in place; any other change draws the card anew. */
+const VALUE_FIELDS = ["text", "value", "checked", "rows", "url", "visible", "disabled"];
+/** Image variants the stylesheet gives a size (ash-ui.css .a2-img-*). */
+const SIZED_IMAGES = ["icon", "avatar", "smallFeature", "mediumFeature", "header"];
+const imageKind = (url) => String(url ?? "").startsWith("icon:") ? "icon" : imageSrc(String(url ?? "")) ? "img" : null;
+const imageSrc = (url) => url === "avatar" || url.startsWith("avatar:") ? avatarUrl(url === "avatar" ? "default" : url.slice(7))
+  : /^https:\/\//i.test(url) || /^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,/i.test(url) ? url : null;
+
+/** What a card is drawn as, its values left out: two cards with the same layout differ only in what `patch` writes. */
+function layoutOf(s, plan) {
+  const card = s.item.card;
+  const shape = (node) => {
+    const out = { ...node };
+    for (const key of VALUE_FIELDS) delete out[key];
+    if (Array.isArray(node.options)) out.options = node.options.map((o) => plain(o) ? { ...o, checked: undefined } : o);
+    if (Array.isArray(node.series)) out.series = node.series.map((x) => plain(x) ? { ...x, values: undefined } : x);
+    if (node.component === "ProgressBar") out.label = Boolean(node.label);
+    if (node.component === "Image") out.url = imageKind(node.url);
+    return out;
+  };
+  return JSON.stringify([plan.root, plan.theme, plan.reactive, [...plan.byId.values()].map(shape), s.tabs,
+    card.owner, card.app, card.temporary_app, plain(card.form), stateLine(card, s), !!s.ctx]);
+}
+
+/** Writes the values of [s]'s card into the controls drawn for it, by component id; false when its layout changed. */
+function patch(s) {
+  const plan = parsePlan(s.plan) ?? parsePlan(s.item.card.plan);
+  if (!s.root || !plan || layoutOf(s, plan) !== s.layout) return false;
+  try {
+    s.byId = plan.byId;
+    for (const [id, write] of s.writers) { const node = plan.byId.get(id); if (node) write(node); }
+    tail(s);
+  } catch { return false; }
+  return true;
+}
+
+/** The card of state [s] after a local change: patched in place, else drawn again. */
+function refresh(s) { if (!patch(s)) repaint(s); }
+
+/** Draws the card of state [s] into [root] again, keeping the focused input focused with its caret. */
 function repaint(s) {
   const root = s.root;
   if (!root) return;
@@ -754,13 +823,17 @@ function paint(root, s) {
   if (!plan) throw new Error("no plan");
   s.root = root;
   s.reactive = plan.reactive;
+  s.byId = plan.byId;
+  s.layout = layoutOf(s, plan);
+  // Per component id, what writes its values in place (see `patch`); the inputs bound to the card's data.
+  s.writers = new Map();
+  s.inputs = [];
   s.focusables = new Map();
   root.replaceChildren();
   const accent = plan.theme ? cssColor(plan.theme.accent) : null;
   if (accent) root.style.setProperty("--you", accent);
   const closed = stateLine(card, s);
   const live = !closed && !!ctx;
-  const form = plain(card.form);
   const byId = plan.byId;
   const passwords = () => { let map = secrets.get(card.id); if (!map) secrets.set(card.id, map = new Map()); return map; };
 
@@ -775,27 +848,45 @@ function paint(root, s) {
     if (typeof path !== "string") return;
     if (!writePointer(s.data, path, value)) return;
     changed();
-    if (redraw) repaint(s);
+    if (redraw) refresh(s);
   };
   const valueAt = (node, fallback) => { if (typeof node.bind !== "string") return fallback; const v = readPointer(s.data, node.bind); return v === undefined ? fallback : v; };
   const focusable = (el, node, part = "") => { const key = `${node.id}:${part}`; el.dataset.a2Focus = key; s.focusables.set(key, el); return el; };
-  const act = (node) => (event) => { event?.preventDefault?.(); void perform(s, node.action, byId, node); };
+  const act = (node) => (event) => { event?.preventDefault?.(); void perform(s, node.action, s.byId, node); };
+  const writer = (node, fn) => { s.writers.set(node.id, fn); };
+  /** An input bound to [node]: not written to while the owner edits it (focus, IME composition, a dragged slider). */
+  const track = (input, node, drag = false) => {
+    if (typeof node.bind === "string") s.inputs.push({ el: input, bind: node.bind });
+    const on = () => held.add(input), off = () => held.delete(input);
+    input.addEventListener("compositionstart", on); input.addEventListener("compositionend", off);
+    if (drag) { input.addEventListener("pointerdown", on); for (const type of ["pointerup", "pointercancel", "change"]) input.addEventListener(type, off); }
+  };
 
   const draw = (parentEl, id, depth, parentKind) => {
     const node = byId.get(id);
-    if (!node || depth > MAX_DEPTH || node.visible === false) return null;
+    if (!node || depth > MAX_DEPTH) return null;
     const el = drawNode(parentEl, node, depth);
     if (!el) return null;
     el.dataset.a2Id = node.id;
     applyStyle(el, node, parentKind);
+    const display = el.style.display ?? "";
+    let tapState = null;
     if (node.action && node.component !== "Button") {
       el.classList.add("a2-tap");
       el.setAttribute("role", "button");
       el.tabIndex = 0;
-      const pressed = runtimeKind(node.action) && buttonView(card, s, node.id, node.action).busy;
-      if ((!live && ("event" in node.action || runtimeKind(node.action))) || pressed) el.setAttribute("aria-disabled", "true");
-      else el.addEventListener("click", act(node));
+      tapState = (n) => {
+        const pressed = runtimeKind(n.action) && buttonView(s.item.card, s, n.id, n.action).busy;
+        if ((!live && ("event" in n.action || runtimeKind(n.action))) || pressed) el.setAttribute("aria-disabled", "true");
+        else el.removeAttribute("aria-disabled");
+      };
+      el.addEventListener("click", (event) => { if (el.getAttribute("aria-disabled") !== "true") act(node)(event); });
     }
+    // A hidden component is drawn too (out of sight), so that showing it is a value written like any other.
+    const shown = (n) => { el.style.display = n.visible === false ? "none" : display; tapState?.(n); };
+    const own = s.writers.get(node.id);
+    shown(node);
+    writer(node, own ? (n) => { shown(n); own(n); } : shown);
     return el;
   };
   // The space between a container's children is its own `gap`; without one they sit edge to edge.
@@ -816,23 +907,34 @@ function paint(root, s) {
     switch (node.component) {
     case "Text": {
       const el = text(parentEl, "div", "", `a2-text a2-${["h1", "h2", "h3", "h4", "h5", "caption"].includes(node.variant) ? node.variant : "body"}`);
-      appendCardMarkdown(el, node.text ?? "");
+      let shown = node.text ?? "";
+      appendCardMarkdown(el, shown);
+      writer(node, (n) => { if ((n.text ?? "") === shown) return; shown = n.text ?? ""; el.replaceChildren(); appendCardMarkdown(el, shown); });
       return el;
     }
     case "Image": {
-      const url = String(node.url ?? "");
-      if (url.startsWith("icon:")) { const el = text(parentEl, "span", "", "a2-icon"); drawIcon(el, url.slice(5), "i-l"); return el; }
+      let url = String(node.url ?? "");
+      if (url.startsWith("icon:")) {
+        const el = text(parentEl, "span", "", "a2-icon");
+        drawIcon(el, url.slice(5), "i-l");
+        writer(node, (n) => { if (String(n.url) === url) return; url = String(n.url); el.replaceChildren(); drawIcon(el, url.slice(5), "i-l"); });
+        return el;
+      }
+      if (!imageSrc(url)) return null;
       const img = document.createElement("img");
       img.className = `a2-img a2-img-${node.variant ?? "plain"}`;
       img.alt = node.a11y ?? "";
       img.loading = "lazy";
       img.decoding = "async";
       img.referrerPolicy = "no-referrer";
-      if (url === "avatar" || url.startsWith("avatar:")) img.src = avatarUrl(url === "avatar" ? "default" : url.slice(7));
-      else if (/^https:\/\//i.test(url) || /^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,/i.test(url)) img.src = url;
-      else return null;
+      let src = imageSrc(url);
+      img.src = src;
       const fit = { contain: "contain", cover: "cover", fill: "fill", none: "none", scaleDown: "scale-down" }[node.fit];
       if (fit) img.style.objectFit = fit;
+      // The box has its size before the picture comes, so the row does not jump: the style's, its variant's, else 16:9.
+      const style = plain(node.style) ? node.style : {};
+      if (!Number.isFinite(style.height) && !SIZED_IMAGES.includes(node.variant)) { img.style.aspectRatio = "16 / 9"; if (style.width === undefined) img.style.width = "100%"; }
+      writer(node, (n) => { const next = imageSrc(String(n.url ?? "")); if (next && next !== src) img.src = src = next; });
       parentEl.append(img);
       return img;
     }
@@ -901,27 +1003,43 @@ function paint(root, s) {
       const variant = node.variant === "primary" ? "btn-primary" : node.variant === "borderless" ? "btn-ghost" : "btn-neutral";
       // A press the hub runs, or a copy, has a line under the button for its outcome (「已复制」, 「已完成 · 10:42」, why it failed).
       const lined = Boolean(runtimeKind(node.action) || plain(node.action?.copy));
-      const view = lined ? buttonView(card, s, node.id, node.action) : { busy: false, line: null };
       const holder = lined ? text(parentEl, "div", "", "a2-act") : parentEl;
       const el = button(holder, "", `a-btn btn-sm a2-btn ${variant}`);
-      if (view.busy) { text(el, "span", "处理中…", "a2-text"); el.setAttribute("aria-busy", "true"); }
-      else if (node.child) draw(el, node.child, depth + 1, "Button");
-      el.disabled = node.disabled === true || !live || s.busy || !node.action || view.busy;
+      if (node.child) draw(el, node.child, depth + 1, "Button");
+      const label = [...el.children], busy = document.createElement("span");
+      busy.className = "a2-text"; busy.textContent = "处理中…";
       focusable(el, node);
       el.addEventListener("click", act(node));
-      if (!lined) return el;
-      if (node.style?.width === "fill" || Number.isFinite(node.style?.width)) holder.classList.add("a2-act-fill");
-      if (view.line) text(holder, "div", view.line.text, `a2-act-line${view.line.state === "failed" ? " failed" : ""}`);
-      return holder;
+      if (lined && (node.style?.width === "fill" || Number.isFinite(node.style?.width))) holder.classList.add("a2-act-fill");
+      let wasBusy = false, line = null, lineKey = "";
+      const update = (n) => {
+        const view = lined ? buttonView(s.item.card, s, n.id, n.action) : { busy: false, line: null };
+        if (view.busy !== wasBusy) {
+          wasBusy = view.busy;
+          el.replaceChildren(...(view.busy ? [busy] : label));
+          if (view.busy) el.setAttribute("aria-busy", "true"); else el.removeAttribute("aria-busy");
+        }
+        el.disabled = n.disabled === true || !live || s.busy || !n.action || view.busy;
+        const key = view.line ? `${view.line.state}:${view.line.text}` : "";
+        if (key === lineKey) return;
+        lineKey = key;
+        line?.remove();
+        line = view.line ? text(holder, "div", view.line.text, `a2-act-line${view.line.state === "failed" ? " failed" : ""}`) : null;
+      };
+      update(node);
+      writer(node, update);
+      return lined ? holder : el;
     }
     case "CheckBox": case "Switch": {
       const el = text(parentEl, "label", "", `a2-check${node.component === "Switch" ? " a2-switch-row" : ""}`);
       const input = document.createElement("input");
       input.type = "checkbox";
       if (node.component === "Switch") { input.className = "a2-switch"; input.setAttribute("role", "switch"); }
-      input.checked = valueAt(node, node.checked === true) === true;
-      input.disabled = !live || node.disabled === true;
+      const update = (n) => { if (!editingNow(input)) input.checked = valueAt(n, n.checked === true) === true; input.disabled = !live || n.disabled === true; };
+      update(node);
+      writer(node, update);
       focusable(input, node);
+      track(input, node);
       input.addEventListener("change", () => write(node.bind, input.checked === true));
       if (node.component === "Switch") { text(el, "span", node.label ?? "", "a2-check-label"); el.append(input); }
       else { el.append(input); text(el, "span", node.label ?? "", "a2-check-label"); }
@@ -931,21 +1049,33 @@ function paint(root, s) {
       const el = text(parentEl, "div", "", "a2-field a2-choice");
       if (node.label) text(el, "span", node.label, "a2-label");
       const options = Array.isArray(node.options) ? node.options.filter((o) => plain(o) && typeof o.value === "string") : [];
-      const given = valueAt(node, null);
-      const selected = new Set(Array.isArray(given) ? given.filter((v) => typeof v === "string") : options.filter((o) => o.checked).map((o) => o.value));
+      const chosen = (n) => {
+        const given = valueAt(n, null);
+        return new Set(Array.isArray(given) ? given.filter((v) => typeof v === "string") : (n.options ?? []).filter((o) => o?.checked).map((o) => o.value));
+      };
+      let selected = chosen(node);
       const choose = (value, on) => {
         const next = node.multiple ? options.map((o) => o.value).filter((v) => v === value ? on : selected.has(v)) : on ? [value] : [];
         write(node.bind, next, true);
       };
+      const marks = [];
       if (node.chips) {
         const row = text(el, "div", "", "opts a2-chips");
         options.forEach((o, i) => {
-          const on = selected.has(o.value);
-          const b = button(row, String(o.label ?? o.value), `opt${on ? " on" : ""}`, on ? "check" : "", "i-xs");
-          b.setAttribute("aria-pressed", String(on));
+          const b = button(row, "", "opt");
+          let was;
           b.disabled = !live;
           focusable(b, node, `o${i}`);
-          b.addEventListener("click", () => choose(o.value, node.multiple ? !on : true));
+          b.addEventListener("click", () => choose(o.value, node.multiple ? !selected.has(o.value) : true));
+          marks.push(() => {
+            const on = selected.has(o.value);
+            if (on === was) return;
+            was = on;
+            b.className = `opt${on ? " on" : ""}`;
+            b.setAttribute("aria-pressed", String(on));
+            b.replaceChildren();
+            if (on) { addIcon(b, "check", "i-xs"); text(b, "span", String(o.label ?? o.value)); } else b.textContent = String(o.label ?? o.value);
+          });
         });
       } else {
         const list = text(el, "div", "", "a2-col a2-choice-list");
@@ -954,31 +1084,43 @@ function paint(root, s) {
           const input = document.createElement("input");
           input.type = node.multiple ? "checkbox" : "radio";
           input.name = `a2-${card.id}-${node.id}`;
-          input.checked = selected.has(o.value);
           input.disabled = !live;
           focusable(input, node, `o${i}`);
+          track(input, node);
           input.addEventListener("change", () => choose(o.value, input.checked === true));
           row.append(input);
           text(row, "span", String(o.label ?? o.value), "a2-check-label");
+          marks.push(() => { if (!editingNow(input)) input.checked = selected.has(o.value); });
         });
       }
+      for (const mark of marks) mark();
+      writer(node, (n) => { selected = chosen(n); for (const mark of marks) mark(); });
       return el;
     }
     case "ProgressBar": {
       const el = text(parentEl, "div", "", "a2-field a2-progress");
-      if (node.label) text(el, "span", node.label, "a2-label");
-      const track = text(el, "div", "", "a2-track");
+      const name = node.label ? text(el, "span", node.label, "a2-label") : null;
+      const bar = text(el, "div", "", "a2-track");
       const max = Number.isFinite(node.max) && node.max > 0 ? node.max : 100;
-      const value = Math.min(max, Math.max(0, Number(node.value) || 0));
-      const fill = text(track, "div", "", "a2-fill");
-      fill.style.width = `${Math.round(value / max * 1000) / 10}%`;
-      track.setAttribute("role", "progressbar");
-      track.setAttribute("aria-valuemin", "0");
-      track.setAttribute("aria-valuemax", String(max));
-      track.setAttribute("aria-valuenow", String(value));
+      const fill = text(bar, "div", "", "a2-fill");
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", String(max));
+      const update = (n) => {
+        const value = Math.min(max, Math.max(0, Number(n.value) || 0));
+        fill.style.width = `${Math.round(value / max * 1000) / 10}%`;
+        bar.setAttribute("aria-valuenow", String(value));
+        if (name) name.textContent = n.label;
+      };
+      update(node);
+      writer(node, update);
       return el;
     }
-    case "Badge": return text(parentEl, "span", node.text ?? "", "a2-badge");
+    case "Badge": {
+      const el = text(parentEl, "span", node.text ?? "", "a2-badge");
+      writer(node, (n) => { el.textContent = n.text ?? ""; });
+      return el;
+    }
     case "Clock": {
       const el = text(parentEl, "span", "", "a2-text a2-body a2-clock");
       ticking(el, () => { el.textContent = formatClock(new Date(), node.format || "HH:mm", node.timeZone); });
@@ -993,12 +1135,13 @@ function paint(root, s) {
       const h = Number.isFinite(node.style?.height) ? node.style.height : 80;
       const el = text(parentEl, "div", "", "a2-chart-box");
       el.style.height = px(h);
-      let width = 0;
-      const paintChart = (w) => { if (!w || w === width) return; width = w; el.replaceChildren(chartSvg(node, Math.round(w), h)); };
+      let width = 0, now = node;
+      const paintChart = (w) => { if (!w || w === width) return; width = w; el.replaceChildren(chartSvg(now, Math.round(w), h)); };
       paintChart(300);
       const measure = () => paintChart(el.clientWidth || 300);
       globalThis.requestAnimationFrame?.(measure);
       if (typeof globalThis.ResizeObserver === "function") new ResizeObserver(measure).observe(el);
+      writer(node, (n) => { if (JSON.stringify(n.series) === JSON.stringify(now.series)) return; now = n; const w = width; width = 0; paintChart(w || 300); });
       return el;
     }
     case "TextField": {
@@ -1017,7 +1160,11 @@ function paint(root, s) {
       focusable(input, node);
       // A password never enters the card's data: it is kept apart and goes to the vault on 「提交」.
       if (obscured) input.addEventListener("input", () => { passwords().set(key, input.value); if (s.error) { s.error = ""; root.querySelector?.(".a2-error")?.remove(); } });
-      else input.addEventListener("input", () => write(node.bind, input.value));
+      else {
+        input.addEventListener("input", () => write(node.bind, input.value));
+        track(input, node);
+        writer(node, (n) => { const v = String(valueAt(n, n.text ?? "") ?? ""); if (!editingNow(input) && input.value !== v) input.value = v; });
+      }
       wrap.append(input);
       return wrap;
     }
@@ -1027,29 +1174,41 @@ function paint(root, s) {
       input.className = "a2-input";
       const date = node.enableDate !== false, time = node.enableTime === true;
       input.type = date && time ? "datetime-local" : date ? "date" : "time";
-      const raw = String(valueAt(node, node.text ?? "") ?? "");
-      input.value = date && time ? raw.slice(0, 16) : date ? raw.slice(0, 10) : /^\d{2}:\d{2}/.test(raw) ? raw.slice(0, 5) : /T(\d{2}:\d{2})/.exec(raw)?.[1] ?? "";
+      const shown = (n) => {
+        const raw = String(valueAt(n, n.text ?? "") ?? "");
+        return date && time ? raw.slice(0, 16) : date ? raw.slice(0, 10) : /^\d{2}:\d{2}/.test(raw) ? raw.slice(0, 5) : /T(\d{2}:\d{2})/.exec(raw)?.[1] ?? "";
+      };
+      input.value = shown(node);
       input.disabled = !live;
       focusable(input, node);
+      track(input, node);
       input.addEventListener("change", () => write(node.bind, input.value));
+      writer(node, (n) => { const v = shown(n); if (!editingNow(input) && input.value !== v) input.value = v; });
       wrap.append(input);
       return wrap;
     }
     case "Slider": {
       const wrap = field(parentEl, node);
       const min = Number.isFinite(node.min) ? node.min : 0, max = Number.isFinite(node.max) ? node.max : 100;
-      const value = Number(valueAt(node, node.value ?? min));
       const row = text(wrap, "div", "", "a2-row a2-slider-row");
       const input = document.createElement("input");
       input.type = "range";
       input.className = "a2-slider";
       input.min = String(min); input.max = String(max);
       input.step = Number.isFinite(node.step) ? String(node.step) : "any";
-      input.value = String(Number.isFinite(value) ? value : min);
       input.disabled = !live;
       focusable(input, node);
+      track(input, node, true);
       row.append(input);
-      const shown = text(row, "span", input.value, "a2-slider-value");
+      const shown = text(row, "span", "", "a2-slider-value");
+      const update = (n) => {
+        if (editingNow(input)) return;
+        const value = Number(valueAt(n, n.value ?? min));
+        input.value = String(Number.isFinite(value) ? value : min);
+        shown.textContent = input.value;
+      };
+      update(node);
+      writer(node, update);
       input.addEventListener("input", () => { shown.textContent = input.value; write(node.bind, Number(input.value)); });
       return wrap;
     }
@@ -1059,10 +1218,18 @@ function paint(root, s) {
       const header = Array.isArray(node.header) ? node.header : [];
       if (header.length) { const tr = text(text(table, "thead", ""), "tr", ""); for (const h of header) cellMarkdown(text(tr, "th", ""), h); }
       const body = text(table, "tbody", "");
-      for (const row of Array.isArray(node.rows) ? node.rows : []) {
-        const tr = text(body, "tr", "");
-        for (const cell of Array.isArray(row) ? row : []) cellMarkdown(text(tr, "td", ""), cell);
-      }
+      let rows;
+      const update = (n) => {
+        if (JSON.stringify(n.rows) === rows) return;
+        rows = JSON.stringify(n.rows);
+        body.replaceChildren();
+        for (const row of Array.isArray(n.rows) ? n.rows : []) {
+          const tr = text(body, "tr", "");
+          for (const cell of Array.isArray(row) ? row : []) cellMarkdown(text(tr, "td", ""), cell);
+        }
+      };
+      update(node);
+      writer(node, update);
       return wrap;
     }
     case "Html": {
@@ -1073,7 +1240,9 @@ function paint(root, s) {
       frame.setAttribute("referrerpolicy", "no-referrer");
       frame.setAttribute("title", "小应用");
       frame.style.height = px(Number.isFinite(node.height) ? node.height : 320);
-      const doc = miniAppDocument(node.html ?? "", themeVars(), accent);
+      // ash.call / ash.ask / ash.tell only on a card of an app; who speaks is this card and this component, bound here.
+      const full = typeof card.app === "string" && card.app !== "";
+      const doc = miniAppDocument(node.html ?? "", themeVars(), accent, full);
       frame.srcdoc = doc;
       // The frame may only show its own document: a navigation away from it puts the document back.
       let loads = 0, expected = 1;
@@ -1082,13 +1251,13 @@ function paint(root, s) {
       listen();
       const now = Date.now();
       for (const entry of frames) if (entry.frame.isConnected === false && now - entry.added > 2000) frames.delete(entry);
-      const answerFrame = (id, answer) => { try { frame.contentWindow?.postMessage({ ash: "answer", id, answer }, "*"); } catch { /* the frame is gone */ } };
-      frames.add({ frame, mounted: false, added: now, send: (event) => {
+      const answerFrame = (id, result) => { try { frame.contentWindow?.postMessage({ jsonrpc: "2.0", id, result }, "*"); } catch { /* the frame is gone */ } };
+      frames.add({ frame, full, mounted: false, added: now, answer: answerFrame, send: (event) => {
         // A mini app acts like a button, at most once a second.
         const now = Date.now();
         if (now - s.lastSend < 1000) return;
         s.lastSend = now;
-        void perform(s, { event }, byId, node);
+        void perform(s, { event }, s.byId, node);
       }, act: (id, request) => {
         // ash.call / ash.ask / ash.tell: a press of this Html node with the frame's request, at most two a second.
         if (!request) { answerFrame(id, { state: "failed", text: "这个请求看不懂。" }); return; }
@@ -1115,14 +1284,21 @@ function paint(root, s) {
     }
   }
 
-  const body = text(root, "div", "", "a2-col a2-body-root");
-  if (!draw(body, plan.root, 0, "Column")) throw new Error("nothing drawn");
+  s.body = text(root, "div", "", "a2-col a2-body-root");
+  if (!draw(s.body, plan.root, 0, "Column")) throw new Error("nothing drawn");
+  tail(s);
+  return root;
+}
+
+/** What is under the card's body, drawn again on every patch: the error, how it ended or what is being sent, the footer. */
+function tail(s) {
+  const root = s.root, card = s.item.card, closed = stateLine(card, s);
+  for (const el of [...root.children]) if (el !== s.body) el.remove();
   if (s.error) text(root, "div", s.error, "card-note a2-error");
   if (closed) text(root, "div", closed, "a2-status");
-  else if (s.busy) text(root, "div", form ? "正在提交…" : "正在发送…", "a2-status");
+  else if (s.busy) text(root, "div", plain(card.form) ? "正在提交…" : "正在发送…", "a2-status");
   footer(root, s, closed);
-  if (!live) root.classList.add("a2-readonly");
-  return root;
+  if (closed || !s.ctx) root.classList.add("a2-readonly"); else root.classList.remove("a2-readonly");
 }
 
 /** The thumbs the owner gives an open or closed card: the last one given shows as chosen; its height is there from the start. */
@@ -1184,14 +1360,14 @@ async function togglePin(s) {
   if (s.pinning || typeof ctx?.pin !== "function") return;
   const before = s.pinned ?? card.pinned === true;
   s.pinned = !before; s.pinning = true; s.pinError = "";
-  repaint(s);
+  refresh(s);
   try { await ctx.pin(card.id, s.pinned); }
   catch {
     s.pinned = before;
     s.pinError = before ? "没关掉常驻，请再试一次" : "没设成常驻，请再试一次";
-    const timer = setTimeout(() => { s.pinError = ""; repaint(s); }, PIN_ERROR_MS);
+    const timer = setTimeout(() => { s.pinError = ""; refresh(s); }, PIN_ERROR_MS);
     timer.unref?.();
-  } finally { s.pinning = false; repaint(s); }
+  } finally { s.pinning = false; refresh(s); }
 }
 
 /** 「存成应用」: the card's temporary app stays (`service:cards/keep`); the button goes once the hub took it. */
@@ -1199,10 +1375,10 @@ async function keepApp(s) {
   const ctx = s.ctx, card = s.item.card;
   if (s.keeping || s.kept || typeof ctx?.keep !== "function") return;
   s.keeping = true;
-  repaint(s);
+  refresh(s);
   try { await ctx.keep(card.id); s.kept = true; }
   catch { ctx.problem?.("没存成应用，请再试一次。"); }
-  finally { s.keeping = false; repaint(s); }
+  finally { s.keeping = false; refresh(s); }
 }
 
 /** The owner's thumb as a say to the card's agent; a second tap on the one already chosen does nothing. */
@@ -1211,9 +1387,9 @@ async function giveFeedback(s, kind, glyph) {
   const before = feedbackOf(card, s.feedback);
   if (before === kind || s.feedbackSending || typeof ctx?.say !== "function" || !AGENT.test(card.owner ?? "")) return;
   const body = sayBody(card.id, glyph, { name: "feedback", context: { feedback: kind } }, s.data);
-  s.feedback = kind; s.feedbackSending = true; repaint(s);
+  s.feedback = kind; s.feedbackSending = true; refresh(s);
   try { await ctx.say(card.owner, body.text, body.card); }
-  catch (error) { s.feedback = before; repaint(s); ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
+  catch (error) { s.feedback = before; refresh(s); ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
   finally { s.feedbackSending = false; }
 }
 
@@ -1232,11 +1408,9 @@ async function draft(s) {
   s.inflight++;
   try {
     const answer = await ctx.draft(card.id, JSON.parse(body));
-    if (version === s.version && s.reactive && plain(answer?.plan) && parsePlan(answer.plan)) { s.plan = answer.plan; repaint(s); }
+    if (version === s.version && s.reactive && plain(answer?.plan) && parsePlan(answer.plan)) { s.plan = answer.plan; refresh(s); }
   } catch { /* the values stay on this screen; the action that follows carries them */ }
   finally { s.inflight--; }
-  // A newer version came while the owner was typing: read the card again now that the hub has the owner's values.
-  if (version === s.version && !s.timer && s.inflight === 0 && s.hold !== null) ctx.refresh?.(s.item.id);
 }
 
 /** What a tap on [node] (a Button, or anything with an action) does. */
@@ -1272,12 +1446,12 @@ async function press(s, node, action) {
   s.pressing.add(node.id);
   delete s.outcomes[node.id];
   haptic();
-  repaint(s);
+  refresh(s);
   const answer = await actOnce(ctx.act, actBody(card.id, node.id, s.data), actTimeoutMs(action));
   s.pressing.delete(node.id);
   // What the hub wrote on the card by now is not newer than this answer; anything it writes later is.
   if (answer.state !== "running") s.outcomes[node.id] = { state: answer.state, text: answer.text, after: Number(s.item.card.actions?.[node.id]?.at) || 0 };
-  repaint(s);
+  refresh(s);
 }
 
 /** `{copy: {text}}`: onto this device's clipboard, nothing sent; 「已复制」 under the button for a moment. */
@@ -1288,8 +1462,8 @@ async function copy(s, node, value) {
   if (ok) haptic();
   if (!node?.id) return;
   s.copied[node.id] = { until: Date.now() + COPIED_MS, state: ok ? "ok" : "failed", text: ok ? "已复制" : "没复制成功" };
-  repaint(s);
-  const timer = setTimeout(() => repaint(s), COPIED_MS + 20);
+  refresh(s);
+  const timer = setTimeout(() => refresh(s), COPIED_MS + 20);
   timer.unref?.();
 }
 
@@ -1302,7 +1476,7 @@ async function say(s, label, event) {
   catch (error) { ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
 }
 
-function fail(s, message) { s.busy = false; s.error = message; repaint(s); }
+function fail(s, message) { s.busy = false; s.error = message; refresh(s); }
 
 const UNKNOWN = ["offline", "unavailable", "timeout", "result_unknown", "internal"];
 
@@ -1325,7 +1499,7 @@ async function submitForm(s) {
   const titles = plain(form.titles) ? form.titles : {};
   const secret = Object.entries(plain(form.secret) ? form.secret : {});
   for (const [field] of secret) if (!(typed.get(fieldPath(field)) ?? "")) { fail(s, `请先填写${titles[field] || field}`); return; }
-  s.busy = true; s.error = ""; repaint(s);
+  s.busy = true; s.error = ""; refresh(s);
   if (secret.length) {
     if (typeof ctx.vaultSet !== "function") { fail(s, "这里存不了密码，请到手机上填写。"); return; }
     try {
@@ -1337,7 +1511,7 @@ async function submitForm(s) {
   if (!result?.ok) { fail(s, answerProblem(result?.error)); return; }
   secrets.delete(card.id);
   s.busy = false; s.sent = true; s.error = "";
-  repaint(s);
+  refresh(s);
   ctx.refresh?.(s.item.id);
 }
 
@@ -1345,12 +1519,12 @@ async function cancelForm(s) {
   const ctx = s.ctx;
   if (typeof ctx.answerForm !== "function") return;
   clearTimeout(s.timer); s.timer = null;
-  s.busy = true; s.error = ""; repaint(s);
+  s.busy = true; s.error = ""; refresh(s);
   let result;
   try { result = await answer(s, formCancelBody()); } catch { result = { ok: false, error: { code: "offline" } }; }
   if (!result?.ok) { fail(s, answerProblem(result?.error)); return; }
   secrets.delete(s.item.card.id);
   s.busy = false; s.cancelled = true;
-  repaint(s);
+  refresh(s);
   ctx.refresh?.(s.item.id);
 }

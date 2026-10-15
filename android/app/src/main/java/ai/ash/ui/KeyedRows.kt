@@ -18,8 +18,11 @@ class KeyedRowsAdapter(private val ctx: Context) : ListAdapter<ChatRow, KeyedRow
     override fun onCreateViewHolder(parent: ViewGroup, type: Int) = Holder(FrameLayout(ctx).apply { layoutParams = RecyclerView.LayoutParams(-1, -2) })
 
     override fun onBindViewHolder(h: Holder, position: Int) {
+        val v = getItem(position).make()
+        // The same view again (a card patched in place) stays attached: its focus, IME composing and mini app go on.
+        if (v != null && h.box.childCount == 1 && h.box.getChildAt(0) === v) return
         h.box.removeAllViews()
-        val v = getItem(position).make() ?: return
+        if (v == null) return
         (v.parent as? ViewGroup)?.removeView(v)
         val lp = when (val own = v.layoutParams) {
             null -> FrameLayout.LayoutParams(-1, -2)

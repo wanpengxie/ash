@@ -91,3 +91,28 @@ test("a card of an app: live data from the app, a button calling its word, idle 
   await eventually(async () => (await owner.call("service:apps", "apps.describe", { id: "tally" })).ok === false || undefined, "the temporary app removed");
   void resultOf;
 });
+
+test("an agent makes cards only of an app it published or may use: a narrowed helper cannot borrow another app's grants", async (t) => {
+  const s = await startScenario(t, { runtimes: ["scripted"] });
+  const HELPER = "agent:narrow";
+  const state: { shown?: ToolResult } = {};
+  s.driver.scriptFor(HELPER, async (turn) => { state.shown = await turn.call(OWNER, "show", { id: "borrowed", app: "tally", a2ui, text: "借来的卡" }); });
+  const owner = await s.human();
+  const made = await owner.call("service:apps", "apps.scaffold", { id: "tally", name: "计数" });
+  assert.ok(made.ok, JSON.stringify(made));
+  const edited = await owner.call("body:main", "workspace.edit", { path: "/root/apps/tally/server.mjs", edits: [{ oldText: "process.env.ASH_APP_DIR || process.cwd()", newText: "process.cwd()" }] });
+  assert.ok(edited.ok, JSON.stringify(edited));
+  assert.ok((await owner.call("service:apps", "apps.install", { id: "tally" })).ok);
+  // A helper the owner declared that may speak to him but not use the app.
+  const declared = await owner.call("service:agents", "declare", { id: HELPER, name: "窄帮手", summary: "只会发卡", brief: "发卡。", runtime: { kind: "scripted" }, words: ["person:owner/*"] });
+  assert.ok(declared.ok, JSON.stringify(declared));
+  assert.ok((await owner.call("service:agents", "start", { agent: HELPER })).ok);
+  assert.ok((await owner.call("service:agents", "tell", { agent: HELPER, text: "发一张" })).ok);
+  await eventually(() => state.shown, "the helper's card");
+  assert.equal(state.shown!.isError, false, JSON.stringify(state.shown));
+  const problems = (resultOf(state.shown!) as { problems?: string[] }).problems ?? [];
+  assert.ok(problems.some((p) => p.includes("may not make cards of tally")), JSON.stringify(problems));
+  const card = dataOf(await owner.call("service:cards", "describe", { id: "borrowed" })) as { card: { app?: string; sources: string[] } };
+  assert.equal(card.card.app, undefined, "the card has no app: none of its calls or sources run as tally");
+  assert.deepEqual(card.card.sources, []);
+});

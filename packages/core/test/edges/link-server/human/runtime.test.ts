@@ -5,7 +5,7 @@ import type { Caller, Message } from "../../../../../sdk/src/message";
 import { Cards } from "../../../../src/edges/link-server/human/cards";
 import { CardRuntime } from "../../../../src/edges/link-server/human/runtime";
 
-function setup(settings: Record<string, unknown> = {}, o: { hears?: boolean; origin?: string } = {}) {
+function setup(settings: Record<string, unknown> = {}, o: { hears?: boolean; origin?: string; inUse?: () => boolean; removeFails?: () => boolean } = {}) {
   let now = 1_000_000;
   const db = new DatabaseSync(":memory:");
   const cards = new Cards(db, () => now);
@@ -15,6 +15,7 @@ function setup(settings: Record<string, unknown> = {}, o: { hears?: boolean; ori
   const runtime = new CardRuntime({
     db, cards, settings: () => settings, now: () => now, log: () => {}, manual: true, viewing: () => true, push: (card) => pushed.push(card),
     hears: () => o.hears !== false,
+    ...(o.inUse ? { inUse: async () => o.inUse!() } : {}),
     router: {
       subscribe: (_f, cb) => { subscribers.push(cb); return () => {}; },
       send: async (m, caller) => {
@@ -23,6 +24,7 @@ function setup(settings: Record<string, unknown> = {}, o: { hears?: boolean; ori
         // The directory: a word named *.list reads, any other writes. apps.describe: the app's origin.
         if (m.to === "service:directory") return { ok: true, result: { data: { member: b.member, words: [{ word: b.word, effect: b.word.endsWith(".list") ? "read" : "write" }] } } };
         if (m.word === "apps.describe") return { ok: true, result: { data: { id: b.id, origin: o.origin ?? "agent" } } };
+        if (m.word === "apps.remove" && o.removeFails?.()) return { ok: false, error: { code: "failed", message: "busy" } };
         return { ok: true, result: { data: {} } };
       },
     },
@@ -147,4 +149,22 @@ test("only an agent's new app may be a card's temporary app; a pinned card does 
   await w.runtime.member.handle({ word: "pin", body: { id: "kept", pinned: true } } as Message, { caller: OWNER_PRESS } as never);
   await assert.rejects(w.runtime.member.handle({ word: "sleep", body: { id: "kept" } } as Message, { caller: AGENT_PRESS } as never), /pinned/);
   assert.equal(w.runtime.run("kept")!.pinned, true);
+});
+
+test("a temporary app is removed only when no page or widget uses it; a failed removal waits for the next sweep", async () => {
+  let used = true, fails = true;
+  const w = setup({}, { inUse: () => used, removeFails: () => fails });
+  w.show("t", live, "hr");
+  w.runtime.closeCard("t");
+  const removes = () => w.sent.filter((x) => x.word === "apps.remove").length;
+  await w.runtime.recycle();
+  assert.equal(removes(), 0, "a page or a widget still shows it: kept");
+  used = false;
+  await w.runtime.recycle();
+  assert.equal(removes(), 1, "free: tried");
+  fails = false;
+  await w.runtime.recycle();
+  assert.equal(removes(), 2, "failed: tried again on the next sweep, and removed");
+  await w.runtime.recycle();
+  assert.equal(removes(), 2, "a removed app is not removed twice");
 });

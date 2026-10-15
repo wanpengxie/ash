@@ -36,14 +36,16 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
-import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebMessage
+import android.webkit.WebMessagePort
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -64,6 +66,9 @@ import android.widget.TableRow
 import android.widget.TextClock
 import android.widget.TextView
 import ai.ash.R
+import ai.ash.apps.AppIds
+import ai.ash.apps.Csp
+import ai.ash.apps.HostPage
 import ai.ash.host.PresentRoutes
 import ai.ash.ui.design.AshPalette
 import ai.ash.ui.design.AshTokens
@@ -84,6 +89,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.math.BigDecimal
+import java.security.SecureRandom
 import java.time.LocalDate
 import java.time.LocalTime
 import java.util.Locale
@@ -417,33 +423,123 @@ object ChatCardModel {
     /** A colour as CSS. */
     fun css(argb: Int): String = String.format(Locale.US, "rgba(%d,%d,%d,%.3f)", (argb shr 16) and 0xFF, (argb shr 8) and 0xFF, argb and 0xFF, ((argb ushr 24) and 0xFF) / 255f)
 
-    /** The mini app's only rules: its own inline code and styles, pictures and fonts given inline; nothing else, no network. */
-    const val MINI_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:"
-    private val DOCTYPE = Regex("^\\s*<!doctype[^>]*>", RegexOption.IGNORE_CASE)
+    // --- a push drawn in place (MOBILE-ARCH §12.6) ---
+
+    /** A JSON value as text with its keys in order, so two equal values always read the same. */
+    fun canon(v: Any?): String = StringBuilder().also { canon(it, v) }.toString()
+
+    private fun canon(b: StringBuilder, v: Any?) {
+        when (v) {
+            null, JSONObject.NULL -> b.append("null")
+            is JSONObject -> {
+                b.append('{')
+                v.keys().asSequence().sorted().forEachIndexed { i, k -> if (i > 0) b.append(','); b.append(JSONObject.quote(k)).append(':'); canon(b, v.opt(k)) }
+                b.append('}')
+            }
+            is JSONArray -> { b.append('['); for (i in 0 until v.length()) { if (i > 0) b.append(','); canon(b, v.opt(i)) }; b.append(']') }
+            is String -> b.append(JSONObject.quote(v))
+            is Number -> b.append(number(v))
+            else -> b.append(v.toString())
+        }
+    }
+
+    /** A node's value fields: what a push may change on its control in place. */
+    private val VALUES = listOf("text", "value", "checked", "rows", "visible", "disabled")
+
+    /** A node without its value fields (a progress's label, options' checked, series' values, a picture's url too). */
+    fun layoutOf(n: JSONObject): String {
+        val o = JSONObject(n.toString())
+        VALUES.forEach { o.remove(it) }
+        val kind = n.optString("component")
+        val url = n.optString("url")
+        if (kind == "ProgressBar") o.remove("label")
+        if (kind == "Image" && !url.startsWith("icon:") && url != "avatar" && !url.startsWith("avatar:")) o.remove("url")
+        for ((list, key) in listOf("options" to "checked", "series" to "values")) o.optJSONArray(list)?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.remove(key) }
+        return canon(o)
+    }
 
     /**
-     * The document a mini app's sandbox loads: first thing, its CSP, the theme as CSS variables (`--ash-bg` …) and `ash`: `send(action,
-     * context)`, which hands the action to the phone's bridge ([bridge] is the injected object's name), and `call(member, word, body)`,
-     * `ask(text)`, `tell(text)`, each a Promise of the hub's answer `{state, text, result?}` (the phone answers through
-     * `__ashReply(id, answer)`); then the agent's HTML.
+     * What a push changed since the card was drawn: null when it must be drawn anew (another layout: the plan around its
+     * components, the component ids or their order, or a node apart from its value fields); else the components to write in
+     * place — the ones whose node, bound value or hub button state changed.
      */
-    fun miniAppDocument(html: String, vars: Map<String, String>, dark: Boolean, bridge: String = "__ashCard"): String {
+    fun changes(was: Plan, wasData: JSONObject, wasCard: JSONObject, now: Plan, data: JSONObject, card: JSONObject): List<String>? {
+        fun around(p: Plan) = canon(JSONObject(p.raw).apply { remove("components"); remove("data") })
+        if (around(was) != around(now) || was.byId.keys.toList() != now.byId.keys.toList()) return null
+        val out = ArrayList<String>()
+        for ((id, n) in now.byId) {
+            val old = was.byId.getValue(id)
+            if (layoutOf(old) != layoutOf(n)) return null
+            val bind = n.optString("bind")
+            if (canon(old) != canon(n) || (bind.isNotEmpty() && canon(read(wasData, bind)) != canon(read(data, bind))) ||
+                canon(wasCard.optJSONObject("actions")?.opt(id)) != canon(card.optJSONObject("actions")?.opt(id))) out.add(id)
+        }
+        return out
+    }
+
+    /** A drawn component's control: whether the owner is at it right now, and writing a node's values on it (false: it cannot). */
+    class Control(val editing: () -> Boolean = { false }, val write: (JSONObject) -> Boolean)
+
+    /** The new values of [ids] written on their controls, leaving alone one the owner is at; false when the card must be drawn anew. */
+    fun write(ids: List<String>, byId: Map<String, JSONObject>, controls: Map<String, Control>): Boolean {
+        for (id in ids) {
+            val c = controls[id] ?: return false
+            if (!c.editing() && !c.write(byId.getValue(id))) return false
+        }
+        return true
+    }
+
+    // --- a card's mini app (MOBILE-ARCH §12.4) ---
+
+    /** Where the mini apps of cards without an app run (.invalid never resolves); a card of an app runs at its app's origin. */
+    const val CARD_ORIGIN = "https://card.ash-card.invalid"
+    const val MINI_MAX = 64 * 1024
+    private val MINI_METHODS = setOf("ash/send", "ash/call", "ash/ask", "ash/tell")
+
+    /**
+     * What goes after the page's CSP and port shim ([HostPage]): the theme as CSS variables (`--ash-bg` …) and `window.ash` —
+     * `send(action, context)`, and for a card of an app ([full]) `call(member, word, body)`, `ask(text)`, `tell(text)`, each a
+     * Promise of the hub's answer `{state, text, result?}`. Each is a JSON-RPC message the shim sends on the port.
+     */
+    fun miniHead(vars: Map<String, String>, dark: Boolean, full: Boolean): String {
         val css = vars.entries.joinToString(";") { "--ash-${it.key}:${it.value}" }
-        val head = "<meta http-equiv=\"Content-Security-Policy\" content=\"$MINI_CSP\">" +
-            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-            "<style>:root{$css;color-scheme:${if (dark) "dark" else "light"}}</style>" +
-            "<script>(function(){var b=window.$bridge;var send=function(a,c){try{b.send(String(a),JSON.stringify(c===undefined?{}:c))}catch(e){}};" +
-            // ash.call / ask / tell: one request each, answered by the phone through __ashReply with the same id.
-            "var seq=0,wait={};var req=function(r){return new Promise(function(ok){var id=\"r\"+(++seq);wait[id]=ok;" +
-            "try{b.request(id,JSON.stringify(r))}catch(e){delete wait[id];ok({state:\"failed\",text:\"发不出去\"})}})};" +
-            "Object.defineProperty(window,\"__ashReply\",{value:function(id,a){var w=wait[id];if(!w)return;delete wait[id];" +
-            "var r;try{r=JSON.parse(a)}catch(e){r={state:\"failed\",text:\"\"}}w(r)},writable:false,configurable:false});" +
-            "var api={send:send,call:function(m,w,body){return req({call:{member:String(m),word:String(w),body:body===undefined?{}:body}})}," +
-            "ask:function(t){return req({ask:{text:String(t)}})},tell:function(t){return req({tell:{text:String(t)}})}};" +
-            "Object.defineProperty(window,\"ash\",{value:Object.freeze(api),writable:false,configurable:false});})();</script>"
-        val body = html.removePrefix("﻿")
-        val doctype = DOCTYPE.find(body)
-        return if (doctype != null) doctype.value + head + body.substring(doctype.range.last + 1) else head + body
+        return "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>:root{$css;color-scheme:${if (dark) "dark" else "light"}}</style><script>" + """
+(function(){
+  var post = window.postMessage, seq = 0, wait = {};
+  function rpc(method, params, ok){ var id = "a" + (++seq); if (ok) wait[id] = ok; post.call(window, {jsonrpc: "2.0", id: id, method: method, params: params}, "*"); }
+  window.addEventListener("message", function(e){
+    var m = e.data; if (!m || m.jsonrpc !== "2.0" || !wait.hasOwnProperty(m.id)) return;
+    var ok = wait[m.id]; delete wait[m.id]; ok(m.result || {state: "failed", text: ""});
+  });
+  function req(method, params){ return new Promise(function(ok){ rpc(method, params, ok); }); }
+  var api = {send: function(a, c){ rpc("ash/send", {action: String(a), context: c === undefined ? {} : c}); }};
+  if ($full) {
+    api.call = function(m, w, body){ return req("ash/call", {member: String(m), word: String(w), body: body === undefined ? {} : body}); };
+    api.ask = function(t){ return req("ash/ask", {text: String(t)}); };
+    api.tell = function(t){ return req("ash/tell", {text: String(t)}); };
+  }
+  Object.defineProperty(window, "ash", {value: Object.freeze(api), writable: false, configurable: false});
+})();
+""".trim() + "</script>"
+    }
+
+    /**
+     * A message that came on a mini app's port, read: null when refused (over [MINI_MAX], not JSON-RPC 2.0, not one of the four
+     * methods, or a call / ask / tell from a card without an [app]); else its id and what it asks — `{send: {action, context}}`
+     * or the act's `request` ([miniRequest]), null when not in shape. Who it is from is the host's, never read from it.
+     */
+    fun miniMessage(raw: String?, app: Boolean): Pair<Any?, JSONObject?>? {
+        if (raw == null || raw.length > MINI_MAX || raw.toByteArray(Charsets.UTF_8).size > MINI_MAX) return null
+        val m = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        val method = m.opt("method") as? String
+        if (m.opt("jsonrpc") != "2.0" || method !in MINI_METHODS || (!app && method != "ash/send")) return null
+        val id = m.opt("id")
+        val p = m.optJSONObject("params") ?: JSONObject()
+        if (method == "ash/send") {
+            val action = (p.opt("action") as? String)?.trim()?.takeIf { it.isNotEmpty() && it.length <= 64 } ?: return id to null
+            return id to JSONObject().put("send", JSONObject().put("action", action).put("context", p.optJSONObject("context") ?: JSONObject()))
+        }
+        return id to miniRequest(JSONObject().put(method!!.removePrefix("ash/"), p).toString())
     }
 }
 
@@ -454,7 +550,8 @@ object ChatCardModel {
  * The chat makes a row again whenever an item changes; what the owner is doing on a card is kept here, by card id: the working copy
  * of its data (inputs write into it at their `bind`), the passwords typed (never in the data, never saved; they go only to
  * `service:vault/set`), the tab shown, the field with the cursor. A card's view is one holder that stays the same view, so the chat
- * keeps it where it is; it is drawn again inside only when what it shows changed.
+ * keeps it where it is. A push that changes only values is written on the controls in place ([ChatCardModel.changes]), never
+ * on a control the owner is at right now; anything else draws the card anew.
  */
 class ChatCards(
     /** The chat's activity; for a picture ([preview]), a context in the theme asked for. */
@@ -484,12 +581,10 @@ class ChatCards(
         /** Sent or cancelled from here, until the window says so. */
         var local: String? = null
         var busy = false
-        var lastEdit = 0L
         var draftSeq = 0
-        var inFlight = 0
         var pending: Runnable? = null
-        var paintedRaw: String? = null
-        var paintedRest: String? = null
+        /** What was drawn last (in place or anew): the plan, the data, the card, and the rest of what is drawn ([frame]). */
+        var drawn: Drawn? = null
         /** The 👍 / 👎 tapped here, until the item says it. */
         var feedbackLocal: String? = null
         /** Pictures still on their way in the last drawing. */
@@ -510,8 +605,20 @@ class ChatCards(
         val holder: FrameLayout = if (preview) Capped(ctx, dp(AshTokens.Size.cardMaxW)) else FrameLayout(ctx)
         /** The text boxes drawn, by component id (to put the cursor back after drawing again). */
         val fields = HashMap<String, EditText>()
-        /** Mini apps, by component id, with the document they run. */
-        val webs = HashMap<String, Pair<String, WebView>>()
+        /** The controls drawn, by component id, and the footer's writer (false: it cannot show the card now in place). */
+        val controls = HashMap<String, ChatCardModel.Control>()
+        var footer: (() -> Boolean)? = null
+        /** Mini apps, by component id. */
+        val minis = HashMap<String, Mini>()
+        /** The row is on screen (its mini apps live only then). */
+        var onScreen = false
+
+        init {
+            if (!preview) holder.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(v: View) { onScreen = true; minis.values.forEach { it.sync() } }
+                override fun onViewDetachedFromWindow(v: View) { onScreen = false; minis.values.forEach { it.sync() } }
+            })
+        }
 
         fun state(): String {
             local?.let { return it }
@@ -522,15 +629,23 @@ class ChatCards(
         }
         fun open() = state() == "open"
         fun feedback() = ChatCardModel.feedbackShown(feedbackLocal, card.optString("feedback").ifEmpty { null })
-        /** The owner is at it: a box has the cursor, or a change has not reached the hub yet. */
-        fun editing() = holder.findFocus() != null || pending != null || inFlight > 0 || SystemClock.uptimeMillis() - lastEdit < 1500
+        /** All a drawing shows but the plan, the data and the values a push writes in place (life, fed_at, pinned, feedback, actions). */
+        fun frame(): String {
+            val now = SystemClock.uptimeMillis()
+            return listOf("app", "temporary_app", "owner").joinToString("|") { card.opt(it)?.toString().orEmpty() } +
+                "|${state()}|${card.has("form")}|$busy|$tabs|$keeping|${pressing.keys}|$failedHere|${copied.filterValues { it > now }.keys}|${pinFailedUntil > now}"
+        }
     }
+
+    private class Drawn(val plan: ChatCardModel.Plan, val data: JSONObject, val card: JSONObject, val frame: String)
 
     private val cards = HashMap<String, Card>()
     /** Presses counted, so a late answer or timeout finds only its own press. */
     private var presses = 0L
     /** Password boxes: card id -> the box's bind path -> what is typed. In memory only. */
     private val secrets = HashMap<String, HashMap<String, String>>()
+    /** A push is being written on the controls: what they report back is not the owner's change. */
+    private var writing = false
 
     /** The view of a card item (`type: "card"`, `card.type: "a2ui"`); the same view each time for the same card. */
     fun view(item: JSONObject): View {
@@ -545,13 +660,18 @@ class ChatCards(
         st.card = card
         if (st.pinLocal == card.optBoolean("pinned")) st.pinLocal = null
         val updated = card.optLong("updated_at")
-        // A newer version from the hub (the creator changed it, or another screen did): taken unless the owner is editing here.
-        if (st.plan == null || (updated > st.updatedAt && !st.editing())) {
-            st.plan = plan; st.data = JSONObject(plan.data.toString()); st.updatedAt = updated
+        // A newer version from the hub (the creator changed it, or another screen did) is taken; what the owner is putting in a
+        // control right now stays theirs (the next draft carries it).
+        if (st.plan == null || updated > st.updatedAt) {
+            val data = JSONObject(plan.data.toString())
+            for ((cid, ctl) in st.controls) if (ctl.editing()) st.plan?.byId?.get(cid)?.optString("bind")?.takeIf { it.isNotEmpty() }?.let { b ->
+                ChatCardModel.read(st.data, b)?.let { ChatCardModel.write(data, b, it) }
+            }
+            st.plan = plan; st.data = data; st.updatedAt = updated
         }
         if (card.optString("state").ifEmpty { "open" } != "open") st.local = null
         if (st.feedbackLocal != null && st.feedbackLocal == card.optString("feedback")) st.feedbackLocal = null
-        paint(st)
+        show(st)
         return st.holder
     }
 
@@ -559,38 +679,50 @@ class ChatCards(
     fun waitingImages(): Int = cards.values.sumOf { it.waitingImages }
 
     /** Draws every card again (a picture that has come in since is in it now). */
-    fun redraw() { for (st in cards.values) { st.paintedRaw = null; paint(st) } }
+    fun redraw() { for (st in cards.values) paint(st) }
 
     fun close() {
         for (st in cards.values) {
             st.pending?.let(main::removeCallbacks)
-            st.webs.values.forEach { runCatching { it.second.destroy() } }
-            st.webs.clear()
+            st.minis.values.forEach { it.drop() }
+            st.minis.clear()
         }
         secrets.clear()
     }
 
     // --- drawing ---
 
+    /** [st] as it is now: written in place when only values changed since it was drawn, else drawn anew. */
+    private fun show(st: Card) {
+        val plan = st.plan ?: return
+        val d = st.drawn
+        val ids = if (d != null && d.frame == st.frame()) ChatCardModel.changes(d.plan, d.data, d.card, plan, st.data, st.card) else null
+        if (ids == null) return paint(st)
+        writing = true
+        val done = try { ChatCardModel.write(ids, plan.byId, st.controls) && st.footer?.invoke() != false }
+            catch (e: Exception) { Log.w(TAG, "card ${st.id} could not be written in place", e); false }
+            finally { writing = false }
+        if (!done) return paint(st)
+        st.drawn = Drawn(plan, JSONObject(st.data.toString()), st.card, st.frame())
+        st.minis.values.forEach { it.sync() }
+    }
+
+    /** Draws [st] anew (the cursor stays in its box). */
     private fun paint(st: Card) {
         val plan = st.plan ?: return
         val state = st.state()
-        val now = SystemClock.uptimeMillis()
-        val runtime = listOf("life", "fed_at", "temporary_app", "app", "pinned", "actions").joinToString("|") { st.card.opt(it)?.toString().orEmpty() } +
-            "|${st.pressing.keys}|${st.failedHere}|${st.copied.filterValues { it > now }.keys}|${st.keeping}|${st.pinLocal}|${st.pinFailedUntil > now}"
-        val rest = "$state|${st.busy}|${st.tabs}|${st.feedback()}|$runtime"
-        if (st.paintedRaw == plan.raw && st.paintedRest == rest) return
         val focused = st.holder.findFocus() as? EditText
         val focusId = st.fields.entries.firstOrNull { it.value === focused }?.key
         val selection = focused?.let { it.selectionStart to it.selectionEnd }
-        st.fields.clear()
+        st.fields.clear(); st.controls.clear(); st.footer = null
         st.waitingImages = 0
         val draw = Draw(st, plan, state)
-        val drawn = runCatching { draw.card() }.getOrElse { Log.w(TAG, "card ${st.id} could not be drawn", it); plain(st.card.optString("text")) }
+        val drawn = runCatching { draw.card() }.getOrElse { Log.w(TAG, "card ${st.id} could not be drawn", it); null }
         st.holder.removeAllViews()
-        st.holder.addView(drawn, FrameLayout.LayoutParams(MATCH, WRAP))
-        st.paintedRaw = plan.raw; st.paintedRest = rest
-        for (gone in st.webs.keys - draw.webs) st.webs.remove(gone)?.let { runCatching { it.second.destroy() } }
+        st.holder.addView(drawn ?: plain(st.card.optString("text")), FrameLayout.LayoutParams(MATCH, WRAP))
+        st.drawn = if (drawn == null) null else Drawn(plan, JSONObject(st.data.toString()), st.card, st.frame())
+        for (gone in st.minis.keys - draw.webs) st.minis.remove(gone)?.drop()
+        st.minis.values.forEach { it.sync() }
         if (focusId != null) st.fields[focusId]?.let { f ->
             f.requestFocus()
             selection?.let { (a, b) -> val n = f.text.length; f.setSelection(a.coerceIn(0, n), b.coerceIn(0, n)) }
@@ -630,12 +762,19 @@ class ChatCards(
             ChatCardModel.stateLine(state)?.let { line ->
                 addView(AshUi.text(ctx, line, AshType(12f, 16f, 500, Role.TEXT_3)).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(MATCH, WRAP))
             }
-            val caption = if (st.pinFailedUntil > SystemClock.uptimeMillis()) ChatCardModel.PIN_FAILED else ChatCardModel.caption(st.card, pinned = st.pinned())
             // Its height is held from the first drawing: choosing one, live data coming, sleeping change only what it says.
-            if (!preview && st.card.optJSONObject("form") == null) addView(footer(caption), LinearLayout.LayoutParams(MATCH, dp(FOOTER_DP)))
-            else if (caption != null || (!preview && ChatCardModel.reservesCaption(st.card)))
-                addView(captionView(caption.orEmpty()), LinearLayout.LayoutParams(MATCH, dp(FOOTER_DP)))
+            if (!preview && st.card.optJSONObject("form") == null) addView(footer(), LinearLayout.LayoutParams(MATCH, dp(FOOTER_DP)))
+            else {
+                fun shown() = caption() != null || (!preview && ChatCardModel.reservesCaption(st.card))
+                val had = shown()
+                val line = captionView("")
+                if (had) addView(line, LinearLayout.LayoutParams(MATCH, dp(FOOTER_DP)))
+                st.footer = { if (shown() != had) false else { line.text = caption().orEmpty(); true } }
+            }
+            st.footer?.invoke()
         }
+
+        private fun caption() = if (st.pinFailedUntil > SystemClock.uptimeMillis()) ChatCardModel.PIN_FAILED else ChatCardModel.caption(st.card, pinned = st.pinned())
 
         /** 「HH:MM 更新」 or 「已休眠 · HH:MM 的数据」: small and quiet. */
         private fun captionView(text: String): TextView = AshUi.text(ctx, text, AshType(11.5f, 15f, 400, Role.TEXT_3)).apply {
@@ -644,49 +783,78 @@ class ChatCards(
 
         /**
          * The card's last line: the caption at the start; at the end 「存成应用」 (a card whose app exists only for it), and 👍 / 👎,
-         * small and quiet — the one the owner gave last is chosen, and tapping it again does nothing.
+         * small and quiet — the one the owner gave last is chosen, and tapping it again does nothing. A push changes what it says
+         * in place ([Card.footer]).
          */
-        private fun footer(caption: String?): View = AshUi.hstack(ctx, 4).apply {
+        private fun footer(): View = AshUi.hstack(ctx, 4).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            addView(captionView(caption.orEmpty()), LinearLayout.LayoutParams(0, MATCH, 1f))
+            val line = captionView("")
+            addView(line, LinearLayout.LayoutParams(0, MATCH, 1f))
             if (st.card.optBoolean("temporary_app") && !st.keeping && !readOnly) addView(AshUi.text(ctx, "存成应用", AshType(12f, 16f, 500, null), c.youText).apply {
                 gravity = Gravity.CENTER; setPadding(dp(8), 0, dp(8), 0); isClickable = true
                 contentDescription = "把这张卡片的应用留下来"
                 setOnClickListener { keep(st) }
             }, LinearLayout.LayoutParams(WRAP, MATCH))
             // 「常驻」: the owner keeps a card of an app running off screen; there from the first drawing, for every such card.
-            if (ChatCardModel.pinnable(st.card) && !preview) addView(AshUi.hstack(ctx, 4).apply {
+            val sw = MiniSwitch(ctx, accent, c.surface3)
+            val pinRow = AshUi.hstack(ctx, 4).apply {
                 gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), 0, dp(6), 0); isClickable = true
-                val on = st.pinned()
-                contentDescription = "${ChatCardModel.PIN_LABEL}：${if (on) "开" else "关"}"
                 addView(AshUi.text(ctx, ChatCardModel.PIN_LABEL, AshType(11.5f, 15f, 400, Role.TEXT_3)))
-                addView(MiniSwitch(ctx, on, accent, c.surface3), LinearLayout.LayoutParams(dp(24), dp(14)))
-                setOnClickListener { pin(st, !on) }
-            }, LinearLayout.LayoutParams(WRAP, MATCH))
-            val shown = st.feedback()
-            for ((which, icon) in listOf("up" to R.drawable.ash_ic_thumb_up, "down" to R.drawable.ash_ic_thumb_down)) {
-                val chosen = shown == which
-                addView(FrameLayout(ctx).apply {
-                    setPadding(dp(8), 0, dp(8), 0)
-                    if (chosen) background = AshUi.rounded(c.surface2, dpF(FOOTER_DP / 2f))
-                    contentDescription = if (which == "up") "有用" else "没用"
-                    isSelected = chosen
-                    setOnClickListener { feedback(st, which) }
-                    addView(ImageView(ctx).apply {
-                        setImageDrawable(ctx.getDrawable(icon)?.mutate()?.apply { setTint(if (chosen) c.text else c.text3) })
-                        alpha = if (chosen) 1f else 0.7f
-                    }, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER))
-                }, LinearLayout.LayoutParams(WRAP, MATCH))
+                addView(sw, LinearLayout.LayoutParams(dp(24), dp(14)))
+                setOnClickListener { pin(st, !st.pinned()) }
             }
+            if (ChatCardModel.pinnable(st.card) && !preview) addView(pinRow, LinearLayout.LayoutParams(WRAP, MATCH))
+            val thumbs = listOf("up" to R.drawable.ash_ic_thumb_up, "down" to R.drawable.ash_ic_thumb_down).map { (which, icon) ->
+                val iv = ImageView(ctx)
+                val box = FrameLayout(ctx).apply {
+                    setPadding(dp(8), 0, dp(8), 0)
+                    contentDescription = if (which == "up") "有用" else "没用"
+                    setOnClickListener { feedback(st, which) }
+                    addView(iv, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER))
+                }
+                addView(box, LinearLayout.LayoutParams(WRAP, MATCH))
+                Triple(which, box, iv to icon)
+            }
+            st.footer = {
+                line.text = caption().orEmpty()
+                val on = st.pinned()
+                pinRow.contentDescription = "${ChatCardModel.PIN_LABEL}：${if (on) "开" else "关"}"
+                sw.on = on
+                val shown = st.feedback()
+                for ((which, box, pair) in thumbs) {
+                    val chosen = shown == which
+                    box.background = if (chosen) AshUi.rounded(c.surface2, dpF(FOOTER_DP / 2f)) else null
+                    box.isSelected = chosen
+                    pair.first.setImageDrawable(ctx.getDrawable(pair.second)?.mutate()?.apply { setTint(if (chosen) c.text else c.text3) })
+                    pair.first.alpha = if (chosen) 1f else 0.7f
+                }
+                true
+            }
+        }
+
+        /** Writers of the components drawn, by id, as [build] leaves them for [node]. */
+        private val own = HashMap<String, ChatCardModel.Control>()
+
+        /** [n]'s control: [write] puts a new node's values on what was drawn (false: it cannot); [editing] is the owner at it now. */
+        private fun control(n: JSONObject, editing: () -> Boolean = { false }, write: (JSONObject) -> Boolean) {
+            own[n.optString("id")] = ChatCardModel.Control(editing, write)
         }
 
         fun node(id: String, ink: Int?): View? {
             val n = plan.byId[id] ?: return null
-            if (!n.optBoolean("visible", true)) return null
             val s = style(n)
             val color = s.color?.pick(night) ?: ink
             val v = runCatching { build(n, s, color) }.getOrElse { Log.w(TAG, "card ${st.id}: ${n.optString("component")} $id left out", it); null } ?: return null
             decorate(v, n, s)
+            // Hidden is a value: the view is there, gone until it shows.
+            fun show(m: JSONObject) { v.visibility = if (m.optBoolean("visible", true)) View.VISIBLE else View.GONE }
+            show(n)
+            val w = own.remove(id)
+            st.controls[id] = ChatCardModel.Control(w?.editing ?: { false }) { m ->
+                show(m)
+                // Without a writer of its own, only being shown can change in place (a tap's disabled draws it anew).
+                w?.write?.invoke(m) ?: (m.optBoolean("disabled") == n.optBoolean("disabled"))
+            }
             return v
         }
 
@@ -734,7 +902,9 @@ class ChatCards(
                 else base = SystemClock.elapsedRealtime() - (now - n.optLong("since"))
                 start()
             }
-            "Chart" -> ChartView(ctx, AshChart.parse(n, ::tint), night)
+            "Chart" -> ChartView(ctx, AshChart.parse(n, ::tint), night).also { v ->
+                control(n) { m -> val chart = runCatching { AshChart.parse(m, ::tint) }.getOrNull(); if (chart != null) v.chart = chart; chart != null }
+            }
             "TextField" -> field(n)
             "DateTimeInput" -> dateTime(n)
             "Slider" -> slider(n, ink)
@@ -809,6 +979,11 @@ class ChatCards(
                     }
                 }
                 Slot.STACK -> FrameLayout.LayoutParams(px(s.width) ?: pw ?: WRAP, px(s.height) ?: ph ?: WRAP, PLACES[s.place ?: align ?: "topStart"] ?: (Gravity.TOP or Gravity.START))
+            }
+            // A picture's box never waits for it: a side its style leaves to wrap is 16:9 of the other.
+            if (kind == "Image") {
+                if (lp.height == WRAP) lp.height = if (lp.width > 0) lp.width * 9 / 16 else ph ?: dp(120)
+                if (lp.width == WRAP && lp.height > 0) lp.width = lp.height * 16 / 9
             }
             s.margin?.let { m -> lp.topMargin = dp(m[0]); lp.marginEnd = dp(m[1]); lp.bottomMargin = dp(m[2]); lp.marginStart = dp(m[3]) }
             return lp
@@ -902,8 +1077,7 @@ class ChatCards(
         private fun text(n: JSONObject, s: CStyle, ink: Int?): TextView {
             val variant = n.optString("variant").ifEmpty { "body" }
             val type = textType(s, TYPES[variant] ?: BODY)
-            val body = Md.render(n.optString("text"), c.surface2, c.her)
-            val tv = AshUi.text(ctx, body, type, ink?.let { if (variant == "caption") AshUi.withAlpha(it, 0.7f) else it })
+            val tv = AshUi.text(ctx, "", type, ink?.let { if (variant == "caption") AshUi.withAlpha(it, 0.7f) else it })
             if (s.italic == true) {
                 if (Build.VERSION.SDK_INT >= 28) tv.typeface = Typeface.create(Typeface.DEFAULT, type.weight.coerceIn(1, 1000), true)
                 else tv.setTypeface(tv.typeface, Typeface.ITALIC)
@@ -919,8 +1093,16 @@ class ChatCards(
             }
             s.maxLines?.let { tv.maxLines = it; tv.ellipsize = when (s.ellipsize) { "start" -> TextUtils.TruncateAt.START; "middle" -> TextUtils.TruncateAt.MIDDLE; "none" -> null; else -> TextUtils.TruncateAt.END } }
             s.letterSpacing?.let { tv.letterSpacing = it }
-            // Links open when tapped; inside a button the whole button is the tap.
-            if (!inButton && body.getSpans(0, body.length, ClickableSpan::class.java).isNotEmpty()) tv.movementMethod = LinkMovementMethod.getInstance()
+            val linkable = !inButton
+            fun fill(m: JSONObject): Boolean {
+                val body = Md.render(m.optString("text"), c.surface2, c.her)
+                tv.text = body
+                // Links open when tapped; inside a button the whole button is the tap.
+                if (linkable && body.getSpans(0, body.length, ClickableSpan::class.java).isNotEmpty()) tv.movementMethod = LinkMovementMethod.getInstance()
+                return true
+            }
+            fill(n)
+            control(n, write = ::fill)
             return tv
         }
 
@@ -929,6 +1111,7 @@ class ChatCards(
             return AshUi.text(ctx, n.optString("text"), AshType(11.5f, 14f, 600, null), tone).apply {
                 gravity = Gravity.CENTER; setPadding(dp(8), dp(3), dp(8), dp(3))
                 background = AshUi.rounded(AshUi.withAlpha(tone, 0.14f), dpF(11f))
+                control(n) { m -> text = m.optString("text"); true }
             }
         }
 
@@ -971,13 +1154,20 @@ class ChatCards(
                 "cover" -> ImageView.ScaleType.CENTER_CROP; "fill" -> ImageView.ScaleType.FIT_XY; "none" -> ImageView.ScaleType.CENTER
                 "scaleDown" -> ImageView.ScaleType.CENTER_INSIDE; else -> ImageView.ScaleType.FIT_CENTER
             }
-            val img = if (avatar) Img.Avatar(if (url.contains(':')) url.substringAfter(':') else "default") else Img.Url(url)
+            var img = if (avatar) Img.Avatar(if (url.contains(':')) url.substringAfter(':') else "default") else Img.Url(url)
             val w = ctx.resources.displayMetrics.widthPixels
-            // A picture still on its way is a soft block; it is set when it arrives (a failed one stays the block).
+            // A picture still on its way is a soft block in its box; it is set when it arrives (a failed one stays the block).
             if (!avatar) iv.background = AshUi.rounded(c.surface2, 0f)
-            fun load() { CardImages.get(ctx, img, w, dp(360)) { load() }?.let { iv.setImageBitmap(it); iv.background = null } }
+            fun load() { val want = img; CardImages.get(ctx, want, w, dp(360)) { if (img === want) load() }?.let { iv.setImageBitmap(it); iv.background = null } }
             load()
             if (iv.drawable == null && url.startsWith("https:") && !CardImages.failed.containsKey(url)) st.waitingImages++
+            // Another picture (an avatar or an icon is drawn anew): the box stays, the new one is set when it arrives.
+            var shown = url
+            control(n) { m ->
+                val u = m.optString("url")
+                if (u != shown) { shown = u; img = Img.Url(u); iv.setImageDrawable(null); iv.background = AshUi.rounded(c.surface2, 0f); load() }
+                true
+            }
             clip(iv, s.cornerRadius?.let { dpF(it) } ?: if (variant == "avatar") -1f else dpF(12f))
             return iv
         }
@@ -986,16 +1176,24 @@ class ChatCards(
             val action = n.optJSONObject("action")
             val id = n.optString("id")
             val runs = ChatCardModel.hubAction(action)
-            val pressBusy = runs && ChatCardModel.pressBusy(id in st.pressing, hubState(id), System.currentTimeMillis(), ChatCardModel.pressTimeoutMs(action))
-            val face = buttonFace(n, if (pressBusy) "处理中…" else null)
+            fun face(m: JSONObject) = (runs && ChatCardModel.pressBusy(id in st.pressing, hubState(id), System.currentTimeMillis(), ChatCardModel.pressTimeoutMs(action))) to m.optBoolean("disabled")
+            val drawnFace = face(n)
+            val face = buttonFace(n, if (drawnFace.first) "处理中…" else null)
             // A button the hub runs, or a copy, has its outcome line under it, held from the start.
-            if (!runs && action?.has("copy") != true) return face
-            val out = ChatCardModel.outcome((st.copied[id] ?: 0L) > SystemClock.uptimeMillis(), st.failedHere[id], hubState(id))
+            val line = if (!runs && action?.has("copy") != true) null else AshUi.text(ctx, "", AshType(11.5f, 15f, 400, Role.TEXT_2)).apply {
+                minLines = 1; maxLines = 3; ellipsize = TextUtils.TruncateAt.END; maxWidth = dp(280)
+            }
+            fun fill() {
+                val out = ChatCardModel.outcome((st.copied[id] ?: 0L) > SystemClock.uptimeMillis(), st.failedHere[id], hubState(id)) ?: return
+                line?.text = out.first; line?.setTextColor(if (out.second) c.err else c.text2)
+            }
+            fill()
+            // The hub's state of it: its line in place; running or not, pressable or not: the card is drawn anew.
+            control(n) { m -> if (face(m) != drawnFace) false else { line?.text = ""; fill(); true } }
+            if (line == null) return face
             return AshUi.vstack(ctx, 2).apply {
                 addView(face, LinearLayout.LayoutParams(WRAP, WRAP))
-                addView(AshUi.text(ctx, out?.first.orEmpty(), AshType(11.5f, 15f, 400, Role.TEXT_2), if (out?.second == true) c.err else null).apply {
-                    minLines = 1; maxLines = 3; ellipsize = TextUtils.TruncateAt.END; maxWidth = dp(280)
-                }, LinearLayout.LayoutParams(WRAP, WRAP))
+                addView(line, LinearLayout.LayoutParams(WRAP, WRAP))
             }
         }
 
@@ -1038,7 +1236,7 @@ class ChatCards(
         private fun bindOf(n: JSONObject): String? = n.optString("bind").ifEmpty { null }
         private fun valueOf(n: JSONObject): Any? = bindOf(n)?.let { ChatCardModel.read(st.data, it) }
         private fun enabled(n: JSONObject) = !readOnly && !n.optBoolean("disabled")
-        private fun put(n: JSONObject, value: Any) { val b = bindOf(n) ?: return; changed(st) { ChatCardModel.write(st.data, b, value) } }
+        private fun put(n: JSONObject, value: Any) { val b = bindOf(n) ?: return; if (!writing) changed(st) { ChatCardModel.write(st.data, b, value) } }
         private fun fieldLabel(text: String) = AshUi.text(ctx, text, AshType(13f, 18f, 500, Role.TEXT_2))
         /** An input's label sits this far above its box. */
         private fun labelled() = AshUi.vstack(ctx, LABEL_GAP)
@@ -1048,27 +1246,37 @@ class ChatCards(
             AshUi.style(this, BODY, ink ?: c.text)
             text = n.optString("label")
             buttonTintList = ColorStateList.valueOf(accent)
-            isChecked = valueOf(n) as? Boolean ?: n.optBoolean("checked")
-            isEnabled = enabled(n)
+            fun fill(m: JSONObject): Boolean { isChecked = valueOf(m) as? Boolean ?: m.optBoolean("checked"); isEnabled = enabled(m); return true }
+            fill(n)
             setOnCheckedChangeListener { _, on -> put(n, on) }
+            control(n, write = ::fill)
         }
 
         private fun switch(n: JSONObject, ink: Int?): View = AshUi.hstack(ctx, 10).apply {
             addView(AshUi.text(ctx, n.optString("label"), BODY, ink), LinearLayout.LayoutParams(0, WRAP, 1f))
             val sw = AshUi.AshSwitch(ctx)
-            sw.set(valueOf(n) as? Boolean ?: n.optBoolean("checked"))
+            fun fill(m: JSONObject): Boolean {
+                sw.set(valueOf(m) as? Boolean ?: m.optBoolean("checked"))
+                sw.isEnabled = enabled(m); sw.alpha = if (sw.isEnabled) 1f else 0.5f
+                return true
+            }
+            fill(n)
             sw.onChange = { on -> put(n, on) }
-            if (!enabled(n)) { sw.isEnabled = false; sw.alpha = 0.5f }
             addView(sw)
+            control(n, write = ::fill)
         }
 
         private fun choice(n: JSONObject): View {
             val all = n.optJSONArray("options") ?: JSONArray()
             val options = (0 until all.length()).mapNotNull { all.optJSONObject(it) }
             val chosen = LinkedHashSet<String>()
-            val given = valueOf(n) as? JSONArray
-            if (given != null) for (i in 0 until given.length()) chosen.add(given.optString(i))
-            else options.filter { it.optBoolean("checked") }.forEach { chosen.add(it.optString("value")) }
+            fun choose(m: JSONObject) {
+                chosen.clear()
+                val given = valueOf(m) as? JSONArray
+                if (given != null) for (i in 0 until given.length()) chosen.add(given.optString(i))
+                else m.optJSONArray("options")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.takeIf { it.optBoolean("checked") }?.let { chosen.add(it.optString("value")) } }
+            }
+            choose(n)
             val multiple = n.optBoolean("multiple")
             val chips = n.optBoolean("chips")
             val on = enabled(n)
@@ -1097,6 +1305,7 @@ class ChatCards(
             }
             fill()
             box.addView(holder, LinearLayout.LayoutParams(MATCH, WRAP))
+            control(n) { m -> if (enabled(m) != on) false else { choose(m); fill(); true } }
             return box
         }
 
@@ -1125,8 +1334,7 @@ class ChatCards(
                 if (variant == "longText") { minLines = 3; gravity = Gravity.TOP or Gravity.START }
                 if (obscured) { setAutofillHints(View.AUTOFILL_HINT_PASSWORD); typeface = Typeface.DEFAULT }
                 n.optString("placeholder").takeIf { it.isNotEmpty() }?.let { hint = it }
-                val value = if (obscured) secrets[st.id]?.get(secretKey).orEmpty() else asText(valueOf(n)) ?: n.optString("text")
-                setText(value)
+                setText(if (obscured) secrets[st.id]?.get(secretKey).orEmpty() else asText(valueOf(n)) ?: n.optString("text"))
                 isEnabled = enabled(n)
                 if (!isEnabled) alpha = 0.6f
                 addTextChangedListener(object : TextWatcher {
@@ -1141,6 +1349,13 @@ class ChatCards(
             }
             st.fields[id] = et
             box.addView(et, LinearLayout.LayoutParams(MATCH, WRAP))
+            // The owner is at it while it has the cursor or text is being composed; a password box is never written from data.
+            control(n, editing = { et.hasFocus() || BaseInputConnection.getComposingSpanStart(et.text) >= 0 }) { m ->
+                val t = asText(valueOf(m)) ?: m.optString("text")
+                if (!obscured && et.text.toString() != t) et.setText(t)
+                et.isEnabled = enabled(m); et.alpha = if (et.isEnabled) 1f else 0.6f
+                true
+            }
             return box
         }
 
@@ -1173,6 +1388,7 @@ class ChatCards(
                 } else time(null)
             } else shown.alpha = 0.6f
             box.addView(shown, LinearLayout.LayoutParams(MATCH, WRAP))
+            control(n) { m -> if (enabled(m) != enabled(n)) false else { value = (valueOf(m) as? String) ?: m.optString("text"); show(); true } }
             return box
         }
 
@@ -1181,14 +1397,16 @@ class ChatCards(
             val max = n.optDouble("max", 100.0).let { if (it > min) it else min + 1 }
             val step = ChatCardModel.sliderStep(min, max, n.optDouble("step", Double.NaN))
             val notches = Math.round((max - min) / step).toInt().coerceIn(1, 100_000)
-            val start = (valueOf(n) as? Number)?.toDouble() ?: n.optDouble("value", min)
+            fun at(m: JSONObject) = (valueOf(m) as? Number)?.toDouble() ?: m.optDouble("value", min)
+            val start = at(n)
             val shown = AshUi.text(ctx, ChatCardModel.number(start), AshType(13f, 18f, 600, Role.TEXT_2))
+            var dragging = false
             return AshUi.vstack(ctx, 2).apply {
                 addView(AshUi.hstack(ctx, 8).apply {
                     addView(AshUi.text(ctx, n.optString("label"), AshType(13f, 18f, 500, Role.TEXT_2), ink), LinearLayout.LayoutParams(0, WRAP, 1f))
                     addView(shown)
                 }, LinearLayout.LayoutParams(MATCH, WRAP))
-                addView(SeekBar(ctx).apply {
+                val bar = SeekBar(ctx).apply {
                     this.max = notches
                     progress = Math.round((start - min) / step).toInt().coerceIn(0, notches)
                     progressTintList = ColorStateList.valueOf(accent); thumbTintList = ColorStateList.valueOf(accent)
@@ -1200,28 +1418,43 @@ class ChatCards(
                             shown.text = ChatCardModel.number(v)
                             put(n, v)
                         }
-                        override fun onStartTrackingTouch(bar: SeekBar) {}
-                        override fun onStopTrackingTouch(bar: SeekBar) {}
+                        override fun onStartTrackingTouch(bar: SeekBar) { dragging = true }
+                        override fun onStopTrackingTouch(bar: SeekBar) { dragging = false }
                     })
-                }, LinearLayout.LayoutParams(MATCH, WRAP))
+                }
+                addView(bar, LinearLayout.LayoutParams(MATCH, WRAP))
+                control(n, editing = { dragging }) { m ->
+                    val v = at(m)
+                    shown.text = ChatCardModel.number(v)
+                    bar.progress = Math.round((v - min) / step).toInt().coerceIn(0, notches)
+                    bar.isEnabled = enabled(m)
+                    true
+                }
             }
         }
 
         private fun progress(n: JSONObject, s: CStyle, ink: Int?): View = AshUi.vstack(ctx, 6).apply {
-            n.optString("label").takeIf { it.isNotEmpty() }?.let { addView(AshUi.text(ctx, it, AshTokens.Type.sub, ink)) }
+            val label = n.optString("label").takeIf { it.isNotEmpty() }?.let { AshUi.text(ctx, it, AshTokens.Type.sub, ink).also(::addView) }
             val max = n.optDouble("max", 100.0)
-            addView(ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
+            val bar = ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
                 isIndeterminate = false
                 this.max = 1000
-                progress = if (max > 0) (n.optDouble("value", 0.0) / max * 1000).roundToInt().coerceIn(0, 1000) else 0
                 progressTintList = ColorStateList.valueOf(s.color?.pick(night) ?: accent)
                 progressBackgroundTintList = ColorStateList.valueOf(c.surface3)
-            }, LinearLayout.LayoutParams(MATCH, dp(6)))
+            }
+            addView(bar, LinearLayout.LayoutParams(MATCH, dp(6)))
+            fun fill(m: JSONObject): Boolean {
+                if (m.optString("label").isNotEmpty() != (label != null)) return false
+                label?.text = m.optString("label")
+                bar.progress = if (max > 0) (m.optDouble("value", 0.0) / max * 1000).roundToInt().coerceIn(0, 1000) else 0
+                return true
+            }
+            fill(n)
+            control(n, write = ::fill)
         }
 
         private fun table(n: JSONObject, ink: Int?): View {
             val header = n.optJSONArray("header") ?: JSONArray()
-            val rows = n.optJSONArray("rows") ?: JSONArray()
             val width = header.length()
             val t = TableLayout(ctx).apply {
                 isStretchAllColumns = true
@@ -1235,10 +1468,17 @@ class ChatCards(
                 })
             }
             t.addView(row((0 until width).map { header.optString(it) }, true))
-            for (i in 0 until rows.length()) {
-                val r = rows.optJSONArray(i) ?: continue
-                t.addView(row((0 until width).map { if (it < r.length()) r.optString(it) else "" }, false))
+            fun fill(m: JSONObject): Boolean {
+                if (t.childCount > 1) t.removeViews(1, t.childCount - 1)
+                val rows = m.optJSONArray("rows") ?: JSONArray()
+                for (i in 0 until rows.length()) {
+                    val r = rows.optJSONArray(i) ?: continue
+                    t.addView(row((0 until width).map { if (it < r.length()) r.optString(it) else "" }, false))
+                }
+                return true
             }
+            fill(n)
+            control(n, write = ::fill)
             return HorizontalScrollView(ctx).apply {
                 isHorizontalScrollBarEnabled = false; isFillViewport = true
                 background = AshUi.rounded(c.surface2, dpF(12f))
@@ -1270,15 +1510,16 @@ class ChatCards(
             webs.add(id)
             val vars = mapOf("bg" to c.bg, "surface" to c.surface, "text" to c.text, "text2" to c.text2, "accent" to accent, "line" to c.line)
                 .mapValues { ChatCardModel.css(it.value) }
-            val doc = ChatCardModel.miniAppDocument(n.optString("html"), vars, night, BRIDGE)
-            val key = "${doc.length}:${doc.hashCode()}"
-            val web = st.webs[id]?.takeIf { it.first == key }?.second ?: sandbox(st, id, doc).also { w ->
-                st.webs.put(id, key to w)?.second?.let { old -> runCatching { old.destroy() } }
-            }
-            (web.parent as? ViewGroup)?.removeView(web)
-            clip(web, dpF(12f))
+            val app = st.card.optString("app").takeIf { AppIds.valid(it) }
+            val html = n.optString("html")
+            val head = ChatCardModel.miniHead(vars, night, app != null)
+            // The same page goes on across drawings; another page (or theme) is a new one.
+            val mini = st.minis[id]?.takeIf { it.html == html && it.head == head && it.app == app }
+                ?: Mini(st, id, app, html, head).also { st.minis.put(id, it)?.drop() }
+            (mini.box.parent as? ViewGroup)?.removeView(mini.box)
+            clip(mini.box, dpF(12f))
             return AshUi.vstack(ctx, 4).apply {
-                addView(web, LinearLayout.LayoutParams(MATCH, dp(n.optDouble("height", 320.0))))
+                addView(mini.box, LinearLayout.LayoutParams(MATCH, dp(n.optDouble("height", 320.0))))
                 val owner = st.card.optString("owner")
                 // A card of an app already is one; a card whose app exists only for it keeps it with the footer's 「存成应用」.
                 if (owner.startsWith("agent:") && st.card.optString("app").isEmpty() && !st.card.optBoolean("temporary_app")) addView(AshUi.button(ctx, "存成应用", AshUi.Kind.GHOST, AshUi.BtnSize.SM).also { b ->
@@ -1294,7 +1535,6 @@ class ChatCards(
     /** A value changed: kept in the working copy at once, and told to the hub (`card.draft`) once the owner pauses. */
     private fun changed(st: Card, write: () -> Unit) {
         write()
-        st.lastEdit = SystemClock.uptimeMillis()
         st.pending?.let(main::removeCallbacks)
         val r = Runnable { st.pending = null; draft(st) }
         st.pending = r
@@ -1305,14 +1545,12 @@ class ChatCards(
         if (!st.open()) return
         val port = port ?: return
         val seq = ++st.draftSeq
-        st.inFlight++
         port.call("person:owner", "card.draft", JSONObject().put("card", st.id).put("data", JSONObject(st.data.toString()))) { data, failure ->
-            st.inFlight--
             // Quietly: a draft that did not arrive is sent again with the next change, and the values are on the screen.
             if (failure != null || data == null || seq != st.draftSeq || st.pending != null) return@call
             if (st.plan?.reactive != true) return@call
-            // A reactive card is drawn again from the hub's answer; the working copy stays (it may already be newer).
-            ChatCardModel.plan(data.optJSONObject("plan"))?.let { st.plan = it; paint(st) }
+            // A reactive card shows the hub's answer (in place when only values changed); the working copy stays (it may already be newer).
+            ChatCardModel.plan(data.optJSONObject("plan"))?.let { st.plan = it; show(st) }
         }
     }
 
@@ -1472,89 +1710,127 @@ class ChatCards(
         else -> "没有送到，再点一次试试"
     }
 
-    // --- the mini app's sandbox ---
+    // --- a card's mini app ---
 
     /**
-     * A WebView that can reach nothing: no network (every request refused, and network loads blocked), no files, no storage, no
-     * cookies (the document is a data: URL, an opaque origin), no navigation, no pop-ups, no permissions. Its only way out is
-     * `ash.send`, which does what a Button does.
+     * A card's mini app (its Html component, MOBILE-ARCH §12.4): a WebView that lives while the card's row is on screen and the
+     * card is awake — made when the row is drawn or attached, destroyed when it is recycled or detached, or the card sleeps or
+     * closes; each load is a new page with a new port. The page is the one an app's own pages get ([HostPage]: the CSP, the
+     * port shim) at its app's origin (cards without an app: [ChatCardModel.CARD_ORIGIN]). It reaches nothing — no network, no
+     * files, no navigation, no permissions; its only way out is the port, where the host knows who it is.
      */
-    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface", "AddJavascriptInterface")
-    private fun sandbox(st: Card, component: String, doc: String): WebView = WebView(ctx).apply {
-        settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = false
-            allowFileAccess = false
-            allowContentAccess = false
-            @Suppress("DEPRECATION") allowFileAccessFromFileURLs = false
-            @Suppress("DEPRECATION") allowUniversalAccessFromFileURLs = false
-            setGeolocationEnabled(false)
-            setSupportMultipleWindows(false)
-            javaScriptCanOpenWindowsAutomatically = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            mediaPlaybackRequiresUserGesture = true
-            blockNetworkLoads = true
-            blockNetworkImage = true
-            cacheMode = WebSettings.LOAD_NO_CACHE
-            @Suppress("DEPRECATION") saveFormData = false
-        }
-        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
-        setBackgroundColor(Color.TRANSPARENT)
-        isVerticalScrollBarEnabled = false
-        webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                if (request.url.scheme in setOf("data", "about")) null
-                else WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
-            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                (view.parent as? ViewGroup)?.removeView(view)
-                st.webs.entries.removeAll { it.value.second === view }
-                runCatching { view.destroy() }
-                return true
-            }
-        }
-        webChromeClient = object : WebChromeClient() {
-            override fun onPermissionRequest(request: PermissionRequest) { request.deny() }
-            override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback) { callback.invoke(origin, false, false) }
-            override fun onShowFileChooser(w: WebView?, cb: ValueCallback<Array<Uri>>?, params: FileChooserParams?): Boolean { cb?.onReceiveValue(null); return true }
-        }
-        addJavascriptInterface(Bridge(st, component, this), BRIDGE)
-        loadData(Base64.encodeToString(doc.toByteArray(Charsets.UTF_8), Base64.NO_WRAP), "text/html; charset=utf-8", "base64")
-    }
-
-    /**
-     * The mini app's way out. `ash.send(action, context)`: one action at most every 0.8 s, as if a Button with that event was
-     * tapped. `ash.call / ask / tell`: at most 2 a second, each `service:cards/act {request}` as the card's Html component (run like
-     * a button of the card, by the hub); the answer goes back into the page with the request's id.
-     */
-    private inner class Bridge(private val st: Card, private val component: String, private val web: WebView) {
-        private var last = 0L
+    private inner class Mini(val st: Card, val component: String, val app: String?, val html: String, val head: String) {
+        val box = FrameLayout(ctx)
+        /** In the box while there is no page: a soft block, with a line when it sleeps, has ended or crashed. */
+        private val note = AshUi.text(ctx, "", AshType(13f, 18f, 400, Role.TEXT_3)).apply { gravity = Gravity.CENTER; background = AshUi.rounded(c.surface2, dpF(12f)) }
+        private val origin = app?.let { AppIds.origin(it) } ?: ChatCardModel.CARD_ORIGIN
+        private var web: WebView? = null
+        private val ports = ArrayList<WebMessagePort>()
+        private var lastSend = 0L
         private val calls = ChatCardModel.Rate(2, 1000)
 
-        @JavascriptInterface fun request(id: String?, body: String?) {
-            main.post {
-                val rid = id?.takeIf { it.isNotEmpty() && it.length <= 32 } ?: return@post
-                fun reply(answer: JSONObject) { runCatching { web.evaluateJavascript("window.__ashReply(${JSONObject.quote(rid)},${JSONObject.quote(answer.toString())})", null) } }
-                val request = ChatCardModel.miniRequest(body) ?: return@post reply(JSONObject().put("state", "failed").put("text", "这个请求看不懂"))
-                if (!calls.take(SystemClock.uptimeMillis())) return@post reply(JSONObject().put("state", "failed").put("text", "太快了，稍后再试"))
-                val port = port ?: return@post reply(ChatCardModel.miniAnswer(null, "unavailable"))
-                if (!st.open()) return@post reply(ChatCardModel.miniAnswer(null, "conflict"))
-                var answered = false
-                fun once(answer: JSONObject) { if (!answered) { answered = true; reply(answer) } }
-                main.postDelayed({ once(ChatCardModel.miniAnswer(null, "timeout")) }, ChatCardModel.pressTimeoutMs(null))
-                port.call("service:cards", "act", ChatCardModel.actBody(st.id, component, st.data, request)) { data, failure -> once(ChatCardModel.miniAnswer(data, failure?.code)) }
-            }
+        init { box.addView(note, FrameLayout.LayoutParams(MATCH, MATCH)) }
+
+        /** Alive or not, as the row and the card are now. */
+        fun sync() {
+            val life = st.card.optString("life")
+            val closed = ChatCardModel.closed(st.card)
+            note.text = when { closed -> "小应用已结束"; life == "dormant" -> "小应用休眠中"; else -> "" }
+            if (st.onScreen && !closed && life != "dormant") { if (web == null) load() } else drop()
         }
 
-        @JavascriptInterface fun send(action: String?, context: String?) {
-            main.post {
-                val now = SystemClock.uptimeMillis()
-                if (now - last < 800) return@post
-                last = now
-                val name = action?.trim()?.takeIf { it.isNotEmpty() && it.length <= 64 } ?: return@post
-                val ctxObj = runCatching { JSONObject(context ?: "{}") }.getOrNull()
-                event(st, name, ctxObj, name)
+        fun drop() {
+            ports.forEach { runCatching { it.close() } }
+            ports.clear()
+            web?.let { w -> box.removeView(w); runCatching { w.destroy() } }
+            web = null
+            note.visibility = View.VISIBLE
+        }
+
+        @SuppressLint("SetJavaScriptEnabled")
+        private fun load() {
+            val token = Base64.encodeToString(ByteArray(18).also { SecureRandom().nextBytes(it) }, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            val w = WebView(ctx)
+            web = w
+            var offered = 0
+            w.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = false
+                allowFileAccess = false
+                allowContentAccess = false
+                @Suppress("DEPRECATION") allowFileAccessFromFileURLs = false
+                @Suppress("DEPRECATION") allowUniversalAccessFromFileURLs = false
+                setGeolocationEnabled(false)
+                setSupportMultipleWindows(false)
+                javaScriptCanOpenWindowsAutomatically = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                mediaPlaybackRequiresUserGesture = true
+                cacheMode = WebSettings.LOAD_NO_CACHE
+                @Suppress("DEPRECATION") saveFormData = false
             }
+            CookieManager.getInstance().setAcceptThirdPartyCookies(w, false)
+            w.setBackgroundColor(Color.TRANSPARENT)
+            w.isVerticalScrollBarEnabled = false
+            w.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
+                // The page itself, data: and blob:; nothing else.
+                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                    if (request.url.scheme in setOf("data", "blob", "about") || (request.isForMainFrame && request.url.toString() == "$origin/")) null
+                    else WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                override fun onPageCommitVisible(view: WebView, url: String?) = offer()
+                override fun onPageFinished(view: WebView, url: String?) = offer()
+                fun offer() {
+                    // As an app's page: its end of a new channel, under the token (the shim keeps the first, closes a later one).
+                    if (web !== w || offered >= 2) return
+                    offered++
+                    runCatching {
+                        val (mine, theirs) = w.createWebMessageChannel()
+                        ports.add(mine)
+                        mine.setWebMessageCallback(object : WebMessagePort.WebMessageCallback() {
+                            override fun onMessage(p: WebMessagePort, message: WebMessage) { if (web === w) heard(p, message.data) }
+                        }, main)
+                        w.postWebMessage(WebMessage(token, arrayOf(theirs)), Uri.parse(origin))
+                    }.onFailure { Log.w(TAG, "could not connect the mini app", it) }
+                }
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    if (view === web) { drop(); note.text = "这个小应用停了" } else runCatching { view.destroy() }
+                    return true
+                }
+            }
+            w.webChromeClient = object : WebChromeClient() {
+                override fun onPermissionRequest(request: PermissionRequest) { request.deny() }
+                override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback) { callback.invoke(origin, false, false) }
+                override fun onShowFileChooser(w: WebView?, cb: ValueCallback<Array<Uri>>?, params: FileChooserParams?): Boolean { cb?.onReceiveValue(null); return true }
+            }
+            note.visibility = View.GONE
+            box.addView(w, FrameLayout.LayoutParams(MATCH, MATCH))
+            w.loadDataWithBaseURL("$origin/", HostPage.build(html, Csp(emptyList(), emptyList()), token, head), "text/html", "utf-8", null)
+        }
+
+        /**
+         * What the page said on our port: `ash.send` at most every 0.8 s, as if a Button with that event was tapped; `ash.call /
+         * ask / tell` at most 2 a second, each `service:cards/act {request}` as this card's component, the answer back on the port.
+         */
+        private fun heard(p: WebMessagePort, raw: String?) {
+            val (id, what) = ChatCardModel.miniMessage(raw, app != null) ?: return
+            fun reply(answer: JSONObject) {
+                if (web != null) runCatching { p.postMessage(WebMessage(JSONObject().put("jsonrpc", "2.0").put("id", id ?: JSONObject.NULL).put("result", answer).toString())) }
+            }
+            fun failed(text: String) = JSONObject().put("state", "failed").put("text", text)
+            if (what == null) return reply(failed("这个请求看不懂"))
+            val now = SystemClock.uptimeMillis()
+            what.optJSONObject("send")?.let { s ->
+                if (now - lastSend < 800) return
+                lastSend = now
+                return event(st, s.getString("action"), s.getJSONObject("context"), s.getString("action"))
+            }
+            if (!calls.take(now)) return reply(failed("太快了，稍后再试"))
+            val port = port ?: return reply(ChatCardModel.miniAnswer(null, "unavailable"))
+            if (!st.open()) return reply(ChatCardModel.miniAnswer(null, "conflict"))
+            var answered = false
+            fun once(answer: JSONObject) { if (!answered) { answered = true; reply(answer) } }
+            main.postDelayed({ once(ChatCardModel.miniAnswer(null, "timeout")) }, ChatCardModel.pressTimeoutMs(null))
+            port.call("service:cards", "act", ChatCardModel.actBody(st.id, component, st.data, what)) { data, failure -> once(ChatCardModel.miniAnswer(data, failure?.code)) }
         }
     }
 
@@ -1568,7 +1844,9 @@ class ChatCards(
     }
 
     /** The footer's small switch: a pill with its knob at the end when on. Drawn only; the row around it takes the tap. */
-    private class MiniSwitch(ctx: Context, private val on: Boolean, private val onColor: Int, private val offColor: Int) : View(ctx) {
+    private class MiniSwitch(ctx: Context, private val onColor: Int, private val offColor: Int) : View(ctx) {
+        var on = false
+            set(v) { field = v; invalidate() }
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         override fun onDraw(canvas: Canvas) {
             val w = width.toFloat(); val h = height.toFloat(); val r = h / 2
@@ -1581,7 +1859,9 @@ class ChatCards(
     }
 
     /** A Chart: drawn by [AshChart] at the size it is given, in the current theme. */
-    private class ChartView(ctx: Context, private val chart: AshChart.Chart, private val night: Boolean) : View(ctx) {
+    private class ChartView(ctx: Context, chart: AshChart.Chart, private val night: Boolean) : View(ctx) {
+        var chart = chart
+            set(v) { field = v; bmp = null; invalidate() }
         private var bmp: Bitmap? = null
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { bmp = null }
         override fun onDraw(canvas: Canvas) {
@@ -1644,7 +1924,6 @@ class ChatCards(
         /** A built-in icon's size when the style gives none. */
         const val ICON_DP = 22f
         const val DRAFT_MS = 400L
-        const val BRIDGE = "__ashCard"
         /** 「已复制」 stays this long. */
         const val COPIED_MS = 2000L
         /** The line after 「常驻」 could not be changed stays this long. */

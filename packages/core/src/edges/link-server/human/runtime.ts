@@ -59,6 +59,11 @@ export interface CardRuntimeDeps {
    * the app listening, so it needs the same grant. Not given: no card hears any event.
    */
   hears?(app: string, word: string): boolean;
+  /**
+   * Is app [app] still used by another surface (a page of it opened lately, a home-screen widget showing one of its cards)?
+   * A temporary app in use is not removed; the next sweep asks again. Not given: never in use.
+   */
+  inUse?(app: string): Promise<boolean>;
   /** No timers (tests drive `tick`). */
   manual?: boolean;
 }
@@ -92,6 +97,8 @@ export class CardRuntime {
 
   constructor(private readonly d: CardRuntimeDeps) {
     d.db.exec(SCHEMA);
+    const have = new Set((d.db.prepare("PRAGMA table_info(card_runtime)").all() as { name: string }[]).map((c) => c.name));
+    if (!have.has("app_gone")) d.db.exec("ALTER TABLE card_runtime ADD COLUMN app_gone INTEGER NOT NULL DEFAULT 0");
     this.unsubscribe = d.router.subscribe({}, (m) => { if (m.kind === "event") this.onEvent(m); });
     if (!d.manual) { this.tickTimer = setInterval(() => this.tick(), TICK_MS); this.tickTimer.unref?.(); }
   }
@@ -185,7 +192,10 @@ export class CardRuntime {
   }
 
   /** Every few seconds: who is active, idle, dormant or past its time; sources follow; limits hold. */
-  tick(): void { try { this.reconcile(); } catch (error) { this.d.log("cards tick", error); } }
+  tick(): void {
+    try { this.reconcile(); } catch (error) { this.d.log("cards tick", error); }
+    void this.recycle().catch((error) => this.d.log("cards recycle", error));
+  }
 
   private reconcile(): void {
     const now = this.d.now();
@@ -245,13 +255,30 @@ export class CardRuntime {
     for (const id of [...this.lastEvent.keys()]) if (id.startsWith(`${r.id}\0`)) this.lastEvent.delete(id);
     const row = this.d.cards.get(r.id);
     if (row && row.state === "open") this.d.cards.setState(r.id, "closed");
-    // A temporary app goes when its cards are all closed (unless the owner kept it).
-    if (r.app && r.temporary && !r.kept) {
-      const left = this.d.db.prepare("SELECT count(*) AS n FROM card_runtime WHERE app=? AND life!='closed'").get(r.app) as { n: number };
-      const kept = this.d.db.prepare("SELECT count(*) AS n FROM card_runtime WHERE app=? AND kept=1").get(r.app) as { n: number };
-      if (Number(left.n) === 0 && Number(kept.n) === 0) void this.call("service:apps", "apps.remove", { id: r.app, keep_data: false });
-    }
+    // A temporary app goes when its cards are all closed (the sweep: recycle).
+    if (r.app && r.temporary && !r.kept) void this.recycle();
     if (push) this.push(r.id);
+  }
+
+  private recycling = false;
+
+  /**
+   * Remove the temporary apps whose cards are all closed (not kept by the owner, not already gone), unless another surface
+   * still uses them (a page open lately, a widget): those, and a removal that failed, wait for the next sweep.
+   */
+  async recycle(): Promise<void> {
+    if (this.recycling) return;
+    this.recycling = true;
+    try {
+      const apps = (this.d.db.prepare(`SELECT app FROM card_runtime WHERE app IS NOT NULL GROUP BY app
+        HAVING max(temporary)=1 AND max(kept)=0 AND max(app_gone)=0 AND sum(life!='closed')=0`).all() as { app: string }[]).map((r) => r.app);
+      for (const app of apps) {
+        if (await this.d.inUse?.(app)) continue;
+        const reply = await this.call("service:apps", "apps.remove", { id: app, keep_data: false });
+        if (reply.ok || reply.error.code === "not_found") this.d.db.prepare("UPDATE card_runtime SET app_gone=1 WHERE app=?").run(app);
+        else this.d.log(`temporary app ${app} not removed (${reply.error.code}); the next sweep tries again`);
+      }
+    } finally { this.recycling = false; }
   }
 
   /** person:owner/card.close and service:cards/close. */

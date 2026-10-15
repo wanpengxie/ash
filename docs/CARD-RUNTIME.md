@@ -17,6 +17,10 @@ when all its cards are closed, unless the owner keeps it (「存成应用」). T
 folder is the agent's own) that no lasting card uses; for any other app (the owner's, a built-in one, one kept) it is ignored
 with a problem, so a card never puts to sleep or removes an app the owner relies on.
 
+An agent may make a card of an app only if it published that app itself, or its declaration lets it call every word of
+the app; otherwise `app` is dropped (the card has no app, nothing of it runs as the app) and `problems` says why. An app's
+own card always belongs to that app. A narrowed helper cannot borrow an app's grants through a card.
+
 ## 2. Actions
 
 | action | what happens | where |
@@ -75,7 +79,9 @@ is `pin`); `apps.sleep` stops no app behind the owner (apps cannot call it; for 
 always-ask list, no 「以后都可以」). `ttl_min` only makes a card stop sooner (at most the default day); longer is pinning.
 
 Limits (hub settings): `cards.max_active` 8, `cards.max_sources` 16, `cards.max_temporary_apps` 5; over a limit the least
-recently used goes dormant first (its temporary app sleeps). A temporary app is removed when all its cards are closed.
+recently used goes dormant first (its temporary app sleeps). A temporary app is removed when all its cards are closed and no other surface uses it (a page of it opened in the last
+hour, a home-screen widget showing one of its cards); if it is in use or the removal fails, the sweep tries again a
+minute later.
 
 **Visibility**: the owner's screens report the card ids on screen with `service:cards/seen {cards}` when the list stops
 scrolling (and once a minute while the chat is visible); no screen reporting = everything idle.

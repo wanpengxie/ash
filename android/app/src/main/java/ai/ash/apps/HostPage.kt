@@ -8,10 +8,11 @@ package ai.ash.apps
 object HostPage {
     private val DOCTYPE = Regex("^\\s*<!doctype[^>]*>", RegexOption.IGNORE_CASE)
 
-    fun build(html: String, csp: Csp, token: String): String {
+    /** [extraHead] goes right after the shim (a card's mini app: its theme and `window.ash`). */
+    fun build(html: String, csp: Csp, token: String, extraHead: String = ""): String {
         require(Regex("[A-Za-z0-9_-]{8,64}").matches(token))
         val body = html.removePrefix("﻿")
-        val head = csp.meta() + "<script>" + shim(token) + "</script>"
+        val head = csp.meta() + "<script>" + shim(token) + "</script>" + extraHead
         val doctype = DOCTYPE.find(body)
         // Before the app's own markup: the parser puts both in the head, ahead of any script of the app's.
         return if (doctype != null) doctype.value + head + body.substring(doctype.range.last + 1) else head + body

@@ -173,15 +173,7 @@ class ChatCardModelTest {
         assertEquals("21:00", ChatCardModel.iso(null, LocalTime.of(21, 0)))
     }
 
-    @Test fun theMiniAppGetsItsRulesAndBridgeBeforeItsOwnHtml() {
-        val doc = ChatCardModel.miniAppDocument("<!DOCTYPE html><html><head><script>ash.send('go',{a:1})</script></head></html>", mapOf("bg" to "rgba(0,0,0,1.000)"), dark = true)
-        assertTrue(doc.startsWith("<!DOCTYPE html><meta http-equiv=\"Content-Security-Policy\" content=\"${ChatCardModel.MINI_CSP}\">"))
-        assertTrue(doc.indexOf("--ash-bg:rgba(0,0,0,1.000)") < doc.indexOf("<html>"))
-        assertTrue(doc.indexOf("window.__ashCard") < doc.indexOf("ash.send('go'"))
-        assertTrue(doc.contains("color-scheme:dark"))
-        assertTrue(ChatCardModel.MINI_CSP.startsWith("default-src 'none'"))
-        assertFalse(ChatCardModel.MINI_CSP.contains("connect-src"))
-        assertTrue(ChatCardModel.miniAppDocument("<p>hi</p>", emptyMap(), dark = false).endsWith("<p>hi</p>"))
+    @Test fun aColourAsCss() {
         assertEquals("rgba(255,0,0,0.502)", ChatCardModel.css(0x80FF0000.toInt()))
     }
 
@@ -346,12 +338,6 @@ class ChatCardModelTest {
         // At most 2 a second.
         val rate = ChatCardModel.Rate(2, 1000)
         assertTrue(rate.take(0)); assertTrue(rate.take(100)); assertFalse(rate.take(500)); assertTrue(rate.take(1000)); assertFalse(rate.take(1050)); assertTrue(rate.take(1100))
-    }
-
-    @Test fun theMiniAppHasCallAskAndTell() {
-        val doc = ChatCardModel.miniAppDocument("<p>hi</p>", emptyMap(), dark = false)
-        for (word in listOf("send:send", "call:function(m,w,body)", "ask:function(t)", "tell:function(t)", "b.request(id,", "__ashReply")) assertTrue(word, doc.contains(word))
-        assertTrue(doc.indexOf("__ashReply") < doc.indexOf("<p>hi</p>"))
     }
 
     @Test fun theFormerlyRoundIconsHaveTheirOwnLines() {
