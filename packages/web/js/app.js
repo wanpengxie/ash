@@ -19,6 +19,7 @@ import { Files } from "./files.js";
 import { framePainter } from "./frame-painter.js";
 import { agentPicker } from "./agent-picker.js";
 import { addIcon, avatarUrl } from "./chat-ui.js";
+import { cardIdsOnScreen, patchA2uiCard, SeenReporter } from "./a2ui-card.js";
 
 /** The pages of her home that the kernel (or the agent) can ask this page to open, by the name it uses; others are aliases. */
 const HOME_SECTIONS = new Set(["waiting", "upcoming", "memory", "promises", "hands", "backstage", "identity", "files", "activity",
@@ -231,6 +232,10 @@ export function boot() {
       vaultSet: (body) => net.data("service:vault", "set", body),
       answerForm: (request) => net.answerForm(request),
       say: (to, words, card) => net.enqueueSay(words, [], null, to, card),
+      // The card runtime (docs/CARD-RUNTIME.md): a press the hub runs, keeping a card's temporary app, 「常驻」.
+      act: (body) => net.data("service:cards", "act", body),
+      keep: (id) => net.data("service:cards", "keep", { id }),
+      pin: (id, pinned) => net.data("service:cards", "pin", { id, pinned }),
       refresh: (message) => timeline?.refreshCard({ message }),
       problem: (message) => presenceBar.problem(message),
     },
@@ -290,8 +295,9 @@ export function boot() {
       const id = first?.dataset.rowKey?.replace(/^message:/, "") || first?.dataset.messageId;
       return id ? { around_id: id } : timeline.store.items[0] ? { around_id: timeline.store.items[0].id } : {};
     },
-    onHistoryReady: () => { timeline.historyReady(); },
+    onHistoryReady: () => { timeline.historyReady(); seen.poke(); },
     onCardChange: (change) => { timeline?.refreshCard(change); },
+    onCardPatch: (card) => { patchA2uiCard(card); timeline?.patchCard(card); },
     onPresent: async (request) => {
       const opened = await presentUiOpen(suggestions, request, openUiTarget).catch(() => false);
       return { ok: true, data: { opened } };
@@ -319,6 +325,16 @@ export function boot() {
     },
   });
   connectHome(net, homeFeed);
+  // The cards on screen, told to the hub when the list stops scrolling, when the chat comes into view, and once a minute
+  // while it is in view: those cards stay awake (docs/CARD-RUNTIME.md §4).
+  const homeLayer = () => document.querySelector("#home");
+  const chatVisible = () => !document.hidden && homeLayer()?.hidden !== false && net.status === "online";
+  const seen = new SeenReporter({ ids: () => cardIdsOnScreen(log), visible: chatVisible, send: (cards) => net.call("service:cards", "seen", { cards }) });
+  seen.start();
+  // Her home is a layer over the chat, made the first time it opens: closing it brings the chat back into view.
+  const homeObserver = new MutationObserver(() => seen.poke());
+  const watchHome = () => { const layer = homeLayer(); if (layer) homeObserver.observe(layer, { attributes: true, attributeFilter: ["hidden"] }); };
+  window.addEventListener("ash:open", () => setTimeout(watchHome, 0));
   files = new Files(net);
   // Visible-item pages cannot be drowned by background ledger events; fill a short viewport from finite older pages.
   let filling = false;
@@ -454,6 +470,7 @@ export function boot() {
   recipient = agentPicker(form, input, net, redraw, { field: document.querySelector("#field") });
   document.addEventListener("visibilitychange", () => {
     net.setVisible(!document.hidden);
+    seen.poke();
     if (!document.hidden) typing(); else stopTyping();
   });
   const typingTimer = setInterval(() => { if (!document.hidden && typingTo) typing(); }, 3_000);
@@ -465,6 +482,7 @@ export function boot() {
   // The whole field is the target of a tap, not only the text line.
   document.querySelector("#field").addEventListener("click", (event) => { if (event.target === event.currentTarget) input.focus(); });
   log.addEventListener("scroll", async event => {
+    seen.poke();
     if (views.get(log)?.position.compensations.has(event)) return;
     restorer.scroll();
     if (timeline.loading) return;
@@ -483,12 +501,14 @@ export function boot() {
     showPicked();
   });
   appsButton.addEventListener("click", () => openHome({ page: "apps" }));
-  window.addEventListener("pagehide", () => { timeline.clearCurrentRefresh(); clearInterval(progressTimer); clearInterval(typingTimer); restorer.dispose(); navigationObserver.disconnect(); views.get(log)?.dispose(); net.stop(); });
+  window.addEventListener("pagehide", () => { timeline.clearCurrentRefresh(); clearInterval(progressTimer); clearInterval(typingTimer); restorer.dispose(); navigationObserver.disconnect(); seen.dispose(); homeObserver.disconnect(); views.get(log)?.dispose(); net.stop(); });
   window.addEventListener("online", () => net.reconnect());
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     restorer.closed = false; restorer.reset();
     navigationObserver.observe(log, { childList: true });
+    seen.start();
+    watchHome();
     net.start();
   });
   net.start();

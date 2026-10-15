@@ -67,13 +67,18 @@ export function createWindowReader(ledger: HistoryLedger, now: () => number = Da
   /** A card in the conversation as it is now (its newest version, what the owner entered, open or not): the human edge keeps it in owner_cards. */
   let cardRow: ReturnType<typeof db.prepare> | null = null;
   const cardStatement = () => cardRow ??= db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_cards'").get()
-    ? db.prepare("SELECT id,owner,text,state,form,plan,updated_at,feedback FROM owner_cards WHERE message=?") : null;
+    ? db.prepare(`SELECT c.id,c.owner,c.text,c.state,c.form,c.plan,c.updated_at,c.feedback,r.app,r.temporary,r.kept,r.life,r.pinned,r.actions,r.fed_at
+      FROM owner_cards c LEFT JOIN card_runtime r ON r.id=c.id WHERE c.message=?`) : null;
   function card(message: string, shown: DisplayFact): DisplayFact {
-    const r = cardStatement()?.get(message) as { id: string; owner: string; text: string; state: string; form: string | null; plan: string; updated_at: number; feedback: string | null } | undefined;
+    const r = cardStatement()?.get(message) as { id: string; owner: string; text: string; state: string; form: string | null; plan: string; updated_at: number; feedback: string | null;
+      app: string | null; temporary: number | null; kept: number | null; life: string | null; pinned: number | null; actions: string | null; fed_at: number | null } | undefined;
     if (!r) return { ...shown, state: "closed" };
     const { problems: _problems, hints: _hints, ...plan } = JSON.parse(r.plan) as Record<string, unknown>;
     const form = r.form ? JSON.parse(r.form) as { secret: Record<string, string>; fields: Record<string, { title: string }>; expires_at: number } : null;
+    const actions = r.actions ? JSON.parse(r.actions) as Record<string, unknown> : {};
     return { type: "a2ui", id: r.id, owner: r.owner, text: r.text, state: r.state, plan, updated_at: r.updated_at, ...(r.feedback ? { feedback: r.feedback } : {}),
+      ...(r.life ? { life: r.life } : {}), ...(r.app ? { app: r.app } : {}), ...(r.temporary && !r.kept ? { temporary_app: true } : {}), ...(r.pinned ? { pinned: true } : {}),
+      ...(Object.keys(actions).length ? { actions } : {}), ...(r.fed_at ? { fed_at: r.fed_at } : {}),
       ...(form ? { form: { secret: form.secret, titles: Object.fromEntries(Object.entries(form.fields).map(([k, f]) => [k, f.title])), expires_at: form.expires_at } } : {}) };
   }
   function lastOwner(snap: number) {

@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "ec71d77d11056fed1d30758941c4353427e3f36ddd27d6abd6abb48da2c9d763",
+ "hash": "10069854518498f9fc53421dc36036f4a38a0fe5baae3ba2b3dbbe03c9a05528",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -9429,6 +9429,99 @@
   },
   {
    "member": "service:apps",
+   "word": "apps.sleep",
+   "kind": "request",
+   "direction": "in",
+   "description": "Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again; while it sleeps it hears no events (an alert it would raise does not come), so the gate decides whether the owner is asked. service:cards does this for a temporary app whose cards are all asleep.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+     },
+     "sleeping": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id",
+     "sleeping"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "structure",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在让应用休眠"
+   }
+  },
+  {
+   "member": "service:apps",
+   "word": "apps.wake",
+   "kind": "request",
+   "direction": "in",
+   "description": "Start an app put to sleep with apps.sleep (an app that is turned off stays off: apps.enable).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+     },
+     "running": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id",
+     "running"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在唤醒应用"
+   }
+  },
+  {
+   "member": "service:apps",
    "word": "apps.restart",
    "kind": "request",
    "direction": "in",
@@ -16456,7 +16549,7 @@
    "word": "show",
    "kind": "request",
    "direction": "in",
-   "description": "Put a card in the conversation. Either card: a file, image, link, a permission page to switch on, or choices; or a2ui: any card you design — text, tables, charts, lists, images, tabs, buttons, inputs, a small sandboxed page — drawn natively in the chat, in the same card language as the home-screen cards. Show the owner what you want to show and ask for choices and input this way, in the conversation: never send them to another page for it. id names the card (default: this message's id) so card.update can change it later in place: a follow-up updates the card instead of sending another one. text is a short plain summary for notifications and screens that cannot draw the card (written from the card when left out). Answers {accepted, card, problems, hints}: problems lists what was left out and why, hints what usually looks worse (too many accents, icons, titles); fix them with card.update, and look at it with card.preview. A card that cannot be drawn at all is refused with the reason. Showing choices does not itself authorize anything. a2ui is the same A2UI as a home-screen card (widget.card.put): {components:[{id, component, ...}], root?:'root', data?:{...}, theme?}. In the conversation it also takes TextField {label, value, variant: shortText|longText|number|obscured, placeholder} (obscured is a password box: what is typed is never in data and never reaches you; ask for a password with person:owner/form), DateTimeInput {label, value: ISO text, enableDate (default true), enableTime}, Slider {label, value, min, max, step}, Table {columns: [titles], rows: [[cells]] or {path}}, and Html {html: one self-contained HTML document with inline CSS and JS, height: dp} for what the components cannot show (a calculator, a game, an unusual chart): it runs sandboxed with no network; the theme is in CSS variables --ash-bg, --ash-surface, --ash-text, --ash-text2, --ash-accent, --ash-line; ash.send(action, context) sends an action to you like a button. Row, Column, List and Grid take gap (dp between their children; none when left out). A Chart series takes min (the bottom of its axis, for a price or a weight). The conversation draws the card's frame: do not give the root a background, padding or corners. Inputs with value {path} write the owner's value into data on the phone itself: tabs, toggles, choices, sliders and typing need no round trip to you, and any Text or visible that reads such a path follows at once. A Button with action {event:{name, context?}} sends you the owner's message `[card <id>, action <name>] {context, data}` with the card's current data. Lists may scroll horizontally here. What cannot be drawn is left out and listed in problems; a component named but not given yet shows as a placeholder.",
+   "description": "Put a card in the conversation. Either card: a file, image, link, a permission page to switch on, or choices; or a2ui: any card you design — text, tables, charts, lists, images, tabs, buttons, inputs, a small sandboxed page — drawn natively in the chat, in the same card language as the home-screen cards. Show the owner what you want to show and ask for choices and input this way, in the conversation: never send them to another page for it. app makes the card a surface of that Ash app (docs: card runtime): its buttons may call words ({call}) and its data may be fed live (a2ui.sources), always as app:<app>, within what the app was granted and through the gate; without app a card only talks to agents and does things on the phone. temporary_app: the app exists only for this card and is removed when its cards are closed (unless the owner keeps it). Every card stops by itself: idle a minute after it leaves the screen, dormant after 30 minutes, closed after a day untouched; ttl_min only closes it sooner. Keeping one running is the owner's: suggest it with service:cards/pin. id names the card (default: this message's id) so card.update can change it later in place: a follow-up updates the card instead of sending another one. text is a short plain summary for notifications and screens that cannot draw the card (written from the card when left out). Answers {accepted, card, problems, hints}: problems lists what was left out and why, hints what usually looks worse (too many accents, icons, titles); fix them with card.update, and look at it with card.preview. A card that cannot be drawn at all is refused with the reason. Showing choices does not itself authorize anything. a2ui is the same A2UI as a home-screen card (widget.card.put): {components:[{id, component, ...}], root?:'root', data?:{...}, theme?}. In the conversation it also takes TextField {label, value, variant: shortText|longText|number|obscured, placeholder} (obscured is a password box: what is typed is never in data and never reaches you; ask for a password with person:owner/form), DateTimeInput {label, value: ISO text, enableDate (default true), enableTime}, Slider {label, value, min, max, step}, Table {columns: [titles], rows: [[cells]] or {path}}, and Html {html: one self-contained HTML document with inline CSS and JS, height: dp} for what the components cannot show (a calculator, a game, an unusual chart): it runs sandboxed with no network; the theme is in CSS variables --ash-bg, --ash-surface, --ash-text, --ash-text2, --ash-accent, --ash-line; ash.send(action, context) sends an action to you like a button. Row, Column, List and Grid take gap (dp between their children; none when left out). A Chart series takes min (the bottom of its axis, for a price or a weight). The conversation draws the card's frame: do not give the root a background, padding or corners. Inputs with value {path} write the owner's value into data on the phone itself: tabs, toggles, choices, sliders and typing need no round trip to you, and any Text or visible that reads such a path follows at once. A Button with action {event:{name, context?}} sends you the owner's message `[card <id>, action <name>] {context, data}` with the card's current data. Lists may scroll horizontally here. What cannot be drawn is left out and listed in problems; a component named but not given yet shows as a placeholder.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -16638,6 +16731,18 @@
      "text": {
       "type": "string",
       "maxLength": 2000
+     },
+     "app": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+     },
+     "temporary_app": {
+      "type": "boolean"
+     },
+     "ttl_min": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440
      }
     },
     "required": [],
@@ -16767,6 +16872,47 @@
    ],
    "label": {
     "doing": "在更新卡片"
+   }
+  },
+  {
+   "member": "person:owner",
+   "word": "card.close",
+   "kind": "request",
+   "direction": "in",
+   "description": "Close a card you showed (its creator, its app, or the owner): it stays in the conversation as it is now, its live data and buttons stop, and a temporary app whose cards are all closed is removed. Close a card when its task is done.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "closed": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "closed"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "act",
+   "risk": "none",
+   "callers": [
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在收起卡片"
    }
   },
   {
@@ -23225,6 +23371,569 @@
    ],
    "label": {
     "doing": "在看身体信息"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "list",
+   "kind": "request",
+   "direction": "in",
+   "description": "The cards in the conversation that are not closed (or those in one state): whose they are, which app runs them, their live sources, whether they are active, idle, dormant or pinned, when they were last seen and used; and the limits (how many may be active, how many sources, how many temporary apps).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "life": {
+      "type": "string",
+      "enum": [
+       "active",
+       "idle",
+       "dormant",
+       "closed"
+      ]
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "cards": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1
+        },
+        "message": {
+         "type": "string",
+         "minLength": 1
+        },
+        "owner": {
+         "type": "string",
+         "minLength": 1
+        },
+        "app": {
+         "type": "string"
+        },
+        "temporary_app": {
+         "type": "boolean"
+        },
+        "life": {
+         "type": "string",
+         "enum": [
+          "active",
+          "idle",
+          "dormant",
+          "closed"
+         ]
+        },
+        "pinned": {
+         "type": "boolean"
+        },
+        "text": {
+         "type": "string"
+        },
+        "sources": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "last_seen": {
+         "type": "number"
+        },
+        "last_used": {
+         "type": "number"
+        },
+        "expires_at": {
+         "type": "number"
+        },
+        "updated_at": {
+         "type": "number"
+        }
+       },
+       "required": [
+        "id",
+        "owner",
+        "life",
+        "pinned"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "limits": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "cards"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在看运行中的卡片"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "describe",
+   "kind": "request",
+   "direction": "in",
+   "description": "One card's runtime: its state, sources, app and the state of its buttons.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "card": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "message": {
+        "type": "string",
+        "minLength": 1
+       },
+       "owner": {
+        "type": "string",
+        "minLength": 1
+       },
+       "app": {
+        "type": "string"
+       },
+       "temporary_app": {
+        "type": "boolean"
+       },
+       "life": {
+        "type": "string",
+        "enum": [
+         "active",
+         "idle",
+         "dormant",
+         "closed"
+        ]
+       },
+       "pinned": {
+        "type": "boolean"
+       },
+       "text": {
+        "type": "string"
+       },
+       "sources": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "last_seen": {
+        "type": "number"
+       },
+       "last_used": {
+        "type": "number"
+       },
+       "expires_at": {
+        "type": "number"
+       },
+       "updated_at": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "id",
+       "owner",
+       "life",
+       "pinned"
+      ],
+      "additionalProperties": false
+     },
+     "actions": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "card"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看一张卡片"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "sleep",
+   "kind": "request",
+   "direction": "in",
+   "description": "Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it. A card the owner pinned is refused (conflict): unpin it with pin first.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "life": {
+      "type": "string",
+      "enum": [
+       "active",
+       "idle",
+       "dormant",
+       "closed"
+      ]
+     }
+    },
+    "required": [
+     "life"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在让卡片休眠"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "wake",
+   "kind": "request",
+   "direction": "in",
+   "description": "Wake a sleeping card: its app is started, its live data runs again and it is drawn fresh.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "life": {
+      "type": "string",
+      "enum": [
+       "active",
+       "idle",
+       "dormant",
+       "closed"
+      ]
+     }
+    },
+    "required": [
+     "life"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在唤醒卡片"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "close",
+   "kind": "request",
+   "direction": "in",
+   "description": "Close a card (the same as person:owner/card.close): a static picture of it stays in the conversation.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "closed": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "closed"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在收起卡片"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "pin",
+   "kind": "request",
+   "direction": "in",
+   "description": "Keep a card running off screen (a delivery being tracked): it does not go idle, dormant or closed by time, though the limits on running cards still apply; unpin to let it stop again. Only the owner decides: an agent's call puts a card in front of him every time, so say why in purpose.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "pinned": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id",
+     "pinned"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "pinned": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "pinned"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在固定卡片"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "keep",
+   "kind": "request",
+   "direction": "in",
+   "description": "The card's temporary app becomes a lasting one: it is no longer removed when its cards are closed (「存成应用」).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string"
+     },
+     "kept": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "kept"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在保留卡片的应用"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "act",
+   "kind": "request",
+   "direction": "in",
+   "description": "Press a button of a card (its component id) with the values on the card now: pressed by the owner, its call runs as the card's app through the gate (which may ask him); pressed by an agent, the call is the agent's own, judged as any of its calls. Its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here, and may call only its own app's words.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "card": {
+      "type": "string",
+      "minLength": 1
+     },
+     "component": {
+      "type": "string",
+      "minLength": 1
+     },
+     "data": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     },
+     "request": {
+      "type": "object",
+      "description": "only from a card's mini app: {call: {member, word, body}} | {ask: {text}} | {tell: {text}}"
+     }
+    },
+    "required": [
+     "card",
+     "component"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "ok",
+       "failed",
+       "running"
+      ]
+     },
+     "result": {},
+     "text": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "state"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "act",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "timeout_ms": 660000,
+   "label": {
+    "doing": "在按卡片上的按钮"
+   }
+  },
+  {
+   "member": "service:cards",
+   "word": "seen",
+   "kind": "request",
+   "direction": "in",
+   "description": "The card ids on a screen of the owner now (the conversation reports them when it stops scrolling): those cards are active, the others go idle in time. Not recorded.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "cards": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1
+      },
+      "maxItems": 50
+     }
+    },
+    "required": [
+     "cards"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "active": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "active"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在记下看到的卡片"
    }
   }
  ]

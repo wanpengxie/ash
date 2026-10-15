@@ -80,8 +80,10 @@ test("agent step 3: a payment always asks, with no 「以后都可以」", async
   assert.equal((await verdict(g, req("agent:main", DEVICE, "order.place"), byLabel)).by, "payment");
 });
 
-test("agent step 4: no word always asks; rules, devices, persona and installs are decided by the owner's mode and review like any other", async () => {
-  assert.equal(ALWAYS_ASK.size, 0);
+test("agent step 4: one word always asks (keeping a card running is the owner's); rules, devices, persona and installs are decided by the owner's mode and review like any other", async () => {
+  assert.deepEqual([...ALWAYS_ASK], ["service:cards/pin", "app:cards/cards.pin"]);
+  const pin = await verdict(make({ review: async () => ({ verdict: "allow" }), tier: () => "full" }), req("agent:main", "service:cards", "pin"), word("service:cards", "pin", { effect: "write", risk: "none" }));
+  assert.deepEqual([pin.verdict, pin.by, pin.offer_always], ["ask", "always_ask", false], "an agent's pin is a card the owner taps, every time");
   const g = make({ review: async () => ({ verdict: "allow" }), tier: () => "full" });
   for (const [member, w] of [["service:gate", "rules.set"], ["service:gate", "rules.revoke"], ["service:gate", "mode.set"], ["service:devices", "access_set"],
     ["service:devices", "revoke"], ["service:devices", "pair_approve"], ["service:devices", "update"], ["service:persona", "propose"], ["service:apps", "apps.install"]] as const) {

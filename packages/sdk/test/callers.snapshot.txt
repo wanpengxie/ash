@@ -77,11 +77,21 @@
   service:bodies/describe  owner,agent,app
   service:bodies/bind  owner,agent,app
   service:bodies/unbind  owner,agent,app
+  service:cards/list  owner,agent,app
+* service:cards/describe  owner,agent
+  service:cards/sleep  owner,agent,app
+  service:cards/wake  owner,agent,app
+  service:cards/close  owner,agent,app
+  service:cards/pin  owner,agent,app
+* service:cards/keep  owner,agent
+* service:cards/act  owner,agent
+* service:cards/seen  owner,agent
 * person:owner/say  agent,app
 * person:owner/notice  agent,app
 * person:owner/react  agent,app
 * person:owner/show  agent,app
 * person:owner/card.update  agent,app
+* person:owner/card.close  agent,app
 * person:owner/card.draft  owner,agent
 * person:owner/card.preview  agent
 * person:owner/form  agent
@@ -216,6 +226,8 @@
   service:apps/apps.revoke  owner,agent,app
   service:apps/apps.refresh  owner,agent,app
 * service:apps/apps.badge  app
+* service:apps/apps.sleep  owner,agent
+  service:apps/apps.wake  owner,agent,app
   service:apps/apps.restart  owner,agent,app
   service:apps/apps.logs  owner,agent,app
   service:apps/apps.reset  owner,agent,app

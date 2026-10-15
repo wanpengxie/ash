@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CARD_ICON_GLYPHS, DRAFT_DELAY_MS, buttonLabel, cardState, cssColor, fieldPath, formAnswerBody, formCancelBody, formatClock, formatSpan, frameMessage, masked,
-  miniAppDocument, MINI_APP_CSP, parsePlan, readPointer, renderA2uiCard, resetCards, sayBody, secretsOf, stateLine, writePointer } from "../js/a2ui-card.js";
+import { CARD_ICON_GLYPHS, CARD_ICON_SHAPES, COPIED_MS, DRAFT_DELAY_MS, SeenReporter, actBody, actOnce, actProblem, actTimeoutMs, buttonLabel, buttonView, cardIdsOnScreen,
+  cardState, cssColor, fieldPath, formAnswerBody, formCancelBody, formatClock, formatSpan, frameMessage, liveLine, masked, pinnable, miniAppDocument, miniAppRequest, MINI_APP_CSP,
+  parsePlan, patchA2uiCard, readPointer, renderA2uiCard, resetCards, runtimeKind, sayBody, secretsOf, stateLine, writePointer } from "../js/a2ui-card.js";
 import { renderCard } from "../js/cards.js";
 import { ICON_SHAPES } from "../js/ash-icons.js";
 import { CARD_ICONS } from "../../sdk/src/card.ts";
@@ -262,12 +263,15 @@ test("a container's gap is the space between its children; without one they sit 
   assert.deepEqual(["root", "row", "grid", "list", "plain"].map((id) => byId(root, id).style.gap), ["12px", "6px", "4px", "8px", undefined]);
 }));
 
-test("every card icon name is one of Ash's line icons or the neutral outline, drawn in the node's colour; an svgPath outline is stroked", () => withDom(() => {
+test("every card icon name is a line icon (Ash's or the cards' own), drawn in the node's colour; an unknown one is the neutral outline; an svgPath outline is stroked", () => withDom(() => {
   resetCards();
   assert.deepEqual(Object.keys(CARD_ICON_GLYPHS).sort(), [...CARD_ICONS].sort(), "one entry for every name the hub accepts");
-  for (const [name, glyph] of Object.entries(CARD_ICON_GLYPHS)) assert.ok(glyph === null || ICON_SHAPES[glyph], `${name} -> ${glyph}`);
+  for (const [name, glyph] of Object.entries(CARD_ICON_GLYPHS)) assert.ok(ICON_SHAPES[glyph] || CARD_ICON_SHAPES[glyph], `${name} -> ${glyph}: no name falls back to the circle`);
+  for (const name of ["sun", "cloud", "rain", "snow", "wind", "moon", "person", "accountCircle", "star", "starHalf", "starOff", "volumeUp", "volumeDown", "volumeMute", "volumeOff", "weight", "water", "car"])
+    assert.ok(CARD_ICON_SHAPES[CARD_ICON_GLYPHS[name]] || ICON_SHAPES[CARD_ICON_GLYPHS[name]], name);
+  for (const shapes of Object.values(CARD_ICON_SHAPES)) for (const [tag, attrs] of shapes) assert.ok(tag === "path" && typeof attrs.d === "string" && attrs.d.length > 4);
   const item = { id: "m", type: "card", card: { type: "a2ui", id: "icons", owner: "agent:main", state: "open", updated_at: 1, plan: { root: "root", components: [
-    { id: "root", component: "Row", children: ["ok", "sun", "img", "line", "solid"] },
+    { id: "root", component: "Row", children: ["ok", "sun", "img", "line", "solid", "odd"] }, { id: "odd", component: "Icon", name: "nothingLikeThis" },
     { id: "ok", component: "Icon", name: "check", style: { color: "accent" } }, { id: "sun", component: "Icon", name: "sun" },
     { id: "img", component: "Image", url: "icon:mail" },
     { id: "line", component: "Icon", svgPath: "M4 12h16" }, { id: "solid", component: "Icon", svgPath: "M4 4h16v16H4Z" }] } } };
@@ -277,8 +281,11 @@ test("every card icon name is one of Ash's line icons or the neutral outline, dr
   assert.ok(ok.find((n) => n.tag === "path"), "a line icon, not a glyph");
   assert.equal(root.textContent.includes("✓"), false);
   const sun = byId(root, "sun").find((n) => n.tag === "svg");
-  assert.match(sun.attributes.class, /a2-icon-none/);
-  assert.ok(sun.find((n) => n.tag === "circle"), "no close match: a small circle");
+  assert.doesNotMatch(sun.attributes.class, /a2-icon-none/);
+  assert.equal(sun.findAll((n) => n.tag === "path").length, CARD_ICON_SHAPES.sun.length, "the cards' own sun");
+  const odd = byId(root, "odd").find((n) => n.tag === "svg");
+  assert.match(odd.attributes.class, /a2-icon-none/);
+  assert.ok(odd.find((n) => n.tag === "circle"), "no match at all: a small circle");
   assert.ok(byId(root, "img").find((n) => n.tag === "path"), "icon: images are line icons too");
   assert.doesNotMatch(byId(root, "line").find((n) => n.tag === "svg").attributes.class, /i-solid/);
   assert.match(byId(root, "solid").find((n) => n.tag === "svg").attributes.class, /i-solid/);
@@ -292,7 +299,7 @@ test("a chart series with min starts its axis there", () => withDom(() => {
   assert.deepEqual(svg.findAll((n) => n.tag === "rect").map((r) => r.attributes.height), ["2", "24"], "axis 58 .. 58 + 5 x 1.25; 40 sits on the bottom");
 }));
 
-const thumbs = (root) => byClass(root, "a2-feedback")?.findAll((n) => n.tag === "button") ?? [];
+const thumbs = (root) => byClass(root, "a2-feedback")?.findAll((n) => n.tag === "button" && n.has("a2-fb")) ?? [];
 
 test("an agent's card, open or closed, has the quiet thumbs; a tap is the owner's say with the values; the chosen one stays chosen", async () => withDom(async () => {
   resetCards();
@@ -301,7 +308,9 @@ test("an agent's card, open or closed, has the quiet thumbs; a tap is the owner'
   const item = { id: "m1", type: "card", card: { type: "a2ui", id: "fb-1", owner: "agent:helper", state: "open", updated_at: 1, plan } };
   const root = renderA2uiCard(new FakeNode("div"), item, ctx);
   const [up, down] = thumbs(root);
-  assert.deepEqual([up.textContent, down.textContent], ["👍", "👎"]);
+  assert.deepEqual([up.attributes["aria-label"], down.attributes["aria-label"]], ["有用", "没用"]);
+  assert.ok([up, down].every((b) => b.find((n) => n.tag === "svg") && !b.textContent.includes("👍") && !b.textContent.includes("👎")), "line icons, not emoji");
+  assert.notDeepEqual(up.find((n) => n.tag === "path").attributes, down.find((n) => n.tag === "path").attributes, "thumbs up and down differ");
   assert.deepEqual([up.attributes["aria-pressed"], down.attributes["aria-pressed"]], ["false", "false"]);
   up.click();
   await until(() => ctx.calls.some(([k]) => k === "say"));
@@ -547,3 +556,322 @@ test("a card.update answered by the hub, or a form answered, names the card to r
     assert.deepEqual(changes, [{ card: "card-7" }, { message: "form-msg" }]);
   });
 });
+
+// ---- the card runtime (docs/CARD-RUNTIME.md) ----
+
+const runtimeItem = (card = {}) => ({ id: "m-rt", seq: 4, ts: 1, type: "card", side: "agent",
+  card: { type: "a2ui", id: "rt-1", owner: "agent:helper", text: "天气", state: "open", updated_at: 1000, app: "weather", life: "active",
+    plan: { root: "root", data: { city: "杭州" }, components: [
+      { id: "root", component: "Column", children: ["go", "ask", "copy", "tap"] },
+      { id: "go", component: "Button", variant: "primary", child: "go.t", action: { call: { member: "app:weather", word: "refresh", body: { city: "杭州" }, timeout_s: 10 } } },
+      { id: "go.t", component: "Text", text: "刷新" },
+      { id: "ask", component: "Button", child: "ask.t", action: { ask: { text: "明天呢？" } } },
+      { id: "ask.t", component: "Text", text: "问问" },
+      { id: "copy", component: "Button", variant: "borderless", child: "copy.t", action: { copy: { text: "杭州 晴 21°" } } },
+      { id: "copy.t", component: "Text", text: "复制" },
+      { id: "tap", component: "Text", text: "点我", action: { tell: { text: "看过了" } } }] }, ...card } });
+const buttonOf = (root, id) => byId(root, id)?.find((n) => n.tag === "button");
+const lineOf = (root, id) => byId(root, id)?.find((n) => n.has?.("a2-act-line"));
+
+test("a press the hub runs: what it sends, how long it waits, and why it failed in the owner's words", async () => {
+  assert.equal(runtimeKind({ call: { member: "m", word: "w", body: {} } }), "call");
+  assert.equal(runtimeKind({ ask: { text: "x" } }), "ask");
+  assert.equal(runtimeKind({ tell: { text: "x" } }), "tell");
+  assert.equal(runtimeKind({ event: { name: "x" } }), null);
+  assert.equal(runtimeKind({ copy: { text: "x" } }), null);
+  const data = { a: { b: 1 } };
+  const body = actBody("card-1", "go", data);
+  assert.deepEqual(body, { card: "card-1", component: "go", data: { a: { b: 1 } } });
+  data.a.b = 2;
+  assert.equal(body.data.a.b, 1, "the values as they were at the press");
+  assert.deepEqual(actBody("card-1", "mini", {}, { ask: { text: "hi" } }), { card: "card-1", component: "mini", data: {}, request: { ask: { text: "hi" } } });
+  assert.equal(actTimeoutMs({ call: { member: "m", word: "w", body: {}, timeout_s: 10 } }), 15_000);
+  assert.equal(actTimeoutMs({ call: { member: "m", word: "w", body: {} } }), 35_000, "the default: 30 s and 5 more");
+  assert.equal(actTimeoutMs({ tell: { text: "x" } }), 35_000);
+  assert.equal(actTimeoutMs({ ask: { text: "x" } }), 125_000, "an agent's answer: the hub waits 120 s");
+  assert.match(actProblem({ code: "conflict" }), /已经结束/);
+  assert.match(actProblem({ code: "offline" }), /没连上/);
+  assert.match(actProblem({ code: "result_unknown" }), /没有及时回应/);
+  assert.equal(actProblem(new Error("x")), "没做成，可以再按一次。");
+  assert.deepEqual(await actOnce(async () => ({ state: "ok", text: "已完成 · 10:42", result: { t: 21 } }), body, 1000), { state: "ok", text: "已完成 · 10:42", result: { t: 21 } });
+  assert.deepEqual(await actOnce(async () => { throw Object.assign(new Error("closed"), { code: "conflict" }); }, body, 1000), { state: "failed", text: actProblem({ code: "conflict" }) });
+  assert.deepEqual(await actOnce(() => new Promise(() => {}), body, 20), { state: "failed", text: "没有及时回应，可以再按一次。" }, "no answer in time: retryable");
+});
+
+test("a button's state: busy while this screen's press is on its way or the hub says it runs (until the wait is over); the newest outcome below it", () => {
+  const action = { call: { member: "m", word: "w", body: {}, timeout_s: 10 } };
+  const local = { pressing: new Set(), outcomes: {}, copied: {}, runningSince: new Map() };
+  const card = (actions) => ({ actions });
+  assert.deepEqual(buttonView(card(undefined), local, "go", action, 0), { busy: false, line: null });
+  local.pressing.add("go");
+  assert.deepEqual(buttonView(card(undefined), local, "go", action, 0), { busy: true, line: null });
+  local.pressing.delete("go");
+  // Another screen pressed it: the hub says it runs.
+  const running = card({ go: { state: "running", text: "处理中…", at: 500 } });
+  assert.equal(buttonView(running, local, "go", action, 1000).busy, true);
+  assert.equal(buttonView(running, local, "go", action, 1000 + 14_000).busy, true);
+  assert.equal(buttonView(running, local, "go", action, 1000 + 15_000).busy, false, "a run never finished stops counting after the wait");
+  // This screen's answer, then the hub's own record of it, then a newer press elsewhere.
+  local.outcomes.go = { state: "failed", text: "没有及时回应，可以再按一次。", after: 500 };
+  assert.deepEqual(buttonView(card({ go: { state: "running", text: "处理中…", at: 500 } }), { ...local, runningSince: new Map() }, "go", action, 0).busy, true);
+  assert.deepEqual(buttonView(card({}), local, "go", action, 0).line, { state: "failed", text: "没有及时回应，可以再按一次。" });
+  assert.deepEqual(buttonView(card({ go: { state: "ok", text: "已完成 · 10:42", at: 900 } }), local, "go", action, 0).line, { state: "ok", text: "已完成 · 10:42" }, "the hub wrote a newer one");
+  local.outcomes.go.after = 900;
+  assert.deepEqual(buttonView(card({ go: { state: "ok", text: "已完成 · 10:42", at: 900 } }), local, "go", action, 0).line.state, "failed", "not newer than the answer");
+  local.copied.go = { until: 2000, state: "ok", text: "已复制" };
+  assert.deepEqual(buttonView(card({}), local, "go", action, 1999), { busy: false, line: { state: "ok", text: "已复制" } });
+  assert.notEqual(buttonView(card({}), local, "go", action, 2000).line?.text, "已复制", "gone after a moment");
+});
+
+test("pressing a call button: 「处理中…」 and disabled at once, one press at a time, the act with the card's values, the outcome under it, then pressable again", async () => withDom(async () => {
+  resetCards();
+  let answer;
+  const ctx = recorder({ act: (body) => { ctx.calls.push(["act", body]); return new Promise((resolve) => { answer = resolve; }); } });
+  let root = renderA2uiCard(new FakeNode("div"), runtimeItem(), ctx);
+  const go = buttonOf(root, "go");
+  assert.equal(go.disabled, false);
+  assert.equal(go.textContent, "刷新");
+  assert.equal(lineOf(root, "go"), undefined, "no line before a press");
+  go.click();
+  assert.equal(buttonOf(root, "go").textContent, "处理中…");
+  assert.equal(buttonOf(root, "go").disabled, true);
+  await until(() => ctx.calls.some(([k]) => k === "act"));
+  buttonOf(root, "go").fire("click");
+  await tick();
+  assert.equal(ctx.calls.filter(([k]) => k === "act").length, 1, "a press while one runs does nothing");
+  assert.deepEqual(ctx.calls.find(([k]) => k === "act")[1], { card: "rt-1", component: "go", data: { city: "杭州" } });
+  assert.equal(ctx.calls.some(([k]) => k === "say"), false, "not a say");
+  answer({ state: "ok", text: "已完成 · 10:42" });
+  await until(() => !buttonOf(root, "go").disabled);
+  assert.equal(buttonOf(root, "go").textContent, "刷新");
+  assert.equal(lineOf(root, "go").textContent, "已完成 · 10:42");
+  assert.equal(lineOf(root, "go").has("failed"), false);
+  // A failure says why, in red-ish text, and the button can be pressed again.
+  buttonOf(root, "go").click();
+  await until(() => ctx.calls.filter(([k]) => k === "act").length === 2);
+  answer({ state: "failed", text: "这张卡的应用没有被批准做这件事，安装时没给这一项权限。" });
+  await until(() => !buttonOf(root, "go").disabled);
+  assert.ok(lineOf(root, "go").has("failed"));
+  // The hub's card says another screen's press runs: the button waits for it.
+  root = renderA2uiCard(new FakeNode("div"), runtimeItem({ updated_at: 2000, actions: { ask: { state: "running", text: "处理中…", at: 1990 } } }), ctx);
+  assert.equal(buttonOf(root, "ask").disabled, true);
+  assert.equal(buttonOf(root, "ask").textContent, "处理中…");
+  // A tap target with a hub action is a press too (tell).
+  const ctx2 = recorder({ act: async (body) => { ctx2.calls.push(["act", body]); return { state: "ok", text: "已转告" }; } });
+  const tapRoot = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-2" }), ctx2);
+  byId(tapRoot, "tap").fire("click");
+  await until(() => ctx2.calls.some(([k]) => k === "act"));
+  assert.deepEqual(ctx2.calls.find(([k]) => k === "act")[1], { card: "rt-2", component: "tap", data: { city: "杭州" } });
+}));
+
+test("copy puts the text on this device's clipboard, sends nothing, and says 「已复制」 under the button for a moment", async () => withDom(async () => {
+  resetCards();
+  const copied = [];
+  const ctx = recorder({ copy: async (text) => { copied.push(text); }, act: async () => { throw new Error("not this"); } });
+  const root = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-copy" }), ctx);
+  buttonOf(root, "copy").click();
+  await until(() => lineOf(root, "copy"));
+  assert.deepEqual(copied, ["杭州 晴 21°"]);
+  assert.equal(lineOf(root, "copy").textContent, "已复制");
+  assert.deepEqual(ctx.calls.filter(([k]) => k !== "draft"), [], "nothing sent");
+  await until(() => !lineOf(root, "copy"), COPIED_MS + 500, "the line goes");
+}));
+
+test("the card's live line: when its data came, that it sleeps with the time of its data; only on a card with an app", () => {
+  const at = new Date(2026, 9, 15, 9, 5).getTime();
+  assert.equal(liveLine({ app: "weather", life: "active", fed_at: at }), "09:05 更新");
+  assert.equal(liveLine({ temporary_app: true, life: "active" }), "", "the line keeps its place before data comes");
+  assert.equal(liveLine({ app: "weather", life: "dormant", fed_at: at, updated_at: 1 }), "已休眠 · 09:05 的数据");
+  assert.equal(liveLine({ app: "weather", life: "dormant", updated_at: at }), "已休眠 · 09:05 的数据", "no live data yet: the card's own time");
+  assert.equal(liveLine({ app: "weather", life: "closed", fed_at: at }), null);
+  assert.equal(liveLine({ app: "weather", state: "closed", life: "active", fed_at: at }), null);
+  assert.equal(liveLine({ life: "dormant", updated_at: at }), null, "an agent's card without an app holds nothing");
+  assert.equal(liveLine({ app: "weather" }), null);
+  assert.equal(stateLine({ state: "open", life: "closed" }), "已结束", "a closed card is read-only");
+});
+
+test("the footer: the live line, 「存成应用」 for a temporary app (gone once kept), the thumbs as line icons; a dormant card still draws its data", async () => withDom(async () => {
+  resetCards();
+  const at = new Date(2026, 9, 15, 14, 30).getTime();
+  const ctx = recorder({ keep: async (id) => { ctx.calls.push(["keep", id]); return { kept: true }; } });
+  const root = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-life", life: "dormant", fed_at: at, temporary_app: true }), ctx);
+  const bar = byClass(root, "a2-feedback");
+  assert.equal(byClass(bar, "a2-live").textContent, "已休眠 · 14:30 的数据");
+  assert.equal(buttonOf(root, "go").textContent, "刷新", "the data is still drawn");
+  assert.equal(thumbs(root).length, 2);
+  assert.ok(bar.find((n) => n.has?.("a2-pin")), "「常驻」 for an app's card");
+  const keep = bar.find((n) => n.tag === "button" && n.textContent === "存成应用");
+  keep.click();
+  await until(() => ctx.calls.some(([k]) => k === "keep"));
+  assert.deepEqual(ctx.calls.find(([k]) => k === "keep"), ["keep", "rt-life"]);
+  await until(() => !byClass(root, "a2-feedback").find((n) => n.tag === "button" && n.textContent === "存成应用"));
+  // An app's card (not an agent's): the live line alone, no thumbs.
+  const app = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-app", owner: "app:weather", life: "active", fed_at: at }), ctx);
+  assert.equal(byClass(app, "a2-live").textContent, "14:30 更新");
+  assert.equal(thumbs(app).length, 0);
+  // A closed card: read-only, no live line, nothing to keep.
+  const closed = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-closed", life: "closed", temporary_app: true, fed_at: at }), ctx);
+  assert.equal(byClass(closed, "a2-status").textContent, "已结束");
+  assert.equal(buttonOf(closed, "go").disabled, true);
+  assert.equal(byClass(closed, "a2-live"), undefined);
+  assert.equal(closed.find((n) => n.tag === "button" && n.textContent === "存成应用"), undefined);
+}));
+
+test("a pushed card replaces the card's state; a card held by the focus of a pressed button is drawn again in place", () => withDom(() => {
+  resetCards();
+  const ctx = recorder();
+  const root = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-patch" }), ctx);
+  assert.equal(patchA2uiCard({ id: "nobody", plan: {} }), false);
+  buttonOf(root, "go").focus();
+  const next = { ...runtimeItem({ id: "rt-patch" }).card, updated_at: 3000, fed_at: 2999, plan: { ...runtimeItem().card.plan, data: { city: "上海" } },
+    actions: { go: { state: "ok", text: "已完成 · 10:42", at: 2990 } } };
+  assert.equal(patchA2uiCard(next), true);
+  assert.equal(cardState("rt-patch").item.card.fed_at, 2999, "the hub's card");
+  assert.deepEqual(cardState("rt-patch").data, { city: "杭州" }, "the owner is on the card: the working copy waits, as for any newer version");
+  assert.equal(lineOf(root, "go").textContent, "已完成 · 10:42", "drawn here: the timeline leaves a focused row alone");
+}));
+
+test("the timeline takes a pushed card into every item showing it and redraws only those rows", async () => {
+  const { ConversationTimeline } = await import("../js/conversation-timeline.js");
+  const changes = [];
+  const timeline = new ConversationTimeline({ binding: () => ({}), same: () => true }, (view, conversation, dirty) => changes.push(dirty));
+  const card = { type: "a2ui", id: "c-9", owner: "agent:main", state: "open", updated_at: 1, plan: { root: "r", components: [{ id: "r", component: "Text", text: "a" }] } };
+  timeline.acceptPage({ dataset_id: "d", snapshot_seq: 10, items: [{ id: "m1", seq: 1, ts: 1, type: "say", side: "agent", text: "hi" },
+    { id: "m2", seq: 2, ts: 2, type: "card", side: "agent", card, byte_size: 10 }], has_more_before: false, has_more_after: false });
+  changes.length = 0;
+  const dirty = timeline.patchCard({ ...card, updated_at: 5, life: "dormant" });
+  assert.deepEqual([...dirty], ["m2"]);
+  assert.deepEqual(changes.map((d) => [...d]), [["m2"]]);
+  assert.equal(timeline.get("m2").card.life, "dormant");
+  assert.equal(timeline.get("m2").card.type, "a2ui");
+  assert.equal(timeline.get("m1").text, "hi");
+  assert.deepEqual([...timeline.patchCard({ id: "elsewhere" })], [], "a card not loaded here changes nothing");
+});
+
+test("the page answers a pushed card.patch and hands the card on; a bad one is refused", async () => {
+  const { Net } = await import("../js/net.js");
+  const got = [];
+  const fake = { onCardPatch: (card) => got.push(card), onPresent: async () => ({ ok: false }) };
+  const present = (frame) => Net.prototype.present.call(fake, frame);
+  assert.deepEqual(await present({ surface: "chat", op: "card.patch", body: { card: { id: "c-1", type: "a2ui", life: "idle" } } }), { ok: true, data: {} });
+  assert.deepEqual(got, [{ id: "c-1", type: "a2ui", life: "idle" }]);
+  assert.equal((await present({ surface: "chat", op: "card.patch", body: {} })).ok, false);
+  assert.equal((await present({ surface: "chat", op: "card.preview", body: {} })).error.code, "unavailable", "a preview picture is still the phone's");
+});
+
+test("the cards on screen are told to the hub after scrolling stops and once a minute, only while the chat is visible", async () => {
+  const el = (id, top, bottom) => ({ dataset: { cardId: id }, getBoundingClientRect: () => ({ top, bottom, height: bottom - top }) });
+  const log = { getBoundingClientRect: () => ({ top: 100, bottom: 700 }),
+    querySelectorAll: () => [el("above", 0, 90), el("a", 50, 150), el("b", 300, 400), el("b", 400, 500), el("below", 710, 900), el("", 200, 300), el("flat", 300, 300)] };
+  assert.deepEqual(cardIdsOnScreen(log), ["a", "b"]);
+  assert.deepEqual(cardIdsOnScreen(null), []);
+  const sent = [];
+  let visible = true, ids = ["a", "b"];
+  const seen = new SeenReporter({ ids: () => ids, visible: () => visible, send: async (cards) => { sent.push(cards); if (cards.includes("boom")) throw new Error("offline"); }, delay: 20, every: 60 });
+  seen.poke(); seen.poke(); seen.poke();
+  await tick(40);
+  assert.deepEqual(sent, [["a", "b"]], "one report after the scrolling stopped");
+  seen.start();
+  await until(() => sent.length >= 2, 1000, "the regular report");
+  visible = false;
+  const before = sent.length;
+  seen.poke();
+  await tick(150);
+  assert.equal(sent.length, before, "nothing while the chat is hidden");
+  visible = true; ids = [];
+  seen.report();
+  await tick();
+  assert.equal(sent.length, before, "never an empty list");
+  ids = ["boom"];
+  seen.report();
+  await tick();
+  assert.deepEqual(sent.at(-1), ["boom"], "a failure is ignored");
+  seen.dispose();
+});
+
+test("table cells are the card's Markdown, not raw marks", () => withDom(() => {
+  resetCards();
+  const item = { id: "m", type: "card", card: { type: "a2ui", id: "tbl", owner: "agent:main", state: "open", updated_at: 1, plan: { root: "root", components: [
+    { id: "root", component: "Table", header: ["**城市**", "天气"], rows: [["**杭州**", "晴 `21°`"], ["上海", "多云\n有风"]] }] } } };
+  const root = renderA2uiCard(new FakeNode("div"), item, recorder());
+  const cells = root.findAll((n) => n.tag === "td" || n.tag === "th");
+  assert.equal(cells[0].find((n) => n.tag === "b")?.textContent, "城市");
+  assert.equal(cells[2].find((n) => n.tag === "b")?.textContent, "杭州");
+  assert.equal(cells[3].find((n) => n.tag === "code")?.textContent, "21°");
+  assert.ok(cells.every((c) => !c.textContent.includes("**")), "no raw asterisks");
+  assert.ok(cells[5].find((n) => n.tag === "br"), "lines kept");
+}));
+
+test("the mini app's ash.call / ash.ask / ash.tell are presses of its card, answered into the frame, at most two a second", async () => withDom(async () => {
+  resetCards();
+  const doc = miniAppDocument("<p>x</p>", { scheme: "light" });
+  for (const name of ["send:function", "call:function", "ask:function", "tell:function"]) assert.ok(doc.includes(name), name);
+  assert.deepEqual(miniAppRequest({ call: { member: "app:weather", word: "now", body: { city: "杭州" } } }), { call: { member: "app:weather", word: "now", body: { city: "杭州" } } });
+  assert.deepEqual(miniAppRequest({ call: { member: "app:weather", word: "now" } }), { call: { member: "app:weather", word: "now", body: {} } });
+  assert.deepEqual(miniAppRequest({ ask: { text: "明天呢" } }), { ask: { text: "明天呢" } });
+  assert.equal(miniAppRequest({ tell: { text: " " } }), null);
+  assert.equal(miniAppRequest({ call: { member: "", word: "x" } }), null);
+  assert.equal(miniAppRequest({ call: { member: "m", word: "w", body: { big: "x".repeat(17 * 1024) } } }), null);
+  const ctx = recorder({ act: async (body) => { ctx.calls.push(["act", body]); return { state: "ok", text: "已完成", result: { t: 21 } }; } });
+  const item = { id: "m", type: "card", card: { type: "a2ui", id: "mini-rt", owner: "agent:main", app: "weather", state: "open", updated_at: 1,
+    plan: { root: "root", data: { k: 1 }, components: [{ id: "root", component: "Html", html: "<b>x</b>", height: 100 }] } } };
+  const root = renderA2uiCard(new FakeNode("div"), item, ctx);
+  assert.equal(root.find((n) => n.tag === "button" && n.textContent === "存成应用"), undefined, "a card of an app is saved through its footer, not the old way");
+  const frame = root.find((n) => n.tag === "iframe");
+  const posted = [];
+  frame.contentWindow = { postMessage: (message, origin) => posted.push([message, origin]) };
+  const source = frame.contentWindow;
+  assert.equal(frameMessage({ source, data: { ash: "act", id: "r1", request: { call: { member: "app:weather", word: "now", body: { city: "杭州" } } } } }), true);
+  await until(() => posted.length === 1);
+  assert.deepEqual(ctx.calls.find(([k]) => k === "act")[1], { card: "mini-rt", component: "root", data: { k: 1 }, request: { call: { member: "app:weather", word: "now", body: { city: "杭州" } } } });
+  assert.deepEqual(posted[0], [{ ash: "answer", id: "r1", answer: { state: "ok", text: "已完成", result: { t: 21 } } }, "*"]);
+  assert.equal(frameMessage({ source, data: { ash: "act", id: "r2", request: { ask: { text: "明天呢" } } } }), true);
+  assert.equal(frameMessage({ source, data: { ash: "act", id: "r3", request: { tell: { text: "好" } } } }), true);
+  await until(() => posted.length === 3);
+  assert.deepEqual(posted.find(([m]) => m.id === "r3")[0].answer, { state: "failed", text: "太快了，稍后再试。" }, "a third in the same second is refused");
+  assert.equal(ctx.calls.filter(([k]) => k === "act").length, 2);
+  assert.equal(frameMessage({ source, data: { ash: "act", id: "r4", request: { nothing: true } } }), false);
+  await until(() => posted.length === 4);
+  assert.equal(posted.at(-1)[0].answer.state, "failed", "a request it cannot read is answered too");
+  assert.equal(frameMessage({ source: { other: true }, data: { ash: "act", id: "r5", request: { ask: { text: "x" } } } }), false, "only its own frame");
+}));
+
+test("「常驻」 on an app's card: drawn from the start, set at once through service:cards/pin, put back with a short line when refused", async () => withDom(async () => {
+  resetCards();
+  const at = new Date(2026, 9, 15, 8, 0).getTime();
+  assert.equal(pinnable({ app: "weather", life: "active", state: "open" }), true);
+  assert.equal(pinnable({ app: "weather", life: "closed" }), false);
+  assert.equal(pinnable({ owner: "agent:main", life: "active" }), false, "an agent's card without an app holds nothing to keep");
+  assert.equal(liveLine({ app: "weather", life: "active", pinned: true, fed_at: at }), "常驻中");
+  assert.equal(liveLine({ app: "weather", life: "dormant", pinned: true, fed_at: at }), "已休眠 · 08:00 的数据");
+  let refuse = false;
+  const ctx = recorder({ pin: async (id, pinned) => { ctx.calls.push(["pin", id, pinned]); if (refuse) throw Object.assign(new Error("no"), { code: "offline" }); return { pinned }; } });
+  const root = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin", fed_at: at }), ctx);
+  const pin = () => byClass(root, "a2-pin");
+  const live = () => byClass(root, "a2-live");
+  assert.equal(pin().attributes.role, "switch");
+  assert.equal(pin().attributes["aria-checked"], "false");
+  assert.equal(pin().textContent, "常驻");
+  assert.equal(live().textContent, "08:00 更新");
+  pin().click();
+  assert.equal(pin().attributes["aria-checked"], "true", "on at once");
+  assert.equal(live().textContent, "常驻中");
+  await until(() => ctx.calls.some(([k]) => k === "pin"));
+  assert.deepEqual(ctx.calls.find(([k]) => k === "pin"), ["pin", "rt-pin", true]);
+  await until(() => !pin().disabled);
+  // The hub's card agrees; then turning it off is refused: it goes back, with a short line.
+  patchA2uiCard({ ...runtimeItem({ id: "rt-pin", fed_at: at }).card, pinned: true, updated_at: 1001 });
+  assert.equal(cardState("rt-pin").pinned, undefined, "the hub's card says the same now");
+  renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin", fed_at: at, pinned: true, updated_at: 1001 }), ctx);
+  const again = cardState("rt-pin").root;
+  refuse = true;
+  byClass(again, "a2-pin").click();
+  assert.equal(byClass(again, "a2-pin").attributes["aria-checked"], "false");
+  await until(() => byClass(again, "a2-pin").attributes["aria-checked"] === "true" && !byClass(again, "a2-pin").disabled);
+  assert.equal(byClass(again, "a2-live").textContent, "没关掉常驻，请再试一次");
+  assert.ok(byClass(again, "a2-live").has("failed"));
+  assert.deepEqual(ctx.calls.filter(([k]) => k === "pin").map(([, , on]) => on), [true, false]);
+  // A closed card, or an agent's card without an app: no switch.
+  assert.equal(byClass(renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin-closed", life: "closed" }), ctx), "a2-pin"), undefined);
+  assert.equal(byClass(renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin-agent", app: undefined, life: "active" }), ctx), "a2-pin"), undefined);
+}));

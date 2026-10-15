@@ -304,6 +304,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   const human = late.human = createHuman({
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
     summarize: createSummarizer({ llm }), vaultHas: (ref) => vault.list().some((entry) => entry.ref === ref),
+    appHears: (app, word) => late.apps?.runtime.hears(app, word) ?? false,
   });
   const hostService = createHostService({ client: host, router, registry, virtual, vault, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);
@@ -313,7 +314,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   // 7. everybody into the registry
   for (const member of [
     blobs, gateService, clock, senses, cost, reflex, history, admin, health, widgets, directory, vaultService, ...semantic.members,
-    body, devices, bodies, linkControl.member, human.member, agents.service, apps.service, createLlmService(llm), hostService.member,
+    body, devices, bodies, linkControl.member, human.member, human.cards, agents.service, apps.service, createLlmService(llm), hostService.member,
   ]) registry.add(member);
 
   // 8. start. The agents are told the tool address, so the port opens first; the registry already holds the services

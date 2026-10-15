@@ -15,11 +15,12 @@ export class Net {
   /**
    * [pendingStore], [connector] and [clock] are for tests.
    * The callbacks: onMessage(safeFact), onHistory(displayPage), onCurrent(currentPage), onHistoryReady(), onState(status, detail),
-   * onOpen(info) after every (re)connection, onQueue(count, outbox), onPresent(frame) -> {ok, data?, error?}.
+   * onOpen(info) after every (re)connection, onQueue(count, outbox), onPresent(frame) -> {ok, data?, error?},
+   * onCardChange({card} | {message}) to read a card again, onCardPatch(card) with a card the hub pushed whole.
    */
   constructor({ label = "网页", pendingStore = null, url, connector, clock, random, onMessage = () => {}, onHistory = () => {},
     onHistoryReady = () => {}, onCurrent = () => {}, historyTarget = () => ({}), onState = () => {}, onOpen = () => {}, onQueue = () => {}, onPresent = async () => ({ ok: false, error: { code: "unavailable", message: "not shown here" } }),
-    onCardChange = () => {} } = {}) {
+    onCardChange = () => {}, onCardPatch = () => {} } = {}) {
     this.onMessage = onMessage;
     this.onHistory = onHistory;
     this.onHistoryReady = onHistoryReady;
@@ -30,6 +31,7 @@ export class Net {
     this.onQueue = onQueue;
     this.onPresent = onPresent;
     this.onCardChange = onCardChange;
+    this.onCardPatch = onCardPatch;
     /** card.update requests on their way: request id -> card id, until the hub has answered them. */
     this.cardUpdates = new Map();
     this.status = "connecting";
@@ -390,6 +392,13 @@ export class Net {
     if (frame.op === "focus") { globalThis.focus?.(); return { ok: true, data: {} }; }
     // Drawing a card off screen into a picture is the phone's (it draws cards natively); this page cannot.
     if (frame.op === "card.preview") return { ok: false, error: { code: "unavailable", message: "this page cannot draw a card preview; the phone can" } };
+    // A card in the conversation, whole, as the hub has it now (live data, a button's state, its lifecycle): not recorded.
+    if (frame.op === "card.patch") {
+      const card = frame.body?.card;
+      if (!card || typeof card !== "object" || Array.isArray(card) || typeof card.id !== "string" || !card.id) return { ok: false, error: { code: "bad_request", message: "no card" } };
+      try { this.onCardPatch(card); } catch { /* drawn on the next read of the card */ }
+      return { ok: true, data: {} };
+    }
     if (frame.op !== "open") return { ok: false, error: { code: "unavailable", message: `chat ${frame.op} is not shown on this page` } };
     // The body is `{target, id?, mode?}` (SPEC-03 §5.4).
     const { target, id, mode } = frame.body;

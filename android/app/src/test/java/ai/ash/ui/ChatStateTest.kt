@@ -98,4 +98,14 @@ class ChatStateTest {
         d.keep(Drafts.chat(null), "")
         assertTrue("an emptied box keeps nothing", Drafts.chat(null) !in mem)
     }
+
+    @Test fun aCardPatchedSinceTheReadStartedOutranksWhatTheReadSays() {
+        val newer = JSONObject().put("type", "a2ui").put("id", "k1").put("rev", 2)
+        val w = ChatWindow { item -> if (item.optJSONObject("card")?.optString("id") == "k1") JSONObject(item.toString()).put("card", newer) else item }
+        val old = JSONObject().put("seq", 1).put("id", "m1").put("type", "card").put("card", JSONObject().put("type", "a2ui").put("id", "k1").put("rev", 1))
+        w.newest(w.begin(), window(old), 1)
+        assertEquals(2, w.items.getValue(1).getJSONObject("card").getInt("rev"))
+        w.older(window(JSONObject(old.toString()).put("seq", 0)))
+        assertEquals("older pages go through it too", 2, w.items.getValue(0).getJSONObject("card").getInt("rev"))
+    }
 }

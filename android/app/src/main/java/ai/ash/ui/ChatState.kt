@@ -10,7 +10,10 @@ import java.util.TreeMap
  * for the generation it was asked in ([begin]): one asked before the link went down and came back, or before the conversation
  * was read anew, is dropped whether it succeeded or failed. Plain data, no Android.
  */
-class ChatWindow {
+class ChatWindow(
+    /** What an item becomes as it is taken from a read (the chat puts a card's newer patch over an older read of it). */
+    private val adjust: (JSONObject) -> JSONObject = { it },
+) {
     val items = TreeMap<Long, JSONObject>()
     var moreBefore = false; private set
     /** When the last read failed (0: the last read worked); the screen says the conversation may be behind. */
@@ -50,7 +53,7 @@ class ChatWindow {
         if (keepMore && (items.firstEntry()?.key ?: Long.MAX_VALUE) >= oldest) moreBefore = had
     }
 
-    private fun put(got: JSONArray) { for (i in 0 until got.length()) got.optJSONObject(i)?.let { items[it.optLong("seq")] = it } }
+    private fun put(got: JSONArray) { for (i in 0 until got.length()) got.optJSONObject(i)?.let { items[it.optLong("seq")] = adjust(it) } }
 
     fun clientIds(): Set<String> = items.values.mapNotNull { it.optString("client_id").ifEmpty { null } }.toSet()
     fun ids(): Set<String> = items.values.map { it.optString("id") }.toSet()

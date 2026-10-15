@@ -34,6 +34,7 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     private val waiting = HashMap<String, (JSONObject) -> Unit>()
     private val linkListeners = ArrayList<(Boolean) -> Unit>()
     private val changeListeners = ArrayList<() -> Unit>()
+    private val cardListeners = ArrayList<(JSONObject) -> Unit>()
     private class Partial(val mime: String, val bytes: ByteArrayOutputStream = ByteArrayOutputStream())
     private val incoming = HashMap<String, Partial>()
     private val arrived = LinkedHashMap<String, Pair<String, ByteArray>>()
@@ -55,12 +56,16 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
         arrived.clear()
         linkListeners.clear()
         changeListeners.clear()
+        cardListeners.clear()
         outQueue.shutdownNow()
     }
 
     fun onLink(l: (Boolean) -> Unit) { linkListeners.add(l); l(open) }
     fun onChange(l: () -> Unit) { changeListeners.add(l) }
     fun removeChange(l: () -> Unit) { changeListeners.remove(l) }
+    /** A card in the conversation changed (`chat` present `card.patch {card}`): [l] gets the whole card as it is now. */
+    fun onCard(l: (JSONObject) -> Unit) { cardListeners.add(l) }
+    fun removeCard(l: (JSONObject) -> Unit) { cardListeners.remove(l) }
 
     override fun post(message: String) {
         if (stopped) return
@@ -104,8 +109,11 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
         when (f.optString("t")) {
             "send.result" -> waiting.remove(f.optString("id"))?.invoke(f)
             "sync.page", "sync.msg" -> if (f.optString("sid") == sid) changeListeners.toList().forEach { it() }
-            // A `chat` present (focus / open): the chat is the app's front screen, it is up.
-            "present" -> out(JSONObject().put("t", "present.result").put("id", f.optString("id")).put("ok", true))
+            // A `chat` present: a card that changed is drawn again where it is; focus / open: the chat is the app's front screen, it is up.
+            "present" -> {
+                if (f.optString("op") == "card.patch") f.optJSONObject("body")?.optJSONObject("card")?.let { card -> cardListeners.toList().forEach { it(card) } }
+                out(JSONObject().put("t", "present.result").put("id", f.optString("id")).put("ok", true))
+            }
             "stream" -> stream(f, bytes)
             "error" -> waiting.remove(f.optString("id"))?.invoke(JSONObject().put("ok", false)
                 .put("error", JSONObject().put("code", f.optString("code", "failed")).put("message", f.optString("message"))))

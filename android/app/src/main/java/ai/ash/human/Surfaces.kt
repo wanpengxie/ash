@@ -23,8 +23,15 @@ internal object Surfaces {
         // What a present needs is running before it is shown: the hand's runtime (the island layer gets its context there).
         fun ready(handler: SurfaceHandler) = SurfaceHandler { op, body -> HandRuntime.start(app); handler.present(op, body) }
         return HumanChannel(linkedMapOf(
-            // A card's picture is drawn off screen; every other op is the chat page's.
-            "chat" to SurfaceHandler { op, body -> if (op == "card.preview") ChatCardPreview.present(app, body) else chat.present(op, body) },
+            // A card's picture is drawn off screen; a card that changed goes to the page as it is (the chat stays where it is);
+            // every other op is the chat page's.
+            "chat" to SurfaceHandler { op, body ->
+                when (op) {
+                    "card.preview" -> ChatCardPreview.present(app, body)
+                    "card.patch" -> chat.deliver(op, body)
+                    else -> chat.present(op, body)
+                }
+            },
             "notification" to ready { op, body ->
                 val id = body.optString("id")
                 when (op) {

@@ -36,6 +36,8 @@ export function createAppsService(runtime: AppRuntime): Member {
         if (!ctx.caller.member.startsWith("app:")) throw new WordError("forbidden", "an app sets the dot of its own icon");
         return { data: runtime.setBadge(ctx.caller.member.slice(4), body.tone as "ok" | "warn" | "err" | "paused") };
       }
+      case "apps.sleep": return { data: await runtime.sleep(id) };
+      case "apps.wake": return { data: await runtime.wake(id) };
       case "apps.restart": return { data: await runtime.restart(id) };
       case "apps.logs": return { data: runtime.logs(id, typeof body.lines === "number" ? body.lines : 100) };
       case "apps.reset": return { data: await runtime.reset(id) };

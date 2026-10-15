@@ -1,8 +1,10 @@
 // A card an agent designed (A2UI, docs/GENUI.md) drawn in the conversation as DOM: the same literal plan the phone draws
 // natively (`plan.components`, every binding already resolved by the hub). Inputs write into a working copy of the card's
 // data kept here per card id, so it survives the timeline drawing its rows again; a password box keeps its text in memory
-// only and sends it nowhere but the vault. A button's action is the owner's own message to the card's creator, or the
-// answer of a form. A mini app (Html) runs in a sandboxed frame with no network and one way out: `ash.send`.
+// only and sends it nowhere but the vault. A button's action is the owner's own message to the card's creator, the answer
+// of a form, or (docs/CARD-RUNTIME.md) a press the hub runs for the card (`service:cards/act`: call / ask / tell), whose
+// outcome the hub writes on the card itself and pushes as `card.patch`. A mini app (Html) runs in a sandboxed frame with no
+// network and one way out: `ash.send`, and `ash.call` / `ash.ask` / `ash.tell`, which are presses of the card too.
 import { addIcon, avatarUrl, button, text } from "./chat-ui.js";
 import { ICON_SHAPES } from "./ash-icons.js";
 import { markdownUrl } from "./markdown.js";
@@ -127,8 +129,153 @@ export function stateLine(card, local = {}, now = Date.now()) {
   if (local.sent) return STATE_TEXT.sent;
   if (local.cancelled) return STATE_TEXT.cancelled;
   if (card.state && card.state !== "open") return STATE_TEXT[card.state] ?? STATE_TEXT.closed;
+  if (card.life === "closed") return STATE_TEXT.closed;
   if (Number.isFinite(card.form?.expires_at) && card.form.expires_at > 0 && card.form.expires_at <= now) return STATE_TEXT.expired;
   return "";
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The card runtime (docs/CARD-RUNTIME.md): presses the hub runs, what a button shows, the card's live line, what is seen.
+
+/** A press the hub runs for the card (`service:cards/act`): "call", "ask" or "tell"; null for any other action. */
+export function runtimeKind(action) {
+  if (!plain(action)) return null;
+  return ["call", "ask", "tell"].find((kind) => plain(action[kind])) ?? null;
+}
+
+/** What a press sends to `service:cards/act`: which card, which component, the values on the card now, and a mini app's request. */
+export function actBody(cardId, component, data, request = null) {
+  return { card: String(cardId), component: String(component), data: clone(plain(data) ? data : {}), ...(plain(request) ? { request: clone(request) } : {}) };
+}
+
+/** How long a press waits for the hub's answer: the action's `timeout_s` (the hub's own default otherwise) and 5 s more. */
+export function actTimeoutMs(action) {
+  const kind = runtimeKind(action);
+  const given = kind && kind !== "tell" ? action[kind].timeout_s : undefined;
+  const seconds = Number.isFinite(given) && given > 0 ? given : kind === "ask" ? 120 : 30;
+  return (seconds + 5) * 1000;
+}
+
+const ACT_FAILED = "没做成，可以再按一次。";
+const ACT_LATE = "没有及时回应，可以再按一次。";
+
+/** The outcome line of a press the hub did not answer: why, in the owner's words. */
+export function actProblem(error) {
+  const code = error?.code;
+  if (code === "conflict") return "这张卡已经结束了，按钮不再起作用。";
+  if (code === "offline" || code === "unavailable") return "没连上，可以再按一次。";
+  if (code === "timeout" || code === "result_unknown") return ACT_LATE;
+  if (code === "forbidden") return "这张卡的应用没有被批准做这件事。";
+  return ACT_FAILED;
+}
+
+const answerOf = (data) => plain(data) && ["ok", "failed", "running"].includes(data.state)
+  ? { state: data.state, text: typeof data.text === "string" ? data.text : "", ...(data.result !== undefined ? { result: data.result } : {}) }
+  : { state: "failed", text: ACT_FAILED };
+
+/** One press: [act] (the page's `service:cards/act`) with [body], answered within [ms]; never throws. */
+export async function actOnce(act, body, ms) {
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve({ state: "failed", text: ACT_LATE }), ms); });
+  try {
+    return await Promise.race([Promise.resolve().then(() => act(body)).then(answerOf, (error) => ({ state: "failed", text: actProblem(error) })), late]);
+  } finally { clearTimeout(timer); }
+}
+
+/** How long 「已复制」 stays under a button. */
+export const COPIED_MS = 2000;
+
+/**
+ * What a button with a hub action (or a copy) shows now: `busy` (「处理中…」, disabled: a press of this screen is on its way,
+ * or the hub says it runs; a run the hub never finished stops counting after the action's wait) and the line under it:
+ * the outcome this screen was answered, unless the hub wrote a newer one on the card.
+ */
+export function buttonView(card, local, component, action, now = Date.now()) {
+  const copied = local?.copied?.[component];
+  if (copied && copied.until > now) return { busy: false, line: { state: copied.state, text: copied.text } };
+  const hub = plain(card?.actions?.[component]) ? card.actions[component] : null;
+  let running = false;
+  if (hub?.state === "running") {
+    const since = local?.runningSince;
+    const key = `${component}\0${hub.at}`;
+    if (since && !since.has(key)) { if (since.size > 50) since.clear(); since.set(key, now); }
+    running = now - (since?.get(key) ?? now) < actTimeoutMs(action);
+  }
+  if (local?.pressing?.has(component) || running) return { busy: true, line: null };
+  const mine = local?.outcomes?.[component];
+  const hubDone = hub && hub.state !== "running" ? hub : null;
+  const shown = mine && !(hubDone && Number(hubDone.at) > mine.after) ? mine : hubDone;
+  return { busy: false, line: shown?.text ? { state: shown.state === "failed" ? "failed" : "ok", text: String(shown.text) } : null };
+}
+
+const clockOf = (ms) => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+
+/**
+ * The quiet line at the bottom of a card that holds resources (it has an app; its live data may come): 「常驻中」 while the
+ * owner keeps it running, 「HH:MM 更新」 once data came, 「已休眠 · HH:MM 的数据」 while it sleeps, "" until then (the line
+ * keeps its place); null for any other card.
+ */
+export function liveLine(card) {
+  const backed = (typeof card?.app === "string" && card.app !== "") || card?.temporary_app === true;
+  if (!backed || !(Number.isFinite(card.fed_at) || typeof card.life === "string")) return null;
+  if (card.life === "closed" || (card.state && card.state !== "open")) return null;
+  const fed = Number.isFinite(card.fed_at) && card.fed_at > 0 ? card.fed_at : null;
+  if (card.life === "dormant") {
+    const at = fed ?? (Number.isFinite(card.updated_at) && card.updated_at > 0 ? card.updated_at : null);
+    return at ? `已休眠 · ${clockOf(at)} 的数据` : "已休眠";
+  }
+  if (card.pinned === true && card.life === "active") return "常驻中";
+  return fed ? `${clockOf(fed)} 更新` : "";
+}
+
+/** Whether the owner may keep [card] running (「常驻」): a card of an app that is not closed. */
+export const pinnable = (card) => typeof card?.app === "string" && card.app !== "" && card.life !== "closed" && (!card.state || card.state === "open");
+
+/** The ids of the cards an agent designed that are on screen in [log] now (at most 50). */
+export function cardIdsOnScreen(log) {
+  const view = log?.getBoundingClientRect?.();
+  if (!view) return [];
+  const ids = [];
+  for (const el of log.querySelectorAll?.(".a2ui[data-card-id]") ?? []) {
+    const id = el.dataset?.cardId;
+    const box = el.getBoundingClientRect?.();
+    if (!id || !box || ids.includes(id) || box.height <= 0 || box.bottom <= view.top || box.top >= view.bottom) continue;
+    ids.push(id);
+    if (ids.length >= 50) break;
+  }
+  return ids;
+}
+
+/**
+ * Tells the hub which cards are on screen (`service:cards/seen`): [delay] ms after the last poke (the list stopped
+ * scrolling, the chat came into view) and every [every] ms while the chat is visible; never while it is hidden, never an
+ * empty list. Failures are ignored: the next report says it again.
+ */
+export class SeenReporter {
+  constructor({ ids, send, visible = () => true, delay = 400, every = 60_000 }) {
+    Object.assign(this, { ids, send, visible, delay, every, timer: null, interval: null });
+  }
+  poke() {
+    if (!this.visible()) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.report(), this.delay);
+    this.timer.unref?.();
+  }
+  report() {
+    clearTimeout(this.timer);
+    this.timer = null;
+    if (!this.visible()) return;
+    let ids;
+    try { ids = this.ids(); } catch { return; }
+    if (!Array.isArray(ids) || !ids.length) return;
+    Promise.resolve().then(() => this.send(ids.slice(0, 50))).catch(() => {});
+  }
+  start() {
+    clearInterval(this.interval);
+    this.interval = setInterval(() => this.report(), this.every);
+    this.interval.unref?.();
+  }
+  dispose() { clearTimeout(this.timer); clearInterval(this.interval); this.timer = this.interval = null; }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -161,16 +308,37 @@ function stateFor(item) {
   if (!s) {
     if (states.size >= MAX_STATES) for (const [id, old] of states) { if (!editing(old)) { clearTimeout(old.timer); states.delete(id); secrets.delete(id); } if (states.size < MAX_STATES) break; }
     s = { id: card.id, data: clone(data), seen: server, hold: null, plan: null, tabs: {}, version: 0, inflight: 0, timer: null,
-      sent: false, cancelled: false, busy: false, error: "", answer: null, root: null, item, ctx: null, lastSend: 0, feedback: undefined };
+      sent: false, cancelled: false, busy: false, error: "", answer: null, root: null, item, ctx: null, lastSend: 0, feedback: undefined,
+      // The card runtime: presses on their way, their outcomes as answered here, 「已复制」, mini app calls in the last second.
+      pressing: new Set(), outcomes: {}, copied: {}, runningSince: new Map(), calls: [], kept: false, keeping: false,
+      // 「常驻」 as the owner just set it (until the hub's card says the same), and why setting it failed.
+      pinned: undefined, pinning: false, pinError: "" };
     states.set(card.id, s);
   } else if (server > s.seen) {
     if (editing(s) || (s.hold !== null && server <= s.hold)) s.hold = Math.max(s.hold ?? 0, server);
     else { s.data = clone(data); s.seen = server; s.plan = null; s.hold = null; }
   }
   if (s.feedback !== undefined && card.feedback === s.feedback) s.feedback = undefined;
+  if (s.pinned !== undefined && !s.pinning && (card.pinned === true) === s.pinned) s.pinned = undefined;
   if (card.state && card.state !== "open") { s.busy = false; if (card.state === "sent" || card.state === "cancelled") s.error = ""; }
   s.item = item;
   return s;
+}
+
+/**
+ * The hub pushed [card] whole (`card.patch`: live data, a button's state, the lifecycle). Its state follows now; the row
+ * itself is drawn again by the timeline, unless the owner's focus holds it (a button just pressed): then it is drawn here.
+ * Not while an input has the focus: the timeline draws it when the owner leaves it.
+ */
+export function patchA2uiCard(card) {
+  const s = plain(card) && typeof card.id === "string" ? states.get(card.id) : null;
+  if (!s || !plain(card.plan)) return false;
+  stateFor({ ...s.item, card });
+  const root = s.root;
+  const active = (root?.ownerDocument ?? globalThis.document)?.activeElement;
+  const tag = String(active?.tagName ?? active?.tag ?? "").toLowerCase();
+  if (root && active && active !== root && root.contains?.(active) && !["input", "textarea", "select"].includes(tag)) repaint(s);
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -278,30 +446,76 @@ export function appendCardMarkdown(parent, source) {
   return parent;
 }
 
+/** A table cell's text as the card's inline Markdown (**b**, `code`, links), its lines kept. */
+export function cellMarkdown(cell, source) {
+  String(source ?? "").split("\n").forEach((line, i) => { if (i) cell.append(document.createElement("br")); inline(cell, line); });
+  return cell;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Icons and charts.
 
 /**
- * Every card icon name (sdk card.ts CARD_ICONS) as the nearest of Ash's own line icons (js/ash-icons.js); null for a name
- * with no close match, drawn as a neutral outline (a small circle). The one table on the web; the phone keeps its own.
+ * Line icons the cards use beyond Ash's own set (js/ash-icons.js), drawn the same way: a 24 grid, stroke 1.8, round caps and
+ * joins (`.i`); a shape with `fill` is solid. The same path data as the phone's vector drawables (res/drawable/ash_ic_*.xml:
+ * sun, cloud, rain, snow, wind, person, account, star, star_half, star_off, volume_*, weight, water, car, thumb_up, thumb_down),
+ * so both look alike: change them together.
+ */
+export const CARD_ICON_SHAPES = Object.freeze({
+  sun: [["path", { d: "M8,12a4,4 0 1,0 8,0a4,4 0 1,0 -8,0" }], ["path", { d: "M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" }]],
+  cloud: [["path", { d: "M7.5 18.5h9.5a4 4 0 0 0 .5-7.97A5.5 5.5 0 0 0 7.1 9.1 4.75 4.75 0 0 0 7.5 18.5z" }]],
+  rain: [["path", { d: "M7.5 14.5h9.5a3.5 3.5 0 0 0 .4-6.98A5 5 0 0 0 7.8 6.3 4.1 4.1 0 0 0 7.5 14.5z" }], ["path", { d: "M8.5 17.5l-1 2.5M12.5 17.5l-1 2.5M16.5 17.5l-1 2.5" }]],
+  snow: [["path", { d: "M7.5 14.5h9.5a3.5 3.5 0 0 0 .4-6.98A5 5 0 0 0 7.8 6.3 4.1 4.1 0 0 0 7.5 14.5z" }], ["path", { d: "M8 18v.01M12 18v.01M16 18v.01M10 21v.01M14 21v.01" }]],
+  wind: [["path", { d: "M3.5 9h10a2.5 2.5 0 1 0-2.5-2.5M3.5 13h14a2.5 2.5 0 1 1-2.5 2.5M3.5 17h7" }]],
+  person: [["path", { d: "M8.5,8a3.5,3.5 0 1,0 7,0a3.5,3.5 0 1,0 -7,0" }], ["path", { d: "M5 20a7 7 0 0 1 14 0" }]],
+  accountCircle: [["path", { d: "M3.5,12a8.5,8.5 0 1,0 17,0a8.5,8.5 0 1,0 -17,0" }], ["path", { d: "M9.5,10a2.5,2.5 0 1,0 5,0a2.5,2.5 0 1,0 -5,0" }], ["path", { d: "M6.8 18.6a6 6 0 0 1 10.4 0" }]],
+  star: [["path", { d: "M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.8L12 16.9l-5.25 2.75 1-5.8L3.5 9.7l5.9-.9z" }]],
+  starHalf: [["path", { d: "M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.8L12 16.9l-5.25 2.75 1-5.8L3.5 9.7l5.9-.9z" }], ["path", { d: "M12 3.5L9.4 8.8 3.5 9.7l4.25 4.1-1 5.8L12 16.9z", fill: "currentColor", stroke: "none" }]],
+  starOff: [["path", { d: "M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.8L12 16.9l-5.25 2.75 1-5.8L3.5 9.7l5.9-.9z" }], ["path", { d: "M3.5 3.5l17 17" }]],
+  volumeUp: [["path", { d: "M4 9.5h3.5L12 5.5v13l-4.5-4H4z" }], ["path", { d: "M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" }]],
+  volumeDown: [["path", { d: "M4 9.5h3.5L12 5.5v13l-4.5-4H4z" }], ["path", { d: "M15.5 9a4 4 0 0 1 0 6" }]],
+  volumeMute: [["path", { d: "M4 9.5h3.5L12 5.5v13l-4.5-4H4z" }]],
+  volumeOff: [["path", { d: "M4 9.5h3.5L12 5.5v13l-4.5-4H4z" }], ["path", { d: "M15.5 9.5l5 5M20.5 9.5l-5 5" }]],
+  weight: [["path", { d: "M5.5 9.5h13l1.5 10.5h-16z" }], ["path", { d: "M9 9.5V7a3 3 0 0 1 6 0v2.5" }]],
+  water: [["path", { d: "M12 3.5s-6 6.6-6 10.5a6 6 0 0 0 12 0c0-3.9-6-10.5-6-10.5z" }]],
+  car: [["path", { d: "M3.5 16.5v-3.5l1.9-5a2 2 0 0 1 1.9-1.3h9.4a2 2 0 0 1 1.9 1.3l1.9 5v3.5z" }], ["path", { d: "M3.5 13h17" }], ["path", { d: "M6 16.5v2h2.5v-2M15.5 16.5v2H18v-2" }], ["path", { d: "M7 14.8v.01M17 14.8v.01" }]],
+  thumbUp: [["path", { d: "M7.5 10.5v9h-3v-9z" }], ["path", { d: "M7.5 10.5l3.5-6.5a2 2 0 0 1 2 2.2l-.5 3.3h5a2 2 0 0 1 2 2.4l-1.2 6a2 2 0 0 1-2 1.6H7.5" }]],
+  thumbDown: [["path", { d: "M7.5 13.5v-9h-3v9z" }], ["path", { d: "M7.5 13.5l3.5 6.5a2 2 0 0 0 2-2.2l-.5-3.3h5a2 2 0 0 0 2-2.4l-1.2-6a2 2 0 0 0-2-1.6H7.5" }]],
+
+});
+
+/**
+ * Every card icon name (sdk card.ts CARD_ICONS) as the nearest line icon: one of Ash's own (js/ash-icons.js) or of the
+ * cards' (CARD_ICON_SHAPES); null draws a neutral outline (a small circle). The one table on the web; the phone keeps its own.
  */
 export const CARD_ICON_GLYPHS = Object.freeze({
-  accountCircle: null, add: "plus", arrowBack: "back", arrowForward: "chev", attachFile: "file", calendarToday: "clock", call: "phone",
+  accountCircle: "accountCircle", add: "plus", arrowBack: "back", arrowForward: "chev", attachFile: "file", calendarToday: "clock", call: "phone",
   camera: "camera", check: "check", close: "x", delete: "trash", download: "down", edit: "pen", event: "clock", error: "alert",
   fastForward: "chev", favorite: "heart", favoriteOff: "heart", folder: "folder", help: "ask", home: "grid", info: "alert", locationOn: "pin",
   lock: "lock", lockOpen: "lock", mail: "msg", menu: "list", moreVert: "more", moreHoriz: "more", notificationsOff: "bell",
-  notifications: "bell", pause: "pause", payment: "wallet", person: null, phone: "phone", photo: "image", play: "chev", print: "file",
+  notifications: "bell", pause: "pause", payment: "wallet", person: "person", phone: "phone", photo: "image", play: "chev", print: "file",
   refresh: "refresh", rewind: "back", search: "eye", send: "up", settings: "slider", share: "link", shoppingCart: "box", skipNext: "chev",
-  skipPrevious: "back", star: "heart", starHalf: "heart", starOff: "heart", stop: "x", upload: "up", visibility: "eye", visibilityOff: "eye",
-  volumeDown: null, volumeMute: null, volumeOff: null, volumeUp: null, warning: "alert", sun: null, cloud: null, rain: null, snow: null,
-  wind: null, moon: "moon", heart: "heart", steps: "pulse", weight: null, sleep: "moon", water: null, fire: "bolt", calendar: "clock",
-  clock: "clock", alert: "alert", bell: "bell", car: null, money: "coin", chart: "pulse",
+  skipPrevious: "back", star: "star", starHalf: "starHalf", starOff: "starOff", stop: "x", upload: "up", visibility: "eye", visibilityOff: "eye",
+  volumeDown: "volumeDown", volumeMute: "volumeMute", volumeOff: "volumeOff", volumeUp: "volumeUp", warning: "alert", sun: "sun", cloud: "cloud",
+  rain: "rain", snow: "snow", wind: "wind", moon: "moon", heart: "heart", steps: "pulse", weight: "weight", sleep: "moon", water: "water", fire: "bolt",
+  calendar: "clock", clock: "clock", alert: "alert", bell: "bell", car: "car", money: "coin", chart: "pulse",
 });
+
+/** A line icon by its shape name (the cards' own first, then Ash's); null when there is none or no SVG to draw with. */
+function drawShape(parent, glyph, className) {
+  if (typeof document.createElementNS !== "function") return null;
+  const shapes = Object.hasOwn(CARD_ICON_SHAPES, glyph) ? CARD_ICON_SHAPES[glyph] : null;
+  if (!shapes) return Object.hasOwn(ICON_SHAPES, glyph) ? addIcon(parent, glyph, className) : null;
+  const svg = svgNode("svg", { class: className ? `i ${className}` : "i", viewBox: "0 0 24 24", "aria-hidden": "true" }, parent);
+  for (const [tag, attrs] of shapes) svgNode(tag, attrs, svg);
+  return svg;
+}
 
 /** A card icon as a single-colour line icon in the node's colour (never an emoji); the neutral outline when it has no match. */
 function drawIcon(parent, name, className = "i-s") {
   const glyph = Object.hasOwn(CARD_ICON_GLYPHS, name) ? CARD_ICON_GLYPHS[name] : null;
-  if (glyph && ICON_SHAPES[glyph]) return addIcon(parent, glyph, className);
+  const drawn = glyph && drawShape(parent, glyph, className);
+  if (drawn) return drawn;
   const svg = svgNode("svg", { class: `i ${className} a2-icon-none`, viewBox: "0 0 24 24", "aria-hidden": "true" }, parent);
   svgNode("circle", { cx: 12, cy: 12, r: 5 }, svg);
   return svg;
@@ -403,6 +617,18 @@ function themeVars() {
   };
 }
 
+/**
+ * `window.ash` in the mini app: `send(action, context)` (the owner's say), and `call(member, word, body)`, `ask(text)`,
+ * `tell(text)`, each a press of the card that resolves to the hub's answer `{state, text, result?}` (never rejects).
+ */
+export const MINI_APP_BRIDGE = "(function(){var p=window.parent,n=0,w={};" +
+  "function c(v){return v&&typeof v===\"object\"?JSON.parse(JSON.stringify(v)):{}}" +
+  "function r(q){return new Promise(function(ok){var id=\"r\"+(++n);w[id]=ok;p.postMessage({ash:\"act\",id:id,request:q},\"*\")})}" +
+  "window.addEventListener(\"message\",function(e){var d=e.data;if(e.source!==p||!d||d.ash!==\"answer\"||!w[d.id])return;var f=w[d.id];delete w[d.id];f(d.answer)});" +
+  "window.ash=Object.freeze({send:function(action,context){p.postMessage({ash:\"send\",action:String(action),context:c(context)},\"*\")}," +
+  "call:function(member,word,body){return r({call:{member:String(member),word:String(word),body:c(body)}})}," +
+  "ask:function(text){return r({ask:{text:String(text)}})},tell:function(text){return r({tell:{text:String(text)}})}})})();";
+
 /** The mini app's document: the CSP, the theme as CSS variables and the `ash.send` bridge, ahead of the agent's HTML. */
 export function miniAppDocument(html, vars = themeVars(), accent = null) {
   const safe = (v) => String(v).replace(/[<>;{}]/g, "");
@@ -411,19 +637,43 @@ export function miniAppDocument(html, vars = themeVars(), accent = null) {
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MINI_APP_CSP}">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<style>:root{${declarations};color-scheme:${vars.scheme === "dark" ? "dark" : "light"}}html,body{margin:0;background:var(--ash-bg);color:var(--ash-text);font-family:system-ui,-apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}</style>` +
-    `<script>(function(){var p=window.parent;window.ash=Object.freeze({send:function(action,context){p.postMessage({ash:"send",action:String(action),context:context&&typeof context==="object"?JSON.parse(JSON.stringify(context)):{}},"*")}})})();</script>`;
+    `<script>${MINI_APP_BRIDGE}</script>`;
   const source = String(html ?? "");
   const doctype = /^\s*<!doctype[^>]*>/i.exec(source);
   return doctype ? `${doctype[0]}${head}${source.slice(doctype[0].length)}` : `<!doctype html>${head}${source}`;
 }
 
-/** A message from a mini app: only from a frame this page made, only `{ash: "send", action, context}`. */
+/** A mini app's `call` / `ask` / `tell` request made safe to send; null when it is none of them. */
+export function miniAppRequest(request) {
+  if (!plain(request)) return null;
+  const call = request.call;
+  if (plain(call) && typeof call.member === "string" && call.member && call.member.length <= 128 && typeof call.word === "string" && call.word && call.word.length <= 128) {
+    const body = plain(call.body) ? call.body : {};
+    let size = 0; try { size = JSON.stringify(body).length; } catch { return null; }
+    return size > 16 * 1024 ? null : { call: { member: call.member, word: call.word, body: clone(body) } };
+  }
+  for (const kind of ["ask", "tell"]) {
+    const value = request[kind];
+    if (plain(value) && typeof value.text === "string" && value.text.trim() && value.text.length <= 4000) return { [kind]: { text: value.text } };
+  }
+  return null;
+}
+
+/**
+ * A message from a mini app: only from a frame this page made, only `{ash: "send", action, context}` or
+ * `{ash: "act", id, request}` (answered into the frame as `{ash: "answer", id, answer}`).
+ */
 export function frameMessage(event) {
   for (const entry of frames) {
     if (entry.frame.isConnected === false && entry.mounted) { frames.delete(entry); continue; }
     if (entry.frame.isConnected) entry.mounted = true;
     if (!event?.source || entry.frame.contentWindow !== event.source) continue;
     const data = event.data;
+    if (plain(data) && data.ash === "act" && typeof data.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(data.id)) {
+      const request = miniAppRequest(data.request);
+      entry.act?.(data.id, request);
+      return request !== null;
+    }
     if (!plain(data) || data.ash !== "send" || typeof data.action !== "string" || !EVENT_NAME.test(data.action)) return false;
     const context = plain(data.context) ? data.context : {};
     let size = 0; try { size = JSON.stringify(context).length; } catch { return false; }
@@ -542,7 +792,8 @@ function paint(root, s) {
       el.classList.add("a2-tap");
       el.setAttribute("role", "button");
       el.tabIndex = 0;
-      if (!live && "event" in node.action) el.setAttribute("aria-disabled", "true");
+      const pressed = runtimeKind(node.action) && buttonView(card, s, node.id, node.action).busy;
+      if ((!live && ("event" in node.action || runtimeKind(node.action))) || pressed) el.setAttribute("aria-disabled", "true");
       else el.addEventListener("click", act(node));
     }
     return el;
@@ -648,12 +899,20 @@ function paint(root, s) {
     }
     case "Button": {
       const variant = node.variant === "primary" ? "btn-primary" : node.variant === "borderless" ? "btn-ghost" : "btn-neutral";
-      const el = button(parentEl, "", `a-btn btn-sm a2-btn ${variant}`);
-      if (node.child) draw(el, node.child, depth + 1, "Button");
-      el.disabled = node.disabled === true || !live || s.busy || !node.action;
+      // A press the hub runs, or a copy, has a line under the button for its outcome (「已复制」, 「已完成 · 10:42」, why it failed).
+      const lined = Boolean(runtimeKind(node.action) || plain(node.action?.copy));
+      const view = lined ? buttonView(card, s, node.id, node.action) : { busy: false, line: null };
+      const holder = lined ? text(parentEl, "div", "", "a2-act") : parentEl;
+      const el = button(holder, "", `a-btn btn-sm a2-btn ${variant}`);
+      if (view.busy) { text(el, "span", "处理中…", "a2-text"); el.setAttribute("aria-busy", "true"); }
+      else if (node.child) draw(el, node.child, depth + 1, "Button");
+      el.disabled = node.disabled === true || !live || s.busy || !node.action || view.busy;
       focusable(el, node);
       el.addEventListener("click", act(node));
-      return el;
+      if (!lined) return el;
+      if (node.style?.width === "fill" || Number.isFinite(node.style?.width)) holder.classList.add("a2-act-fill");
+      if (view.line) text(holder, "div", view.line.text, `a2-act-line${view.line.state === "failed" ? " failed" : ""}`);
+      return holder;
     }
     case "CheckBox": case "Switch": {
       const el = text(parentEl, "label", "", `a2-check${node.component === "Switch" ? " a2-switch-row" : ""}`);
@@ -798,11 +1057,11 @@ function paint(root, s) {
       const wrap = text(parentEl, "div", "", "a2-table-wrap");
       const table = text(wrap, "table", "", "a2-table");
       const header = Array.isArray(node.header) ? node.header : [];
-      if (header.length) { const tr = text(text(table, "thead", ""), "tr", ""); for (const h of header) text(tr, "th", h); }
+      if (header.length) { const tr = text(text(table, "thead", ""), "tr", ""); for (const h of header) cellMarkdown(text(tr, "th", ""), h); }
       const body = text(table, "tbody", "");
       for (const row of Array.isArray(node.rows) ? node.rows : []) {
         const tr = text(body, "tr", "");
-        for (const cell of Array.isArray(row) ? row : []) text(tr, "td", cell);
+        for (const cell of Array.isArray(row) ? row : []) cellMarkdown(text(tr, "td", ""), cell);
       }
       return wrap;
     }
@@ -823,14 +1082,25 @@ function paint(root, s) {
       listen();
       const now = Date.now();
       for (const entry of frames) if (entry.frame.isConnected === false && now - entry.added > 2000) frames.delete(entry);
+      const answerFrame = (id, answer) => { try { frame.contentWindow?.postMessage({ ash: "answer", id, answer }, "*"); } catch { /* the frame is gone */ } };
       frames.add({ frame, mounted: false, added: now, send: (event) => {
         // A mini app acts like a button, at most once a second.
         const now = Date.now();
         if (now - s.lastSend < 1000) return;
         s.lastSend = now;
         void perform(s, { event }, byId, node);
+      }, act: (id, request) => {
+        // ash.call / ash.ask / ash.tell: a press of this Html node with the frame's request, at most two a second.
+        if (!request) { answerFrame(id, { state: "failed", text: "这个请求看不懂。" }); return; }
+        const now = Date.now();
+        s.calls = s.calls.filter((at) => now - at < 1000);
+        if (s.calls.length >= 2) { answerFrame(id, { state: "failed", text: "太快了，稍后再试。" }); return; }
+        s.calls.push(now);
+        const c = s.ctx, current = s.item.card;
+        if (typeof c?.act !== "function" || stateLine(current, s)) { answerFrame(id, { state: "failed", text: "这张卡已经结束了。" }); return; }
+        void actOnce(c.act, actBody(current.id, node.id, s.data, request), actTimeoutMs(request)).then((answer) => answerFrame(id, answer));
       } });
-      if (AGENT.test(card.owner ?? "")) {
+      if (AGENT.test(card.owner ?? "") && !card.app && card.temporary_app !== true) {
         const save = button(wrap, "存成应用", "a-btn btn-sm btn-ghost a2-save");
         save.disabled = !live;
         save.addEventListener("click", () => {
@@ -850,28 +1120,89 @@ function paint(root, s) {
   if (s.error) text(root, "div", s.error, "card-note a2-error");
   if (closed) text(root, "div", closed, "a2-status");
   else if (s.busy) text(root, "div", form ? "正在提交…" : "正在发送…", "a2-status");
-  if (!form && AGENT.test(card.owner ?? "")) feedbackFooter(root, s);
+  footer(root, s, closed);
   if (!live) root.classList.add("a2-readonly");
   return root;
 }
 
 /** The thumbs the owner gives an open or closed card: the last one given shows as chosen; its height is there from the start. */
-const FEEDBACK = Object.freeze([["up", "👍", "有用"], ["down", "👎", "没用"]]);
+const FEEDBACK = Object.freeze([["up", "👍", "thumbUp", "有用"], ["down", "👎", "thumbDown", "没用"]]);
 
 /** Which thumb [card] shows as chosen: the one just tapped on this screen, else the last one the hub recorded. */
 export const feedbackOf = (card, local) => local ?? (card?.feedback === "up" || card?.feedback === "down" ? card.feedback : undefined);
 
-function feedbackFooter(root, s) {
-  const footer = text(root, "div", "", "a2-feedback");
-  const chosen = feedbackOf(s.item.card, s.feedback);
+/**
+ * The card's quiet bottom line, one height from the start: its live line (「常驻中」, 「HH:MM 更新」, 「已休眠 · …」) on the
+ * left, then 「存成应用」 for a card whose app exists only for it, the 「常驻」 switch of an app's card, the thumbs of an
+ * agent's card.
+ */
+function footer(root, s, closed) {
+  const card = s.item.card;
+  const thumbs = !plain(card.form) && AGENT.test(card.owner ?? "");
+  const pin = !closed && pinnable(card);
+  const pinned = s.pinned ?? card.pinned === true;
+  const live = liveLine({ ...card, pinned });
+  const keep = card.temporary_app === true && !s.kept && !closed;
+  if (!thumbs && live === null && !keep && !pin) return;
+  const bar = text(root, "div", "", "a2-feedback");
+  if (s.pinError) text(bar, "span", s.pinError, "a2-live failed");
+  else if (live !== null || pin) text(bar, "span", live ?? "", "a2-live");
+  if (keep) {
+    const b = button(bar, "存成应用", "a2-keep");
+    b.disabled = typeof s.ctx?.keep !== "function" || s.keeping;
+    b.addEventListener("click", () => { void keepApp(s); });
+  }
+  if (pin) {
+    const b = button(bar, "", "a2-pin");
+    text(b, "span", "", "a2-pin-track");
+    text(b, "span", "常驻");
+    b.setAttribute("role", "switch");
+    b.setAttribute("aria-checked", String(pinned));
+    b.setAttribute("aria-label", pinned ? "常驻：开" : "常驻：关");
+    b.disabled = typeof s.ctx?.pin !== "function" || s.pinning;
+    b.addEventListener("click", () => { void togglePin(s); });
+  }
+  if (!thumbs) return;
+  const chosen = feedbackOf(card, s.feedback);
   const can = typeof s.ctx?.say === "function";
-  for (const [kind, glyph, label] of FEEDBACK) {
-    const b = button(footer, glyph, `a2-fb${chosen === kind ? " on" : ""}`);
+  for (const [kind, glyph, shape, label] of FEEDBACK) {
+    const b = button(bar, "", `a2-fb${chosen === kind ? " on" : ""}`);
+    if (!drawShape(b, shape, "i-xs")) b.textContent = glyph;
     b.setAttribute("aria-label", label);
     b.setAttribute("aria-pressed", String(chosen === kind));
     b.disabled = !can;
     b.addEventListener("click", () => { void giveFeedback(s, kind, glyph); });
   }
+}
+
+/** How long the line saying 「常驻」 was not set stays. */
+const PIN_ERROR_MS = 3000;
+
+/** 「常驻」: the owner keeps the card running off screen, or lets it sleep again (`service:cards/pin`); shown at once, put back if refused. */
+async function togglePin(s) {
+  const ctx = s.ctx, card = s.item.card;
+  if (s.pinning || typeof ctx?.pin !== "function") return;
+  const before = s.pinned ?? card.pinned === true;
+  s.pinned = !before; s.pinning = true; s.pinError = "";
+  repaint(s);
+  try { await ctx.pin(card.id, s.pinned); }
+  catch {
+    s.pinned = before;
+    s.pinError = before ? "没关掉常驻，请再试一次" : "没设成常驻，请再试一次";
+    const timer = setTimeout(() => { s.pinError = ""; repaint(s); }, PIN_ERROR_MS);
+    timer.unref?.();
+  } finally { s.pinning = false; repaint(s); }
+}
+
+/** 「存成应用」: the card's temporary app stays (`service:cards/keep`); the button goes once the hub took it. */
+async function keepApp(s) {
+  const ctx = s.ctx, card = s.item.card;
+  if (s.keeping || s.kept || typeof ctx?.keep !== "function") return;
+  s.keeping = true;
+  repaint(s);
+  try { await ctx.keep(card.id); s.kept = true; }
+  catch { ctx.problem?.("没存成应用，请再试一次。"); }
+  finally { s.keeping = false; repaint(s); }
 }
 
 /** The owner's thumb as a say to the card's agent; a second tap on the one already chosen does nothing. */
@@ -912,6 +1243,8 @@ async function draft(s) {
 async function perform(s, action, byId, node) {
   if (!plain(action)) return;
   const ctx = s.ctx, card = s.item.card;
+  if (runtimeKind(action)) { await press(s, node, action); return; }
+  if (plain(action.copy)) { await copy(s, node, action.copy.text); return; }
   if (!("event" in action)) { (ctx?.open ?? openAction)(action); return; }
   const event = action.event;
   if (!plain(event) || typeof event.name !== "string" || !ctx || stateLine(card, s) || s.busy) return;
@@ -921,6 +1254,43 @@ async function perform(s, action, byId, node) {
     return;
   }
   await say(s, node?.component === "Button" ? buttonLabel(byId, node) : event.name, event);
+}
+
+/** A short tick under the finger where the device has one. */
+function haptic() { try { globalThis.navigator?.vibrate?.(8); } catch { /* no vibration here */ } }
+
+/**
+ * A press the hub runs (`service:cards/act` with the values on the card): 「处理中…」 and disabled at once, then the outcome
+ * under the button; retryable after the answer or the wait. A press while one runs does nothing.
+ */
+async function press(s, node, action) {
+  const ctx = s.ctx, card = s.item.card;
+  if (!node?.id || typeof ctx?.act !== "function" || stateLine(card, s) || s.busy) return;
+  if (buttonView(card, s, node.id, action).busy) return;
+  // The values go with the press: no separate draft after it.
+  clearTimeout(s.timer); s.timer = null;
+  s.pressing.add(node.id);
+  delete s.outcomes[node.id];
+  haptic();
+  repaint(s);
+  const answer = await actOnce(ctx.act, actBody(card.id, node.id, s.data), actTimeoutMs(action));
+  s.pressing.delete(node.id);
+  // What the hub wrote on the card by now is not newer than this answer; anything it writes later is.
+  if (answer.state !== "running") s.outcomes[node.id] = { state: answer.state, text: answer.text, after: Number(s.item.card.actions?.[node.id]?.at) || 0 };
+  repaint(s);
+}
+
+/** `{copy: {text}}`: onto this device's clipboard, nothing sent; 「已复制」 under the button for a moment. */
+async function copy(s, node, value) {
+  const write = typeof s.ctx?.copy === "function" ? s.ctx.copy : (words) => globalThis.navigator.clipboard.writeText(words);
+  let ok = true;
+  try { await write(String(value ?? "")); } catch { ok = false; }
+  if (ok) haptic();
+  if (!node?.id) return;
+  s.copied[node.id] = { until: Date.now() + COPIED_MS, state: ok ? "ok" : "failed", text: ok ? "已复制" : "没复制成功" };
+  repaint(s);
+  const timer = setTimeout(() => repaint(s), COPIED_MS + 20);
+  timer.unref?.();
 }
 
 async function say(s, label, event) {

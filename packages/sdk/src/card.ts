@@ -142,7 +142,19 @@ export type CardAction =
   | { event: { name: string; context?: Record<string, unknown> } }
   | { openApp: { app: string; surface?: string } }
   | { openAsh: Record<string, never> }
-  | { openUrl: { url: string } };
+  | { openUrl: { url: string } }
+  /** Chat only: copy text on the phone. */
+  | { copy: { text: string } }
+  /** Chat only: a word called on the hub as the card's app (service:cards/act); its result goes into the card's data at `result`. */
+  | { call: { member: string; word: string; body: Record<string, unknown>; result?: string; timeout_s?: number } }
+  /** Chat only: an agent asked (its answer into `result`) or told, with the card's data. */
+  | { ask: { agent?: string; text: string; result?: string; timeout_s?: number } }
+  | { tell: { agent?: string; text: string } };
+
+/** A data path of a conversation card fed by the hub while the card is active (docs/CARD-RUNTIME.md §3). */
+export type CardSource =
+  | { member: string; word: string; body?: Record<string, unknown>; every_s: number; pick?: string; keep?: number }
+  | { event: string; pick?: string; keep?: number };
 
 /** One component as the phone draws it: literal values only. Instances of a template carry the item they show. */
 export interface WidgetComponent {
@@ -447,7 +459,7 @@ function color(value: unknown, where: string): CardColor {
 }
 
 /** A Chart's series: one to four, at most 600 values together; every colour, limit and index checked. */
-function chartSeries(value: unknown, where: string): ChartSeries[] {
+function chartSeries(value: unknown, where: string, r?: Resolver, scope = "", chat = false): ChartSeries[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4) bad(`${where} series must be a list of 1 to 4 series`);
   let all = 0;
   return (value as unknown[]).map((raw, i) => {
@@ -456,8 +468,11 @@ function chartSeries(value: unknown, where: string): ChartSeries[] {
     const s = raw as Record<string, unknown>;
     for (const key of Object.keys(s)) if (!["type", "values", "color", "fill", "width", "dot", "max", "floor", "min", "highlight", "colors", "lastColor", "limit", "limitColor"].includes(key)) bad(`${at} has unknown field "${key}"`);
     if (s.type !== "line" && s.type !== "bars") bad(`${at} type must be "line" or "bars"`);
-    if (!Array.isArray(s.values) || s.values.length < 1 || s.values.length > 240 || s.values.some((v) => typeof v !== "number" || !Number.isFinite(v))) bad(`${at} values must be 1 to 240 finite numbers`);
-    const values = (s.values as number[]).map((v) => Math.max(0, v));
+    // In the conversation the values may be read from data ({path}), a list a live source keeps filling: empty at first.
+    const given = chat && r ? r.value(s.values, `${at} values`, scope) : s.values;
+    const fed = given !== s.values;
+    if (!Array.isArray(given) || given.length < (fed ? 0 : 1) || given.length > 240 || given.some((v) => typeof v !== "number" || !Number.isFinite(v))) bad(`${at} values must be 1 to 240 finite numbers`);
+    const values = (given as number[]).map((v) => Math.max(0, v));
     all += values.length;
     if (all > 600) bad(`${where} has more than 600 values in all its series`);
     const out: ChartSeries = { type: s.type as "line" | "bars", values, color: color(s.color, `${at} color`) };
@@ -564,6 +579,7 @@ function style(raw: unknown, where: string, r: Resolver, scope: string): CardSty
 const APP_ID = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*$/;
 const SURFACE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const EVENT_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
+const WORD = /^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)*$/;
 const URL_SCHEMES = ["https:", "http:", "mailto:", "tel:", "sms:", "geo:"];
 
 function openTarget(url: string, where: string): CardAction {
@@ -583,9 +599,57 @@ function openTarget(url: string, where: string): CardAction {
   return { openUrl: { url: parsed.toString() } };
 }
 
-function action(raw: unknown, where: string, r: Resolver, scope: string): CardAction {
-  const shapes = "{event:{name, context?}}, {functionCall:{call:'openUrl', args:{url}}}, {openApp:{app, surface?}} or {openAsh:{}}";
+/** Every {path} and {call} in [value], at any depth, as its value (a call's body as the card's data has it now). */
+function deep(value: unknown, where: string, r: Resolver, scope: string): unknown {
+  if (Array.isArray(value)) return value.map((v, i) => deep(v, `${where}[${i}]`, r, scope));
+  if (plain(value)) {
+    if ((typeof value.path === "string" && Object.keys(value).length === 1) || typeof value.call === "string") return r.value(value, where, scope);
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deep(v, `${where}.${k}`, r, scope)]));
+  }
+  return value;
+}
+
+const MEMBER = /^(service|agent|device|body|app|person):[A-Za-z0-9_.:*-]+$/;
+const timeoutOf = (value: unknown, where: string): number | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 600) bad(`${where} timeout_s must be a whole number of seconds from 1 to 600`);
+  return value as number;
+};
+const pointerOf = (value: unknown, where: string): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.startsWith("/") || value === "/") bad(`${where} must be a JSON pointer into the card's data, such as "/result"`);
+  return value as string;
+};
+
+function action(raw: unknown, where: string, r: Resolver, scope: string, chat = false): CardAction {
+  const shapes = chat ? "{event:{name, context?}}, {call:{member, word, body?, result?, timeout_s?}}, {ask:{agent?, text, result?}}, {tell:{agent?, text}}, {copy:{text}}, {functionCall:{call:'openUrl', args:{url}}}, {openApp:{app, surface?}} or {openAsh:{}}"
+    : "{event:{name, context?}}, {functionCall:{call:'openUrl', args:{url}}}, {openApp:{app, surface?}} or {openAsh:{}}";
   if (!plain(raw) || Object.keys(raw).length !== 1) return bad(`${where} action must be one of ${shapes}`);
+  const kind = Object.keys(raw)[0]!;
+  if (["call", "ask", "tell", "copy"].includes(kind) && !chat) bad(`${where} action ${kind}: a home-screen card's buttons send events or open things; ${kind} is for cards in the conversation`);
+  if (kind === "copy" && plain(raw.copy)) return { copy: { text: r.text(raw.copy.text, `${where} action.copy.text`, scope) } };
+  if (kind === "call" && plain(raw.call)) {
+    const c = raw.call;
+    for (const key of Object.keys(c)) if (!["member", "word", "body", "result", "timeout_s"].includes(key)) bad(`${where} action.call has unknown field "${key}" (member, word, body, result, timeout_s)`);
+    const member = r.text(c.member, `${where} action.call.member`, scope);
+    if (!MEMBER.test(member)) bad(`${where} action.call.member "${member}" is not a member id (service:…, device:…, app:…)`);
+    const word = r.text(c.word, `${where} action.call.word`, scope);
+    if (!WORD.test(word)) bad(`${where} action.call.word "${word}" is not a word name`);
+    const body = c.body === undefined ? {} : deep(c.body, `${where} action.call.body`, r, scope);
+    if (!plain(body)) bad(`${where} action.call.body must be an object`);
+    const result = pointerOf(c.result, `${where} action.call.result`), timeout = timeoutOf(c.timeout_s, `${where} action.call`);
+    return { call: { member, word, body: body as Record<string, unknown>, ...(result ? { result } : {}), ...(timeout ? { timeout_s: timeout } : {}) } };
+  }
+  if ((kind === "ask" || kind === "tell") && plain(raw[kind])) {
+    const a = raw[kind] as Record<string, unknown>;
+    for (const key of Object.keys(a)) if (!["agent", "text", ...(kind === "ask" ? ["result", "timeout_s"] : [])].includes(key)) bad(`${where} action.${kind} has unknown field "${key}"`);
+    const agent = a.agent === undefined ? undefined : r.text(a.agent, `${where} action.${kind}.agent`, scope);
+    if (agent !== undefined && !/^agent:[a-z][a-z0-9_-]*$/.test(agent)) bad(`${where} action.${kind}.agent must be an agent id (agent:<name>)`);
+    const text = r.text(a.text, `${where} action.${kind}.text`, scope);
+    if (kind === "tell") return { tell: { ...(agent ? { agent } : {}), text } };
+    const result = pointerOf(a.result, `${where} action.ask.result`), timeout = timeoutOf(a.timeout_s, `${where} action.ask`);
+    return { ask: { ...(agent ? { agent } : {}), text, ...(result ? { result } : {}), ...(timeout ? { timeout_s: timeout } : {}) } };
+  }
   if (plain(raw.event)) {
     const e = raw.event;
     for (const key of Object.keys(e)) if (key !== "name" && key !== "context") bad(`${where} action.event has unknown field "${key}" (name, context)`);
@@ -729,6 +793,8 @@ export interface ChatRender extends WidgetRender {
   problems: string[];
   /** What the card does that usually looks worse (too many accents, icons, main titles…): advice for the agent, nothing is changed. */
   hints: string[];
+  /** Data paths the hub fills while the card is active (docs/CARD-RUNTIME.md §3). */
+  sources: Record<string, CardSource>;
 }
 
 /**
@@ -738,8 +804,8 @@ export interface ChatRender extends WidgetRender {
  */
 export function checkChatCard(raw: unknown): ChatRender {
   const problems: string[] = [];
-  const { render, data, binds, reactive } = check(raw, { surface: "chat", lenient: true, checkLevels: false, problems });
-  return { ...render, data, binds, reactive, problems, hints: cardHints(render) };
+  const { render, data, binds, reactive, sources } = check(raw, { surface: "chat", lenient: true, checkLevels: false, problems });
+  return { ...render, data, binds, reactive, problems, hints: cardHints(render), sources };
 }
 
 /** The cheap, certain checks of a conversation card's design (skill genui): what usually makes a card look worse. */
@@ -770,7 +836,36 @@ export function cardHints(render: WidgetRender): string[] {
 
 interface CheckOptions { surface: CardSurface; lenient: boolean; checkLevels: boolean; problems?: string[] }
 
-function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Record<string, unknown>; binds: string[]; reactive: boolean } {
+/** a2ui.sources: data paths the hub fills while the card is active. A bad one is left out (noted). */
+function sourcesOf(raw: unknown, note: (message: string) => void): Record<string, CardSource> {
+  if (raw === undefined) return {};
+  if (!plain(raw)) { note("a2ui.sources must be an object {\"/path\": source}"); return {}; }
+  const out: Record<string, CardSource> = {};
+  const entries = Object.entries(raw);
+  if (entries.length > 8) note(`a2ui.sources has ${entries.length} sources; a card takes at most 8 (the first 8 are kept)`);
+  for (const [path, s] of entries.slice(0, 8)) {
+    const at = `a2ui.sources["${path}"]`;
+    if (!path.startsWith("/") || path === "/") { note(`${at}: the key is a JSON pointer into data, such as "/hr"`); continue; }
+    if (!plain(s)) { note(`${at} must be {member, word, body?, every_s, pick?, keep?} or {event: "<member>/<event>", pick?, keep?}`); continue; }
+    const keep = s.keep === undefined ? undefined : typeof s.keep === "number" && Number.isInteger(s.keep) && s.keep >= 1 && s.keep <= 240 ? s.keep : NaN;
+    if (Number.isNaN(keep)) { note(`${at}.keep must be a whole number from 1 to 240`); continue; }
+    if (s.pick !== undefined && (typeof s.pick !== "string" || !s.pick.startsWith("/"))) { note(`${at}.pick must be a JSON pointer into the result, such as "/bpm"`); continue; }
+    const common = { ...(s.pick !== undefined ? { pick: s.pick as string } : {}), ...(keep !== undefined ? { keep } : {}) };
+    if (typeof s.event === "string") {
+      if (!/^(service|device|app):[A-Za-z0-9_.-]+\/[a-z][a-z0-9_.-]*$/.test(s.event) && !/^(device):\*\/[a-z][a-z0-9_.-]*$/.test(s.event)) { note(`${at}.event must be "<member>/<event>", such as "device:*/sense.heart_rate"`); continue; }
+      out[path] = { event: s.event, ...common };
+      continue;
+    }
+    if (typeof s.member !== "string" || !MEMBER.test(s.member) || typeof s.word !== "string" || !WORD.test(s.word)) { note(`${at} needs member and word (a word to read), or event`); continue; }
+    const every = typeof s.every_s === "number" && Number.isFinite(s.every_s) ? Math.max(5, Math.min(86_400, Math.round(s.every_s))) : NaN;
+    if (Number.isNaN(every)) { note(`${at}.every_s must be a number of seconds (at least 5)`); continue; }
+    if (s.body !== undefined && !plain(s.body)) { note(`${at}.body must be an object`); continue; }
+    out[path] = { member: s.member, word: s.word, ...(s.body ? { body: s.body as Record<string, unknown> } : {}), every_s: every, ...common };
+  }
+  return out;
+}
+
+function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Record<string, unknown>; binds: string[]; reactive: boolean; sources: Record<string, CardSource> } {
   const chat = o.surface === "chat";
   /** Lenient: note the problem and go on; strict: refuse the card. */
   const note = (message: string): void => { if (o.lenient) o.problems!.push(message); else bad(message); };
@@ -779,10 +874,13 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
   let bytes = 0;
   try { bytes = Buffer.byteLength(JSON.stringify(a2ui), "utf8"); } catch { bad("a2ui is not plain JSON"); }
   if (bytes > CARD_LIMITS.json) bad(`a2ui is ${bytes} bytes; one card can be at most ${CARD_LIMITS.json} bytes (it is sent to the phone in one piece) — link large images by https instead of embedding them`);
-  for (const key of Object.keys(a2ui)) if (!["components", "root", "data", "sizes", "theme", "catalogId", "surfaceId"].includes(key))
-    note(`a2ui has unknown field "${key}" (components, root, data, sizes, theme)`);
-  const data = a2ui.data ?? {};
-  if (!plain(data)) bad("a2ui.data must be an object");
+  for (const key of Object.keys(a2ui)) if (!["components", "root", "data", "sizes", "theme", "catalogId", "surfaceId", ...(chat ? ["sources"] : [])].includes(key))
+    note(`a2ui has unknown field "${key}" (components, root, data, sizes, theme${chat ? ", sources" : ""})`);
+  if (a2ui.data !== undefined && !plain(a2ui.data)) bad("a2ui.data must be an object");
+  const data: Record<string, unknown> = JSON.parse(JSON.stringify(a2ui.data ?? {}));
+  const sources = chat ? sourcesOf(a2ui.sources, note) : {};
+  // A path a source fills starts empty, so what reads it draws before the first value comes.
+  for (const [path, src] of Object.entries(sources)) if (pointer(data, path) === undefined) setPointer(data, path, src.keep ? [] : "");
   const r = new Resolver(data);
   if (!Array.isArray(a2ui.components) || a2ui.components.length === 0) bad("a2ui.components must be a non-empty array of components");
   const kinds = chat ? [...CARD_COMPONENTS, ...CHAT_COMPONENTS] : [...CARD_COMPONENTS];
@@ -911,7 +1009,7 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
       const a11y = [label, description].filter(Boolean).join("，");
       if (a11y) node.a11y = a11y;
     } else if (c.accessibility !== undefined) bad(`${where} accessibility must be {label?, description?}`);
-    if (c.action !== undefined) node.action = action(c.action, where, r, scope);
+    if (c.action !== undefined) node.action = action(c.action, where, r, scope, chat);
     if (c.gap !== undefined && kind !== "Chart") {
       if (!chat) bad(`${where} gap: a home-screen widget cannot space a container's children by itself; give the children style.margin`);
       node.gap = dimension(r.value(c.gap, `${where} gap`, scope), `${where} gap`, 64);
@@ -1058,7 +1156,7 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
     }
     case "Chart": {
       if (typeof node.style?.height !== "number") bad(`${where} needs style.height in dp (a chart is drawn at the size the card gives it)`);
-      node.series = chartSeries(c.series, where);
+      node.series = chartSeries(c.series, where, r, scope, chat);
       if (c.gap !== undefined) node.gap = dimension(c.gap, `${where} gap`, 20);
       break;
     }
@@ -1201,7 +1299,7 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
   const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
   const reactive = binds.some(([at, path]) => r.reads.some(([by, read]) => by !== at && overlaps(read, path)));
   const render = { root: rootId as string, components: out, ...(sizes ? { sizes } : {}), ...(theme ? { theme } : {}) };
-  return { render, data: data as Record<string, unknown>, binds: [...new Set(binds.map(([, path]) => path))], reactive };
+  return { render, data, binds: [...new Set(binds.map(([, path]) => path))], reactive, sources };
 }
 
 /** Event names, open targets and toggles on a card, as widget.list reports them. */

@@ -1,0 +1,13 @@
+/* 卡片 — the page's own rules; colours and type come from the tokens and ash-ui.css above. */
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg)}
+.pg{padding:16px;display:flex;flex-direction:column;gap:10px}
+.pg h1{margin:0}
+.pg p{margin:0}
+.cards{display:flex;flex-direction:column;gap:10px}
+.item{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-1);padding:14px;display:flex;flex-direction:column;gap:8px}
+.item .txt{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;color:var(--ink)}
+.item .tags{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.item .acts{display:flex;gap:8px;flex-wrap:wrap}
+.empty-note{padding:28px 12px;text-align:center}
+#note:empty{display:none}
