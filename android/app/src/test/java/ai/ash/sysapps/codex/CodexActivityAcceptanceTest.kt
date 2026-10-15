@@ -172,24 +172,33 @@ class CodexActivityAcceptanceTest {
             assertTrue("$name fully inside the real window", visible.top >= 0 && visible.left >= 0 && visible.bottom <= window.height && visible.right <= window.width)
         }
         val root = controller.get().window.decorView
+        // Native Canvas snapshots must invalidate cached display lists after the previous screenshot.
+        // Otherwise a second draw can omit clean children even though their geometry is visible.
+        views().forEach { it.invalidate() }
         val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+        bitmap.density = root.resources.displayMetrics.densityDpi
         root.draw(Canvas(bitmap))
         val colors = HashSet<Int>()
         for (y in 0 until root.height step 9) for (x in 0 until root.width step 9) colors += bitmap.getPixel(x, y)
         assertTrue("actual rendered Activity content", colors.size > 10)
-        fun inkIn(top: Int, bottom: Int): Int {
-            val background = bitmap.getPixel(3, top.coerceAtLeast(0))
+        fun inkIn(rect: android.graphics.Rect): Int {
             var count = 0
-            for (y in top.coerceAtLeast(0) until bottom.coerceAtMost(bitmap.height) step 3)
-                for (x in 0 until bitmap.width step 3) if (bitmap.getPixel(x, y) != background) count++
+            for (y in rect.top.coerceAtLeast(0) until rect.bottom.coerceAtMost(bitmap.height) step 2)
+                for (x in rect.left.coerceAtLeast(0) until rect.right.coerceAtMost(bitmap.width) step 2) {
+                    val pixel = bitmap.getPixel(x, y)
+                    if (android.graphics.Color.alpha(pixel) > 0 && android.graphics.Color.red(pixel) < 180 &&
+                        android.graphics.Color.green(pixel) < 180 && android.graphics.Color.blue(pixel) < 180) count++
+                }
             return count
         }
         val titleRect = android.graphics.Rect(); toolbar.getGlobalVisibleRect(titleRect)
         val inputRect = android.graphics.Rect(); input.getGlobalVisibleRect(inputRect)
-        assertTrue("native toolbar pixels contain content", inkIn(titleRect.top, titleRect.bottom) > 25)
-        assertTrue("native composer pixels contain content", inkIn(inputRect.top, inputRect.bottom) > 25)
+        assertTrue("native title text is drawn in its exact visible rectangle", inkIn(titleRect) > 100)
+        assertTrue("native composer text is drawn in its exact visible rectangle", inkIn(inputRect) > 100)
         val dir = File("/data/atoll/tmp/codex-acceptance").apply { mkdirs() }
-        File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val file = File(dir, "$name.pending.png")
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        assertTrue(file.renameTo(File(dir, "$name.png")))
         bitmap.recycle()
     }
     private fun pending() = File(controller.get().filesDir, "codex-outbox").listFiles()?.filter { it.extension == "json" }.orEmpty()
