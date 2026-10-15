@@ -1,40 +1,38 @@
-# 团队应用 R1
+# 团队应用：原委托、原回答与原成员
 
-负责任务书 §3；涉及 MOBILE-ARCH §1.1–1.4、§2.1–2.6、§3.1–3.6、§4.1–4.3、§5.4–5.6、§6.1–6.2、§7.2、§11.1。
+本轮按 app-design SPEC（含 §8）、v6 BUILD-MAP 与 STEP2 校正稿实现。应用 id 为 `team`，原生入口 `ai.ash.sysapps.team.TeamActivity`。公共注册由总控集成，不在业务分支另建。
 
-应用 id `team`，入口 `ai.ash.sysapps.team.TeamActivity`。公共注册由底座维护。
+## 三个稳定空间
 
-首屏以委托与回复为工作区。顶部只有一块紧凑概览，概述实际在工作 / 等待谁的成员，并提供成员快捷入口；完整成员列表另开。等待回复的委托优先，答复挂在原委托下面，可继续问同一成员。成员详情显示工作、角色、配置模型、花费与相关往来；启停 / 修改配置直接可用，重启 / 记忆 / 日志保留在更多操作。工具与接口清单放进高级配置。
+- **现在**：先显示实际 Exchange 返回的最近原回答，再显示成员手上的事、真实等待与费用；关系另进二级。没有原交付时显示空态；成员状态缺失写未知，不推为空闲。不生成审批卡、阶段、核验或假产物链接。
+- **往来**：按原 Exchange 展示谁问谁、原状态与原回答，保留分页、原文与 blob 读取。主对话不混入此处。
+- **成员**：真实名字、角色、工作与原币种费用。招人、角色/模型/工具、启停/重启、记忆与日志可达，管理留在二级。
 
-往来以请求账本 id 为 key，显示「谁 → 谁、委托 / 告知、内容 → 回答」。长文默认折叠；原文通过 history.read / blobs.read 分页读取。可向前翻页。主人的 say 和主 agent 给主人的 say 不在团队时间线；点名使用 service:agents/ask，保持后台分线，回答关联到请求而非主对话。spawn 的回答也在原委托下面。
+根页由共享 AppIdentity/AppDestination 提供标识与底栏，不显示返回 Ash 的箭头。原成员详情返回进入前的空间与阅读锚点。路由仍用原 Activity、增量 KeyedRows 与事件读取，不建立新的导航或消息后台。
 
-记忆严格对应 user 模块实际载入的共享 USER.md / MEMORY.md，明确这是共享记忆；没有 user 模块时不把主 agent 记忆冒充帮手自己的记忆。日志使用 history.query 的 speaker 筛选，轮次详情使用 history.turn。
+## 原回答详情和追问
 
-新建需名字、角色、模型，模型从 runtimes / runtime.catalog 选择。配置使用 agents/update，启停建立删除使用现有词。agent.changed 带 by；轮次和用量使用已有事件。收到事件合并刷新，不轮询、不引入修订号或锁。
+详情保留原成员身份、原 Exchange、完整已取得的回答及原始往来入口。回答标明来自帮手，不能当独立核验或现实目标完成。实际文件/链接缺失时只给原文；history/blob 读取失败留原内容和原因。
 
-状态归 Activity 的纯 Model 与每个来源 Read。失败保留快照，同源最多一个读取在途，换目标丢弃旧结果。刷新不重建输入栏。成员 key 是 agent id，往来 / 日志 key 是消息 id。KeyedRows 增量列表保首个可见 key / offset。
+追问使用原有 `service:agents/ask {agent,text}`、`wait:false`、`client_id`。文本附原委托 id/摘要，界面继续显示原 Exchange；没有 `thread` 参数，也不声称后端已将新回答持久串入原线程。结果未知继续使用原编号确认，绝不换帮手或新编号自动重派。
 
-点名与编辑草稿按目标分开，持续保存于 UiDrafts；发送中保留内容，成功才清空相同草稿。失败 / 结果未知保留且明确提示，不自动重发。中枢已有请求和回执是发送事实，不复制业务存储。Insets / 返回 / 生命周期订阅由 SystemAppActivity 负责；离页停监听，恢复重读。
+未发草稿按成员保留；待发请求保留原目标、正文、引用和 client_id。旧读取、晚回执不清掉另一成员的新稿。输入保持同一 EditText，位于既有 KeyboardDeck 内，键盘仍用 translation。配置表单草稿、保存后的就绪提示与受控重启影响继续可见。
 
-旧外壳没有独立团队管理页面，原以 agent id 打开的帮手主页改向团队成员详情。Ash / 设备旧页由各自 worker 清理，避免争写。
+费用保留 `US$` 和未计价次数；未取得费用不编零。成员记忆只展示实际载入的共享记忆，没有 user 模块时明确说明，不冒充成员私有记忆。
 
-验证覆盖问答关联、主对话隔离、成员筛选、分页、长文引用、变更作者和今日成本。JVM 覆盖乱序 / 失败不清空、状态、稳定身份与 blob 定位。真机键盘、200% 字体、TalkBack、窗口恢复本轮未操作手机验证。
+## 本轮可复核证据
 
-## 交付验证
+- 真实 agents service/manager/inbox/history + 两个 human-channel 客户端，只有模型驱动用确定性脚本：一次投递、先回执、原回答跨端可见、原成员追问携原委托引用；执行中换工具受控重启、原请求结果未知。该 Node 回归 **1/1 通过**，TypeScript 检查通过。
+- `team-session.json` 来自该服务测试实际返回，包括 quiet/during/answered/continued 与真实 answerEvent。Activity 监听此事件后必须产生新的 list/exchanges 请求，才向回调喂入最新快照，不能靠复用旧回调伪造刷新。
+- 首轮真实 MotionEvent 点交付标题没有打开详情，原因是卡内可选文字吞掉父级点击。`749b69ed` 只关闭可点行内文字选择，阅读详情全文仍可选择；没有把测试改为直接调用回调。
+- 复验标准单命令 `testDebugUnitTest`，仅 TeamActivityAcceptanceTest / TeamModelTest / TeamSendTest，`--max-workers=1`：**22/22 通过**（9 Activity、9 Model、4 Send），含手机 360dp/mdpi 资源与实际布局、真实点击、草稿路由、成员身份、配置提示、焦点/选区、未知请求同编号确认及原空间阅读位置。日志文件 `team-v6-android-r2-20261016.log`。
+- 已实际打开 `android/app/build/reports/team-acceptance/` 下 `v6-team-home.png`、`v6-team-detail.png`、`v6-team-quiet.png`、`v6-team-editing.png`。本轮四图生成于 2026-10-16 06:19（Asia/Singapore），为有效 360×800px/mdpi 窗口。
 
-- 中枢：`node --import tsx --test` 定向执行 agents 的 service / flow / team、history 的 history / exchanges、cost、SDK words，共 71 项通过。
-- `tsc --noEmit -p .` 通过。
-- Android：`compileDebugKotlin`、`testDebugUnitTest --tests 'ai.ash.sysapps.team.*' --tests ai.ash.human.HumanSendTest --tests ai.ash.ui.ChatStateTest` 通过（24 项 JVM）。
-- 独立底座依赖：`68655210`；异步 send.result / client_id 端口：`a1714cd9`。应用注册和 Manifest 由底座批次统一登记；此应用不改公共注册表。
-- 未打包、未安装、未推送、未操作手机。键盘、200% 字体、TalkBack、预测返回和真实窗口恢复未做真机验证。
-- 补充 human/team 通道回归 1 项通过：帮手回答延迟时先返回持久回执，同 `client_id` 再确认只投递一次，其他调用不受阻，后续回答经 sync 挂回原委托。定向中枢覆盖合计 72 项。
+## 最后详情窄收口的验证边界
 
+`33acebb9` 在上述 22/22 与四图之后：关系变成无底展开行，去掉重复的「继续问」，成员管理集中到顶栏更多；原角色、模型、启停、重启、记忆、日志全部仍在管理二级。测试改为直接真实触摸底部输入与发送，原成员/Exchange 引用、client_id、草稿及焦点断言保留。**此窄收口尚未重跑 Android；现有详情/编辑图是修前证据，最终集成需定向看更新图。**
 
-## 产品整改（10-16，验证进行中）
+实际真机 IME、系统返回手势、TalkBack、200% 字体、深色与后台恢复未验证。Robolectric 不证明这些行为。未打包、未安装、未推送、未合主线，产品最终验收由总控另做。
 
-- 路径一：打开团队 → 首屏直接看到「整理这次应用验收结果，先检查团队入口复用」及负责的资料帮手、等待回复；不会先排完十位成员卡片。
-- 路径二：点名交代 → 明确提交中枢的回执 → 回复挂回委托 → 点继续问 → 仍发给资料帮手；另一端同时收到同一条回答。
-- 数据来自实际 agents service / manager / inbox / history 与两个真实 human-channel 端点，只有模型驱动被确定性脚本替代。`team-session.json` 是该场景服务返回的快照，Activity/View 回归直接载入它，不另造页面状态。
-- 修前证据：真实 Activity 的 A → 新 Intent B 仍停在 A（expected agent:b, actual agent:a）；工具 read 改 write 后 driver allowed 仍为 read；改名后能力目录仍为旧名。新增回归已分别复现。
-- 配置语义：工具、完整角色或模块更改会受控重启；原运行轮先被切断并返回结果未知，不在旧执行过程中热换授权。停止的成员只保存配置，下次启动使用。支持热配置的纯模型更改仍遵从运行时的下一轮配置机制。成员重命名不改变执行 id，目录同时更新。
-- Android/View 修后验证待统一测试依赖与串行构建时段；当前没有以编译或 Model 测试冒充产品验收。
+业务提交顺序：`d8171187` → `ab4cffec` → `749b69ed` → `33acebb9`。
+本轮依赖副本须排除：`05f0b9b2`（e708fb3e）、`54512efe`（d013fbb5）、`690b1cbd`（5b80be54）。
