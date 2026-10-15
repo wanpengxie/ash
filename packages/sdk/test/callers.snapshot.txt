@@ -180,6 +180,8 @@
 * service:host/hands.handoff  kernel
 * service:host/update.install  owner,agent
 * service:host/update.status  owner,agent
+* service:host/ctx.list  owner,agent
+* service:host/ctx.read  owner,agent
 * app:*/ash.on_event  kernel
   service:widgets/widget.list  owner,agent,app
   service:widgets/widget.card.put  owner,agent,app

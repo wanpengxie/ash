@@ -74,6 +74,8 @@ export class HostClient {
   handsHandoff(port: number, token: string) { return this.optional("hands.handoff", { port, token }); }
   updateInstall(req: HostMethods["update.install"]["req"]) { return this.optional("update.install", req); }
   updateStatus() { return this.optional("update.status", {}); }
+  ctxList() { return this.optional("ctx.list", {}); }
+  ctxRead(req: HostMethods["ctx.read"]["req"]) { return this.optional("ctx.read", req); }
   /** A phone action (vscreen.*, input.key, apps.open): forwarded as is; `{supported:false}` when the host did not declare its group. */
   phone<M extends HostMethod>(method: M, req: HostMethods[M]["req"]) { return this.optional(method, req); }
 

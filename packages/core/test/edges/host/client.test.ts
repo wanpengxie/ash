@@ -36,6 +36,8 @@ describe("host client", () => {
     assert.deepEqual(await client.handsHandoff(43001, "link-token"), { supported: true, result: { delivered: ["hand:fake"] } });
     await client.updateInstall({ version: "2.0.0", packages: [{ package: "ai.ash.kernel", url: "https://example.test/k.apk", sha256: "ab".repeat(32) }] });
     await client.updateStatus();
+    await client.ctxList();
+    await client.ctxRead({ day: "2026-10-15", file: "events", offset: 0, limit: 100 });
 
     assert.deepEqual(host.calls.map((call) => [call.method, call.body]), [
       ["identity.key", {}],
@@ -50,6 +52,8 @@ describe("host client", () => {
       ["hands.handoff", { port: 43001, token: "link-token" }],
       ["update.install", { version: "2.0.0", packages: [{ package: "ai.ash.kernel", url: "https://example.test/k.apk", sha256: "ab".repeat(32) }] }],
       ["update.status", {}],
+      ["ctx.list", {}],
+      ["ctx.read", { day: "2026-10-15", file: "events", offset: 0, limit: 100 }],
     ]);
   });
 
@@ -96,6 +100,7 @@ describe("host client", () => {
         vscreen: () => Promise.all([client.phone("vscreen.status", {}), client.phone("vscreen.tap", { x: 1, y: 1 })]),
         input: () => Promise.all([client.phone("input.key", { key: "home" })]),
         apps: () => Promise.all([client.phone("apps.open", { app: "x" })]),
+        ctx: () => Promise.all([client.ctxList(), client.ctxRead({ day: "2026-10-15", file: "events" })]),
       }[capability];
       for (const answer of await attempts()) assert.deepEqual(answer, { supported: false });
       assert.equal(host.calls.length, 0, "nothing was sent");

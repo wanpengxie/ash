@@ -1,5 +1,6 @@
 package ai.ash.kernel
 
+import ai.ash.kernel.host.ctx.ContextFiles
 import org.json.JSONObject
 
 /** What the supervisor hears from the core through the host interface. */
@@ -35,6 +36,8 @@ class HostApi(
     private val phone: PhonePort? = null,
     /** Installing a new release of Ash's packages. Non-null when `update` is declared. */
     private val update: UpdatePort? = null,
+    /** What the context probe recorded, read only. Non-null when `ctx` is declared (the shell host: only it can read the files). */
+    private val ctx: ContextFiles? = null,
 ) {
     /** One call; the answer is `{"ok":true,"result":…}` or `{"ok":false,"error":{"code","message"}}`. */
     fun call(method: String, params: JSONObject): JSONObject {
@@ -126,6 +129,18 @@ class HostApi(
             JSONObject().put("started", true).put("via", via)
         }
         "update.status" -> (update ?: throw BadRequest("unsupported $method")).status()
+        "ctx.list" -> (ctx ?: throw BadRequest("unsupported $method")).list()
+        "ctx.read" -> {
+            val files = ctx ?: throw BadRequest("unsupported $method")
+            // Only a day and one of the probe's four files: the host makes the path, no path is taken from the caller.
+            val day = b.str("day")
+            if (!ContextFiles.DAY.matches(day)) throw BadRequest("day must be YYYY-MM-DD")
+            val file = b.str("file")
+            if (file !in ContextFiles.FILES) throw BadRequest("file must be one of ${ContextFiles.FILES.joinToString("|")}")
+            val offset = if (b.has("offset")) b.long("offset", 0) else 0L
+            val limit = if (b.has("limit")) b.int("limit", 1, ContextFiles.MAX_READ) else ContextFiles.MAX_READ
+            files.read(day, file, offset, limit)
+        }
         else -> {
             val port = phone ?: throw BadRequest("unsupported $method")
             // What went wrong on the phone (am start refused, the virtual screen gone) is the caller's to read.
@@ -170,6 +185,7 @@ class HostApi(
             "power.hold" to "power", "power.release" to "power",
             "hands.handoff" to "hands",
             "update.install" to "update", "update.status" to "update",
+            "ctx.list" to "ctx", "ctx.read" to "ctx",
             "vscreen.create" to "vscreen", "vscreen.status" to "vscreen", "vscreen.launch" to "vscreen",
             "vscreen.see" to "vscreen", "vscreen.tap" to "vscreen", "vscreen.swipe" to "vscreen",
             "vscreen.key" to "vscreen", "vscreen.type" to "vscreen", "vscreen.close" to "vscreen",

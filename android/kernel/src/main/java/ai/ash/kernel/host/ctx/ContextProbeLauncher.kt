@@ -16,7 +16,7 @@ class ContextProbeLauncher(
     private val log: (String) -> Unit,
     private val report: (String) -> Unit,
 ) {
-    private val root = File("/data/local/tmp/ash-ctx")
+    private val root = ROOT
     @Volatile private var alive = false
     @Volatile private var startedAt = 0L
     @Volatile private var lastExit = ""
@@ -63,6 +63,14 @@ class ContextProbeLauncher(
         }
     }
 
+    /** For ctx.list: `state` running | paused | stopped, since when it runs (Unix ms), and how it last ended (why it is not running). */
+    fun state(): JSONObject {
+        val o = JSONObject().put("state", when { File(root, "paused").exists() -> "paused"; alive -> "running"; else -> "stopped" })
+        if (alive) o.put("since", startedAt)
+        if (lastExit.isNotEmpty()) o.put("last_exit", lastExit)
+        return o
+    }
+
     private fun status(): String {
         val sb = StringBuilder("上下文探针：")
         when {
@@ -94,5 +102,9 @@ class ContextProbeLauncher(
     private fun mb(b: Long) = if (b < 1_048_576) "${b / 1024} KB" else String.format(Locale.US, "%.1f MB", b / 1_048_576.0)
     private fun span(ms: Long): String { val m = ms / 60_000; return if (m < 60) "$m 分钟" else "${m / 60} 小时 ${m % 60} 分" }
 
-    private companion object { const val MAIN = "ai.ash.kernel.host.ctx.ContextProbe" }
+    companion object {
+        /** Where the probe records (only the shell user can read it). */
+        val ROOT = File("/data/local/tmp/ash-ctx")
+        private const val MAIN = "ai.ash.kernel.host.ctx.ContextProbe"
+    }
 }
