@@ -92,6 +92,7 @@ export class HandRegistry {
   private readonly members = new Map<string, HandMember>();
   private readonly seen = new Map<string, Set<string>>();
   private readonly onlineListeners = new Set<(handId: string) => void>();
+  private readonly manifestListeners = new Set<(handId: string) => void>();
   private link: LinkControl | null = null;
   private readonly now: () => number;
 
@@ -172,6 +173,8 @@ export class HandRegistry {
     return (this.d.db.prepare("SELECT name FROM hand_capabilities WHERE hand = ? ORDER BY name").all(id) as { name: string }[]).map((r) => r.name);
   }
   onOnline(listener: (handId: string) => void): () => void { this.onlineListeners.add(listener); return () => void this.onlineListeners.delete(listener); }
+  /** A connected hand's manifest was taken: its capabilities can be called now. */
+  onManifest(listener: (handId: string) => void): () => void { this.manifestListeners.add(listener); return () => void this.manifestListeners.delete(listener); }
 
   /** The risk of one call, asked of the hand that will run it (`GateDeps.assess`); null = the declared risk stands. */
   assess(msg: Message): Promise<Risk | null> {
@@ -201,6 +204,7 @@ export class HandRegistry {
         l.events = new Set(frame.events.map((e) => e.word));
         this.registerMembers(id);
         this.persist(id, frame, check);
+        for (const listener of this.manifestListeners) try { listener(id); } catch (error) { this.d.log?.("manifest listener failed", error); }
       },
       event: (frame) => this.onEvent(session, conn, mine(), frame),
       closed: () => {

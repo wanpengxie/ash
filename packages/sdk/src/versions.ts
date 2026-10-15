@@ -8,8 +8,15 @@ export const WORD_CONTRACT_VERSION = 4;
 export const ASH_SDK = 4;
 /** The one connection protocol between the kernel and every hand (packages/link). */
 export const LINK_PROTOCOL = "ash-link/2";
+/**
+ * What a hub announces on a relay tunnel before TLS (packages/link/src/secure.ts). It stays put when [LINK_PROTOCOL] moves
+ * on, so a computer of an older link protocol still gets into TLS, where it can trust the hub's 4008 and the release it names.
+ */
+export const LINK_TUNNEL = "ash-link/2";
 /** The computer program (packages/device) this hub pairs: its release on GitHub (`device-v<version>`) is what the install command fetches. */
 export const DEVICE_VERSION = "0.2.4";
+/** The oldest computer program this hub talks with: an older one is closed with 4008 and told which release to install. */
+export const DEVICE_MIN_VERSION = "0.2.4";
 /** Where its releases are published (`<this>/device-v<version>/<asset>`). */
 export const DEVICE_RELEASES = "https://github.com/wanpengxie/ash/releases/download";
 /** The kernel host contract (host.json, host interface, host events). */
@@ -19,3 +26,12 @@ export const APP_CONTRACT = "ash-app/1";
 /** The agent tool surface: the MCP server every agent connects to. */
 export const MCP_SERVER_NAME = "ash";
 export const MCP_SERVER_VERSION = "4.0.0";
+
+/** Whether release [a] (`1.2.3`, a leading `v` allowed) comes before [b]; false when either is not such a version. */
+export function versionBefore(a: string | null | undefined, b: string): boolean {
+  const parse = (v: string | null | undefined) => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(v ?? "")?.slice(1).map(Number) ?? null;
+  const x = parse(a), y = parse(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! < y[i]!;
+  return false;
+}

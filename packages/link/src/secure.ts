@@ -14,7 +14,8 @@ import { createHmac, createPublicKey, timingSafeEqual, verify, type KeyObject } 
 import { Duplex } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { TLSSocket, connect as tlsConnect, createSecureContext } from "node:tls";
-import { CLOSE_CODES, LINK_PROTOCOL, LIMITS } from "../../sdk/src/link";
+import { CLOSE_CODES, LIMITS } from "../../sdk/src/link";
+import { LINK_TUNNEL } from "../../sdk/src/versions";
 import { selfSignedCertificate } from "./cert";
 import type { Connector, SocketEvents } from "./hand";
 import type { LinkSocket, RawSocket } from "./socket";
@@ -63,17 +64,20 @@ export function signatureHolds(publicKey: string, data: string, sig: string): bo
 /** The owner's word that [hub_key] is the hub's until [expires_at] (ms). The owner key signs [endorsementText]. */
 export interface Endorsement { owner_key: string; hub_key: string; expires_at: number; sig: string }
 export const endorsementText = (e: Pick<Endorsement, "owner_key" | "hub_key" | "expires_at">): string =>
-  [LINK_PROTOCOL, "hub-key", e.owner_key, e.hub_key, String(e.expires_at)].join("\n");
+  [LINK_TUNNEL, "hub-key", e.owner_key, e.hub_key, String(e.expires_at)].join("\n");
 
 /**
  * Proof of the one-time pairing secret: only the hub that issued it and the computer it was given to know it, and the relay
  * never sees it. Each side MACs the three keys of the connection as it sees them, so a key the relay swapped shows.
  */
 export function pairMac(secret: string, side: "hub" | "device", keys: { owner: string; hub: string; device: string }): string {
-  return createHmac("sha256", secret).update([LINK_PROTOCOL, `pair-${side}`, keys.owner, keys.hub, keys.device].join("\n")).digest("base64url");
+  return createHmac("sha256", secret).update([LINK_TUNNEL, `pair-${side}`, keys.owner, keys.hub, keys.device].join("\n")).digest("base64url");
 }
 const macHolds = (want: string, given: unknown): boolean =>
   typeof given === "string" && given.length === want.length && timingSafeEqual(Buffer.from(given), Buffer.from(want));
+
+/** A release of the computer program: its version and the SHA-256 of each platform's package (`darwin-arm64`, ...). */
+export interface DeviceRelease { version: string; sha256: Record<string, string> }
 
 /** A secure connection that did not come about: the close code it ended with and why. `pairing`: the pairing secret did not hold. */
 export class SecureRefusal extends Error {
@@ -129,6 +133,8 @@ interface HubSide {
   deviceKey: string;
   /** Set until the device proved the pairing secret on its first connection. */
   pairSecret: string | null;
+  /** Named in a 4008 close: the release a device too old for this hub installs. */
+  release?: DeviceRelease | null;
 }
 interface DeviceSide {
   role: "device";
@@ -141,12 +147,21 @@ interface DeviceSide {
   now(): number;
   /** The hub proved the pairing secret: [ownerKey] is the owner's, pin it and forget the secret. */
   paired?(ownerKey: string): void;
+  /** The hub, proved, closed with 4008 and named the release to install. */
+  update?(release: DeviceRelease): void;
 }
 type Ending = { code: number; reason: string };
 
 const parse = (text: string): Record<string, unknown> | null => {
   try { const value = JSON.parse(text); return value && typeof value === "object" && !Array.isArray(value) ? value : null; } catch { return null; }
 };
+/** A release as a 4008 names it, or null when it is not one. */
+function releaseOf(value: unknown): DeviceRelease | null {
+  const r = value as { version?: unknown; sha256?: unknown } | null | undefined;
+  if (!r || typeof r.version !== "string" || !/^\d+\.\d+\.\d+$/.test(r.version) || !r.sha256 || typeof r.sha256 !== "object") return null;
+  const sha256 = Object.fromEntries(Object.entries(r.sha256 as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string" && /^[a-f0-9]{64}$/.test(e[1])));
+  return { version: r.version, sha256 };
+}
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 100);
 
 class SecureTunnel {
@@ -178,7 +193,7 @@ class SecureTunnel {
   start(): void {
     const { kernel } = this.side as HubSide;
     this.arm();
-    this.outer.send(JSON.stringify({ t: "challenge", nonce: "secure", kernel: { id: kernel.id, version: kernel.version, protocol: LINK_PROTOCOL } }));
+    this.outer.send(JSON.stringify({ t: "challenge", nonce: "secure", kernel: { id: kernel.id, version: kernel.version, protocol: LINK_TUNNEL } }));
     this.beginTls();
   }
 
@@ -192,7 +207,7 @@ class SecureTunnel {
     const announced = parse(text);
     const kernel = announced?.t === "challenge" ? announced.kernel as { protocol?: unknown } | undefined : undefined;
     // Not a reason to stop for good: this is still in the clear, so it may be the relay's.
-    if (kernel?.protocol !== LINK_PROTOCOL) return this.abort(CLOSE_CODES.badFrame, `the hub announced ${String(kernel?.protocol ?? "nothing").slice(0, 40)}`);
+    if (kernel?.protocol !== LINK_TUNNEL) return this.abort(CLOSE_CODES.badFrame, `the hub announced ${String(kernel?.protocol ?? "nothing").slice(0, 40)}`);
     this.trusted = (this.side as DeviceSide).trust();
     this.beginTls();
   }
@@ -245,7 +260,9 @@ class SecureTunnel {
     clearTimeout(this.timer);
     let done = false;
     const closeOuter = () => { if (done) return; done = true; tls.destroy(); this.outer.close(code, reason); };
-    tls.write(`!close ${JSON.stringify({ code, reason })}\n`, () => setImmediate(closeOuter));
+    // A device too old for this hub is told which release to install: it can trust this, it is inside TLS.
+    const release = code === CLOSE_CODES.unsupported && this.side.role === "hub" ? this.side.release : null;
+    tls.write(`!close ${JSON.stringify({ code, reason, ...(release ? { update: release } : {}) })}\n`, () => setImmediate(closeOuter));
     setTimeout(closeOuter, FLUSH_MS).unref?.();
   }
 
@@ -304,6 +321,11 @@ class SecureTunnel {
     if (line.startsWith("!close ")) {
       const said = parse(line.slice("!close ".length));
       this.heard = { code: Number.isInteger(said?.code) ? said!.code as number : 1000, reason: typeof said?.reason === "string" ? said.reason.slice(0, 100) : "" };
+      // Only from a hub that proved itself (the connection is open), and only with 4008.
+      const release = releaseOf(said?.update);
+      if (this.phase === "open" && this.side.role === "device" && this.heard.code === CLOSE_CODES.unsupported && release) {
+        try { this.side.update?.(release); } catch { /* the listener's problem */ }
+      }
       try { this.outer.close(this.heard.code, this.heard.reason); } catch { /* gone */ }
       return this.finish(this.heard);
     }
@@ -361,6 +383,8 @@ export interface HubSecureOptions {
   kernel: { id: string; version: string };
   deviceKey: string;
   pairSecret: string | null;
+  /** The release a device this hub closes with 4008 is told to install. */
+  release?: DeviceRelease | null;
 }
 
 /**
@@ -396,6 +420,8 @@ export interface DeviceSecureOptions {
   paired?(ownerKey: string): void;
   /** A connection did not come about, and why. */
   refused?(error: SecureRefusal): void;
+  /** The hub (proved) closed with 4008 and named the release to install. */
+  update?(release: DeviceRelease): void;
   now?: () => number;
 }
 
@@ -410,7 +436,7 @@ export function secureConnector(inner: Connector, o: DeviceSecureOptions): Conne
     const secure = new SecureTunnel({
       send: (text) => raw!.send(text),
       close: (code, reason) => { if (raw) raw.close(code, reason); else pending.push({ code, reason }); },
-    }, { role: "device", key: o.key, trust: o.trust, now: o.now ?? Date.now, paired: o.paired });
+    }, { role: "device", key: o.key, trust: o.trust, now: o.now ?? Date.now, paired: o.paired, update: o.update });
     let told = false;
     const tell = (code: number, reason: string) => { if (!told) { told = true; events.close(code, reason); } };
     secure.onClose = tell;

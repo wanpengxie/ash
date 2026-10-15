@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "f7ff4e64dfaf842dbda6778c6255b151622cc42f77e2b6a3cd8ae2bc042eea0a",
+ "hash": "1c955d8640bf308f29859d0d4fdba0b9e4c4325ee4764ec7654f0031939d694b",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -3976,7 +3976,7 @@
    "word": "update",
    "kind": "request",
    "direction": "in",
-   "description": "Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked.",
+   "description": "Have a computer update its Ash program from its GitHub release (device-v<version>), checked against sha256, and restart. Give only device: the hub installs the release it was built with and knows the checksum for the computer's platform. Give version and sha256 (the platform's line in that release's SHA256SUMS) for another release. Computers older than the hub's release are also updated by themselves when they connect, unless the setting devices.auto_update is false. Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3994,9 +3994,7 @@
      }
     },
     "required": [
-     "device",
-     "version",
-     "sha256"
+     "device"
     ],
     "additionalProperties": false
    },
@@ -4005,6 +4003,12 @@
     "properties": {
      "started": {
       "type": "boolean"
+     },
+     "version": {
+      "type": "string"
+     },
+     "sha256": {
+      "type": "string"
      }
     },
     "required": [

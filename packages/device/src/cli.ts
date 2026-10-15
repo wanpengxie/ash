@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile, rename, access, rm } from "node:fs/promises
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { DEVICE_VERSION, installRelease, serviceDefinition } from "./install";
+import { DEVICE_VERSION, installRelease, proxyEnvironment, serviceDefinition } from "./install";
 import type { startDevice, DeviceConfig } from "./main";
 import { deviceLogger } from "./log";
 import { callLocal } from "./local";
@@ -48,7 +48,7 @@ export async function deviceCli(start: typeof startDevice, args = process.argv.s
     console.log(proved ? "Paired: the hub proved the pairing secret, and this computer pinned its owner key." : `Paired with the relay, but the hub has not connected yet${refusal ? ` (${refusal.message})` : ""}; the service will keep trying.`);
     if (args.includes("--no-service")) { console.log(`Paired. Start with: ash-device run --config ${configPath}`); return; }
     await mkdir(dirname(serviceFile), { recursive: true });
-    await writeFile(serviceFile, serviceDefinition(root, process.platform, process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"), { mode: 0o600 });
+    await writeFile(serviceFile, serviceDefinition(root, process.platform, process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", proxyEnvironment(process.env)), { mode: 0o600 });
     if (process.platform === "darwin") {
       const domain = `gui/${process.getuid!()}`;
       await exec("launchctl", ["bootout", domain, serviceFile]).catch(() => {});

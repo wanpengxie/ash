@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `f7ff4e64dfaf842d`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `1c955d8640bf308f`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -131,7 +131,7 @@
 | `restore` | owner, agent | write / structure | - | device* | 在恢复已撤销的设备 | Let a revoked hand pair again, with the permissions it had. The gate decides whether the owner is asked. |
 | `rename` | owner, agent, app | write / none | - | device*, name* | 在修改设备名称 | Change the name a hand is shown with. |
 | `access_set` | owner, agent, app | write / none | - | device*, tier, lend, body, local_agents | 在调整设备权限 | Change what a hand may do (lend capabilities, serve as a body, run local agents) and its tier (ask, full): the same choices pair_approve makes. |
-| `update` | owner, agent, app | write / structure | - | device*, version*, sha256* | 在更新设备程序 | Have a computer update its Ash program to the given version (checked against sha256). Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked. |
+| `update` | owner, agent, app | write / structure | - | device*, version, sha256 | 在更新设备程序 | Have a computer update its Ash program from its GitHub release (device-v<version>), checked against sha256, and restart. Give only device: the hub installs the release it was built with and knows the checksum for the computer's platform. Give version and sha256 (the platform's line in that release's SHA256SUMS) for another release. Computers older than the hub's release are also updated by themselves when they connect, unless the setting devices.auto_update is false. Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked. |
 | `pair_code` | owner, agent | read / none | - | pair_id* | 在看配对命令 | The install command of a pairing still waiting, again. It only lets the device ask; pair_approve lets it in. |
 | `pair.changed` | kernel | read / none | event out, record | pair_id*, state*, device, reason | 在记下配对进展 | A pairing moved on (requested, approved, rejected, connected, expired, failed with its reason). The one who started it is told by a background message. |
 | `config.changed` | kernel | read / none | event in | item*, state* | 在记下手机设置变化 | A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded. |

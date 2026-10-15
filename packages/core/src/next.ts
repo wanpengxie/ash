@@ -240,7 +240,10 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     db: ledger.db(), router, link, hands, vault, now, log,
     identity: { key: () => host.identityKey(), sign: (data) => host.identitySign(data) },
   });
-  const devices = new Devices({ hands, router, bodies, gateway: linkControl.pairing, now, primaryAgent: () => late.agents?.primary() ?? null });
+  const devices = new Devices({
+    hands, router, bodies, gateway: linkControl.pairing, now, log, primaryAgent: () => late.agents?.primary() ?? null,
+    autoUpdate: () => admin.settings(["devices.auto_update"])["devices.auto_update"] !== false,
+  });
   linkControl.bindDevices(devices);
   const remote = createRemoteDrivers({ router, log, attached: {
     declare: (computer, name) => attached.declare(computer, name), drop: (computer) => attached.drop(computer),

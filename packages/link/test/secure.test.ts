@@ -4,7 +4,7 @@ import { CLOSE_CODES, LINK_PROTOCOL } from "../../sdk/src/link";
 import { eventually } from "../../core/test/fixtures/wait";
 import { HandClient, type HandHandlers } from "../src/hand";
 import { LinkError, type LinkSession } from "../src/server";
-import { SecureRefusal, secureConnector, type DeviceSecureOptions } from "../src/secure";
+import { SecureRefusal, secureConnector, type DeviceRelease, type DeviceSecureOptions } from "../src/secure";
 import { endorse, party, secureWorld, type Party, type SecureWorld, type Wire } from "./fixtures/secure";
 
 const caller = { member: "agent:main", label: "main" };
@@ -17,15 +17,16 @@ interface Device {
   closes: { code: number; reason: string; willReconnect: boolean }[];
   refusals: SecureRefusal[];
   pinned: string[];
+  releases: DeviceRelease[];
 }
 
 /** The device: a link client behind `secureConnector`, with one capability that records what it was asked. */
 function device(world: SecureWorld, o: { trust?: () => { ownerKey: string; pairSecret: string | null }; as?: Party; handlers?: HandHandlers; now?: () => number } = {}): Device {
   const me = o.as ?? world.device;
-  const runs: string[] = [], closes: Device["closes"] = [], refusals: SecureRefusal[] = [], pinned: string[] = [];
+  const runs: string[] = [], closes: Device["closes"] = [], refusals: SecureRefusal[] = [], pinned: string[] = [], releases: DeviceRelease[] = [];
   const secure: DeviceSecureOptions = {
     key: me.key, trust: o.trust ?? (() => ({ ownerKey: world.owner.publicKey, pairSecret: null })),
-    paired: (ownerKey) => pinned.push(ownerKey), refused: (error) => refusals.push(error), now: o.now,
+    paired: (ownerKey) => pinned.push(ownerKey), refused: (error) => refusals.push(error), now: o.now, update: (release) => releases.push(release),
   };
   const client = new HandClient({
     url: "relay://tunnel/link", connector: secureConnector(world.connector, secure),
@@ -39,7 +40,7 @@ function device(world: SecureWorld, o: { trust?: () => { ownerKey: string; pairS
     },
   });
   client.start();
-  return { client, runs, closes, refusals, pinned };
+  return { client, runs, closes, refusals, pinned, releases };
 }
 
 const call = (session: LinkSession, text: string) => session.call({ capability: "echo.say", args: { text }, caller, deadline: Date.now() + 10_000 });
@@ -250,4 +251,43 @@ test("a forged announcement of another protocol makes the device try again later
     assert.equal(mac.closes[0]!.willReconnect, true);
     assert.notEqual(mac.client.state, "stopped");
   } finally { mac.client.stop(); world.link.close(); }
+});
+
+const RELEASE: DeviceRelease = { version: "9.9.9", sha256: { "linux-x64": "a".repeat(64), "darwin-arm64": "b".repeat(64) } };
+
+test("a hub that closes with 4008 names the release to install; the device takes it only from inside TLS", async () => {
+  const world = secureWorld({ hubOptions: () => ({ release: RELEASE }) });
+  const mac = device(world);
+  try {
+    await mac.client.ready();
+    // The relay closes the tunnel with 4008: in the clear, so not believed, and no release.
+    world.wires[0]!.end(CLOSE_CODES.unsupported, "too old");
+    await eventually(() => mac.closes.length > 0, "closed");
+    assert.deepEqual([mac.closes[0]!.code, mac.releases], [1006, []]);
+    await eventually(() => world.sessions.length === 2 && mac.client.state === "ready", "reconnected");
+    // The hub itself: inside TLS, with the release.
+    world.sessions[1]!.close(CLOSE_CODES.unsupported, "too old");
+    await eventually(() => mac.client.state === "stopped", "stopped");
+    assert.equal(mac.client.stoppedBy, CLOSE_CODES.unsupported);
+    assert.deepEqual(mac.releases, [RELEASE]);
+  } finally { mac.client.stop(); world.link.close(); }
+});
+
+test("only 4008 carries a release, and a hub that has not proved itself cannot give one", async () => {
+  const world = secureWorld({ hubOptions: () => ({ release: RELEASE }) });
+  const mac = device(world);
+  try {
+    await mac.client.ready();
+    world.sessions[0]!.close(CLOSE_CODES.revoked, "revoked");
+    await eventually(() => mac.client.state === "stopped", "stopped");
+    assert.deepEqual(mac.releases, []);
+  } finally { mac.client.stop(); world.link.close(); }
+  // A stranger answering as the hub: refused before anything it says counts.
+  const stranger = party();
+  const fake = secureWorld({ hubOptions: () => ({ key: stranger.key, endorsement: endorse(party(), stranger), release: RELEASE }) });
+  const other = device(fake);
+  try {
+    await eventually(() => other.refusals.length > 0, "refused");
+    assert.deepEqual(other.releases, []);
+  } finally { other.client.stop(); fake.link.close(); }
 });

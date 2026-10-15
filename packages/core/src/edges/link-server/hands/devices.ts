@@ -6,7 +6,9 @@
  * change of a pairing is an event `pair.changed`, and its initiator, if an agent, is told by `tell`.
  */
 import { randomBytes } from "node:crypto";
+import { DEVICE_ASSETS } from "../../../../../sdk/src/device-assets.generated";
 import { OWNER_ID, bodyId, deviceId } from "../../../../../sdk/src/ids";
+import { versionBefore } from "../../../../../sdk/src/versions";
 import type { HandKind } from "../../../../../sdk/src/link";
 import { WordError, type Caller, type ErrorBody, type HandleContext, type Message, type WordResult } from "../../../../../sdk/src/message";
 import type { Member, WordContract } from "../../../../../sdk/src/word";
@@ -79,6 +81,15 @@ export interface DevicesDeps {
   now?: () => number;
   /** The primary agent: what a device reports reaches it as well as the owner. */
   primaryAgent?: () => string | null | undefined;
+  /** The setting `devices.auto_update` (default on): a computer older than the hub's release is updated when it connects. */
+  autoUpdate?: () => boolean;
+  log?: (message: string, error?: unknown) => void;
+}
+
+/** The release this hub installs on a computer of [platform] (`darwin-arm64`, ...), or null when it has none for it. */
+export function releaseFor(platform: string | null | undefined): { version: string; sha256: string } | null {
+  const sha256 = platform ? DEVICE_ASSETS.sha256[platform] : undefined;
+  return sha256 ? { version: DEVICE_ASSETS.version, sha256 } : null;
 }
 
 const SERVICE: Caller = { member: DEVICES_ID, via: "service", local: true };
@@ -92,10 +103,13 @@ export class Devices implements Member {
   readonly name = "devices";
   readonly pairs = new Map<string, Pair>();
   private readonly config = new Map<string, Record<string, string>>();
+  /** The release each computer was last told to install by the automatic update: once per hub run, so a failing one is not retried in a loop. */
+  private readonly autoTried = new Map<string, string>();
   private readonly now: () => number;
 
   constructor(private readonly d: DevicesDeps) {
     this.now = d.now ?? Date.now;
+    d.hands.onManifest((id) => void this.autoUpdate(id));
     d.hands.onOnline((id) => {
       for (const pair of this.pairs.values()) if (pair.state === "approved" && pair.device === deviceId(id)) this.move(pair, "connected");
     });
@@ -164,9 +178,10 @@ export class Devices implements Member {
       case "access_set": return { data: await this.accessSet(this.live(input.device), input) };
       case "update": {
         const hand = this.live(input.device);
-        const reply = await this.d.router.send({ to: deviceId(hand.id), kind: "request", word: "x.ash.update", body: { version: input.version, sha256: input.sha256 } }, SERVICE);
+        const release = this.release(hand, input.version, input.sha256);
+        const reply = await this.d.router.send({ to: deviceId(hand.id), kind: "request", word: "x.ash.update", body: release }, SERVICE);
         if (!reply.ok) throw failure(reply.error);
-        return { data: { started: true } };
+        return { data: { started: true, ...release } };
       }
       case "pair.changed": return;
       case "config.changed": {
@@ -189,6 +204,33 @@ export class Devices implements Member {
       }
       default: throw new WordError("not_found", `${DEVICES_ID} has no word ${msg.word}`);
     }
+  }
+
+  // ---- updating a computer -----------------------------------------------------------------------------------------
+
+  /** What `update` installs: what was asked, else the hub's release for the computer's platform. */
+  private release(hand: HandRecord, version?: string, sha256?: string): { version: string; sha256: string } {
+    if (version && sha256) return { version, sha256 };
+    const own = releaseFor(hand.platform);
+    if (version && version.replace(/^v/, "") !== own?.version) {
+      throw new WordError("bad_request", `the hub only knows the checksums of release ${DEVICE_ASSETS.version}`, { recovery_hint: `Give sha256 too: the line for ash-device-${hand.platform ?? "<platform>"}.tar.gz in SHA256SUMS of the device-v${version.replace(/^v/, "")} release on GitHub.` });
+    }
+    if (!own) throw new WordError("unavailable", `the hub has no package for ${hand.platform ?? "this computer's platform"}`, { recovery_hint: "Give version and sha256 from the release's SHA256SUMS on GitHub." });
+    return own;
+  }
+
+  /** A computer connected with a program older than the hub's release: update it, when the owner's setting allows (default on). */
+  private async autoUpdate(id: string): Promise<void> {
+    const hand = this.d.hands.get(id);
+    if (!hand || hand.revoked_at || hand.kind !== "computer" || (this.d.autoUpdate && !this.d.autoUpdate())) return;
+    const release = releaseFor(hand.platform);
+    if (!release || !versionBefore(hand.version, release.version) || this.autoTried.get(id) === release.version) return;
+    this.autoTried.set(id, release.version);
+    const reply = await this.d.router.send({ to: deviceId(id), kind: "request", word: "x.ash.update", body: release }, SERVICE).catch((error: unknown) => {
+      this.d.log?.(`updating ${hand.name} failed`, error);
+      return null;
+    });
+    if (reply && !reply.ok) this.d.log?.(`updating ${hand.name} to ${release.version} was refused: ${reply.error.code} ${reply.error.message}`);
   }
 
   // ---- hands ---------------------------------------------------------------------------------------------------------

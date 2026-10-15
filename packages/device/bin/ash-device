@@ -1,4 +1,6 @@
 #!/bin/sh
 set -eu
 ash_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Downloads (the program's own updates from GitHub) go through a proxy only when the standard variables name one.
+if [ -n "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}" ]; then export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"; fi
 exec "$ash_bin_dir/../node" "$ash_bin_dir/../ash-device.mjs" "$@"

@@ -4,6 +4,7 @@ import { WordError, type HandleContext, type Message } from "../../../../sdk/src
 import { Devices, type PairKind, type PairingGateway, type RelayPermission } from "../../../src/edges/link-server/hands/devices";
 import { eventually } from "../../fixtures/wait";
 import { cap, connected, connectViaRelay, newIdentity, startHub, type Hub } from "./harness";
+import { DEVICE_ASSETS } from "../../../../sdk/src/device-assets.generated";
 
 const owner: HandleContext = { signal: new AbortController().signal, caller: { member: "person:owner", via: "human", local: true }, raw: undefined };
 const agent: HandleContext = { ...owner, caller: { member: "agent:main", via: "agent", local: false } };
@@ -158,7 +159,7 @@ test("update has the computer's x.ash.update run, asked by this service", async 
   const { hub, call, refused } = await setup(t);
   const computer = await connected(hub, { kind: "computer" });
   const body = { device: dev(computer), version: "0.2.0", sha256: "a".repeat(64) };
-  assert.deepEqual(await call("update", body), { started: true });
+  assert.deepEqual(await call("update", body), { started: true, version: "0.2.0", sha256: "a".repeat(64) });
   assert.deepEqual(hub.router.sent.map((s) => [s.msg.to, s.msg.word, s.msg.body, s.caller.member]), [[dev(computer), "x.ash.update", { version: "0.2.0", sha256: "a".repeat(64) }, "service:devices"]]);
   hub.router.answers.set(`${dev(computer)}/x.ash.update`, () => ({ ok: false, error: { code: "offline", message: "gone" } }));
   assert.equal(await refused("update", body), "offline");
@@ -240,6 +241,40 @@ test("pairing fails when the device that connects cannot prove the secret: the r
   await eventually(() => gateway.calls.includes(`revoke ${identity.handId}`), "the relay to revoke it too");
   await eventually(() => hub.router.sent.some((s) => s.msg.word === "tell" && /failed: .*swapped.*start a new pairing/.test(String((s.msg.body as { text: string }).text))), "the agent told");
   assert.ok(hub.router.sent.some((s) => s.msg.word === "pair.changed" && (s.msg.body as { state: string; reason?: string }).state === "failed" && /swapped/.test((s.msg.body as { reason?: string }).reason ?? "")));
+});
+
+test("update without a release installs the hub's own, with the checksum for the computer's platform", async (t) => {
+  const { hub, call, refused } = await setup(t);
+  const mac = await connected(hub, { kind: "computer", platform: "darwin-arm64", version: DEVICE_ASSETS.version });
+  const release = { version: DEVICE_ASSETS.version, sha256: DEVICE_ASSETS.sha256["darwin-arm64"] };
+  assert.deepEqual(await call("update", { device: dev(mac) }), { started: true, ...release });
+  assert.deepEqual(hub.router.sent.filter((s) => s.msg.word === "x.ash.update").map((s) => s.msg.body), [release]);
+  // Another release needs its checksum; a platform the hub has no package for needs both.
+  assert.equal(await refused("update", { device: dev(mac), version: "0.1.0" }), "bad_request");
+  assert.deepEqual(await call("update", { device: dev(mac), version: "0.1.0", sha256: "c".repeat(64) }), { started: true, version: "0.1.0", sha256: "c".repeat(64) });
+  const odd = await connected(hub, { kind: "computer", platform: "freebsd-x64" });
+  assert.equal(await refused("update", { device: dev(odd) }), "unavailable");
+});
+
+test("a computer older than the hub's release is updated when its manifest comes in, once, and not when the setting is off", async (t) => {
+  let on = true;
+  const hub = await startHub(); t.after(() => hub.stop());
+  new Devices({ hands: hub.hands, router: hub.router, bodies: hub.bodies, gateway: new FakeGateway(), autoUpdate: () => on });
+  const updates = () => hub.router.sent.filter((s) => s.msg.word === "x.ash.update");
+  const old = await connected(hub, { kind: "computer", platform: "linux-x64", version: "0.1.0", capabilities: [cap("x.ash.update")] });
+  await eventually(() => updates().length === 1, "the automatic update");
+  assert.deepEqual([updates()[0]!.msg.to, updates()[0]!.msg.body, updates()[0]!.caller.member], [dev(old), { version: DEVICE_ASSETS.version, sha256: DEVICE_ASSETS.sha256["linux-x64"] }, "service:devices"]);
+  await old.client.setManifest([cap("x.ash.update"), cap("x.mac.more")]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(updates().length, 1, "once per hub run: a failing update is not retried in a loop");
+
+  const current = await connected(hub, { kind: "computer", platform: "linux-x64", version: DEVICE_ASSETS.version, capabilities: [cap("x.ash.update")] });
+  const phone = await connected(hub, { kind: "phone", platform: "linux-x64", version: "0.0.1", capabilities: [cap("x.ash.update")] });
+  on = false;
+  const off = await connected(hub, { kind: "computer", platform: "linux-x64", version: "0.1.0", capabilities: [cap("x.ash.update")] });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(updates().map((s) => s.msg.to), [dev(old)], "not the current one, not a phone, not with the setting off");
+  void current; void phone; void off;
 });
 
 test("config.changed from a hand is kept for describe", async (t) => {
