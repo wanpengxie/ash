@@ -151,27 +151,20 @@ test("only an agent's new app may be a card's temporary app; a pinned card does 
   assert.equal(w.runtime.run("kept")!.pinned, true);
 });
 
-test("a temporary app is removed only when no page or widget uses it, and a failed removal is tried again on a later sweep", async () => {
+test("a temporary app is removed only when no page or widget uses it; a failed removal waits for the next sweep", async () => {
   let used = true, fails = true;
   const w = setup({}, { inUse: () => used, removeFails: () => fails });
   w.show("t", live, "hr");
   w.runtime.closeCard("t");
-  await w.runtime.recycle();
   const removes = () => w.sent.filter((x) => x.word === "apps.remove").length;
+  await w.runtime.recycle();
   assert.equal(removes(), 0, "a page or a widget still shows it: kept");
   used = false;
   await w.runtime.recycle();
-  assert.equal(removes(), 0, "not before the retry time");
-  w.advance(61_000);
-  await w.runtime.recycle();
-  assert.equal(removes(), 1, "tried once it is free");
-  await w.runtime.recycle();
-  assert.equal(removes(), 1, "a failure waits for the next try");
+  assert.equal(removes(), 1, "free: tried");
   fails = false;
-  w.advance(61_000);
   await w.runtime.recycle();
-  assert.equal(removes(), 2, "tried again, and removed");
-  w.advance(61_000);
+  assert.equal(removes(), 2, "failed: tried again on the next sweep, and removed");
   await w.runtime.recycle();
   assert.equal(removes(), 2, "a removed app is not removed twice");
 });

@@ -36,8 +36,6 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS card_runtime (
 /** Every card's default lifecycle (the owner's rule: a card stops by itself unless he pins it): the hub settings `cards.*`. */
 export const CARD_LIMITS_DEFAULT = { idle_minutes: 1, dormant_minutes: 30, closed_hours: 24, max_active: 8, max_sources: 16, max_temporary_apps: 5 };
 const TICK_MS = 10_000;
-/** How soon a temporary app that was in use, or whose removal failed, is tried again. */
-const RETRY_MS = 60_000;
 /** A card reported on screen counts as seen for this long (the screens report again at least once a minute). */
 const SEEN_MS = 75_000;
 const EVENT_GAP_MS = 2_000;
@@ -262,13 +260,11 @@ export class CardRuntime {
     if (push) this.push(r.id);
   }
 
-  /** When each temporary app may be tried again after it was in use or its removal failed. */
-  private readonly retryAt = new Map<string, number>();
   private recycling = false;
 
   /**
    * Remove the temporary apps whose cards are all closed (not kept by the owner, not already gone), unless another surface
-   * still uses them (a page open lately, a widget): those, and a removal that failed, are tried again a minute later.
+   * still uses them (a page open lately, a widget): those, and a removal that failed, wait for the next sweep.
    */
   async recycle(): Promise<void> {
     if (this.recycling) return;
@@ -277,12 +273,10 @@ export class CardRuntime {
       const apps = (this.d.db.prepare(`SELECT app FROM card_runtime WHERE app IS NOT NULL GROUP BY app
         HAVING max(temporary)=1 AND max(kept)=0 AND max(app_gone)=0 AND sum(life!='closed')=0`).all() as { app: string }[]).map((r) => r.app);
       for (const app of apps) {
-        const now = this.d.now();
-        if ((this.retryAt.get(app) ?? 0) > now) continue;
-        if (await this.d.inUse?.(app)) { this.retryAt.set(app, now + RETRY_MS); continue; }
+        if (await this.d.inUse?.(app)) continue;
         const reply = await this.call("service:apps", "apps.remove", { id: app, keep_data: false });
-        if (reply.ok || reply.error.code === "not_found") { this.d.db.prepare("UPDATE card_runtime SET app_gone=1 WHERE app=?").run(app); this.retryAt.delete(app); }
-        else { this.d.log(`temporary app ${app} not removed (${reply.error.code}); trying again later`); this.retryAt.set(app, now + RETRY_MS); }
+        if (reply.ok || reply.error.code === "not_found") this.d.db.prepare("UPDATE card_runtime SET app_gone=1 WHERE app=?").run(app);
+        else this.d.log(`temporary app ${app} not removed (${reply.error.code}); the next sweep tries again`);
       }
     } finally { this.recycling = false; }
   }
