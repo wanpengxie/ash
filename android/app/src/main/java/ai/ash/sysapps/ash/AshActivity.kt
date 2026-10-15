@@ -66,6 +66,7 @@ open class AshActivity : SystemAppActivity() {
     private var chromeSpace: String? = null
     private lateinit var editStatus: TextView
     private lateinit var save: TextView
+    private lateinit var saveDock: LinearLayout
     private var editing: Edit? = null
     private var writing = false
     private var editGeneration = 0
@@ -125,6 +126,10 @@ open class AshActivity : SystemAppActivity() {
         } }
         editStatus = AshUi.text(this, "", AshTokens.Type.callout)
         save = AppUi.button(this, s(R.string.ash_save), AppAccent.TEAL) { saveEdit() }
+        saveDock = AshUi.vstack(this).apply {
+            addView(AshViews.line(context))
+            addView(AshUi.vstack(context).apply { setPadding(dp(16), dp(10), dp(16), dp(10)); addView(save) })
+        }
         formScroll = ScrollView(this).apply {
             isFillViewport = false
             addView(AshUi.vstack(context, AshTokens.Space.md).apply {
@@ -260,7 +265,7 @@ open class AshActivity : SystemAppActivity() {
         moreButton.visibility = if (settingsButton.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         val status = if (route == "now" && editing == null) value("now")?.optLong("as_of")?.takeIf { it > 0 }?.let { s(R.string.ash_recent_confirmed, HomeModel.dayTime(it, System.currentTimeMillis())) } ?: s(R.string.ash_now_unknown) else null
         setStatus(status)
-        if (dockShown != (editing != null)) { dockShown = editing != null; setBottomAction(if (dockShown) save else null) }
+        if (dockShown != (editing != null)) { dockShown = editing != null; setBottomAction(if (dockShown) saveDock else null) }
         renderEditor()
         val out = ArrayList<ChatRow>()
         fun row(key: String, heading: String, text: String = "", actionLabel: String = s(R.string.ash_open), action: (() -> Unit)? = null) {
@@ -303,7 +308,7 @@ open class AshActivity : SystemAppActivity() {
                 val old = !connected || slot("now").error != null || confirmed == null || confirmed < System.currentTimeMillis() - 300_000
                 val current = if (value("now") == null) s(R.string.ash_now_unknown) else if (old) s(R.string.ash_now_snapshot, AshModel.nowText(AshModel.now(true, value("now"), null, System.currentTimeMillis()), name)) else AshModel.nowText(now, name)
                 val time = confirmed?.let { s(R.string.ash_recent_confirmed, HomeModel.dayTime(it, System.currentTimeMillis())) } ?: s(R.string.ash_now_unknown)
-                out.add(ChatRow("profile", "$name|$current|$time") { AshViews.profile(this, name, current, time) })
+                out.add(ChatRow("profile", "$name|$current|$time") { AshViews.profile(this, name, current, listOfNotNull(time, now.nextComing?.let { s(R.string.ash_next, HomeModel.dayTime(it, System.currentTimeMillis())) }).joinToString("\n")) })
                 val active = AshModel.activeTodos(AshModel.todos(value("tasks")))
                 out.add(ChatRow("promises-title", active.size.toString()) { AshViews.section(this, s(R.string.ash_shared_promises), value("tasks")?.let { active.size.toString() }) })
                 if (value("tasks") == null) row("tasks-loading", s(R.string.ash_loading))
@@ -322,7 +327,7 @@ open class AshActivity : SystemAppActivity() {
                 if (growth.isNotEmpty()) {
                     out.add(ChatRow("growth-title", "growth") { AshViews.section(this, s(R.string.ash_recent_growth)) })
                     growth.take(2).forEach { g -> out.add(ChatRow("growth:${g.id}", "${g.title}|${g.at}|${g.evidence}") {
-                        AshViews.timeline(this, HomeModel.dayTime(g.at, System.currentTimeMillis()), g.title, if (g.evidence.isEmpty()) s(R.string.ash_no_evidence) else s(R.string.ash_growth_basis, g.evidence.joinToString(" · "))) { navigate("growth") }
+                        AshViews.timeline(this, HomeModel.dayTime(g.at, System.currentTimeMillis()), g.title, listOf(g.why, if (g.evidence.isEmpty()) s(R.string.ash_no_evidence) else s(R.string.ash_growth_basis, g.evidence.joinToString(" · "))).filter { it.isNotBlank() }.joinToString("\n")) { navigate("growth") }
                     }) }
                 }
                 actionRow("persona-agreements", s(R.string.ash_persona_agreements)) { navigate("more") }

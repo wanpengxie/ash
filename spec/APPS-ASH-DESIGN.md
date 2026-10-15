@@ -43,3 +43,16 @@
 「现在」展示最近读取的事实；缺失不当作空闲，读取失败、断连或旧快照明确说当前待确认，并带读取时间。不再用「在想」替代处理中的状态。成长按 why/did/effect/next 展示，缺效果说尚未记录，标明记录时间、记录人；未附出处时不冒充已经核实的成果。
 
 内部回归分层：AshMemoryWriterTest 跑生产 get/patch/set 工作流，AshActivityTest 用真实 Activity、RecyclerView、EditText、AlertDialog 和点击回执验证可见产品路径（端口为固定响应）；ash-app.test.ts 以真实 startHub、human link、MCP 工具、正文文件及后台唤醒验证纠正→改记忆/日记→note.reply 以及主 agent 不可用时批注仍被保存、同 id 不重复保存。它们均不冒充真机 IME/可访问性验收，实际运行结果及缺项另列在交付证据中。
+
+
+## 冻结稿原生施工（SPEC第8节 / 当前v6）
+
+已亲读 app-design 893981d6 与必要规则、项目原则/模型/移动规范；实际打开当前正常/详情/平静/地图与动线。按已完成的STEP1→STEP2结果施工，不另开研究或设计。现在、记得你、日记为三个稳定空间；公共 AppIdentity/AppDestination 与 status/footer 由 base 提供，AshViews 只组合本应用事实、共享承诺和成长内容，使用既有 token/头像/图标，不建第二套状态。
+
+现在页：原 history/current 和 as_of 最近确认；subject:ash 的共享承诺最多两条摘要，保留具名帮手/原状态，todo 不写运行；同 id 打开原任务，空集合也保留全部入口。前台不造请求/决定数量。具体记忆直接进入同条编辑；成长只用已存 why/did/effect/next/evidence。人格/约定、原批注、成长、完整文件编辑继续从更多/对应空间进入。原任务操作仍在同一任务应用。
+
+记忆详情：文件/条目身份、当前原文、未附原依据的常态说明、同一输入实例、完整原文件读取、精确保存和删除。保存前依旧通过 AshMemoryWriter 读完整最新文件并只 patch 一条，未完整读取不得覆盖。保存后停在同一事实详情，单列保存结果和原 note.reply；当次原 note id 是详情对象关联，绝无送达追踪/专用重试/后台补发。无回复明确尚未看到回应。普通草稿/operation id继续保留；切空间、返回和 onNewIntent 不以刷新重建输入。人格版本通过原 gate/propose，保存不称即时策略生效。
+
+导航以页面返回位置和三个空间的阅读锚点恢复；详情退出回原空间。日记日期/原正文/批注、人格版本/批准边界、免打扰和已有规则、成长原依据等成熟二级功能不因主图省略删除。表单用原WindowInsetsOwner的非会话窗口策略；没有会话dock改成非会话路径，未改KeyboardDeck/发送队列。
+
+验证先按统一排期：既有Robolectric 360×800dp / xxhdpi，实际Activity、窗口尺寸、Native绘图与手动看图。代表性fixture只在测试，不进入生产。至少ash-home/ash-detail/ash-quiet，另有保存后详情；服务数据流沿原接口未改。真机IME/TalkBack/大字体/dark/系统返回等未跑时明确标未验。
