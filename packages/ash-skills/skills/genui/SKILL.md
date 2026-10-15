@@ -15,12 +15,16 @@ whenToUse: 要在对话里发一张卡、改一张发过的卡、请主人一次
 | `human_form {title, why, schema, secret?}` | 一张表单卡，填完点「提交」才回来；`secret` 字段是密码框 |
 | `capability_call {member: "person:owner", word: "card.preview", body: {id, theme}}` | 看手机把这张卡画成什么样（一张图） |
 
-本目录（容器里 `/opt/ash/ash-skills/skills/genui/`）：`patterns.md` 版式对照表、`examples/` 每种版式一份能直接改的样例（文件内容就是 `human_show` 或 `human_form` 的参数）、`rules.md` 尺寸留白颜色组件的细规矩、`checklist.md` 发前自查、`feedback.md` 怎么记主人的口味、`mechanics.md` 按钮、改卡、表单、保险箱、小页面怎么用。
+本目录（容器里 `/opt/ash/ash-skills/skills/genui/`）：`patterns.md` 版式对照表、`examples/` 每种版式一份能直接改的样例（文件内容就是 `human_show` 或 `human_form` 的参数）、`rules.md` 尺寸留白颜色组件的细规矩、`checklist.md` 发前自查、`feedback.md` 怎么记主人的口味、`mechanics.md` 按钮、改卡、表单、保险箱、小页面怎么用、`runtime.md` 卡片背后的后端、按钮直接调词、实时数据和休眠。
 
 ## 发不发卡
 
 - 一两句话说得清的（「快递中午到」）只说话。多条或多列的数据、对比、时间线、数字和趋势、要勾选填写确认的、要回头再看的（行程、清单、菜谱）才发卡。
 - 一次一张，一张只做一件事。气泡里一句话说结论，卡片放细节，两边不重复。
+
+## 只展示，还是要后端
+
+卡片可以是完整的小应用。只是看、在卡上切换勾选、按钮让你接着做：只发卡。按钮要直接做事（建日历、记一笔）、数据要一直更新（心率、价格）、要存东西：先照技能 `build-app` 写一个应用、`needs` 写清要用的词，再 `human_show {app, temporary_app}` 发卡，按钮用 `{call}`，数据用 `a2ui.sources`。做完事收起卡（`card.close`）。细节和例子（心率实时图、记账卡、确认预约）在 `runtime.md`。
 
 ## 每次的做法
 
