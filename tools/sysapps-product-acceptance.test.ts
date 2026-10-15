@@ -24,7 +24,7 @@ test("a committed task must not be reported as failed when scheduling is tempora
   assert.equal(reply.ok, true, "the task is saved; scheduling failure must be reported separately");
 });
 
-test("retrying a saved correction must be able to notify Ash after an initial wake failure", async (t) => {
+test("a note stays saved when Ash is unavailable, and confirming its id does not send it again", async (t) => {
   const w = world();
   w.registry.add(fake("service:agents", wordsOf("service:agents"), () => ({ data: {
     agents: [{ id: "agent:main", name: "Ash", primary: true }],
@@ -50,8 +50,10 @@ test("retrying a saved correction must be able to notify Ash after an initial wa
   const retry = success(await w.router.send(request, owner));
   const notes = success(await w.router.send({ to: "service:persona", kind: "request", word: "notes.list", body: {} }, owner)).notes;
   t.diagnostic(JSON.stringify({ first, retry, wakes, savedNotes: notes.length }));
-  assert.equal(notes.length, 1, "a notification retry must not duplicate the correction");
-  assert.equal(retry.told, true, "retry must actually retry notification, not only return the saved id");
+  assert.equal(notes.length, 1, "confirming a save must not duplicate the correction");
+  assert.equal(notes[0].text, request.body.text);
+  assert.equal(retry.id, first.id);
+  assert.equal(wakes, 1, "a save confirmation is not a notification retry");
 });
 
 test("saving a helper's tool restrictions changes the actual running authorization, not only its profile", async (t) => {
