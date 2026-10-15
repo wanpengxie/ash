@@ -1,6 +1,7 @@
 package ai.ash.sysapps.tasks
 
 import ai.ash.sysapps.SystemAppActivity
+import ai.ash.ui.Flow
 import ai.ash.ui.ChatRow
 import ai.ash.ui.HumanPort
 import ai.ash.ui.Hk
@@ -42,7 +43,8 @@ open class TasksActivity : SystemAppActivity() {
     private var loading = false
     private var dirty = false
     private var selected: String? = null
-    private val names = mutableMapOf("person:owner" to "你")
+    private val names = mutableMapOf("person:owner" to "你", "service:tasks" to "Ash")
+    private val pendingRows = mutableSetOf<String>()
     private val agents = mutableListOf("person:owner")
     private lateinit var list: RecyclerView
     private lateinit var adapter: KeyedRowsAdapter
@@ -80,7 +82,6 @@ open class TasksActivity : SystemAppActivity() {
     }
     override fun onNewIntent(next: Intent) {
         super.onNewIntent(next)
-        if (ready && selected != null) saveEditor()
         dialog?.dismiss(); dialog = null
         setIntent(next); routeGeneration++; state = state.request(); loading = false; dirty = false
         editorId = null; restoreField = null; restoreKey = null
@@ -101,7 +102,7 @@ open class TasksActivity : SystemAppActivity() {
         val root = AshUi.vstack(this, 6).apply { setPadding(dp(14), 0, dp(14), dp(8)) }
         val tabs = AshUi.hstack(this, 6)
         TasksModel.View.entries.forEach { tab -> tabs.addView(AshUi.button(this, tab.label, AshUi.Kind.NEUTRAL) {
-            view = tab; selected = null; editorId = null; render(); syncBack()
+            routeGeneration++; dialog?.dismiss(); view = tab; selected = null; editorId = null; render(); syncBack()
         }) }
         root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(tabs) })
         feedback = AshUi.text(this, "正在读取…", AshTokens.Type.callout, c.text2).apply {
@@ -212,25 +213,30 @@ open class TasksActivity : SystemAppActivity() {
                 if (editorId != selected && ready) edit(task)
                 else if (editorVersion != task.updatedAt && editorId == selected)
                     feedback.text = "这条待办有更新（${names[task.updatedBy] ?: task.updatedBy}）；你的编辑保留，返回后可重新打开。"
-            } else if (state.loaded) feedback.text = "没有找到这条待办，返回可看全部"
+            } else {
+                form.removeAllViews(); fields.clear(); times.clear()
+                if(state.loaded) feedback.text = "没有找到这条待办，返回可看全部"
+            }
             return
         }
-        title.text = "任务 · ${view.label}"
-        val rows = TasksModel.rows(state.tasks, view, System.currentTimeMillis()).map { t ->
-            ChatRow(t.key, listOf(t.title, t.note, t.status, t.subject, t.assignee, t.dueAt, t.remindAt, t.updatedBy, t.result, t.remindersPending, t.conversationPending, names[t.assignee]).joinToString("|")) {
-                AshUi.vstack(this, 4).apply {
-                    setPadding(dp(10), dp(10), dp(10), dp(10))
-                    addView(AshUi.text(this@TasksActivity, t.title, AshTokens.Type.headline))
-                    val meta = listOf(TasksModel.status(t), TasksModel.assignee(t, names), t.dueAt?.let { "截止 ${editTime(it)}" }, t.remindAt?.let { "提醒 ${editTime(it)}" }, if (t.remindersPending) "提醒待恢复" else null, if (t.conversationPending) "对话卡待送达" else null).filterNotNull().joinToString(" · ")
-                    addView(AshUi.text(this@TasksActivity, meta, AshTokens.Type.callout, c.text2))
-                    if (t.note.isNotEmpty() || t.result.isNotEmpty()) addView(AshUi.text(this@TasksActivity, t.result.ifEmpty { t.note }, AshTokens.Type.callout, c.text2))
-                    if (t.updatedBy.isNotBlank()) addView(AshUi.text(this@TasksActivity, "${names[t.updatedBy] ?: t.updatedBy} 更新", AshTokens.Type.callout, c.text2))
-                    minimumHeight = dp(48); isClickable = true; isFocusable = true
-                    setOnClickListener { selected = t.id; editorId = null; render(); syncBack() }
-                    contentDescription = "${t.title}，$meta，打开详情"
-                }
-            }
-        }.ifEmpty { listOf(ChatRow("empty", "$view:${state.loaded}") { AshUi.text(this, if (state.loaded) "这里还没有待办" else "正在读取待办…", AshTokens.Type.body, c.text2) }) }
+        title.text = if (view == TasksModel.View.TODAY) "今天的事" else "任务 · ${view.label}"
+        val rows = mutableListOf<ChatRow>()
+        fun group(key: String, heading: String, tasks: List<TasksModel.Task>, empty: String? = null) {
+            if (tasks.isEmpty() && empty == null) return
+            rows.add(ChatRow("section:$key", "$heading:${tasks.size}") { AshUi.text(this, "$heading · ${tasks.size}", AshTokens.Type.headline) })
+            tasks.forEach { rows.add(taskRow(it)) }
+            if (tasks.isEmpty()) rows.add(ChatRow("empty:$key", empty.orEmpty()) { AshUi.text(this, empty.orEmpty(), AshTokens.Type.callout, c.text2) })
+        }
+        if (view == TasksModel.View.TODAY) {
+            val attention = state.tasks.filter { it.remindersPending || it.conversationPending }
+            group("attention", "需要补上", attention)
+            val attentionIds = attention.map { it.id }.toSet()
+            group("you", "今天轮到你", TasksModel.rows(state.tasks, view, System.currentTimeMillis()).filter { it.assignee == "person:owner" && it.id !in attentionIds }, "今天没有到期或逾期的事；还没定时间的在「待我处理」。")
+            val work = state.tasks.filter { it.open && it.assignee.startsWith("agent:") && it.id !in attentionIds }
+            group("blocked", "Ash 卡在哪里", work.filter { it.status == "waiting" })
+            group("working", "Ash 正在推进", work.filter { it.status == "doing" })
+            group("queued", "Ash 还未开始", work.filter { it.status == "todo" })
+        } else group("all", view.label, TasksModel.rows(state.tasks, view, System.currentTimeMillis()), if (state.loaded) "这里还没有待办" else "正在读取待办…")
         val lm = list.layoutManager as LinearLayoutManager
         val first = lm.findFirstVisibleItemPosition(); val key = adapter.currentList.getOrNull(first)?.key
         val offset = lm.findViewByPosition(first)?.let { lm.getDecoratedTop(it) }
@@ -242,6 +248,71 @@ open class TasksActivity : SystemAppActivity() {
             if (index >= 0 && top != null && selected == null && epoch == scrollVersion && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) {
                 lm.scrollToPositionWithOffset(index, top); restoreKey = null
             }
+        }
+    }
+    private fun openTask(task: TasksModel.Task) { routeGeneration++; selected = task.id; editorId = null; render(); syncBack() }
+    private fun source(task: TasksModel.Task) {
+        task.source?.message?.takeIf { it.isNotBlank() }?.let {
+            startActivity(Intent(this, HomeActivity::class.java).putExtra("ai.ash.extra.MESSAGE_ID", it).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        }
+    }
+    private fun taskRow(t: TasksModel.Task): ChatRow = ChatRow(t.key,
+        listOf(t.title,t.note,t.status,t.subject,t.assignee,t.dueAt,t.remindAt,t.updatedBy,t.result,t.remindersPending,t.conversationPending,names[t.assignee],pendingRows.contains(t.id)).joinToString("|")) {
+        AshUi.vstack(this, AshTokens.Space.xxs).apply {
+            tag = t.key
+            setPadding(dp(AshTokens.Space.xs),dp(AshTokens.Space.xs),dp(AshTokens.Space.xs),dp(AshTokens.Space.sm))
+            addView(AshUi.text(this@TasksActivity,t.title,AshTokens.Type.headline))
+            val person = TasksModel.assignee(t,names)
+            val progress = when {
+                t.status == "done" -> "做完了"
+                t.status == "dropped" -> "已决定不做"
+                t.status == "waiting" -> if (t.assignee == "person:owner") "在等对方" else "$person 暂时卡住了"
+                t.status == "doing" -> if (t.assignee == "person:owner") "你正在处理" else "$person 正在处理"
+                else -> if (t.assignee == "person:owner") "轮到你做" else "$person 负责，还未开始"
+            }
+            val at = t.dueAt ?: t.remindAt
+            val timing = at?.let { "${if (t.dueAt != null) "原定" else "提醒"} ${editTime(it)}${if (t.open && it < System.currentTimeMillis()) " · 已过时间" else ""}" }
+            addView(AshUi.text(this@TasksActivity,listOfNotNull(progress,timing).joinToString(" · "),AshTokens.Type.callout,c.text2))
+            val detail = t.result.ifEmpty { t.note }
+            if (detail.isNotBlank()) addView(AshUi.text(this@TasksActivity,detail,AshTokens.Type.body))
+            if (t.remindersPending || t.conversationPending) addView(AshUi.text(this@TasksActivity,listOfNotNull(if(t.remindersPending)"已保存，提醒尚未安排；请点重试提醒，此前不能保证到点提醒" else null,if(t.conversationPending)"对话里的确认或结果待送达" else null).joinToString(" · "),AshTokens.Type.callout,c.text2))
+            val buttons = Flow(this@TasksActivity,dp(AshTokens.Space.xs),dp(AshTokens.Space.xxs))
+            fun action(label: String, kind: AshUi.Kind = AshUi.Kind.GHOST, run: () -> Unit) {
+                buttons.addView(AshUi.button(this@TasksActivity,label,kind) { if (t.id !in pendingRows) run() }.apply { isEnabled = t.id !in pendingRows })
+            }
+            if(t.remindersPending)action("重试提醒",AshUi.Kind.SECONDARY) { rowWrite(t,"update",JSONObject().put("id",t.id)) }
+            if(t.conversationPending)action("重试对话卡") { rowWrite(t,"update",JSONObject().put("id",t.id)) }
+            if (t.open) {
+                if (t.assignee == "person:owner") action("完成",AshUi.Kind.SECONDARY) { rowWrite(t,"done",JSONObject().put("id",t.id)) }
+                else action("记录结果",AshUi.Kind.SECONDARY) {
+                    val input = Hk.field(this@TasksActivity,"这件事的结果是什么？")
+                    val epoch=routeGeneration
+                    showDialog(AlertDialog.Builder(this@TasksActivity).setTitle(t.title).setView(input).setPositiveButton("完成并回报") { _, _ ->
+                        if(epoch==routeGeneration && input.text.isNotBlank())rowWrite(t,"done",JSONObject().put("id",t.id).put("result",input.text.toString()))
+                    }.setNegativeButton("取消",null).create())
+                }
+                action("改期") {
+                    chooseTime("改到什么时候",t.remindAt ?: t.dueAt) { at ->
+                        val b=JSONObject().put("id",t.id).put("remind_at",at ?: JSONObject.NULL)
+                        if(t.dueAt!=null)b.put("due_at",at ?: JSONObject.NULL)
+                        rowWrite(t,"update",b)
+                    }
+                }
+            }
+            if(t.source?.message?.isNotBlank()==true)action(if(t.status=="waiting")"去对话跟进" else "回来源对话") { source(t) }
+            action("详细设置") { openTask(t) }
+            addView(buttons)
+            if(t.updatedBy.isNotBlank())addView(AshUi.text(this@TasksActivity,"${names[t.updatedBy] ?: t.updatedBy.removePrefix("agent:")} 更新",AshTokens.Type.callout,c.text2))
+        }
+    }
+    private fun rowWrite(task: TasksModel.Task, word: String, body: JSONObject) {
+        if(!pendingRows.add(task.id))return
+        val epoch=routeGeneration; render()
+        taskCall("service:tasks",word,body) { data,failure ->
+            pendingRows.remove(task.id)
+            if(epoch!=routeGeneration)return@taskCall
+            feedback.text=if(failure!=null || data?.optJSONObject("task")==null) "${failure?.message ?: "结果尚未确认"} · 保留待办，请刷新核对" else savedMessage(data.optJSONObject("task"))
+            refresh();render()
         }
     }
     private fun edit(task: TasksModel.Task) {
@@ -311,36 +382,33 @@ open class TasksActivity : SystemAppActivity() {
         val button = AshUi.button(this, "$label：${value?.let(::editTime) ?: "未设置"}", AshUi.Kind.NEUTRAL).apply { tag = "task.time.$key" }
         timeButtons[key] = button; form.addView(button)
         button.setOnClickListener {
-            val epoch = routeGeneration; val task = editorId
-            fun choose(at: Long?) {
-                if (epoch != routeGeneration || task != editorId) return
-                times[key] = at; button.text = "$label：${at?.let(::editTime) ?: "未设置"}"; saveEditor()
-            }
-            val zone = ZoneId.systemDefault(); val now = java.time.ZonedDateTime.now(zone)
-            val tonight = now.toLocalDate().atTime(20, 0).atZone(zone).let { if (it.isAfter(now)) it else it.plusDays(1) }
-            val labels = arrayOf("选日期和时间", if (tonight.toLocalDate() == now.toLocalDate()) "今晚 20:00" else "明晚 20:00", "明天 09:00", "一小时后", "清除时间")
-            showDialog(AlertDialog.Builder(this).setTitle("$label · ${zone.id}").setItems(labels) { _, which ->
-                when (which) {
-                    0 -> {
-                        val initial = Instant.ofEpochMilli(times[key] ?: System.currentTimeMillis()).atZone(zone)
-                        showDialog(DatePickerDialog(this, { _, y, m, d ->
-                            if (epoch == routeGeneration && task == editorId)
-                                showDialog(TimePickerDialog(this, { _, h, min ->
-                                    choose(LocalDateTime.of(y, m + 1, d, h, min).atZone(zone).toInstant().toEpochMilli())
-                                }, initial.hour, initial.minute, android.text.format.DateFormat.is24HourFormat(this)))
-                        }, initial.year, initial.monthValue - 1, initial.dayOfMonth))
-                    }
-                    1 -> choose(tonight.toInstant().toEpochMilli())
-                    2 -> choose(now.toLocalDate().plusDays(1).atTime(9, 0).atZone(zone).toInstant().toEpochMilli())
-                    3 -> choose(now.plusHours(1).toInstant().toEpochMilli())
-                    4 -> choose(null)
-                }
-            }.setNegativeButton("取消", null).create())
+            chooseTime(label,times[key]) { at -> times[key]=at;button.text="$label：${at?.let(::editTime) ?: "未设置"}";saveEditor() }
         }
+    }
+    private fun chooseTime(label: String, current: Long?, choose: (Long?) -> Unit) {
+        val epoch=routeGeneration;val task=selected
+        fun accept(at:Long?){if(epoch==routeGeneration && task==selected)choose(at)}
+        val zone=ZoneId.systemDefault();val now=java.time.ZonedDateTime.now(zone)
+        val tonight=now.toLocalDate().atTime(20,0).atZone(zone).let { if(it.isAfter(now))it else it.plusDays(1) }
+        val labels=arrayOf("选日期和时间",if(tonight.toLocalDate()==now.toLocalDate())"今晚 20:00" else "明晚 20:00","明天 09:00","一小时后","清除时间")
+        showDialog(AlertDialog.Builder(this).setTitle("$label · ${zone.id}").setItems(labels) { _,which -> when(which){
+            0 -> {
+                val initial=Instant.ofEpochMilli(current ?: System.currentTimeMillis()).atZone(zone)
+                showDialog(DatePickerDialog(this,{ _,y,m,d ->
+                    if(epoch==routeGeneration && task==selected)showDialog(TimePickerDialog(this,{ _,h,min ->
+                        accept(LocalDateTime.of(y,m+1,d,h,min).atZone(zone).toInstant().toEpochMilli())
+                    },initial.hour,initial.minute,android.text.format.DateFormat.is24HourFormat(this)))
+                },initial.year,initial.monthValue-1,initial.dayOfMonth))
+            }
+            1 -> accept(tonight.toInstant().toEpochMilli())
+            2 -> accept(now.toLocalDate().plusDays(1).atTime(9,0).atZone(zone).toInstant().toEpochMilli())
+            3 -> accept(now.plusHours(1).toInstant().toEpochMilli())
+            4 -> accept(null)
+        }}.setNegativeButton("取消",null).create())
     }
     private fun savedMessage(task: JSONObject?): String {
         val delivery = task?.optJSONObject("delivery")
-        return listOfNotNull("已保存", if (delivery?.optString("reminders") == "pending") "提醒待恢复" else null,
+        return listOfNotNull("已保存", if (delivery?.optString("reminders") == "pending") "提醒尚未安排，请在列表点重试提醒" else null,
             if (delivery?.optString("conversation") == "pending") "对话卡待恢复" else null).joinToString(" · ")
     }
     private fun saveEditor() {
@@ -408,7 +476,7 @@ open class TasksActivity : SystemAppActivity() {
     }
     override fun onDestroy() { dialog?.dismiss(); dialog = null; super.onDestroy() }
     override fun canGoBack() = selected != null
-    override fun goBack() { selected = null; editorId = null; render(); syncBack() }
+    override fun goBack() { routeGeneration++; dialog?.dismiss(); selected = null; editorId = null; render(); syncBack() }
     override fun onSaveInstanceState(out: Bundle) {
         super.onSaveInstanceState(out); out.putString("task", selected); out.putString("view", view.name)
         val lm = list.layoutManager as LinearLayoutManager

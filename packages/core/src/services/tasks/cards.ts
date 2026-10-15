@@ -93,8 +93,9 @@ export function timeLine(task: Task, now: number, primary: string | null): strin
   const parts: string[] = [];
   if (task.remind_at !== null) parts.push(`提醒 ${when(task.remind_at, now)}`);
   if (task.due_at !== null) parts.push(`${when(task.due_at, now)}前`);
-  const obvious = task.subject === "owner" ? task.assignee === OWNER_ID : task.assignee === primary;
-  if (!obvious) parts.push(`${who(task.assignee, primary)}来做`);
+  parts.push(`负责人：${who(task.assignee, primary)}`);
+  if (task.status === "todo" && isAgentId(task.assignee)) parts.push("还未开始");
+  if (task.status === "doing") parts.push("正在处理");
   if (task.status === "waiting") parts.push("在等对方");
   return parts.join(" · ");
 }
@@ -102,7 +103,6 @@ export function timeLine(task: Task, now: number, primary: string | null): strin
 /** The conversation card of [task] as a card of [kind], drawn from the task as it is at [now]. */
 export function cardOf(task: Task, kind: CardKind, now: number, primary: string | null): { a2ui: Record<string, unknown>; text: string } {
   const line = timeLine(task, now, primary);
-  const mine = task.subject === "ash";
   const call = (word: string, body: Record<string, unknown>) => ({ call: { member: TASKS_ID, word, body: { id: task.id, ...body } } });
   const components: Record<string, unknown>[] = [];
   const text = (id: string, value: unknown, extra: Record<string, unknown> = {}) => components.push({ id, component: "Text", text: value, ...extra });
@@ -125,7 +125,7 @@ export function cardOf(task: Task, kind: CardKind, now: number, primary: string 
     return { a2ui: { components }, text: `${title}${task.result ? `：${task.result}` : ""}` };
   }
 
-  const head = kind === "remind" ? `提醒：${task.title}` : kind === "follow" ? `「${task.title}」到期了，还没完成` : `${mine ? "我来做" : "记下了"}：${task.title}`;
+  const head = kind === "remind" ? `提醒：${task.title}` : kind === "follow" ? `「${task.title}」到期了，还没完成` : `记下了：${task.title}`;
   text("title", `**${head}**`);
   children.push("title");
   if (line) { text("when", line, { variant: "caption" }); children.push("when"); }
@@ -140,7 +140,7 @@ export function cardOf(task: Task, kind: CardKind, now: number, primary: string 
     components.push({ id: "f.title", component: "TextField", label: "内容", value: { path: "/title" }, variant: "shortText" });
     components.push({ id: "f.remind", component: "DateTimeInput", label: "提醒时间", value: { path: "/remind" }, enableDate: true, enableTime: true });
     button("f.save", "保存", call("update", { title: { path: "/title" }, remind_at: { path: "/remind" } }), "primary");
-    button("drop", mine ? "不用做了" : "不用记", call("update", { status: "dropped" }), "borderless");
+    button("drop", "不做了", call("update", { status: "dropped" }), "borderless");
     row.push("edit", "drop");
     children.push("row", "form");
   } else if (kind === "remind") {
@@ -157,9 +157,14 @@ export function cardOf(task: Task, kind: CardKind, now: number, primary: string 
     row.push("done", "move", "drop");
     children.push("f.due", "row");
   }
+  if(task.delivery?.reminders === "pending") {
+    text("reminder.pending", "已保存，提醒尚未安排。请点重试提醒；此前不能保证到点提醒。", {variant:"caption"});
+    button("reminder.retry", "重试提醒", call("update", {}));
+    children.push("reminder.pending", "reminder.retry");
+  }
   components.push({ id: "row", component: "Row", gap: 8, align: "center", children: row });
   components.unshift({ id: "root", component: "Column", gap: 8, children });
-  return { a2ui: { components, data }, text: [head, line].filter(Boolean).join(" · ") };
+  return { a2ui: { components, data }, text: [head, line, task.delivery?.reminders === "pending" ? "提醒尚未安排，请重试提醒" : ""].filter(Boolean).join(" · ") };
 }
 
 /** A card's name in the conversation: `task.<id>.<kind>.<stamp>` (the kind is read back from it). */

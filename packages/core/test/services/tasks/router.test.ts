@@ -44,9 +44,11 @@ test("saved task survives clock/list and clock/set failures without reporting an
     const again=success(await w.call("add",{title:`clock ${fault}`,remind_at:w.clock.now+10000,client_id:`fault-${fault}`}));
     assert.equal(again.created,false);assert.equal(again.task.id,added.task.id);
     w.faults[fault]=false;
-    await w.call("task.sync",{},service("tasks"));
-    assert.equal(success(await w.call("get",{id:added.task.id})).task.delivery.reminders,"ready");
-    w.clock.now+=10001;w.realClock.check();
+    // No direct repair call: the real pre-existing maintenance alarm must perform recovery.
+    w.clock.now+=60_001;w.realClock.check();
+    await eventually(async()=>success(await w.call("get",{id:added.task.id})).task.delivery.reminders==="ready","the real maintenance alarm restored scheduling");
+    assert.ok(w.owner.calls.some(c=>c.msg.word==="card.update"&&!JSON.stringify(c.msg.body).includes("reminder.retry")),"the original card loses its pending reminder warning");
+    w.clock.now+=1001;w.realClock.check();
     await eventually(()=>w.shown.some(id=>id.includes(".remind.")),"real clock delivered the recovered reminder");
     assert.equal(success(await w.call("list")).tasks.length,1);
   }
@@ -83,4 +85,22 @@ test("agent responsibility requires results independently of subject, without au
   const done=success(await w.call("done",{id:added.task.id,result:"材料已核对"},agent("helper","helper-turn")));
   assert.equal(done.task.subject,"owner");assert.equal(done.task.assignee,"agent:helper");
   assert.ok(w.owner.calls.some(c=>c.msg.word==="show"&&c.msg.reply_to===source.id&&String((c.msg.body as any).id).includes(".report.")));
+});
+
+
+test("first boot with no maintenance timer gives a visible same-task retry instead of an automatic-recovery promise",async t=>{
+  for(const fault of ["list","set"] as const){
+    const w=taskHub();t.after(()=>w.realClock.stop());w.faults[fault]=true;await w.tasks.start();
+    const added=success(await w.call("add",{title:"首次启动要交材料",remind_at:w.clock.now+10_000,client_id:`first-${fault}`}));
+    assert.equal(added.task.delivery.saved,true);assert.equal(added.task.delivery.reminders,"pending");
+    const confirmation=w.owner.calls.find(c=>c.msg.word==="show")!;
+    assert.ok(String((confirmation.msg.body as any).text).includes("提醒尚未安排"));
+    assert.ok(JSON.stringify(confirmation.msg.body).includes("重试提醒"));
+    w.faults[fault]=false;
+    const retry=success(await w.call("update",{id:added.task.id})); // The card and list use this existing word.
+    assert.equal(retry.task.id,added.task.id);assert.equal(retry.task.delivery.reminders,"ready");
+    assert.equal(success(await w.call("list")).tasks.length,1);
+    w.clock.now+=10_001;w.realClock.check();
+    await eventually(()=>w.shown.some(id=>id.includes(".remind.")),"the initially unavailable clock now delivered the reminder");
+  }
 });

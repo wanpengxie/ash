@@ -16,7 +16,7 @@ object TasksModel {
         val open get() = status in setOf("todo", "doing", "waiting")
         val key get() = "task:$id"
     }
-    enum class View(val label: String) { TODAY("今天"), WAITING("等你的"), ASH("Ash 在做"), ALL("全部"), CLOSED("已完成 / 不做了") }
+    enum class View(val label: String) { TODAY("今天"), WAITING("待我处理"), ASH("Ash 自己的事"), ALL("全部"), CLOSED("已完成 / 不做了") }
     data class State(val tasks: List<Task> = emptyList(), val loaded: Boolean = false, val problem: String = "", val generation: Long = 0) {
         fun request() = copy(generation = generation + 1)
         fun success(token: Long, items: List<Task>) = if (token == generation) copy(tasks = items.toList(), loaded = true, problem = "") else this

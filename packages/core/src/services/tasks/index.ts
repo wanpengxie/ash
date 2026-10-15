@@ -215,6 +215,8 @@ export class TasksService implements Member {
   }
   private async sync():Promise<void>{
     const timersReady=await this.syncTimers();
+    // Know whether the reminder was actually arranged before showing a confirmation card.
+    await this.refreshDelivery(timersReady);
     const primary=await this.primary();
     for(const n of this.db.prepare("SELECT * FROM task_notices WHERE sent=0 ORDER BY rowid LIMIT 100").all() as Notice[]){
       const task=this.get(n.task_id);
@@ -226,7 +228,7 @@ export class TasksService implements Member {
         r=await this.send(OWNER_ID,"show",{id:n.id,...cardOf(task,"noted",this.now(),primary)},task.source?.message);
         if(!r.ok&&r.error.code==="conflict")r={ok:true};
       }else if(n.kind!=="noted"&&isAgentId(task.assignee)){
-        r=await this.send(task.assignee,"wake",{lane:"back",reason:n.kind==="remind"?"task_reminder":"task_overdue",context:{task,source:task.source,instruction:"Use service:tasks/done with a result when finished; if blocked, update status waiting and note the reason. Report in the source conversation."}});
+        r=await this.send(task.assignee,"wake",{lane:"back",reason:n.kind==="remind"?"task_reminder":"task_overdue",context:{task,source:task.source,instruction:"Use service:tasks/done with a result when finished; if blocked, update status waiting and note the reason. The hub posts the result card to the source conversation; do not duplicate it."}});
       }else{
         const card=cardOf(task,n.kind,this.now(),primary);
         r=await this.send(OWNER_ID,"show",{id:n.id,...card,kind:n.kind==="noted"?"reply":"due"},task.source?.message);
@@ -245,6 +247,9 @@ export class TasksService implements Member {
       const r=await this.send(OWNER_ID,"card.update",{id:n.id,...cardOf(task,n.kind==="report"?"noted":n.kind,this.now(),primary)});
       if(r.ok || r.error.code==="not_found")this.mark(n);
     }
+    await this.refreshDelivery(timersReady);
+  }
+  private async refreshDelivery(timersReady:boolean):Promise<void>{
     for(const row of this.db.prepare("SELECT data,reminder_sent,follow_sent FROM tasks").all() as Stored[]){
       const task=JSON.parse(row.data) as Task;
       const needsClock=isOpen(task) && ((task.remind_at!==null && row.reminder_sent!==task.remind_at) ||
@@ -252,8 +257,10 @@ export class TasksService implements Member {
       const pending=this.db.prepare("SELECT 1 FROM task_notices WHERE task_id=? AND sent!=1 LIMIT 1").get(task.id);
       const delivery:NonNullable<Task["delivery"]>={saved:true,reminders:needsClock?(timersReady?"ready":"pending"):"none",conversation:pending?"pending":"ready"};
       if(JSON.stringify(task.delivery)!==JSON.stringify(delivery)){
+        const reminderChanged=task.delivery?.reminders!==delivery.reminders;
         task.delivery=delivery;
         this.db.prepare("UPDATE tasks SET data=? WHERE id=?").run(JSON.stringify(task),task.id);
+        if(reminderChanged)this.db.prepare("UPDATE task_notices SET sent=2 WHERE task_id=? AND sent=1").run(task.id);
         await this.event(task,"updated",TASKS_ID);
       }
     }
