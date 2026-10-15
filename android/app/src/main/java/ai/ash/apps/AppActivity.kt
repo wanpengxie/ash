@@ -359,6 +359,10 @@ class AppActivity : Activity() {
             main.post { startActivity(Intent(this@AppActivity, ai.ash.ui.ConsoleActivity::class.java).also { i -> part?.let { i.putExtra(ai.ash.ui.ConsoleActivity.EXTRA_PART, it) } }) }
         }
         override fun openHome(section: String, arg: String?) {
+            if (section == "device") {
+                main.post { startActivity(ai.ash.sysapps.SystemApps.intent(this@AppActivity, "devices", arg)) }
+                return
+            }
             main.post { startActivity(Intent(this@AppActivity, ai.ash.ui.HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra(ai.ash.ui.HomeActivity.EXTRA_HOME_PAGE, section).also { i -> arg?.let { i.putExtra(ai.ash.ui.HomeActivity.EXTRA_HOME_ARG, it) } }) }
         }

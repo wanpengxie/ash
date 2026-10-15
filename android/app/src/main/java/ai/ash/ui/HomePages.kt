@@ -64,6 +64,11 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
     /** Opens the home page (of the agent [agent], or of her), and [section] on top of it ([arg]: what that page was asked about). */
     fun openPage(section: String?, agent: String?, arg: String? = null) {
         if (section == "apps") { apps(); return }
+        // Old app links/notifications still open the device app; no device page remains in the shell.
+        if (section in setOf("device", "hands", "connect")) {
+            activity.startActivity(ai.ash.sysapps.SystemApps.intent(activity, "devices", if (section == "connect") "connect" else arg))
+            return
+        }
         hideIme()
         disposeAll()
         this.agent = agent?.takeIf { Regex("^agent:[a-z][a-z0-9_-]*$").matches(it) && it != port.primary }
@@ -129,9 +134,6 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
             "memory" -> HmMemory(e, arg)
             "identity" -> HmIdentity(e, arg)
             "promises" -> HmPromises(e, arg)
-            "hands" -> HmHands(e, arg)
-            "device" -> HmDevice(e, arg)
-            "connect" -> HmConnect(e, arg)
             "browser" -> HmBrowser(e, arg)
             "backstage" -> HmBackstage(e, arg)
             "keys" -> HmKeys(e, arg)

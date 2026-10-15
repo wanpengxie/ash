@@ -130,4 +130,29 @@ class DevicesModelTest {
         a.failed("conflict", "已撤销，先恢复")
         assertEquals(Action.Phase.FAILED to "已撤销，先恢复", a.phase to a.message)
     }
+
+    @Test fun restoringAPairingKeepsOnlyItsIdAndAcceptsOnlyItsOwnCommand() {
+        val f = PairFlow()
+        f.resume("p1")
+        assertEquals(PairFlow.Step.Waiting("p1", "", 0), f.step)
+        assertFalse(f.expiredBy(now))
+        f.restoreCommand("other", "secret", now + 1000)
+        assertEquals("", (f.step as PairFlow.Step.Waiting).command)
+        f.restoreCommand("p1", "one-time command", now + 1000)
+        assertEquals("one-time command", (f.step as PairFlow.Step.Waiting).command)
+        f.changed(JSONObject().put("pair_id", "p1").put("state", "requested").put("name", "Mac"))
+        f.restoreCommand("p1", "late command", now + 2000)
+        assertEquals(PairFlow.Step.Asking("p1", "Mac"), f.step)
+    }
+
+    @Test fun historicalChangesDoNotOverwriteNewerEventsAndOtherMembersCannotPoseAsDevices() {
+        val s = DevicesState()
+        fun msg(at: Long, by: String) = JSONObject().put("kind", "event").put("to", "service:devices")
+            .put("word", "device.changed").put("ts", at)
+            .put("body", JSONObject().put("device", "device:a").put("change", "renamed").put("by", by))
+        s.heard(msg(now, "person:owner"))
+        s.heard(msg(now - 1000, "agent:main"))
+        s.heard(msg(now + 1000, "agent:other").put("to", "service:other"))
+        assertEquals("person:owner", s.changes["device:a"]!!.by)
+    }
 }

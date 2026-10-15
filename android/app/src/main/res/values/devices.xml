@@ -17,7 +17,6 @@
     <string name="dev_working">正在处理…</string>
     <string name="dev_retry">没成功，请刷新状态后重试。%1$s</string>
     <string name="dev_unknown">没收到结果。先刷新确认是否生效，再决定要不要重试。</string>
-    <string name="dev_reconcile">结果未确认，请先刷新状态</string>
     <string name="dev_relay_help">让 Ash 看看中转站</string>
     <string name="dev_relay_request">帮我看看设备中转站的连接情况</string>
     <string name="dev_lend">借出能力</string>
@@ -28,7 +27,6 @@
     <string name="dev_agents_help">本地帮手可使用这台电脑的完整权限</string>
     <string name="dev_full">完全放开审批</string>
     <string name="dev_full_help">关闭时按规则和影响审批；开启后不再逐次询问</string>
-    <string name="dev_access_busy">上一项访问范围正在保存，请稍等</string>
     <string name="dev_update">现在升级</string>
     <string name="dev_diagnose">连接诊断</string>
     <string name="dev_revoke">撤销设备</string>
@@ -39,7 +37,6 @@
     <string name="dev_confirm">确认撤销</string>
     <string name="dev_diagnosis">%1$s\n中转站：%2$s\n连接数：%3$d\n%4$s</string>
     <string name="dev_no_findings">没有发现问题</string>
-    <string name="dev_raw_details">诊断详情：%1$s</string>
     <string name="dev_rename_external">设备名称已由别处更改，当前草稿仍保留</string>
     <string name="dev_computer">电脑</string>
     <string name="dev_server">服务器</string>
@@ -57,9 +54,9 @@
     <string name="dev_restart">重新开始</string>
     <string name="dev_open_device">查看设备</string>
     <string name="dev_pair_restore">正在恢复配对进度…</string>
-    <string name="dev_pair_code_lost">命令只在本次界面中显示。刷新可重新取回尚未过期的命令。</string>
-    <string name="dev_pair_processed">请求已处理，请刷新状态。</string>
     <string name="dev_unavailable">中转站不可用，请先检查首屏顶部的连接状态。</string>
     <string name="dev_busy_rebuild">上一次操作的结果待确认，请刷新状态后检查。</string>
     <string name="dev_phone_apps">手机与应用</string>
+    <string name="dev_agent_unavailable">暂时没找到 Ash，请刷新后重试。</string>
+    <string name="dev_told">已告诉 Ash。</string>
 </resources>

@@ -27,7 +27,7 @@ import org.json.JSONObject
 
 /** Device app, APPS-R1 §1; MOBILE-ARCH §2–3, §5–6. All business actions use the hub. */
 class DevicesActivity : SystemAppActivity() {
-    private val model = DevicesState()
+    private lateinit var model: DevicesState
     private val pair = PairFlow()
     private lateinit var list: RecyclerView
     private lateinit var rows: KeyedRowsAdapter
@@ -39,8 +39,15 @@ class DevicesActivity : SystemAppActivity() {
     private val reading = HashSet<Refresh>()
     private val dirty = HashSet<Refresh>()
     private var reconcileDetail: Detail? = null
+    private var pairUncertain = false
+    private var pairDraft: String? = null
+    private var pairingKind = "computer"
     private var readingPair = false
     private var pairDirty = false
+    private var manualPairRead = false
+    private val readErrors = HashMap<Refresh, String>()
+    private var restoreKey: String? = null
+    private var restoreOffset = 0
     private var primary: String? = null
     private var note = ""
     private val handler = Handler(Looper.getMainLooper())
@@ -50,8 +57,13 @@ class DevicesActivity : SystemAppActivity() {
     private val prefs by lazy { getSharedPreferences("devices.ui", MODE_PRIVATE) }
 
     override fun build(saved: Bundle?) {
+        model = lastNonConfigurationInstance as? DevicesState ?: DevicesState()
         route = saved?.getString("route") ?: routeOf(intent.getStringExtra(EXTRA_ARG))
+        pairUncertain = saved?.getBoolean("pairUncertain") ?: false
+        pairDraft = saved?.getString("pairDraft")
+        pairingKind = saved?.getString("pairKind") ?: "computer"
         model.showRevoked = saved?.getBoolean("revoked") ?: false
+        restoreKey = saved?.getString("anchor"); restoreOffset = saved?.getInt("offset") ?: 0
         (saved?.getString("pair") ?: route.takeIf { it.startsWith("p/") }?.removePrefix("p/"))?.let(pair::resume)
         list = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@DevicesActivity)
@@ -75,6 +87,7 @@ class DevicesActivity : SystemAppActivity() {
         handler.post(clock)
     }
     override fun onStop() { active = false; handler.removeCallbacks(clock); super.onStop() }
+    override fun onRetainNonConfigurationInstance(): Any = model
     override fun onConnectionChanged(connected: Boolean) {
         if (connected && active) { Refresh.entries.forEach(::read); readPair() }
     }
@@ -91,7 +104,16 @@ class DevicesActivity : SystemAppActivity() {
     override fun goBack() { showRoute("") }
     override fun onSaveInstanceState(out: Bundle) {
         out.putString("route", route); out.putBoolean("revoked", model.showRevoked)
+        out.putBoolean("pairUncertain", pairUncertain)
+        out.putString("pairDraft", pairing?.accessDraft() ?: pairDraft)
+        out.putString("pairKind", pairingKind)
         pair.pairId?.let { out.putString("pair", it) }
+        val lm = list.layoutManager as LinearLayoutManager
+        val position = lm.findFirstVisibleItemPosition()
+        rows.currentList.getOrNull(position)?.let { row ->
+            out.putString("anchor", row.key)
+            lm.findViewByPosition(position)?.let { out.putInt("offset", lm.getDecoratedTop(it) - list.paddingTop) }
+        }
         // Neither the install command nor its one-time secret enters saved state or preferences.
         super.onSaveInstanceState(out)
     }
@@ -113,14 +135,14 @@ class DevicesActivity : SystemAppActivity() {
         routeGeneration++; route = next; detail = null; pairing = null; note = ""
         currentFocus?.clearFocus()
         content.removeAllViews(); actions.removeAllViews()
-        actions.addView(button(R.string.dev_refresh) {
+        actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_refresh)!!, getString(R.string.dev_refresh)) {
             Refresh.entries.forEach(::read); readPair(manual = true)
             reconcileDetail = detail
         })
         when {
             route.isEmpty() -> {
                 title.text = getString(R.string.dev_title)
-                actions.addView(button(R.string.dev_connect) { pair.reset(); showRoute("connect") })
+                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_plus)!!, getString(R.string.dev_connect)) { pair.reset(); pairUncertain = false; pairDraft = null; showRoute("connect") })
                 (list.parent as? android.view.ViewGroup)?.removeView(list)
                 content.addView(list)
             }
@@ -159,8 +181,8 @@ class DevicesActivity : SystemAppActivity() {
                 Refresh.RELAY -> data?.takeIf { it.has("configured") && it.has("connected") }
             }
             when (what) { Refresh.DEVICES -> model.devicesRead(gen, valid); Refresh.RELAY -> model.relayRead(gen, valid); Refresh.PAIRS -> model.requestsRead(gen, valid) }
-            if (valid == null) note = error(failure) else if (failure == null) {
-                note = ""
+            if (valid == null) readErrors[what] = error(failure) else if (failure == null) {
+                readErrors.remove(what)
                 if (what == Refresh.DEVICES && reconcileDetail === detail) { detail?.reconciled(); reconcileDetail = null }
             }
             if (active) { render(); if (dirty.remove(what)) read(what) }
@@ -168,6 +190,7 @@ class DevicesActivity : SystemAppActivity() {
     }
 
     private fun readPair(manual: Boolean = false) {
+        if (manual) manualPairRead = true
         val id = pair.pairId ?: return
         if (!active) return
         if (readingPair) { pairDirty = true; return }
@@ -177,7 +200,8 @@ class DevicesActivity : SystemAppActivity() {
             if (pair.pairId != id) { if (active) readPair(); return@call }
             if (data != null) {
                 pair.changed(data)
-                if (manual) pairing?.reconciled()
+                if (data.optString("state") != "requested") pairUncertain = false
+                if (manualPairRead) { pairing?.reconciled(); manualPairRead = false }
                 val waiting = pair.step as? PairFlow.Step.Waiting
                 if (data.optString("state") == "waiting" && waiting?.command.isNullOrEmpty()) readCode(id)
                 pairing?.result?.text = ""
@@ -199,19 +223,28 @@ class DevicesActivity : SystemAppActivity() {
         if (!active) return
         if (route.isEmpty()) {
             val snapshot = model.rows(System.currentTimeMillis())
-            rows.submitList(snapshot.map { row -> ChatRow(row.key, row.toString()) { listRow(row) } } +
-                if (note.isEmpty()) emptyList() else listOf(ChatRow("read-error", note) { text(note) }))
+            val errors = readErrors.filterKeys { it != Refresh.DEVICES }.map { (key, message) -> ChatRow("error/$key", message) { text(message) } }
+            val feedback = if (note.isEmpty()) emptyList() else listOf(ChatRow("feedback", note) { text(note) })
+            rows.submitList(snapshot.map { row -> ChatRow(row.key, row.toString() + if (row is DevicesState.Row.Status) primary.orEmpty() else "") { listRow(row) } } + errors + feedback) {
+                restoreKey?.let { key ->
+                    val position = rows.currentList.indexOfFirst { it.key == key }
+                    if (position >= 0) { (list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, restoreOffset); restoreKey = null }
+                }
+            }
         } else { detail?.bind(); pairing?.bind() }
     }
     private fun listRow(row: DevicesState.Row): View = when (row) {
         is DevicesState.Row.Status -> section(row.text).apply {
             addView(button(R.string.dev_relay_help) {
-                call("service:agents", "tell", JSONObject().put("agent", primary ?: "agent:main").put("text", getString(R.string.dev_relay_request))) { _, failure ->
-                    note = if (failure == null) getString(R.string.dev_saved) else error(failure); render()
+                val agent = primary
+                if (agent == null) { note = getString(R.string.dev_agent_unavailable); render() }
+                else call("service:agents", "tell", JSONObject().put("agent", agent).put("text", getString(R.string.dev_relay_request))) { _, failure ->
+                    note = if (failure == null) getString(R.string.dev_told) else error(failure); render()
                 }
-            })
+            }.apply { isEnabled = primary != null })
         }
         is DevicesState.Row.Request -> AshUi.row(this, row.pair.name.ifEmpty { DevicesText.kind(row.pair.kind) }, getString(R.string.dev_requests), onClick = {
+            if (pair.pairId != row.pair.pairId) { pairDraft = null; pairUncertain = false }
             pair.resume(row.pair.pairId); showRoute("p/${row.pair.pairId}"); readPair()
         })
         is DevicesState.Row.Item -> column().apply {
@@ -237,17 +270,19 @@ class DevicesActivity : SystemAppActivity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
             isSaveEnabled = false
         }
+        private var restoring = true
         private var nameLoaded = false
         private var nameDirty = false
         private var settingName = false
         private var sourceName: String? = null
+        private var awaitingName: String? = null
         private val nameNote = text("")
         private val saveName: TextView = button(R.string.dev_save_name) {
             val next = name.text.toString().trim()
-            if (next.isEmpty()) { nameNote.text = getString(R.string.dev_name_empty); return@button }
+            if (next.isEmpty()) { nameNote.text = getString(R.string.dev_name_empty); nameNote.visibility = View.VISIBLE; return@button }
             run("rename", saveNameButton(), nameNote, JSONObject().put("name", next)) {
                 // An answer to the previous name never clears a newer draft.
-                if (name.text.toString().trim() == next) { nameDirty = false; keepDraft(null) }
+                if (name.text.toString().trim() == next) { awaitingName = next; keepDraft(null) }
             }
         }
         private fun saveNameButton() = saveName
@@ -271,9 +306,6 @@ class DevicesActivity : SystemAppActivity() {
         private val pending = HashSet<String>()
         private val unknown = HashSet<String>()
         init {
-            listOf("rename", "access_set", "update", "revoke", "restore").forEach { word ->
-                if (prefs.getBoolean("pending/$id/$word", false)) { unknown.add(word); status.text = getString(R.string.dev_busy_rebuild) }
-            }
             root.addView(header); root.addView(status); root.addView(change); root.addView(abilities)
             root.addView(name); root.addView(saveName); root.addView(nameNote); root.addView(access.root)
             root.addView(update); root.addView(updateNote); root.addView(diagnose); root.addView(diagnosis)
@@ -288,7 +320,13 @@ class DevicesActivity : SystemAppActivity() {
             // Local UI draft storage, not a device business capability. Disk reads are off the UI thread.
             UiIo.disk {
                 val draft = prefs.getString("name/$id", null)
-                UiIo.ui { if (detail === this && !nameDirty && draft != null) { setName(draft); nameDirty = true } }
+                val unconfirmed = listOf("rename", "access_set", "update", "revoke", "restore").filter { prefs.getBoolean("pending/$id/$it", false) }
+                UiIo.ui {
+                    if (!isDestroyed && detail === this) {
+                        if (!nameDirty && draft != null) { setName(draft); nameDirty = true }
+                        unknown.addAll(unconfirmed); restoring = false; bind()
+                    }
+                }
             }
         }
         private fun keepDraft(value: String?) { UiIo.disk { prefs.edit().apply { if (value == null) remove("name/$id") else putString("name/$id", value) }.apply() } }
@@ -297,9 +335,10 @@ class DevicesActivity : SystemAppActivity() {
             val d = model.device(id)
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; return }
             header.text = d.name
-            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), DevicesText.version(d, model.release), note.takeIf { it.isNotEmpty() }).joinToString("\n")
+            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), DevicesText.version(d, model.release), readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).joinToString("\n")
             change.text = model.changes[id]?.let { DevicesText.change(it, primary, System.currentTimeMillis()) }.orEmpty()
             abilities.text = getString(R.string.dev_capabilities, DevicesText.abilities(d.capabilities).joinToString("、").ifEmpty { getString(R.string.dev_none) })
+            if (awaitingName == d.name && name.text.toString().trim() == awaitingName) { nameDirty = false; awaitingName = null }
             if (!nameLoaded || (!nameDirty && !name.hasFocus() && name.text.toString() != d.name)) setName(d.name)
             else if (nameDirty && sourceName != null && sourceName != d.name) nameNote.text = getString(R.string.dev_rename_external)
             sourceName = d.name
@@ -312,14 +351,16 @@ class DevicesActivity : SystemAppActivity() {
             revoke.text = getString(if (d.revoked) R.string.dev_restore else R.string.dev_revoke)
             revoke.isEnabled = "revoke" !in pending && "restore" !in pending && "revoke" !in unknown && "restore" !in unknown
             diagnose.isEnabled = "diagnose" !in pending
+            listOf(nameNote, change, updateNote, diagnosis, revokeNote).forEach { it.visibility = visible(it.text.isNotEmpty()) }
+            if (restoring) { name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; revoke.isEnabled = false }
         }
         private fun run(word: String, control: View, message: TextView, args: JSONObject = JSONObject(), done: () -> Unit = {}) {
             if (word in unknown || !pending.add(word)) return
             control.isEnabled = false; message.text = getString(R.string.dev_working)
             prefs.edit().putBoolean("pending/$id/$word", true).apply()
             call("service:devices", word, args.put("device", id)) { _, failure ->
-                pending.remove(word); prefs.edit().remove("pending/$id/$word").apply()
-                if (isUnknown(failure)) unknown.add(word)
+                pending.remove(word)
+                if (isUnknown(failure)) unknown.add(word) else prefs.edit().remove("pending/$id/$word").apply()
                 if (failure == null) done()
                 message.text = if (failure == null) getString(R.string.dev_saved) else error(failure)
                 if (detail === this && active) { bind(); read(Refresh.DEVICES) }
@@ -357,14 +398,22 @@ class DevicesActivity : SystemAppActivity() {
         private val switches = values.mapValues { (key, label) -> AshUi.AshSwitch(this@DevicesActivity).apply {
             contentDescription = getString(label)
             set(key == "lend")
-            onChange = { on -> changed?.invoke(key, if (key == "tier") (if (on) "full" else "ask") else on, this, messages.getValue(key)) }
+            onChange = { on ->
+                if (changed != null) messages.getValue(key).visibility = View.VISIBLE
+                changed?.invoke(key, if (key == "tier") (if (on) "full" else "ask") else on, this, messages.getValue(key))
+            }
         } }
         private val messages = values.mapValues { text("") }
         init {
             val helps = listOf(R.string.dev_lend_help, R.string.dev_body_help, R.string.dev_agents_help, R.string.dev_full_help)
             values.entries.forEachIndexed { i, (key, label) ->
-                root.addView(AshUi.row(this@DevicesActivity, getString(label), getString(helps[i]), trailing = switches.getValue(key)))
-                root.addView(messages.getValue(key))
+                root.addView(AshUi.hstack(this@DevicesActivity, AshTokens.Space.xs).apply {
+                    addView(AshUi.vstack(this@DevicesActivity).apply {
+                        addView(text(getString(label), true)); addView(text(getString(helps[i])))
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(switches.getValue(key))
+                })
+                root.addView(messages.getValue(key).apply { visibility = View.GONE })
             }
         }
         fun bind(d: Device) {
@@ -372,6 +421,10 @@ class DevicesActivity : SystemAppActivity() {
             switches.forEach { (key, switch) -> switch.set(actual.getValue(key)) }
         }
         fun enabled(enabled: Boolean) { switches.values.forEach { it.isEnabled = enabled; it.alpha = if (enabled) 1f else 0.4f } }
+        fun restore(value: String?) {
+            val data = value?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return
+            switches.forEach { (key, switch) -> switch.set(if (key == "tier") data.optString(key) == "full" else data.optBoolean(key)) }
+        }
         fun args() = JSONObject().put("tier", if (switches.getValue("tier").checked) "full" else "ask").also { o -> listOf("lend", "body", "local_agents").forEach { o.put(it, switches.getValue(it).checked) } }
     }
 
@@ -380,9 +433,8 @@ class DevicesActivity : SystemAppActivity() {
         val result = text("")
         private val explanation = text(getString(R.string.dev_pair_intro))
         private val command = text("").apply { setTextIsSelectable(true); isSaveEnabled = false }
-        private var kind = "computer"
-        private val computer = button(R.string.dev_computer) { kind = "computer"; kindState() }
-        private val server = button(R.string.dev_server) { kind = "server"; kindState() }
+        private val computer = button(R.string.dev_computer) { pairingKind = "computer"; kindState() }
+        private val server = button(R.string.dev_server) { pairingKind = "server"; kindState() }
         private val issue = button(R.string.dev_issue) { issue() }
         private val copy: TextView = button(R.string.dev_copy) {
             val waiting = pair.step as? PairFlow.Step.Waiting ?: return@button
@@ -396,15 +448,15 @@ class DevicesActivity : SystemAppActivity() {
         private val permissions = AccessForm()
         private val approve = button(R.string.dev_approve) { decide(true) }
         private val reject = button(R.string.dev_reject) { decide(false) }
-        private val restart = button(R.string.dev_restart) { pair.reset(); result.text = ""; bind() }
+        private val restart = button(R.string.dev_restart) { pair.reset(); pairUncertain = false; result.text = ""; bind() }
         private val open = button(R.string.dev_open_device) {
             val id = (pair.step as? PairFlow.Step.Connected)?.device ?: (pair.step as? PairFlow.Step.Approved)?.device
             if (!id.isNullOrEmpty()) showRoute("d/$id")
         }
         private var deciding = false
-        private var uncertain = false
-        init { listOf(computer, server, explanation, issue, command, copy, permissions.root, approve, reject, result, restart, open).forEach(root::addView); kindState() }
-        private fun kindState() { computer.isSelected = kind == "computer"; server.isSelected = kind == "server"; computer.alpha = if (computer.isSelected) 1f else 0.5f; server.alpha = if (server.isSelected) 1f else 0.5f }
+        init { permissions.restore(pairDraft); listOf(computer, server, explanation, issue, command, copy, permissions.root, approve, reject, result, restart, open).forEach(root::addView); kindState() }
+        fun accessDraft() = permissions.args().toString()
+        private fun kindState() { computer.isSelected = pairingKind == "computer"; server.isSelected = pairingKind == "server"; computer.alpha = if (computer.isSelected) 1f else 0.5f; server.alpha = if (server.isSelected) 1f else 0.5f }
         fun bind() {
             val s = pair.step
             val idle = s is PairFlow.Step.Idle || s is PairFlow.Step.Ended
@@ -417,10 +469,13 @@ class DevicesActivity : SystemAppActivity() {
             val asking = s is PairFlow.Step.Asking || s is PairFlow.Step.Approving
             permissions.root.visibility = visible(asking)
             approve.visibility = visible(asking); reject.visibility = visible(asking)
-            approve.isEnabled = !deciding && !uncertain && s is PairFlow.Step.Asking
+            approve.isEnabled = !deciding && !pairUncertain && s is PairFlow.Step.Asking
             reject.isEnabled = approve.isEnabled
             restart.visibility = visible(s is PairFlow.Step.Ended || waiting != null && pair.expiredBy(System.currentTimeMillis()) || s is PairFlow.Step.Connected)
             open.visibility = visible(s is PairFlow.Step.Connected && s.device != null)
+            if (deciding) result.text = getString(R.string.dev_working)
+            else if (pairUncertain) result.text = getString(R.string.dev_unknown)
+            result.visibility = visible(result.text.isNotEmpty())
             explanation.text = when (s) {
                 is PairFlow.Step.Idle -> getString(R.string.dev_pair_intro)
                 is PairFlow.Step.Issuing -> getString(R.string.dev_working)
@@ -442,7 +497,7 @@ class DevicesActivity : SystemAppActivity() {
             if (!pair.start()) return
             result.text = ""; bind()
             val generation = routeGeneration
-            call("service:devices", "pair_start", JSONObject().put("kind", kind)) { data, failure ->
+            call("service:devices", "pair_start", JSONObject().put("kind", pairingKind)) { data, failure ->
                 if (pairing !== this || routeGeneration != generation) return@call
                 pair.issued(data, failure?.code, failure?.message)
                 if (active) render()
@@ -451,21 +506,21 @@ class DevicesActivity : SystemAppActivity() {
         }
         private fun decide(allow: Boolean) {
             val asking = pair.step as? PairFlow.Step.Asking ?: return
-            if (deciding || uncertain) return
-            deciding = true
+            if (deciding || pairUncertain) return
+            deciding = true; pairUncertain = true
             if (allow) pair.approve()
             bind()
             val args = if (allow) permissions.args() else JSONObject()
             call("service:devices", if (allow) "pair_approve" else "pair_reject", args.put("pair_id", asking.pairId)) { data, failure ->
                 if (pair.pairId != asking.pairId) return@call
-                deciding = false; uncertain = isUnknown(failure)
+                deciding = false; pairUncertain = isUnknown(failure)
                 if (allow) pair.approveAnswered(data, failure?.code, failure?.message)
                 else if (data != null) pair.changed(data)
                 if (pairing === this) { result.text = if (failure == null) "" else error(failure); bind() }
                 readPair(); read(Refresh.DEVICES); read(Refresh.PAIRS)
             }
         }
-        fun reconciled() { uncertain = false; bind() }
+        fun reconciled() { pairUncertain = false; result.text = ""; bind() }
     }
 
     private fun readChanges(id: String) {

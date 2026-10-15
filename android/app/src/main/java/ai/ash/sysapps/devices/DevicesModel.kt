@@ -184,7 +184,7 @@ object DevicesJson {
 
     /** A recorded `device.changed` message → the device and the change. */
     fun change(m: JSONObject): Pair<String, Change>? {
-        if (m.optString("word") != "device.changed") return null
+        if (m.optString("kind") != "event" || m.optString("to") != "service:devices" || m.optString("word") != "device.changed") return null
         val b = m.optJSONObject("body") ?: return null
         val device = b.str("device") ?: return null
         return device to Change(b.str("change") ?: return null, b.str("by") ?: "", b.str("version"), m.optLong("ts", 0))
