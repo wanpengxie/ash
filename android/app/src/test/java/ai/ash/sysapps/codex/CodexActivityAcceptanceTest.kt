@@ -10,6 +10,7 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
@@ -165,7 +166,9 @@ class CodexActivityAcceptanceTest {
     @Test fun existingWorkSendApprovalAndResultPreserveTheActualChineseEditor() {
         assertTrue(texts().any { it.contains("工作 Mac") && it.contains("修复结算页") })
         input.setText("先跑退款回归，再提交"); focusInput(); input.setSelection(4)
-        BaseInputConnection(input, true).setComposingRegion(1, 4)
+        assertTrue(input.onCreateInputConnection(EditorInfo())!!.setComposingRegion(1, 4))
+        assertEquals("actual editor composing precondition", 1, BaseInputConnection.getComposingSpanStart(input.text))
+        assertEquals(4, BaseInputConnection.getComposingSpanEnd(input.text))
         val composing = BaseInputConnection.getComposingSpanStart(input.text)
         assertTrue("editor focus precondition", input.hasFocus())
         assertSame("window focus precondition", input, controller.get().currentFocus)
@@ -244,12 +247,24 @@ class CodexActivityAcceptanceTest {
         lm.scrollToPositionWithOffset(9, -21); layout()
         val before = ai.ash.ui.Anchor.of(list, lm, rows)
         assertNotNull("reading older work", before)
-        controller.newIntent(intent(mini, "t2")); waitFor("other work") { texts().contains("整理跑步计划") }
+        controller.newIntent(intent(mini, "t2"))
+        val pane = CodexActivity::class.java.getDeclaredField("pane").apply { isAccessible = true }.get(controller.get())
+        val remembered = CodexPane::class.java.getDeclaredField("readingPlaces").apply { isAccessible = true }.get(pane) as Map<*, *>
+        assertEquals("leaving stores the measured anchor", before, remembered[ai.ash.ui.Drafts.codex(mac, "t1")])
+        waitFor("other work") { texts().contains("整理跑步计划") }
         controller.newIntent(intent(mac, "t1"))
+        val pendingPlace = CodexPane::class.java.getDeclaredField("place").apply { isAccessible = true }
+        assertEquals("entering selects the original anchor", before, pendingPlace.get(pane))
+        val traces = ArrayList<String>()
         try {
-            waitFor("same visible work restored") { ai.ash.ui.Anchor.of(list, lm, rows) == before }
+            waitFor("same visible work restored") {
+                val actual = ai.ash.ui.Anchor.of(list, lm, rows)
+                val trace = "place=${pendingPlace.get(pane)} actual=$actual height=${list.height}"
+                if (traces.lastOrNull() != trace) traces += trace
+                actual == before
+            }
         } catch (e: IllegalStateException) {
-            throw AssertionError("expected reading place=$before; actual=${ai.ash.ui.Anchor.of(list, lm, rows)}", e)
+            throw AssertionError("expected reading place=$before; actual=${ai.ash.ui.Anchor.of(list, lm, rows)}; transitions=$traces", e)
         }
         capture("returned-to-reading-place")
     }
@@ -263,7 +278,9 @@ class CodexActivityAcceptanceTest {
         val second = requests.last { it.optString("word") == "x.codex.send" }.getJSONObject("body").getString("client_id")
         assertEquals(first, second); assertEquals(1, pending().size)
         input.setText("拼音还在输入"); focusInput(); input.setSelection(2)
-        BaseInputConnection(input, true).setComposingRegion(0, 2)
+        assertTrue(input.onCreateInputConnection(EditorInfo())!!.setComposingRegion(0, 2))
+        assertEquals("actual editor composing precondition", 0, BaseInputConnection.getComposingSpanStart(input.text))
+        assertEquals(2, BaseInputConnection.getComposingSpanEnd(input.text))
         val bounds = views().filterIsInstance<RecyclerView>().map { listOf(it.top, it.height) }
         conn.close(1000)
         waitFor("offline banner") { texts().contains("暂时连不上 Ash，连上后会自动恢复") && !link.client.channelOpen("human") }
