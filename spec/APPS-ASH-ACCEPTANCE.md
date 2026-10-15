@@ -1,5 +1,7 @@
 # Ash 应用产品整改证据（10-16）
 
+最新范围：按总控确认，已收敛送达机制。下文旧轮次的专用通知重试证据仅作施工历史，不再是产品要求或签收门槛；当前行为见文末「批注最小简化」。
+
 涉及 MOBILE-ARCH §2.1–2.3、§3.1–3.4、§6.1–6.2、§11.1、§13.1–13.2。保留原交付，未提前实现二期主线。
 
 ## 她记错我 → 我纠正 → 看她是否改正并回应
@@ -61,3 +63,14 @@
 首屏另增真实 Activity 用例 AshActivityTest.homeShowsCurrentWorkAndTheSharedPromisesOnAPhone，截图 ash-home-now-and-promises.png。沿用同一 TestActivity 和数据端口：history/current 返回正在整理下周行程，service:tasks/list 返回 subject:ash 的进行中和等待确认两件承诺；额外 owner 待办不应出现。不新增展示 Model 或业务状态。测试断言实际手机 View 中现在、进行中承诺与等待确认承诺均在首屏可见，并断言读取参数 subject:ash/status:all、没有 done 调用。仍是代表性 fixture 的实际 Activity 绘制，不冒充实际账户当前工作或真实模型自动行为。
 
 保持统一 360×800dp / xxhdpi、Native Graphics 和截图非空检查。此次只增测试入口和文档，未启动 Gradle；入口与首屏图待下一时段运行。非阻断打磨记录：独立动作卡留白较多，后续可收紧，当前不因此变更框架。
+
+
+## 批注最小简化
+
+功能收敛，不改样式。服务移除 persona_note_delivery 的建表与读写；旧表原地不删。新批注先入 persona_notes，再尝试一次普通 owner_note 唤醒；唤醒失败不推翻保存结果，不补发。已有 id 校验内容和来源后只返回 id，不重建批注、不重复唤醒。原 note.reply 和对象关联保持。
+
+Activity 删除 retryNotice、lastNoteId、跨页送达追踪及持久 notice-status/notice-payload/last-note-id 读写，删除专用通知重试按钮与送达文案；不清旧偏好，不新增兼容或迁移。普通编辑草稿、operation id 保留。反馈分别说记忆是否已保存、批注是否已保存；未知结果保留草稿，不把已通知当作已理解。回应直接读取原批注的实际 reply。
+
+删去专用送达重试验收，保留真实服务的会议纠正→记忆/日记→原批注回应；主 agent 不可用时也要保存批注，同 id 只防重复保存。View 回归改验保存反馈与实际回应，补充失败/未知的普通草稿保留，以及记忆已保存但批注失败/未知时分别反馈。Android 用例只改未跑，等待统一时段；本轮不启动 Gradle。
+
+本轮实际结果：persona 相关轻量服务测试 7/7，真实中枢两条定向用例 2/2（会议纠正及原批注回应；主 agent 停止时保存成功且同 id 不重复保存）。资源 XML 解析与 diff 检查通过。Android 编译、更新后的 Views 与截图未执行，不能沿用此前通过数声称此提交已全部通过。

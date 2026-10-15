@@ -31,7 +31,7 @@ test("Ash app: a meeting correction wakes the back lane, corrects real memory an
     assert.equal(answered.isError, false, answered.text);
   });
   const note = await call("note", { id: "meeting-correction", about: "memory:USER.md", text: "会议周三，不是周二；日记也请改正" });
-  assert.equal(note.told, true);
+  assert.equal(note.id, "meeting-correction");
   await eventually(async () => (await call("notes.list", { about: "memory:USER.md" })).notes.find((n: any) => n.id === note.id && n.reply), "the reply on the original note");
   const memory = await call("memory.get", { file: "USER.md" });
   const diary = await call("diary.get", { date: "2026-10-15" });
@@ -49,22 +49,18 @@ test("Ash app: a meeting correction wakes the back lane, corrects real memory an
   assert.ok(!owner.messages.some(m => m.seq > original.seq && m.kind === "request" && m.from === MAIN && m.word === "say"), "background response stays by the note, not the front conversation");
 });
 
-test("Ash app: retrying an undelivered note notifies once and reports the actual delivery state", async (t) => {
+test("Ash app: a note is saved while the agent is stopped and the same id only prevents duplicate storage", async (t) => {
   const s = await startScenario(t);
   const owner = await s.human();
   await owner.call("service:agents", "stop", { agent: MAIN });
-  const payload = { id: "retry-note", about: "now", text: "会议是周三" };
+  const payload = { id: "saved-note", about: "now", text: "会议是周三" };
   const first = await owner.call("service:persona", "note", payload);
-  assert.ok(first.ok); assert.equal(dataOf(first).told, false);
-  const started = await owner.call("service:agents", "start", { agent: MAIN }); assert.ok(started.ok);
-  const retry = await owner.call("service:persona", "note", payload);
-  assert.ok(retry.ok); assert.equal(dataOf(retry).told, true);
+  assert.ok(first.ok); assert.equal(dataOf(first).id, payload.id);
   const replay = await owner.call("service:persona", "note", payload);
-  assert.ok(replay.ok); assert.equal(dataOf(replay).told, true);
+  assert.ok(replay.ok); assert.deepEqual(dataOf(replay), { id: payload.id });
   const notes = await owner.call("service:persona", "notes.list", { about: "now" });
   assert.equal(dataOf(notes).notes.filter((n: any) => n.id === payload.id).length, 1);
-  await eventually(() => s.driver.turns.find(r => r.key === "back" && r.messages.some(m => m.text.includes("retry-note"))), "the retried background notification");
-  assert.equal(s.driver.turns.filter(r => r.key === "back" && r.messages.some(m => m.text.includes("retry-note"))).length, 1);
+  assert.equal(dataOf(notes).notes.find((n: any) => n.id === payload.id).text, payload.text);
 });
 
 test("Ash app: the daily clock wake produces diary and a sourced growth record through the same service words", async (t) => {

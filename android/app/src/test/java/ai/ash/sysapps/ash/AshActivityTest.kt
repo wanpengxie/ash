@@ -15,6 +15,7 @@ import android.widget.EditText
 import android.widget.TextView
 import ai.ash.R
 import ai.ash.sysapps.SystemAppActivity
+import ai.ash.ui.HumanPort
 import ai.ash.ui.Reply
 import org.json.JSONArray
 import org.json.JSONObject
@@ -44,7 +45,7 @@ class AshActivityTest {
     }
     object Port {
         var document = "# 安排\n- 会议周二\n- 爱喝美式\n"
-        var told = false
+        var noteFailure: Reply? = null
         var reply = ""
         var tasks = JSONArray()
         var current: JSONObject? = null
@@ -52,10 +53,11 @@ class AshActivityTest {
         val calls = ArrayList<Triple<String, String, JSONObject>>()
         fun call(to: String, word: String, body: JSONObject, done: (Reply) -> Unit) {
             calls.add(Triple(to, word, JSONObject(body.toString())))
+            if (word == "note" && noteFailure != null) { done(noteFailure!!); return }
             val data = when(word) {
                 "memory.get" -> JSONObject().put("files", JSONArray().put(JSONObject().put("file", "USER.md").put("content", document)))
                 "memory.set" -> { document = body.getString("content"); JSONObject().put("saved", true) }
-                "note" -> JSONObject().put("id", body.getString("id")).put("told", told)
+                "note" -> JSONObject().put("id", body.getString("id"))
                 "notes.list" -> JSONObject().put("notes", JSONArray().apply {
                     val note = calls.lastOrNull { it.second == "note" }?.third
                     if (note != null) put(JSONObject().put("id", note.getString("id")).put("about", note.getString("about")).put("text", note.getString("text")).put("by", "person:owner").put("at", 1).apply { if (reply.isNotEmpty()) put("reply", reply).put("replied_by", "agent:main") })
@@ -78,7 +80,7 @@ class AshActivityTest {
     private var controller: ActivityController<TestActivity>? = null
     private lateinit var activity: TestActivity
     @Before fun reset() {
-        Port.document = "# 安排\n- 会议周二\n- 爱喝美式\n"; Port.told = false; Port.reply = ""; Port.calls.clear(); Port.tasks = JSONArray(); Port.current = null; Port.growth = JSONArray()
+        Port.document = "# 安排\n- 会议周二\n- 爱喝美式\n"; Port.noteFailure = null; Port.reply = ""; Port.calls.clear(); Port.tasks = JSONArray(); Port.current = null; Port.growth = JSONArray()
         org.robolectric.RuntimeEnvironment.getApplication().getSharedPreferences("ash-app-drafts", 0).edit().clear().commit()
     }
     @After fun close() { controller?.destroy() }
@@ -133,13 +135,6 @@ class AshActivityTest {
         val heading = all().filterIsInstance<TextView>().first { it.text.toString() == title }
         all(heading.parent as ViewGroup).filterIsInstance<TextView>().first { it.text.toString() == "查看" }.performClick(); settle()
     }
-    private fun statusAction() {
-        settle()
-        val status = all().filterIsInstance<TextView>().first { it.text.toString().contains("尚未通知 Ash") }
-        val card = status.parent as ViewGroup
-        all(card).filterIsInstance<TextView>().first { it.text.toString() == "重试通知" }.performClick(); settle()
-    }
-
     @Test fun homeShowsCurrentWorkAndTheSharedPromisesOnAPhone() {
         val now = System.currentTimeMillis()
         Port.current = JSONObject().put("as_of", now)
@@ -166,7 +161,7 @@ class AshActivityTest {
         screenshot("ash-home-now-and-promises")
     }
 
-    @Test fun aSingleFactCorrectionPreservesNewFactsAndShowsWhetherAshWasNotified() {
+    @Test fun aSingleFactCorrectionPreservesNewFactsAndShowsTheOriginalNoteReply() {
         open("memory")
         val advanced = texts().indexOf("全文与整页批注（高级）")
         assertTrue("specific memories must precede the advanced entry", advanced < 0 || texts().indexOf("会议周二") < advanced)
@@ -177,14 +172,47 @@ class AshActivityTest {
         Port.document += "- 刚刚补上的偏好\n"
         editor.setText("会议周三"); click("保存")
         assertTrue(Port.document.contains("会议周三")); assertTrue(Port.document.contains("刚刚补上的偏好")); assertTrue(Port.document.contains("爱喝美式"))
-        assertTrue(texts().any { it.contains("批注已保存，但尚未通知 Ash") })
+        assertTrue(texts().any { it.contains("记忆已保存；批注已保存") })
         val note = Port.calls.last { it.second == "note" }.third
-        Port.told = true; statusAction()
-        assertEquals(note.getString("id"), Port.calls.last { it.second == "note" }.third.getString("id"))
-        assertTrue(texts().any { it.contains("已通知 Ash") })
+        assertTrue(note.getString("text").contains("会议周二"))
+        assertTrue(note.getString("text").contains("会议周三"))
         Port.reply = "我读到了更正：会议是周三。咖啡偏好保持不变。"
         activity.message(JSONObject().put("from", "service:persona").put("kind", "event").put("word", "persona.changed").put("body", JSONObject().put("part", "notes").put("by", "agent:main")))
-        settle(); assertTrue(texts().any { it.contains("Ash 已回应") }); screenshot("memory-corrected-and-answered")
+        settle(); assertTrue(texts().any { it.contains("我的回应：") && it.contains(Port.reply) }); screenshot("memory-corrected-and-answered")
+    }
+
+    @Test fun failedAndUnconfirmedNoteSavesKeepTheNormalEditingDraft() {
+        for (code in listOf("forbidden", "result_unknown")) {
+            open("memory"); click("批注 / 纠正")
+            val editor = activity.findViewById<EditText>(R.id.ash_editor)
+            val correction = "会议是周三：$code"
+            editor.setText(correction)
+            Port.noteFailure = Reply(false, JSONObject(), null, HumanPort.Failure(code, "批注保存未确认"))
+            click("保存")
+            assertEquals(correction, editor.text.toString())
+            val prefs = activity.getSharedPreferences("ash-app-drafts", 0)
+            val key = "note:memory:USER.md:会议周二"
+            assertEquals(correction, prefs.getString(key, null))
+            assertTrue(prefs.contains("operation:$key"))
+            assertFalse(texts().contains("批注已保存"))
+            controller!!.destroy(); controller = null
+            Port.noteFailure = null
+        }
+    }
+
+    @Test fun aSavedMemoryAndItsFailedOrUnconfirmedNoteHaveSeparateFeedback() {
+        for (code in listOf("forbidden", "result_unknown")) {
+            Port.document = "# 安排\n- 会议周二\n- 爱喝美式\n"
+            open("memory"); click("修改")
+            activity.findViewById<EditText>(R.id.ash_editor).setText("会议周三")
+            Port.noteFailure = Reply(false, JSONObject(), null, HumanPort.Failure(code, "不允许保存批注"))
+            click("保存")
+            assertTrue(Port.document.contains("会议周三"))
+            assertTrue(texts().any { it.startsWith("记忆已保存；") && it.contains(if (code == "result_unknown") "还没确认批注是否保存" else "批注未能保存") })
+            assertFalse(texts().contains("重试通知"))
+            controller!!.destroy(); controller = null
+            Port.noteFailure = null
+        }
     }
 
     @Test fun deletionClicksRemoveOnlyThatFactThroughTheSameWords() {

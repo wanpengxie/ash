@@ -34,8 +34,6 @@ open class AshActivity : SystemAppActivity() {
     private var primary: String? = null
     private var name = "Ash"
     private var noticeStatus = ""
-    private var retryNotice: JSONObject? = null
-    private var lastNoteId: String? = null
     private var day: String? = null
     private var taskId: String? = null
     private lateinit var list: RecyclerView
@@ -61,9 +59,6 @@ open class AshActivity : SystemAppActivity() {
     private fun who(by: String?) = AshModel.who(by?.takeUnless { it == "null" || it.isEmpty() }, primary, name)
 
     override fun build(saved: Bundle?) {
-        noticeStatus = prefs.getString("notice-status", "").orEmpty()
-        retryNotice = runCatching { JSONObject(prefs.getString("notice-payload", "")!!) }.getOrNull()
-        lastNoteId = prefs.getString("last-note-id", null)
         route = saved?.getString("route") ?: "now"
         day = saved?.getString("day"); taskId = saved?.getString("task-id")
         restoreKey = saved?.getString("anchor")
@@ -135,8 +130,6 @@ open class AshActivity : SystemAppActivity() {
         val relevant = word in setOf("persona.changed", "task.changed", "settings.changed", "agent.changed", "agents.changed") ||
             (kind == "response" && word in setOf("workspace.write", "rules.set", "rules.revoke", "mode.set", "pulse.set")) ||
             (route == "now" && from == primary && kind in setOf("event", "response", "say"))
-        if (word == "persona.changed" && message.optJSONObject("body")?.optString("part") == "notes" && lastNoteId != null)
-            read("notes", AshModel.PERSONA, "notes.list", JSONObject().put("limit", 100))
         if (relevant) refresh()
     }
     private fun read(key: String, to: String, word: String, body: JSONObject = JSONObject()) {
@@ -162,9 +155,6 @@ open class AshActivity : SystemAppActivity() {
                 }
             } else r.data
             val again = state.finish(ticket, if (valid) data else null, if (valid) null else s(R.string.ash_read_failed))
-            if (key == "notes" && valid && data.objects("notes").any { it.optString("id") == lastNoteId && !it.optString("reply").let { text -> text.isEmpty() || text == "null" } }) {
-                noticeStatus = s(R.string.ash_note_answered); prefs.edit().putString("notice-status", noticeStatus).apply()
-            }
             if (key == "agents" && valid) { val agent = r.data.objects("agents").firstOrNull { it.optBoolean("primary") }; primary = agent?.optString("id"); name = agent?.optString("name")?.takeIf { it.isNotBlank() } ?: "Ash" }
             draw()
             if (again && connected) queuedReads.remove(key)?.invoke()
@@ -211,7 +201,7 @@ open class AshActivity : SystemAppActivity() {
                 }
             })
         }
-        if (noticeStatus.isNotEmpty()) row("notice", s(R.string.ash_notice_title), noticeStatus, if (retryNotice != null) s(R.string.ash_retry_notice) else s(R.string.ash_open)) { val body = retryNotice; if (body != null) sendNotice(body) else navigate("notes") }
+        if (noticeStatus.isNotEmpty()) row("notice", s(R.string.ash_save_result), noticeStatus)
         when (route) {
             "task" -> {
                 val task = value("task:$taskId")?.optJSONObject("task")?.let { AshModel.todos(JSONObject().put("tasks", JSONArray().put(it))).firstOrNull() }
@@ -341,27 +331,22 @@ open class AshActivity : SystemAppActivity() {
                 draw()
                 memoryWriter().save(file, item.text, null) { result ->
                     pending.remove(key)
-                    if (result.ok) sendNotice(JSONObject().put("id", UUID.randomUUID().toString()).put("about", "memory:$file").put("text", s(R.string.ash_deleted_notice, item.text)))
-                    else showNotice(result.failure?.message ?: s(R.string.ash_write_failed))
+                    if (result.ok) saveCorrection("memory:$file", s(R.string.ash_deleted_notice, item.text), s(R.string.ash_memory_saved))
+                    else showNotice(if (result.retryable) s(R.string.ash_unknown) else result.failure?.message ?: s(R.string.ash_write_failed))
                     refresh(); draw()
                 }
             }
         }.show()
     }
-    private fun showNotice(text: String) { noticeStatus = text; prefs.edit().putString("notice-status", text).apply(); draw() }
-    private fun delivery(body: JSONObject, result: Reply) {
-        pending.remove("notice")
-        lastNoteId = body.optString("id"); prefs.edit().putString("last-note-id", lastNoteId).apply()
-        retryNotice = if (result.ok && result.data.optBoolean("told")) null else body
-        prefs.edit().putString("notice-payload", retryNotice?.toString()).apply()
-        showNotice(if (result.ok && result.data.optBoolean("told")) s(R.string.ash_note_told) else if (result.ok) s(R.string.ash_note_not_told) else s(R.string.ash_note_delivery_unknown))
-    }
-    private fun sendNotice(body: JSONObject) {
-        if ("notice" in pending && retryNotice?.optString("id") == body.optString("id")) return
-        pending.add("notice")
-        retryNotice = body; prefs.edit().putString("notice-payload", body.toString()).apply()
-        showNotice(s(R.string.ash_notifying))
-        request(AshModel.PERSONA, "note", body) { result -> delivery(body, result); refresh() }
+    private fun showNotice(text: String) { noticeStatus = text; draw() }
+    /** The original change is already saved. This separate note write never changes that result. */
+    private fun saveCorrection(about: String, text: String, saved: String) {
+        showNotice(saved)
+        request(AshModel.PERSONA, "note", JSONObject().put("id", UUID.randomUUID().toString()).put("about", about).put("text", text)) { result ->
+            val noteResult = if (result.ok) s(R.string.ash_note_saved) else if (result.retryable) s(R.string.ash_note_save_unknown) else s(R.string.ash_note_save_failed, result.failure?.message ?: s(R.string.ash_write_failed))
+            showNotice("$saved；$noteResult")
+            refresh()
+        }
     }
 
     private fun memoryLabel(file: String) = s(when(file) { "USER.md" -> R.string.ash_about_you; "MEMORY.md" -> R.string.ash_my_notes; else -> R.string.ash_proactive })
@@ -406,10 +391,11 @@ open class AshActivity : SystemAppActivity() {
             if (r.ok) {
                 prefs.edit().remove(edit.key).remove("operation:${edit.key}").apply()
                 closeEdit()
-                if (edit.word == "note") delivery(body, r)
-                else if (edit.notify != null) sendNotice(JSONObject().put("id", UUID.randomUUID().toString()).put("about", edit.notify).put("text", if (body.has("_item")) s(R.string.ash_replaced_notice, body.getString("_item"), text) else s(R.string.ash_edit_notice)))
+                if (edit.word == "note") showNotice(s(R.string.ash_note_saved))
+                else if (edit.notify != null) saveCorrection(edit.notify, if (body.has("_item")) s(R.string.ash_replaced_notice, body.getString("_item"), text) else s(R.string.ash_edit_notice), s(if (edit.word == "memory.set") R.string.ash_memory_saved else R.string.ash_saved))
+                else showNotice(s(R.string.ash_saved))
                 refresh()
-            } else { save.isEnabled = !r.retryable; editStatus.text = r.failure?.message ?: if (r.retryable) s(R.string.ash_unknown) else s(R.string.ash_write_failed) }
+            } else { save.isEnabled = !r.retryable; editStatus.text = if (r.retryable) s(R.string.ash_unknown) else r.failure?.message ?: s(R.string.ash_write_failed) }
         }
         if (edit.word == "memory.set") memoryWriter().save(body.getString("file"), body.optString("_item").takeIf { body.has("_item") }, text, complete)
         else request(edit.to, edit.word, body, complete)

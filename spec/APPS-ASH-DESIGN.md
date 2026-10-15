@@ -14,7 +14,7 @@
 - 日记：复用 `memory/YYYY-MM-DD.md`，`diary.list/get/set`，按日翻页、批注。daily-review 通过词写日记和长期记忆，发出 `persona.changed`；原有直接写工作区的结果也在相应写入账本变化后重读。
 - 成长：`growth.list/put` 保存已经发生的学习与改进：为什么开始、做了什么、效果、下一步、出处。它是成果记录，进行中工作仍在任务服务，主线不在这里另建。记录和批注使用稳定 id，重试不重复记一条。
 - 约定：现有 `admin/settings.get/set`（免打扰）、`gate/rules.list/revoke`、`gate/mode.set`、记忆里的 PROACTIVE.md。规则撤销先说清影响再确认。改变审批/设置后按账本刷新。
-- 批注：`persona/note` 按对象保存并在后台唤醒主 agent；她通过 `note.reply` 回应做了什么或为何没改。直接更正记忆/人格也补一条通知。通知失败如实保留提示，不把保存失败说成成功。未知写入结果保留草稿并要求查看现状，不自动重放。
+- 批注：`persona/note` 按对象保存并在后台唤醒主 agent；她通过 `note.reply` 回应做了什么或为何没改。直接更正记忆/人格也补一条通知。记忆改动与后续批注的保存结果分别反馈，不把唤醒失败说成保存失败。未知写入结果保留草稿并要求查看现状，不自动重放。
 
 外壳里的 HomeDocs（人格/记忆）和 HomePromises 已删除，主页对应三个旧块移除。旧深链接兼容转进 Ash 应用的对应 section，不再创建旧子页。
 
@@ -36,10 +36,10 @@
 
 日常路径一：我对你的了解 → 具体的「会议周二」→ 修改为周三 / 删除 / 留纠正 → 保存前 memory.get 读取完整最新文档 → 只替换该事实 → memory.set → 同一 persona/note 通知主 agent。新添的其他记忆保留，目标已变或重复时不猜着改；全文退到高级入口。页面和首页展示「你纠正的那件事」及原批注关联的回应，不要求用户去读 Markdown。
 
-普通批注路径会区分：保存且已通知、保存但尚未通知、送达结果未知。后两者可点同一条记录重试；persona 只记一个批注 id，已成功唤醒的 id 不再重复唤醒。没有后台队列或新的修订协议。
+普通批注只反馈保存成功、失败或尚未确认；失败/未确认保留正常编辑草稿。批注新入库后尝试一次普通后台唤醒，已有 id 只防重复保存，不再补发或追踪送达。不显示专用重试通知；是否理解和改正以原 note.reply 为准。记忆已保存而批注失败时，两件事分别说清。没有后台队列、送达持久表或旧偏好迁移。
 
 日常路径二：首页「我答应你的事」→ 某件承诺 → 待做 / 正在推进 / 卡在这里 / 事情的结果。原因读 note，结果读 result；没有写就直说未记录，不能把 todo 说成 doing。任务应用仍是同一份 subject:ash 数据，详情可按 id 打开它调整安排、看出处，返回后重新读取。文件和证据不占主路径。
 
 「现在」展示最近读取的事实；缺失不当作空闲，读取失败、断连或旧快照明确说当前待确认，并带读取时间。不再用「在想」替代处理中的状态。成长按 why/did/effect/next 展示，缺效果说尚未记录，标明记录时间、记录人；未附出处时不冒充已经核实的成果。
 
-内部回归分层：AshMemoryWriterTest 跑生产 get/patch/set 工作流，AshActivityTest 用真实 Activity、RecyclerView、EditText、AlertDialog 和点击回执验证可见产品路径（端口为固定响应）；ash-app.test.ts 以真实 startHub、human link、MCP 工具、正文文件及后台唤醒验证纠正→改记忆/日记→note.reply 和断连重试。它们均不冒充真机 IME/可访问性验收，实际运行结果及缺项另列在交付证据中。
+内部回归分层：AshMemoryWriterTest 跑生产 get/patch/set 工作流，AshActivityTest 用真实 Activity、RecyclerView、EditText、AlertDialog 和点击回执验证可见产品路径（端口为固定响应）；ash-app.test.ts 以真实 startHub、human link、MCP 工具、正文文件及后台唤醒验证纠正→改记忆/日记→note.reply 以及主 agent 不可用时批注仍被保存、同 id 不重复保存。它们均不冒充真机 IME/可访问性验收，实际运行结果及缺项另列在交付证据中。
