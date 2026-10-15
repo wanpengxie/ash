@@ -149,6 +149,12 @@ export class TasksService implements Member {
     for (const key of ["due_at","remind_at"] as const) if(b[key]!==undefined) task[key]=parseTime(b[key],key)!;
     if(b.remind_in!==undefined) task.remind_at=now+b.remind_in*60_000;
     this.validate(task);
+    if(caller.via === "agent" && task.subject === "ash") {
+      if((task.status === "done" || task.status === "dropped") && !task.result?.trim())
+        throw new WordError("bad_request","give result: what you completed, or why you could not do it");
+      if(task.status === "waiting" && !task.note.trim())
+        throw new WordError("bad_request","give note: who or what you are waiting for");
+    }
     if(JSON.stringify(old)===JSON.stringify(task)) {await this.sync();return old;}
     task.updated_by=caller.member;task.updated_at=now;
     task.done_at=isOpen(task)?null:(isOpen(old)?now:old.done_at);
@@ -172,9 +178,7 @@ export class TasksService implements Member {
     this.o.ledger.tx(()=>{
       this.notice(task,b.kind==="remind"?"remind":"follow",at);
       this.db.prepare(`UPDATE tasks SET ${field}=? WHERE id=?`).run(at,task.id);
-      this.change(task,b.kind==="remind"?"reminded":"followed_up",TASKS_ID);
     });
-    await this.event(task,b.kind==="remind"?"reminded":"followed_up",TASKS_ID);
   }
   private async send(to:string,word:string,body:unknown,reply_to?:string):Promise<Reply>{
     return this.o.router.send({to,kind:"request",word,body,...(reply_to?{reply_to}:{})},SELF);
@@ -216,12 +220,15 @@ export class TasksService implements Member {
         // Same stable card id: recovery after a crash between show and mark must not make another card.
         if(!r.ok&&r.error.code==="conflict") r={ok:true};
       }
-      if(r.ok)this.mark(n);else this.o.log?.(`task delivery pending ${n.id}`,r.error);
+      if(r.ok){
+        const change=n.kind==="remind"?"reminded":n.kind==="follow"?"followed_up":null;
+        this.o.ledger.tx(()=>{this.mark(n);if(change)this.change(task,change,TASKS_ID);});
+        if(change)await this.event(task,change,TASKS_ID);
+      }else this.o.log?.(`task delivery pending ${n.id}`,r.error);
     }
     // Card refreshes are durable too: a crash after updating the task must not leave its old card actionable forever.
     for(const n of this.db.prepare("SELECT * FROM task_notices WHERE sent=2 ORDER BY rowid LIMIT 100").all() as Notice[]){
       const task=this.get(n.task_id);
-      if(n.kind!=="noted" && n.kind!=="report" && isAgentId(task.assignee)){this.mark(n);continue;}
       const r=await this.send(OWNER_ID,"card.update",{id:n.id,...cardOf(task,n.kind==="report"?"noted":n.kind,this.now(),primary)});
       if(r.ok || r.error.code==="not_found")this.mark(n);
     }

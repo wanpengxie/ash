@@ -28,11 +28,11 @@ export interface Task {
 
 export const isOpen = (task: Pick<Task, "status">): boolean => OPEN.has(task.status);
 
-/** A follow-up of the owner's task comes the morning after it fell due (at least an hour later), never at night; an agent's at the time itself. */
+/** A follow-up of the owner's task comes the morning after it fell due (at least an hour later), never at night; an agent's at least an hour later. */
 export const FOLLOW_UP_TIME = "09:00";
 export function followUpAt(task: Pick<Task, "assignee" | "due_at">): number | null {
   if (task.due_at === null) return null;
-  return isAgentId(task.assignee) ? task.due_at : nextMoment(task.due_at + 3_600_000 - 1, FOLLOW_UP_TIME);
+  return isAgentId(task.assignee) ? task.due_at + 3_600_000 : nextMoment(task.due_at + 3_600_000 - 1, FOLLOW_UP_TIME);
 }
 
 /**

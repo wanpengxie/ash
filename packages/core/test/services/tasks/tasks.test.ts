@@ -14,7 +14,7 @@ const AGENT: Caller={member:"agent:main",via:"agent",local:true};
 const SELF: Caller={member:TASKS_ID,via:"service",local:true};
 const T0=new Date(2026,9,15,12).getTime();
 function setup(ledger=openLedger().ledger){
-  let now=T0;let seq=0; let fail=false;
+  let now=T0;let seq=0; let fail=false; let failUpdates=false;
   const sent:{msg:Outgoing;caller:Caller}[]=[];
   const timers=new Map<string,any>(); const cards=new Set<string>();
   const router={send:async(msg:Outgoing,caller:Caller):Promise<Reply>=>{
@@ -25,6 +25,7 @@ function setup(ledger=openLedger().ledger){
       if(msg.word==="cancel")timers.delete(b.id);
       if(msg.word==="set"){const id=`timer-${++seq}`;timers.set(id,{id,...b,created_by:caller.member});return {ok:true,result:{data:{id}}};}
     }
+    if(msg.word==="card.update"&&failUpdates)return {ok:false,error:{code:"unavailable",message:"temporarily unavailable"}};
     if(msg.word==="show"){
       if(fail)return {ok:false,error:{code:"offline",message:"temporarily away"}};
       const plan=checkChatCard(b.a2ui);
@@ -42,7 +43,7 @@ function setup(ledger=openLedger().ledger){
     if(contract.result_schema)assert.ok(compileSchema(contract.result_schema)(result.data),`${word} output`);
     return result.data;
   };
-  return{service,call,sent,timers,cards,ledger,advance:(ms:number)=>{now+=ms;},setNow:(ms:number)=>{now=ms;},fail:(v:boolean)=>{fail=v;}};
+  return{service,call,sent,timers,cards,ledger,advance:(ms:number)=>{now+=ms;},setNow:(ms:number)=>{now=ms;},fail:(v:boolean)=>{fail=v;},failUpdates:(v:boolean)=>{failUpdates=v;}};
 }
 
 test("durable add, shared subject/assignee, source and idempotent retry",async()=>{
@@ -53,6 +54,7 @@ test("durable add, shared subject/assignee, source and idempotent retry",async()
   assert.equal(task.subject,"owner");assert.equal(task.assignee,OWNER.member);
   assert.equal(task.source.message,source.id);
   assert.equal((await w.call("add",input,AGENT)).created,false);
+  assert.equal((await w.call("add",Object.fromEntries(Object.entries(input).reverse()),AGENT)).created,false);
   await assert.rejects(w.call("add",{...input,title:"另一个任务"},AGENT),{code:"conflict"});
   assert.equal((await w.call("list")).tasks.length,1);
   w.ledger.close();const reopened=Ledger.open(opened.path);
@@ -78,6 +80,7 @@ test("failed delivery is kept; completing while disconnected suppresses stale re
   const w=setup();w.fail(true);const {task}=await w.call("add",{title:"不要误催",remind_at:T0+1000});
   w.setNow(T0+1000);await w.call("task.due",{id:task.id,kind:"remind",at:T0+1000},SELF);
   assert.equal(w.cards.size,0);
+  assert.ok(!(await w.call("get",{id:task.id})).changes.some((c:any)=>c.change==="reminded"),"queued is not delivered");
   await w.call("done",{id:task.id});w.fail(false);await w.call("task.sync",{},SELF);
   assert.ok(![...w.cards].some(id=>id.includes(".remind.")));
   assert.ok([...w.cards].some(id=>id.includes(".noted.")));
@@ -87,6 +90,8 @@ test("Ash work uses the same store, wakes assignee, reports result at the source
   const w=setup();const source=w.ledger.append({from:OWNER.member,to:AGENT.member,kind:"request",word:"say",body:{text:"帮我查材料"}});
   const {task}=await w.call("add",{title:"我查材料",subject:"ash",assignee:"agent:helper",source:{message:source.id},remind_at:T0+1000},AGENT);
   assert.equal((await w.call("list",{subject:"ash"})).tasks[0].id,task.id);
+  await assert.rejects(w.call("done",{id:task.id},AGENT),{code:"bad_request"});
+  await assert.rejects(w.call("update",{id:task.id,status:"waiting"},AGENT),{code:"bad_request"});
   w.setNow(T0+1000);await w.call("task.due",{id:task.id,kind:"remind",at:T0+1000},SELF);
   assert.ok(w.sent.some(s=>s.msg.to==="agent:helper"&&s.msg.word==="wake"));
   await w.call("done",{id:task.id,result:"材料已找到"},AGENT);
@@ -104,4 +109,19 @@ test("time validation, cards and equal-timestamp paging",async()=>{
   assert.equal(new Set([...a.tasks,...b.tasks,...c.tasks].map((t:Task)=>t.id)).size,5);
   for(const kind of ["noted","remind","follow"] as const)assert.deepEqual(checkChatCard(cardOf(a.tasks[0],kind,T0,"agent:main").a2ui).problems,[]);
   await assert.rejects(w.call("task.due",{id:ids[0],kind:"remind",at:T0+1000},OWNER),{code:"forbidden"});
+});
+
+
+test("a task card update refused temporarily is repaired by the next clock sync",async()=>{
+  const w=setup();const {task}=await w.call("add",{title:"原内容"});
+  w.failUpdates(true);
+  await w.call("update",{id:task.id,title:"新内容"});
+  assert.equal((await w.call("get",{id:task.id})).task.title,"新内容");
+  const count=w.sent.filter(s=>s.msg.word==="card.update").length;
+  w.failUpdates(false);await w.call("task.sync",{},SELF);
+  const updates=w.sent.filter(s=>s.msg.word==="card.update");
+  assert.equal(updates.length,count+1);
+  assert.ok(JSON.stringify(updates.at(-1)!.msg.body).includes("新内容"));
+  await w.call("task.sync",{},SELF);
+  assert.equal(w.sent.filter(s=>s.msg.word==="card.update").length,updates.length,"does not keep redrawing unchanged cards");
 });

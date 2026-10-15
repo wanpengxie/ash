@@ -610,7 +610,7 @@ add("service:tasks", "update", "request", obj({ id: nonempty, ...taskEdit, subje
     "Everyone changes the same tasks (the owner in the 任务 app or on a card, you here); the last change wins and each one is announced as task.changed with who made it. " + TASK_FIELDS });
 add("service:tasks", "done", "request", obj({ id: nonempty, result: taskText }, ["id"]),
   obj({ task: taskInfo }, ["task"]),
-  { effect: "write", label: "在勾掉待办", description: "Mark a task done, with result: what came of it (for one of yours, what you did and found, in a sentence; it is written on the task's card in the conversation). Then tell the owner yourself when it is news to him. Done again is harmless." });
+  { effect: "write", label: "在勾掉待办", description: "Mark a task done, with result: what came of it (for one of yours, what you did and found, in a sentence; it is written on the task's card in the conversation). The hub also posts the result card replying to its source message: do not duplicate that report unless you have new information. Done again is harmless." });
 add("service:tasks", "list", "request", obj({ status: choice("open", "closed", "all"), subject: taskSubject, assignee: nonempty, thread: nonempty,
   limit: { type: "integer", minimum: 1, maximum: 500 }, before: positiveSafe }),
   obj({ tasks: array(taskInfo), next_before: positiveSafe }, ["tasks"]),

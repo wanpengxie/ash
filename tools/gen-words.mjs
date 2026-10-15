@@ -23,7 +23,7 @@ const canonical = (value) => {
 };
 
 // The order of SPEC-02 §4.1, then the owner's and agents' words, apps, then the hand and body actions.
-const MEMBER_ORDER = ["service:admin", "service:health", "service:gate", "service:vault", "service:devices", "service:link", "service:agents", "service:apps", "service:clock", "service:llm",
+const MEMBER_ORDER = ["service:admin", "service:health", "service:gate", "service:vault", "service:devices", "service:link", "service:agents", "service:apps", "service:clock", "service:tasks", "service:llm",
   "service:persona", "service:widgets", "service:pulse", "service:cost", "service:reflex", "service:senses", "service:directory", "service:history", "service:blobs",
   "service:host", "service:bodies", "person:owner", "agent:*", "app:*", "device:*", "body:*"];
 const rank = (member) => { const at = MEMBER_ORDER.indexOf(member); return at < 0 ? MEMBER_ORDER.length : at; };

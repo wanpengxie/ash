@@ -56,11 +56,20 @@ class TasksActivity : SystemAppActivity() {
     private var pendingAdd: JSONObject? = null
     private var editorId: String? = null
     private var editorVersion: Long = 0
+    private var scrollVersion = 0L
+    private var restoreKey: String? = null
+    private var restoreOffset = 0
+    private var restoreField: String? = null
+    private var restoreSelection = 0
     private val file by lazy { File(filesDir, "drafts/tasks.json") }
     private val arg by lazy { runCatching { JSONObject(intent.getStringExtra(EXTRA_ARG).orEmpty()) }.getOrNull() }
 
     override fun build(saved: Bundle?) {
         title.text = "任务"
+        restoreKey = saved?.getString("anchor")
+        restoreOffset = saved?.getInt("offset") ?: 0
+        restoreField = saved?.getString("field")
+        restoreSelection = saved?.getInt("selection") ?: 0
         state = (lastNonConfigurationInstance as? TasksModel.State) ?: state
         selected = saved?.getString("task") ?: arg?.optString("id")?.takeIf { it.isNotEmpty() }
         view = if (arg?.optString("subject") == "ash") TasksModel.View.ASH else
@@ -81,10 +90,16 @@ class TasksActivity : SystemAppActivity() {
         root.addView(AshUi.hstack(this, 8).apply {
             addView(quick, LinearLayout.LayoutParams(0, -2, 1f)); addView(quickButton)
         })
-        adapter = KeyedRowsAdapter(this)
+        adapter = KeyedRowsAdapter(this).apply {
+            stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY
+        }
         list = RecyclerView(this).apply {
             id = 0x007a1102; layoutManager = LinearLayoutManager(this@TasksActivity)
             adapter = this@TasksActivity.adapter; itemAnimator = null
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) { scrollVersion++ }
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) { if (scrollState != RecyclerView.SCROLL_STATE_IDLE) scrollVersion++ }
+            })
         }
         root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
         form = AshUi.vstack(this, 10)
@@ -191,9 +206,14 @@ class TasksActivity : SystemAppActivity() {
         val lm = list.layoutManager as LinearLayoutManager
         val first = lm.findFirstVisibleItemPosition(); val key = adapter.currentList.getOrNull(first)?.key
         val offset = lm.findViewByPosition(first)?.let { lm.getDecoratedTop(it) }
+        val reading = restoreKey ?: key
+        val top = if (restoreKey != null) restoreOffset else offset
+        val epoch = scrollVersion
         adapter.submitList(rows) {
-            val index = rows.indexOfFirst { it.key == key }
-            if (index >= 0 && offset != null && selected == null) lm.scrollToPositionWithOffset(index, offset)
+            val index = rows.indexOfFirst { it.key == reading }
+            if (index >= 0 && top != null && selected == null && epoch == scrollVersion && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) {
+                lm.scrollToPositionWithOffset(index, top); restoreKey = null
+            }
         }
     }
     private fun edit(task: TasksModel.Task) {
@@ -233,6 +253,8 @@ class TasksActivity : SystemAppActivity() {
             })
         }
         form.addView(AshUi.text(this, "${names[task.updatedBy] ?: task.updatedBy} · ${editTime(task.updatedAt)}", AshTokens.Type.callout, c.text2))
+        restoreField?.let { key -> fields[key]?.let { input -> input.requestFocus(); input.setSelection(restoreSelection.coerceIn(0, input.length())) } }
+        restoreField = null
     }
     private fun saveEditor() {
         val id = editorId ?: return
@@ -287,7 +309,14 @@ class TasksActivity : SystemAppActivity() {
     }
     override fun canGoBack() = selected != null
     override fun goBack() { selected = null; editorId = null; render(); syncBack() }
-    override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("task", selected); out.putString("view", view.name) }
+    override fun onSaveInstanceState(out: Bundle) {
+        super.onSaveInstanceState(out); out.putString("task", selected); out.putString("view", view.name)
+        val lm = list.layoutManager as LinearLayoutManager
+        val first = lm.findFirstVisibleItemPosition()
+        adapter.currentList.getOrNull(first)?.let { out.putString("anchor", it.key) }
+        lm.findViewByPosition(first)?.let { out.putInt("offset", lm.getDecoratedTop(it)) }
+        fields.entries.find { it.value.hasFocus() }?.let { out.putString("field", it.key); out.putInt("selection", it.value.selectionStart) }
+    }
     private fun EditText.watch(changed: () -> Unit) = addTextChangedListener(object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = changed()
