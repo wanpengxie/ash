@@ -195,6 +195,7 @@ open class DevicesActivity : SystemAppActivity() {
         if (!active) return
         if (!reading.add(what)) { dirty.add(what); return }
         val gen = model.begin(what)
+        val reviewedDetail = detail?.takeIf { what == Refresh.DEVICES && it.needsConnectionReview() }
         val member = if (what == Refresh.RELAY) "service:link" else "service:devices"
         val word = when (what) { Refresh.DEVICES -> "list"; Refresh.RELAY -> "gateway.status"; Refresh.PAIRS -> "pair_pending" }
         val args = if (what == Refresh.DEVICES) JSONObject().put("include_revoked", true) else JSONObject()
@@ -208,6 +209,7 @@ open class DevicesActivity : SystemAppActivity() {
             when (what) { Refresh.DEVICES -> model.devicesRead(gen, valid); Refresh.RELAY -> model.relayRead(gen, valid); Refresh.PAIRS -> model.requestsRead(gen, valid) }
             if (valid == null) readErrors[what] = error(failure) else if (failure == null) {
                 readErrors.remove(what)
+                if (reviewedDetail === detail) reviewedDetail?.connectionReadSucceeded()
                 if (what == Refresh.DEVICES && reconcileDetail === detail) { detail?.reconciled(); reconcileDetail = null }
             }
             if (active) { render(); if (dirty.remove(what)) read(what) }
@@ -349,6 +351,7 @@ open class DevicesActivity : SystemAppActivity() {
         private fun updateButton() = update
         private val diagnosis = text("")
         private var diagnosisState: Pair<Boolean, Boolean>? = null
+        private var diagnosisIssue: String? = null
         private val diagnosisRaw = text("").apply { setTextIsSelectable(true); visibility = View.GONE }
         private var rawOpen = false
         private val diagnosisToggle: TextView = button(R.string.dev_diag_details) {
@@ -406,11 +409,14 @@ open class DevicesActivity : SystemAppActivity() {
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; restore.visibility = View.GONE; return }
             header.text = d.name
             title.text = d.name
+            if (diagnosisState != null && diagnosisState != (d.online to d.revoked) && "diagnose" !in pending) clearDiagnosis()
             val noAccess = !d.lend && !d.body && !d.localAgents
-            val impact = when { d.revoked -> getString(R.string.dev_detail_revoked); noAccess -> getString(R.string.dev_detail_no_access); else -> useSummary(d) }
-            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), impact, readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.distinct().joinToString("\n")
+            val impact = when { d.revoked -> getString(R.string.dev_detail_revoked); diagnosisIssue != null -> getString(R.string.dev_detail_connection_review); noAccess -> getString(R.string.dev_detail_no_access); else -> useSummary(d) }
+            val presence = if (diagnosisIssue != null && !d.revoked) getString(R.string.dev_connection_check_needed) else DevicesText.presence(d, System.currentTimeMillis())
+            status.text = listOfNotNull(presence, impact, readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.distinct().joinToString("\n")
             nextStep.text = when {
                 d.revoked -> getString(R.string.dev_detail_restore_next, d.name)
+                diagnosisIssue != null -> diagnosisIssue.orEmpty()
                 !d.online -> getString(R.string.dev_detail_offline_next, d.name, DevicesText.kind(d.kind))
                 noAccess -> getString(R.string.dev_detail_access_next)
                 else -> getString(R.string.dev_detail_online_next)
@@ -434,12 +440,14 @@ open class DevicesActivity : SystemAppActivity() {
             restore.isEnabled = revoke.isEnabled && !restoring
             diagnose.isEnabled = "diagnose" !in pending
             diagnose.visibility = visible(!d.revoked)
-            if (diagnosisState != null && diagnosisState != (d.online to d.revoked) && "diagnose" !in pending) {
-                diagnosis.text = ""; diagnosisRaw.text = ""; diagnosisRaw.visibility = View.GONE; diagnosisToggle.visibility = View.GONE
-                diagnosisState = null; rawOpen = false
-            }
             listOf(nameNote, change, versionInfo, updateNote, diagnosis, revokeNote).forEach { it.visibility = visible(it.text.isNotEmpty()) }
             if (restoring) { name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; revoke.isEnabled = false }
+        }
+        fun needsConnectionReview() = diagnosisIssue != null
+        fun connectionReadSucceeded() { if ("diagnose" !in pending) clearDiagnosis() }
+        private fun clearDiagnosis() {
+            diagnosisIssue = null; diagnosisState = null; rawOpen = false
+            diagnosis.text = ""; diagnosisRaw.text = ""; diagnosisRaw.visibility = View.GONE; diagnosisToggle.visibility = View.GONE
         }
         private fun run(word: String, control: View, message: TextView, args: JSONObject = JSONObject(), done: () -> Unit = {}) {
             if (word in unknown || !pending.add(word)) return
@@ -479,7 +487,7 @@ open class DevicesActivity : SystemAppActivity() {
             diagnosisToggle.visibility = View.GONE; diagnosisRaw.visibility = View.GONE; rawOpen = false
             request("service:link", "diagnose", JSONObject().put("hand", id.removePrefix("device:"))) { data, failure ->
                 if (detail !== this) return@request
-                if (data == null) { pending.remove("diagnose"); diagnosis.text = error(failure); bind(); return@request }
+                if (data == null) { pending.remove("diagnose"); diagnosis.text = error(failure); diagnosisIssue = getString(R.string.dev_diag_incomplete); diagnosisState = model.device(id)?.let { it.online to it.revoked }; bind(); return@request }
                 request("service:link", "list") { links, linkFailure ->
                     pending.remove("diagnose")
                     if (detail !== this) return@request
@@ -501,7 +509,9 @@ open class DevicesActivity : SystemAppActivity() {
                         d?.online == true -> R.string.dev_diag_connected
                         else -> R.string.dev_diag_incomplete
                     }
-                    diagnosis.text = getString(R.string.dev_diag_layout, getString(conclusion), relaySummary(), count, latencyText(conns, id))
+                    val conclusionText = if (conclusion == R.string.dev_diag_tunnel_missing) getString(conclusion, d?.name.orEmpty()) else getString(conclusion)
+                    diagnosisIssue = conclusionText.takeIf { conclusion != R.string.dev_diag_connected }
+                    diagnosis.text = getString(R.string.dev_diag_layout, conclusionText, relaySummary(), count, latencyText(conns, id))
                     diagnosisRaw.text = listOfNotNull(lines.takeIf { it.isNotEmpty() }, model.relay?.error, linkFailure?.let(::error)).joinToString("\n")
                     diagnosisToggle.visibility = visible(diagnosisRaw.text.isNotEmpty())
                     diagnosisToggle.text = getString(R.string.dev_diag_details)

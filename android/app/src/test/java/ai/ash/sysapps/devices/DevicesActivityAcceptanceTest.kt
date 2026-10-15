@@ -179,10 +179,20 @@ class DevicesActivityAcceptanceTest {
         diagnose.done(JSONObject().put("ok", false).put("findings", JSONArray().put(JSONObject().put("code", "tunnel.missing").put("message", raw))), null)
         activity.take("list", "service:link").done(JSONObject().put("connections", JSONArray()), null)
         assertTrue(activity.texts().any { it.contains("设备已到达中转站，但还没有接通 Ash") })
+        assertTrue(activity.texts().contains("连接需检查"))
+        assertFalse(activity.texts().any { it.contains("连接已就绪") || it.contains("Ash 现在可以") })
+        assertTrue(activity.texts().any { it.contains("Alpha") && it.contains("重启 Ash 并检查网络") })
         assertTrue(activity.texts().any { it.contains("延迟：尚无可用测量") })
         assertFalse(activity.texts().contains(raw))
         activity.button("查看诊断原文").performClick(); assertTrue(activity.texts().contains(raw))
         activity.button("收起诊断原文").performClick(); activity.scrollToText("设备已到达中转站"); activity.capture("diagnosis-conclusion")
+        // A list read begun before the diagnosis cannot erase the newer failure merely because it says online.
+        activity.take("list", "service:devices").done(devices(), null)
+        assertTrue(activity.texts().contains("连接需检查"))
+        assertFalse(activity.texts().any { it.contains("连接已就绪") })
+        // A later successful reread reconciles the page; the failure never mutates the stored device fact.
+        activity.connect(); activity.take("list", "service:devices").done(devices(), null)
+        assertFalse(activity.texts().contains("连接需检查")); assertTrue(activity.texts().any { it.contains("连接已就绪") })
     }
 
     @Test fun revocationRequiresConfirmationDismissesOnNewTargetAndShowsTheRestorableState() {
@@ -246,9 +256,12 @@ class DevicesActivityAcceptanceTest {
 
     @Test fun theHomeScreenExplainsWhatAshCanDoAndLeadsAnOfflineDeviceToRecovery() {
         val activity = screen("")
+        activity.answer("gateway.status", JSONObject().put("configured", true).put("connected", true).put("url", "https://relay.example"))
+        activity.answer("pair_pending", JSONObject().put("pairs", JSONArray()))
         val data = devices().put("release", "0.2.5"); data.getJSONArray("devices").getJSONObject(0).put("version", "0.2.5"); data.getJSONArray("devices").getJSONObject(1).put("online", false).put("lend", false).put("latest", false)
         activity.answer("list", data); activity.capture("devices-home")
         assertTrue(activity.texts().contains("接入一台电脑"))
+        assertTrue(activity.texts().any { it.contains("中转站已连通") }); assertFalse(activity.texts().any { it.contains("正在读取中转站") })
         assertTrue(activity.texts().any { it.contains("Ash 现在可以：看屏幕") })
         val list = views(activity.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().single()
         (list.layoutManager as androidx.recyclerview.widget.LinearLayoutManager).scrollToPositionWithOffset(3, 0)
@@ -289,6 +302,7 @@ class DevicesActivityAcceptanceTest {
 
     @Test fun diagnosticLatencyUsesOnlyThisDevicesExecutorConnectionAndKeepsUnknownExplicit() {
         val activity = screen("d/device:a"); activity.answer("list", devices())
+        activity.answer("gateway.status", JSONObject().put("configured", true).put("connected", true).put("url", "https://relay.example"))
         fun connection(hand: String, channel: String, rtt: Double?): JSONObject = JSONObject().put("hand", hand).put("channels", JSONArray().put(channel))
             .put("latency", if (rtt == null) JSONObject.NULL else JSONObject().put("rtt_ms", rtt).put("age_ms", 12_000))
         fun diagnose(connections: JSONArray) {

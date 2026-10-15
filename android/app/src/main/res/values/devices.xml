@@ -69,18 +69,18 @@
     <string name="dev_allowed_capabilities">设备交出的能力</string>
     <string name="dev_allowed_body">文件和命令</string>
     <string name="dev_allowed_agents">本地帮手</string>
-    <string name="dev_diag_latency_unknown">延迟：尚无可用测量，稍后可再点连接诊断。</string>
+    <string name="dev_diag_latency_unknown">延迟：尚无可用测量，稍后可再点“检查连接”。</string>
     <string name="dev_diag_details">查看诊断原文</string>
     <string name="dev_diag_hide_details">收起诊断原文</string>
     <string name="dev_diag_connected">设备与 Ash 已连通。</string>
     <string name="dev_diag_revoked">设备已撤销，连接已停用。需要继续使用，请恢复这台设备。</string>
     <string name="dev_diag_offline">设备当前离线。请在那台设备打开 Ash，检查网络后刷新。</string>
     <string name="dev_diag_relay_down">中转站未连通。先回到设备列表，让 Ash 检查中转站，再刷新连接。</string>
-    <string name="dev_diag_tunnel_missing">设备已到达中转站，但还没有接通 Ash。请让 Ash 检查连接，再刷新。</string>
+    <string name="dev_diag_tunnel_missing">设备已到达中转站，但还没有接通 Ash。请在“%1$s”上重启 Ash 并检查网络，再点“检查连接”；仍失败时重新接入这台设备。</string>
     <string name="dev_diag_access_missing">设备还未开放操作。请在访问范围中开启需要的项目，再刷新连接。</string>
     <string name="dev_diag_handshake">设备连接未通过验证。请确认是已配对的设备；仍连不上时重新配对。</string>
     <string name="dev_diag_problem">连接检查发现问题。请查看诊断原文，或让 Ash 帮你排查。</string>
-    <string name="dev_diag_incomplete">连接信息没读全，暂时无法确认。请点连接诊断重试。</string>
+    <string name="dev_diag_incomplete">连接信息没读全，暂时无法确认。请点“检查连接”重试。</string>
     <string name="dev_diag_connections_unknown">未读到</string>
     <string name="dev_diag_layout">%1$s\n%2$s\n连接数：%3$s\n%4$s</string>
     <string name="dev_revoked_done">已撤销，设备不能再连接。需要时可恢复。</string>
@@ -114,4 +114,6 @@
     <string name="dev_detail_offline_next">请在“%1$s”这台%2$s上启动 Ash，并检查它的网络。完成后点下面的“检查连接”，确认连接是否恢复。</string>
     <string name="dev_detail_access_next">连接已就绪。要让 Ash 操作这台设备，请展开下面的“设备设置”，开启需要的访问范围。</string>
     <string name="dev_detail_online_next">连接已就绪。Ash 可使用上方列出的能力；如遇问题，点“检查连接”。</string>
+    <string name="dev_connection_check_needed">连接需检查</string>
+    <string name="dev_detail_connection_review">连接状态待核实，Ash 的操作可能受影响。</string>
 </resources>
