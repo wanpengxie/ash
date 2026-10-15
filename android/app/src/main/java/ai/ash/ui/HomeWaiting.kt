@@ -20,6 +20,8 @@ class HmWaiting(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private var page: JSONObject? = null
     private var history: List<JSONObject>? = null
     private var loading = false
+    /** The last read failed: what is shown is from before it (or nothing was ever read). */
+    private var failed = false
     private val cards = AshUi.vstack(ctx, 14)
     private val paging = AshUi.hstack(ctx, 8)
     private val settledBox = AshUi.vstack(ctx)
@@ -44,7 +46,9 @@ class HmWaiting(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         val b = JSONObject().put("limit", 40).also { o -> agent?.let { o.put("agent", it) }; params?.keys()?.forEach { k -> o.put(k, params.get(k)) } }
         call("service:history", "current", b) { r ->
             loading = false
-            if (r.ok) { page = r.data; env.intents.answers.keys.retainAll(asks().map { it.id }.toSet()); draw() }
+            failed = !r.ok
+            if (r.ok) { page = r.data; env.intents.answers.keys.retainAll(asks().map { it.id }.toSet()) }
+            draw()
         }
     }
 
@@ -52,7 +56,13 @@ class HmWaiting(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         val items = HomeModel.waitingItems(asks()).filter { agent == null || it.ask.from == agent }
         wake("expiry", items.minOfOrNull { it.ask.expiresAt }) { draw() }
         cards.removeAllViews()
-        if (items.isEmpty()) cards.addView(Hk.list(ctx, listOf(Hk.row(ctx, "check", "现在没有要你决定的事", "有事她会叫你", "ok"))))
+        // Only a successful read that is empty says there is nothing; before it, it is being read; a failure says so (§3.2).
+        if (failed) cards.addView(Hk.note(ctx, if (page == null) "没读到要你决定的事，稍后再试。" else "没读到最新的，下面是上次读到的。"))
+        if (items.isEmpty()) cards.addView(when {
+            page == null && !failed -> Hk.note(ctx, "正在读取…")
+            page == null -> View(ctx)
+            else -> Hk.list(ctx, listOf(Hk.row(ctx, "check", "现在没有要你决定的事", "有事她会叫你", "ok")))
+        })
         else items.forEach { cards.addView(card(it)) }
         paging.removeAllViews()
         if (page?.optBoolean("has_more_before") == true) paging.addView(AshUi.button(ctx, "更早的问题", Kind.GHOST, AshUi.BtnSize.SM) { load(JSONObject().put("before", page?.num("before"))) })

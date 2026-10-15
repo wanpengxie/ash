@@ -85,6 +85,7 @@
         <!-- The ash UI: the chat (drawn natively) and the 「应用」 tab (the owner's apps; each opens in AppActivity's own task). The only launcher icon. fullUser: follow the system rotation lock. -->
         <activity
             android:name=".ui.HomeActivity"
+            android:enableOnBackInvokedCallback="true"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="fullUser"

@@ -67,7 +67,7 @@ class AshTokensTest {
         assertEquals(420, AshTokens.Size.glowW)
         assertEquals(320, AshTokens.Size.glowH)
         assertEquals(size.getDouble("stroke").toFloat(), AshTokens.Size.stroke)
-        assertTrue("controls are at least 44dp", AshTokens.Size.touch >= 44 && AshTokens.Size.iconButton >= 44)
+        assertTrue("controls are at least 48dp", AshTokens.Size.touch >= 48 && AshTokens.Size.iconButton >= 48)
     }
 
     @Test fun typeScaleIsTheTokens() {

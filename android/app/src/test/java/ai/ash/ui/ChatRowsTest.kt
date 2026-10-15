@@ -10,11 +10,11 @@ class ChatRowsTest {
     private fun say(seq: Long, id: String, text: String, client: String? = null) = JSONObject().put("seq", seq).put("id", id).put("type", "say").put("text", text)
         .apply { if (client != null) put("client_id", client) }
 
-    private fun build(items: List<JSONObject>, outbox: List<JSONObject> = emptyList(), more: Boolean = false) =
+    private fun build(items: List<JSONObject>, outbox: List<Pending> = emptyList(), more: Boolean = false) =
         ChatRows.build(items, outbox, more, { error("not drawn") }, { error("not drawn") }, { error("not drawn") })
 
     @Test fun keysAreStableAndTheOwnersMessageKeepsItsRow() {
-        val waiting = JSONObject().put("client_id", "c1").put("status", "sending").put("body", JSONObject().put("text", "hi"))
+        val waiting = Pending("c1", null, JSONObject().put("text", "hi"))
         val before = build(listOf(say(1, "m1", "hello")), listOf(waiting))
         val after = build(listOf(say(1, "m1", "hello"), say(2, "m2", "hi", client = "c1")))
         assertEquals(listOf("m1", "c1"), before.map { it.key })
@@ -33,7 +33,7 @@ class ChatRowsTest {
     }
 
     @Test fun anOutboxEntryTheWindowShowsIsOneRowAndUnknownKindsAreNotRows() {
-        val waiting = JSONObject().put("client_id", "c1").put("status", "sent")
+        val waiting = Pending("c1", null, JSONObject(), Pending.SENT)
         val rows = build(listOf(say(1, "m1", "a", client = "c1"), JSONObject().put("seq", 2).put("id", "m2").put("type", "future"),
             JSONObject().put("seq", 3).put("id", "m3").put("type", "card").put("card", JSONObject().put("type", "image"))), listOf(waiting), more = true)
         assertEquals(listOf(ChatRows.MORE, "c1", "m3"), rows.map { it.key })
@@ -53,7 +53,7 @@ class ChatRowsTest {
     }
 
     @Test fun aSentMessageKeepsItsRowWhenTheWindowCopyHasNoClientId() {
-        val outbox = listOf(JSONObject().put("client_id", "c1").put("id", "m1").put("status", "sent").put("body", JSONObject().put("text", "hi")))
+        val outbox = listOf(Pending("c1", null, JSONObject().put("text", "hi"), Pending.SENT, "m1"))
         val pendingOnly = ChatRows.build(emptyList(), outbox, false, { throw AssertionError("not drawn") }, { null }, { null })
         val window = listOf(JSONObject().put("id", "m1").put("seq", 9).put("type", "say").put("text", "hi"))
         val withCopy = ChatRows.build(window, emptyList(), false, { throw AssertionError("not drawn") }, { null }, { null }, sentAs = { if (it == "m1") "c1" else null })

@@ -36,7 +36,7 @@ export const CODEX_CAPABILITIES: CapabilitySpec[] = [
   { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The owner's own Codex App (the desktop app on this computer, his workbench, not your helper agents): its sessions, past ones included: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open now; x.codex.send and x.codex.open open it there.",
     input_schema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many (default 30)." }, helpers: { type: "boolean", description: "Also the sessions your own helper agents ran on this computer's Codex runtime (default false: the owner's only)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
-  { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for.",
+  { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for. Each item has `at` (its place in its turn), `id` when Codex gives one, and on the owner's messages sent with x.codex.send `client_id` (the one it was sent with).",
     input_schema: { type: "object", additionalProperties: false, required: ["thread"], properties: { thread: THREAD, turns: { type: "integer", minimum: 1, maximum: 20, description: "How many of the last turns (default 6)." }, max_chars: { type: "integer", minimum: 40, maximum: 4000, description: "Cut each text to this length (default 600)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
   { name: "x.codex.approvals", label: "在看 Codex 等的批准", description: "The requests Codex is waiting for the owner to approve, across the sessions the app has open: which session, what it wants to run or change.",
@@ -46,7 +46,7 @@ export const CODEX_CAPABILITIES: CapabilitySpec[] = [
     input_schema: { type: "object", additionalProperties: false, required: ["thread"], properties: { thread: THREAD } },
     effect: "act", timeout_ms: 60_000, ...REMOTE },
   { name: "x.codex.new", label: "在开新的 Codex 会话", description: "Start a new Codex session in a project (cwd: its working directory, as x.codex.sessions shows them, or any absolute path) with its first message; it opens in the Codex app on this computer. Returns the new session's id (thread).",
-    input_schema: { type: "object", additionalProperties: false, required: ["cwd", "text"], properties: { cwd: { type: "string", minLength: 1, description: "The project's directory." }, text: { type: "string", minLength: 1, maxLength: 20_000 }, title: { type: "string", maxLength: 80, description: "The session's name (default: the first line of text)." } } },
+    input_schema: { type: "object", additionalProperties: false, required: ["cwd", "text"], properties: { cwd: { type: "string", minLength: 1, description: "The project's directory." }, text: { type: "string", minLength: 1, maxLength: 20_000 }, title: { type: "string", maxLength: 80, description: "The session's name (default: the first line of text)." }, client_id: { type: "string", minLength: 1, maxLength: 80, description: "Makes a repeat of the same request answer the session it made instead of making another." } } },
     effect: "act", timeout_ms: 130_000, ...REMOTE },
   { name: "x.codex.send", label: "在给 Codex 发消息", description: "Say something to a Codex session, a past one too (it is opened in the app first): a new turn when it is idle, added to the running turn when it is busy. If the answer is lost the result is unknown and nothing is sent again by itself; read the session before repeating. Pass the same client_id to repeat safely.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread", "text"], properties: { thread: THREAD, text: { type: "string", minLength: 1, maxLength: 20_000 }, client_id: { type: "string", minLength: 1, maxLength: 80, description: "Makes a repeat of the same send a no-op." } } },
@@ -148,6 +148,14 @@ export class CodexApp {
   private readonly pending = new Map<string, Pending>();
   private readonly seen = new Map<string, Seen>();
   private readonly sends = new Map<string, { at: number; done: Promise<Rec> }>();
+  private readonly creates = new Map<string, { at: number; done: Promise<Rec> }>();
+  /**
+   * What was sent from here, per session, in order: the client id, the words, and how many of the owner's messages the
+   * session had before it. The session view names the owner's message each one became with its client id (when the app
+   * itself does not say), so the phone can tell its waiting message from the one the session shows — the first of the
+   * owner's messages after that point with those words, each taken once. Kept ten minutes, as the sends are.
+   */
+  private readonly claims = new Map<string, { clientId: string; text: string; from: number; at: number }[]>();
   private listed: { at: number; rows: Listed[] } | null = null;
   private listing: Promise<Listed[]> | null = null;
   /** Sessions made here (x.codex.new): known to exist before the runtime lists them. */
@@ -368,7 +376,7 @@ export class CodexApp {
       id: conv.id, title: this.titleOf(raw, conv.id), open: true,
       state: approvals.length ? "waiting_approval" as const : active ? "running" as const : "idle" as const,
       ...(str(raw.cwd) ? { cwd: raw.cwd as string } : {}),
-      turns: turns.slice(-turnCount).map((t) => turnView(t, max)),
+      turns: turns.slice(-turnCount).map((t) => turnView(t, max, this.claimed(conv.id, turns))),
       approvals,
     };
   }
@@ -421,7 +429,7 @@ export class CodexApp {
     const saved = await (this.o.readThread ?? readWithAppServer)(id).catch(() => null);
     if (!saved) throw new WordError("not_found", `Codex has no session ${id}`);
     const all = canonicalTurns(saved);
-    return { id, title: this.titleOf(saved, id), open: false, state: "idle" as const, ...(str(saved.cwd) ? { cwd: saved.cwd as string } : {}), turns: all.slice(-turns).map((t) => turnView(t, max)), approvals: [] };
+    return { id, title: this.titleOf(saved, id), open: false, state: "idle" as const, ...(str(saved.cwd) ? { cwd: saved.cwd as string } : {}), turns: all.slice(-turns).map((t) => turnView(t, max, this.claimed(id, all))), approvals: [] };
   }
 
   async approvals() {
@@ -481,7 +489,19 @@ export class CodexApp {
    * A new session in a project (its working directory), with its first message. The app has no way to be asked for a new
    * session, so it is made by the Codex runtime (named, so it is kept), opened in the app like a past one, and spoken to there.
    */
-  async create(cwd: string, text: string, title?: string): Promise<Rec> {
+  async create(cwd: string, text: string, title?: string, clientId?: string): Promise<Rec> {
+    if (!clientId) return this.make(cwd, text, title, randomUUID());
+    const key = `${cwd}\u0000${clientId}`;
+    const again = this.creates.get(key);
+    if (again) return { ...(await again.done), repeated: true };
+    const done = this.make(cwd, text, title, clientId);
+    this.creates.set(key, { at: this.o.now(), done });
+    for (const [k, v] of this.creates) if (this.o.now() - v.at > 600_000) this.creates.delete(k);
+    done.catch(() => this.creates.delete(key));
+    return done;
+  }
+
+  private async make(cwd: string, text: string, title: string | undefined, clientId: string): Promise<Rec> {
     await this.ready();
     if (!isAbsolute(cwd) || !(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new WordError("bad_request", `${cwd} is not a directory on this computer`, { recovery_hint: "use the cwd of a session from x.codex.sessions, or an absolute path" });
     const name = clip(title?.trim() || text.trim().split("\n")[0], 60);
@@ -490,7 +510,7 @@ export class CodexApp {
     catch (error) { throw new WordError("failed", `Codex could not make the session: ${clip(errorText(error), 200)}`); }
     if (this.listed) this.listed.at = 0;
     this.made.add(id);
-    const sent = await this.send(id, text);
+    const sent = await this.send(id, text, clientId);
     return { thread: id, title: name, cwd, ...sent };
   }
 
@@ -531,12 +551,13 @@ export class CodexApp {
   private async deliver(id: string, text: string, messageId: string): Promise<Rec> {
     const input = [{ type: "text", text, text_elements: [] }];
     const conv = await this.opened(id);
+    this.claim(id, messageId, text, conv.raw);
     const uncertain = (error: unknown): never => {
       throw new WordError("result_unknown", `Codex did not confirm the message (${errorText(error)}); read the session before sending again`, { recovery_hint: "x.codex.session" });
     };
     const start = async (): Promise<Rec> => {
       const request = { threadId: id, input, clientUserMessageId: messageId };
-      const restoreMessage = { id: randomUUID(), text, context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], workspaceRoots: str(conv.raw.cwd) ? [conv.raw.cwd] : [] }, cwd: str(conv.raw.cwd) ?? "", createdAt: this.o.now() };
+      const restoreMessage = { id: messageId, text, context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], workspaceRoots: str(conv.raw.cwd) ? [conv.raw.cwd] : [] }, cwd: str(conv.raw.cwd) ?? "", createdAt: this.o.now() };
       // The app's own windows send `{request, context}`; the older flat form is kept beside it. UNVERIFIED against a live app.
       const turnStart = { request, context: { restoreMessage, attachments: [], commentAttachments: [] }, ...request };
       try { await this.toOwner(id, "thread-follower-start-turn", { conversationId: id, turnStart }, 120_000); }
@@ -545,7 +566,7 @@ export class CodexApp {
     };
     if (!isActive(conv.raw, canonicalTurns(conv.raw))) return start();
     // Never decide from a view that may be a moment old: ask to join the turn, and start one only when the app says it had ended.
-    const restore = { id: randomUUID(), text, context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], workspaceRoots: str(conv.raw.cwd) ? [conv.raw.cwd] : [] }, cwd: str(conv.raw.cwd) ?? "", createdAt: this.o.now() };
+    const restore = { id: messageId, text, context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], workspaceRoots: str(conv.raw.cwd) ? [conv.raw.cwd] : [] }, cwd: str(conv.raw.cwd) ?? "", createdAt: this.o.now() };
     try {
       await this.toOwner(id, "thread-follower-steer-turn", { conversationId: id, clientUserMessageId: messageId, input, serviceTier: null, attachments: [], additionalContext: null, restoreMessage: restore }, 120_000);
       return { sent: true, mode: "steer" };
@@ -556,6 +577,29 @@ export class CodexApp {
       if (UNCERTAIN.test(message)) return uncertain(error);
       throw new WordError("failed", clip(message, 300));
     }
+  }
+
+  /** Notes a send to [thread] (see [claims]). */
+  private claim(thread: string, clientId: string, text: string, raw: Rec) {
+    const now = this.o.now();
+    const list = (this.claims.get(thread) ?? []).filter((c) => now - c.at <= 600_000 && c.clientId !== clientId);
+    list.push({ clientId, text, from: ownerMessages(canonicalTurns(raw)).length, at: now });
+    this.claims.set(thread, list);
+  }
+
+  /** The client id of each of the owner's messages that came from a send here, by the message's place among the owner's messages. */
+  private claimed(thread: string, turns: Rec[]): Map<Rec, string> {
+    const out = new Map<Rec, string>();
+    const mine = ownerMessages(turns);
+    const taken = new Set<number>();
+    mine.forEach((m, i) => { const own = echoedId(m); if (own) { out.set(m, own); taken.add(i); } });
+    const echoed = new Set(out.values());
+    for (const c of this.claims.get(thread) ?? []) {
+      if (echoed.has(c.clientId)) continue;
+      const i = mine.findIndex((m, at) => at >= c.from && !taken.has(at) && userText(m) === c.text);
+      if (i >= 0) { out.set(mine[i], c.clientId); taken.add(i); }
+    }
+    return out;
   }
 
   async stop(id: string) {
@@ -610,7 +654,7 @@ export class CodexApp {
       case "x.codex.new": {
         const cwd = str(args.cwd), text = str(args.text);
         if (!cwd || !text) throw new WordError("bad_request", "cwd and text are required");
-        data = await this.create(cwd, text, str(args.title) ?? undefined); break;
+        data = await this.create(cwd, text, str(args.title) ?? undefined, str(args.client_id) ?? undefined); break;
       }
       case "x.codex.send": { const text = str(args.text); if (!text) throw new WordError("bad_request", "text is required"); data = await this.send(thread(), text, str(args.client_id) ?? undefined); break; }
       case "x.codex.stop": data = await this.stop(thread()); break;
@@ -682,10 +726,27 @@ function textOf(v: unknown): string {
   return r ? textOf(r.text ?? r.content ?? r.summary ?? "") : "";
 }
 
-function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string } {
+const USER_TYPES = new Set(["userMessage", "steeringUserMessage"]);
+/** The owner's messages of the session, in order. */
+function ownerMessages(turns: Rec[]): Rec[] {
+  return turns.flatMap((t) => (Array.isArray(t.items) ? t.items : []).map(rec).filter((i): i is Rec => !!i && USER_TYPES.has(String(i.type))));
+}
+function userText(item: Rec): string { return textOf(String(item.type) === "steeringUserMessage" ? rec(item.restoreMessage)?.text ?? item.content ?? item.text : item.content ?? item.text); }
+/** The client id the app itself keeps on an owner's message, if it keeps one (UNVERIFIED which field a live app fills). */
+function echoedId(item: Rec): string | undefined {
+  return str(item.clientUserMessageId) ?? str(item.clientId) ?? str(item.client_id) ?? str(rec(item.restoreMessage)?.id) ?? undefined;
+}
+
+/**
+ * One item of a turn: `at` is its place in the whole turn (the view shows the last 30, so a place in the view would point at
+ * another item as the turn grows); `id` is the app's own id when it has one; `client_id` names an owner's message by the
+ * client id it was sent with.
+ */
+function itemView(item: Rec, max: number, at = 0, clientId?: string): { kind: string; text?: string; status?: string; at: number; id?: string; client_id?: string } {
   const type = String(item.type ?? "item");
   const status = str(item.status) ?? undefined;
-  const text = (kind: string, t: unknown) => ({ kind, text: redactText(clip(textOf(t), max)), ...(status ? { status } : {}) });
+  const ids = { at, ...(str(item.id) ? { id: item.id as string } : {}), ...(clientId ? { client_id: clientId } : {}) };
+  const text = (kind: string, t: unknown) => ({ kind, text: redactText(clip(textOf(t), max)), ...(status ? { status } : {}), ...ids });
   switch (type) {
     case "userMessage": return text("user", item.content ?? item.text);
     case "steeringUserMessage": return text("user", rec(item.restoreMessage)?.text ?? item.content ?? item.text);
@@ -696,13 +757,13 @@ function itemView(item: Rec, max: number): { kind: string; text?: string; status
     case "mcpToolCall": return text("tool", [item.server, item.tool].filter(Boolean).join("."));
     case "webSearch": return text("search", item.query);
     case "todo-list": return text("plan", (Array.isArray(item.plan) ? item.plan : []).map((s) => str(rec(s)?.step)).filter(Boolean).join("; "));
-    default: return { kind: type, ...(status ? { status } : {}) };
+    default: return { kind: type, ...(status ? { status } : {}), ...ids };
   }
 }
 
-function turnView(turn: Rec, max: number) {
-  const items = (Array.isArray(turn.items) ? turn.items : []).map(rec).filter((i): i is Rec => !!i);
-  return { id: str(turn.id) ?? str(turn.turnId) ?? "", status: str(turn.status) ?? "unknown", items: items.slice(-30).map((i) => itemView(i, max)) };
+function turnView(turn: Rec, max: number, claimed: Map<Rec, string> = new Map()) {
+  const items = (Array.isArray(turn.items) ? turn.items : []).map(rec).map((i, at) => [i, at] as const).filter((p): p is readonly [Rec, number] => !!p[0]);
+  return { id: str(turn.id) ?? str(turn.turnId) ?? "", status: str(turn.status) ?? "unknown", items: items.slice(-30).map(([i, at]) => itemView(i, max, at, claimed.get(i))) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

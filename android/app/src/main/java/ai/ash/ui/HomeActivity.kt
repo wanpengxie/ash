@@ -9,8 +9,6 @@ import android.os.Looper
 import android.view.View
 import android.widget.FrameLayout
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsAnimationCompat
-import androidx.core.view.WindowInsetsCompat
 import ai.ash.R
 import ai.ash.apps.Ash
 import ai.ash.apps.AppsPane
@@ -40,11 +38,15 @@ class HomeActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     private var themedNight = false
+    /** What the activity was given when it was made again (the Codex page's route waits here until the page is made). */
+    private var saved: Bundle? = null
+    private val backRouter = BackRouter(this, ::canGoBack, ::goBack)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         themedNight = night
         setTheme(if (themedNight) R.style.Ash_Dark else R.style.Ash_Light)
         super.onCreate(savedInstanceState)
+        saved = savedInstanceState
         ai.ash.apps.Ui.systemBars(this)
         port = HumanPort(Link.get(this).chat)
         files = ChatFiles(this, port)
@@ -53,13 +55,21 @@ class HomeActivity : Activity() {
         home.composeHook = { text, _ -> showTab(HomeTab.CHAT); chatScreen.compose(text) }
         home.jumpHook = { id -> showTab(HomeTab.CHAT); chatScreen.jumpTo(id) }
         home.onName = { name -> chatScreen.setName(name) }
+        home.onShownChange = {
+            backRouter.sync()
+            syncChatShown()
+            // Opening/closing the home overlay changes the IME owner even if the tab did not change.
+            if (::content.isInitialized) ViewCompat.requestApplyInsets(content)
+        }
+        chatScreen.restore(savedInstanceState)
         // Edge to edge (targetSdk 35): the frame keeps clear of the bars and the keyboard; the chat is laid out in what is left.
         content = FrameLayout(this).apply {
             setBackgroundColor(AshUi.p(this@HomeActivity).bg)
             addView(chatScreen.view, FrameLayout.LayoutParams(-1, -1))
             addView(home.view, FrameLayout.LayoutParams(-1, -1))
         }
-        keyboardInsets()
+        // The window's one insets owner: the chat or a Codex session in front rides the keyboard, any other page is laid out above it.
+        WindowInsetsOwner.install(content, front = ::frontDeck)
         setContentView(content)
         val saved = HomeTab.of(savedInstanceState?.getString(STATE_TAB))
         val focus = intent?.getBooleanExtra(EXTRA_FOCUS_INPUT, false) == true
@@ -95,45 +105,19 @@ class HomeActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_TAB, tab.key)
+        chatScreen.save(outState)
+        // The Codex page keeps its route; not made this time, the route it had before is kept for the next time.
+        codexPane?.save(outState) ?: saved?.getBundle(CodexPane.STATE)?.let { outState.putBundle(CodexPane.STATE, it) }
     }
 
     /** The chat is what the owner sees (not another tab, not a home page over it). */
     private fun chatInFront() = tab == HomeTab.CHAT && home.view.visibility != View.VISIBLE
 
-    /**
-     * The keyboard never lays the chat out: the frame keeps clear of the bars only, and the chat's conversation-and-input
-     * piece stands on the keyboard, moving with it frame by frame and staying there when it stops ([ChatScreen.keyboard], a
-     * move of the drawing). Coming up or going down, nothing in the conversation is laid out again, so nothing on screen
-     * changes place but the piece itself. (While the keyboard is up the top of the conversation is under the header; a drag
-     * of the conversation puts the keyboard away.) Other tabs and the home pages are laid out above the keyboard, as before.
-     */
-    private fun keyboardInsets() {
-        var moving = false
-        val ime = WindowInsetsCompat.Type.ime()
-        fun keyboardOf(insets: WindowInsetsCompat) =
-            (insets.getInsets(ime).bottom - insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom).coerceAtLeast(0)
-        ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            val keyboard = keyboardOf(insets)
-            val chat = chatInFront()
-            // While the keyboard moves, the piece follows it in onProgress; this answer is where it will end.
-            if (!moving) chatScreen.keyboard(if (chat) keyboard else 0)
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom + if (chat) 0 else keyboard)
-            WindowInsetsCompat.CONSUMED
-        }
-        ViewCompat.setWindowInsetsAnimationCallback(content, object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
-            override fun onPrepare(animation: WindowInsetsAnimationCompat) { if (animation.typeMask and ime != 0) moving = true }
-            override fun onProgress(insets: WindowInsetsCompat, running: MutableList<WindowInsetsAnimationCompat>): WindowInsetsCompat {
-                if (moving && chatInFront()) chatScreen.keyboard(keyboardOf(insets))
-                return insets
-            }
-            override fun onEnd(animation: WindowInsetsAnimationCompat) {
-                if (animation.typeMask and ime == 0) return
-                moving = false
-                ViewCompat.requestApplyInsets(content)
-            }
-        })
-        ViewCompat.requestApplyInsets(content)
+    /** The page in front that rides the keyboard ([KeyboardDeck]): the chat, or the Codex page; null for the others. */
+    private fun frontDeck(): KeyboardDeck? = when {
+        chatInFront() -> chatScreen
+        tab == HomeTab.CODEX -> codexPane
+        else -> null
     }
 
     /** Brings [next] to the front: the chat, or the apps over it (made the first time it is wanted). */
@@ -144,8 +128,8 @@ class HomeActivity : Activity() {
                 .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)) }
         }
         if (next == HomeTab.CODEX && codexPane == null) {
-            codexPane = CodexPane(this, port) { showTab(HomeTab.CHAT) }
-                .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)) }
+            codexPane = CodexPane(this, port, saved) { showTab(HomeTab.CHAT) }
+                .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)); it.onRouteChange = { backRouter.sync() } }
         }
         if (next != HomeTab.CHAT) chatScreen.dropKeyboard()
         chatScreen.view.visibility = if (next == HomeTab.CHAT) View.VISIBLE else View.GONE
@@ -154,8 +138,16 @@ class HomeActivity : Activity() {
         codexPane?.shown(next == HomeTab.CODEX && resumed)
         if (next == HomeTab.APPS && resumed) appsPane?.refresh()
         syncFront()
+        backRouter.sync()
+        syncChatShown()
         ViewCompat.requestApplyInsets(content)
     }
+
+    /**
+     * The chat reads, ticks and tells the kernel it is seen only while it is: the activity in front and the chat its visible
+     * route (not another tab, not her pages over it; MOBILE-ARCH §3.6).
+     */
+    private fun syncChatShown() { if (::chatScreen.isInitialized) chatScreen.shown(resumed && chatInFront()) }
 
     /** What the rest of Ash goes by to know the owner is looking at the chat: not when the apps tab is in front. */
     private fun syncFront() {
@@ -173,7 +165,7 @@ class HomeActivity : Activity() {
         LeaseState.refresh()
         HandRuntime.appOpened(this)
         Link.get(this).presence.tell()
-        chatScreen.shown(true)
+        syncChatShown()
         if (tab == HomeTab.APPS) appsPane?.refresh()
         codexPane?.shown(tab == HomeTab.CODEX)
         // The kernel package: not installed, the guide's first step offers to install it (once); not running, it is started from here (in front, the app may).
@@ -207,13 +199,20 @@ class HomeActivity : Activity() {
         if (nowNight != themedNight) recreate()
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (tab == HomeTab.APPS) { if (appsPane?.back() != true) showTab(HomeTab.CHAT); return }
-        if (tab == HomeTab.CODEX) { if (codexPane?.back() != true) showTab(HomeTab.CHAT); return }
-        if (home.back()) return
-        moveTaskToBack(true)
+    /** Somewhere to go back to: another tab than the chat, or her home pages over it. At the chat itself back is the system's. */
+    private fun canGoBack() = tab != HomeTab.CHAT || home.view.visibility == View.VISIBLE
+
+    private fun goBack() {
+        when {
+            tab == HomeTab.APPS -> if (appsPane?.back() != true) showTab(HomeTab.CHAT)
+            tab == HomeTab.CODEX -> if (codexPane?.back() != true) showTab(HomeTab.CHAT)
+            else -> home.back()
+        }
     }
+
+    /** Before Android 13 (and on 13, which reads the opt-in only for the whole app): the same route as [backRouter]. */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() { if (!backRouter.onBackPressed()) super.onBackPressed() }
 
     override fun onDestroy() {
         ai.ash.host.AppState.homePageLive = false
