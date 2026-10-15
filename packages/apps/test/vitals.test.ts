@@ -14,7 +14,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { checkManifest } from "../../core/src/edges/apps/check";
-import { validateCard } from "../../core/src/services/widgets/card";
+import { validateCard } from "../../sdk/src/card";
 import { INVARIANTS as HUB_INVARIANTS } from "../../core/src/services/health/budgets";
 import { bundleApp } from "../bundle.mjs";
 

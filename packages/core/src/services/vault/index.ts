@@ -7,7 +7,7 @@
  *   set / delete               the owner (keys page, fill-in card).
  *   put                        an agent stores a key it obtained; write-only, it cannot replace the owner's or a connection's.
  *   generate                   the hub makes a random secret.
- *   request                    an agent asks the owner for a key: the entry waits on the keys page and the owner gets a card.
+ *   request                    an agent asks the owner for a key: a one-field form card in the conversation (person:owner/form).
  *   services / connect         the hub's OAuth connections: what can be connected, start one (oauth.ts).
  *
  * Values live sealed in the vault; what is not secret (label, kind, service, status, expiry) lives in `vault_meta`.
@@ -22,6 +22,7 @@ import { wordsOf } from "../../../../sdk/src/words";
 import type { Ledger } from "../../kernel/ledger";
 import type { Router, Vault } from "../../kernel/types";
 import { REF_PATTERN } from "../../kernel/vault";
+import { missingRef } from "../../kernel/vault/refs";
 import { createOAuth, PROVIDERS, providerOf, type OAuth, type TokenSet } from "./oauth";
 
 export const VAULT_ID = "service:vault";
@@ -43,16 +44,20 @@ export interface VaultServiceOptions {
   appCredential?: (app: string, ref: string) => boolean;
   now?: () => number;
   log?: (message: string, error?: unknown) => void;
+  /** How long a fill-in card stays open after its key was saved (default CARD_GRACE_MS). */
+  cardGraceMs?: number;
 }
 
 interface Row { ref: string; label: string; kind: string; service: string | null; why: string | null; help_url: string | null; account: string | null;
   scopes: string | null; expires_at: number | null; status: string | null; origin: string | null; requested_by: string | null; last_used_at: number | null }
 
 const SELF: Caller = { member: VAULT_ID, via: "service", local: true };
+/** How long a fill-in card stays open after its key was saved, for the answer the owner's screen sends right after saving. */
+const CARD_GRACE_MS = 10_000;
 const COLUMNS: Record<string, string> = { service: "TEXT", why: "TEXT", help_url: "TEXT", account: "TEXT", scopes: "TEXT", expires_at: "INTEGER", status: "TEXT",
   origin: "TEXT", requested_by: "TEXT", last_used_at: "INTEGER" };
 
-export function createVaultService(options: VaultServiceOptions): Member & { oauth: OAuth; token(ref: string): Promise<string> } {
+export function createVaultService(options: VaultServiceOptions): Member & { oauth: OAuth; token(ref: string): Promise<string>; resolve(ref: string): Promise<string>; usable(ref: string): "ok" | "missing" | "broken"; labelOf(ref: string): string } {
   const { vault, router } = options;
   const now = options.now ?? Date.now;
   const db = options.ledger.db();
@@ -135,6 +140,22 @@ export function createVaultService(options: VaultServiceOptions): Member & { oau
     oauth,
     /** For the hub's service members: a working token of the connection [ref]; its use is noted. */
     token: tokenOf,
+    /**
+     * The value behind a `$vault.<ref>` (kernel/vault/refs), for where the hub puts it in: a command's environment, an app's,
+     * an agent runtime's or an MCP server's. A connection gives a working access token. Its use is noted; it is never logged.
+     */
+    async resolve(ref: string): Promise<string> {
+      if (!REF_PATTERN.test(ref) || !vault.list().some((e) => e.ref === ref)) throw missingRef(ref, "missing");
+      const e = entry(ref);
+      if (e.status === "broken") throw missingRef(ref, "broken");
+      if (e.kind === "oauth") return tokenOf(ref);
+      const value = vault.use(ref);
+      if (value === null) throw missingRef(ref, "missing");
+      db.prepare("UPDATE vault_meta SET last_used_at=? WHERE ref=?").run(now(), ref);
+      return value;
+    },
+    labelOf: (ref: string) => entry(ref).label,
+    usable: (ref: string) => !REF_PATTERN.test(ref) || !vault.list().some((e) => e.ref === ref) ? "missing" : entry(ref).status === "broken" ? "broken" : "ok",
     async handle(msg: Message, ctx: HandleContext): Promise<WordResult | void> {
       const body = (msg.body ?? {}) as Record<string, unknown>;
       // A value is only in the original request; the ledger's copy of the body is the masked placeholder.
@@ -151,10 +172,13 @@ export function createVaultService(options: VaultServiceOptions): Member & { oau
           if (typeof raw.value !== "string") throw new WordError("bad_request", "value must be the secret text");
           store(ref, raw.value);
           const r = row(ref);
-          upsert(ref, { label: typeof raw.label === "string" ? raw.label : r?.label ?? KNOWN[ref]?.label ?? ref, kind: kindOf(typeof raw.kind === "string" ? raw.kind : r?.kind ?? KNOWN[ref]?.kind),
+          // An entry that was asked for keeps what it was asked as (a key stays a key even when typed into a password box).
+          upsert(ref, { label: r?.label ?? (typeof raw.label === "string" ? raw.label : KNOWN[ref]?.label ?? ref), kind: kindOf(r?.kind ?? (typeof raw.kind === "string" ? raw.kind : KNOWN[ref]?.kind)),
             status: "ok", origin: "owner" });
           announce(ref, "saved");
-          closeCard(ref);
+          // Saved from the card itself: its answer follows at once. Saved elsewhere (the keys page): the card is no longer needed.
+          const open = cards.get(ref);
+          if (open) setTimeout(() => { if (cards.get(ref) === open) closeCard(ref); }, options.cardGraceMs ?? CARD_GRACE_MS).unref?.();
           if (r?.requested_by) tell(r.requested_by, `主人存好了 ${ref}（${r.label}）。`);
           return { data: { ref, configured: true } };
         }
@@ -185,17 +209,15 @@ export function createVaultService(options: VaultServiceOptions): Member & { oau
           const help = typeof body.help_url === "string" && /^https:\/\//.test(body.help_url) ? body.help_url : undefined;
           upsert(ref, { label, kind: kindOf(String(body.kind ?? "key")), why, status: "waiting", origin: "owner", requested_by: ctx.caller.member,
             ...(help ? { help_url: help } : {}), ...(typeof body.service === "string" ? { service: body.service } : {}) });
-          // The owner's card: filling in happens on the keys page (the card's button opens it there), never in the conversation.
-          const card = { title: `需要你填：${label}`, detail: [why, help ? `去哪拿：${help}` : ""].filter(Boolean).join("\n"), human_kind: "question",
-            // The option id `vault_fill` makes the owner's side open the keys page.
-            options: [{ id: "vault_fill", label: "去填写" }, { id: "no", label: "不给" }], expires_at: now() + 7 * 86_400_000 };
+          // The owner's card: one password box in the conversation, filled in and saved right there (the value goes from the owner's screen into the vault).
+          const card = { title: `需要你填：${label}`, why: [why, help ? `去哪拿：${help}` : ""].filter(Boolean).join("\n"),
+            schema: { type: "object", properties: { value: { type: "string", title: label } }, required: ["value"] }, secret: { value: ref }, expires_at: now() + 7 * 86_400_000 };
           closeCard(ref);
           const controller = new AbortController();
           cards.set(ref, controller);
-          void router.send({ to: OWNER_ID, kind: "request", word: "ask", body: card }, SELF, { signal: controller.signal }).then((reply) => {
+          void router.send({ to: OWNER_ID, kind: "request", word: "form", body: card }, SELF, { signal: controller.signal }).then((reply) => {
             if (cards.get(ref) === controller) cards.delete(ref);
-            const choice = reply.ok ? (reply.result?.data as { choice?: string } | undefined)?.choice : undefined;
-            if (choice === "no") tell(ctx.caller.member, `主人不给 ${ref}（${label}）。换个不用它的办法，或问他为什么。`);
+            if (!reply.ok && reply.error.code === "cancelled" && !controller.signal.aborted) tell(ctx.caller.member, `主人不给 ${ref}（${label}）。换个不用它的办法，或问他为什么。`);
           }, (e) => log("request card failed", e));
           return { data: { ref, status: "waiting" } };
         }

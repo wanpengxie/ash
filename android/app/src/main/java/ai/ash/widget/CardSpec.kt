@@ -147,11 +147,12 @@ object CardSpec {
 
     private fun box(raw: JSONArray?): FloatArray? = raw?.let { a -> FloatArray(4) { a.optDouble(it, 0.0).toFloat() } }
 
-    private fun style(o: JSONObject?): CStyle {
+    /** A component's `style`; [color] reads its colours (the conversation maps theme names to the app's own palette). */
+    fun style(o: JSONObject?, color: (Any?) -> Tint? = ::tint): CStyle {
         if (o == null) return CStyle()
         fun f(key: String) = if (o.has(key)) o.optDouble(key).toFloat() else null
         return CStyle(
-            background = tint(o.opt("background")), color = tint(o.opt("color")), cornerRadius = f("cornerRadius"),
+            background = color(o.opt("background")), color = color(o.opt("color")), cornerRadius = f("cornerRadius"),
             padding = box(o.optJSONArray("padding")), margin = box(o.optJSONArray("margin")), width = dim(o.opt("width")), height = dim(o.opt("height")),
             fontSize = f("fontSize"), fontWeight = if (o.has("fontWeight")) o.optInt("fontWeight") else null,
             italic = if (o.has("italic")) o.optBoolean("italic") else null, underline = o.optBoolean("underline"),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Message } from "../../../../sdk/src/message";
 import { createWidgetsService, STATE_WORD } from "../../../src/services/widgets";
-import { validateCard } from "../../../src/services/widgets/card";
+import { validateCard } from "../../../../sdk/src/card";
 import { openLedger } from "../../kernel/ledger/helpers";
 import { agent, call, code, ctxOf, fakeRouter, msg, owner } from "../support";
 

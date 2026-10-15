@@ -362,8 +362,43 @@ add("person:owner", "notice", "request", obj({ title: { type: "string", minLengt
   { callers: TO_OWNER, effect: "act", label: "在给你发通知", description: "A notification on the owner's phone that is not part of the conversation: no message is added, nobody answers it, and it rings as a heads-up does (quiet hours, dedupe_key). Opening it opens the page named by open (codex: the Codex page). For news of his own tools, such as his Codex App, that neither the conversation nor an agent needs to keep." });
 add("person:owner", "react", "request", obj({ message_id: id, emoji: nonempty }, ["message_id", "emoji"]), accepted,
   { callers: TO_OWNER, effect: "act", label: "在给消息加表情", description: "React to one existing message with an emoji; an unknown message id fails. Not for a new explanation: use say for that." });
-add("person:owner", "show", "request", obj({ card: CARD_SCHEMA }, ["card"]), accepted,
-  { callers: TO_OWNER, effect: "act", label: "在给你看卡片", description: "Show the owner a file, image, link, a permission page to switch on, or choices. Showing choices does not itself authorize anything. A permission card only names an Android setting the owner must switch on; calling a capability asks the owner by itself." });
+/** A card's name in the conversation (default: the id of the message that showed it). */
+const chatCardId: JsonSchema = { type: "string", pattern: "^[A-Za-z0-9_.-]{1,64}$" };
+/** What a card in the conversation is written in: the same A2UI as a home-screen card (widget.card.put), for the conversation. */
+export const CHAT_A2UI_GUIDE = "a2ui is the same A2UI as a home-screen card (widget.card.put): {components:[{id, component, ...}], root?:'root', data?:{...}, theme?}. In the conversation it also takes " +
+  "TextField {label, value, variant: shortText|longText|number|obscured, placeholder} (obscured is a password box: what is typed is never in data and never reaches you; ask for a password with person:owner/form), " +
+  "DateTimeInput {label, value: ISO text, enableDate (default true), enableTime}, Slider {label, value, min, max, step}, Table {columns: [titles], rows: [[cells]] or {path}}, " +
+  "and Html {html: one self-contained HTML document with inline CSS and JS, height: dp} for what the components cannot show (a calculator, a game, an unusual chart): it runs sandboxed with no network; " +
+  "the theme is in CSS variables --ash-bg, --ash-surface, --ash-text, --ash-text2, --ash-accent, --ash-line; ash.send(action, context) sends an action to you like a button. " +
+  "Inputs with value {path} write the owner's value into data on the phone itself: tabs, toggles, choices, sliders and typing need no round trip to you, and any Text or visible that reads such a path follows at once. " +
+  "A Button with action {event:{name, context?}} sends you the owner's message `[card <id>, action <name>] {context, data}` with the card's current data. Lists may scroll horizontally here. " +
+  "What cannot be drawn is left out and listed in problems; a component named but not given yet shows as a placeholder.";
+add("person:owner", "show", "request", { ...obj({ card: CARD_SCHEMA, a2ui: obj({}, [], true), id: chatCardId, text: { type: "string", maxLength: 2000 } }), oneOf: [{ required: ["card"], properties: { card: { type: "object" } } }, { required: ["a2ui"], properties: { a2ui: { type: "object" } } }] },
+  obj({ accepted: bool, card: str, problems: strings }, ["accepted"]),
+  { callers: TO_OWNER, effect: "act", label: "在给你看卡片", description: "Put a card in the conversation. Either card: a file, image, link, a permission page to switch on, or choices; or a2ui: any card you design — text, tables, charts, lists, images, tabs, buttons, inputs, a small sandboxed page — drawn natively in the chat, in the same card language as the home-screen cards. " +
+    "Show the owner what you want to show and ask for choices and input this way, in the conversation: never send them to another page for it. " +
+    "id names the card (default: this message's id) so card.update can change it later in place: a follow-up updates the card instead of sending another one. text is a short plain summary for notifications and screens that cannot draw the card (written from the card when left out). " +
+    "Answers {accepted, card, problems}: problems lists what was left out and why; fix it with card.update. A card that cannot be drawn at all is refused with the reason. Showing choices does not itself authorize anything. " + CHAT_A2UI_GUIDE });
+add("person:owner", "card.update", "request", obj({ id: chatCardId, a2ui: obj({}, [], true), data: { type: "object", description: "JSON pointer -> new value, merged into the card's data" }, text: { type: "string", maxLength: 2000 } }, ["id"]),
+  obj({ updated: bool, problems: strings }, ["updated"]),
+  { callers: TO_OWNER, effect: "act", label: "在更新卡片", description: "Change a card you showed in the conversation, where it is: a new a2ui (its layout), and/or data as {\"/pointer\": value} merged into its data model (keeps what the owner entered unless you set it). For a follow-up, a result arriving, or filling in a long card part by part. Only the card's creator may change it. Answers problems like show." });
+add("person:owner", "card.draft", "request", obj({ card: chatCardId, data: obj({}, [], true) }, ["card", "data"]),
+  obj({ card: str, plan: obj({}, [], true) }, ["card"]),
+  { callers: OWNER, label: "在记下卡片上填的", description: "What the owner has entered on a card so far (its whole data model), from the owner's screen: kept with the card so it is there again after a refresh, and when something on the card reads it, the card drawn again (plan). Nothing is sent to anyone; an action on the card carries the values." });
+const formField = obj({ type: choice("string", "number", "integer", "boolean"), title: str, description: str, default: any, enum: { type: "array", minItems: 1 }, examples: { type: "array" },
+  format: choice("date", "time", "date-time", "email", "uri", "multiline"), minimum: num, maximum: num, minLength: integer, maxLength: integer, pattern: str }, ["type"]);
+add("person:owner", "form", "request", obj({
+  title: nonempty, why: str,
+  schema: obj({ type: { const: "object" }, properties: { type: "object", additionalProperties: formField, minProperties: 1, maxProperties: 30 }, required: strings }, ["properties"]),
+  values: obj({}, [], true),
+  secret: { type: "object", additionalProperties: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$" }, description: "field -> vault name: a password box; its value goes straight into the vault" },
+  expires_at: num,
+}, ["title", "schema"]),
+  obj({ values: obj({}, [], true), secret: { type: "object", additionalProperties: obj({ ref: nonempty, masked: str }, ["ref", "masked"]) } }, ["values", "secret"]),
+  { callers: ["agent"], effect: "act", timeout_ms: 604_800_000, label: "在请你填写", description: "Ask the owner to fill in a form card in the conversation and wait for it: everything you need in one card (an address, a port, a user name and a password; a date and a choice …), filled in and sent right there. " +
+    "schema is a JSON Schema object: properties with type string|number|integer|boolean, title (the label), description, default, enum (a choice), examples, format (date, time, date-time, email, uri, multiline); required. values prefills. " +
+    "secret maps a field to a vault name: that field is a password box, and what the owner types goes from the phone straight into the vault under that name — you never see it; use it as $vault.<name> (workspace.bash env). " +
+    "Answers {values (the other fields), secret: {field: {ref, masked}}} when the owner sends it, or fails with cancelled when the owner declines. why says what it is for (shown on the card). Ends at expires_at (default 24 hours, at most 7 days)." });
 add("person:owner", "ask", "request", {
   ...obj({
     title: nonempty, detail: str, human_kind: choice("question", "confirmation"), allow_custom: bool,
@@ -384,9 +419,10 @@ add("person:owner", "open", "request", obj({ target: choice("activity", "upcomin
 // ===================================================================================================================
 add("agent:*", "say", "request", { type: "object", properties: {
     text: { type: "string" }, attachments: { type: "array", items: attachmentInput, minItems: 1 }, in_reply_to: id, option_id: id,
+    card: obj({ id: chatCardId, action: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,64}$" }, context: obj({}, [], true), data: obj({}, [], true) }, ["id", "action"]),
   }, additionalProperties: false, dependentRequired: { in_reply_to: ["option_id"], option_id: ["in_reply_to"] },
-  anyOf: [{ required: ["text"], properties: { text: { type: "string", minLength: 1 } } }, { required: ["attachments"], properties: { attachments: { type: "array", minItems: 1 } } }, { required: ["in_reply_to", "option_id"], properties: { in_reply_to: id, option_id: id } }] }, accepted,
-  { callers: OWNER, effect: "act", label: "在读你的消息", description: "The owner speaks to the agent, or answers an option card (in_reply_to and option_id together). Acknowledged at once and queued on the front lane; the agent's answer arrives later as a message." });
+  anyOf: [{ required: ["text"], properties: { text: { type: "string", minLength: 1 } } }, { required: ["attachments"], properties: { attachments: { type: "array", minItems: 1 } } }, { required: ["in_reply_to", "option_id"], properties: { in_reply_to: id, option_id: id } }, { required: ["card"], properties: { card: { type: "object" } } }] }, accepted,
+  { callers: OWNER, effect: "act", label: "在读你的消息", description: "The owner speaks to the agent, answers an option card (in_reply_to and option_id together), or acts on a card the agent showed (card: which card, which action, its context and the card's data as the owner left it; text is the button's label). Acknowledged at once and queued on the front lane; the agent's answer arrives later as a message." });
 add("agent:*", "tell", "request", obj({ text: nonempty, attachments: array(attachmentInput) }, ["text"]), accepted,
   { effect: "act", label: "在告诉帮手", description: "Tell the agent something. It joins the agent's back lane and the agent decides what to do with it; there is no direct answer to the sender." });
 add("agent:*", "ask", "request", obj({ text: nonempty }, ["text"]), obj({ answer: str }, ["answer"]),
@@ -718,9 +754,9 @@ add("service:widgets", "widget.card.get", "request", obj({ id: widgetCardId }, [
   obj({ card: widgetCardInfo, a2ui: obj({}, [], true), feedback: array(obj({ ts: nonnegativeSafe, feedback: nonempty, action: nonempty, card_updated_at: nonnegativeSafe, component: str, item: str },
     ["ts", "feedback", "action", "card_updated_at"])), preview: widgetPreviewImage, preview_problem: str, note: str }, ["card", "a2ui", "feedback"]),
   { label: "在看桌面卡片的内容", effect: "read", description: "Read one card back: what it says (its a2ui as it was put), size, owner, last update, the owner's answers recorded on it (feedback: what a feedback button said and when; card_updated_at tells which version of the card was answered), and the picture of how the home screen shows it now (the same image as widget.card.preview; preview_problem says why there is none). Use it to see what you showed before and how it was received; widget.list only gives titles." });
-add("service:widgets", "widget.card.validate", "request", obj({ a2ui: obj({}, [], true) }, ["a2ui"]),
-  obj({ valid: bool, problem: str, components: { type: "integer", minimum: 0 }, levels: { type: "integer", minimum: 0 }, actions: strings }, ["valid"]),
-  { label: "在检查桌面卡片", effect: "read", description: "Check a card's a2ui exactly as widget.card.put would, without saving or showing anything: valid, or the problem (which component, which property, why). levels is how deep it nests against Android's limit. Same format as widget.card.put." });
+add("service:widgets", "widget.card.validate", "request", obj({ a2ui: obj({}, [], true), surface: choice("widget", "chat") }, ["a2ui"]),
+  obj({ valid: bool, problem: str, problems: strings, components: { type: "integer", minimum: 0 }, levels: { type: "integer", minimum: 0 }, actions: strings }, ["valid"]),
+  { label: "在检查卡片", effect: "read", description: "Check a card's a2ui without saving or showing anything. surface widget (default): exactly as widget.card.put would — valid, or the problem (which component, which property, why); levels is how deep it nests against Android's limit. surface chat: as person:owner/show would — valid unless nothing can be drawn, and problems lists what would be left out." });
 add("service:widgets", "widget.card.remove", "request", obj({ id: widgetCardId }, ["id"]), obj({ removed: bool }, ["removed"]),
   { label: "在移除桌面卡片", effect: "write", description: "Remove a card (yours, or any other that is stale). Widgets that showed it ask the owner to pick another card." });
 add("service:widgets", "widget.tap", "request", obj({ card: widgetCardId, action: { type: "string", minLength: 1, maxLength: 64 }, component: { type: "string", minLength: 1, maxLength: 200 },

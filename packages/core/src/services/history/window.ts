@@ -56,12 +56,25 @@ export function createWindowReader(ledger: HistoryLedger, now: () => number = Da
       }
     }
     const item = projectRecords(facts).conversation.find((x) => x.id === id)!;
+    if (item.type === "card" && item.card?.type === "a2ui") item.card = card(id, item.card);
     // Aggregate repeated reactions rather than materializing every reaction event in browser or server JS.
     const reactions = db.prepare("SELECT json_extract(m.body,'$.emoji') AS emoji,count(*) AS count,min(m.id) AS id FROM message_relations r JOIN messages m ON m.seq=r.source_seq WHERE r.target=? AND r.kind='react' AND r.source_seq<=? GROUP BY emoji ORDER BY min(r.source_seq) LIMIT 51")
       .all(id, snap) as { emoji: string; count: number; id: string }[];
     item.reactions = reactions.slice(0, 50);
     item.reactions_more = reactions.length > 50;
     return item;
+  }
+  /** A card in the conversation as it is now (its newest version, what the owner entered, open or not): the human edge keeps it in owner_cards. */
+  let cardRow: ReturnType<typeof db.prepare> | null = null;
+  const cardStatement = () => cardRow ??= db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_cards'").get()
+    ? db.prepare("SELECT id,owner,text,state,form,plan,updated_at FROM owner_cards WHERE message=?") : null;
+  function card(message: string, shown: DisplayFact): DisplayFact {
+    const r = cardStatement()?.get(message) as { id: string; owner: string; text: string; state: string; form: string | null; plan: string; updated_at: number } | undefined;
+    if (!r) return { ...shown, state: "closed" };
+    const { problems: _problems, ...plan } = JSON.parse(r.plan) as Record<string, unknown>;
+    const form = r.form ? JSON.parse(r.form) as { secret: Record<string, string>; fields: Record<string, { title: string }>; expires_at: number } : null;
+    return { type: "a2ui", id: r.id, owner: r.owner, text: r.text, state: r.state, plan, updated_at: r.updated_at,
+      ...(form ? { form: { secret: form.secret, titles: Object.fromEntries(Object.entries(form.fields).map(([k, f]) => [k, f.title])), expires_at: form.expires_at } } : {}) };
   }
   function lastOwner(snap: number) {
     return rows("SELECT id,seq,ts FROM messages WHERE display_type='owner.say' AND seq<=? ORDER BY seq DESC LIMIT 1", snap)[0];

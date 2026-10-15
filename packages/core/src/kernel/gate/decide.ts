@@ -26,6 +26,11 @@ export const isPayment = (contract: WordContract, body?: unknown): boolean =>
 export const needsLease = (contract: WordContract): boolean => contract.foreground === true && contract.effect !== "read";
 const clock = (ms: number): string => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 
+/** How a 「以后都可以」 for a vault entry on a body is kept: a rule for everyone, on that body, for the word `vault:<name>`. */
+export const VAULT_SUBJECT = "*";
+export const VAULT_FINGERPRINT = "vault";
+export const vaultWord = (ref: string): string => `vault:${ref}`;
+
 export const ASSESS_MS = 10_000;
 /** The outer limit on the review model; the reviewer gives itself less, more for a long request. */
 export const REVIEW_MS = 30_000;
@@ -108,6 +113,16 @@ export function createGate(deps: GateDeps, store: GateStore, options: GateOption
       return { verdict: "deny", by: "app", offer_always: false, reason: "needs_approval: an app cannot ask the owner; leave it to an agent or the owner" };
     }
 
+    // 1b. a vault entry used by name on a body: the owner allows each name on each body once, or for good (a rule, revocable like any)
+    const target = req.to ?? "";
+    const vault = deps.vaultUse?.(req) ?? null;
+    const unasked = vault ? vault.names.filter((n) => !store.matchRule(VAULT_SUBJECT, target, vaultWord(n.ref), VAULT_FINGERPRINT, null)) : [];
+    if (vault && unasked.length) {
+      const note = `用保险箱里的${unasked.map((n) => `『${n.label}』`).join("、")}在 ${vault.where} 上执行`;
+      evidence(req, contract, caller, risk, { by: "vault", reason: note, offer_always: true });
+      return { verdict: "ask", by: "vault", offer_always: true, reason: note, note };
+    }
+
     // 2. a read
     if (contract.effect === "read") return { verdict: "allow", by: "read", offer_always: false };
 
@@ -129,7 +144,6 @@ export function createGate(deps: GateDeps, store: GateStore, options: GateOption
     // 5. no risk
     if (risk === "none") return allow(assessed ? "assessed_none" : "declared_none", assessed ? "assessed_none" : "declared_none");
     // 6. a hand, or a computer lent as a body, that the owner trusts fully (body:main is always "ask")
-    const target = req.to ?? "";
     if ((target.startsWith("device:") || target.startsWith("body:")) && deps.tier(target) === "full") return allow("hand_full", "hand_full");
     // 7. the owner wants every outward action asked about
     const execute = contract.effect === "execute";
@@ -170,6 +184,12 @@ export function createGate(deps: GateDeps, store: GateStore, options: GateOption
       if (answer === "deny") { store.amend(req.id, { decision: "deny", answered_at: t }); return; }
       const always = answer === "always" && e.offer_always === true;
       store.amend(req.id, { decision: always ? "always" : "once", answered_at: t });
+      // A vault entry on a body: 「以后都可以」 allows these names there; the command itself is never remembered.
+      if (e.decided_by === "vault") {
+        if (always) for (const { ref } of deps.vaultUse?.(req)?.names ?? []) store.addRule({ subject: VAULT_SUBJECT, to: e.member, word: vaultWord(ref), object_pattern: "*", risk: e.risk,
+          contract_fingerprint: VAULT_FINGERPRINT, expires_at: t + RULE_DAYS * 86_400_000, created_by: OWNER_ID });
+        return;
+      }
       if (!e.offer_always) return;
       const subject = e.requester;
       if (always) {

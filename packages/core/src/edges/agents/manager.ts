@@ -12,6 +12,7 @@ import type { HostNetwork } from "../../../../sdk/src/host";
 import { OWNER_ID } from "../../../../sdk/src/ids";
 import type { Member } from "../../../../sdk/src/word";
 import { wordsOf } from "../../../../sdk/src/words";
+import { refsIn, resolveRefs } from "../../kernel/vault/refs";
 import type { Ledger } from "../../kernel/ledger";
 import type { Registry, Router, Vault } from "../../kernel/types";
 import { proxyEnv } from "../../../../sdk/src/proxy";
@@ -56,6 +57,8 @@ export interface AgentsDeps {
   log?(...args: unknown[]): void;
   /** Vault refs the runtime may hold for itself. */
   credentialRefs?: string[];
+  /** The value behind `$vault.<name>` in a declaration's native.env (kernel/vault/refs), put in when the runtime starts. */
+  vaultRef?: (name: string) => Promise<string>;
   /** The host's network when the module starts: what the running agents were given, to tell later whether the proxy changed. */
   network?: HostNetwork;
   /** The runtime kinds whose processes run on the main body, so a new proxy needs a new process (default `dsh`). Those on a computer are not the hub's to restart. */
@@ -428,9 +431,14 @@ export class AgentManager {
       statics = await this.modules.static(decl);
       if (!current()) return; // voided while the files were read: no process exists yet
       const baseline = this.keySaves; // keys saved from here on are not in what the start writes
+      // $vault.<name> in the runtime's environment: the value goes to the process only, never back into the declaration.
+      const native = decl.native?.env && refsIn(decl.native.env).length
+        ? { ...decl.native, env: (await resolveRefs(decl.native.env, (name) => this.deps.vaultRef ? this.deps.vaultRef(name) : Promise.reject(new WordError("unavailable", "the vault cannot be used here")))).env }
+        : decl.native;
+      if (!current()) return;
       await this.within(START_TIMEOUT_MS, `${id} did not finish starting`, (async () => {
         await live.driver.start(id, {
-          runtime: decl.runtime, ...(decl.native ? { native: decl.native } : {}), tools: this.deps.tools(id, Object.keys(lanes), decl.tools),
+          runtime: decl.runtime, ...(native ? { native } : {}), tools: this.deps.tools(id, Object.keys(lanes), decl.tools),
           modules: { static: statics }, lanes: Object.keys(lanes), sessions: run.spec.sessions,
         });
         // The runtime keeps its own keys: a key it has is left alone, unless the owner saved one since this agent last took keys.
@@ -616,6 +624,11 @@ export class AgentManager {
     const attachments = this.storeAttachments(body.attachments);
     let words = text(body.text);
     if (msg.word === "say" && body.in_reply_to) words = `[answers ${body.in_reply_to}, option ${body.option_id}] ${words}`.trim();
+    // The owner acted on a card this agent showed: which card, which action, and what the card holds now.
+    if (msg.word === "say" && body.card && typeof body.card === "object") {
+      const { id: card, action, context, data } = body.card as { id: string; action: string; context?: unknown; data?: unknown };
+      words = `[card ${card}, action ${action}] ${JSON.stringify({ ...(context !== undefined ? { context } : {}), ...(data !== undefined ? { data } : {}) })}${words ? `\n${words}` : ""}`;
+    }
     if (msg.word === "wake") words = `Wake · ${text(body.reason)}${body.context === undefined ? "" : `\n${JSON.stringify(body.context)}`}`;
     if (!words && attachments.length) words = "(attachments)";
     const lane = this.laneFor(decl, msg.from, msg.word, msg.kind, msg.word === "wake" ? text(body.lane) : undefined);

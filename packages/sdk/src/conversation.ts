@@ -112,7 +112,12 @@ export function safeRecord(m: any): DisplayFact | null {
   }
   if (m.kind === "request" && m.to === OWNER && publisher(m.from)) {
     if (m.word === "react" && typeof b.message_id === "string" && typeof b.emoji === "string") return { ...base, type: "react", message_id: b.message_id, emoji: b.emoji };
-    if (m.word === "show") { const card = safeCard(b.card); return card ? { ...base, type: "show", card } : null; }
+    if (m.word === "show") {
+      // A card the agent wrote (A2UI): what it shows now is kept with the card (service:history reads it); here only which card.
+      if (b.a2ui !== undefined) return { ...base, type: "show", card: { type: "a2ui", id: typeof b.id === "string" && b.id ? b.id : m.id, text: textField(b.text).text } };
+      const card = safeCard(b.card); return card ? { ...base, type: "show", card } : null;
+    }
+    if (m.word === "form" && typeof b.title === "string") return { ...base, type: "show", card: { type: "a2ui", id: m.id, text: `需要你填：${b.title}`, form: true } };
     if (m.word === "ask" && typeof b.title === "string") {
       const { options, valid } = askOptions(b);
       const asked = number(m.ts) ?? 0;

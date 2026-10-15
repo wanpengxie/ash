@@ -154,6 +154,8 @@ class ChatScreen(
     /** Her name as her home page reads it from IDENTITY.md: the bar and the box's hint follow it. */
     private var herName = "Ash"
     private val outbox = Outbox(ctx)
+    /** Cards drawn from a plan (`show {a2ui}`, `form`): what the owner does on them is kept there across repaints. */
+    private val cards by lazy { ChatCards(activity, port, ::post, ::toast) { refresh() } }
     private var flushing = false
     private val tick = object : Runnable { override fun run() { paintProgress(); paintLease(); if (shown) main.postDelayed(this, 1_000) } }
     private val onChange: () -> Unit = { refresh() }
@@ -179,7 +181,7 @@ class ChatScreen(
         }
     }
 
-    fun close() { port.removeChange(onChange); LeaseState.removeChange(onLease) }
+    fun close() { port.removeChange(onChange); LeaseState.removeChange(onLease); cards.close() }
 
     private fun paintLease() {
         val first = LeaseState.leases.firstOrNull()
@@ -247,6 +249,11 @@ class ChatScreen(
         val body = JSONObject().put("text", text)
         if (attachments.length() > 0) body.put("attachments", attachments)
         option?.let { body.put("in_reply_to", it.first).put("option_id", it.second) }
+        post(to, body)
+    }
+
+    /** The owner's `say` [body] to [to], through the outbox (a card's action goes this way too). */
+    private fun post(to: String, body: JSONObject) {
         outbox.add(JSONObject().put("to", to).put("kind", "request").put("word", "say").put("body", body).put("client_id", UUID.randomUUID().toString()))
         paintList(toEnd = true)
         flush()
@@ -282,9 +289,6 @@ class ChatScreen(
             if (!r.optBoolean("ok")) toast("没有送到，再点一次试试")
             refresh()
         }
-        // 「去填写」 on a card asking for a key: the value is typed on the keys page, never in the conversation.
-        if (choice == "vault_fill") activity.startActivity(android.content.Intent(activity, HomeActivity::class.java)
-            .addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra(HomeActivity.EXTRA_HOME_PAGE, "keys"))
     }
 
     // --- the screen ---
@@ -660,6 +664,7 @@ class ChatScreen(
             "link" -> plainCard("链接", card.optString("title").ifEmpty { card.optString("url") }, card.optString("summary"), AshUi.Tone.MUTE, R.drawable.ash_ic_link).apply {
                 setOnClickListener { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(card.optString("url")))) } }
             }
+            "a2ui" -> cards.view(item)
             "permission" -> plainCard("需要授权", "打开「${PERMISSIONS[card.optString("permission")] ?: "手机"}」权限", card.optString("why").ifEmpty { "需要授权" }, AshUi.Tone.YOU, R.drawable.ash_ic_lock).apply {
                 addView(AshUi.button(ctx, "去授权", AshUi.Kind.PRIMARY, AshUi.BtnSize.SM) { ctx.startActivity(Intent(ctx, ConsoleActivity::class.java)) }, LinearLayout.LayoutParams(-2, -2))
             }

@@ -6,7 +6,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cases } from "../packages/core/test/fixtures/widget-cards.cases.mjs";
-import { CARD_AVATARS, CARD_COLORS, CARD_ICONS, CARD_LIMITS, CardError, validateCard } from "../packages/core/src/services/widgets/card.ts";
+import { CARD_AVATARS, CARD_COLORS, CARD_ICONS, CARD_LIMITS, CardError, validateCard } from "../packages/sdk/src/card.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = cases.map((c) => {

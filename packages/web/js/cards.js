@@ -1,4 +1,5 @@
 import { addIcon, button, text } from "./chat-ui.js";
+import { renderA2uiCard } from "./a2ui-card.js";
 
 /**
  * A file the kernel names: {workspace, path} where `workspace` says which body (see body.js) and `path` is a path on it,
@@ -28,8 +29,10 @@ export function cardHead(parent, tone, glyph, label) {
 const shell = (parent, className = "") => text(parent, "div", "", `a-card card ${className}`.trim());
 
 /** Every action is a normal owner message or link; the card creates no private channel. */
-export function renderCard(parent, item, { onSelect, onPermission, optionPending, onOpenFile, herName = "Ash" } = {}) {
+export function renderCard(parent, item, { onSelect, onPermission, optionPending, onOpenFile, herName = "Ash", a2ui = null } = {}) {
   const card = item.card;
+  // A card the agent designed: drawn from its plan; a button on it is the owner's own message or the answer of a form.
+  if (card.type === "a2ui") return renderA2uiCard(parent, item, a2ui);
   const root = shell(parent, ["file", "image", "link", "app"].includes(card.type) ? "slim" : "");
   if (card.type === "options") {
     cardHead(root, "her", "ask", `${herName} 问你`);

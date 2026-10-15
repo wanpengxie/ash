@@ -57,6 +57,7 @@ const OWNER_CHECKS: Record<string, string> = {
   "packages/core/src/kernel/gate/decide.ts: if (caller.via === \"human\") {": "the human channel is the owner's; nobody else comes in through it",
   "packages/core/src/kernel/gate/decide.ts: return caller.member === OWNER_ID ? { verdict: \"allow\", by: \"human\", offer_always: false } : { verdict: \"deny\", by: \"human\", offer_always: false, reason: \"only the owner comes in through a human channel\" };": "the same",
   "packages/core/src/edges/link-server/human/index.ts: if (m.from === OWNER_ID) recorded.offer(m);": "the owner's own messages to his channels",
+  "packages/core/src/edges/link-server/human/index.ts: const acted = m.from === OWNER_ID && m.kind === \"request\" && m.word === \"say\" ? (m.body as { card?: { id?: unknown; data?: unknown } } | null)?.card : undefined;": "what the owner entered on a card stays with the card when he acts on it",
   "packages/core/src/edges/apps/runtime.ts: if (caller.member !== OWNER_ID) {": "an install the gate asked about installs what was approved",
   "packages/core/src/kernel/router/router.ts: const asOwnerService = caller.via === \"service\" && caller.member === OWNER_ID;": "a service speaking for the owner",
 };

@@ -21,9 +21,9 @@ import type { Member, WordContract } from "../../../../sdk/src/word";
 import { wordsOf } from "../../../../sdk/src/words";
 import type { Ledger } from "../../kernel/ledger";
 import type { Router } from "../../kernel/types";
-import { CardError, cardActions, levels, setPointer, validateCard, type WidgetRender } from "./card";
+import { CardError, cardActions, checkChatCard, levels, setPointer, validateCard, type WidgetRender } from "../../../../sdk/src/card";
 
-export { validateCard } from "./card";
+export { validateCard } from "../../../../sdk/src/card";
 export const WIDGETS_ID = "service:widgets";
 /** The event that carries the full widget state to the owner's channels. */
 export const STATE_WORD = "widget.state";
@@ -168,7 +168,7 @@ export class WidgetsService implements Member {
     try {
       switch (msg.word) {
         case "widget.list": return { data: this.state() };
-        case "widget.card.validate": return { data: this.validate(body.a2ui) };
+        case "widget.card.validate": return { data: this.validate(body.a2ui, body.surface) };
         case "widget.card.put": return await this.put(msg.from, body);
         case "widget.card.get": return await this.get(body.id);
         case "widget.card.preview": return await this.previewWord(body.id);
@@ -182,8 +182,12 @@ export class WidgetsService implements Member {
     }
   }
 
-  private validate(a2ui: unknown) {
+  private validate(a2ui: unknown, surface?: string) {
     try {
+      if (surface === "chat") {
+        const chat = checkChatCard(a2ui);
+        return { valid: true, problems: chat.problems, components: chat.components.length, actions: cardActions(chat) };
+      }
       const render = validateCard(a2ui);
       const byId = new Map(render.components.map((c) => [c.id, c]));
       const roots = [render.root, ...(render.sizes ?? []).map((s) => s.root)];

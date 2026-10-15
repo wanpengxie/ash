@@ -36,13 +36,13 @@ test("put is write-only and may replace any key, the owner's too; generate makes
   assert.ok(!listed.includes("id-2") && !listed.includes(s.vault.use("relay_claim")!));
 });
 
-test("request: the entry waits, the owner gets a card whose button opens the keys page; when the owner saves it the agent is told", async () => {
-  const s = setup((m) => (m.word === "ask" ? { ok: true, result: { data: { choice: "vault_fill" } } } : { ok: true }));
+test("request: the entry waits, the owner gets a form card in the conversation with one password box; when the owner saves it the agent is told", async () => {
+  const s = setup(() => ({ ok: true }));
   assert.deepEqual(await call(s.service, agent("main"), "request", { ref: "SLACK_TOKEN", label: "Slack 令牌", why: "发消息到你的 Slack", help_url: "https://api.slack.com/apps" }), { ref: "SLACK_TOKEN", status: "waiting" });
   await flush();
-  const card = s.router.sent.find((x) => x.msg.word === "ask")!.msg.body as any;
-  assert.deepEqual(card.options.map((o: any) => o.id), ["vault_fill", "no"]);
-  assert.match(card.detail, /api\.slack\.com/);
+  const card = s.router.sent.find((x) => x.msg.word === "form")!.msg.body as any;
+  assert.deepEqual(card.secret, { value: "SLACK_TOKEN" }, "the one field goes straight into the vault under the asked name");
+  assert.match(card.why, /api\.slack\.com/);
   assert.equal((await call(s.service, agent(), "describe", { ref: "SLACK_TOKEN" })).status, "waiting");
   await call(s.service, owner, "set", { ref: "SLACK_TOKEN", value: SECRET, label: "Slack 令牌" });
   await flush();
@@ -127,17 +127,18 @@ test("token: only an app granted that credential gets its value; an agent never 
   assert.ok((await call(s.service, agent(), "describe", { ref: "MAIL_KEY" })).last_used_at);
 });
 
-test("request: the fill-in card closes once the key is saved (no stale card waits for the owner)", async () => {
+test("request: the fill-in card closes soon after the key is saved (no stale card waits for the owner)", async () => {
   const { ledger, path } = openLedger();
   const vault = openVault({ file: join(dirname(path), "vault.json"), sealKey: randomBytes(32), now: () => 99 });
   const signals: AbortSignal[] = [];
-  const router = { send: async (m: any, _c: any, opts?: { signal?: AbortSignal }) => { if (m.word === "ask" && opts?.signal) signals.push(opts.signal); return m.word === "ask" ? new Promise<any>(() => {}) : { ok: true }; } };
-  const service = createVaultService({ vault, ledger, router: router as any, log: () => {} });
+  const router = { send: async (m: any, _c: any, opts?: { signal?: AbortSignal }) => { if (m.word === "form" && opts?.signal) signals.push(opts.signal); return m.word === "form" ? new Promise<any>(() => {}) : { ok: true }; } };
+  const service = createVaultService({ vault, ledger, router: router as any, log: () => {}, cardGraceMs: 0 });
   await call(service, agent(), "request", { ref: "K1", label: "k1", why: "x" });
   await call(service, agent(), "request", { ref: "K2", label: "k2", why: "y" });
   await flush();
   assert.equal(signals.length, 2);
   await call(service, owner, "set", { ref: "K1", value: SECRET, label: "k1" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
   assert.deepEqual(signals.map((x) => x.aborted), [true, false]);
   await call(service, owner, "delete", { ref: "K2" });
   assert.deepEqual(signals.map((x) => x.aborted), [true, true]);

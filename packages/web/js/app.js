@@ -4,7 +4,7 @@ import { HomeFeed } from "./home-feed.js";
 import { FullTexts } from "./full-texts.js";
 import { IdleExpansion } from "./idle-expansion.js";
 import { connectHome } from "./home.js";
-import { Net } from "./net.js";
+import { Net, OWNER } from "./net.js";
 import { WindowView } from "./window-view.js";
 import { renderProgress } from "./progress.js";
 import { presentUiOpen } from "./suggestions.js";
@@ -225,6 +225,15 @@ export function boot() {
     },
     optionPending,
     askIntents,
+    // Cards an agent designed: what typing on them, their buttons and their forms do (js/a2ui-card.js).
+    a2ui: {
+      draft: (card, data) => net.data(OWNER, "card.draft", { card, data }),
+      vaultSet: (body) => net.data("service:vault", "set", body),
+      answerForm: (request) => net.answerForm(request),
+      say: (to, words, card) => net.enqueueSay(words, [], null, to, card),
+      refresh: (message) => timeline?.refreshCard({ message }),
+      problem: (message) => presenceBar.problem(message),
+    },
     onSelect: async (item, option) => {
       if (item.locked || optionPending.has(item.id)) return;
       optionPending.add(item.id);
@@ -243,8 +252,6 @@ export function boot() {
         if (!net.same(binding)) throw new Error("连接刚换过，回答没有送出，请再点一次。");
         await answerAsk(net, fresh, choice, intent.clientId, { answerText });
         intent.status = "confirmed";
-        // 「去填写」 on a card asking for a key: the value is typed on the keys page, never in the conversation.
-        if (choice === "vault_fill") globalThis.dispatchEvent(new CustomEvent("ash:open", { cancelable: true, detail: { page: "home", section: "keys" } }));
       } catch (error) {
         intent.status = /无权|被拒绝|已失效|不可用|已经过期|没有这个选项|没被接受/.test(error?.message || "") ? "rejected" : "uncertain";
         presenceBar.problem(error instanceof Error ? error.message : "回答有没有送到还不知道，请再点一次。");
@@ -284,6 +291,7 @@ export function boot() {
       return id ? { around_id: id } : timeline.store.items[0] ? { around_id: timeline.store.items[0].id } : {};
     },
     onHistoryReady: () => { timeline.historyReady(); },
+    onCardChange: (change) => { timeline?.refreshCard(change); },
     onPresent: async (request) => {
       const opened = await presentUiOpen(suggestions, request, openUiTarget).catch(() => false);
       return { ok: true, data: { opened } };
