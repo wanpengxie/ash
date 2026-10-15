@@ -292,7 +292,7 @@ public class TeamActivityAcceptanceTest {
         @Implementation protected void request(LinkClient client, JSONObject request, Function2<JSONObject, HumanPort.Failure, Unit> done) { assertSame(link.getClient(),client); reads.add(new Read("send", request, done)); }
     }
     @Implements(value = SystemAppActivity.class, isInAndroidSdk = false)
-    public static class BaseClient {
+    public static class BaseClient extends org.robolectric.shadows.ShadowActivity {
         @Implementation protected LinkClient getHumanClient() { return link.getClient(); }
     }
     @Implements(value = LedgerFeed.class, isInAndroidSdk = false)
