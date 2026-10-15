@@ -669,7 +669,7 @@ open class DevicesActivity : SystemAppActivity() {
         private val selected = values.keys.associateWith { it == "lend" }.toMutableMap()
         private val messages = values.mapValues { AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2).apply { visibility = View.GONE } }
         private val controls = values.mapValues { (key, label) ->
-            button(R.string.dev_permission_allow).apply {
+            button(R.string.dev_permission_allow, action = {}).apply {
                 contentDescription = getString(label)
                 val control = this
                 setOnClickListener {
