@@ -17,6 +17,7 @@ import ai.ash.kernel.ShellInstaller
 import ai.ash.kernel.SystemEnv
 import ai.ash.kernel.Updater
 import ai.ash.kernel.WakeManager
+import ai.ash.kernel.host.ctx.ContextFiles
 import ai.ash.kernel.host.ctx.ContextProbeLauncher
 import android.os.Looper
 import android.os.Process
@@ -77,11 +78,12 @@ object ShellHost {
         val phone = ShellPhone(ctx, ShellPhone.kernelApk(ctx, pkg)) { Log.i(TAG, it) }
         // Ash's own updates: downloaded here (the shell user's directory, which `pm` can read), installed with `pm install -r`.
         val updater = Updater(File(runDir, "update"), ShellInstaller { Log.i(TAG, it) }, { Log.i(TAG, it) })
-        val api = HostApi(HostApi.CAPABILITIES + PHONE_CAPABILITIES + "update", BridgeIdentity(bridge), WakeManager(BridgeAlarm(bridge)), power, hands, callbacks, { Log.w(TAG, it) }, phone, updater)
-        val pipe = HostPipe(api) { Log.i(TAG, it) }
         // A one-day probe of what the owner does on the phone and what recording it costs (/data/local/tmp/ash-ctx);
-        // its state is shown on the kernel page.
+        // its state is shown on the kernel page, and what it recorded is read through the host (ctx.list / ctx.read).
         val probe = ContextProbeLauncher(ShellPhone.kernelApk(ctx, pkg), { Log.i(TAG, it) }) { runCatching { bridge.reportProbe(it) } }
+        val recorded = ContextFiles(ContextProbeLauncher.ROOT) { probe.state() }
+        val api = HostApi(HostApi.CAPABILITIES + PHONE_CAPABILITIES + "update" + "ctx", BridgeIdentity(bridge), WakeManager(BridgeAlarm(bridge)), power, hands, callbacks, { Log.w(TAG, it) }, phone, updater, recorded)
+        val pipe = HostPipe(api) { Log.i(TAG, it) }
 
         val version = runCatching { ctx.packageManager.getPackageInfo(pkg, 0).versionName }.getOrNull() ?: "0"
         val installedAt = runCatching { ctx.packageManager.getPackageInfo(pkg, 0).lastUpdateTime }.getOrNull() ?: 0L

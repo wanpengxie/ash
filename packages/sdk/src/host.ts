@@ -31,7 +31,7 @@ export const HOST_POWER_HOLD_MAX_MS = 600_000;
 // ---- capabilities --------------------------------------------------------------------------------------------------
 
 export const HOST_REQUIRED_CAPABILITIES = ["identity", "lifecycle", "status"] as const;
-export const HOST_OPTIONAL_CAPABILITIES = ["wake", "power", "hands", "update", "vscreen", "input", "apps"] as const;
+export const HOST_OPTIONAL_CAPABILITIES = ["wake", "power", "hands", "update", "vscreen", "input", "apps", "ctx"] as const;
 export type HostRequiredCapability = (typeof HOST_REQUIRED_CAPABILITIES)[number];
 export type HostOptionalCapability = (typeof HOST_OPTIONAL_CAPABILITIES)[number];
 export type HostCapability = HostRequiredCapability | HostOptionalCapability;
@@ -122,6 +122,13 @@ export interface HostMethods {
   "update.install": { req: { version: string; packages: { package: string; url: string; sha256: string }[]; token?: string }; res: { started: true; via: "shell" | "installer" } };
   /** The running or last update: `state` idle | downloading | installing | waiting_user | done | failed, with `version` and `message`. */
   "update.status": { req: Record<string, never>; res: { state: string; version?: string; message?: string; at?: number } };
+  /**
+   * What the phone's context probe recorded (capability ctx, the kernel host with the debug identity: only it can read the
+   * files). `ctx.list`: every day with each file's size and line count (estimated for big files), and the probe's state.
+   * `ctx.read`: a piece of one file by bytes, whole lines; the host makes the path from `day` and `file`, nothing else.
+   */
+  "ctx.list": { req: Record<string, never>; res: { probe: CtxProbeState; days: { day: string; files: CtxFileInfo[] }[] } };
+  "ctx.read": { req: { day: string; file: CtxFile; offset?: number; limit?: number }; res: { day: string; file: CtxFile; offset: number; next_offset: number; size: number; eof: boolean; text: string } };
   // The phone-action groups the kernel host serves (capability vscreen/input/apps). The host does the Android work and
   // returns structured data (plus a short `message` for the reply, and the JPEG for vscreen.see); the kernel builds the
   // word's content. Absent when the host cannot do them (unpaired: only `input`, media and volume keys).
@@ -156,6 +163,8 @@ export const HOST_METHOD_CAPABILITY: { readonly [M in HostMethod]: HostCapabilit
   "hands.handoff": "hands",
   "update.install": "update",
   "update.status": "update",
+  "ctx.list": "ctx",
+  "ctx.read": "ctx",
   "vscreen.create": "vscreen",
   "vscreen.status": "vscreen",
   "vscreen.launch": "vscreen",
@@ -170,6 +179,14 @@ export const HOST_METHOD_CAPABILITY: { readonly [M in HostMethod]: HostCapabilit
   "input.key": "input",
   "apps.open": "apps",
 };
+
+/** The context probe's four files (JSON lines), one set per day. */
+export const CTX_FILES = ["events", "screens", "touch", "stats"] as const;
+export type CtxFile = (typeof CTX_FILES)[number];
+/** Most bytes one `ctx.read` returns. */
+export const CTX_READ_MAX = 262_144;
+export interface CtxProbeState { state: "running" | "paused" | "stopped"; since?: number; last_exit?: string }
+export interface CtxFileInfo { file: CtxFile; bytes: number; lines: number; lines_estimated: boolean; modified: number }
 
 /** Error codes of the host interface: the shared set (SPEC-02 section 7). */
 export type HostErrorCode = ErrorCode;

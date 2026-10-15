@@ -37,7 +37,7 @@ const HAND_OPEN = "apps.open_direct";
 const phoneCapabilityOf = (word: string): HostCapability | undefined => PHONE_CAPABILITY[namespaceOf(word) ?? ""];
 
 export interface HostServiceDeps {
-  client: Pick<HostClient, "wakeAt" | "wakeClear" | "powerHold" | "powerRelease" | "handsHandoff" | "updateInstall" | "updateStatus" | "lifecycleRestart" | "phone" | "has">;
+  client: Pick<HostClient, "wakeAt" | "wakeClear" | "powerHold" | "powerRelease" | "handsHandoff" | "updateInstall" | "updateStatus" | "ctxList" | "ctxRead" | "lifecycleRestart" | "phone" | "has">;
   /** The vault entry GITHUB_TOKEN (a read-only token) reads a private release; it is handed to the host only, never to a word. */
   vault?: { use(ref: string): string | null };
   /** Finds a release of the phone's packages on GitHub (replaced in tests). */
@@ -91,12 +91,20 @@ export function createHostService(deps: HostServiceDeps): HostService {
         case "hands.handoff": return done(await client.handsHandoff(b.port, b.token));
         case "update.install": return updatePhone(b.version);
         case "update.status": return done(await client.updateStatus());
+        case "ctx.list": return hostCall(() => client.ctxList());
+        case "ctx.read": return hostCall(() => client.ctxRead({ day: b.day, file: b.file, ...(b.offset !== undefined ? { offset: b.offset } : {}), ...(b.limit !== undefined ? { limit: b.limit } : {}) }));
         // The answer goes out first: the restart takes this process with it.
         case "restart": setTimeout(() => { client.lifecycleRestart(String(b.reason ?? "restart asked")).catch((error) => log("lifecycle.restart failed", error)); }, 300).unref(); return { data: { restarting: true } };
         default: throw new WordError("not_found", `${HOST_ID} has no word ${msg.word}`);
       }
     },
   };
+
+  /** A host call whose errors (a bad day, the host gone) are the word's; unavailable when the host does not have it (no debug identity). */
+  async function hostCall<R>(call: () => Promise<HostOptional<R>>): Promise<WordResult> {
+    try { return done(await call()); }
+    catch (error) { if (error instanceof HostCallError) throw new WordError(error.code, error.message); throw error; }
+  }
 
   /** Finds the release on GitHub (its SHA256SUMS), then has the host download, check and install it. */
   async function updatePhone(version: string | undefined): Promise<WordResult> {

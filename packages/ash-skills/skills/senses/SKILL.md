@@ -1,7 +1,7 @@
 ---
 name: ash-senses
 description: 管理手机的位置、运动、步数和健康记录：什么时候开、记哪些地点、事后向主人汇报；被位置、骑行或健康数据源中断叫醒时怎么做；感知不在线、数据过期时怎么兜底、怎么用人话讲错误。
-whenToUse: 主人提到位置、出门到岗、通勤、运动、骑行、步数、体重睡眠心率、手表；你判断记录这些能帮到主人；被 geofence_enter、geofence_exit、cycling_start、cycling_end、health_source_stale 叫醒时；调用 location.*、activity.*、health.*、sensors.*、sense.* 报错时。
+whenToUse: 主人提到位置、出门到岗、通勤、运动、骑行、步数、体重睡眠心率、手表；你判断记录这些能帮到主人；被 geofence_enter、geofence_exit、cycling_start、cycling_end、health_source_stale 叫醒时；调用 location.*、activity.*、health.*、sensors.*、sense.* 报错时；要回顾主人在手机上做过什么、读上下文采集记录（ctx.list、ctx.read）时。
 ---
 
 # 管好手机感知
@@ -48,6 +48,13 @@ whenToUse: 主人提到位置、出门到岗、通勤、运动、骑行、步数
 | 感知不在线 | 「感知暂时不在线，稍后再试；我先用之前记下的。」 |
 
 `location.get` 的结果会说明谁答的（`source`: `live` 还是 `last_known`）、精度、`age_s`（多久以前）和 `accuracy_met`（精度是否达到）。位置是几分钟前的，就按「几分钟前在……」说，不要说成「现在在……」。
+
+## 手机上的使用记录
+
+宿主在手机上记录主人的操作和屏幕文字（上下文采集），按天存成四个 JSON lines 文件：`events`（点击、输入、滑动、切窗口、通知）、`screens`（前台窗口变化时的文字）、`touch`（原始触摸和按键）、`stats`（记录本身的开销）。要回顾主人用手机做了什么、整理当天的上下文时这样读，不要插线、不要找路径：
+1. `service:host` `ctx.list`：有哪些天、每个文件多大多少行，`probe.state` 说采集器在记录、被主人暂停还是停了（`last_exit` 是原因）。
+2. `service:host` `ctx.read {day, file, offset}`：每次最多 256 KB 的整行，从返回的 `next_offset` 接着读到 `eof`。大文件先读 `events` 和 `stats`，`screens`、`touch` 按需要分段读，别一口气全读进来。
+要「后台也能动手」接着才有；`unavailable` 就说明得先接。这是主人的私事：只用来帮他，不外发、不在对话里大段贴原文。
 
 ## 好的样子
 

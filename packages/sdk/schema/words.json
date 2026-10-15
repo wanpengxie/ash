@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "c0c5c235d3d403b661b439bb2857da22a2d92a150f0fa6edd9528c6734f76d55",
+ "hash": "ec71d77d11056fed1d30758941c4353427e3f36ddd27d6abd6abb48da2c9d763",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -15270,6 +15270,217 @@
    ],
    "label": {
     "doing": "在看手机升级进度"
+   }
+  },
+  {
+   "member": "service:host",
+   "word": "ctx.list",
+   "kind": "request",
+   "direction": "in",
+   "description": "What the phone's context probe has recorded, per day (YYYY-MM-DD, oldest first): each file with its size in bytes and line count (lines_estimated: guessed from the start of a big file), and whether the probe is recording now (running, paused by the owner, or stopped with last_exit saying why). The files are JSON lines: events (the owner's own actions: clicks, typing, scrolling, window changes, notifications), screens (the front window's text whenever it changed), touch (raw touches and keys), stats (what recording costs, every 10 minutes). Read one with ctx.read. Needs the phone's debug identity (「后台也能动手」); without it: unavailable.",
+   "input_schema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "probe": {
+      "type": "object",
+      "properties": {
+       "state": {
+        "type": "string",
+        "enum": [
+         "running",
+         "paused",
+         "stopped"
+        ]
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "last_exit": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "state"
+      ],
+      "additionalProperties": false
+     },
+     "days": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "day": {
+         "type": "string"
+        },
+        "files": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "file": {
+            "type": "string",
+            "enum": [
+             "events",
+             "screens",
+             "touch",
+             "stats"
+            ]
+           },
+           "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+           },
+           "lines": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+           },
+           "lines_estimated": {
+            "type": "boolean"
+           },
+           "modified": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+           }
+          },
+          "required": [
+           "file",
+           "bytes",
+           "lines"
+          ],
+          "additionalProperties": false
+         }
+        }
+       },
+       "required": [
+        "day",
+        "files"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "probe",
+     "days"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看手机上的使用记录"
+   }
+  },
+  {
+   "member": "service:host",
+   "word": "ctx.read",
+   "kind": "request",
+   "direction": "in",
+   "description": "Read a piece of one context-probe file (see ctx.list): day YYYY-MM-DD, file events | screens | touch | stats, from byte offset (default 0), at most limit bytes (default and most 262144). text is whole JSON lines (one longer than limit comes in pieces); go on from next_offset until eof. A file that is still being written can grow after eof: read again from next_offset later. Only these files can be read; there is no path.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "day": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+     },
+     "file": {
+      "type": "string",
+      "enum": [
+       "events",
+       "screens",
+       "touch",
+       "stats"
+      ]
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 262144
+     }
+    },
+    "required": [
+     "day",
+     "file"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "day": {
+      "type": "string"
+     },
+     "file": {
+      "type": "string",
+      "enum": [
+       "events",
+       "screens",
+       "touch",
+       "stats"
+      ]
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "next_offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "eof": {
+      "type": "boolean"
+     },
+     "text": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "day",
+     "file",
+     "offset",
+     "next_offset",
+     "size",
+     "eof",
+     "text"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在读手机上的使用记录"
    }
   },
   {

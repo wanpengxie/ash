@@ -9,6 +9,7 @@
  * An agent's name never appears here; `agent:*` stands for every declared agent.
  */
 import { AGENT_ID, AGENT_ID_PATTERN, APP_NAME_PATTERN, BODY_ID_PATTERN, CLIENT_ID_PATTERN, DATE_PATTERN, DEDUPE_KEY_PATTERN, DEVICE_ID_PATTERN, HAND_ID_PATTERN, SURFACE_ID_PATTERN, TOOL_NAME_PATTERN } from "./ids";
+import { CTX_FILES, CTX_READ_MAX } from "./host";
 import { ACTIVITY_STATES } from "./namespaces";
 import {
   DEFAULT_CALLERS, RISKS, secret, sensitive, wordEffect,
@@ -687,6 +688,14 @@ add("service:host", "update.install", "request", obj({ version: { type: "string"
   { callers: OWNER_AGENT, effect: "execute", risk: "structure", label: "在升级手机上的 Ash", description: "Update Ash on this phone to a release (both packages: the app, then the kernel; without version: the latest). The hub reads the release's SHA256SUMS on GitHub (a private repository with the vault's GITHUB_TOKEN); the host downloads each APK, checks it and only then installs it. It answers at once and works in the background: follow it with update.status. With the debug identity it installs by itself (via shell); without it the system installer asks the owner to tap 「安装」 in a notification, once per package (via installer). Installing the kernel restarts the hub: you come back on the new version. The gate decides whether the owner is asked." });
 add("service:host", "update.status", "request", empty, obj({ state: str, version: str, message: str, at: nonnegativeSafe }, ["state"], true),
   { callers: OWNER_AGENT, label: "在看手机升级进度", description: "Where the phone's update is: idle, downloading, installing, waiting_user (the owner must tap the system's install confirmation), done or failed (message says why; nothing was installed when a download or checksum failed)." });
+add("service:host", "ctx.list", "request", empty,
+  obj({ probe: obj({ state: choice("running", "paused", "stopped"), since: nonnegativeSafe, last_exit: str }, ["state"]),
+    days: { type: "array", items: obj({ day: str, files: { type: "array", items: obj({ file: choice(...CTX_FILES), bytes: nonnegativeSafe, lines: nonnegativeSafe, lines_estimated: bool, modified: nonnegativeSafe }, ["file", "bytes", "lines"]) } }, ["day", "files"]) } }, ["probe", "days"]),
+  { callers: OWNER_AGENT, effect: "read", label: "在看手机上的使用记录", description: "What the phone's context probe has recorded, per day (YYYY-MM-DD, oldest first): each file with its size in bytes and line count (lines_estimated: guessed from the start of a big file), and whether the probe is recording now (running, paused by the owner, or stopped with last_exit saying why). The files are JSON lines: events (the owner's own actions: clicks, typing, scrolling, window changes, notifications), screens (the front window's text whenever it changed), touch (raw touches and keys), stats (what recording costs, every 10 minutes). Read one with ctx.read. Needs the phone's debug identity (「后台也能动手」); without it: unavailable." });
+add("service:host", "ctx.read", "request",
+  obj({ day: { type: "string", pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }, file: choice(...CTX_FILES), offset: nonnegativeSafe, limit: { type: "integer", minimum: 1, maximum: CTX_READ_MAX } }, ["day", "file"]),
+  obj({ day: str, file: choice(...CTX_FILES), offset: nonnegativeSafe, next_offset: nonnegativeSafe, size: nonnegativeSafe, eof: bool, text: str }, ["day", "file", "offset", "next_offset", "size", "eof", "text"]),
+  { callers: OWNER_AGENT, effect: "read", label: "在读手机上的使用记录", description: "Read a piece of one context-probe file (see ctx.list): day YYYY-MM-DD, file events | screens | touch | stats, from byte offset (default 0), at most limit bytes (default and most 262144). text is whole JSON lines (one longer than limit comes in pieces); go on from next_offset until eof. A file that is still being written can grow after eof: read again from next_offset later. Only these files can be read; there is no path." });
 
 // ===================================================================================================================
 // app:*: the one word the hub calls on every app

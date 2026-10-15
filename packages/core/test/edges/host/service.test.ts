@@ -5,6 +5,7 @@ import { lintWords } from "../../../../sdk/src/word";
 import type { Message, Outgoing, Reply, WordResult } from "../../../../sdk/src/message";
 import { createHostPipe, createHostService, createVirtualScreen } from "../../../src/edges/host";
 import type { PhoneRelease, ReleaseOptions } from "../../../src/edges/host/release";
+import { HostCallError } from "../../../src/edges/host/client";
 
 const capOfMethod = (m: string) => (m.startsWith("vscreen.") ? "vscreen" : m === "input.key" ? "input" : "apps");
 const PHONE_RESULTS: Record<string, unknown> = {
@@ -31,6 +32,13 @@ const setup = (offline: string[] = [], onNetwork?: (network: unknown, online: bo
     handsHandoff: async (port: number, token: string) => { calls.push(["handoff", port, token]); return supported({ delivered: ["x"] }); },
     updateInstall: async (req: unknown) => { calls.push(["updateInstall", req]); return supported({ started: true as const, via: "shell" as const }); },
     updateStatus: async () => supported({ state: "downloading", version: "0.4.49" }),
+    ctxList: async () => caps.has("ctx") ? supported({ probe: { state: "running" as const, since: 1 }, days: [] }) : { supported: false as const },
+    ctxRead: async (req: any) => {
+      calls.push(["ctxRead", req]);
+      if (!caps.has("ctx")) return { supported: false as const };
+      if (req.day === "bad") throw new HostCallError("bad_request", "day must be YYYY-MM-DD", "ctx.read");
+      return supported({ day: req.day, file: req.file, offset: 0, next_offset: 3, size: 3, eof: true, text: "{}\n" });
+    },
     has: (cap: string) => caps.has(cap),
     phone: async (method: string, req: unknown): Promise<any> => {
       calls.push(["phone", method, req]);
@@ -178,6 +186,7 @@ test("vscreen.record.stop: the host's video is copied into the main body's work 
   const client = {
     wakeAt: async () => ({ supported: false as const }), wakeClear: async () => ({ supported: false as const }), powerHold: async () => ({ supported: false as const }),
     powerRelease: async () => ({ supported: false as const }), handsHandoff: async () => ({ supported: false as const }), updateInstall: async () => ({ supported: false as const }), updateStatus: async () => ({ supported: false as const }),
+    ctxList: async () => ({ supported: false as const }), ctxRead: async () => ({ supported: false as const }),
     lifecycleRestart: async () => ({}), has: (cap: string) => cap === "vscreen",
     phone: async (method: string): Promise<any> => ({ supported: true as const, result: method === "vscreen.record.stop" ? { path: video, seconds: 4.5, bytes: 18, reason: "stopped" } : { message: "ok" } }),
   };
@@ -213,4 +222,16 @@ test("service:host update.install: only the version is asked; the release comes 
   await open.service.member.handle(msg("update.install", {}), ctx);
   assert.deepEqual(open.asked, [{ repo: "wanpengxie/ash-drop", token: null }]);
   assert.deepEqual(open.calls.at(-1), ["updateInstall", { version: "0.4.49", packages: RELEASE.packages }]);
+});
+
+test("service:host ctx.list / ctx.read: the probe's files through the host; the host's bad_request is the word's; without ctx unavailable", async () => {
+  const s = setup([], undefined, ["ctx"]);
+  assert.deepEqual(await s.service.member.handle(msg("ctx.list", {}), ctx), { data: { probe: { state: "running", since: 1 }, days: [] } });
+  const read = await s.service.member.handle(msg("ctx.read", { day: "2026-10-15", file: "events", offset: 0, limit: 10, path: "/etc/passwd" }), ctx) as WordResult;
+  assert.equal((read.data as { text: string }).text, "{}\n");
+  assert.deepEqual(s.calls.at(-1), ["ctxRead", { day: "2026-10-15", file: "events", offset: 0, limit: 10 }], "only day, file, offset and limit go to the host");
+  await assert.rejects(s.service.member.handle(msg("ctx.read", { day: "bad", file: "events" }), ctx), (e: any) => e.code === "bad_request");
+  const without = setup();
+  await assert.rejects(without.service.member.handle(msg("ctx.list", {}), ctx), (e: any) => e.code === "unavailable");
+  await assert.rejects(without.service.member.handle(msg("ctx.read", { day: "2026-10-15", file: "events" }), ctx), (e: any) => e.code === "unavailable");
 });
