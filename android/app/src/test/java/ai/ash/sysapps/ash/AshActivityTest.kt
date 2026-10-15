@@ -4,6 +4,9 @@ import android.app.AlertDialog
 import android.app.Application
 import android.content.DialogInterface
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import java.io.File
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -24,13 +27,18 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowAlertDialog
 
 /** Actual Activity, RecyclerView rows, editor, clicks and saved drafts. The port is deterministic; the Node scenario covers the real hub. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = Application::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AshActivityTest {
     class TestActivity : AshActivity() {
+        fun connect() = onConnectionChanged(true)
+        fun backInside() = goBack()
+        fun message(message: JSONObject) = onLedger(message)
         override fun request(to: String, word: String, body: JSONObject, done: (Reply) -> Unit) = Port.call(to, word, body, done)
     }
     object Port {
@@ -72,7 +80,7 @@ class AshActivityTest {
     private fun open(section: String) {
         val intent = Intent().putExtra(SystemAppActivity.EXTRA_ARG, JSONObject().put("section", section).toString())
         controller = Robolectric.buildActivity(TestActivity::class.java, intent).create().visible()
-        activity = controller!!.get(); activity.onConnectionChanged(true); settle()
+        activity = controller!!.get(); activity.connect(); settle()
     }
     private fun all(view: View = activity.window.decorView): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
     private fun texts() = all().filterIsInstance<TextView>().map { it.text.toString() }
@@ -83,6 +91,16 @@ class AshActivityTest {
             root.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)); root.layout(0, 0, 1080, 2400)
             Thread.sleep(10)
         }
+    }
+    private fun screenshot(name: String) {
+        val output = System.getenv("ASH_ACCEPTANCE_ARTIFACTS") ?: return
+        settle()
+        val root = activity.window.decorView
+        val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+        root.draw(Canvas(bitmap))
+        val file = File(output, "$name.png"); file.parentFile!!.mkdirs()
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
     }
     private fun click(text: String) { settle(); val target = all().filterIsInstance<TextView>().firstOrNull { it.text.toString() == text && it.isShown }; assertNotNull("missing visible action $text: ${texts()}", target); target!!.performClick(); settle() }
     private fun clickCard(title: String) {
@@ -99,7 +117,7 @@ class AshActivityTest {
 
     @Test fun aSingleFactCorrectionPreservesNewFactsAndShowsWhetherAshWasNotified() {
         open("memory")
-        assertTrue(texts().contains("会议周二")); assertFalse(texts().contains(Port.document))
+        assertTrue(texts().contains("会议周二")); assertFalse(texts().contains(Port.document)); screenshot("memory-before-correction")
         click("修改")
         val editor = activity.findViewById<EditText>(R.id.ash_editor)
         assertEquals("会议周二", editor.text.toString())
@@ -111,9 +129,9 @@ class AshActivityTest {
         Port.told = true; statusAction()
         assertEquals(note.getString("id"), Port.calls.last { it.second == "note" }.third.getString("id"))
         assertTrue(texts().any { it.contains("已通知 Ash") })
-        Port.reply = "我知道了，已按周三安排。"
-        activity.onLedger(JSONObject().put("from", "service:persona").put("kind", "event").put("word", "persona.changed").put("body", JSONObject().put("part", "notes").put("by", "agent:main")))
-        settle(); assertTrue(texts().any { it.contains("Ash 已回应") })
+        Port.reply = "我读到了更正：会议是周三。咖啡偏好保持不变。"
+        activity.message(JSONObject().put("from", "service:persona").put("kind", "event").put("word", "persona.changed").put("body", JSONObject().put("part", "notes").put("by", "agent:main")))
+        settle(); assertTrue(texts().any { it.contains("Ash 已回应") }); screenshot("memory-corrected-and-answered")
     }
 
     @Test fun deletionClicksRemoveOnlyThatFactThroughTheSameWords() {
@@ -128,15 +146,16 @@ class AshActivityTest {
         val task = JSONObject().put("id", "t_meeting").put("subject", "ash").put("title", "帮你改会议").put("assignee", "agent:main").put("status", "waiting").put("note", "在等你确认周三下午的时间")
         Port.tasks.put(task)
         open("now"); clickCard("帮你改会议")
-        assertTrue(texts().contains("卡在这里")); assertTrue(texts().contains("在等你确认周三下午的时间"))
+        assertTrue(texts().contains("卡在这里")); assertTrue(texts().contains("在等你确认周三下午的时间")); screenshot("promise-blocked")
         clickCard("打开任务应用")
         val launched = shadowOf(activity).nextStartedActivity
+        assertEquals("ai.ash.sysapps.tasks.TasksActivity", launched.component!!.className)
         val arg = JSONObject(launched.getStringExtra(SystemAppActivity.EXTRA_ARG)!!)
         assertEquals("t_meeting", arg.getString("id")); assertEquals("ash", arg.getString("subject"))
         task.put("status", "done").put("result", "会议已改到周三下午，日历已更新")
-        activity.onConnectionChanged(true); settle()
+        activity.connect(); settle()
         assertTrue(texts().contains("事情的结果")); assertTrue(texts().contains("会议已改到周三下午，日历已更新"))
-        assertFalse(texts().contains("卡在这里"))
+        assertFalse(texts().contains("卡在这里")); screenshot("promise-result")
     }
 
     @Test fun oldStatusAndUnsubstantiatedGrowthStayClearlyLabelled() {
@@ -161,7 +180,7 @@ class AshActivityTest {
         assertEquals("还没保存的周三", activity.findViewById<EditText>(R.id.ash_editor).text.toString())
         assertFalse(Port.calls.any { it.second == "memory.set" })
         Port.document = "# 安排\n- 会议周五\n"
-        activity.goBack(); activity.onConnectionChanged(true); settle()
+        activity.backInside(); activity.connect(); settle()
         assertTrue(texts().contains("会议周五"))
     }
 }

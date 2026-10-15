@@ -338,12 +338,15 @@ open class AshActivity : SystemAppActivity() {
     }
     private fun showNotice(text: String) { noticeStatus = text; prefs.edit().putString("notice-status", text).apply(); draw() }
     private fun delivery(body: JSONObject, result: Reply) {
+        pending.remove("notice")
         lastNoteId = body.optString("id"); prefs.edit().putString("last-note-id", lastNoteId).apply()
         retryNotice = if (result.ok && result.data.optBoolean("told")) null else body
         prefs.edit().putString("notice-payload", retryNotice?.toString()).apply()
         showNotice(if (result.ok && result.data.optBoolean("told")) s(R.string.ash_note_told) else if (result.ok) s(R.string.ash_note_not_told) else s(R.string.ash_note_delivery_unknown))
     }
     private fun sendNotice(body: JSONObject) {
+        if ("notice" in pending && retryNotice?.optString("id") == body.optString("id")) return
+        pending.add("notice")
         retryNotice = body; prefs.edit().putString("notice-payload", body.toString()).apply()
         showNotice(s(R.string.ash_notifying))
         request(AshModel.PERSONA, "note", body) { result -> delivery(body, result); refresh() }

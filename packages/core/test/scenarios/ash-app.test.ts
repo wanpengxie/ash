@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bodyOf, dataOf, MAIN, startScenario } from "./harness";
+import { accepted, bodyOf, dataOf, MAIN, startScenario } from "./harness";
 import { eventually } from "../fixtures/wait";
 
 // Real hub + human link + agent MCP tools + body workspace. Only the agent's decision is scripted, not its routing or writes.
@@ -65,4 +65,37 @@ test("Ash app: retrying an undelivered note notifies once and reports the actual
   assert.equal(dataOf(notes).notes.filter((n: any) => n.id === payload.id).length, 1);
   await eventually(() => s.driver.turns.find(r => r.key === "back" && r.messages.some(m => m.text.includes("retry-note"))), "the retried background notification");
   assert.equal(s.driver.turns.filter(r => r.key === "back" && r.messages.some(m => m.text.includes("retry-note"))).length, 1);
+});
+
+test("Ash app: the daily clock wake produces diary and a sourced growth record through the same service words", async (t) => {
+  const s = await startScenario(t, { fakeNow: true });
+  const owner = await s.human();
+  const feedback = accepted(await owner.say("重复提醒太多，请少打扰我"));
+  s.driver.scriptFor(MAIN, async (turn) => {
+    const wake = turn.messages.find(m => m.word === "wake" && m.text.startsWith("Wake · daily\n"));
+    if (!wake) return;
+    assert.equal(turn.key, "back");
+    const context = JSON.parse(wake.text.slice(wake.text.indexOf("\n") + 1));
+    const changed = await turn.call("service:pulse", "pulse.set", { schedule: [{ time: "10:00" }, { time: "18:00" }], reason: "主人反馈重复提醒太多，减少主动更新时间" });
+    assert.equal(changed.isError, false, changed.text);
+    const diary = await turn.call("service:persona", "diary.set", { date: context.date, content: "# 今天\n## 复盘\n我根据你说提醒太多的反馈，将主动更新改为每天10点和18点；效果还在观察。\n<!-- review:done -->" });
+    assert.equal(diary.isError, false, diary.text);
+    const growth = await turn.call("service:persona", "growth.put", { id: "less-interruption", title: "少打扰你", why: "你说重复提醒太多", did: "我将主动更新改为每天10点和18点", effect: "还在观察，没有核实减少了多少", next: "下周和你核对", evidence: [feedback.message.id, context.diary] });
+    assert.equal(growth.isError, false, growth.text);
+  });
+  const date = new Date(s.clock.t + 60_000);
+  const hhmm = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const set = await owner.call("service:admin", "settings.set", { "semantic.review_time": hhmm }); assert.ok(set.ok, JSON.stringify(set));
+  await eventually(async () => dataOf(await owner.call("service:clock", "list")).timers.some((timer: any) => timer.label === `semantic:daily:${s.clock.t + 60_000}`), "the daily review's actual clock timer");
+  s.advance(60_001); s.hostEvent({ event: "wake.fired", at: s.clock.t });
+  await eventually(async () => dataOf(await owner.call("service:persona", "growth.list", {})).items.find((g: any) => g.id === "less-interruption"), "the growth produced by the back-lane review");
+  const year = date.getFullYear(), month = String(date.getMonth()+1).padStart(2,"0"), day = String(date.getDate()).padStart(2,"0");
+  const diary = dataOf(await owner.call("service:persona", "diary.get", { date: `${year}-${month}-${day}` }));
+  assert.equal(diary.done, true); assert.match(diary.content, /效果还在观察/);
+  const record = dataOf(await owner.call("service:persona", "growth.list", {})).items[0];
+  assert.equal(record.by, MAIN); assert.match(record.effect, /没有核实/); assert.equal(record.evidence.length, 2);
+  const pulse = dataOf(await owner.call("service:pulse", "pulse.get", {}));
+  assert.deepEqual(pulse.schedule.map((slot: any) => slot.time), ["10:00", "18:00"]);
+  const ledger = await owner.ledger();
+  assert.ok(ledger.some(m => m.word === "persona.changed" && bodyOf(m).part === "growth" && bodyOf(m).by === MAIN));
 });

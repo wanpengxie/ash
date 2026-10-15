@@ -102,9 +102,12 @@ object AshModel {
     data class MemoryItem(val section: String, val text: String, val occurrence: Int)
     fun memoryItems(markdown: String): List<MemoryItem> {
         var section = ""
+        var fenced = false
         val counts = HashMap<String, Int>()
         return markdown.lines().mapNotNull { raw ->
             val line = raw.trim()
+            if (line.startsWith("```")) { fenced = !fenced; return@mapNotNull null }
+            if (fenced) return@mapNotNull null
             if (line.startsWith("#")) { section = line.trimStart('#').trim(); return@mapNotNull null }
             if (line.isBlank() || line.startsWith("<!--") || line.startsWith("```")) return@mapNotNull null
             val text = shown(line)
