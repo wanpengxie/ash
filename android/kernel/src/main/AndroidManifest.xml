@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <!-- Optional pairing/reconnect shortcuts; code input also lives on the kernel page. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Ash's own updates without the debug identity: the system installer, with the owner's confirmation for each package. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       Two signature-level permissions, declared by both packages (same signature may declare twice, so either installs first):

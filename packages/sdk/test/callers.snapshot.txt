@@ -175,6 +175,7 @@
   service:host/restart  owner,agent,app
 * service:host/hands.handoff  kernel
 * service:host/update.install  owner,agent
+* service:host/update.status  owner,agent
 * app:*/ash.on_event  kernel
   service:widgets/widget.list  owner,agent,app
   service:widgets/widget.card.put  owner,agent,app

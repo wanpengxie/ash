@@ -33,6 +33,8 @@ class HostApi(
     private val log: (String) -> Unit = {},
     /** The phone actions (vscreen / input / apps). Non-null when any of those groups is declared. */
     private val phone: PhonePort? = null,
+    /** Installing a new release of Ash's packages. Non-null when `update` is declared. */
+    private val update: UpdatePort? = null,
 ) {
     /** One call; the answer is `{"ok":true,"result":…}` or `{"ok":false,"error":{"code","message"}}`. */
     fun call(method: String, params: JSONObject): JSONObject {
@@ -100,6 +102,30 @@ class HostApi(
             val delivered = hands.handoff(b.int("port", 1, 65535), b.str("token"))
             JSONObject().put("delivered", org.json.JSONArray(delivered))
         }
+        "update.install" -> {
+            val port = update ?: throw BadRequest("unsupported $method")
+            val version = b.str("version")
+            if (!VERSION.matches(version)) throw BadRequest("version must look like 1.2.3")
+            val list = b.optJSONArray("packages") ?: throw BadRequest("packages must be a list")
+            val packages = (0 until list.length()).map { i ->
+                val p = list.optJSONObject(i) ?: throw BadRequest("packages[$i] must be an object")
+                val pkg = p.str("package")
+                val url = p.str("url")
+                val sha = p.str("sha256")
+                if (pkg !in Updater.PACKAGES) throw BadRequest("packages[$i]: only ${Updater.PACKAGES.joinToString()} are updated here")
+                if (!url.startsWith("https://")) throw BadRequest("packages[$i]: url must be https")
+                if (!SHA256.matches(sha)) throw BadRequest("packages[$i]: sha256 must be 64 hex digits")
+                UpdatePackage(pkg, url, sha)
+            }
+            if (packages.isEmpty() || packages.map { it.pkg }.toSet().size != packages.size) throw BadRequest("packages must name each package once")
+            // The app first, the kernel last: installing the kernel ends this process.
+            val ordered = packages.sortedBy { Updater.PACKAGES.indexOf(it.pkg) }
+            val token = b.optString("token").takeIf { it.isNotEmpty() }
+            if (token != null && token.length > 512) throw BadRequest("token too long")
+            val via = try { port.start(version, ordered, token) } catch (e: IllegalStateException) { throw BadRequest(e.message ?: "busy") }
+            JSONObject().put("started", true).put("via", via)
+        }
+        "update.status" -> (update ?: throw BadRequest("unsupported $method")).status()
         else -> {
             val port = phone ?: throw BadRequest("unsupported $method")
             // What went wrong on the phone (am start refused, the virtual screen gone) is the caller's to read.
@@ -133,7 +159,7 @@ class HostApi(
         JSONObject().put("ok", false).put("error", JSONObject().put("code", code).put("message", message))
 
     companion object {
-        /** What this host declares: update.install is not implemented yet, so `update` is not listed. */
+        /** What every host declares; `update` (and the phone actions) are added by the host that can do them. */
         val CAPABILITIES = listOf("identity", "lifecycle", "status", "wake", "power", "hands")
 
         private val METHOD_CAPABILITY = mapOf(
@@ -143,7 +169,7 @@ class HostApi(
             "wake.at" to "wake", "wake.clear" to "wake",
             "power.hold" to "power", "power.release" to "power",
             "hands.handoff" to "hands",
-            "update.install" to "update",
+            "update.install" to "update", "update.status" to "update",
             "vscreen.create" to "vscreen", "vscreen.status" to "vscreen", "vscreen.launch" to "vscreen",
             "vscreen.see" to "vscreen", "vscreen.tap" to "vscreen", "vscreen.swipe" to "vscreen",
             "vscreen.key" to "vscreen", "vscreen.type" to "vscreen", "vscreen.close" to "vscreen",
@@ -152,6 +178,8 @@ class HostApi(
             "apps.open" to "apps",
         )
         private val STATES = listOf("starting", "running", "degraded", "stopping")
+        private val VERSION = Regex("^\\d+\\.\\d+\\.\\d+$")
+        private val SHA256 = Regex("^[0-9a-f]{64}$")
         private const val MAX_HOLD_MS = 600_000L
         private const val MAX_SIGN_BYTES = 64 * 1024
     }

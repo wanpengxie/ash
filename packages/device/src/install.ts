@@ -47,9 +47,16 @@ export async function installRelease(root: string, version: string, sha256: stri
 
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const unit = (value: string) => `"${value.replace(/%/g, "%%").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-export function serviceDefinition(root: string, platform: string, path: string): string {
+/** The standard proxy variables. The program honours them (bin/ash-device turns on Node's NODE_USE_ENV_PROXY when one is set). */
+export const PROXY_VARIABLES = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"] as const;
+/** The proxy variables of [env] that are set, to give the service what the shell that set it up had. */
+export const proxyEnvironment = (env: NodeJS.ProcessEnv): Record<string, string> =>
+  Object.fromEntries(PROXY_VARIABLES.filter((name) => env[name]).map((name) => [name, env[name]!]));
+
+export function serviceDefinition(root: string, platform: string, path: string, env: Record<string, string> = {}): string {
   const command = join(root, "current", "bin", "ash-device"), config = join(root, "device.json");
-  if (platform === "darwin") return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.ash.device</string><key>ProgramArguments</key><array><string>${xml(command)}</string><string>run</string><string>--config</string><string>${xml(config)}</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict><key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>`;
+  const vars: [string, string][] = [["PATH", path], ...Object.entries(env)];
+  if (platform === "darwin") return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.ash.device</string><key>ProgramArguments</key><array><string>${xml(command)}</string><string>run</string><string>--config</string><string>${xml(config)}</string></array><key>EnvironmentVariables</key><dict>${vars.map(([k, v]) => `<key>${xml(k)}</key><string>${xml(v)}</string>`).join("")}</dict><key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>`;
   if (platform !== "linux") throw new Error("Unsupported service platform");
-  return `[Unit]\nDescription=Ash computer device\nAfter=network-online.target\n[Service]\nType=simple\nExecStart=${unit(command)} run --config ${unit(config)}\nEnvironment=${unit(`PATH=${path}`)}\nRestart=always\nRestartSec=5\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=Ash computer device\nAfter=network-online.target\n[Service]\nType=simple\nExecStart=${unit(command)} run --config ${unit(config)}\n${vars.map(([k, v]) => `Environment=${unit(`${k}=${v}`)}\n`).join("")}Restart=always\nRestartSec=5\n[Install]\nWantedBy=default.target\n`;
 }

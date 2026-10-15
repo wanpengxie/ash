@@ -38,6 +38,8 @@ export interface DeviceDeps {
   codexApp?: false | CodexAppOptions;
   /** How long agents keep running without the hub. */
   graceMs?: number;
+  /** Installs a release (default: from GitHub, [installRelease]); replaced in tests. */
+  install?: (root: string, version: string, sha256: string) => Promise<unknown>;
 }
 
 export interface RunningDevice {
@@ -82,13 +84,14 @@ export async function startDevice(config: DeviceConfig, pair?: { code: string; s
   let client!: HandClient;
   const workspace = createWorkspace({ workdir, stateDir, stream: (data, mime) => client.sendStream("device", data, { mime }) });
   let updating = false;
+  const install = dependencies.install ?? ((root: string, version: string, sha256: string) => installRelease(root, version, sha256));
   const hand = createHand({
     workspace, ego, kimi, codex,
     busy: () => agents.busy || workspace.busy || kimi.busy || !!ego?.running || updating,
     update: config.installRoot && dependencies.restart
       ? async (version, sha256) => {
         updating = true;
-        try { const result = await installRelease(config.installRoot!, version, sha256); setTimeout(dependencies.restart!, 1000); return result; }
+        try { const result = await install(config.installRoot!, version, sha256); setTimeout(dependencies.restart!, 1000); return result; }
         catch (error) { updating = false; throw error; }
       }
       : null,
@@ -113,11 +116,26 @@ export async function startDevice(config: DeviceConfig, pair?: { code: string; s
   const pairing = new PairingFile(join(stateDir, "paired.json"));
   const line = dependencies.relay === false ? null : new GatewayLine(config.gateway, identity, port, log);
   let lastRefusal: RunningDevice["lastRefusal"] = null;
+  // The hub closed with 4008 and named the release it needs (inside TLS, so it is the hub's): install it, then restart.
+  let installing: Promise<boolean> | null = null;
+  const platform = `${process.platform}-${process.arch}`;
   const connector = secureConnector(port.connector, {
     key: identity.link,
     trust: () => pairing.trust(),
     paired: (ownerKey) => { pairing.pin(ownerKey); log("the hub proved the pairing secret; its owner key is pinned"); },
     refused: (refusal) => { lastRefusal = { message: refusal.message, pairing: refusal.pairing }; log("the connection was not secured:", refusal.message); },
+    update: (release) => {
+      const sha256 = release.sha256[platform];
+      if (installing) return;
+      if (!config.installRoot || !sha256) { log(`the hub needs release ${release.version}, which this copy cannot install here (${config.installRoot ? `no package for ${platform}` : "not installed by install.sh"})`); return; }
+      log(`the hub needs release ${release.version}: installing it from GitHub`);
+      updating = true;
+      installing = install(config.installRoot, release.version, sha256).then(() => true, (error) => {
+        log(`installing ${release.version} failed; the current version stays`, error instanceof Error ? error.message : error);
+        updating = false;
+        return false;
+      });
+    },
   });
   // `agent` is asked for only while some runtime is installed; it is read again on every handshake.
   const channels = { device: {} } as HelloChannels;
@@ -139,6 +157,11 @@ export async function startDevice(config: DeviceConfig, pair?: { code: string; s
         agents.closed();
         log("hub connection closed", code, reason);
         if (willReconnect) return;
+        if (code === 4008 && installing) {
+          // Restart into the new release; if it did not install, end as before (the service starts this copy again).
+          void installing.then((ok) => { if (ok && dependencies.restart) dependencies.restart(); else { line?.stop(); finish(); } });
+          return;
+        }
         if (code === 4003) line?.markRevoked();
         line?.stop();
         finish();

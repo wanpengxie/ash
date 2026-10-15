@@ -10,11 +10,24 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         Log.i("ash.kernel.boot", "${intent.action}: starting the kernel")
         KernelService.start(ctx)
+        if (!ai.ash.kernel.host.adb.AdbKey.exists(ctx)) return
         // Paired with wireless debugging, but the shell host is gone after a reboot: ask the owner to connect it again.
-        if (ai.ash.kernel.host.adb.AdbKey.exists(ctx) && !ai.ash.kernel.host.KernelHost.ready()) {
-            ai.ash.kernel.host.KernelPairing.askToConnect(ctx.applicationContext)
+        // After an update the old shell host starts the new build's host itself (ShellHost.followUpdate): ask only if it
+        // has not come back after a while.
+        if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) {
+            if (!ai.ash.kernel.host.KernelHost.ready()) ai.ash.kernel.host.KernelPairing.askToConnect(ctx.applicationContext)
+            return
         }
+        val pending = goAsync()
+        Thread({
+            try {
+                Thread.sleep(UPDATE_GRACE_MS)
+                if (!ai.ash.kernel.host.KernelHost.ready()) ai.ash.kernel.host.KernelPairing.askToConnect(ctx.applicationContext)
+            } finally { pending.finish() }
+        }, "ash-boot-after-update").start()
     }
+
+    companion object { private const val UPDATE_GRACE_MS = 20_000L }
 }
 
 /** The exact alarm of wake.at went off: take the wake lock first, then let the service tell the core. */

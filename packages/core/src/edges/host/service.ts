@@ -21,9 +21,13 @@ import type { Registry, Router } from "../../kernel/types";
 import type { HostEventReader, HostPipe } from "./pipe";
 import { HostCallError, type HostClient, type HostOptional } from "./client";
 import type { VirtualScreen } from "./virtual";
+import { phoneRelease, type PhoneRelease, type ReleaseOptions } from "./release";
+import { PHONE_RELEASES } from "../../../../sdk/src/versions";
 
 export const HOST_ID = "service:host";
 const SELF: Caller = { member: HOST_ID, via: "service", local: true };
+/** The vault entry of the read-only GitHub token for a private release repository. */
+const GITHUB_TOKEN = "GITHUB_TOKEN";
 
 /** The phone namespaces the host serves and the host capability that gates each: a word is listed only when the host has it. */
 const PHONE_CAPABILITY: Readonly<Record<string, HostCapability>> = { vscreen: "vscreen", input: "input", apps: "apps" };
@@ -33,7 +37,11 @@ const HAND_OPEN = "apps.open_direct";
 const phoneCapabilityOf = (word: string): HostCapability | undefined => PHONE_CAPABILITY[namespaceOf(word) ?? ""];
 
 export interface HostServiceDeps {
-  client: Pick<HostClient, "wakeAt" | "wakeClear" | "powerHold" | "powerRelease" | "handsHandoff" | "updateInstall" | "lifecycleRestart" | "phone" | "has">;
+  client: Pick<HostClient, "wakeAt" | "wakeClear" | "powerHold" | "powerRelease" | "handsHandoff" | "updateInstall" | "updateStatus" | "lifecycleRestart" | "phone" | "has">;
+  /** The vault entry GITHUB_TOKEN (a read-only token) reads a private release; it is handed to the host only, never to a word. */
+  vault?: { use(ref: string): string | null };
+  /** Finds a release of the phone's packages on GitHub (replaced in tests). */
+  release?: (o: ReleaseOptions) => Promise<PhoneRelease>;
   router: Pick<Router, "send">;
   /** Finds the phone's hand, for the apps.open the host cannot do. */
   registry: Pick<Registry, "findByWord">;
@@ -81,13 +89,27 @@ export function createHostService(deps: HostServiceDeps): HostService {
         case "power.hold": return done(await client.powerHold(b.ms, b.reason));
         case "power.release": return done(await client.powerRelease());
         case "hands.handoff": return done(await client.handsHandoff(b.port, b.token));
-        case "update.install": return done(await client.updateInstall(b.version, b.url, b.sha256));
+        case "update.install": return updatePhone(b.version);
+        case "update.status": return done(await client.updateStatus());
         // The answer goes out first: the restart takes this process with it.
         case "restart": setTimeout(() => { client.lifecycleRestart(String(b.reason ?? "restart asked")).catch((error) => log("lifecycle.restart failed", error)); }, 300).unref(); return { data: { restarting: true } };
         default: throw new WordError("not_found", `${HOST_ID} has no word ${msg.word}`);
       }
     },
   };
+
+  /** Finds the release on GitHub (its SHA256SUMS), then has the host download, check and install it. */
+  async function updatePhone(version: string | undefined): Promise<WordResult> {
+    if (!client.has("update")) throw new WordError("unavailable", "this host cannot install updates");
+    const token = deps.vault?.use(GITHUB_TOKEN) ?? null;
+    const release = await (deps.release ?? phoneRelease)({ repo: PHONE_RELEASES, ...(version ? { version } : {}), token });
+    let r: HostOptional<{ started: true; via: "shell" | "installer" }>;
+    try { r = await client.updateInstall({ version: release.version, packages: release.packages, ...(token ? { token } : {}) }); }
+    catch (error) { if (error instanceof HostCallError) throw new WordError(error.code, error.message); throw error; }
+    if (!r.supported) throw new WordError("unavailable", "this host cannot install updates");
+    log(`installing ${release.version} on the phone (${r.result.via})`);
+    return { data: { started: true, version: release.version, via: r.result.via, packages: release.packages.map((p) => p.package) } };
+  }
 
   /** Forward one phone word to the host and shape its reply: data follows the word, the host's `message` and (for see) the JPEG become content. */
   async function phone(word: HostMethod, body: Record<string, any>, turn: string | undefined, caller?: string): Promise<WordResult> {

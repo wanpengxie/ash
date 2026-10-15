@@ -5,12 +5,13 @@
 import { generateKeyPairSync, sign as signBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { base64url, handId } from "../../../../sdk/src/ids";
+import { DEVICE_VERSION } from "../../../../sdk/src/versions";
 import type { CapabilitySpec } from "../../../../sdk/src/link";
 import type { Caller, Outgoing, Reply } from "../../../../sdk/src/message";
 import type { Member } from "../../../../sdk/src/word";
 import { createNodeClient } from "../../../../link/src/client";
 import { HandClient, type Connector, type EventQueue, type HandHandlers } from "../../../../link/src/hand";
-import { linkKey, secureConnector, type LinkKey } from "../../../../link/src/secure";
+import { linkKey, secureConnector, type DeviceRelease, type LinkKey } from "../../../../link/src/secure";
 import { memoryPair } from "../../../../link/test/fixtures/memory";
 import { endorse, party } from "../../../../link/test/fixtures/secure";
 import { createLinkServer, type GatewaySecurity, type HubLinkServer } from "../../../src/edges/link-server";
@@ -41,8 +42,8 @@ export function relaySecurity(): { ownerKey: string; security: GatewaySecurity }
  * A device's end of a relay tunnel: TLS over [connect]'s socket, the hub checked against [ownerKey] (what the device pinned at
  * pairing), as `ash-device` does.
  */
-export const secureDevice = (identity: Identity, ownerKey: string, connect: Connector): Connector =>
-  secureConnector(connect, { key: identity.link, trust: () => ({ ownerKey, pairSecret: null }) });
+export const secureDevice = (identity: Identity, ownerKey: string, connect: Connector, update?: (release: DeviceRelease) => void): Connector =>
+  secureConnector(connect, { key: identity.link, trust: () => ({ ownerKey, pairSecret: null }), update });
 
 export const cap = (name: string, over: Partial<CapabilitySpec> = {}): CapabilitySpec =>
   ({ name, description: `${name}: a capability of the test hand.`, label: `在${name}`, input_schema: { type: "object" }, effect: "read", risk: "none", ...over });
@@ -133,6 +134,9 @@ export interface HandOptions {
   signWith?: Identity;
   url?: string;
   eventQueue?: EventQueue;
+  /** The program version the hand says (default: the hub's own release of the computer program through the relay, 0.0.1 locally). */
+  version?: string;
+  platform?: string;
 }
 
 export interface TestHand {
@@ -150,7 +154,7 @@ export async function connect(hub: Pick<Hub, "url" | "token">, o: HandOptions = 
   const client = createNodeClient({
     url: o.url ?? hub.url,
     headers: (): Record<string, string> => (o.token === null ? {} : { authorization: `Bearer ${o.token ?? hub.token}` }),
-    hand: { kind: o.kind ?? "phone", name: o.name ?? "test hand", version: "0.0.1", platform: "test", public_key: identity.publicKey },
+    hand: { kind: o.kind ?? "phone", name: o.name ?? "test hand", version: o.version ?? "0.0.1", platform: o.platform ?? "test", public_key: identity.publicKey },
     channels: (o.channels ?? { device: {} }) as never,
     sign: (nonce) => (o.signWith ?? identity).sign(nonce),
     eventQueue: o.eventQueue,
@@ -170,7 +174,7 @@ export async function connected(hub: Pick<Hub, "url" | "token">, o: HandOptions 
 }
 
 /** A hand that reaches the hub through a relay tunnel for device [from]: secured end to end, then judged by the hand's record. */
-export function connectViaRelay(hub: Pick<Hub, "server" | "relay">, from: string, identity: Identity, o: Omit<HandOptions, "identity" | "token"> = {}): TestHand {
+export function connectViaRelay(hub: Pick<Hub, "server" | "relay">, from: string, identity: Identity, o: Omit<HandOptions, "identity" | "token"> & { update?: (release: DeviceRelease) => void } = {}): TestHand {
   const closes: TestHand["closes"] = [];
   const client = new HandClient({
     url: "relay://tunnel/link",
@@ -181,8 +185,8 @@ export function connectViaRelay(hub: Pick<Hub, "server" | "relay">, from: string
       hub.server.acceptGateway(pair.server, from, hub.relay.security);
       queueMicrotask(() => events.open());
       return pair.hand;
-    }),
-    hand: { kind: o.kind ?? "computer", name: o.name ?? "relay hand", version: "0.0.1", platform: "test", public_key: identity.publicKey },
+    }, o.update),
+    hand: { kind: o.kind ?? "computer", name: o.name ?? "relay hand", version: o.version ?? DEVICE_VERSION, platform: "test", public_key: identity.publicKey },
     channels: (o.channels ?? { device: {} }) as never,
     sign: (nonce) => identity.sign(nonce),
     eventQueue: o.eventQueue,

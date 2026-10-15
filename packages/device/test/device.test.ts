@@ -13,6 +13,7 @@ import { checkCapabilitySpec } from "../../sdk/src/link";
 import { startDevice, type DeviceDeps, type RunningDevice } from "../src/main";
 import { loadIdentity } from "../src/link";
 import { DEVICE_VERSION } from "../src/install";
+import { DEVICE_ASSETS } from "../../sdk/src/device-assets.generated";
 import { Desktop, snapshot, turn } from "./fake-codex-desktop";
 import { context, errorCode, eventually, fakeCodex, openTunnel, request, startKernel, withPath, type Kernel } from "./kernel";
 
@@ -60,6 +61,32 @@ test("a hub that cannot prove the pairing secret is not let in, and the computer
   assert.deepEqual(s.device.lastRefusal, { message: "the hub could not prove the pairing secret: the relay may have swapped the owner's key", pairing: true });
   assert.equal(JSON.parse(await readFile(file, "utf8")).secret, "the-real-secret", "nothing pinned");
   assert.equal(s.kernel.hands.online(s.id), false);
+});
+
+test("the hub closes with 4008 and names its release: this computer installs it from GitHub and restarts", async (t) => {
+  const installed: [string, string, string][] = [];
+  let restarted = 0;
+  const s = await setup(t, { installRoot: "/data/ash-device-root", deps: {
+    install: async (root, version, sha256) => { installed.push([root, version, sha256]); },
+    restart: () => { restarted++; },
+  } });
+  await s.device.client.ready();
+  const conn = s.kernel.server.connections().find((c) => c.hand === s.id)!;
+  s.kernel.server.closeConnection(conn.conn, 4008, "too old");
+  await eventually(() => restarted === 1, "the restart");
+  const platform = `${process.platform}-${process.arch}`;
+  assert.deepEqual(installed, [["/data/ash-device-root", DEVICE_ASSETS.version, DEVICE_ASSETS.sha256[platform]]]);
+});
+
+test("a 4008 that comes in the clear (the relay's) installs nothing", async (t) => {
+  const installed: string[] = [];
+  const s = await setup(t, { installRoot: "/data/ash-device-root", deps: { install: async (_root, version) => { installed.push(version); }, restart: () => {} } });
+  await s.device.client.ready();
+  s.tunnel.cut(4008, "forged");
+  await eventually(() => s.device.client.state !== "ready", "the connection gone");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(installed, []);
+  assert.notEqual(s.device.client.state, "stopped");
 });
 
 test("the handshake: this computer signs in as a computer, with the device channel and, when a runtime is installed, the agent channel", async (t) => {

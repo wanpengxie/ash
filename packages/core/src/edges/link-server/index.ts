@@ -14,7 +14,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { handId } from "../../../../sdk/src/ids";
 import { CLOSE_CODES, type HandKind, type HelloFrame, type LinkChannel } from "../../../../sdk/src/link";
-import { MCP_SERVER_VERSION } from "../../../../sdk/src/versions";
+import { DEVICE_ASSETS } from "../../../../sdk/src/device-assets.generated";
+import { DEVICE_MIN_VERSION, MCP_SERVER_VERSION, versionBefore } from "../../../../sdk/src/versions";
 import { SecureRefusal, sameKey, secureHub, type Endorsement, type LinkKey } from "../../../../link/src/secure";
 import {
   createLinkServer as createLink, type AuthContext, type AuthResult, type LinkServer, type LinkSession, type SessionHandlers,
@@ -135,6 +136,10 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
     const id = await handId(spkiBytes(key!)!);
     if (relay && id !== relay.from) return refuse(CLOSE_CODES.unauthenticated, "the key is not the device's");
     known(id);
+    // Too old to talk with: closed with 4008 inside TLS, which also names the release to install (secure.ts).
+    if (relay && hello.hand.kind === "computer" && versionBefore(hello.hand.version, DEVICE_MIN_VERSION)) {
+      return refuse(CLOSE_CODES.unsupported, `this computer's program ${hello.hand.version.slice(0, 20)} is older than ${DEVICE_MIN_VERSION}; it updates itself`);
+    }
 
     const hand = hands.get(id);
     if (hand?.revoked_at) return refuse(CLOSE_CODES.revoked, "revoked");
@@ -254,7 +259,7 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
         tunnel.close(CLOSE_CODES.unauthenticated, "unknown device");
         return;
       }
-      secureHub(tunnel, { key: security.key, endorsement: security.endorsement, kernel, deviceKey: hand.public_key, pairSecret: security.pairSecret }).then(({ socket, peerKey }) => {
+      secureHub(tunnel, { key: security.key, endorsement: security.endorsement, kernel, deviceKey: hand.public_key, pairSecret: security.pairSecret, release: DEVICE_ASSETS }).then(({ socket, peerKey }) => {
         if (security.pairSecret) security.paired?.();
         link.accept(socket, { meta: new FromGateway(from, peerKey) });
       }, (error: unknown) => {

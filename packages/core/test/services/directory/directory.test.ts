@@ -37,7 +37,7 @@ test("nothing is local-only: a remote owner sees what the owner on this machine 
 test("an agent sees what callers allows (what the owner can call, but the owner's typing of a secret); the kernel sees all, including kernel-only words", async () => {
   const a = await call(service, agent("main"), "list");
   assert.deepEqual(words(a, "service:vault").sort(), ["connect", "delete", "describe", "generate", "list", "provider", "put", "request", "services"]);
-  assert.deepEqual(words(a, "service:host").sort(), ["restart", "update.install"], "the host's words an agent may call, not its kernel-only ones");
+  assert.deepEqual(words(a, "service:host").sort(), ["restart", "update.install", "update.status"], "the host's words an agent may call, not its kernel-only ones");
   const k = await call(service, kernel, "list");
   assert.ok(words(k, "service:host").includes("wake.at"));
   assert.ok(words(k, "service:vault").includes("set"));

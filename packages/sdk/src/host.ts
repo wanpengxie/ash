@@ -113,7 +113,15 @@ export interface HostMethods {
   "power.hold": { req: { ms: number; reason: string }; res: Record<string, never> };
   "power.release": { req: Record<string, never>; res: Record<string, never> };
   "hands.handoff": { req: { port: number; token: string }; res: { delivered: string[] } };
-  "update.install": { req: { version: string; url: string; sha256: string }; res: Record<string, never> };
+  /**
+   * Starts installing a release of Ash's packages (ai.ash.agent, then ai.ash.kernel) in the background and answers at once:
+   * each APK is downloaded, checked against its SHA-256, and only then installed — with `pm install` by the debug identity
+   * (`via: "shell"`), or by the system installer, which asks the owner to confirm each package (`via: "installer"`).
+   * `token` reads a private repository's assets (sent to api.github.com only). Installing the kernel restarts the core.
+   */
+  "update.install": { req: { version: string; packages: { package: string; url: string; sha256: string }[]; token?: string }; res: { started: true; via: "shell" | "installer" } };
+  /** The running or last update: `state` idle | downloading | installing | waiting_user | done | failed, with `version` and `message`. */
+  "update.status": { req: Record<string, never>; res: { state: string; version?: string; message?: string; at?: number } };
   // The phone-action groups the kernel host serves (capability vscreen/input/apps). The host does the Android work and
   // returns structured data (plus a short `message` for the reply, and the JPEG for vscreen.see); the kernel builds the
   // word's content. Absent when the host cannot do them (unpaired: only `input`, media and volume keys).
@@ -147,6 +155,7 @@ export const HOST_METHOD_CAPABILITY: { readonly [M in HostMethod]: HostCapabilit
   "power.release": "power",
   "hands.handoff": "hands",
   "update.install": "update",
+  "update.status": "update",
   "vscreen.create": "vscreen",
   "vscreen.status": "vscreen",
   "vscreen.launch": "vscreen",

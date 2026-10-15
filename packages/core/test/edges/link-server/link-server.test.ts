@@ -5,6 +5,8 @@ import { eventually } from "../../fixtures/wait";
 import { HandClient } from "../../../../link/src/hand";
 import { memoryPair } from "../../../../link/test/fixtures/memory";
 import { cap, connect, connected, connectViaRelay, newIdentity, startHub } from "./harness";
+import { DEVICE_ASSETS } from "../../../../sdk/src/device-assets.generated";
+import type { DeviceRelease } from "../../../../link/src/secure";
 
 const get = (port: number, path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
   request({ host: "127.0.0.1", port, path }, (res) => {
@@ -188,6 +190,20 @@ test("the local link is in the clear on 127.0.0.1 with the token; a relay tunnel
   assert.equal(refusals[0], "the device spoke in the clear; a relay connection must be secured");
   assert.equal(hub.hands.online(identity.handId), false);
   assert.deepEqual(hub.server.connections().map((c) => c.via), ["local"]);
+});
+
+test("through the relay a computer older than the hub's minimum is closed with 4008 inside TLS, and told the release to install", async (t) => {
+  const hub = await startHub(); t.after(() => hub.stop());
+  const identity = await newIdentity();
+  hub.hands.register({ id: identity.handId, name: "旧电脑", kind: "computer", public_key: identity.publicKey, paired_by: "gateway", lend: true });
+  const releases: DeviceRelease[] = [];
+  const old = connectViaRelay(hub, identity.handId, identity, { version: "0.1.9", update: (release) => releases.push(release) });
+  await eventually(() => old.client.state === "stopped", "closed for good");
+  assert.equal(old.client.stoppedBy, 4008);
+  assert.deepEqual(releases, [{ version: DEVICE_ASSETS.version, sha256: DEVICE_ASSETS.sha256 }]);
+  // The current program is let in.
+  const current = connectViaRelay(hub, identity.handId, identity);
+  await current.client.ready();
 });
 
 test("the device channel reaches the hand registry, and its end marks the hand offline", async (t) => {

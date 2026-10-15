@@ -5,6 +5,7 @@
 import { generateKeyPairSync, sign as signBytes } from "node:crypto";
 import { connect, createServer } from "node:net";
 import { base64url, handId } from "../../../../sdk/src/ids";
+import { DEVICE_VERSION } from "../../../../sdk/src/versions";
 import type { HandKind } from "../../../../sdk/src/link";
 import { WordError, type HandleContext, type Message } from "../../../../sdk/src/message";
 import type { CapabilitySpec } from "../../../../sdk/src/link";
@@ -122,7 +123,7 @@ export async function startWorld(t: { after(fn: () => unknown): void }, o: { gat
         paired: (ownerKey) => { who.pinned.push(ownerKey); who.trust = { ownerKey, pairSecret: null }; },
         refused: (refusal) => who.refusals.push(refusal),
       }),
-      hand: { kind: who.kind, name: who.name, version: "0.0.1", platform: "test", public_key: who.identity.publicKey },
+      hand: { kind: who.kind, name: who.name, version: DEVICE_VERSION, platform: "test", public_key: who.identity.publicKey },
       channels: { device: {} }, sign: (nonce) => who.identity.sign(nonce),
     });
     clients.push(client);

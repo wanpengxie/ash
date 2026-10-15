@@ -34,7 +34,8 @@ describe("host client", () => {
     await client.powerHold(5000, "turn");
     await client.powerRelease();
     assert.deepEqual(await client.handsHandoff(43001, "link-token"), { supported: true, result: { delivered: ["hand:fake"] } });
-    await client.updateInstall("2.0.0", "https://example.test/k.pkg", "ab".repeat(32));
+    await client.updateInstall({ version: "2.0.0", packages: [{ package: "ai.ash.kernel", url: "https://example.test/k.apk", sha256: "ab".repeat(32) }] });
+    await client.updateStatus();
 
     assert.deepEqual(host.calls.map((call) => [call.method, call.body]), [
       ["identity.key", {}],
@@ -47,7 +48,8 @@ describe("host client", () => {
       ["power.hold", { ms: 5000, reason: "turn" }],
       ["power.release", {}],
       ["hands.handoff", { port: 43001, token: "link-token" }],
-      ["update.install", { version: "2.0.0", url: "https://example.test/k.pkg", sha256: "ab".repeat(32) }],
+      ["update.install", { version: "2.0.0", packages: [{ package: "ai.ash.kernel", url: "https://example.test/k.apk", sha256: "ab".repeat(32) }] }],
+      ["update.status", {}],
     ]);
   });
 
@@ -90,7 +92,7 @@ describe("host client", () => {
         wake: () => Promise.all([client.wakeAt(1), client.wakeClear()]),
         power: () => Promise.all([client.powerHold(1, "x"), client.powerRelease()]),
         hands: () => Promise.all([client.handsHandoff(1, "t")]),
-        update: () => Promise.all([client.updateInstall("1", "u", "s")]),
+        update: () => Promise.all([client.updateInstall({ version: "1.0.0", packages: [] }), client.updateStatus()]),
         vscreen: () => Promise.all([client.phone("vscreen.status", {}), client.phone("vscreen.tap", { x: 1, y: 1 })]),
         input: () => Promise.all([client.phone("input.key", { key: "home" })]),
         apps: () => Promise.all([client.phone("apps.open", { app: "x" })]),

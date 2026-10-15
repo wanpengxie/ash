@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { installRelease, releaseUrl, serviceDefinition } from "../src/install";
+import { installRelease, proxyEnvironment, releaseUrl, serviceDefinition } from "../src/install";
 
 test("release installation verifies bytes, startup and platform before replacing the live version", async () => {
   const root = await mkdtemp(join(tmpdir(), "ash-install-test-")), source = join(root, "source", "ash-device");
@@ -36,4 +36,15 @@ test("release names and user service definitions do not inject shell, XML or sys
   assert.match(mac, /A&amp;B/); assert.match(mac, /KeepAlive/);
   const linux = serviceDefinition('/home/test/50% "app"', "linux", "/usr/bin");
   assert.match(linux, /50%%/); assert.match(linux, /Restart=always/); assert.doesNotMatch(linux, /User=root/);
+});
+
+test("the service keeps the proxy variables of the shell that set it up, and nothing else of its environment", () => {
+  const env = proxyEnvironment({ HTTPS_PROXY: "http://proxy.lan:7890", no_proxy: "localhost", HOME: "/home/x", SECRET: "s" });
+  assert.deepEqual(env, { HTTPS_PROXY: "http://proxy.lan:7890", no_proxy: "localhost" });
+  const linux = serviceDefinition("/home/x/.ash-device", "linux", "/usr/bin", env);
+  assert.match(linux, /Environment="HTTPS_PROXY=http:\/\/proxy.lan:7890"\n/);
+  assert.match(linux, /Environment="no_proxy=localhost"\n/);
+  const mac = serviceDefinition("/Users/x/.ash-device", "darwin", "/usr/bin", env);
+  assert.match(mac, /<key>HTTPS_PROXY<\/key><string>http:\/\/proxy.lan:7890<\/string>/);
+  assert.doesNotMatch(mac + linux, /SECRET|HOME/);
 });
