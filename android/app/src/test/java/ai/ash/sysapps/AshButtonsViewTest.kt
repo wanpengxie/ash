@@ -11,15 +11,18 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** Measure the actual common button, including the Drawable/background path, at a phone density. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = Application::class, qualifiers = "w393dp-h851dp-xxhdpi")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AshButtonsViewTest {
     @Test fun shortLabelsKeepTheirHorizontalPaddingAndHaveAFingerSizedTarget() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         try {
             val activity = controller.get()
+            activity.setTheme(ai.ash.R.style.Ash_Light)
             val row = LinearLayout(activity)
             val button = AshUi.button(activity, "批准", size = AshUi.BtnSize.SM)
             row.addView(button); activity.setContentView(row)

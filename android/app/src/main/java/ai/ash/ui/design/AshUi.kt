@@ -149,8 +149,10 @@ object AshUi {
             // A long label or a large system font wraps to a second line (the button grows); it is never shrunk below its size.
             maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
             minHeight = touch; minimumHeight = touch
-            setPadding(dp(ctx, size.padXDp), inset, dp(ctx, size.padXDp), inset)
+            minimumWidth = touch
             background = ripple(ctx, pill(bg), pill(Color.WHITE))
+            // A Drawable may supply padding: apply the design padding after the background.
+            setPadding(dp(ctx, size.padXDp), inset, dp(ctx, size.padXDp), inset)
             layoutParams = ViewGroup.LayoutParams(if (block) ViewGroup.LayoutParams.MATCH_PARENT else ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             role(this, android.widget.Button::class.java.name)
             onClick?.let { f -> setOnClickListener { f() } }
