@@ -2,6 +2,10 @@ package ai.ash.sysapps.team
 
 import ai.ash.R
 import ai.ash.sysapps.SystemAppActivity
+import ai.ash.sysapps.AppIdentity
+import ai.ash.sysapps.AppDestination
+import ai.ash.sysapps.AppAccent
+import ai.ash.sysapps.AppUi
 import ai.ash.ui.KeyboardDeck
 import ai.ash.ui.ChatRow
 import ai.ash.ui.HumanCall
@@ -34,6 +38,7 @@ import java.util.UUID
 
 /** Ash's own team, using the very same hub words as the agents. Never a page of the main conversation. */
 class TeamActivity : SystemAppActivity() {
+    override val appIdentity = AppIdentity("团队",R.drawable.ash_ic_grid,AppAccent.PURPLE)
     private val members = TeamModel.Read<List<TeamModel.Member>>()
     private val costs = TeamModel.Read<Map<String, TeamModel.Cost>>()
     private var exchanges = TeamModel.Read<List<TeamModel.Exchange>>()
@@ -72,7 +77,6 @@ class TeamActivity : SystemAppActivity() {
     private lateinit var list: RecyclerView
     private lateinit var lm: LinearLayoutManager
     private lateinit var rows: KeyedRowsAdapter
-    private lateinit var status: TextView
     private lateinit var targets: Spinner
     private lateinit var input: EditText
     private lateinit var send: View
@@ -105,7 +109,12 @@ class TeamActivity : SystemAppActivity() {
         saved?.getBundle("configNotes")?.let { notes -> notes.keySet().forEach { id -> notes.getString(id)?.let { configNotes[id] = it } } }
         title.text = "团队"
         actions.addView(AshUi.iconButton(this,getDrawable(R.drawable.ash_ic_slider)!!,"团队管理") { move(selected,"manage") })
-        status = AshUi.text(this, "正在读取团队…", AshTokens.Type.sub, c.text2).apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        setDestinations(listOf(
+            AppDestination("team","现在",R.drawable.ash_ic_pulse),
+            AppDestination("exchanges","往来",R.drawable.ash_ic_msg),
+            AppDestination("members","成员",R.drawable.ash_ic_grid)
+        ),space,::selectSpace)
+        setStatus("正在读取团队…")
         lm = LinearLayoutManager(this)
         rows = KeyedRowsAdapter(this).apply { stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY }
         list = RecyclerView(this).apply {
@@ -148,7 +157,6 @@ class TeamActivity : SystemAppActivity() {
         }
         formSlot = AshUi.vstack(this).apply { visibility = View.GONE }
         stage = AshUi.vstack(this).apply {
-            addView(status, LinearLayout.LayoutParams(-1, -2))
             addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(formSlot, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(composer, LinearLayout.LayoutParams(-1, -2))
@@ -270,11 +278,8 @@ class TeamActivity : SystemAppActivity() {
         restoringTarget = false
     }
     private fun draftKey() = "team:ask:${target ?: "none"}"
-    private fun say(s: String) { status.text = s }
-    private fun button(label: String, click: () -> Unit): TextView = AshUi.button(this, label, AshUi.Kind.GHOST, onClick = click).apply {
-        minHeight = dp(48); minWidth = dp(48)
-        setPadding(dp(8), paddingTop, dp(8), paddingBottom)
-    }
+    private fun say(s: String) { setStatus(s.takeIf{it.isNotBlank()}) }
+    private fun button(label: String, click: () -> Unit): TextView = AppUi.button(this,label,AppAccent.PURPLE,primary=false,click=click)
     private fun text(s: String, muted: Boolean = false) = AshUi.text(this, s, if (muted) AshTokens.Type.sub else AshTokens.Type.body, if (muted) c.text2 else c.text).apply { setTextIsSelectable(true) }
     private fun box(vararg lines: String) = AshUi.card(this).apply { lines.filter { it.isNotBlank() }.forEach { addView(text(it)) } }
     private fun note(key: String, s: String) = ChatRow(key, s) { text(s, true) }
@@ -285,19 +290,18 @@ class TeamActivity : SystemAppActivity() {
     }
     private fun selectSpace(next: String) {
         if(route in setOf("team","exchanges","members"))spaces[space]=place()
-        space=next; parents.clear()
-        move(null,next,remember=false)
-        spaces[next]?.let { savedKey=it.key; savedOffset=it.offset; resetPosition=false }
+        space=next; parents.clear(); selectDestination(next)
+        move(null,next,remember=false,restore=spaces[next])
     }
-    private fun move(id: String?, next: String, exchange: TeamModel.Exchange? = null, remember: Boolean = true) {
+    private fun move(id: String?, next: String, exchange: TeamModel.Exchange? = null, remember: Boolean = true, restore: Place? = null) {
         if(remember && (route!=next || selected!=id)) parents.add(place())
         val previous=selected
         selected = id; route = next; routeGeneration++; exchanges.invalidate(); exchanges = TeamModel.Read(); before = null
         if(next=="member") {
-            focused=exchange ?: if(previous==id) focused else null
-            exchangeId=focused?.id
+            focused=exchange ?: if(previous==id && (restore==null || focused?.id==restore.exchange)) focused else null
+            exchangeId=restore?.exchange ?: focused?.id
         } else if(next in setOf("team","exchanges","members")) { focused=null; exchangeId=null }
-        extra = emptyList(); moreExtra = null; savedKey = null; sourceRequest = null; armedAction = null; resetPosition = true; moreMember = false
+        extra = emptyList(); moreExtra = null; savedKey = restore?.key; savedOffset=restore?.offset ?: 0; sourceRequest = null; armedAction = null; resetPosition = restore==null; moreMember = false
         list.visibility = View.VISIBLE; formSlot.visibility = View.GONE
         if (id != null) switchTarget(id)
         updateTargets()
@@ -308,15 +312,12 @@ class TeamActivity : SystemAppActivity() {
     override fun goBack() {
         val parent=parents.removeLastOrNull()
         if(parent==null) { selectSpace(space); return }
-        move(parent.member,parent.route,remember=false)
-        exchangeId=parent.exchange
-        if(focused?.id!=exchangeId)focused=null
-        savedKey=parent.key; savedOffset=parent.offset; resetPosition=false
-        render()
+        move(parent.member,parent.route,remember=false,restore=parent)
     }
     private fun render() {
         if (!::rows.isInitialized || route == "edit") return
         title.text = when (route) { "team" -> "团队"; "members" -> "团队成员"; "exchanges" -> "团队往来"; "member" -> "成员与交付"; "manage" -> "团队管理"; "relations" -> "委托关系"; "logs" -> "成员日志"; "memory" -> "载入的记忆"; "original" -> "原始往来"; else -> "往来原文" }
+        showPage(title.text.toString(),detail=route !in setOf("team","members","exchanges"),showNavigation=route in setOf("team","members","exchanges"))
         composer.visibility = if (route == "member") View.VISIBLE else View.GONE
         if(route!="member")stage.translationY=0f
         input.hint="问原来的${member()?.name ?: "帮手"}…"
@@ -373,7 +374,7 @@ class TeamActivity : SystemAppActivity() {
                             val answer=a.error.ifBlank{a.text}
                             built.add(ChatRow("answer:${e.id}",answer) { views.panel().apply { addView(views.text(answer.ifBlank{"原回答没有文字，请查看原始往来。"})) } })
                             built.add(note("answer:source:${e.id}",if(a.error.isBlank()) "以上是帮手的原回答，不是独立验收结论。" else "原委托未确认完成，请先查看原始往来。"))
-                        } else built.add(note("answer:waiting:${e.id}","尚未收到这条委托的回答。"))
+                        } else built.add(note("answer:waiting:${e.id}",if(e.state=="answered") "状态记录已回答，尚未取得回答原文。" else "尚未收到这条委托的回答。"))
                         built.add(note("follow:context:${e.id}","关于「${e.text.take(48)}」的追问，会发给${m.name}。"))
                         built.add(ChatRow("exchange:actions:${e.id}","${e.id}:${e.answer?.seq}") {
                             AshUi.hstack(this,8).apply {
@@ -452,6 +453,7 @@ class TeamActivity : SystemAppActivity() {
         }
         val errors=listOfNotNull(members.error,exchanges.error,costs.error)
         val latest=items.maxByOrNull{it.answer?.ts ?: it.ts}
+        if(route=="member" && errors.isEmpty()) { setStatus(null); return }
         when {
             errors.isNotEmpty()->say(errors.distinct().joinToString(" · ")+"；保留上次内容")
             changedBy!=null->say("最近变化 · $changedBy 修改了成员")
@@ -538,7 +540,8 @@ class TeamActivity : SystemAppActivity() {
         if(route!="edit")parents.add(place())
         selected = m?.id
         route = "edit"; routeGeneration++; syncBack(); title.text = if (m == null) "新建帮手" else "修改配置"
-        list.visibility = View.GONE; composer.visibility = View.GONE
+        list.visibility = View.GONE; composer.visibility = View.GONE;stage.translationY=0f
+        showPage(title.text.toString(),detail=true,showNavigation=false);setStatus(null)
         formSlot.visibility = View.VISIBLE; formSlot.removeAllViews()
         val fields = AshUi.vstack(this, 10).apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
         formSlot.addView(ScrollView(this).apply { addView(fields) }, LinearLayout.LayoutParams(-1, -1))

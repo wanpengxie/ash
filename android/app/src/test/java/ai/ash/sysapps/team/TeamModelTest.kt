@@ -24,6 +24,12 @@ class TeamModelTest {
         val rows = TeamModel.merge(listOf(e, newer), listOf(answered))
         assertEquals(listOf("m2", "m1"), rows.map { it.id }); assertEquals("ok", rows.last().answer?.text)
     }
+    @Test fun missingMemberStateStaysUnknownAndMoneyKeepsItsSourceCurrency() {
+        val member=TeamModel.members(JSONObject("""{"agents":[{"id":"agent:h","name":"帮手"}]}""")).single()
+        assertEquals("当前状态未知",member.status(emptyMap()))
+        assertEquals("US$0.5000",TeamModel.Cost(0.5,2).amount())
+        assertTrue(TeamModel.Cost(0.5,2).pricing().contains("2 次未计价"))
+    }
     @Test fun malformedSuccessCannotClearTheList() {
         assertTrue(runCatching { TeamModel.members(JSONObject()) }.isFailure)
         assertTrue(runCatching { TeamModel.exchanges(JSONObject()) }.isFailure)

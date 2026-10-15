@@ -13,6 +13,15 @@ class TeamSendTest {
         val restored = TeamSend.read(pending.copy(error = "结果未知").json())!!
         assertEquals(sent.toString(), restored.request().toString())
     }
+    @Test fun followUpOnlyUsesExistingAgentAndTextAndRestoresOriginalContextOnRetry() {
+        val pending=TeamSend("same-client","agent:h","请补退款条件",context="原委托 m-original：比较住宿")
+        val restored=TeamSend.read(pending.copy(error="连接中断").json())!!
+        val body=restored.request().getJSONObject("body")
+        assertEquals(setOf("agent","text"),body.keys().asSequence().toSet())
+        assertEquals("agent:h",body.getString("agent"))
+        assertEquals("原委托 m-original：比较住宿\n\n追问：请补退款条件",body.getString("text"))
+        assertEquals(pending.request().toString(),restored.request().toString())
+    }
     @Test fun definitiveRefusalCanBeEndedButUnknownDeliveryMustReuseItsId() {
         val pending = TeamSend("same", "agent:h", "hello")
         assertFalse(pending.copy(code = "offline").refused)

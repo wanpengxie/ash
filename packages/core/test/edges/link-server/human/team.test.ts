@@ -27,6 +27,15 @@ test("owner names a helper once, gets a receipt first, and both endpoints see th
     body: { id: "agent:research", name: "资料帮手", summary: "整理资料", brief: "只回答委托人", runtime: { kind: "dsh", model: "model-one" }, tools: ["read"] } });
   assert.ok(declared.ok && declared.response?.ok);
   for (let i = 1; i <= 8; i++) await f.service("declare", { id: `agent:helper${i}`, name: `帮手${i}`, summary: "整理专项资料", brief: "整理后回复委托人" });
+  const timeline = async (channel: Channel) => {
+    const r = await channel.send({ to: "service:history", kind: "request", word: "exchanges", body: { agent: "agent:research" }, wait: true });
+    assert.ok(r.ok && r.response?.ok); return dataOf(r).items;
+  };
+  const snapshot = async () => ({
+    members: dataOf(await web.send({ to: "service:agents", kind: "request", word: "list", body: {}, wait: true })),
+    exchanges: { items: await timeline(web) },
+  });
+  const quiet = await snapshot();
   const question = { to: "service:agents", kind: "request" as const, word: "ask", body: { agent: "agent:research", text: "整理这次应用验收结果，先检查团队入口复用" }, wait: false, client_id: "team-durable-one" };
   const first = await phone.send(question);
   assert.ok(first.ok); assert.ok(first.message?.id); assert.equal(first.response, undefined);
@@ -41,15 +50,7 @@ test("owner names a helper once, gets a receipt first, and both endpoints see th
   const read = await web.send({ to: "service:agents", kind: "request", word: "describe", body: { agent: "agent:research" }, wait: true });
   assert.ok(read.ok && read.response?.ok);
   assert.equal(dataOf(read).state, "working");
-  const timeline = async (channel: Channel) => {
-    const r = await channel.send({ to: "service:history", kind: "request", word: "exchanges", body: { agent: "agent:research" }, wait: true });
-    assert.ok(r.ok && r.response?.ok); return dataOf(r).items;
-  };
   assert.equal((await timeline(web))[0].state, "waiting");
-  const snapshot = async () => ({
-    members: dataOf(await web.send({ to: "service:agents", kind: "request", word: "list", body: {}, wait: true })),
-    exchanges: { items: await timeline(web) },
-  });
   const during = await snapshot();
   const responseText = "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。";
   f.driver().say("agent:research", "back", responseText); f.driver().finish("agent:research", "back");
@@ -63,14 +64,15 @@ test("owner names a helper once, gets a receipt first, and both endpoints see th
   }
   assert.equal(delivered().length, 1);
   const answered = await snapshot();
-  const follow = await phone.send({ ...question, body: { agent: "agent:research", text: "这个问题会丢掉我刚输入的内容吗？" }, client_id: "team-follow-up-two" });
+  const follow = await phone.send({ ...question, body: { agent: "agent:research", text: `原委托 ${first.message!.id}：${question.body.text}\n\n追问：这个问题会丢掉我刚输入的内容吗？` }, client_id: "team-follow-up-two" });
   assert.ok(follow.ok);
   await waitFor(() => f.driver().running.has("agent:research/back"));
   assert.equal(delivered().length, 2);
+  assert.equal((delivered()[1]![3] as any)[0].text, `原委托 ${first.message!.id}：${question.body.text}\n\n追问：这个问题会丢掉我刚输入的内容吗？`);
   f.driver().say("agent:research", "back", "会有串稿风险。正在补 A、B 两位帮手之间的切换及晚回执保护。"); f.driver().finish("agent:research", "back");
   await web.seen((m) => m.reply_to === follow.message?.id && m.kind === "response", "follow-up answer on the other endpoint");
   const continued = await snapshot();
-  if (process.env.TEAM_CAPTURE === "1") writeFileSync(new URL("../../../fixtures/team-session.json", import.meta.url), JSON.stringify({ during, answered, continued, answerEvent }, null, 2) + "\n");
+  if (process.env.TEAM_CAPTURE === "1") writeFileSync(new URL("../../../fixtures/team-session.json", import.meta.url), JSON.stringify({ quiet, during, answered, continued, answerEvent }, null, 2) + "\n");
   assert.equal(hub.ledger.page({ limit: 200 }).filter((m) => m.to === "person:owner" && m.word === "say").length, 0);
   const interrupted = await phone.send({ ...question, body: { agent: "agent:research", text: "继续检查剩下的入口" }, client_id: "team-interrupted-three" });
   assert.ok(interrupted.ok); await waitFor(() => f.driver().running.has("agent:research/back"));

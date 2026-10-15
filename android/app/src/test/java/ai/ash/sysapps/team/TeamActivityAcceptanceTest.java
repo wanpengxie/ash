@@ -147,21 +147,22 @@ public class TeamActivityAcceptanceTest {
         MotionEvent down=MotionEvent.obtain(now,now,MotionEvent.ACTION_DOWN,x,y,0),up=MotionEvent.obtain(now,now+20,MotionEvent.ACTION_UP,x,y,0);
         assertTrue(decor.dispatchTouchEvent(down));decor.dispatchTouchEvent(up);down.recycle();up.recycle();idle();
     }
-    static View detail(TeamActivity a) throws Exception { return (View)screenText(a,"修改配置",true).getParent(); }
+    static View detail(TeamActivity a) throws Exception { return (View)screenText(a,"角色与模型",true).getParent(); }
     static String text(View root) {
         String s=root instanceof TextView ? ((TextView)root).getText().toString()+"\n" : "";
         if(root instanceof ViewGroup) for(int i=0;i<((ViewGroup)root).getChildCount();i++) s+=text(((ViewGroup)root).getChildAt(i));
         return s;
     }
+    static void invalidateTree(View v) { v.invalidate(); if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++)invalidateTree(((ViewGroup)v).getChildAt(i)); }
     static void screenshot(TeamActivity a,String name) throws Exception {
-        layout(a);View decor=a.getWindow().getDecorView();Bitmap bitmap=Bitmap.createBitmap(decor.getWidth(),decor.getHeight(),Bitmap.Config.ARGB_8888);decor.draw(new Canvas(bitmap));
+        layout(a);View decor=a.getWindow().getDecorView();invalidateTree(decor);Bitmap bitmap=Bitmap.createBitmap(decor.getWidth(),decor.getHeight(),Bitmap.Config.ARGB_8888);decor.draw(new Canvas(bitmap));
         File file=new File("build/reports/team-acceptance/"+name+".png");assertTrue(file.getParentFile().isDirectory()||file.getParentFile().mkdirs());
         try(FileOutputStream out=new FileOutputStream(file)){assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,out));}bitmap.recycle();
     }
     @Test public void pendingReceiptBelongsToOldMemberAndCannotClearTheNewMembersDraft() throws Exception {
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,intent("agent:a")).create().start().resume().visible()) {
             TeamActivity a=c.get(); last("list").answer(MEMBERS);
-            input(a).setText("Alice question"); ((TextView)ReflectionHelpers.getField(a,"send")).performClick();
+            input(a).setText("Alice question"); ((View)ReflectionHelpers.getField(a,"send")).performClick();
             Read send=last("send"); assertEquals("agent:a",send.body.getJSONObject("body").getString("agent")); assertFalse(send.body.getBoolean("wait"));
             c.newIntent(intent("agent:b")); idle(); input(a).setText("Bob unsent");
             send.answer("{\"ok\":true,\"message\":{\"id\":\"alice-request\",\"seq\":7}}");
@@ -176,59 +177,88 @@ public class TeamActivityAcceptanceTest {
             TeamActivity a=c.get(); last("list").answer(MEMBERS);
             View card=detail(a);
             assertNull(label(card,"工具：secret_tool")); assertNull(label(card,"接口：service:private/*"));
-            assertNotNull(label(card,"修改配置")); label(card,"修改配置").performClick(); idle();
+            assertNotNull(label(card,"角色与模型")); label(card,"角色与模型").performClick(); idle();
             View form=ReflectionHelpers.getField(a,"formSlot");
             EditText tools=field(form,"可用工具"); assertNotNull(tools); assertFalse(tools.isShown());
             label(form,"高级配置").performClick(); idle(); assertEquals(View.VISIBLE,((View)tools.getParent()).getVisibility());
-            assertNotNull(label(card,"更多操作"));
+            assertNotNull(label(form,"运行中的帮手：更改角色或工具会重启并中断当前委托；模型变更按运行时在下一轮生效或重启。"));
         }
     }
     @Test public void unknownMemberCannotFallBackToAnotherExecutionIdentity() throws Exception {
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,intent("agent:missing")).create().start().resume().visible()) {
             TeamActivity a=c.get(); last("list").answer(MEMBERS);
             assertEquals("agent:missing",ReflectionHelpers.getField(a,"target"));
-            assertFalse(((TextView)ReflectionHelpers.getField(a,"send")).isEnabled());
+            assertFalse(((View)ReflectionHelpers.getField(a,"send")).isEnabled());
         }
     }
+    static JSONObject session() throws Exception { return new JSONObject(new String(Files.readAllBytes(Repo.INSTANCE.getRoot().toPath().resolve("packages/core/test/fixtures/team-session.json")),StandardCharsets.UTF_8)); }
+    static void provide(TeamActivity a,JSONObject snapshot) throws Exception {
+        last("list").answer(snapshot.getJSONObject("members").toString());
+        last("usage.get").answer("{\"by_caller_today\":[]}");
+        last("exchanges").answer(snapshot.getJSONObject("exchanges").toString());
+        layout(a);
+    }
     @Test public void homePutsRealDelegationBeforeTheFullMemberListThenShowsReplyAndContinue() throws Exception {
-        JSONObject session=new JSONObject(new String(Files.readAllBytes(Repo.INSTANCE.getRoot().toPath().resolve("packages/core/test/fixtures/team-session.json")),StandardCharsets.UTF_8));
-        JSONObject during=session.getJSONObject("during"), answered=session.getJSONObject("answered");
+        JSONObject session=session(),answered=session.getJSONObject("answered");
+        String question="整理这次应用验收结果，先检查团队入口复用";
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,new Intent(RuntimeEnvironment.getApplication(),TeamActivity.class)).create().start().resume().visible()) {
-            TeamActivity a=c.get(); last("list").answer(during.getJSONObject("members").toString());
-            last("exchanges").answer(during.getJSONObject("exchanges").toString());
-            TextView question=screenText(a,"整理这次应用验收结果，先检查团队入口复用",false);
-            assertTrue(visible(question)); assertTrue(during.getJSONObject("members").getJSONArray("agents").length()>6);
-            assertNotNull(screenText(a,"委托与回复",false));
-            for(String action:new String[]{"成员","刷新","新建"})assertTrue("Header action needs a 48dp touch width",screenText(a,action,false).getWidth()>=48);
-            assertFalse(text(a.getWindow().getDecorView()).contains("配置模型："));
-            screenshot(a,"01-working-delegation");
-            touch(a,screenText(a,"资料帮手",false));
-            assertEquals("agent:research",member(a)); assertEquals("agent:research",last("exchanges").body.getString("agent"));
-            last("exchanges").answer(during.getJSONObject("exchanges").toString());
-            layout(a);touch(a,described(a.getWindow().getDecorView(),"返回"));
-            assertEquals("team",ReflectionHelpers.getField(a,"route"));
-            last("exchanges").answer(during.getJSONObject("exchanges").toString());
+            TeamActivity a=c.get();provide(a,answered);
+            assertNotNull(screenText(a,"刚收到的交付",false));
+            assertTrue(visible(screenText(a,question,false)));
+            assertFalse("App root must not return to Ash",described(a.getWindow().getDecorView(),"返回").isShown());
+            assertTrue(answered.getJSONObject("members").getJSONArray("agents").length()>6);
+            for(String tab:new String[]{"现在","往来","成员"})assertTrue(visible(described(a.getWindow().getDecorView(),tab)));
+            screenshot(a,"v6-team-home");
+            touch(a,screenText(a,question,false));
+            assertEquals("agent:research",member(a));assertEquals("agent:research",last("exchanges").body.getString("agent"));
+            last("exchanges").answer(answered.getJSONObject("exchanges").toString());
+            assertNotNull(screenText(a,"成员与交付",false));
+            assertNotNull(screenText(a,"发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。",false));
+            screenshot(a,"v6-team-detail");
+            touch(a,screenText(a,"继续问",true));
+            assertTrue(input(a).hasFocus());input(a).setText("这个问题会丢掉我刚输入的内容吗？"); input(a).setSelection(3);
             Read priorMembers=last("list"),priorExchanges=last("exchanges");
             Feed.listener.invoke(session.getJSONObject("answerEvent"));
-            assertNotSame("Production ledger handler must request fresh members",priorMembers,last("list"));
-            assertNotSame("Production ledger handler must request fresh exchanges",priorExchanges,last("exchanges"));
+            assertNotSame(priorMembers,last("list"));assertNotSame(priorExchanges,last("exchanges"));
             last("list").answer(answered.getJSONObject("members").toString());
             last("exchanges").answer(answered.getJSONObject("exchanges").toString());
-            assertNotNull(screenText(a,"成员当前没有正在执行的工作",false));
-            TextView continueButton=screenText(a,"继续问",true);
-            assertTrue(text(a.getWindow().getDecorView()).contains("发现复用入口会留在上一个成员"));
-            screenshot(a,"02-reply-and-follow-up");
-            touch(a,continueButton);
-            assertEquals("agent:research",ReflectionHelpers.getField(a,"target"));
-            input(a).setText("这个问题会丢掉我刚输入的内容吗？");
-            touch(a,screenText(a,"发送",false));
-            Read sent=last("send"); assertEquals("agent:research",sent.body.getJSONObject("body").getString("agent"));
-            assertEquals("这个问题会丢掉我刚输入的内容吗？",sent.body.getJSONObject("body").getString("text"));
+            assertTrue("Incoming ledger refresh must keep the editor focused",input(a).hasFocus());
+            assertEquals(3,input(a).getSelectionStart());assertEquals("这个问题会丢掉我刚输入的内容吗？",input(a).getText().toString());
+            screenshot(a,"v6-team-editing");
+            touch(a,described(a.getWindow().getDecorView(),"发送到原成员"));
+            Read sent=last("send");JSONObject body=sent.body.getJSONObject("body");
+            assertEquals("agent:research",body.getString("agent"));assertEquals(2,body.length());
+            assertTrue(body.getString("text").contains(answered.getJSONObject("exchanges").getJSONArray("items").getJSONObject(0).getString("id")));
+            assertTrue(body.getString("text").contains(question));assertTrue(body.getString("text").endsWith("这个问题会丢掉我刚输入的内容吗？"));
+            String client=sent.body.getString("client_id");sent.fail("offline","连接中断");
+            touch(a,screenText(a,"确认发送结果",true));assertEquals(client,last("send").body.getString("client_id"));
+            assertEquals(body.toString(),last("send").body.getJSONObject("body").toString());
+            layout(a);touch(a,described(a.getWindow().getDecorView(),"返回"));
+            assertEquals("team",ReflectionHelpers.getField(a,"route"));
+        }
+    }
+    @Test public void quietScreenAndStableDestinationsKeepReadingPlace() throws Exception {
+        try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,new Intent(RuntimeEnvironment.getApplication(),TeamActivity.class)).create().start().resume().visible()) {
+            TeamActivity a=c.get();provide(a,session().getJSONObject("quiet"));
+            assertNotNull(screenText(a,"还没有新的交付。原委托在「往来」里。",false));
+            assertFalse(text(a.getWindow().getDecorView()).contains("已核验"));screenshot(a,"v6-team-quiet");
+            touch(a,described(a.getWindow().getDecorView(),"往来"));
+            last("exchanges").answer(session().getJSONObject("quiet").getJSONObject("exchanges").toString());
+            assertNotNull(screenText(a,"按原委托往来",false));
+            layout(a);touch(a,described(a.getWindow().getDecorView(),"成员"));
+            assertNotNull(screenText(a,"招一位帮手",true));
+            RecyclerView list=ReflectionHelpers.getField(a,"list");int before=((androidx.recyclerview.widget.LinearLayoutManager)list.getLayoutManager()).findFirstVisibleItemPosition();
+            touch(a,screenText(a,"招一位帮手",true));
+            View form=ReflectionHelpers.getField(a,"formSlot");field(form,"名字").setText("保留招人草稿");
+            layout(a);touch(a,described(a.getWindow().getDecorView(),"返回"));
+            assertEquals("members",ReflectionHelpers.getField(a,"route"));screenText(a,"招一位帮手",false);
+            assertEquals(before,((androidx.recyclerview.widget.LinearLayoutManager)list.getLayoutManager()).findFirstVisibleItemPosition());
+            touch(a,screenText(a,"招一位帮手",true));assertEquals("保留招人草稿",field(form,"名字").getText().toString());
         }
     }
     @Test public void configurationFormSubmitsTheChosenModelRoleAndToolPolicy() throws Exception {
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,intent("agent:a")).create().start().resume().visible()) {
-            TeamActivity a=c.get(); last("list").answer(MEMBERS); label(detail(a),"修改配置").performClick();
+            TeamActivity a=c.get(); last("list").answer(MEMBERS); label(detail(a),"角色与模型").performClick();
             View form=ReflectionHelpers.getField(a,"formSlot");
             assertTrue(label(form,"运行中的帮手：更改角色或工具会重启并中断当前委托；模型变更按运行时在下一轮生效或重启。").isShown());
             last("runtimes").answer("{\"runtimes\":[{\"kind\":\"dsh\",\"models\":[{\"id\":\"one\"},{\"id\":\"two\"}]}]}");
@@ -253,7 +283,7 @@ public class TeamActivityAcceptanceTest {
     @Test public void sendingReceiptRefusalAndUnknownHaveDistinctVisibleFeedback() throws Exception {
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,intent("agent:a")).create().start().resume().visible()) {
             TeamActivity a=c.get(); last("list").answer(MEMBERS); input(a).setText("检查入口");
-            ((TextView)ReflectionHelpers.getField(a,"send")).performClick();
+            ((View)ReflectionHelpers.getField(a,"send")).performClick();
             Read first=last("send"); String client=first.body.getString("client_id");
             View pending=screenText(a,"正在提交中枢…",true); assertTrue(visible(pending)); assertFalse(text(a.getWindow().getDecorView()).contains("已提交中枢"));
             first.fail("offline","连接中断");
@@ -271,7 +301,7 @@ public class TeamActivityAcceptanceTest {
     @Test public void creatingAHelperNeedsOnlyNameRoleAndModelAndKeepsTheReturnedIdentity() throws Exception {
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,new Intent(RuntimeEnvironment.getApplication(),TeamActivity.class)).create().start().resume().visible()) {
             TeamActivity a=c.get(); last("list").answer(MEMBERS);
-            View actions=ReflectionHelpers.getField(a,"actions"); label(actions,"新建").performClick();
+            layout(a);touch(a,described(a.getWindow().getDecorView(),"成员"));touch(a,screenText(a,"招一位帮手",true));
             View form=ReflectionHelpers.getField(a,"formSlot");
             field(form,"名字").setText("验收帮手"); field(form,"一句话说明角色").setText("逐项检查应用并回复结果");
             last("runtimes").answer("{\"runtimes\":[{\"kind\":\"dsh\",\"models\":[{\"id\":\"one\"},{\"id\":\"two\"}]}]}");

@@ -26,7 +26,7 @@ internal class TeamViews(private val ctx: Context) {
         setPadding(d(16),d(16),d(16),d(16))
     }
     private fun avatar(m: TeamModel.Member, size: Int): View = if (m.primary) {
-        AshUi.AvatarView(ctx).apply { image = OnboardingViews.face(ctx,"neutral"); layoutParams = LinearLayout.LayoutParams(d(size),d(size)) }
+        AshUi.AvatarView(ctx).apply { image = OnboardingViews.face(ctx,"default"); layoutParams = LinearLayout.LayoutParams(d(size),d(size)) }
     } else text(m.name.take(1),if(size>36) AshTokens.Type.display else AshTokens.Type.headline).apply {
         gravity = Gravity.CENTER; setTextColor(c.helperPurple)
         background = AshUi.rounded(c.surface2,AshUi.dpF(ctx,size*0.32f))
