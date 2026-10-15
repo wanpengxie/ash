@@ -51,6 +51,7 @@ class CodexActivityAcceptanceTest {
     private val mac = "device:ABCDEFGHIJKLMNOPQRSTUV"
     private val mini = "device:ZYXWVUTSRQPONMLKJIHGFE"
     private lateinit var input: EditText
+    private val windowLayouts = ArrayList<String>()
 
     @Before fun start() {
         link = TestLink(wrap = { base -> object : HandHandlers by base {
@@ -61,6 +62,10 @@ class CodexActivityAcceptanceTest {
         details["t1"] = detail("t1", "修复结算页重复扣款", JSONArray().put(progress()))
         details["t2"] = detail("t2", "整理跑步计划", JSONArray().put(JSONObject().put("kind", "agent").put("text", "明天先跑三公里，轻松配速；周末再回顾跑量和膝盖的感觉。")))
         controller = Robolectric.buildActivity(Screen::class.java, intent(mac, "t1")).create().start().resume().visible().windowFocusChanged(true)
+        controller.get().window.decorView.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
+            val size = "${r-l}x${b-t}"
+            if (windowLayouts.lastOrNull() != size) windowLayouts += size
+        }
         waitFor("existing work") { texts().contains("修复结算页重复扣款") }
         input = views().filterIsInstance<EditText>().single()
         layout(); settleWire()
@@ -75,7 +80,13 @@ class CodexActivityAcceptanceTest {
     private fun views(root: View = controller.get().window.decorView): List<View> = listOf(root) +
         if (root is ViewGroup) (0 until root.childCount).flatMap { views(root.getChildAt(it)) } else emptyList()
     private fun texts() = views().filterIsInstance<TextView>().map { it.text.toString() }
-    private fun layout() { val root = controller.get().window.decorView; root.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)); root.layout(0, 0, 1080, 1920) }
+    private fun layout() {
+        val activity = controller.get()
+        val bounds = activity.windowManager.currentWindowMetrics.bounds
+        val root = activity.window.decorView
+        root.measure(View.MeasureSpec.makeMeasureSpec(bounds.width(), View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bounds.height(), View.MeasureSpec.EXACTLY))
+        root.layout(0, 0, bounds.width(), bounds.height())
+    }
     private fun detail(id: String, title: String, items: JSONArray = JSONArray()) = JSONObject().put("id", id).put("title", title)
         .put("turns", JSONArray().put(JSONObject().put("id", "running").put("status", "inProgress").put("items", items)))
         .put("state", "running").put("open", true).put("approvals", JSONArray())
@@ -151,13 +162,32 @@ class CodexActivityAcceptanceTest {
     }
     private fun capture(name: String) {
         settleWire(); layout()
-        assertTrue("toolbar and composer are on screen", input.isShown && input.height > 0 && controller.get().window.decorView.findViewById<View>(android.R.id.content).height > 0)
+        val window = controller.get().window.decorView
+        val toolbar = views().filterIsInstance<TextView>().first()
+        for ((name, control) in listOf("toolbar" to toolbar, "input" to input)) {
+            val visible = android.graphics.Rect()
+            assertTrue("$name has an actual visible rectangle", control.getGlobalVisibleRect(visible))
+            assertEquals("$name is not vertically clipped", control.height, visible.height())
+            assertEquals("$name is not horizontally clipped", control.width, visible.width())
+            assertTrue("$name fully inside the real window", visible.top >= 0 && visible.left >= 0 && visible.bottom <= window.height && visible.right <= window.width)
+        }
         val root = controller.get().window.decorView
         val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
         root.draw(Canvas(bitmap))
         val colors = HashSet<Int>()
         for (y in 0 until root.height step 9) for (x in 0 until root.width step 9) colors += bitmap.getPixel(x, y)
         assertTrue("actual rendered Activity content", colors.size > 10)
+        fun inkIn(top: Int, bottom: Int): Int {
+            val background = bitmap.getPixel(3, top.coerceAtLeast(0))
+            var count = 0
+            for (y in top.coerceAtLeast(0) until bottom.coerceAtMost(bitmap.height) step 3)
+                for (x in 0 until bitmap.width step 3) if (bitmap.getPixel(x, y) != background) count++
+            return count
+        }
+        val titleRect = android.graphics.Rect(); toolbar.getGlobalVisibleRect(titleRect)
+        val inputRect = android.graphics.Rect(); input.getGlobalVisibleRect(inputRect)
+        assertTrue("native toolbar pixels contain content", inkIn(titleRect.top, titleRect.bottom) > 25)
+        assertTrue("native composer pixels contain content", inkIn(inputRect.top, inputRect.bottom) > 25)
         val dir = File("/data/atoll/tmp/codex-acceptance").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
@@ -265,9 +295,9 @@ class CodexActivityAcceptanceTest {
                 actual == before
             }
         } catch (e: IllegalStateException) {
-            throw AssertionError("expected reading place=$before; actual=${ai.ash.ui.Anchor.of(list, lm, rows)}; transitions=$traces", e)
+            throw AssertionError("expected reading place=$before; actual=${ai.ash.ui.Anchor.of(list, lm, rows)}; transitions=$traces windows=$windowLayouts", e)
         }
-        println("reading place restored=$before actual=${ai.ash.ui.Anchor.of(list, lm, rows)}")
+        println("reading place restored=$before actual=${ai.ash.ui.Anchor.of(list, lm, rows)} windows=$windowLayouts")
         settleWire()
         assertEquals("reading place remains after later layouts", before, ai.ash.ui.Anchor.of(list, lm, rows))
         capture("returned-to-reading-place")
