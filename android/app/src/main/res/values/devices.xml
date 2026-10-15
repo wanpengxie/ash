@@ -111,7 +111,7 @@
     <string name="dev_detail_no_access">Ash 还不能操作这台设备。</string>
     <string name="dev_detail_revoked">Ash 已不能使用这台设备的能力，设备也不能再连接。</string>
     <string name="dev_detail_restore_next">需要继续使用“%1$s”，请先恢复设备，再到那台设备打开 Ash。</string>
-    <string name="dev_detail_offline_next">请在“%1$s”这台%2$s上启动 Ash，并检查它的网络。完成后点下面的“检查连接”。这里不能替你远程启动离线设备。</string>
+    <string name="dev_detail_offline_next">请在“%1$s”这台%2$s上启动 Ash，并检查它的网络。完成后点下面的“检查连接”，确认连接是否恢复。</string>
     <string name="dev_detail_access_next">连接已就绪。要让 Ash 操作这台设备，请展开下面的“设备设置”，开启需要的访问范围。</string>
     <string name="dev_detail_online_next">连接已就绪。Ash 可使用上方列出的能力；如遇问题，点“检查连接”。</string>
 </resources>

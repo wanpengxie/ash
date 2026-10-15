@@ -403,7 +403,7 @@ open class DevicesActivity : SystemAppActivity() {
         private fun setName(value: String) { settingName = true; name.setText(value); settingName = false; nameLoaded = true }
         fun bind() {
             val d = model.device(id)
-            if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; return }
+            if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; restore.visibility = View.GONE; return }
             header.text = d.name
             title.text = d.name
             val noAccess = !d.lend && !d.body && !d.localAgents
@@ -426,7 +426,7 @@ open class DevicesActivity : SystemAppActivity() {
             saveName.isEnabled = !d.revoked && "rename" !in pending && "rename" !in unknown
             if ("access_set" !in pending) access.bind(d)
             access.enabled(!d.revoked && d.kind != "browser" && "access_set" !in pending && "access_set" !in unknown)
-            update.visibility = if (d.isComputer && d.latest == false && !d.revoked) View.VISIBLE else View.GONE
+            update.visibility = visible(d.isComputer && newerRelease(d) && !d.revoked)
             update.isEnabled = d.online && d.updating == null && "update" !in pending && "update" !in unknown
             revoke.text = getString(R.string.dev_revoke); revoke.visibility = visible(!d.revoked)
             restore.visibility = visible(d.revoked)
@@ -740,9 +740,10 @@ open class DevicesActivity : SystemAppActivity() {
         d.revoked -> getString(R.string.dev_access_revoked)
         !d.online -> getString(R.string.dev_offline_next)
         !d.lend && !d.body && !d.localAgents -> getString(R.string.dev_access_none)
-        d.latest == false && d.updating == null -> getString(R.string.dev_update_available)
+        newerRelease(d) && d.updating == null -> getString(R.string.dev_update_available)
         else -> ""
     }
+    private fun newerRelease(d: Device) = d.latest == false && !model.release.isNullOrEmpty() && model.release != d.version
     private fun isUnknown(f: HumanPort.Failure?) = f?.code in setOf("result_unknown", "timeout", "offline")
     private fun visible(show: Boolean) = if (show) View.VISIBLE else View.GONE
     private fun subText(value: String) = AshUi.text(this, value, AshTokens.Type.sub).apply {
