@@ -426,7 +426,7 @@ open class TasksActivity : SystemAppActivity() {
         assignee = saved?.optString("assignee") ?: task.assignee
         fun field(key: String, label: String, value: String) {
             form.addView(AshUi.text(this, label, AshTokens.Type.callout, c.text2))
-            val input=Hk.field(this,label,if(saved?.has(key)==true)saved.optString(key) else value)
+            val input=Hk.field(this,label,if(saved?.has(key)==true)saved.optString(key) else value,multiline=key=="note" || key=="result")
             input.watch { saveEditor() }; fields[key] = input; form.addView(input)
         }
         if(!recordOnly)field("title", "内容", task.title)
@@ -514,7 +514,7 @@ open class TasksActivity : SystemAppActivity() {
     }
     private fun savedMessage(task:JSONObject?):String {
         if(task==null)return "结果尚未确认"
-        return runCatching { "已保存 · ${TasksModel.delivery(parse(task))}".removePrefix("已保存 · 已保存 · ") }.getOrDefault("已保存，安排状态待核对")
+        return runCatching { TasksModel.delivery(parse(task)).let { if(it.startsWith("已保存"))it else "已保存 · $it" } }.getOrDefault("已保存，安排状态待核对")
     }
     private fun saveEditor() {
         val id = editorId ?: return
