@@ -179,7 +179,7 @@ class DevicesActivityAcceptanceTest {
         diagnose.done(JSONObject().put("ok", false).put("findings", JSONArray().put(JSONObject().put("code", "tunnel.missing").put("message", raw))), null)
         activity.take("list", "service:link").done(JSONObject().put("connections", JSONArray()), null)
         assertTrue(activity.texts().any { it.contains("设备已到达中转站，但还没有接通 Ash") })
-        assertTrue(activity.texts().contains("连接需检查"))
+        assertTrue(activity.texts().any { it.startsWith("连接需检查\n") && it.contains("连接状态待核实") })
         assertFalse(activity.texts().any { it.contains("连接已就绪") || it.contains("Ash 现在可以") })
         assertTrue(activity.texts().any { it.contains("Alpha") && it.contains("重启 Ash 并检查网络") })
         assertTrue(activity.texts().any { it.contains("延迟：尚无可用测量") })
@@ -188,11 +188,13 @@ class DevicesActivityAcceptanceTest {
         activity.button("收起诊断原文").performClick(); activity.scrollToText("设备已到达中转站"); activity.capture("diagnosis-conclusion")
         // A list read begun before the diagnosis cannot erase the newer failure merely because it says online.
         activity.take("list", "service:devices").done(devices(), null)
-        assertTrue(activity.texts().contains("连接需检查"))
-        assertFalse(activity.texts().any { it.contains("连接已就绪") })
+        assertTrue(activity.texts().any { it.startsWith("连接需检查\n") && it.contains("连接状态待核实") })
+        assertFalse(activity.texts().any { it.contains("连接已就绪") || it.contains("Ash 现在可以") })
         // A later successful reread reconciles the page; the failure never mutates the stored device fact.
         activity.connect(); activity.take("list", "service:devices").done(devices(), null)
-        assertFalse(activity.texts().contains("连接需检查")); assertTrue(activity.texts().any { it.contains("连接已就绪") })
+        assertFalse(activity.texts().any { it.contains("连接需检查") })
+        assertTrue(activity.texts().any { it.contains("连接已就绪") })
+        assertTrue(activity.texts().any { it.contains("Ash 现在可以：看屏幕") })
     }
 
     @Test fun revocationRequiresConfirmationDismissesOnNewTargetAndShowsTheRestorableState() {
