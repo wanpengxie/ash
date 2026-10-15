@@ -27,3 +27,4 @@
 - Android：`compileDebugKotlin`、`testDebugUnitTest --tests 'ai.ash.sysapps.team.*' --tests ai.ash.human.HumanSendTest --tests ai.ash.ui.ChatStateTest` 通过（24 项 JVM）。
 - 独立底座依赖：`68655210`；异步 send.result / client_id 端口：`a1714cd9`。应用注册和 Manifest 由底座批次统一登记；此应用不改公共注册表。
 - 未打包、未安装、未推送、未操作手机。键盘、200% 字体、TalkBack、预测返回和真实窗口恢复未做真机验证。
+- 补充 human/team 通道回归 1 项通过：帮手回答延迟时先返回持久回执，同 `client_id` 再确认只投递一次，其他调用不受阻，后续回答经 sync 挂回原委托。定向中枢覆盖合计 72 项。
