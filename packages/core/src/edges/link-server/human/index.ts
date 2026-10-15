@@ -127,10 +127,12 @@ export function createHuman(deps: HumanDeps): HumanEdge {
     syncs.publish(m);
     if (m.from === OWNER_ID) recorded.offer(m);
     // The owner acted on a card: what was entered on it travels with the action and stays with the card.
-    const acted = m.from === OWNER_ID && m.kind === "request" && m.word === "say" ? (m.body as { card?: { id?: unknown; data?: unknown } } | null)?.card : undefined;
-    if (acted && typeof acted.id === "string" && acted.data && typeof acted.data === "object") {
+    const acted = m.from === OWNER_ID && m.kind === "request" && m.word === "say" ? (m.body as { card?: { id?: unknown; action?: unknown; context?: { feedback?: unknown }; data?: unknown } } | null)?.card : undefined;
+    if (acted && typeof acted.id === "string") {
       const row = cards.get(acted.id);
-      if (row?.state === "open" && !row.form) { try { cards.draft(row, acted.data as Record<string, unknown>); } catch (error) { log(`card ${acted.id} values not kept`, error); } }
+      const feedback = acted.action === "feedback" ? acted.context?.feedback : undefined;
+      if (row && (feedback === "up" || feedback === "down")) cards.setFeedback(row.id, feedback);
+      else if (row?.state === "open" && !row.form && acted.data && typeof acted.data === "object") { try { cards.draft(row, acted.data as Record<string, unknown>); } catch (error) { log(`card ${acted.id} values not kept`, error); } }
     }
     status.observe(m);
     const turn = (m.body as { turn?: unknown } | null)?.turn;
@@ -173,21 +175,22 @@ export function createHuman(deps: HumanDeps): HumanEdge {
           if (body.a2ui === undefined) return { data: { accepted: true } };
           const row = cards.put({ id: typeof body.id === "string" ? body.id : msg.id, message: msg.id, owner: msg.from, a2ui: body.a2ui, ...(typeof body.text === "string" ? { text: body.text } : {}) });
           void notifier.say({ ...msg, body: { text: row.text } }).catch((error) => log("notification failed", error));
-          return { data: { accepted: true, card: row.id, ...(row.plan.problems.length ? { problems: row.plan.problems } : {}) } };
+          return { data: { accepted: true, card: row.id, ...(row.plan.problems.length ? { problems: row.plan.problems } : {}), ...(row.plan.hints.length ? { hints: row.plan.hints } : {}) } };
         }
         case "card.update": {
           const row = ownCard(body.id, msg.from);
           const next = cards.update(row, { ...(body.a2ui ? { a2ui: body.a2ui } : {}), ...(body.data ? { data: body.data } : {}), ...(typeof body.text === "string" ? { text: body.text } : {}) });
-          return { data: { updated: true, ...(next.plan.problems.length ? { problems: next.plan.problems } : {}) } };
+          return { data: { updated: true, ...(next.plan.problems.length ? { problems: next.plan.problems } : {}), ...(next.plan.hints.length ? { hints: next.plan.hints } : {}) } };
         }
         case "card.draft": {
           const row = cards.get(body.card);
           if (!row) throw new WordError("not_found", `no card ${body.card}`);
           if (row.state !== "open") throw new WordError("conflict", "this card is closed");
           const next = cards.draft(row, body.data);
-          const { problems: _problems, ...plan } = next.plan;
+          const { problems: _problems, hints: _hints, ...plan } = next.plan;
           return { data: { card: next.id, plan } };
         }
+        case "card.preview": return cardPreview(body as { id: string; theme?: string });
         case "form": {
           const built = formCard(body as Parameters<typeof formCard>[0]);
           const expires = Math.min(typeof body.expires_at === "number" ? body.expires_at : msg.ts + 24 * 3600_000, msg.ts + 7 * 24 * 3600_000);
@@ -233,6 +236,21 @@ export function createHuman(deps: HumanDeps): HumanEdge {
       ownCard(body.id, msg.from);
       if (body.a2ui) planOf(body.a2ui);
     } else if (msg.word === "form") planOf(formCard(body as Parameters<typeof formCard>[0]).a2ui);
+  }
+
+  /** `card.preview`: the first channel that shows the conversation and can draw the card gives the picture (the phone; a web page cannot). */
+  async function cardPreview(body: { id: string; theme?: string }): Promise<WordResult> {
+    const row = cards.get(body.id);
+    if (!row) throw new WordError("not_found", `no card ${body.id} in the conversation`);
+    let failure: WordError = new WordError("offline", "no channel that can draw the card is connected (the phone draws it)");
+    for (const c of clients.withSurface("chat")) {
+      const result = await presenter.send(c, { surface: "chat", op: "card.preview", body: { card: cards.item(row), theme: body.theme === "dark" ? "dark" : "light" } as never });
+      if (!result.ok) { failure = new WordError(result.error.code, result.error.message); continue; }
+      const image = result.data as { type?: unknown; data?: unknown; width?: unknown; height?: unknown } | undefined;
+      if (image?.type !== "image" || typeof image.data !== "string") continue;
+      return { data: { card: row.id, width: image.width, height: image.height }, content: [result.data as never] };
+    }
+    throw failure;
   }
 
   /** `widget.preview`: the first channel that shows widgets and can draw the card gives the picture. */

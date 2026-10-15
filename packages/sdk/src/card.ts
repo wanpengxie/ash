@@ -83,9 +83,9 @@ const FIELDS: Record<string, readonly string[]> = {
   Text: ["text", "variant"],
   Image: ["url", "description", "fit", "variant"],
   Icon: ["name"],
-  Row: ["children", "justify", "align"],
-  Column: ["children", "justify", "align"],
-  List: ["children", "direction", "align", "columns"],
+  Row: ["children", "justify", "align", "gap"],
+  Column: ["children", "justify", "align", "gap"],
+  List: ["children", "direction", "align", "columns", "gap"],
   Card: ["child"],
   Tabs: ["tabs", "selected"],
   Divider: ["axis"],
@@ -94,7 +94,7 @@ const FIELDS: Record<string, readonly string[]> = {
   Switch: ["label", "value"],
   ChoicePicker: ["label", "variant", "options", "value", "displayStyle", "filterable"],
   Stack: ["children", "align"],
-  Grid: ["children", "columns"],
+  Grid: ["children", "columns", "gap"],
   Spacer: ["size"],
   ProgressBar: ["value", "max", "label"],
   Badge: ["text"],
@@ -157,7 +157,8 @@ export interface WidgetComponent {
   tabs?: { title: string; child: string }[]; selected?: number; axis?: string; checked?: boolean; label?: string;
   options?: { label: string; value: string; checked: boolean }[]; multiple?: boolean; chips?: boolean;
   value?: number; max?: number; size?: number; format?: string; timeZone?: string; since?: number; until?: number;
-  /** Chart: the phone draws these as a bitmap of the size the card gives it. */
+  /** Chart: the phone draws these as a bitmap of the size the card gives it. gap: between a chart's bars; on a Row, Column, List
+   * or Grid in the conversation, the space between its children in dp (none when not given). */
   series?: ChartSeries[]; gap?: number;
   /** Chat only. TextField / DateTimeInput: the value as text; Slider: value, min, max, step. */
   placeholder?: string; min?: number; step?: number; enableDate?: boolean; enableTime?: boolean;
@@ -170,6 +171,8 @@ export interface WidgetComponent {
 /** One line or one set of bars of a Chart (the geometry is the same on the phone and in the app page). `colors` is keyed by the index of the bar. */
 export interface ChartSeries {
   type: "line" | "bars"; values: number[]; color: CardColor; fill?: boolean; width?: number; dot?: boolean; max?: number; floor?: number;
+  /** The bottom of the value axis (a price, a weight: the part that moves); values below it sit on the bottom. */
+  min?: number;
   highlight?: { from: number; to?: number; color: CardColor }; colors?: Record<string, CardColor>; lastColor?: CardColor; limit?: number; limitColor?: CardColor;
 }
 export interface CardSize { width: number; height: number; root: string }
@@ -451,7 +454,7 @@ function chartSeries(value: unknown, where: string): ChartSeries[] {
     const at = `${where} series[${i}]`;
     if (!plain(raw)) return bad(`${at} must be an object`);
     const s = raw as Record<string, unknown>;
-    for (const key of Object.keys(s)) if (!["type", "values", "color", "fill", "width", "dot", "max", "floor", "highlight", "colors", "lastColor", "limit", "limitColor"].includes(key)) bad(`${at} has unknown field "${key}"`);
+    for (const key of Object.keys(s)) if (!["type", "values", "color", "fill", "width", "dot", "max", "floor", "min", "highlight", "colors", "lastColor", "limit", "limitColor"].includes(key)) bad(`${at} has unknown field "${key}"`);
     if (s.type !== "line" && s.type !== "bars") bad(`${at} type must be "line" or "bars"`);
     if (!Array.isArray(s.values) || s.values.length < 1 || s.values.length > 240 || s.values.some((v) => typeof v !== "number" || !Number.isFinite(v))) bad(`${at} values must be 1 to 240 finite numbers`);
     const values = (s.values as number[]).map((v) => Math.max(0, v));
@@ -464,7 +467,9 @@ function chartSeries(value: unknown, where: string): ChartSeries[] {
       return s[key] as number;
     };
     for (const key of ["fill", "dot"] as const) if (s[key] !== undefined) { if (typeof s[key] !== "boolean") bad(`${at} ${key} must be true or false`); out[key] = s[key] as boolean; }
-    const width = num("width", 0.5, 4), max = num("max", 0, 1e9), floor = num("floor", 0, 1e9), limit = num("limit", 0, 1e9);
+    const width = num("width", 0.5, 4), max = num("max", 0, 1e9), floor = num("floor", 0, 1e9), limit = num("limit", 0, 1e9), min = num("min", 0, 1e9);
+    if (min !== undefined && max !== undefined && max <= min) bad(`${at} max must be above min`);
+    if (min !== undefined) out.min = min;
     if (width !== undefined) out.width = width;
     if (max !== undefined) out.max = max;
     if (floor !== undefined) out.floor = floor;
@@ -722,6 +727,8 @@ export interface ChatRender extends WidgetRender {
   reactive: boolean;
   /** What was dropped and why (the agent is told). */
   problems: string[];
+  /** What the card does that usually looks worse (too many accents, icons, main titles…): advice for the agent, nothing is changed. */
+  hints: string[];
 }
 
 /**
@@ -732,7 +739,33 @@ export interface ChatRender extends WidgetRender {
 export function checkChatCard(raw: unknown): ChatRender {
   const problems: string[] = [];
   const { render, data, binds, reactive } = check(raw, { surface: "chat", lenient: true, checkLevels: false, problems });
-  return { ...render, data, binds, reactive, problems };
+  return { ...render, data, binds, reactive, problems, hints: cardHints(render) };
+}
+
+/** The cheap, certain checks of a conversation card's design (skill genui): what usually makes a card look worse. */
+export function cardHints(render: WidgetRender): string[] {
+  const hints: string[] = [];
+  const all = render.components;
+  const count = (test: (c: WidgetComponent) => boolean) => all.filter(test).length;
+  const usesAccent = (c: WidgetComponent) => [c.style?.color, c.style?.background].some((x) => x === "accent") || (c.component === "Button" && c.variant === "primary");
+  const accents = count(usesAccent);
+  if (accents > 2) hints.push(`accent is used ${accents} times; at most 2 (the main button counts as one)`);
+  const titles = count((c) => c.component === "Text" && (c.variant === "h1" || c.variant === "h2"));
+  if (titles > 1) hints.push(`${titles} h1/h2 titles; one main title, the rest h3`);
+  const icons = count((c) => c.component === "Icon" || (c.component === "Image" && !!c.url?.startsWith("icon:")));
+  if (icons > 1) hints.push(`${icons} icons; at most one, or none`);
+  const badges = count((c) => c.component === "Badge");
+  if (badges > 1) hints.push(`${badges} badges; at most one`);
+  const primaries = count((c) => c.component === "Button" && c.variant === "primary");
+  if (primaries > 1) hints.push(`${primaries} primary buttons; at most one, the others borderless`);
+  const hex = count((c) => [c.style?.color, c.style?.background].some((x) => typeof x === "string" && x.startsWith("#")));
+  if (hex) hints.push(`${hex} components use a hex colour; use theme names (they follow dark mode)`);
+  const root = all.find((c) => c.id === render.root);
+  if (root && (root.style?.background || root.style?.padding || root.style?.cornerRadius || root.component === "Card"))
+    hints.push("the root draws its own frame (background, padding, corners or a Card): the conversation already draws the card's frame");
+  const emoji = count((c) => c.component === "Text" && /\p{Extended_Pictographic}/u.test(c.text ?? ""));
+  if (emoji) hints.push(`${emoji} texts carry emoji; leave decoration out`);
+  return hints;
 }
 
 interface CheckOptions { surface: CardSurface; lenient: boolean; checkLevels: boolean; problems?: string[] }
@@ -879,6 +912,10 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
       if (a11y) node.a11y = a11y;
     } else if (c.accessibility !== undefined) bad(`${where} accessibility must be {label?, description?}`);
     if (c.action !== undefined) node.action = action(c.action, where, r, scope);
+    if (c.gap !== undefined && kind !== "Chart") {
+      if (!chat) bad(`${where} gap: a home-screen widget cannot space a container's children by itself; give the children style.margin`);
+      node.gap = dimension(r.value(c.gap, `${where} gap`, scope), `${where} gap`, 64);
+    }
     if (c.checks !== undefined) {
       if (!Array.isArray(c.checks)) bad(`${where} checks must be an array of {condition, message}`);
       for (const [i, check] of (c.checks as unknown[]).entries()) {
@@ -983,7 +1020,8 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
     case "Divider": node.axis = enumOf("axis", ["horizontal", "vertical"], "horizontal"); break;
     case "CheckBox": case "Switch": {
       if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
-      const v = input(c.value, false);
+      let v = input(c.value, false);
+      if (o.lenient && (v === "true" || v === "false")) { note(`${where} value is the text "${v}"; it was read as ${v}`); v = v === "true"; }
       if (typeof v !== "boolean") bad(`${where} value must be true or false`);
       node.checked = v as boolean;
       const b = bound(c.value); if (b) node.bind = b;
@@ -994,8 +1032,10 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
       if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
       node.multiple = enumOf("variant", ["multipleSelection", "mutuallyExclusive"], "mutuallyExclusive") === "multipleSelection";
       node.chips = enumOf("displayStyle", ["checkbox", "chips"], "checkbox") === "chips";
-      const raw = input(c.value, []);
-      if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string")) bad(`${where} value must be an array of option values`);
+      let raw = input(c.value, []);
+      // An obvious slip, read the way it was meant: one chosen value written as text.
+      if (o.lenient && typeof raw === "string") { note(`${where} value is text; it was read as ["${raw}"] (a ChoicePicker's value is an array of option values)`); raw = raw ? [raw] : []; }
+      if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string")) bad(`${where} value must be an array of option values, e.g. ["a"]`);
       const selected = new Set(raw as string[]);
       if (!Array.isArray(c.options) || c.options.length === 0) bad(`${where} options must be a non-empty array of {label, value}`);
       node.options = (c.options as unknown[]).map((o, i) => {
@@ -1064,7 +1104,8 @@ function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Rec
       const min = c.min === undefined ? 0 : r.number(c.min, `${where} min`, scope);
       const max = c.max === undefined ? 100 : r.number(c.max, `${where} max`, scope);
       if (max <= min) bad(`${where} max must be above min`);
-      const v = input(c.value, min);
+      let v = input(c.value, min);
+      if (o.lenient && typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) { note(`${where} value is the text "${v}"; it was read as the number ${Number(v)}`); v = Number(v); }
       if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) bad(`${where} value must be a number from ${min} to ${max}`);
       Object.assign(node, { min, max, value: v });
       if (c.step !== undefined) { const step = r.number(c.step, `${where} step`, scope); if (step <= 0) bad(`${where} step must be above 0`); node.step = step; }

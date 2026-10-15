@@ -67,13 +67,13 @@ export function createWindowReader(ledger: HistoryLedger, now: () => number = Da
   /** A card in the conversation as it is now (its newest version, what the owner entered, open or not): the human edge keeps it in owner_cards. */
   let cardRow: ReturnType<typeof db.prepare> | null = null;
   const cardStatement = () => cardRow ??= db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_cards'").get()
-    ? db.prepare("SELECT id,owner,text,state,form,plan,updated_at FROM owner_cards WHERE message=?") : null;
+    ? db.prepare("SELECT id,owner,text,state,form,plan,updated_at,feedback FROM owner_cards WHERE message=?") : null;
   function card(message: string, shown: DisplayFact): DisplayFact {
-    const r = cardStatement()?.get(message) as { id: string; owner: string; text: string; state: string; form: string | null; plan: string; updated_at: number } | undefined;
+    const r = cardStatement()?.get(message) as { id: string; owner: string; text: string; state: string; form: string | null; plan: string; updated_at: number; feedback: string | null } | undefined;
     if (!r) return { ...shown, state: "closed" };
-    const { problems: _problems, ...plan } = JSON.parse(r.plan) as Record<string, unknown>;
+    const { problems: _problems, hints: _hints, ...plan } = JSON.parse(r.plan) as Record<string, unknown>;
     const form = r.form ? JSON.parse(r.form) as { secret: Record<string, string>; fields: Record<string, { title: string }>; expires_at: number } : null;
-    return { type: "a2ui", id: r.id, owner: r.owner, text: r.text, state: r.state, plan, updated_at: r.updated_at,
+    return { type: "a2ui", id: r.id, owner: r.owner, text: r.text, state: r.state, plan, updated_at: r.updated_at, ...(r.feedback ? { feedback: r.feedback } : {}),
       ...(form ? { form: { secret: form.secret, titles: Object.fromEntries(Object.entries(form.fields).map(([k, f]) => [k, f.title])), expires_at: form.expires_at } } : {}) };
   }
   function lastOwner(snap: number) {

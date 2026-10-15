@@ -224,20 +224,21 @@ body{font-family:var(--font);color:var(--text);font-variant-numeric:tabular-nums
 .say .sbtn::after{content:"";position:absolute;inset:-7px}
 
 /* Cards an agent designed (js/a2ui-card.js): the chat card's shell, the conversation's width, the same type and colours. */
-.a-card.a2ui{max-width:100%;gap:10px;color:var(--text)}
-.a2-col{display:flex;flex-direction:column;gap:8px;min-width:0}
-.a2-row{display:flex;flex-direction:row;align-items:center;gap:8px;min-width:0}
+.a-card.a2ui{max-width:100%;gap:10px;padding:14px;color:var(--text)}
+/* A container's children sit edge to edge unless the card gives it a gap (set inline from the node's `gap`). */
+.a2-col{display:flex;flex-direction:column;min-width:0}
+.a2-row{display:flex;flex-direction:row;align-items:center;min-width:0}
 .a2-stretch>*{flex:1 1 0;min-width:0}
 .a2-stack{display:grid;min-width:0}.a2-stack>*{grid-area:1/1}
-.a2-grid{display:grid;gap:8px;min-width:0}
-.a2-hlist{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;min-width:0}.a2-hlist>*{flex:none}
-.a2-text{font-size:14px;line-height:21px;color:var(--text);overflow-wrap:anywhere;min-width:0}
+.a2-grid{display:grid;min-width:0}
+.a2-hlist{display:flex;overflow-x:auto;scrollbar-width:none;min-width:0}.a2-hlist>*{flex:none}
+.a2-text{font-size:15px;line-height:21px;color:var(--text);overflow-wrap:anywhere;min-width:0}
 .a2-h1{font-size:24px;line-height:32px;font-weight:700;color:var(--ink)}
 .a2-h2{font-size:20px;line-height:28px;font-weight:700;color:var(--ink)}
-.a2-h3{font-size:18px;line-height:26px;font-weight:650;color:var(--ink)}
-.a2-h4{font-size:16px;line-height:23px;font-weight:600;color:var(--ink)}
-.a2-h5{font-size:14px;line-height:20px;font-weight:650;color:var(--ink)}
-.a2-caption{font-size:12.5px;line-height:18px;color:var(--text-2)}
+.a2-h3{font-size:17px;line-height:24px;font-weight:650;color:var(--ink)}
+.a2-h4{font-size:15px;line-height:21px;font-weight:600;color:var(--ink)}
+.a2-h5{font-size:13px;line-height:18px;font-weight:600;color:var(--ink)}
+.a2-caption{font-size:13px;line-height:18px;color:var(--text-2)}
 .a2-md-h{font-weight:650;color:var(--ink);margin:2px 0}.a2-md-h1,.a2-md-h2{font-size:1.25em}.a2-md-h3{font-size:1.1em}
 .a2-md-ul{margin:2px 0;padding-left:20px}.a2-md-ul li{margin:1px 0}
 .a2-text b{font-weight:600;color:var(--ink)}
@@ -245,14 +246,14 @@ body{font-family:var(--font);color:var(--text);font-variant-numeric:tabular-nums
 .a2-text a{color:var(--you-text);text-decoration:none;border-bottom:1px solid currentColor}
 .a-btn .a2-text{color:inherit;font-size:inherit;line-height:inherit;font-weight:inherit}
 .a2-btn{align-self:flex-start;max-width:100%}.a2-row>.a2-btn{align-self:auto}
-.a2-card{background:var(--surface-2);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.a2-card{background:var(--surface-2);border-radius:14px;padding:12px;display:flex;flex-direction:column;min-width:0}
 .a2-divider{height:1px;background:var(--line);align-self:stretch;flex:none}.a2-divider.v{width:1px;height:auto;min-height:16px}
 .a2-badge{display:inline-flex;align-items:center;align-self:flex-start;height:22px;padding:0 9px;border-radius:11px;background:var(--you-soft);color:var(--you-text);font-size:12px;font-weight:600;white-space:nowrap}
-.a2-icon{display:inline-flex;align-items:center;justify-content:center;color:inherit}.a2-icon-dot{width:8px;height:8px;border-radius:50%;background:currentColor;opacity:.5}
+.a2-icon{display:inline-flex;align-items:center;justify-content:center;color:inherit}
 .a2-img{display:block;max-width:100%;border-radius:12px;object-fit:cover}
 .a2-img-icon{width:24px;height:24px;border-radius:6px}.a2-img-avatar{width:40px;height:40px;border-radius:50%}
 .a2-img-smallFeature{width:64px;height:64px}.a2-img-mediumFeature{width:120px;height:120px}.a2-img-largeFeature{width:100%;max-height:240px}.a2-img-header{width:100%;height:160px}
-.a2-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.a2-field{display:flex;flex-direction:column;gap:4px;min-width:0}
 .a2-label{font-size:13px;line-height:18px;color:var(--text-2)}
 .a2-input{width:100%;height:42px;box-sizing:border-box;border-radius:12px;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-size:15px;padding:0 12px}
 textarea.a2-input{height:auto;min-height:88px;padding:10px 12px;line-height:21px;resize:vertical}
@@ -264,7 +265,7 @@ textarea.a2-input{height:auto;min-height:88px;padding:10px 12px;line-height:21px
 .a2-check input.a2-switch{appearance:none;-webkit-appearance:none;width:42px;height:26px;border-radius:13px;background:var(--surface-3);position:relative;transition:background .2s var(--ease);cursor:pointer}
 .a2-switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .2s var(--ease)}
 .a2-switch:checked{background:var(--you)}.a2-switch:checked::after{transform:translateX(16px)}
-.a2-chips{gap:6px}.a2-chips .opt{height:34px;padding:0 13px;font-size:13.5px}
+.a2-choice-list{gap:2px}.a2-chips{gap:6px}.a2-chips .opt{height:34px;padding:0 13px;font-size:13.5px}
 .a2-slider-row{gap:10px}.a2-slider{flex:1;min-width:0;accent-color:var(--you)}.a2-slider-value{font-size:13px;color:var(--text-2);min-width:32px;text-align:end;font-variant-numeric:tabular-nums}
 .a2-track{height:6px;border-radius:3px;background:var(--surface-3);overflow:hidden}.a2-fill{height:100%;border-radius:3px;background:var(--you)}
 .a2-clock,.a2-timer{font-variant-numeric:tabular-nums}
@@ -285,5 +286,11 @@ textarea.a2-input{height:auto;min-height:88px;padding:10px 12px;line-height:21px
 .a2-skeleton{min-height:18px;align-self:stretch}
 .a2-tap{cursor:pointer}
 .a2-status{font-size:12.5px;line-height:18px;color:var(--text-3);text-align:center}
+/* A disabled primary button reads as off: neutral, not a faded accent. */
+.a2ui .a2-btn.btn-primary[disabled]{background:var(--surface-2);color:var(--text-2);opacity:1}
+/* The quiet thumbs under a card (always drawn, so the card never grows when they come). */
+.a2-feedback{display:flex;justify-content:flex-end;align-items:center;gap:2px;height:24px;margin:-4px -6px -6px 0}
+.a2-fb{height:24px;min-width:30px;padding:0 6px;border:0;border-radius:12px;background:none;font-size:13px;line-height:24px;color:var(--text-3);filter:grayscale(1);opacity:.55;cursor:pointer}
+.a2-fb.on{background:var(--surface-2);filter:none;opacity:1}.a2-fb:disabled{cursor:default}
 .a2-error{color:var(--err);background:var(--err-soft)}
 .a2-plain-text{white-space:pre-wrap;overflow-wrap:anywhere}

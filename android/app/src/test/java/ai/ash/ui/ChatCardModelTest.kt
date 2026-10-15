@@ -184,4 +184,53 @@ class ChatCardModelTest {
         assertTrue(ChatCardModel.miniAppDocument("<p>hi</p>", emptyMap(), dark = false).endsWith("<p>hi</p>"))
         assertEquals("rgba(255,0,0,0.502)", ChatCardModel.css(0x80FF0000.toInt()))
     }
+
+    @Test fun feedbackIsTheOwnersSayNamedFeedback() {
+        val data = JSONObject().put("x", 1)
+        val up = ChatCardModel.feedbackBody("up", "card_1", data)
+        assertEquals("👍", up.getString("text"))
+        val card = up.getJSONObject("card")
+        assertEquals("card_1", card.getString("id"))
+        assertEquals("feedback", card.getString("action"))
+        assertEquals("up", card.getJSONObject("context").getString("feedback"))
+        assertEquals(1, card.getJSONObject("data").getInt("x"))
+        val down = ChatCardModel.feedbackBody("down", "card_1", data)
+        assertEquals("👎", down.getString("text"))
+        assertEquals("down", down.getJSONObject("card").getJSONObject("context").getString("feedback"))
+        // What is shown chosen: the tap here first, else what the item says; nothing else counts.
+        assertEquals("down", ChatCardModel.feedbackShown("down", "up"))
+        assertEquals("up", ChatCardModel.feedbackShown(null, "up"))
+        assertNull(ChatCardModel.feedbackShown(null, "meh"))
+        assertNull(ChatCardModel.feedbackShown(null, null))
+    }
+
+    private fun repoFile(path: String): java.io.File = generateSequence(java.io.File("").absoluteFile) { it.parentFile }.map { java.io.File(it, path) }.first { it.isFile }
+
+    @Test fun everyIconNameOfTheCardLanguageHasItsLineIcon() {
+        val src = repoFile("packages/sdk/src/card.ts").readText()
+        val list = Regex("export const CARD_ICONS = \\[([^\\]]*)\\]").find(src)!!.groupValues[1]
+        val names = Regex("\"([A-Za-z]+)\"").findAll(list).map { it.groupValues[1] }.toList()
+        assertTrue(names.size > 50)
+        for (name in names) assertTrue("icon $name has no entry", ChatCardModel.ICONS.containsKey(name))
+        for (name in ai.ash.widget.CardSpec.icons.keys) assertTrue("icon $name has no entry", ChatCardModel.ICONS.containsKey(name))
+        assertEquals(names.toSet(), ChatCardModel.ICONS.keys)
+        assertTrue(ChatCardModel.ICONS.values.count { it != null } > names.size / 2)
+    }
+
+    @Test fun aPreviewIsAtMost900PxAndShrinksInSteps() {
+        // 330 dp at 3x: 990 x 1500 px, the longer side to 900
+        val (w, h) = ChatCardModel.previewSize(990, 1500, 0)!!
+        assertEquals(900, h); assertEquals(594, w)
+        val (w2, h2) = ChatCardModel.previewSize(990, 1500, 1)!!
+        assertTrue(w2 < w && h2 < h)
+        // never enlarged
+        assertEquals(330 to 200, ChatCardModel.previewSize(330, 200, 0))
+        assertNull(ChatCardModel.previewSize(990, 1500, ChatCardModel.PREVIEW_SHRINK.size))
+        val part = ChatCardModel.previewPart(byteArrayOf(1, 2), 594, 900) { "AQI=" }
+        assertEquals("image", part.getString("type"))
+        assertEquals("AQI=", part.getString("data"))
+        assertEquals("image/png", part.getString("mimeType"))
+        assertEquals(594, part.getInt("width")); assertEquals(900, part.getInt("height"))
+        assertEquals(300 * 1024, ChatCardModel.PREVIEW_BYTES)
+    }
 }

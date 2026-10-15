@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DRAFT_DELAY_MS, buttonLabel, cardState, cssColor, fieldPath, formAnswerBody, formCancelBody, formatClock, formatSpan, frameMessage, masked,
+import { CARD_ICON_GLYPHS, DRAFT_DELAY_MS, buttonLabel, cardState, cssColor, fieldPath, formAnswerBody, formCancelBody, formatClock, formatSpan, frameMessage, masked,
   miniAppDocument, MINI_APP_CSP, parsePlan, readPointer, renderA2uiCard, resetCards, sayBody, secretsOf, stateLine, writePointer } from "../js/a2ui-card.js";
 import { renderCard } from "../js/cards.js";
+import { ICON_SHAPES } from "../js/ash-icons.js";
+import { CARD_ICONS } from "../../sdk/src/card.ts";
 import { tick, until } from "./support.js";
 
 // ---- a small stand-in DOM: enough for the card builder (no layout) ----
@@ -247,6 +249,93 @@ test("every component of a plan is drawn in the card shell; an unknown one is sk
   assert.equal(byId(root, "alien"), undefined);
   assert.equal(byId(root, "hidden"), undefined);
   assert.equal(byClass(root, "a2-status"), undefined, "an open card has no end line");
+}));
+
+test("a container's gap is the space between its children; without one they sit edge to edge", () => withDom(() => {
+  resetCards();
+  const item = { id: "m", type: "card", card: { type: "a2ui", id: "gaps", owner: "agent:main", state: "open", updated_at: 1, plan: { root: "root", components: [
+    { id: "root", component: "Column", gap: 12, children: ["row", "grid", "list", "plain"] },
+    { id: "row", component: "Row", gap: 6, children: ["a"] }, { id: "a", component: "Text", text: "a" },
+    { id: "grid", component: "Grid", columns: 2, gap: 4, children: [] }, { id: "list", component: "List", direction: "horizontal", gap: 8, children: [] },
+    { id: "plain", component: "Row", children: [] }] } } };
+  const root = renderA2uiCard(new FakeNode("div"), item, recorder());
+  assert.deepEqual(["root", "row", "grid", "list", "plain"].map((id) => byId(root, id).style.gap), ["12px", "6px", "4px", "8px", undefined]);
+}));
+
+test("every card icon name is one of Ash's line icons or the neutral outline, drawn in the node's colour; an svgPath outline is stroked", () => withDom(() => {
+  resetCards();
+  assert.deepEqual(Object.keys(CARD_ICON_GLYPHS).sort(), [...CARD_ICONS].sort(), "one entry for every name the hub accepts");
+  for (const [name, glyph] of Object.entries(CARD_ICON_GLYPHS)) assert.ok(glyph === null || ICON_SHAPES[glyph], `${name} -> ${glyph}`);
+  const item = { id: "m", type: "card", card: { type: "a2ui", id: "icons", owner: "agent:main", state: "open", updated_at: 1, plan: { root: "root", components: [
+    { id: "root", component: "Row", children: ["ok", "sun", "img", "line", "solid"] },
+    { id: "ok", component: "Icon", name: "check", style: { color: "accent" } }, { id: "sun", component: "Icon", name: "sun" },
+    { id: "img", component: "Image", url: "icon:mail" },
+    { id: "line", component: "Icon", svgPath: "M4 12h16" }, { id: "solid", component: "Icon", svgPath: "M4 4h16v16H4Z" }] } } };
+  const root = renderA2uiCard(new FakeNode("div"), item, recorder());
+  const ok = byId(root, "ok");
+  assert.equal(ok.style.color, "var(--you)", "tinted with the node's colour");
+  assert.ok(ok.find((n) => n.tag === "path"), "a line icon, not a glyph");
+  assert.equal(root.textContent.includes("✓"), false);
+  const sun = byId(root, "sun").find((n) => n.tag === "svg");
+  assert.match(sun.attributes.class, /a2-icon-none/);
+  assert.ok(sun.find((n) => n.tag === "circle"), "no close match: a small circle");
+  assert.ok(byId(root, "img").find((n) => n.tag === "path"), "icon: images are line icons too");
+  assert.doesNotMatch(byId(root, "line").find((n) => n.tag === "svg").attributes.class, /i-solid/);
+  assert.match(byId(root, "solid").find((n) => n.tag === "svg").attributes.class, /i-solid/);
+}));
+
+test("a chart series with min starts its axis there", () => withDom(() => {
+  resetCards();
+  const item = { id: "m", type: "card", card: { type: "a2ui", id: "weight", owner: "agent:main", state: "open", updated_at: 1, plan: { root: "root", components: [
+    { id: "root", component: "Chart", style: { height: 30 }, series: [{ type: "bars", values: [40, 63], color: "accent", min: 58 }], gap: 0 }] } } };
+  const svg = byId(renderA2uiCard(new FakeNode("div"), item, recorder()), "root").find((n) => n.tag === "svg");
+  assert.deepEqual(svg.findAll((n) => n.tag === "rect").map((r) => r.attributes.height), ["2", "24"], "axis 58 .. 58 + 5 x 1.25; 40 sits on the bottom");
+}));
+
+const thumbs = (root) => byClass(root, "a2-feedback")?.findAll((n) => n.tag === "button") ?? [];
+
+test("an agent's card, open or closed, has the quiet thumbs; a tap is the owner's say with the values; the chosen one stays chosen", async () => withDom(async () => {
+  resetCards();
+  const ctx = recorder();
+  const plan = { root: "root", data: { n: 1 }, components: [{ id: "root", component: "Text", text: "hi" }] };
+  const item = { id: "m1", type: "card", card: { type: "a2ui", id: "fb-1", owner: "agent:helper", state: "open", updated_at: 1, plan } };
+  const root = renderA2uiCard(new FakeNode("div"), item, ctx);
+  const [up, down] = thumbs(root);
+  assert.deepEqual([up.textContent, down.textContent], ["👍", "👎"]);
+  assert.deepEqual([up.attributes["aria-pressed"], down.attributes["aria-pressed"]], ["false", "false"]);
+  up.click();
+  await until(() => ctx.calls.some(([k]) => k === "say"));
+  assert.deepEqual(ctx.calls.find(([k]) => k === "say").slice(1), ["agent:helper", "👍", { id: "fb-1", action: "feedback", context: { feedback: "up" }, data: { n: 1 } }]);
+  assert.ok(thumbs(root)[0].has("on"), "chosen at once");
+  thumbs(root)[0].click();
+  await tick();
+  assert.equal(ctx.calls.filter(([k]) => k === "say").length, 1, "the same one again does nothing");
+
+  // The hub's record of the last one, on a closed card.
+  const closed = renderA2uiCard(new FakeNode("div"), { id: "m2", type: "card", card: { type: "a2ui", id: "fb-2", owner: "agent:helper", state: "closed", updated_at: 1, feedback: "down", plan } }, ctx);
+  assert.equal(byClass(closed, "a2-status").textContent, "已结束");
+  const [, chosen] = thumbs(closed);
+  assert.ok(chosen.has("on") && chosen.attributes["aria-pressed"] === "true");
+  chosen.click();
+  await tick();
+  assert.equal(ctx.calls.filter(([k]) => k === "say").length, 1);
+  thumbs(closed)[0].click();
+  await until(() => ctx.calls.filter(([k]) => k === "say").length === 2);
+  assert.deepEqual(ctx.calls.filter(([k]) => k === "say")[1].slice(2), ["👍", { id: "fb-2", action: "feedback", context: { feedback: "up" }, data: { n: 1 } }]);
+
+  assert.equal(thumbs(renderA2uiCard(new FakeNode("div"), formItem({ id: "fb-form" }), ctx)).length, 0, "a form has no thumbs");
+  const readOnly = thumbs(renderA2uiCard(new FakeNode("div"), { id: "m3", type: "card", card: { type: "a2ui", id: "fb-3", owner: "agent:helper", state: "open", updated_at: 1, plan } }));
+  assert.ok(readOnly.length === 2 && readOnly.every((b) => b.disabled), "drawn (the same height) but not tappable without a page to send from");
+}));
+
+test("a failed thumb goes back to what was chosen before", async () => withDom(async () => {
+  resetCards();
+  const ctx = recorder({ say: async () => { throw new Error("offline"); } });
+  const item = { id: "m", type: "card", card: { type: "a2ui", id: "fb-x", owner: "agent:helper", state: "open", updated_at: 1, plan: { root: "root", components: [{ id: "root", component: "Text", text: "hi" }] } } };
+  const root = renderA2uiCard(new FakeNode("div"), item, ctx);
+  thumbs(root)[1].click();
+  await until(() => ctx.calls.some(([k]) => k === "problem"));
+  assert.ok(thumbs(root).every((b) => !b.has("on")));
 }));
 
 test("a card with no plan, or one that cannot be drawn, shows its plain text", () => withDom(() => {

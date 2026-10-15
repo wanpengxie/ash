@@ -26,9 +26,12 @@ export function formCard(body: { title: string; why?: string; schema: { properti
   const components: Record<string, unknown>[] = [];
   const data: Record<string, unknown> = {};
   const fields: FormInfo["fields"] = {};
-  const children = ["title"];
+  // Spacing: 12 between the blocks (the head, each field, the buttons), 2 inside the head, 4 between a field and its note.
+  const children = ["head"];
+  const head = ["title"];
   components.push({ id: "title", component: "Text", text: body.title, variant: "h4" });
-  if (body.why?.trim()) { components.push({ id: "why", component: "Text", text: body.why, variant: "caption" }); children.push("why"); }
+  if (body.why?.trim()) { components.push({ id: "why", component: "Text", text: body.why, variant: "caption" }); head.push("why"); }
+  components.push({ id: "head", component: "Column", gap: 2, children: head });
   Object.entries(body.schema.properties).forEach(([name, f], i) => {
     const id = slug(name, i), path = pathOf(name);
     const label = (f.title?.trim() || name) + (required.includes(name) ? "" : "（选填）");
@@ -51,20 +54,22 @@ export function formCard(body: { title: string; why?: string; schema: { properti
       components.push({ id, component: "TextField", label, variant, value: { path }, ...(hint ? { placeholder: hint } : {}) });
       data[name] = given === undefined ? "" : String(given);
     }
-    children.push(id);
-    if (f.description?.trim()) { components.push({ id: `${id}.about`, component: "Text", text: f.description, variant: "caption" }); children.push(`${id}.about`); }
+    if (f.description?.trim()) {
+      components.push({ id: `${id}.about`, component: "Text", text: f.description, variant: "caption" }, { id: `${id}.group`, component: "Column", gap: 4, children: [id, `${id}.about`] });
+      children.push(`${id}.group`);
+    } else children.push(id);
   });
   // 「提交」 is off until every required field that is not a password has something (a password box is checked on the phone).
   const checks = required.filter((name) => !secret[name]).map((name) => ({ condition: { call: "required", args: { value: { path: pathOf(name) } } }, message: `${fields[name]!.title}还没填` }));
   components.push(
-    { id: "actions", component: "Row", justify: "end", children: ["cancel", "submit"] },
+    { id: "actions", component: "Row", justify: "end", gap: 8, children: ["cancel", "submit"] },
     { id: "cancel", component: "Button", variant: "borderless", child: "cancel.label", action: { event: { name: "cancel" } } },
     { id: "cancel.label", component: "Text", text: "取消" },
     { id: "submit", component: "Button", variant: "primary", child: "submit.label", action: { event: { name: "submit" } }, ...(checks.length ? { checks } : {}) },
     { id: "submit.label", component: "Text", text: "提交" },
   );
   children.push("actions");
-  components.unshift({ id: "root", component: "Column", children });
+  components.unshift({ id: "root", component: "Column", gap: 12, children });
   return { a2ui: { components, data }, info: { fields, required, secret } };
 }
 

@@ -626,8 +626,10 @@ export class AgentManager {
     if (msg.word === "say" && body.in_reply_to) words = `[answers ${body.in_reply_to}, option ${body.option_id}] ${words}`.trim();
     // The owner acted on a card this agent showed: which card, which action, and what the card holds now.
     if (msg.word === "say" && body.card && typeof body.card === "object") {
-      const { id: card, action, context, data } = body.card as { id: string; action: string; context?: unknown; data?: unknown };
-      words = `[card ${card}, action ${action}] ${JSON.stringify({ ...(context !== undefined ? { context } : {}), ...(data !== undefined ? { data } : {}) })}${words ? `\n${words}` : ""}`;
+      const { id: card, action, context, data } = body.card as { id: string; action: string; context?: { feedback?: unknown }; data?: unknown };
+      // 👍 / 👎 on a card: the owner's taste (skill genui, feedback.md), not a request.
+      if (action === "feedback") words = `[card ${card}, feedback ${String(context?.feedback ?? "")}] ${words}`.trim();
+      else words = `[card ${card}, action ${action}] ${JSON.stringify({ ...(context !== undefined ? { context } : {}), ...(data !== undefined ? { data } : {}) })}${words ? `\n${words}` : ""}`;
     }
     if (msg.word === "wake") words = `Wake · ${text(body.reason)}${body.context === undefined ? "" : `\n${JSON.stringify(body.context)}`}`;
     if (!words && attachments.length) words = "(attachments)";

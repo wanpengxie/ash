@@ -388,6 +388,8 @@ export class Net {
   async present(frame) {
     if (frame.surface !== "chat") return { ok: false, error: { code: "unavailable", message: `${frame.surface} is not shown on this page` } };
     if (frame.op === "focus") { globalThis.focus?.(); return { ok: true, data: {} }; }
+    // Drawing a card off screen into a picture is the phone's (it draws cards natively); this page cannot.
+    if (frame.op === "card.preview") return { ok: false, error: { code: "unavailable", message: "this page cannot draw a card preview; the phone can" } };
     if (frame.op !== "open") return { ok: false, error: { code: "unavailable", message: `chat ${frame.op} is not shown on this page` } };
     // The body is `{target, id?, mode?}` (SPEC-03 §5.4).
     const { target, id, mode } = frame.body;

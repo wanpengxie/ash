@@ -7,6 +7,7 @@ import ai.ash.host.Present
 import ai.ash.host.TaskStatus
 import ai.ash.host.screen.ScreenBridge
 import ai.ash.link.PresentOutcome
+import ai.ash.ui.ChatCardPreview
 import ai.ash.ui.HomeActivity
 import ai.ash.ui.LeaseState
 import ai.ash.ui.VScreenPreview
@@ -22,7 +23,8 @@ internal object Surfaces {
         // What a present needs is running before it is shown: the hand's runtime (the island layer gets its context there).
         fun ready(handler: SurfaceHandler) = SurfaceHandler { op, body -> HandRuntime.start(app); handler.present(op, body) }
         return HumanChannel(linkedMapOf(
-            "chat" to SurfaceHandler { op, body -> chat.present(op, body) },
+            // A card's picture is drawn off screen; every other op is the chat page's.
+            "chat" to SurfaceHandler { op, body -> if (op == "card.preview") ChatCardPreview.present(app, body) else chat.present(op, body) },
             "notification" to ready { op, body ->
                 val id = body.optString("id")
                 when (op) {

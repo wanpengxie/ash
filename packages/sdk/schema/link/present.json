@@ -427,6 +427,54 @@
           "const": "chat"
         },
         "op": {
+          "const": "card.preview"
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "card": {
+              "type": "object",
+              "properties": {}
+            },
+            "theme": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "card",
+            "theme"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "ch",
+        "id",
+        "surface",
+        "op",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "present"
+        },
+        "ch": {
+          "const": "human"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "surface": {
+          "const": "chat"
+        },
+        "op": {
           "const": "open"
         },
         "body": {

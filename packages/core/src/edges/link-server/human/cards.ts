@@ -33,6 +33,8 @@ export interface CardRow {
   form: FormInfo | null;
   plan: ChatRender;
   updated_at: number;
+  /** The owner's last 👍 / 👎 on it. */
+  feedback: "up" | "down" | null;
 }
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS owner_cards (
@@ -62,6 +64,8 @@ export function textOf(plan: ChatRender): string {
 export class Cards {
   constructor(private readonly db: DatabaseSync, private readonly now: () => number) {
     db.exec(SCHEMA);
+    const have = new Set((db.prepare("PRAGMA table_info(owner_cards)").all() as { name: string }[]).map((c) => c.name));
+    if (!have.has("feedback")) db.exec("ALTER TABLE owner_cards ADD COLUMN feedback TEXT");
   }
 
   private decode(r: Record<string, unknown> | undefined): CardRow | null {
@@ -69,22 +73,22 @@ export class Cards {
     return {
       id: String(r.id), message: String(r.message), owner: String(r.owner), a2ui: JSON.parse(String(r.a2ui)), data: JSON.parse(String(r.data)),
       text: String(r.text), state: String(r.state) as CardState, form: r.form ? JSON.parse(String(r.form)) as FormInfo : null,
-      plan: JSON.parse(String(r.plan)) as ChatRender, updated_at: Number(r.updated_at),
+      plan: JSON.parse(String(r.plan)) as ChatRender, updated_at: Number(r.updated_at), feedback: r.feedback === "up" || r.feedback === "down" ? r.feedback : null,
     };
   }
 
   get(id: string): CardRow | null { return this.decode(this.db.prepare("SELECT * FROM owner_cards WHERE id=?").get(id) as Record<string, unknown> | undefined); }
 
   private save(row: CardRow): void {
-    this.db.prepare(`INSERT OR REPLACE INTO owner_cards(id,message,owner,a2ui,data,text,state,form,plan,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).run(
-      row.id, row.message, row.owner, JSON.stringify(row.a2ui), JSON.stringify(row.data), row.text, row.state, row.form ? JSON.stringify(row.form) : null, JSON.stringify(row.plan), row.updated_at);
+    this.db.prepare(`INSERT OR REPLACE INTO owner_cards(id,message,owner,a2ui,data,text,state,form,plan,updated_at,feedback) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(
+      row.id, row.message, row.owner, JSON.stringify(row.a2ui), JSON.stringify(row.data), row.text, row.state, row.form ? JSON.stringify(row.form) : null, JSON.stringify(row.plan), row.updated_at, row.feedback);
   }
 
   /** A new card [id] shown by message [message]. */
   put(o: { id: string; message: string; owner: string; a2ui: Record<string, unknown>; text?: string; form?: FormInfo }): CardRow {
     const plan = planOf(o.a2ui);
     const row: CardRow = { id: o.id, message: o.message, owner: o.owner, a2ui: o.a2ui, data: plan.data, text: o.text?.trim() || textOf(plan), state: "open",
-      form: o.form ?? null, plan, updated_at: this.now() };
+      form: o.form ?? null, plan, updated_at: this.now(), feedback: null };
     this.save(row);
     return row;
   }
@@ -117,6 +121,18 @@ export class Cards {
     const next: CardRow = { ...row, data: plan.data, plan, updated_at: this.now() };
     this.save(next);
     return next;
+  }
+
+  /** The owner's 👍 / 👎: kept with the card (the screens show it), and it reaches the creator as his message. */
+  setFeedback(id: string, feedback: "up" | "down"): void {
+    this.db.prepare("UPDATE owner_cards SET feedback=?, updated_at=? WHERE id=?").run(feedback, this.now(), id);
+  }
+
+  /** The card as the owner's screens draw it (the same object as a conversation item's card). */
+  item(row: CardRow): Record<string, unknown> {
+    const { problems: _problems, hints: _hints, ...plan } = row.plan;
+    return { type: "a2ui", id: row.id, owner: row.owner, text: row.text, state: row.state, plan, updated_at: row.updated_at, ...(row.feedback ? { feedback: row.feedback } : {}),
+      ...(row.form ? { form: { secret: row.form.secret, titles: Object.fromEntries(Object.entries(row.form.fields).map(([k, f]) => [k, f.title])), expires_at: row.form.expires_at } } : {}) };
   }
 
   setState(id: string, state: CardState, data?: Record<string, unknown>): void {

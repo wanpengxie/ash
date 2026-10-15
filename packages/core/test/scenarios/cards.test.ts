@@ -51,6 +51,7 @@ test("an agent shows a card it designed, changes it in place, and hears the owne
   assert.equal(shown.card, "trip");
   assert.ok(shown.problems.some((p) => p.includes("Marquee")), "an unknown component is left out and reported");
   assert.ok(shown.problems.some((p) => p.includes("later") && p.includes("placeholder")), "a missing child is a placeholder");
+  assert.deepEqual((resultOf(state.shown!) as { hints?: string[] }).hints, undefined, "a plain card gets no design hints");
   assert.equal(owner.messages.filter((m) => m.to === OWNER && m.word === "show" && m.from === "agent:main").length, 1, "the refused card never reached the conversation");
 
   const message = await owner.seen(toOwner("show", "agent:main"), "the card in the conversation");
@@ -72,6 +73,11 @@ test("an agent shows a card it designed, changes it in place, and hears the owne
   accepted(await owner.send({ to: "agent:main", kind: "request", word: "say", body: { text: "帮我订", card: { id: "trip", action: "book", context: { what: "train" }, data: { n: 5 } } } }));
   const { message: told } = await s.driver.delivery((m) => m.text.startsWith("[card trip, action book]"), "the action reaches the agent");
   assert.ok(told.text.includes("\"n\":5") && told.text.includes("\"what\":\"train\""), "with the card's values and the action's context");
+
+  // 👍 reaches the creator as the owner's taste, and stays with the card.
+  accepted(await owner.send({ to: "agent:main", kind: "request", word: "say", body: { text: "👍", card: { id: "trip", action: "feedback", context: { feedback: "up" } } } }));
+  await s.driver.delivery((m) => m.text.startsWith("[card trip, feedback up]"), "the feedback reaches the agent");
+  item = await eventually(async () => { const it = await itemOf(owner, message.id); return it.card.feedback === "up" ? it : undefined; }, "the feedback kept with the card");
 });
 
 test("a form with a password box: the value goes into the vault, the agent uses it by name, and it is nowhere in the ledger", async (t) => {

@@ -60,6 +60,7 @@ import android.widget.TableLayout
 import android.widget.TableRow
 import android.widget.TextClock
 import android.widget.TextView
+import ai.ash.R
 import ai.ash.host.PresentRoutes
 import ai.ash.ui.design.AshPalette
 import ai.ash.ui.design.AshTokens
@@ -189,6 +190,60 @@ object ChatCardModel {
         JSONObject().put("text", text).put("card", JSONObject().put("id", card).put("action", action).apply { if (context != null) put("context", context) }
             .put("data", JSONObject(data.toString())))
 
+    /** The owner's 👍 / 👎 on a card ([which] is `up` or `down`): a `say` like an action's, named `feedback`. */
+    fun feedbackBody(which: String, card: String, data: JSONObject): JSONObject =
+        sayBody(if (which == "up") "👍" else "👎", card, "feedback", JSONObject().put("feedback", which), data)
+
+    /** The 👍 / 👎 shown as chosen: the one just tapped here, else the one the item says the owner gave last. */
+    fun feedbackShown(local: String?, given: String?): String? = local ?: given?.takeIf { it == "up" || it == "down" }
+
+    /**
+     * The card language's icon names (the hub's CARD_ICONS) as Ash's own line icons; null is the neutral outline (a small
+     * circle), as is any name not here. The one table of the phone.
+     */
+    val ICONS: Map<String, Int?> = linkedMapOf(
+        "accountCircle" to null, "add" to R.drawable.ash_ic_plus, "arrowBack" to R.drawable.ash_ic_back, "arrowForward" to R.drawable.ash_ic_chev,
+        "attachFile" to R.drawable.ash_ic_link, "calendarToday" to R.drawable.ash_ic_clock, "call" to R.drawable.ash_ic_phone, "camera" to R.drawable.ash_ic_camera,
+        "check" to R.drawable.ash_ic_check, "close" to R.drawable.ash_ic_x, "delete" to R.drawable.ash_ic_trash, "download" to R.drawable.ash_ic_down,
+        "edit" to R.drawable.ash_ic_pen, "event" to R.drawable.ash_ic_clock, "error" to R.drawable.ash_ic_alert, "fastForward" to R.drawable.ash_ic_chev,
+        "favorite" to R.drawable.ash_ic_heart, "favoriteOff" to R.drawable.ash_ic_heart, "folder" to R.drawable.ash_ic_folder, "help" to R.drawable.ash_ic_ask,
+        "home" to R.drawable.ash_ic_grid, "info" to R.drawable.ash_ic_alert, "locationOn" to R.drawable.ash_ic_pin, "lock" to R.drawable.ash_ic_lock,
+        "lockOpen" to R.drawable.ash_ic_key, "mail" to R.drawable.ash_ic_msg, "menu" to R.drawable.ash_ic_list, "moreVert" to R.drawable.ash_ic_more,
+        "moreHoriz" to R.drawable.ash_ic_more, "notificationsOff" to R.drawable.ash_ic_bell, "notifications" to R.drawable.ash_ic_bell,
+        "pause" to R.drawable.ash_ic_pause, "payment" to R.drawable.ash_ic_wallet, "person" to null, "phone" to R.drawable.ash_ic_phone,
+        "photo" to R.drawable.ash_ic_image, "play" to R.drawable.ash_ic_chev, "print" to R.drawable.ash_ic_file, "refresh" to R.drawable.ash_ic_refresh,
+        "rewind" to R.drawable.ash_ic_back, "search" to R.drawable.ash_ic_eye, "send" to R.drawable.ash_ic_up, "settings" to R.drawable.ash_ic_slider,
+        "share" to R.drawable.ash_ic_link, "shoppingCart" to R.drawable.ash_ic_box, "skipNext" to R.drawable.ash_ic_chev, "skipPrevious" to R.drawable.ash_ic_back,
+        "star" to null, "starHalf" to null, "starOff" to null, "stop" to R.drawable.ash_ic_stop, "upload" to R.drawable.ash_ic_up,
+        "visibility" to R.drawable.ash_ic_eye, "visibilityOff" to R.drawable.ash_ic_eye, "volumeDown" to null, "volumeMute" to null, "volumeOff" to null,
+        "volumeUp" to null, "warning" to R.drawable.ash_ic_alert,
+        "sun" to null, "cloud" to null, "rain" to null, "snow" to null, "wind" to null, "moon" to R.drawable.ash_ic_moon, "heart" to R.drawable.ash_ic_heart,
+        "steps" to R.drawable.ash_ic_pulse, "weight" to null, "sleep" to R.drawable.ash_ic_moon, "water" to null, "fire" to R.drawable.ash_ic_bolt,
+        "calendar" to R.drawable.ash_ic_clock, "clock" to R.drawable.ash_ic_clock, "alert" to R.drawable.ash_ic_alert, "bell" to R.drawable.ash_ic_bell,
+        "car" to null, "money" to R.drawable.ash_ic_coin, "chart" to R.drawable.ash_ic_pulse)
+
+    // --- a card's picture (`chat` present `card.preview`) ---
+
+    /** The card is drawn this wide, as in the chat. */
+    const val PREVIEW_DP = 330
+    /** The longer side of the picture, in pixels. */
+    const val PREVIEW_SIDE = 900
+    /** The PNG must stay under this; it is drawn smaller until it does. */
+    const val PREVIEW_BYTES = 300 * 1024
+    /** Scales tried in turn when the PNG is too large. */
+    val PREVIEW_SHRINK = floatArrayOf(1f, 0.8f, 0.64f, 0.5f, 0.4f, 0.32f, 0.25f)
+
+    /** The picture's size at shrink step [i] for a card [wPx] x [hPx] px (the longer side at most [PREVIEW_SIDE]); null when the steps are used up. */
+    fun previewSize(wPx: Int, hPx: Int, i: Int): Pair<Int, Int>? {
+        val shrink = PREVIEW_SHRINK.getOrNull(i) ?: return null
+        val s = minOf(1f, PREVIEW_SIDE.toFloat() / maxOf(wPx, hPx, 1)) * shrink
+        return maxOf(1, Math.round(wPx * s)) to maxOf(1, Math.round(hPx * s))
+    }
+
+    /** The answer to `card.preview`: an image part. [encode] is base64 without wraps. */
+    fun previewPart(png: ByteArray, width: Int, height: Int, encode: (ByteArray) -> String): JSONObject =
+        JSONObject().put("type", "image").put("data", encode(png)).put("mimeType", "image/png").put("width", width).put("height", height)
+
     /** What a button says: the first Text in it (without its Markdown marks), else its action's name. */
     fun label(byId: Map<String, JSONObject>, node: JSONObject): String {
         fun find(n: JSONObject?, depth: Int): String? {
@@ -273,14 +328,17 @@ object ChatCardModel {
  * keeps it where it is; it is drawn again inside only when what it shows changed.
  */
 class ChatCards(
-    private val activity: Activity,
-    private val port: HumanPort,
+    /** The chat's activity; for a picture ([preview]), a context in the theme asked for. */
+    private val ctx: Context,
+    private val port: HumanPort?,
     /** The owner's `say` to an agent, through the chat's outbox (so it shows as the owner's message). */
     private val post: (String, JSONObject) -> Unit,
     private val toast: (String) -> Unit,
+    /** Drawn for a picture (`card.preview`): no 👍 / 👎 footer, a mini app as a block of its size, the clock's time now. */
+    private val preview: Boolean = false,
     private val refresh: () -> Unit,
 ) {
-    private val ctx: Context = activity
+    private val activity: Activity? = ctx as? Activity
     private val c = AshUi.p(ctx)
     private val night = AshUi.night(ctx)
     private val main = Handler(Looper.getMainLooper())
@@ -303,7 +361,12 @@ class ChatCards(
         var pending: Runnable? = null
         var paintedRaw: String? = null
         var paintedRest: String? = null
-        val holder = FrameLayout(ctx)
+        /** The 👍 / 👎 tapped here, until the item says it. */
+        var feedbackLocal: String? = null
+        /** Pictures still on their way in the last drawing. */
+        var waitingImages = 0
+        /** The chat's card shell is at most 330 dp wide. */
+        val holder: FrameLayout = Capped(ctx, dp(AshTokens.Size.cardMaxW))
         /** The text boxes drawn, by component id (to put the cursor back after drawing again). */
         val fields = HashMap<String, EditText>()
         /** Mini apps, by component id, with the document they run. */
@@ -316,6 +379,7 @@ class ChatCards(
             return if (s == "open" && ends > 0 && ends <= System.currentTimeMillis()) "expired" else s
         }
         fun open() = state() == "open"
+        fun feedback() = ChatCardModel.feedbackShown(feedbackLocal, card.optString("feedback").ifEmpty { null })
         /** The owner is at it: a box has the cursor, or a change has not reached the hub yet. */
         fun editing() = holder.findFocus() != null || pending != null || inFlight > 0 || SystemClock.uptimeMillis() - lastEdit < 1500
     }
@@ -337,9 +401,16 @@ class ChatCards(
             st.plan = plan; st.data = JSONObject(plan.data.toString()); st.updatedAt = updated
         }
         if (card.optString("state").ifEmpty { "open" } != "open") st.local = null
+        if (st.feedbackLocal != null && st.feedbackLocal == card.optString("feedback")) st.feedbackLocal = null
         paint(st)
         return st.holder
     }
+
+    /** Pictures still on their way in the cards drawn last. */
+    fun waitingImages(): Int = cards.values.sumOf { it.waitingImages }
+
+    /** Draws every card again (a picture that has come in since is in it now). */
+    fun redraw() { for (st in cards.values) { st.paintedRaw = null; paint(st) } }
 
     fun close() {
         for (st in cards.values) {
@@ -355,12 +426,13 @@ class ChatCards(
     private fun paint(st: Card) {
         val plan = st.plan ?: return
         val state = st.state()
-        val rest = "$state|${st.busy}|${st.tabs}"
+        val rest = "$state|${st.busy}|${st.tabs}|${st.feedback()}"
         if (st.paintedRaw == plan.raw && st.paintedRest == rest) return
         val focused = st.holder.findFocus() as? EditText
         val focusId = st.fields.entries.firstOrNull { it.value === focused }?.key
         val selection = focused?.let { it.selectionStart to it.selectionEnd }
         st.fields.clear()
+        st.waitingImages = 0
         val draw = Draw(st, plan, state)
         val drawn = runCatching { draw.card() }.getOrElse { Log.w(TAG, "card ${st.id} could not be drawn", it); plain(st.card.optString("text")) }
         st.holder.removeAllViews()
@@ -399,10 +471,32 @@ class ChatCards(
         fun style(n: JSONObject): CStyle = styles.getOrPut(n.optString("id")) { runCatching { CardSpec.style(n.optJSONObject("style"), ::tint) }.getOrDefault(CStyle()) }
         fun byId(id: String) = plan.byId.getValue(id)
 
+        /** The chat's card shell (surface, rounded, 14 dp in from every side); the card's root draws inside it. */
         fun card(): View = AshUi.card(ctx).apply {
+            setPadding(dp(14), dp(14), dp(14), dp(14))
             node(plan.root, null)?.let { addView(it, params(byId(plan.root), Slot.COLUMN, null)) }
             ChatCardModel.stateLine(state)?.let { line ->
                 addView(AshUi.text(ctx, line, AshType(12f, 16f, 500, Role.TEXT_3)).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(MATCH, WRAP))
+            }
+            // Its height is held from the first drawing: choosing one changes only how they look.
+            if (!preview && st.card.optJSONObject("form") == null) addView(footer(), LinearLayout.LayoutParams(MATCH, dp(FOOTER_DP)))
+        }
+
+        /** 👍 / 👎, small and quiet at the end; the one the owner gave last is chosen, and tapping it again does nothing. */
+        private fun footer(): View = AshUi.hstack(ctx, 4).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            val shown = st.feedback()
+            for ((which, emoji) in listOf("up" to "👍", "down" to "👎")) {
+                val chosen = shown == which
+                addView(AshUi.text(ctx, emoji, AshType(12f, 16f, 400, Role.TEXT_3)).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(dp(8), 0, dp(8), 0)
+                    alpha = if (chosen) 1f else 0.5f
+                    if (chosen) background = AshUi.rounded(c.surface2, dpF(FOOTER_DP / 2f))
+                    contentDescription = if (which == "up") "有用" else "没用"
+                    isSelected = chosen
+                    setOnClickListener { feedback(st, which) }
+                }, LinearLayout.LayoutParams(WRAP, MATCH))
             }
         }
 
@@ -441,14 +535,20 @@ class ChatCards(
             "Switch" -> switch(n, ink)
             "ChoicePicker" -> choice(n)
             "ProgressBar" -> progress(n, s, ink)
-            "Clock" -> TextClock(ctx).apply {
-                AshUi.style(this, textType(s, AshTokens.Type.body), ink)
+            "Clock" -> if (preview) {
+                // A TextClock off screen never sets its text: the time now, as it would show it.
+                val zone = n.optString("timeZone").takeIf { it.isNotEmpty() }?.let { java.util.TimeZone.getTimeZone(it) } ?: java.util.TimeZone.getDefault()
+                AshUi.style(TextView(ctx), textType(s, BODY), ink).apply {
+                    text = android.text.format.DateFormat.format(n.optString("format").ifEmpty { "HH:mm" }, java.util.Calendar.getInstance(zone))
+                }
+            } else TextClock(ctx).apply {
+                AshUi.style(this, textType(s, BODY), ink)
                 val f = n.optString("format").ifEmpty { "HH:mm" }
                 format12Hour = f; format24Hour = f
                 n.optString("timeZone").takeIf { it.isNotEmpty() }?.let { timeZone = it }
             }
             "Timer" -> Chronometer(ctx).apply {
-                AshUi.style(this, textType(s, AshTokens.Type.body), ink)
+                AshUi.style(this, textType(s, BODY), ink)
                 val now = System.currentTimeMillis()
                 if (n.has("until")) { base = SystemClock.elapsedRealtime() + (n.optLong("until") - now); isCountDown = true }
                 else base = SystemClock.elapsedRealtime() - (now - n.optLong("since"))
@@ -489,7 +589,7 @@ class ChatCards(
             "Image" -> {
                 val url = n.optString("url")
                 val avatar = url == "avatar" || url.startsWith("avatar:")
-                if (url.startsWith("icon:")) null to null
+                if (url.startsWith("icon:")) dp(s.fontSize ?: 24f).let { it to it }
                 else when (n.optString("variant").ifEmpty { if (avatar) "avatar" else "mediumFeature" }) {
                     "icon" -> dp(24) to dp(24)
                     "avatar" -> dp(if (n.has("variant")) 40 else 36) to dp(if (n.has("variant")) 40 else 36)
@@ -499,7 +599,7 @@ class ChatCards(
                     else -> (if (slot == Slot.COLUMN || slot == Slot.STACK) MATCH else dp(120)) to dp(120)
                 }
             }
-            "Icon" -> if (n.optString("svgPath").isNotEmpty()) dp(s.fontSize ?: 22f).let { it to it } else null to null
+            "Icon" -> dp(s.fontSize ?: ICON_DP).let { it to it }
             "Chart" -> MATCH to (px(s.height) ?: dp(120))
             "Divider" -> if (n.optString("axis") == "vertical") dp(1) to MATCH else MATCH to dp(1)
             "Spacer" -> if (n.has("size")) dp(n.optDouble("size")).let { it to it } else null to null
@@ -538,46 +638,60 @@ class ChatCards(
             val column = n.optString("component") == "Column"
             val align = n.optString("align").ifEmpty { null }
             val justify = n.optString("justify").ifEmpty { null }
-            val v = if (column) AshUi.vstack(ctx, GAP) else AshUi.hstack(ctx, GAP)
+            val v = if (column) AshUi.vstack(ctx) else AshUi.hstack(ctx)
             if (!column) v.gravity = (when (justify) { "center" -> Gravity.CENTER_HORIZONTAL; "end" -> Gravity.END; else -> Gravity.START }) or
                 (when (align) { "start" -> Gravity.TOP; "end" -> Gravity.BOTTOM; else -> Gravity.CENTER_VERTICAL })
-            children(v, ids(n), if (column) Slot.COLUMN else Slot.ROW, align, justify, ink)
+            children(v, ids(n), if (column) Slot.COLUMN else Slot.ROW, align, justify, ink, gapOf(n))
             return v
         }
 
-        private fun children(box: LinearLayout, ids: List<String>, slot: Slot, align: String?, justify: String?, ink: Int?) {
+        /** A container's `gap` in px: the room between its children (none when not given). */
+        private fun gapOf(n: JSONObject): Int = n.optDouble("gap", 0.0).takeIf { it.isFinite() && it > 0 }?.let { dp(it) } ?: 0
+
+        /** [lp] with [gap] px more before it (above in a column, at the start in a row), on top of its own margin. */
+        private fun spaced(lp: ViewGroup.LayoutParams, slot: Slot, gap: Int): ViewGroup.LayoutParams {
+            if (gap > 0 && lp is ViewGroup.MarginLayoutParams) { if (slot == Slot.COLUMN) lp.topMargin += gap else lp.marginStart += gap }
+            return lp
+        }
+
+        private fun children(box: LinearLayout, ids: List<String>, slot: Slot, align: String?, justify: String?, ink: Int?, gap: Int) {
             val drawn = ids.mapNotNull { id -> node(id, ink)?.let { byId(id) to it } }
             val spread = justify == "spaceBetween" || justify == "spaceAround" || justify == "spaceEvenly"
             fun gap() = box.addView(Space(ctx), if (slot == Slot.COLUMN) LinearLayout.LayoutParams(1, 0, 1f) else LinearLayout.LayoutParams(0, 1, 1f))
             if (spread && justify != "spaceBetween") gap()
             drawn.forEachIndexed { i, (n, v) ->
-                box.addView(v, params(n, slot, align, justify == "stretch"))
+                box.addView(v, spaced(params(n, slot, align, justify == "stretch"), slot, if (i > 0) gap else 0))
                 if (spread && i < drawn.lastIndex) gap()
             }
             if (spread && justify != "spaceBetween" && drawn.isNotEmpty()) gap()
         }
 
-        private fun grid(n: JSONObject, columns: Int, ink: Int?): LinearLayout = AshUi.vstack(ctx, GAP).apply {
+        private fun grid(n: JSONObject, columns: Int, ink: Int?): LinearLayout = AshUi.vstack(ctx).apply {
+            val gap = gapOf(n)
             val drawn = ids(n).mapNotNull { id -> node(id, ink)?.let { id to it } }
-            for (row in drawn.chunked(columns)) addView(AshUi.hstack(ctx, GAP).apply {
-                gravity = Gravity.TOP
-                for ((id, v) in row) addView(AshUi.vstack(ctx).apply { addView(v, params(byId(id), Slot.COLUMN, null)) }, LinearLayout.LayoutParams(0, WRAP, 1f))
-                repeat(columns - row.size) { addView(Space(ctx), LinearLayout.LayoutParams(0, 0, 1f)) }
-            }, LinearLayout.LayoutParams(MATCH, WRAP))
+            drawn.chunked(columns).forEachIndexed { r, row ->
+                addView(AshUi.hstack(ctx).apply {
+                    gravity = Gravity.TOP
+                    fun cell(i: Int) = LinearLayout.LayoutParams(0, WRAP, 1f).apply { if (i > 0) marginStart = gap }
+                    row.forEachIndexed { i, (id, v) -> addView(AshUi.vstack(ctx).apply { addView(v, params(byId(id), Slot.COLUMN, null)) }, cell(i)) }
+                    for (i in row.size until columns) addView(Space(ctx), cell(i).apply { height = 0 })
+                }, LinearLayout.LayoutParams(MATCH, WRAP).apply { if (r > 0) topMargin = gap })
+            }
         }
 
         private fun list(n: JSONObject, ink: Int?): View {
             val align = n.optString("align").ifEmpty { null }
             if (n.optString("direction") == "horizontal") return HorizontalScrollView(ctx).apply {
                 isHorizontalScrollBarEnabled = false
-                addView(AshUi.hstack(ctx, GAP).apply {
+                addView(AshUi.hstack(ctx).apply {
                     gravity = Gravity.TOP
-                    for (id in ids(n)) node(id, ink)?.let { addView(it, params(byId(id), Slot.STRIP, align ?: "start")) }
+                    val gap = gapOf(n)
+                    for (id in ids(n)) node(id, ink)?.let { addView(it, spaced(params(byId(id), Slot.STRIP, align ?: "start"), Slot.STRIP, if (childCount > 0) gap else 0)) }
                 })
             }
             val columns = n.optInt("columns", 1)
             if (columns > 1) return grid(n, columns.coerceAtMost(12), ink)
-            return AshUi.vstack(ctx, GAP).apply { children(this, ids(n), Slot.COLUMN, align, null, ink) }
+            return AshUi.vstack(ctx).apply { children(this, ids(n), Slot.COLUMN, align, null, ink, gapOf(n)) }
         }
 
         private fun tabs(n: JSONObject, ink: Int?): View {
@@ -607,7 +721,7 @@ class ChatCards(
 
         private fun text(n: JSONObject, s: CStyle, ink: Int?): TextView {
             val variant = n.optString("variant").ifEmpty { "body" }
-            val type = textType(s, TYPES[variant] ?: AshTokens.Type.body)
+            val type = textType(s, TYPES[variant] ?: BODY)
             val body = Md.render(n.optString("text"), c.surface2, c.her)
             val tv = AshUi.text(ctx, body, type, ink?.let { if (variant == "caption") AshUi.withAlpha(it, 0.7f) else it })
             if (s.italic == true) {
@@ -638,15 +752,27 @@ class ChatCards(
             }
         }
 
-        private fun glyph(name: String, s: CStyle, ink: Int?): TextView {
-            val size = s.fontSize ?: 20f
-            return AshUi.text(ctx, CardSpec.glyph(name) ?: "•", AshType(size, size * 1.3f, 400, null), s.color?.pick(night) ?: ink ?: c.text).apply { gravity = Gravity.CENTER }
+        /** A built-in icon by name: Ash's own line icon, tinted with the node's colour (a name with none near it: a small circle). */
+        private fun lineIcon(name: String, s: CStyle, ink: Int?): View {
+            val color = s.color?.pick(night) ?: ink ?: c.text
+            val size = dp(s.fontSize ?: ICON_DP)
+            val res = ChatCardModel.ICONS[name]
+            return ImageView(ctx).apply {
+                val d = res?.let { ctx.getDrawable(it)?.mutate() }
+                if (d != null) { d.setTint(color); scaleType = ImageView.ScaleType.FIT_CENTER; setImageDrawable(d) }
+                else {
+                    // The icons are drawn on a 24 grid with a 1.8 line: a ring of 10 in the middle of the box.
+                    val ring = Math.round(size * 10f / 24f); val line = maxOf(1, Math.round(size * 1.8f / 24f))
+                    scaleType = ImageView.ScaleType.CENTER
+                    setImageDrawable(GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT); setStroke(line, color); setSize(ring, ring) })
+                }
+            }
         }
 
         private fun icon(n: JSONObject, s: CStyle, ink: Int?): View {
             val d = n.optString("svgPath")
-            if (d.isEmpty()) return glyph(n.optString("name"), s, ink)
-            val size = dp(s.fontSize ?: 22f)
+            if (d.isEmpty()) return lineIcon(n.optString("name"), s, ink)
+            val size = dp(s.fontSize ?: ICON_DP)
             return ImageView(ctx).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 CardImages.get(ctx, Img.Path(d, Tint(Color.WHITE, Color.WHITE)), size, size) {}?.let { setImageBitmap(it) }
@@ -656,7 +782,7 @@ class ChatCards(
 
         private fun image(n: JSONObject, s: CStyle, ink: Int?): View {
             val url = n.optString("url")
-            if (url.startsWith("icon:")) return glyph(url.removePrefix("icon:"), s, ink)
+            if (url.startsWith("icon:")) return lineIcon(url.removePrefix("icon:"), s, ink)
             val avatar = url == "avatar" || url.startsWith("avatar:")
             val variant = n.optString("variant").ifEmpty { if (avatar) "avatar" else "mediumFeature" }
             val fit = n.optString("fit").ifEmpty { if (variant in FEATURES) "cover" else "contain" }
@@ -671,29 +797,39 @@ class ChatCards(
             if (!avatar) iv.background = AshUi.rounded(c.surface2, 0f)
             fun load() { CardImages.get(ctx, img, w, dp(360)) { load() }?.let { iv.setImageBitmap(it); iv.background = null } }
             load()
+            if (iv.drawable == null && url.startsWith("https:") && !CardImages.failed.containsKey(url)) st.waitingImages++
             clip(iv, s.cornerRadius?.let { dpF(it) } ?: if (variant == "avatar") -1f else dpF(12f))
             return iv
         }
 
         private fun button(n: JSONObject): View {
             val kind = when (n.optString("variant")) { "primary" -> AshUi.Kind.PRIMARY; "borderless" -> AshUi.Kind.GHOST; else -> AshUi.Kind.SECONDARY }
+            val enabled = !readOnly && !st.busy && !n.optBoolean("disabled") && n.optJSONObject("action") != null
+            // A button that cannot be pressed is plainly neutral (surface-2 and text-2), not a faded accent.
+            val (bg, fg) = when {
+                !enabled -> (if (kind == AshUi.Kind.GHOST) Color.TRANSPARENT else c.surface2) to c.text2
+                kind == AshUi.Kind.PRIMARY -> accent to c.onYou
+                kind == AshUi.Kind.SECONDARY -> c.youSoft to c.youText
+                else -> Color.TRANSPARENT to c.youText
+            }
+            val radius = dp(AshTokens.Size.buttonSm) / 2f
             val childId = n.optString("child")
             val child = plan.byId[childId]
             val v: View = if (child == null || (child.optString("component") == "Text" && child.optJSONObject("style") == null)) {
                 AshUi.button(ctx, ChatCardModel.label(plan.byId, n), kind, AshUi.BtnSize.SM).also { b ->
-                    if (kind == AshUi.Kind.PRIMARY && accent != c.you) b.background = AshUi.rounded(accent, dp(AshTokens.Size.buttonSm) / 2f)
+                    if (!enabled) { b.background = AshUi.rounded(bg, radius); b.setTextColor(fg) }
+                    else if (kind == AshUi.Kind.PRIMARY && accent != c.you) b.background = AshUi.rounded(accent, radius)
                 }
             } else {
-                val (bg, fg) = when (kind) { AshUi.Kind.PRIMARY -> accent to c.onYou; AshUi.Kind.SECONDARY -> c.youSoft to c.youText; else -> Color.TRANSPARENT to c.youText }
                 AshUi.hstack(ctx, 6).apply {
                     gravity = Gravity.CENTER; minimumHeight = dp(AshTokens.Size.buttonSm); setPadding(dp(14), dp(4), dp(14), dp(4))
-                    background = AshUi.rounded(bg, dp(AshTokens.Size.buttonSm) / 2f)
+                    background = AshUi.rounded(bg, radius)
                     inButton = true
                     try { node(childId, fg)?.let { addView(it, params(child, Slot.ROW, null)) } } finally { inButton = false }
                 }
             }
-            val enabled = !readOnly && !st.busy && !n.optBoolean("disabled") && n.optJSONObject("action") != null
-            if (enabled) { v.isClickable = true; v.setOnClickListener { act(st, n) } } else AshUi.disable(v)
+            if (enabled) { v.isClickable = true; v.setOnClickListener { act(st, n) } }
+            else { v.isEnabled = false; v.isClickable = false }
             return v
         }
 
@@ -704,10 +840,12 @@ class ChatCards(
         private fun enabled(n: JSONObject) = !readOnly && !n.optBoolean("disabled")
         private fun put(n: JSONObject, value: Any) { val b = bindOf(n) ?: return; changed(st) { ChatCardModel.write(st.data, b, value) } }
         private fun fieldLabel(text: String) = AshUi.text(ctx, text, AshType(13f, 18f, 500, Role.TEXT_2))
+        /** An input's label sits this far above its box. */
+        private fun labelled() = AshUi.vstack(ctx, LABEL_GAP)
         private fun boxBackground() = AshUi.rounded(c.surface2, dpF(12f))
 
         private fun check(n: JSONObject, ink: Int?): View = CheckBox(ctx).apply {
-            AshUi.style(this, AshTokens.Type.body, ink ?: c.text)
+            AshUi.style(this, BODY, ink ?: c.text)
             text = n.optString("label")
             buttonTintList = ColorStateList.valueOf(accent)
             isChecked = valueOf(n) as? Boolean ?: n.optBoolean("checked")
@@ -716,7 +854,7 @@ class ChatCards(
         }
 
         private fun switch(n: JSONObject, ink: Int?): View = AshUi.hstack(ctx, 10).apply {
-            addView(AshUi.text(ctx, n.optString("label"), AshTokens.Type.body, ink), LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(AshUi.text(ctx, n.optString("label"), BODY, ink), LinearLayout.LayoutParams(0, WRAP, 1f))
             val sw = AshUi.AshSwitch(ctx)
             sw.set(valueOf(n) as? Boolean ?: n.optBoolean("checked"))
             sw.onChange = { on -> put(n, on) }
@@ -734,7 +872,7 @@ class ChatCards(
             val multiple = n.optBoolean("multiple")
             val chips = n.optBoolean("chips")
             val on = enabled(n)
-            val box = AshUi.vstack(ctx, 8)
+            val box = labelled()
             n.optString("label").takeIf { it.isNotEmpty() }?.let { box.addView(fieldLabel(it)) }
             val holder: ViewGroup = if (chips) Flow(ctx, dp(8)) else AshUi.vstack(ctx, 8)
             fun fill() {
@@ -769,10 +907,10 @@ class ChatCards(
             val obscured = variant == "obscured"
             // A password box keeps what is typed here only (never in the data, never in a draft); the form sends it to the vault.
             val secretKey = bind ?: "#$id"
-            val box = AshUi.vstack(ctx, 6)
+            val box = labelled()
             n.optString("label").takeIf { it.isNotEmpty() }?.let { box.addView(fieldLabel(it)) }
             val et = EditText(ctx).apply {
-                AshUi.style(this, AshTokens.Type.body, c.text)
+                AshUi.style(this, BODY, c.text)
                 setHintTextColor(c.text3)
                 background = boxBackground()
                 setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -813,14 +951,15 @@ class ChatCards(
             val enableTime = n.optBoolean("enableTime", false)
             var value = (valueOf(n) as? String) ?: n.optString("text")
             val hint = when { enableDate && enableTime -> "选择日期和时间"; enableTime -> "选择时间"; else -> "选择日期" }
-            val box = AshUi.vstack(ctx, 6)
+            val box = labelled()
             n.optString("label").takeIf { it.isNotEmpty() }?.let { box.addView(fieldLabel(it)) }
-            val shown = AshUi.style(TextView(ctx), AshTokens.Type.body, c.text).apply {
+            val shown = AshUi.style(TextView(ctx), BODY, c.text).apply {
                 background = boxBackground(); setPadding(dp(12), dp(10), dp(12), dp(10)); minHeight = dp(44); gravity = Gravity.CENTER_VERTICAL
             }
             fun show() { shown.text = if (value.isEmpty()) hint else value.replace('T', ' '); shown.setTextColor(if (value.isEmpty()) c.text3 else c.text) }
             show()
             if (enabled(n)) shown.setOnClickListener {
+                val activity = activity ?: return@setOnClickListener
                 val (d0, t0) = ChatCardModel.isoParts(value)
                 fun done(d: LocalDate?, t: LocalTime?) { value = ChatCardModel.iso(d, t); show(); put(n, value) }
                 fun time(d: LocalDate?) {
@@ -921,6 +1060,12 @@ class ChatCards(
         /** The sandboxed mini app, its height in dp, and under it 「存成应用」. */
         private fun miniApp(n: JSONObject): View {
             val id = n.optString("id")
+            // A web view off screen draws nothing: in a picture the mini app is a block of its size.
+            if (preview) return FrameLayout(ctx).apply {
+                background = AshUi.rounded(c.surface2, dpF(12f))
+                addView(AshUi.text(ctx, "小应用", AshTokens.Type.sub, c.text3), FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
+                layoutParams = LinearLayout.LayoutParams(MATCH, dp(n.optDouble("height", 320.0)))
+            }.let { block -> AshUi.vstack(ctx).apply { addView(block) } }
             webs.add(id)
             val vars = mapOf("bg" to c.bg, "surface" to c.surface, "text" to c.text, "text2" to c.text2, "accent" to accent, "line" to c.line)
                 .mapValues { ChatCardModel.css(it.value) }
@@ -956,6 +1101,7 @@ class ChatCards(
 
     private fun draft(st: Card) {
         if (!st.open()) return
+        val port = port ?: return
         val seq = ++st.draftSeq
         st.inFlight++
         port.call("person:owner", "card.draft", JSONObject().put("card", st.id).put("data", JSONObject(st.data.toString()))) { data, failure ->
@@ -977,6 +1123,7 @@ class ChatCards(
             a.has("openAsh") -> CAction.OpenAsh
             else -> return
         }
+        val activity = activity ?: return
         runCatching { activity.startActivity(WidgetActions.openIntent(activity, target)) }.onFailure { toast("打不开") }
     }
 
@@ -991,8 +1138,19 @@ class ChatCards(
         post(owner, ChatCardModel.sayBody(label.ifEmpty { name }, st.id, name, context, st.data))
     }
 
+    /** 👍 / 👎: the owner's `say` to the card's creator (an agent); the same one again does nothing. */
+    private fun feedback(st: Card, which: String) {
+        if (preview || st.feedback() == which) return
+        val owner = st.card.optString("owner")
+        if (!owner.startsWith("agent:")) return
+        st.feedbackLocal = which
+        post(owner, ChatCardModel.feedbackBody(which, st.id, st.data))
+        paint(st)
+    }
+
     /** 提交: every password box filled, each saved in the vault, then the form answered with the rest of the values and the masked passwords. */
     private fun submit(st: Card, form: JSONObject) {
+        val port = port ?: return
         if (st.busy) return
         val owner = st.card.optString("owner")
         val secret = form.optJSONObject("secret") ?: JSONObject()
@@ -1020,6 +1178,7 @@ class ChatCards(
     }
 
     private fun cancel(st: Card) {
+        val port = port ?: return
         if (st.busy) return
         st.busy = true; paint(st)
         port.send(ChatCardModel.formMessage(st.card.optString("owner"), st.id, ChatCardModel.cancelAnswer())) { r ->
@@ -1121,6 +1280,14 @@ class ChatCards(
         }
     }
 
+    /** The width it is given, but at most [maxPx] (the card shell's `width: 100%; max-width: 330`). */
+    private class Capped(ctx: Context, private val maxPx: Int) : FrameLayout(ctx) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val given = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) maxPx else minOf(MeasureSpec.getSize(widthMeasureSpec), maxPx)
+            super.onMeasure(MeasureSpec.makeMeasureSpec(given, MeasureSpec.EXACTLY), heightMeasureSpec)
+        }
+    }
+
     /** Chips that wrap onto the next line. */
     private class Flow(ctx: Context, private val gap: Int) : ViewGroup(ctx) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -1158,8 +1325,12 @@ class ChatCards(
         const val TAG = "ash.cards"
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-        /** The room between the parts of a Row or Column. */
-        const val GAP = 8
+        /** The 👍 / 👎 footer's height, held from the start. */
+        const val FOOTER_DP = 22
+        /** An input's label above its box. */
+        const val LABEL_GAP = 4
+        /** A built-in icon's size when the style gives none. */
+        const val ICON_DP = 22f
         const val DRAFT_MS = 400L
         const val BRIDGE = "__ashCard"
         /** What fills the width of a Column that stretches (A2UI's default align). */
@@ -1172,8 +1343,11 @@ class ChatCards(
             "start" to (Gravity.CENTER_VERTICAL or Gravity.START), "center" to Gravity.CENTER, "end" to (Gravity.CENTER_VERTICAL or Gravity.END),
             "bottomStart" to (Gravity.BOTTOM or Gravity.START), "bottom" to (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL), "bottomEnd" to (Gravity.BOTTOM or Gravity.END))
         /** Text variants in the chat's type scale. */
-        val TYPES = mapOf("h1" to AshType(22f, 30f, 700, Role.INK), "h2" to AshType(19f, 26f, 650, Role.INK), "h3" to AshType(17f, 24f, 650, Role.INK),
-            "h4" to AshType(15f, 21f, 650, Role.INK), "h5" to AshType(14f, 20f, 600, Role.INK), "body" to AshTokens.Type.body, "caption" to AshType(12.5f, 17f, 400, Role.TEXT_2))
+        val TYPES = mapOf("h1" to AshType(24f, 32f, 700, Role.INK), "h2" to AshType(20f, 28f, 650, Role.INK), "h3" to AshType(17f, 24f, 650, Role.INK),
+            "h4" to AshType(15f, 21f, 600, Role.INK), "h5" to AshType(13f, 18f, 600, Role.INK), "body" to AshType(15f, 21f, 400, Role.TEXT),
+            "caption" to AshType(13f, 18f, 400, Role.TEXT_2))
+        /** A card's running text (and its inputs): 15 on 21. */
+        val BODY = TYPES.getValue("body")
         fun pair(f: (AshPalette) -> Int) = Tint(f(AshTokens.light), f(AshTokens.dark))
         /** The card language's theme colours as the app's own (light, dark). */
         val THEME = mapOf("text" to pair { it.text }, "textSecondary" to pair { it.text2 }, "onAccent" to pair { it.onYou }, "background" to pair { it.bg },

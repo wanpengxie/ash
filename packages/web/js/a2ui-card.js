@@ -161,12 +161,13 @@ function stateFor(item) {
   if (!s) {
     if (states.size >= MAX_STATES) for (const [id, old] of states) { if (!editing(old)) { clearTimeout(old.timer); states.delete(id); secrets.delete(id); } if (states.size < MAX_STATES) break; }
     s = { id: card.id, data: clone(data), seen: server, hold: null, plan: null, tabs: {}, version: 0, inflight: 0, timer: null,
-      sent: false, cancelled: false, busy: false, error: "", answer: null, root: null, item, ctx: null, lastSend: 0 };
+      sent: false, cancelled: false, busy: false, error: "", answer: null, root: null, item, ctx: null, lastSend: 0, feedback: undefined };
     states.set(card.id, s);
   } else if (server > s.seen) {
     if (editing(s) || (s.hold !== null && server <= s.hold)) s.hold = Math.max(s.hold ?? 0, server);
     else { s.data = clone(data); s.seen = server; s.plan = null; s.hold = null; }
   }
+  if (s.feedback !== undefined && card.feedback === s.feedback) s.feedback = undefined;
   if (card.state && card.state !== "open") { s.busy = false; if (card.state === "sent" || card.state === "cancelled") s.error = ""; }
   s.item = item;
   return s;
@@ -280,22 +281,30 @@ export function appendCardMarkdown(parent, source) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Icons and charts.
 
-/** A2UI icon names (and Ash's older ones) drawn with the page's own glyphs; the rest get the nearest one. */
-const ICON_NAMES = Object.freeze({
-  accountCircle: "chat", person: "chat", add: "plus", arrowBack: "back", arrowForward: "chev", attachFile: "file", calendarToday: "clock",
-  calendar: "clock", event: "clock", call: "phone", phone: "phone", camera: "camera", check: "check", close: "x", delete: "trash",
-  download: "down", upload: "up", edit: "pen", error: "alert", alert: "alert", warning: "alert", folder: "folder", help: "ask", home: "grid",
-  info: "alert", locationOn: "pin", lock: "lock", lockOpen: "lock", mail: "msg", menu: "list", moreVert: "more", moreHoriz: "more",
-  notifications: "bell", notificationsOff: "bell", bell: "bell", pause: "pause", payment: "wallet", money: "coin", photo: "image",
-  refresh: "refresh", search: "eye", send: "up", settings: "slider", share: "link", visibility: "eye", visibilityOff: "eye",
-  favorite: "heart", heart: "heart", moon: "moon", sleep: "moon", clock: "clock", chart: "pulse", steps: "pulse", fire: "bolt",
-  car: "box", shoppingCart: "box", star: "heart", starHalf: "heart", starOff: "heart",
+/**
+ * Every card icon name (sdk card.ts CARD_ICONS) as the nearest of Ash's own line icons (js/ash-icons.js); null for a name
+ * with no close match, drawn as a neutral outline (a small circle). The one table on the web; the phone keeps its own.
+ */
+export const CARD_ICON_GLYPHS = Object.freeze({
+  accountCircle: null, add: "plus", arrowBack: "back", arrowForward: "chev", attachFile: "file", calendarToday: "clock", call: "phone",
+  camera: "camera", check: "check", close: "x", delete: "trash", download: "down", edit: "pen", event: "clock", error: "alert",
+  fastForward: "chev", favorite: "heart", favoriteOff: "heart", folder: "folder", help: "ask", home: "grid", info: "alert", locationOn: "pin",
+  lock: "lock", lockOpen: "lock", mail: "msg", menu: "list", moreVert: "more", moreHoriz: "more", notificationsOff: "bell",
+  notifications: "bell", pause: "pause", payment: "wallet", person: null, phone: "phone", photo: "image", play: "chev", print: "file",
+  refresh: "refresh", rewind: "back", search: "eye", send: "up", settings: "slider", share: "link", shoppingCart: "box", skipNext: "chev",
+  skipPrevious: "back", star: "heart", starHalf: "heart", starOff: "heart", stop: "x", upload: "up", visibility: "eye", visibilityOff: "eye",
+  volumeDown: null, volumeMute: null, volumeOff: null, volumeUp: null, warning: "alert", sun: null, cloud: null, rain: null, snow: null,
+  wind: null, moon: "moon", heart: "heart", steps: "pulse", weight: null, sleep: "moon", water: null, fire: "bolt", calendar: "clock",
+  clock: "clock", alert: "alert", bell: "bell", car: null, money: "coin", chart: "pulse",
 });
 
+/** A card icon as a single-colour line icon in the node's colour (never an emoji); the neutral outline when it has no match. */
 function drawIcon(parent, name, className = "i-s") {
-  const glyph = ICON_SHAPES[name] ? name : ICON_NAMES[name];
+  const glyph = Object.hasOwn(CARD_ICON_GLYPHS, name) ? CARD_ICON_GLYPHS[name] : null;
   if (glyph && ICON_SHAPES[glyph]) return addIcon(parent, glyph, className);
-  return text(parent, "span", "", "a2-icon-dot");
+  const svg = svgNode("svg", { class: `i ${className} a2-icon-none`, viewBox: "0 0 24 24", "aria-hidden": "true" }, parent);
+  svgNode("circle", { cx: 12, cy: 12, r: 5 }, svg);
+  return svg;
 }
 
 function svgNode(tag, attrs, parent) {
@@ -538,6 +547,8 @@ function paint(root, s) {
     }
     return el;
   };
+  // The space between a container's children is its own `gap`; without one they sit edge to edge.
+  const gap = (el, node) => { if (Number.isFinite(node.gap) && node.gap >= 0) el.style.gap = px(node.gap); };
   const kids = (el, node, depth) => { for (const kid of Array.isArray(node.children) ? node.children : []) { const child = draw(el, kid, depth + 1, node.component); if (child && node.component === "Stack") applyPlace(child, node); } };
   const applyPlace = (child, stack) => {
     const place = byId.get(child.dataset.a2Id)?.style?.place ?? stack.align ?? "topStart";
@@ -577,7 +588,8 @@ function paint(root, s) {
     case "Icon": {
       const el = text(parentEl, "span", "", "a2-icon");
       if (typeof node.svgPath === "string") {
-        const svg = svgNode("svg", { class: "i i-s i-solid", viewBox: "0 0 24 24", "aria-hidden": "true" }, el);
+        // A closed shape is filled; an outline (a path never closed with Z) is stroked like the line icons.
+        const svg = svgNode("svg", { class: /[zZ]/.test(node.svgPath) ? "i i-s i-solid" : "i i-s", viewBox: "0 0 24 24", "aria-hidden": "true" }, el);
         svgNode("path", { d: node.svgPath }, svg);
       } else drawIcon(el, node.name);
       return el;
@@ -587,6 +599,7 @@ function paint(root, s) {
       if (JUSTIFY[node.justify]) el.style.justifyContent = node.justify === "stretch" ? "flex-start" : JUSTIFY[node.justify];
       if (ALIGN[node.align]) el.style.alignItems = ALIGN[node.align];
       if (node.justify === "stretch") el.classList.add("a2-stretch");
+      gap(el, node);
       kids(el, node, depth);
       return el;
     }
@@ -594,6 +607,7 @@ function paint(root, s) {
     case "Grid": {
       const el = text(parentEl, "div", "", "a2-grid");
       el.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(12, node.columns ?? 2))}, minmax(0, 1fr))`;
+      gap(el, node);
       kids(el, node, depth);
       return el;
     }
@@ -602,6 +616,7 @@ function paint(root, s) {
       const el = text(parentEl, "div", "", horizontal ? "a2-hlist" : node.columns > 1 ? "a2-grid" : "a2-col");
       if (!horizontal && node.columns > 1) el.style.gridTemplateColumns = `repeat(${node.columns}, minmax(0, 1fr))`;
       if (ALIGN[node.align]) el.style.alignItems = ALIGN[node.align];
+      gap(el, node);
       kids(el, node, depth);
       return el;
     }
@@ -835,8 +850,40 @@ function paint(root, s) {
   if (s.error) text(root, "div", s.error, "card-note a2-error");
   if (closed) text(root, "div", closed, "a2-status");
   else if (s.busy) text(root, "div", form ? "正在提交…" : "正在发送…", "a2-status");
+  if (!form && AGENT.test(card.owner ?? "")) feedbackFooter(root, s);
   if (!live) root.classList.add("a2-readonly");
   return root;
+}
+
+/** The thumbs the owner gives an open or closed card: the last one given shows as chosen; its height is there from the start. */
+const FEEDBACK = Object.freeze([["up", "👍", "有用"], ["down", "👎", "没用"]]);
+
+/** Which thumb [card] shows as chosen: the one just tapped on this screen, else the last one the hub recorded. */
+export const feedbackOf = (card, local) => local ?? (card?.feedback === "up" || card?.feedback === "down" ? card.feedback : undefined);
+
+function feedbackFooter(root, s) {
+  const footer = text(root, "div", "", "a2-feedback");
+  const chosen = feedbackOf(s.item.card, s.feedback);
+  const can = typeof s.ctx?.say === "function";
+  for (const [kind, glyph, label] of FEEDBACK) {
+    const b = button(footer, glyph, `a2-fb${chosen === kind ? " on" : ""}`);
+    b.setAttribute("aria-label", label);
+    b.setAttribute("aria-pressed", String(chosen === kind));
+    b.disabled = !can;
+    b.addEventListener("click", () => { void giveFeedback(s, kind, glyph); });
+  }
+}
+
+/** The owner's thumb as a say to the card's agent; a second tap on the one already chosen does nothing. */
+async function giveFeedback(s, kind, glyph) {
+  const ctx = s.ctx, card = s.item.card;
+  const before = feedbackOf(card, s.feedback);
+  if (before === kind || s.feedbackSending || typeof ctx?.say !== "function" || !AGENT.test(card.owner ?? "")) return;
+  const body = sayBody(card.id, glyph, { name: "feedback", context: { feedback: kind } }, s.data);
+  s.feedback = kind; s.feedbackSending = true; repaint(s);
+  try { await ctx.say(card.owner, body.text, body.card); }
+  catch (error) { s.feedback = before; repaint(s); ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
+  finally { s.feedbackSending = false; }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

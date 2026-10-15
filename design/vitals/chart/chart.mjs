@@ -18,43 +18,53 @@ export const CHART = {
 
 const r1 = (n) => Math.round(n * 10) / 10;
 
-/** 一组数据的纵轴上限：给了 max 用 max；否则 max(floor, 最大值 × 1.25)；floor 默认 0；全是 0 时为 1。 */
+/** 一组数据的纵轴下限：给了 min 用 min（低于它的值落在底上），否则 0。 */
+export const scaleMin = (series) => (typeof series.min === 'number' ? series.min : 0);
+
+/**
+ * 一组数据的纵轴上限：给了 max 用 max；否则 max(floor, min + (最大值 − min) × 1.25)；floor 默认 0，min 默认 0；
+ * 算出来不高于 min 时（全是 0、全在 min 以下）为 min + 1。
+ */
 export function scaleMax(series) {
   if (typeof series.max === 'number') return series.max;
-  const top = Math.max(0, ...series.values) * 1.25;
-  return Math.max(series.floor ?? 0, top) || 1;
+  const min = scaleMin(series);
+  const top = Math.max(series.floor ?? 0, min + Math.max(0, Math.max(min, ...series.values) - min) * 1.25);
+  return top > min ? top : min + 1;
 }
 
-/** 折线的点：x 均分铺满宽度，y 上下各留 pad；值夹在 [0, max]。 */
-export function linePoints(values, w, h, max) {
+/** v 在 [min, max] 这根轴上的高度比例（0..1），轴外的夹到两头。 */
+const frac = (v, max, min) => (max > min ? (Math.min(Math.max(v, min), max) - min) / (max - min) : 0);
+
+/** 折线的点：x 均分铺满宽度，y 上下各留 pad；值夹在 [min, max]。 */
+export function linePoints(values, w, h, max, min = 0) {
   const n = values.length;
-  return values.map((v, i) => [r1(n === 1 ? w : (i / (n - 1)) * w), r1(h - CHART.pad - (Math.min(Math.max(v, 0), max) / max) * (h - CHART.pad * 2))]);
+  return values.map((v, i) => [r1(n === 1 ? w : (i / (n - 1)) * w), r1(h - CHART.pad - frac(v, max, min) * (h - CHART.pad * 2))]);
 }
-/** 柱：等宽、间距 gap。 */
-export function barRects(values, w, h, max, gap = CHART.gap) {
+/** 柱：等宽、间距 gap；从轴底 min 往上长。 */
+export function barRects(values, w, h, max, gap = CHART.gap, min = 0) {
   const n = values.length, bw = (w - gap * (n - 1)) / n;
-  return values.map((v, i) => { const bh = Math.max(CHART.barMin, (Math.min(Math.max(v, 0), max) / max) * h); return { x: r1(i * (bw + gap)), y: r1(h - bh), w: r1(bw), h: r1(bh) }; });
+  return values.map((v, i) => { const bh = Math.max(CHART.barMin, frac(v, max, min) * h); return { x: r1(i * (bw + gap)), y: r1(h - bh), w: r1(bw), h: r1(bh) }; });
 }
 /** 上限虚线的 y：折线留 pad，柱不留。 */
-export const limitY = (value, h, max, type) => r1(type === 'bars' ? h - (Math.min(value, max) / max) * h : h - CHART.pad - (Math.min(value, max) / max) * (h - CHART.pad * 2));
+export const limitY = (value, h, max, type, min = 0) => r1(type === 'bars' ? h - frac(value, max, min) * h : h - CHART.pad - frac(value, max, min) * (h - CHART.pad * 2));
 
 /**
  * 一张图的几何（网页和原生都按这个画）。component 是 A2UI `Chart`：
- *   { series: [ { type: "line"|"bars", values, color, fill?, width?, dot?, max?, floor?,
+ *   { series: [ { type: "line"|"bars", values, color, fill?, width?, dot?, max?, floor?, min?,
  *                 highlight?: {from, to?, color}, colors?: {"<i>": color}, lastColor?, limit?, limitColor? } ], gap? }
  * 返回按画的顺序排好的图元：{kind: "area"|"line"|"bar"|"limit"|"dot", ...}。颜色原样带出，由调用方解析。
  */
 export function layout(component, w, h) {
   const out = [];
   for (const s of component.series) {
-    const max = scaleMax(s), n = s.values.length;
+    const max = scaleMax(s), min = scaleMin(s), n = s.values.length;
     if (s.type === 'bars') {
-      barRects(s.values, w, h, max, component.gap ?? CHART.gap).forEach((r, i) => {
+      barRects(s.values, w, h, max, component.gap ?? CHART.gap, min).forEach((r, i) => {
         const color = (s.colors && s.colors[i]) || (i === n - 1 && s.lastColor) || s.color;
         out.push({ kind: 'bar', ...r, r: Math.min(CHART.barRadius, r.w / 2), color });
       });
     } else {
-      const pts = linePoints(s.values, w, h, max), width = s.width ?? CHART.lineWidth;
+      const pts = linePoints(s.values, w, h, max, min), width = s.width ?? CHART.lineWidth;
       const seg = (a, b) => pts.slice(a, b);
       if (s.fill) out.push({ kind: 'area', points: pts, color: s.color, alpha: CHART.areaAlpha });
       out.push({ kind: 'line', points: pts, color: s.color, width });
@@ -67,7 +77,7 @@ export function layout(component, w, h) {
       }
       if (s.dot !== false) out.push({ kind: 'dot', x: pts[n - 1][0], y: pts[n - 1][1], r: CHART.dot, color: dotColor });
     }
-    if (typeof s.limit === 'number') out.push({ kind: 'limit', y: limitY(s.limit, h, max, s.type), x1: 0, x2: w, width: CHART.limitWidth, dash: CHART.limitDash, color: s.limitColor || 'gray' });
+    if (typeof s.limit === 'number') out.push({ kind: 'limit', y: limitY(s.limit, h, max, s.type, min), x1: 0, x2: w, width: CHART.limitWidth, dash: CHART.limitDash, color: s.limitColor || 'gray' });
   }
   // 虚线和点画在最上面
   return [...out.filter((p) => p.kind !== 'limit' && p.kind !== 'dot'), ...out.filter((p) => p.kind === 'limit'), ...out.filter((p) => p.kind === 'dot')];

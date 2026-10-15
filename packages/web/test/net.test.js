@@ -128,6 +128,8 @@ test("the kernel's chat open is handed to the page with its target, id and mode"
   assert.deepEqual(events.presents, [{ target: "settings" }, { target: "turn", id: "t1", mode: "suggest" }]);
   const other = await kernel.present("notification", "hide", { id: "x" });
   assert.equal(other.ok, false);
+  const preview = await kernel.present("chat", "card.preview", { card: { type: "a2ui", id: "c1" }, theme: "light" });
+  assert.deepEqual([preview.ok, preview.error?.code], [false, "unavailable"], "only the phone draws a card into a picture");
   net.stop(); kernel.close();
 });
 
