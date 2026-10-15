@@ -20,7 +20,8 @@ object CodexOpen {
     // Reading Codex is itself recorded. Never invalidate a read with its own ledger message.
     fun affectsSession(message: JSONObject): Boolean = message.optString("word") in setOf(
         CodexModel.SEND, CodexModel.NEW, CodexModel.STOP, CodexModel.APPROVE,
-    ) || (message.optString("kind") == "event" && message.optString("word").startsWith("x.codex."))
+    ) || (message.optString("kind") == "event" &&
+        (message.optString("word").startsWith("x.codex.") || message.optString("word") in setOf("codex.turn_ended", "codex.approval_pending")))
 
     /** The actor on a mutating request, not the device that later answers it. */
     fun actorLine(message: JSONObject): String? {

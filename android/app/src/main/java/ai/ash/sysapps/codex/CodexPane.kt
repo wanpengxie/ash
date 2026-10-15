@@ -4,9 +4,12 @@ import ai.ash.ui.*
 import ai.ash.link.LinkClient
 
 import ai.ash.R
+import ai.ash.sysapps.AppAccent
+import ai.ash.sysapps.AppUi
 import ai.ash.ui.design.AshTokens
 import ai.ash.ui.design.AshUi
 import android.app.Activity
+import android.app.AlertDialog
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -62,10 +65,27 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     private var loadedDraftKey: String? = null
     private val actors = LinkedHashMap<String, String>()
     private val readingPlaces = LinkedHashMap<String, Anchor>()
+    private data class Snapshot(val detail: CodexModel.Detail, val at: Long)
+    private data class ApprovalAt(val thread: String, val title: String, val approval: CodexModel.Approval)
+    private val snapshots = LinkedHashMap<String, Snapshot>()
+    private val approvalSnapshots = HashMap<String, List<ApprovalAt>>()
+    private val approvalProblems = HashSet<String>()
+    private val stopRequested = HashSet<String>()
+    private var confirmedAt = 0L
+    private var lastActorLine: String? = null
+    private var rawRecord = false
+    var destination: String = saved?.getString("codex.destination") ?: "now"; private set
+    private var rootPlace: Anchor? = null
+    val pageLabel: String get() = when { rawRecord -> "原始记录"; state.newIn != null -> "新工作"; state.inTalk -> if (state.detail?.session?.running == false && state.detail?.session?.waiting == false) "工作结果" else "电脑上的工作"; else -> "Codex" }
+    val statusLine: String get() = state.problem ?: readProblem ?: if (!state.inTalk && state.device in approvalProblems) "审批暂时读不到 · 保留上次内容" else if (confirmedAt == 0L) "正在读取电脑会话" else listOfNotNull("最近确认 · " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(confirmedAt)), lastActorLine).joinToString(" · ")
+    val statusAction: String? get() = if (!state.inTalk) approvalSnapshots[state.device]?.takeIf { it.isNotEmpty() }?.let { (if (state.device in approvalProblems) "上次 " else "") + "${it.size}个待批准" } else null
+    private fun identity(device: String?, thread: String) = "$device/$thread"
+    private fun computerName() = state.deviceName ?: state.computers.firstOrNull { it.id == state.device }?.name ?: "电脑"
+    private fun projectName(session: CodexModel.Session) = session.cwd?.trimEnd('/')?.substringAfterLast('/')?.ifEmpty { "/" }
     /** The route changed (a session opened or closed): the activity offers back to this page only inside a session. */
     var onRouteChange: (() -> Unit)? = null
 
-    private val stop = AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_stop)!!, "停止这一轮") { stopTurn() }.apply { visibility = View.GONE }
+    private val menuButton = AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_slider)!!, "Codex选项") { options() }
     private val input = EditText(activity)
     private val sendButton = AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_up)!!, "发送", filled = true) { sendTapped() }
     private val composer = composer()
@@ -74,10 +94,15 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     private val sessionLm = LinearLayoutManager(activity)
     private val sessionList = RecyclerView(activity).apply {
         layoutManager = sessionLm; adapter = sessionRows; itemAnimator = null
-        setPadding(d(14), 0, d(14), d(16)); clipToPadding = false
+        setPadding(d(16), 0, d(16), d(16)); clipToPadding = false
         addItemDecoration(gap(10))
     }
     private val talkRows = KeyedRowsAdapter(activity)
+    private val resultRows = KeyedRowsAdapter(activity)
+    private val resultList = RecyclerView(activity).apply {
+        layoutManager = LinearLayoutManager(activity); adapter = resultRows; itemAnimator = null
+        setPadding(d(16), 0, d(16), d(16)); clipToPadding = false; addItemDecoration(gap(12))
+    }
     private val talkLm = LinearLayoutManager(activity).apply { stackFromEnd = true }
     private val talkList = RecyclerView(activity).apply {
         layoutManager = talkLm; adapter = talkRows
@@ -90,19 +115,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     }
     /** Where the session was read, to bring back once it is read again after the activity was made again. */
     private var place: Anchor? = null
-    /**
-     * A measured one-line status slot (§1.2). A read failure neither covers nor resizes the conversation.
-     */
-    private val problemLine = AshUi.text(activity, "暂时读不到 Codex，内容会保留", AshTokens.Type.callout, c.text2, maxLines = 1).apply {
-        gravity = Gravity.CENTER; minLines = 1; setPadding(d(14), d(6), d(14), d(6)); setBackgroundColor(c.bg); visibility = View.INVISIBLE
-    }
-    private val computerLine = AshUi.text(activity, "电脑上的 Codex", AshTokens.Type.caption, c.text3, maxLines = 1).apply {
-        setPadding(d(14), 0, d(14), 0)
-    }
-    private val changeLine = AshUi.text(activity, "最近操作", AshTokens.Type.caption, c.text3, maxLines = 1).apply {
-        visibility = View.INVISIBLE
-        setPadding(d(14), 0, d(14), 0)
-    }
+    private var readProblem: String? = null
     private val deck = AshUi.vstack(activity, 0)
 
     private val tick = object : Runnable {
@@ -111,13 +124,11 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     init {
         val column = AshUi.vstack(activity)
-        actions.addView(stop)
-        column.addView(computerLine, LinearLayout.LayoutParams(-1, -2))
-        column.addView(changeLine, LinearLayout.LayoutParams(-1, -2))
-        column.addView(problemLine, LinearLayout.LayoutParams(-1, -2))
+        actions.addView(menuButton)
         val lists = FrameLayout(activity).apply {
             addView(sessionList, FrameLayout.LayoutParams(-1, -1))
             addView(talkList, FrameLayout.LayoutParams(-1, -1))
+            addView(resultList, FrameLayout.LayoutParams(-1, -1))
         }
         deck.addView(lists, LinearLayout.LayoutParams(-1, 0, 1f))
         deck.addView(composer, LinearLayout.LayoutParams(-1, -2))
@@ -144,6 +155,32 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     fun close() { closed = true; state.invalidate(); main.removeCallbacksAndMessages(null) }
 
+    fun destination(id: String) {
+        if (id !in setOf("now", "sessions") || (id == destination && !state.inTalk)) return
+        rememberPlace(); dropKeyboard(); state.back(); destination = id; rawRecord = false
+        rootPlace = null; sessionRows.submitList(null); moved(); refresh()
+    }
+    fun refreshNow() { computersChanged = true; refresh() }
+    private fun options() {
+        val labels = mutableListOf("刷新", "选择电脑")
+        if (state.thread != null) labels += "在电脑打开原会话"
+        labels += "从项目开始新工作"
+        if (state.thread != null) labels += if (rawRecord) "回工作详情" else "查看原始记录"
+        AlertDialog.Builder(activity).setTitle("Codex").setItems(labels.toTypedArray()) { _, index ->
+            when (labels[index]) {
+                "刷新" -> refreshNow()
+                "选择电脑" -> AlertDialog.Builder(activity).setTitle("选择电脑").setItems(state.computers.map { it.name }.toTypedArray()) { _, i -> choose(state.computers[i].id) }.show()
+                "在电脑打开原会话" -> state.device?.let { dev -> state.thread?.let { thread -> call(dev, "x.codex.open", JSONObject().put("thread", thread)) { _, f -> if (f != null) toast(CodexModel.failure(f.code, f.message)) else refresh() } } }
+                "从项目开始新工作" -> {
+                    val projects = CodexModel.projects(state.sessions.orEmpty()).filter { it.cwd != null }
+                    if (projects.isEmpty()) { destination("sessions"); toast("先从会话里的真实项目选择新工作") }
+                    else AlertDialog.Builder(activity).setTitle("选择原项目").setItems(projects.map { it.cwd.orEmpty() }.toTypedArray()) { _, i -> startNew(projects[i]) }.show()
+                }
+                else -> { rawRecord = !rawRecord; paint() }
+            }
+        }.show()
+    }
+
     private fun call(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
         HumanCall.call(client, to, word, body, done)
 
@@ -156,7 +193,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             if (id.isNotEmpty() && actor != null) actors[message.optString("to") + ":" + id] = actor
             while (actors.size > 200) actors.remove(actors.keys.first())
         }
-        if (onComputer) CodexOpen.actorLine(message)?.let { setLine(changeLine, it); changeLine.visibility = View.VISIBLE }
+        if (onComputer) CodexOpen.actorLine(message)?.let { lastActorLine = it }
         if (CodexOpen.affectsComputers(message)) { computersChanged = true; refresh() }
         else if (onComputer && CodexOpen.affectsSession(message)) refresh()
     }
@@ -186,6 +223,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     /** The back key: from a session to the list; false when the list itself is showing. */
     fun back(): Boolean {
+        if (rawRecord) { rememberPlace(); rawRecord = false; paint(); return true }
         rememberPlace()
         if (!state.back()) return false
         dropKeyboard()
@@ -206,6 +244,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             } })
             if (state.inTalk) Anchor.of(talkList, talkLm, talkRows)?.let { putString(PLACE, it.key); putInt(OFFSET, it.offset) }
         })
+        out.putString("codex.destination", destination)
     }
 
     override fun keyboard(px: Int) { deck.translationY = -px.toFloat() }
@@ -237,15 +276,18 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         val dev = state.device ?: return
         val thread = state.thread
         loading = true
-        val done: (JSONObject?, HumanPort.Failure?) -> Unit = { data, failure ->
+        val done: (JSONObject?, HumanPort.Failure?) -> Unit = letDone@ { data, failure ->
             loading = false
             val counted = if (thread == null) state.listRead(gen, data, failure?.code) else state.detailRead(gen, data, failure?.code)
             if (counted) {
+                if (failure == null) { confirmedAt = System.currentTimeMillis(); readProblem = null }
                 // Only the exact client id from this computer and session can replace its pending row.
                 val d = state.detail
                 if (thread != null && failure == null && d != null && ops.ready)
                     CodexModel.settled(ops.items(), dev, thread, d).forEach(ops::remove)
+                if (thread != null && failure == null && d != null) rememberSnapshot(dev, d)
                 paint()
+                if (thread == null && failure == null) { overview(gen, dev); return@letDone }
             }
             again()
         }
@@ -255,25 +297,56 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     private fun again() { if (readAgain) { readAgain = false; refresh() } }
 
-    /** Keep AshUi's line-height span when a status changes; replacing it with plain text changes list geometry. */
-    private fun setLine(view: android.widget.TextView, text: String) {
-        val styled = view.text as? android.text.Spanned
-        val spans = styled?.getSpans(0, styled.length, android.text.style.LineHeightSpan::class.java).orEmpty()
-        view.text = android.text.SpannableString(text).apply {
-            spans.forEach { setSpan(it, 0, length, android.text.Spanned.SPAN_INCLUSIVE_INCLUSIVE) }
+    private fun rememberSnapshot(dev: String, detail: CodexModel.Detail) {
+        val key = identity(dev, detail.session.id)
+        snapshots[key] = Snapshot(detail, System.currentTimeMillis())
+        if (!detail.session.running) stopRequested.remove(key)
+        while (snapshots.size > 32) snapshots.remove(snapshots.keys.first())
+    }
+
+    /** Existing device words only: approvals and two representative original sessions. Missing reads stay unknown. */
+    private fun overview(gen: Int, dev: String) {
+        loading = true
+        call(dev, "x.codex.approvals") { data, failure ->
+            if (closed || !shown || gen != state.generation) { loading = false; again(); return@call }
+            if (failure == null && data?.optJSONArray("approvals") != null) {
+                approvalProblems.remove(dev)
+                val array = data.getJSONArray("approvals")
+                approvalSnapshots[dev] = (0 until array.length()).mapNotNull { i ->
+                    val a = array.optJSONObject(i) ?: return@mapNotNull null
+                    val thread = a.optString("thread"); val id = a.optString("request_id")
+                    if (thread.isBlank() || id.isBlank()) null else ApprovalAt(thread, a.optString("title"), CodexModel.Approval(id, a.optString("kind"), a.optString("summary")))
+                }
+            } else approvalProblems.add(dev)
+            val sessions = state.sessions.orEmpty()
+            val candidates = listOfNotNull(sessions.firstOrNull { it.running || it.waiting }, sessions.firstOrNull { !it.running && !it.waiting }).distinctBy { it.id }
+            fun read(at: Int) {
+                if (closed || !shown || gen != state.generation || at >= candidates.size) { loading = false; paint(); again(); return }
+                val session = candidates[at]
+                call(dev, CodexModel.SESSION, JSONObject().put("thread", session.id).put("turns", 8).put("max_chars", 1200)) { result, error ->
+                    if (gen == state.generation && error == null) CodexModel.detail(result)?.takeIf { it.session.id == session.id }?.let { rememberSnapshot(dev, it) }
+                    read(at + 1)
+                }
+            }
+            read(0)
         }
     }
 
-    private fun problem(text: String) { setLine(problemLine, text); problemLine.visibility = View.VISIBLE }
+    private fun problem(text: String) { readProblem = text; onRouteChange?.invoke() }
 
     // ---- moving ----
 
-    private fun choose(computer: String) { rememberPlace(); if (state.choose(computer)) { moved(); refresh() } }
+    private fun choose(computer: String) {
+        rememberPlace()
+        val leftDetail = state.back()
+        if (state.choose(computer) || leftDetail) { moved(); refresh() }
+    }
     private fun startNew(p: CodexModel.Project) { rememberPlace(); state.startNew(p); moved(); input.requestFocus() }
     private fun open(s: CodexModel.Session) { rememberPlace(); state.open(s.id, s.title); moved(); refresh() }
 
     private fun rememberPlace() {
-        if (!state.inTalk) return
+        if (!state.inTalk) { rootPlace = Anchor.of(sessionList, sessionLm, sessionRows); return }
+        if (resultList.visibility == View.VISIBLE) return
         val key = draftKey() ?: return
         val anchor = Anchor.of(talkList, talkLm, talkRows)
         if (anchor == null) readingPlaces.remove(key) else readingPlaces[key] = anchor
@@ -282,7 +355,8 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     /** The route changed: the lists are handed over anew and the box shows this conversation's own draft. */
     private fun moved() {
-        changeLine.visibility = View.INVISIBLE
+        lastActorLine = null; rawRecord = false; readProblem = null
+        confirmedAt = state.thread?.let { snapshots[identity(state.device, it)]?.at } ?: 0L
         if (draftKey() != loadedDraftKey) place = draftKey()?.let(readingPlaces::get)
         talkRows.submitList(null)
         loadDraft()
@@ -354,7 +428,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         val b = op.body
         val new = b.optString("op") == "new"
         val word = if (new) CodexModel.NEW else CodexModel.SEND
-        val req = if (new) JSONObject().put("cwd", b.optString("cwd")).put("text", b.optString("text")).put("client_id", op.clientId)
+        val req = if (new) JSONObject().put("cwd", b.optString("cwd")).put("text", b.optString("text"))
             else JSONObject().put("thread", b.optString("thread")).put("text", b.optString("text")).put("client_id", op.clientId)
         call(to, word, req) { data, failure ->
             when {
@@ -373,24 +447,36 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         }
     }
 
-    private fun stopTurn() {
-        val dev = state.device ?: return
-        val id = state.thread ?: return
+    private fun stopTurn(dev: String? = state.device, id: String? = state.thread, handoff: Boolean = false) {
+        if (dev == null || id == null) return
+        val session = if (state.device == dev && state.thread == id) state.detail?.session else state.sessions?.firstOrNull { it.id == id }
+        if (session?.running != true) return
+        if (handoff) {
+            AlertDialog.Builder(activity).setTitle("停下后我接手")
+                .setMessage("只请求停止这台电脑的当前一轮。等电脑实际确认停止后，你可以在原会话继续；这不会转交 IDE 控制权，也不会撤销已有改动。")
+                .setNegativeButton("取消", null).setPositiveButton("请求停止本轮") { _, _ -> stopTurn(dev, id) }.show()
+            return
+        }
+        val key = identity(dev, id)
+        if (!stopRequested.add(key)) return
+        paint()
         call(dev, CodexModel.STOP, JSONObject().put("thread", id)) { _, failure ->
-            if (failure != null) toast(CodexModel.failure(failure.code, failure.message)) else main.postDelayed({ refresh() }, 600)
+            if (failure != null) { stopRequested.remove(key); toast(CodexModel.failure(failure.code, failure.message)) }
+            // A stop receipt is not an observed stopped round, and never claims the work goal is complete.
+            paint(); refresh()
         }
     }
 
     /** Answers one approval; only its own buttons wait meanwhile (§6.1). */
-    private fun answer(a: CodexModel.Approval, decision: String) {
-        val dev = state.device ?: return
-        val id = state.thread ?: return
-        if (!answering.add(a.requestId)) return
-        paintTalk()
+    private fun answer(a: CodexModel.Approval, decision: String, dev: String? = state.device, id: String? = state.thread) {
+        if (dev == null || id == null || decision !in setOf("approve", "deny")) return
+        val key = identity(dev, id) + "/" + a.requestId
+        if (!answering.add(key)) return
+        paint()
         call(dev, CodexModel.APPROVE, JSONObject().put("thread", id).put("request_id", a.requestId).put("decision", decision)) { _, failure ->
-            answering.remove(a.requestId)
+            answering.remove(key)
             if (failure != null) toast(CodexModel.failure(failure.code, failure.message))
-            paintTalk(); refresh()
+            paint(); refresh()
         }
     }
 
@@ -412,7 +498,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             hint = "跟 Codex 说…"
             AshUi.style(this, AshTokens.Type.chat, c.text)
             setHintTextColor(c.text3)
-            background = AshUi.rounded(c.surface, AshUi.dpF(activity, 20f), c.line, d(1))
+            background = AshUi.rounded(c.surface, AshUi.dpF(activity, 12f), c.line, d(1))
             setPadding(d(14), d(10), d(14), d(10))
             minHeight = d(AshTokens.Size.touch); maxLines = 6
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -424,25 +510,26 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             })
         }
         addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+        sendButton.background = AshUi.rounded(AshUi.withAlpha(AppAccent.BLUE.color(activity), 0.08f), d(12).toFloat())
+        sendButton.getChildAt(0).background?.setTint(AppAccent.BLUE.color(activity))
         addView(sendButton)
     }
 
     private fun paint() {
         if (closed || !shown) return
-        val name = state.deviceName ?: state.computers.firstOrNull { it.id == state.device }?.name ?: state.device?.removePrefix("device:") ?: "电脑"
-        setLine(computerLine, "$name · ${state.title ?: state.newIn?.name ?: "Codex 会话"}")
         val talk = state.inTalk
+        menuButton.getChildAt(0).background = activity.getDrawable(if (talk) R.drawable.ash_ic_more else R.drawable.ash_ic_slider)?.mutate()?.apply { setTint(c.text2) }
+        val result = talk && !rawRecord && state.newIn == null && state.detail?.session?.let { !it.running && !it.waiting } == true
         composer.visibility = if (talk) View.VISIBLE else View.GONE
         sessionList.visibility = if (talk) View.GONE else View.VISIBLE
-        talkList.visibility = if (talk) View.VISIBLE else View.GONE
-        val p = state.problem
-        problemLine.visibility = if (p == null) View.INVISIBLE else View.VISIBLE
-        if (p != null) setLine(problemLine, p)
-        if (talk) paintTalk() else paintSessions()
+        talkList.visibility = if (talk && !result) View.VISIBLE else View.GONE
+        resultList.visibility = if (result) View.VISIBLE else View.GONE
+        if (result) paintResult(state.detail!!) else if (talk) paintTalk() else if (destination == "now") paintNow() else paintSessions()
+        onRouteChange?.invoke()
     }
 
     private fun paintSessions() {
-        title.text = "Codex"; stop.visibility = View.GONE
+        title.text = "Codex"
         val rows = ArrayList<ChatRow>()
         val computers = state.computers
         // Several computers: which one's Codex is shown.
@@ -462,7 +549,128 @@ class CodexPane(private val activity: Activity, private val title: android.widge
                 }
             }
         }
-        sessionRows.submitList(rows)
+        submitRoot(rows)
+    }
+
+    private fun submitRoot(rows: List<ChatRow>) {
+        sessionRows.submitList(rows) {
+            if (!state.inTalk && state.sessions != null) rootPlace?.let { anchor ->
+                rootPlace = null; anchor.indexIn(rows)?.let { sessionLm.scrollToPositionWithOffset(it, anchor.offset) }
+            }
+        }
+    }
+
+    private fun sectionRow(key: String, label: String) = ChatRow(key, label) { AppUi.section(activity, label).apply { setPadding(0, d(10), 0, 0) } }
+    private fun body(text: String, muted: Boolean = false) = AshUi.text(activity, text, AshTokens.Type.body, if (muted) c.text2 else c.text)
+    private fun code(text: String) = AshUi.text(activity, text, AshTokens.Type.sub, c.text).apply {
+        typeface = android.graphics.Typeface.MONOSPACE; setTextIsSelectable(true)
+        background = AshUi.rounded(c.codeBg, d(12).toFloat()); setPadding(d(12), d(12), d(12), d(12))
+    }
+
+    private fun paintNow() {
+        val rows = ArrayList<ChatRow>()
+        val dev = state.device
+        val sessions = state.sessions
+        val approvals = approvalSnapshots[dev]
+        val scope = computerName()
+        if (sessions == null) rows += hintRow(state.problem ?: "正在读取电脑上的工作…")
+        else {
+            rows += ChatRow("scope", scope) { AshUi.text(activity, "$scope · 当前电脑", AshTokens.Type.sub, c.text2) }
+            if (approvals != null && approvals.isEmpty() && dev !in approvalProblems) rows += ChatRow("quiet", "quiet") { body("本页当前没有需要你的决定", true).apply { setPadding(0, d(16), 0, d(14)) } }
+            for (at in approvals.orEmpty()) {
+                val session = sessions.firstOrNull { it.id == at.thread }
+                val context = listOfNotNull(scope, session?.let(::projectName)).joinToString(" · ")
+                val key = identity(dev, at.thread) + "/" + at.approval.requestId
+                rows += ChatRow("approval:$key", at.approval.summary + context + (key in answering)) { approvalCard(at.approval, dev, at.thread, at.title, context) }
+            }
+            rows += sectionRow("work-title", "电脑上的工作")
+            val active = sessions.filter { it.running || it.waiting }
+            if (active.isEmpty()) rows += ChatRow("no-running", "none") { body("这台电脑当前没有运行中的会话", true) }
+            for (session in active) {
+                val snapshot = snapshots[identity(dev, session.id)]
+                rows += ChatRow("work:" + identity(dev, session.id), "$session|$snapshot|${identity(dev, session.id) in stopRequested}") { workView(session, snapshot) }
+            }
+            val recent = sessions.firstOrNull { !it.running && !it.waiting }
+            if (recent != null) {
+                val snapshot = snapshots[identity(dev, recent.id)]
+                rows += sectionRow("recent-title", if (snapshot?.detail?.turns?.lastOrNull()?.status == "completed") "最近结束的一轮" else "最近会话")
+                rows += ChatRow("recent:" + identity(dev, recent.id), "$recent|$snapshot") {
+                    AshUi.hstack(activity, 10).apply {
+                        gravity = Gravity.CENTER_VERTICAL; minimumHeight = d(64)
+                        addView(AppUi.icon(activity, R.drawable.ash_ic_file, c.text2, 24))
+                        addView(AshUi.vstack(activity, 4).apply {
+                            addView(AshUi.text(activity, recent.title, AshTokens.Type.headline))
+                            addView(AshUi.text(activity, listOfNotNull(projectName(recent), snapshot?.let { CodexEvidence.roundLabel(it.detail) }, "检查明细未取得").joinToString(" · "), AshTokens.Type.sub, c.text2))
+                        }, LinearLayout.LayoutParams(0, -2, 1f))
+                        addView(AppUi.icon(activity, R.drawable.ash_ic_chev, c.text2, 20))
+                        isClickable = true; isFocusable = true; contentDescription = recent.title
+                        setOnClickListener { open(recent) }
+                    }
+                }
+            }
+            if (sessions.isEmpty()) rows += ChatRow("empty-work", "empty") { body("还没有可接续的会话。可在会话页选择已有项目开始新工作。", true) }
+        }
+        submitRoot(rows)
+    }
+
+    private fun workView(session: CodexModel.Session, snapshot: Snapshot?): View = AshUi.vstack(activity, 10).apply {
+        setPadding(0, d(4), 0, d(14))
+        addView(AshUi.hstack(activity, 10).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(AppUi.icon(activity, R.drawable.ash_ic_cpu, c.text, 22))
+            addView(AshUi.vstack(activity, 3).apply {
+                addView(AshUi.text(activity, session.title, AshTokens.Type.headline))
+                addView(AshUi.text(activity, listOfNotNull(computerName(), projectName(session)).joinToString(" · "), AshTokens.Type.sub, c.text2))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(AshUi.text(activity, if (session.waiting) "等本次批准" else "运行中", AshTokens.Type.sub, AppAccent.BLUE.color(activity)))
+            minimumHeight = d(48); isClickable = true; isFocusable = true; contentDescription = session.title
+            setOnClickListener { open(session) }
+        })
+        snapshot?.let { snap ->
+            CodexEvidence.report(snap.detail)?.let { addView(body("Codex最近消息：$it")) }
+            addView(AshUi.text(activity, java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(snap.at)) + " 最后确认", AshTokens.Type.sub, c.text2))
+        }
+        if (session.running) addView(runningActions(state.device, session.id))
+        addView(View(activity).apply { setBackgroundColor(c.line2) }, LinearLayout.LayoutParams(-1, d(1)))
+    }
+
+    private fun runningActions(dev: String?, thread: String): View = AshUi.vstack(activity, 6).apply {
+        val pending = identity(dev, thread) in stopRequested
+        if (pending) addView(body("停止请求已提交，等待电脑实际确认", true))
+        addView(AshUi.hstack(activity, 8).apply {
+            addView(AppUi.button(activity, if (pending) "等待停止确认" else "暂停本轮", AppAccent.BLUE, false) { stopTurn(dev, thread) }.apply { isEnabled = !pending }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(AppUi.button(activity, "停下后我接手", AppAccent.BLUE, false) { stopTurn(dev, thread, true) }.apply { isEnabled = !pending }, LinearLayout.LayoutParams(0, -2, 1f))
+        })
+    }
+
+    private fun paintResult(detail: CodexModel.Detail) {
+        val rows = ArrayList<ChatRow>()
+        val meta = listOfNotNull(computerName(), projectName(detail.session), CodexEvidence.roundLabel(detail)).joinToString(" · ")
+        rows += ChatRow("result-heading", "$meta|${detail.session.title}") { AshUi.vstack(activity, 14).apply {
+            addView(AshUi.text(activity, meta, AshTokens.Type.sub, c.text2))
+            addView(AshUi.text(activity, detail.session.title, AshTokens.Type.title))
+            addView(body("先看实际留下的文件记录与原始汇报。"))
+        } }
+        val files = CodexEvidence.files(detail)
+        if (files.isNotEmpty()) {
+            rows += ChatRow("files-title", "files") { body("这轮记录到的文件", true) }
+            rows += ChatRow("files", files.joinToString("\n")) { AppUi.surface(activity).apply { files.forEach { addView(code(it)) } } }
+        }
+        rows += ChatRow("checks", "unknown") { AshUi.vstack(activity, 4).apply {
+            background = AshUi.rounded(c.surface2, d(16).toFloat()); setPadding(d(12), d(12), d(12), d(12))
+            addView(AshUi.text(activity, "检查明细未取得", AshTokens.Type.headline))
+            addView(body("当前返回的是文件与命令片段、原消息。没有完整差异或可独立核对的检查成绩。"))
+        } }
+        CodexEvidence.report(detail)?.let { report ->
+            rows += ChatRow("report-title", "report") { body("Codex的原始汇报", true) }
+            rows += ChatRow("report", report) { AppUi.surface(activity).apply { addView(body(report).apply { setTextIsSelectable(true) }) } }
+        }
+        rows += ChatRow("raw", "raw") { AppUi.button(activity, "打开这一轮的原始记录", AppAccent.BLUE, false) { rawRecord = true; paint(); place = draftKey()?.let(readingPlaces::get); paintTalk() } }
+        rows += ChatRow("boundary", "boundary") { body("未取得合并/发布记录；工作结束不代表目标已经达成。", true) }
+        for (op in ops.items()) if (op.to == state.device && op.body.optString("thread") == state.thread)
+            rows += ChatRow(op.clientId, op.status + op.text) { opView(op) }
+        input.hint = "告诉 Codex 要改哪里…"
+        resultRows.submitList(rows)
     }
 
     private fun projectView(p: CodexModel.Project, now: Long): View {
@@ -481,7 +689,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         val rows = ArrayList<ChatRow>()
         val newIn = state.newIn
         if (newIn != null) {
-            title.text = "新对话 · ${newIn.name}"; stop.visibility = View.GONE; input.hint = "第一句话…"
+            title.text = "新对话 · ${newIn.name}"; input.hint = "第一句话…"
             val mine = ops.items().filter { it.to == state.device && it.body.optString("op") == "new" && it.body.optString("cwd") == newIn.cwd }
             if (state.problem == null && mine.isEmpty()) rows += hintRow("在 ${newIn.cwd} 里开一个新的 Codex 会话，写下第一句话发出去。")
             for (op in mine) rows += ChatRow(op.clientId, op.status + "|" + op.text) { opView(op) }
@@ -490,8 +698,12 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             val dt = state.detail
             if (dt == null) { if (state.problem == null) rows += hintRow("正在读取…") }
             else {
-                stop.visibility = if (dt.session.running || dt.session.waiting) View.VISIBLE else View.GONE
                 input.hint = if (dt.session.open) "跟 Codex 说…" else "跟 Codex 说…（会先在电脑上打开这个会话）"
+                val meta = listOfNotNull(computerName(), projectName(dt.session), CodexEvidence.roundLabel(dt)).joinToString(" · ")
+                rows += ChatRow("work-heading", meta + dt.session.title) { AshUi.vstack(activity, 8).apply {
+                    addView(AshUi.text(activity, meta, AshTokens.Type.sub, c.text2))
+                    addView(AshUi.text(activity, dt.session.title, AshTokens.Type.title))
+                } }
                 for (turn in dt.turns) turn.items.forEachIndexed { i, item ->
                     if (item.kind == "thinking" || (item.kind in setOf("user", "agent") && item.text.isBlank())) return@forEachIndexed
                     val actor = item.clientId?.let { actors[state.device + ":" + it] }
@@ -499,7 +711,8 @@ class CodexPane(private val activity: Activity, private val title: android.widge
                     rows += ChatRow(CodexModel.itemKey(turn, i), item.kind + "|" + item.text + "|" + actor) { itemView(item, actor) }
                 }
                 if (dt.session.running && dt.approvals.isEmpty()) rows += ChatRow("running", "running") { AshUi.text(activity, "在做事…", AshTokens.Type.caption, c.text3).apply { layoutParams = side(false) } }
-                for (a in dt.approvals) rows += ChatRow("approval:" + a.requestId, a.summary + "|" + (a.requestId in answering)) { approvalCard(a) }
+                for (a in dt.approvals) rows += ChatRow("approval:" + a.requestId, a.summary + "|" + ((identity(state.device, dt.session.id) + "/" + a.requestId) in answering)) { approvalCard(a) }
+                if (dt.session.running) rows += ChatRow("running-actions", "${identity(state.device, dt.session.id) in stopRequested}") { runningActions(state.device, dt.session.id) }
                 if (dt.turns.isEmpty() && dt.approvals.isEmpty()) rows += hintRow("这个会话还没有内容")
             }
             // What waits keeps its client id as its key: the session's copy of it takes over the same row.
@@ -526,7 +739,10 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         val v = when (i.kind) {
             "user" -> AshUi.bubbleText(activity, i.text, true).apply { setTextIsSelectable(true) }
             "agent" -> AshUi.bubbleText(activity, Md.render(i.text, c.surface2, c.her), false).apply { setTextIsSelectable(true); movementMethod = LinkMovementMethod.getInstance() }
-            else -> AshUi.text(activity, "▸ " + toolLabel(i), AshTokens.Type.caption, c.text3, maxLines = 2)
+            else -> AshUi.text(activity, "▸ " + toolLabel(i), AshTokens.Type.sub, c.text2, maxLines = 2).apply {
+                minimumHeight = d(48); gravity = Gravity.CENTER_VERTICAL; isClickable = true; isFocusable = true
+                setOnClickListener { AlertDialog.Builder(activity).setTitle("本次返回的原文").setMessage(i.text).setPositiveButton("关闭", null).show() }
+            }
         }
         return AshUi.vstack(activity, 2).apply {
             gravity = if (mine) Gravity.END else Gravity.START
@@ -560,13 +776,22 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         return if (i.text.isBlank()) verb else "$verb ${i.text}"
     }
 
-    private fun approvalCard(a: CodexModel.Approval): View = AshUi.card(activity).apply {
-        addView(AshUi.cardHeader(activity, AshUi.Tone.WARN, activity.getDrawable(R.drawable.ash_ic_shield)!!, "Codex 等你批准"))
-        addView(AshUi.text(activity, a.summary.ifEmpty { "一个请求" }, AshTokens.Type.body, c.text, maxLines = 8))
-        val waiting = a.requestId in answering
+    private fun approvalCard(a: CodexModel.Approval, dev: String? = state.device, thread: String? = state.thread,
+        workTitle: String = state.title.orEmpty(), context: String = listOfNotNull(computerName(), state.detail?.session?.let(::projectName)).joinToString(" · ")): View = AppUi.surface(activity, decision = true).apply {
+        dividerDrawable = android.graphics.drawable.GradientDrawable().apply { setColor(android.graphics.Color.TRANSPARENT); setSize(0, d(8)) }
         addView(AshUi.hstack(activity, 8).apply {
-            addView(AshUi.button(activity, if (waiting) "处理中…" else "批准", AshUi.Kind.PRIMARY, AshUi.BtnSize.SM) { answer(a, "approve") }.apply { isEnabled = !waiting })
-            addView(AshUi.button(activity, "拒绝", AshUi.Kind.NEUTRAL, AshUi.BtnSize.SM) { answer(a, "deny") }.apply { isEnabled = !waiting })
+            gravity = Gravity.CENTER_VERTICAL
+            addView(AppUi.icon(activity, R.drawable.ash_ic_check, AppAccent.BLUE.color(activity)))
+            addView(AshUi.text(activity, "需要你 · 本次操作", AshTokens.Type.sub, c.text2))
+        })
+        addView(AshUi.text(activity, workTitle.ifBlank { "允许本次操作？" }, AshTokens.Type.headline))
+        addView(AshUi.text(activity, context, AshTokens.Type.sub, c.text2))
+        addView(code(a.summary.ifEmpty { "请求说明未取得，请查看电脑上的原请求。" }))
+        addView(AshUi.text(activity, "只允许本次操作；实际影响以原请求为准。", AshTokens.Type.sub, c.text2))
+        val waiting = (identity(dev, thread.orEmpty()) + "/" + a.requestId) in answering
+        addView(AshUi.hstack(activity, 8).apply {
+            addView(AppUi.button(activity, if (waiting) "处理中…" else "仅本次允许", AppAccent.BLUE) { answer(a, "approve", dev, thread) }.apply { isEnabled = !waiting }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(AppUi.button(activity, "拒绝", AppAccent.BLUE, false) { answer(a, "deny", dev, thread) }.apply { isEnabled = !waiting }, LinearLayout.LayoutParams(0, -2, 1f))
         })
     }
 

@@ -110,7 +110,17 @@ class CodexActivityAcceptanceTest {
                 "list" -> answer(f, JSONObject().put("devices", JSONArray().put(JSONObject().put("device", mac).put("name", "工作 Mac").put("kind", "computer").put("online", true))
                     .put(JSONObject().put("device", mini).put("name", "书房 mini").put("kind", "computer").put("online", true))))
                 "x.codex.session" -> answer(f, details[body.getString("thread")])
-                "x.codex.sessions" -> answer(f, JSONObject().put("sessions", JSONArray().put(JSONObject().put("id", "t1").put("title", "修复结算页重复扣款").put("cwd", "/work/shop"))))
+                "x.codex.sessions" -> {
+                    val ids = if (req.optString("to") == mini) listOf("t2") else listOf("t1", "t3")
+                    answer(f, JSONObject().put("sessions", JSONArray().apply { ids.mapNotNull(details::get).forEach { put(JSONObject(it.toString()).put("turns", null).put("approvals", null).put("cwd", it.optString("cwd", "/work/shop"))) } }))
+                }
+                "x.codex.approvals" -> answer(f, JSONObject().put("approvals", JSONArray().apply {
+                    for (id in if (req.optString("to") == mini) listOf("t2") else listOf("t1", "t3")) {
+                        val detail = details[id] ?: continue
+                        val approvals = detail.optJSONArray("approvals") ?: continue
+                        for (i in 0 until approvals.length()) put(JSONObject(approvals.getJSONObject(i).toString()).put("thread", id).put("title", detail.optString("title")))
+                    }
+                }))
                 "x.codex.send" -> if (holdSend) held.add(f) else answer(f, JSONObject().put("sent", true).put("mode", "steer"), if (sendUnknown) "result_unknown" else null)
                 "x.codex.approve" -> { details["t1"] = detail("t1", "修复结算页重复扣款", JSONArray().put(JSONObject().put("kind", "agent").put("text", "退款幂等回归通过，重复扣款已修复。"))).put("state", "idle"); answer(f, JSONObject().put("approved", true)) }
                 else -> answer(f, JSONObject())
@@ -204,7 +214,7 @@ class CodexActivityAcceptanceTest {
     private fun pending() = File(controller.get().filesDir, "codex-outbox").listFiles()?.filter { it.extension == "json" }.orEmpty()
 
     @Test fun existingWorkSendApprovalAndResultPreserveTheActualChineseEditor() {
-        assertTrue(texts().any { it.contains("工作 Mac") && it.contains("修复结算页") })
+        assertTrue(texts().any { it.contains("工作 Mac") }); assertTrue(texts().any { it.contains("修复结算页") })
         input.setText("先跑退款回归，再提交"); focusInput(); input.setSelection(4)
         assertTrue(input.onCreateInputConnection(EditorInfo())!!.setComposingRegion(1, 4))
         assertEquals("actual editor composing precondition", 1, BaseInputConnection.getComposingSpanStart(input.text))
@@ -233,7 +243,7 @@ class CodexActivityAcceptanceTest {
         assertTrue("owner origin visible", texts().contains("你"))
         assertTrue("Ash origin visible", texts().contains("Ash"))
         capture("refunds-waiting-approval")
-        click("批准"); waitFor("visible result") { texts().any { it.contains("重复扣款已修复") } }
+        click("仅本次允许"); waitFor("visible result") { texts().any { it.contains("重复扣款已修复") } }
         capture("refunds-completed")
         assertEquals(1, requests.count { it.optString("word") == "x.codex.send" })
     }
@@ -327,11 +337,78 @@ class CodexActivityAcceptanceTest {
         assertEquals(2, BaseInputConnection.getComposingSpanEnd(input.text))
         val bounds = views().filterIsInstance<RecyclerView>().map { listOf(it.top, it.height) }
         conn.close(1000)
-        waitFor("offline banner") { texts().contains("暂时连不上 Ash，连上后会自动恢复") && !link.client.channelOpen("human") }
+        waitFor("offline banner") { texts().contains("暂时离线 · 保留上次内容") && !link.client.channelOpen("human") }
         assertEquals(bounds, views().filterIsInstance<RecyclerView>().map { listOf(it.top, it.height) })
         assertEquals("拼音还在输入", input.text.toString()); assertEditorFocus()
         println("actual editor composing after offline=${BaseInputConnection.getComposingSpanStart(input.text)}..${BaseInputConnection.getComposingSpanEnd(input.text)}")
         assertEquals(2, input.selectionStart); assertEquals(0, BaseInputConnection.getComposingSpanStart(input.text))
         capture("offline-keeps-editor-and-content")
+    }
+
+    /** Same actual wire and Activity; examples exist only in this remote-computer fixture. */
+    @Test @Config(qualifiers = "w360dp-h800dp-mdpi")
+    fun frozenHomeResultQuietAndEditingUseActualComputerRecords() {
+        details["t1"] = detail("t1", "更新截图依赖", JSONArray().put(JSONObject().put("kind", "agent").put("text", "正在检查依赖兼容。")))
+            .put("cwd", "/work/ash-web").put("state", "waiting_approval")
+            .put("approvals", JSONArray().put(JSONObject().put("request_id", "install-once").put("kind", "command").put("summary", "npm install")))
+        details["t3"] = detail("t3", "修复登录超时", JSONArray()
+            .put(JSONObject().put("kind", "file").put("text", "src/auth/session.ts\nsrc/auth/refresh.ts\ntest/session.test.ts\nREADME.md"))
+            .put(JSONObject().put("kind", "agent").put("text", "调整了会话过期判断与刷新逻辑。请核对注销后重新登录的行为。")))
+            .put("cwd", "/work/ash-web").put("state", "idle").apply { getJSONArray("turns").getJSONObject(0).put("status", "completed") }
+        controller.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG, JSONObject().put("device", mac).toString()))
+        waitFor("overview from approval and original session words") { texts().contains("npm install") && views().filterIsInstance<RecyclerView>().any { (it.adapter as? ai.ash.ui.KeyedRowsAdapter)?.currentList?.any { row -> row.key == "recent:t3" || row.key == "recent:$mac/t3" } == true } && requests.any { it.optString("word") == "x.codex.session" && it.getJSONObject("body").optString("thread") == "t3" } }
+        assertEquals(360, controller.get().window.decorView.width); assertEquals(800, controller.get().window.decorView.height)
+        assertFalse("root never offers back to Ash", views().any { it.contentDescription == "返回" && it.visibility == View.VISIBLE })
+        val approve = views().filterIsInstance<TextView>().single { it.text.toString() == "仅本次允许" }
+        assertTrue(approve.width >= 48 && approve.height >= 48)
+        captureFrozen("codex-home")
+        click("仅本次允许")
+        waitFor("exact one-shot approval reached computer") { requests.any { it.optString("word") == "x.codex.approve" } }
+        val approval = requests.last { it.optString("word") == "x.codex.approve" }
+        assertEquals(mac, approval.getString("to")); assertEquals("t1", approval.getJSONObject("body").getString("thread"))
+        assertEquals("install-once", approval.getJSONObject("body").getString("request_id")); assertEquals("approve", approval.getJSONObject("body").getString("decision"))
+        controller.newIntent(intent(mac, "t3"))
+        waitFor("actual result and file evidence") { texts().any { it.contains("src/auth/session.ts") } && texts().contains("Codex的原始汇报") }
+        assertFalse("no fake pause on completed work", views().filterIsInstance<TextView>().any { it.text.toString() == "暂停本轮" && it.isShown })
+        input.setText("请核对注销后的行为"); focusInput(); input.setSelection(2)
+        assertTrue(input.onCreateInputConnection(EditorInfo())!!.setComposingRegion(0, 2))
+        event(); settleWire()
+        assertSame(input, views().filterIsInstance<EditText>().single()); assertEditorFocus()
+        assertEquals(0, BaseInputConnection.getComposingSpanStart(input.text)); assertEquals(2, input.selectionStart)
+        captureFrozen("codex-detail", requireEditor = true)
+        details["t1"] = detail("t1", "更新截图依赖", JSONArray().put(JSONObject().put("kind", "agent").put("text", "正在检查依赖兼容。"))).put("cwd", "/work/ash-web")
+        controller.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG, JSONObject().put("device", mac).toString()))
+        waitFor("quiet means approvals were actually read empty") { texts().contains("本页当前没有需要你的决定") && texts().contains("暂停本轮") }
+        captureFrozen("codex-quiet")
+    }
+
+    @Test fun stopReceiptWaitsForAnActualStoppedRoundAndNeverClaimsTheGoalComplete() {
+        click("暂停本轮")
+        waitFor("stop sent but not yet observed") { requests.any { it.optString("word") == "x.codex.stop" } && texts().contains("停止请求已提交，等待电脑实际确认") }
+        assertTrue(texts().contains("运行中" ) || texts().any { it.contains("运行中") })
+        details["t1"]!!.put("state", "idle").getJSONArray("turns").getJSONObject(0).put("status", "interrupted")
+        event(); waitFor("observed actual interrupted round") { texts().any { it.contains("本轮已停止") } }
+        assertTrue(texts().any { it.contains("工作结束不代表目标已经达成") })
+        assertEquals(1, requests.count { it.optString("word") == "x.codex.stop" })
+    }
+
+    private fun captureFrozen(name: String, requireEditor: Boolean = false) {
+        settleWire(); layout()
+        val root = controller.get().window.decorView
+        assertEquals(360, root.width); assertEquals(800, root.height)
+        val title = views().filterIsInstance<TextView>().first { it.text.toString() in setOf("Codex", "工作结果") }
+        val bounds = android.graphics.Rect()
+        assertTrue(title.getGlobalVisibleRect(bounds)); assertEquals(title.height, bounds.height())
+        if (requireEditor) {
+            assertTrue(input.getGlobalVisibleRect(bounds)); assertEquals(input.height, bounds.height())
+            assertEditorFocus()
+        }
+        views().forEach { it.invalidate() }
+        val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+        bitmap.density = root.resources.displayMetrics.densityDpi
+        root.draw(Canvas(bitmap))
+        val dir = File("/data/atoll/tmp/codex-v6-native").apply { mkdirs() }
+        File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
     }
 }
