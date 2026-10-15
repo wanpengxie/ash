@@ -31,7 +31,7 @@ internal class DeviceObjectView(context: Context, kind: String) : View(context) 
             }
             "server" -> {
                 box(16f, 13f, 84f, 68f, 16f, c.surface3, c.line2)
-                context.getDrawable(R.drawable.ash_ic_server)?.mutate()?.apply { setTint(c.text2); setBounds(37, 27, 63, 53); draw(canvas) }
+                context.getDrawable(R.drawable.ash_ic_server)?.mutate()?.apply { setTint(c.text2); setBounds(33, 24, 67, 58); draw(canvas) }
             }
             "browser" -> {
                 context.getDrawable(R.drawable.ash_ic_globe)?.mutate()?.apply { setTint(c.text2); setBounds(20, 10, 80, 70); draw(canvas) }

@@ -48,6 +48,7 @@ open class DevicesActivity : SystemAppActivity() {
     private var pairsLoaded = false
     private var devicesConfirmedAt: Long? = null
     private val anchors = HashMap<String, Pair<String, Int>>()
+    private val readPositions = HashSet<String>()
     private var routeGeneration = 0
     private var active = false
     private var detail: Detail? = null
@@ -98,6 +99,11 @@ open class DevicesActivity : SystemAppActivity() {
                     val params = view.layoutParams as? GridLayoutManager.LayoutParams ?: return
                     out.bottom = dp(10)
                     if (params.spanSize == 1) { out.left = if (params.spanIndex == 0) 0 else dp(5); out.right = if (params.spanIndex == 0) dp(5) else 0 }
+                }
+            })
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    if (newState == RecyclerView.SCROLL_STATE_DRAGGING) readPositions.add(space)
                 }
             })
             setPadding(dp(AshTokens.Space.pageX), 0, dp(AshTokens.Space.pageX), 0)
@@ -374,6 +380,12 @@ open class DevicesActivity : SystemAppActivity() {
             readErrors.forEach { (key, message) -> contentRows += ChatRow("error/$key", message) { AshUi.text(this, message, AshTokens.Type.callout, c.err) } }
             if (note.isNotEmpty()) contentRows += ChatRow("feedback", note) { AshUi.text(this, note, AshTokens.Type.callout) }
             rows.submitList(contentRows) {
+                // Initial independent reads insert the decision/quiet row above the loading grid.
+                // Keep that first, unread viewport at the top; never pull back an owner's chosen reading place.
+                if (restoreKey == null && space !in readPositions && space !in anchors) {
+                    (list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(0, 0)
+                    if (pairsLoaded && model.devices != null && model.relay != null) readPositions.add(space)
+                }
                 restoreKey?.let { key ->
                     val position = rows.currentList.indexOfFirst { it.key == key }
                     if (position >= 0) { (list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, restoreOffset); restoreKey = null }
@@ -393,7 +405,7 @@ open class DevicesActivity : SystemAppActivity() {
         if (names.isNotEmpty()) addView(AshUi.hstack(this@DevicesActivity, 8).apply {
             setPadding(0, dp(8), 0, 0)
             names.forEach { name -> addView(AshUi.vstack(this@DevicesActivity, 4).apply {
-                addView(icon(abilityIcon(name), 18), LinearLayout.LayoutParams(-2, dp(20)))
+                addView(icon(abilityIcon(name), 18), LinearLayout.LayoutParams(dp(18), dp(18)))
                 addView(AshUi.text(this@DevicesActivity, name, AshTokens.Type.sub, c.text2))
             }, LinearLayout.LayoutParams(0, -2, 1f)) }
         })

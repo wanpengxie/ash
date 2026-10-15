@@ -3,6 +3,7 @@ package ai.ash.sysapps.devices
 import ai.ash.sysapps.SystemAppActivity
 import ai.ash.ui.HumanPort
 import ai.ash.ui.UiIo
+import ai.ash.ui.KeyedRowsAdapter
 import ai.ash.ui.design.AshUi
 import android.app.AlertDialog
 import android.graphics.Bitmap
@@ -104,6 +105,18 @@ class DevicesActivityAcceptanceTest {
         // RecyclerView inserts animate after its first layout. Advance the actual main-loop animation frames before drawing.
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
         layoutScreen()
+    }
+    private fun DeviceScreen.awaitRootRow(key: String, signature: String? = null) {
+        val list = views(window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().single()
+        val limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+        while (System.nanoTime() < limit) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16)); layoutScreen()
+            val adapter = list.adapter as KeyedRowsAdapter
+            val index = adapter.currentList.indexOfFirst { it.key == key }
+            if (index >= 0 && (signature == null || adapter.currentList[index].sig == signature) && list.layoutManager?.findViewByPosition(index) != null) return
+            Thread.sleep(5)
+        }
+        fail("Expected root row $key to be bound in the real viewport; rows=${(list.adapter as KeyedRowsAdapter).currentList.map { it.key }}; visible=${texts()}")
     }
     private fun DeviceScreen.scrollToText(fragment: String) {
         settleScreen()
@@ -347,6 +360,9 @@ class DevicesActivityAcceptanceTest {
         activity.answer("pair_pending", JSONObject().put("pairs", JSONArray().put(JSONObject().put("pair_id", "pair-travel").put("state", "requested").put("name", "随身电脑").put("kind", "computer"))))
         val status = activity.take("pair_status"); assertEquals("pair-travel", status.body.getString("pair_id"))
         status.done(JSONObject().put("pair_id", "pair-travel").put("state", "requested").put("name", "随身电脑"), null)
+        val model = DevicesActivity::class.java.getDeclaredField("model").apply { isAccessible = true }.get(activity) as DevicesState
+        assertEquals(listOf("pair-travel"), model.requests.map { it.pairId })
+        activity.awaitRootRow("pair/pair-travel")
         activity.capture("devices-v6-home")
         assertTrue(activity.texts().contains("允许这台电脑接入？")); assertTrue(activity.texts().contains("随身电脑"))
         assertTrue(activity.texts().any { it.contains("文件命令：关闭") })
@@ -372,13 +388,16 @@ class DevicesActivityAcceptanceTest {
     @Test fun theQuietGridAndDetailReturnToTheOriginalPermissionSpace() {
         val activity = screen(""); activity.relayReady(); activity.answer("list", sceneDevices())
         activity.answer("pair_pending", JSONObject().put("pairs", JSONArray()))
+        val model = DevicesActivity::class.java.getDeclaredField("model").apply { isAccessible = true }.get(activity) as DevicesState
+        assertTrue(model.requests.isEmpty())
+        activity.awaitRootRow("quiet")
         activity.capture("devices-v6-quiet")
         assertTrue(activity.texts().contains("本页当前没有需要你的决定"))
         assertFalse(activity.texts().contains("允许这台电脑接入？"))
         val list = views(activity.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().single()
         assertTrue(list.layoutManager is androidx.recyclerview.widget.GridLayoutManager)
         views(activity.window.decorView).single { it.contentDescription == "权限" }.performClick()
-        activity.settleScreen()
+        activity.awaitRootRow("heading", "permissions"); activity.settleScreen()
         val manager = list.layoutManager as androidx.recyclerview.widget.GridLayoutManager
         val position = manager.findFirstVisibleItemPosition()
         val beforeOffset = manager.findViewByPosition(position)?.top
