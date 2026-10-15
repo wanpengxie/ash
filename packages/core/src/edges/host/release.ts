@@ -1,5 +1,5 @@
 /**
- * A release of the phone's two packages on GitHub (`v<version>`: `app-<version>.apk`, `kernel-<version>.apk` and their
+ * A release of the phone's packages on GitHub (`v<version>`: `app-<version>.apk` and/or `kernel-<version>.apk` and their
  * `SHA256SUMS`), as the host's `update.install` takes it. Only GitHub's release pages, no mirror. A private repository is
  * read through the API with a read-only token; the token is sent to api.github.com only (the asset redirects to a signed
  * storage address, which gets no token) and is never part of a word's body or the ledger.
@@ -70,13 +70,16 @@ export async function phoneRelease(o: ReleaseOptions): Promise<PhoneRelease> {
     urlOf = (name) => `${base}/${name}`;
   }
   // The version is the one the packages are named with (the latest release says it only there, without a token).
-  const named = version ?? tag?.replace(/^v/, "") ?? [...sums.keys()].map((n) => /^app-(\d+\.\d+\.\d+)\.apk$/.exec(n)?.[1]).find(Boolean);
-  if (!named || !VERSION.test(named)) throw new WordError("not_found", "the release does not say its version (app-<version>.apk in SHA256SUMS)");
-  const packages = ASSETS.map(([pkg, asset]) => {
+  const named = version ?? tag?.replace(/^v/, "") ?? [...sums.keys()].map((n) => /^(?:app|kernel)-(\d+\.\d+\.\d+)\.apk$/.exec(n)?.[1]).find(Boolean);
+  if (!named || !VERSION.test(named)) throw new WordError("not_found", "the release does not say its version (app-<version>.apk or kernel-<version>.apk in SHA256SUMS)");
+  // A release carries what changed: the app alone, the kernel alone, or both. Each package it lists is checked and installed.
+  const packages = ASSETS.flatMap(([pkg, asset]) => {
     const name = asset(named);
     const sha256 = sums.get(name), url = urlOf(name);
-    if (!sha256 || !url) throw new WordError("not_found", `release v${named} has no ${name}${sha256 ? "" : " in SHA256SUMS"}`);
-    return { package: pkg, url, sha256 };
+    if (!sha256) return [];
+    if (!url) throw new WordError("not_found", `release v${named} lists ${name} in SHA256SUMS but does not carry it`);
+    return [{ package: pkg, url, sha256 }];
   });
+  if (!packages.length) throw new WordError("not_found", `release v${named} carries neither app-${named}.apk nor kernel-${named}.apk`);
   return { version: named, packages };
 }
