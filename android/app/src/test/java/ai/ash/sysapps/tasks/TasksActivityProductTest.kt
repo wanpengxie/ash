@@ -172,12 +172,18 @@ class TasksActivityProductTest {
     fun productHomeRendersTheActualWindowWithNativeGraphics() {
         val ctl=screen();val a=ctl.get()
         val now=System.currentTimeMillis()
-        set(a,"state",TasksModel.State(tasks=listOf(
-            TasksModel.Task("tax","交报税材料",dueAt=now-1000),
-            TasksModel.Task("price","比较跑鞋价格",subject="owner",assignee="agent:main",status="doing",note="在核对你选的三双跑鞋"),
-            TasksModel.Task("address","确认收货地址",subject="owner",assignee="agent:helper",status="waiting",note="需要你给收货地址",source=TasksModel.Source("source-address")),
-        ),loaded=true))
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));flush()
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
+        set(a,"visible",true)
+        TasksActivity::class.java.getDeclaredMethod("onConnectionChanged",Boolean::class.javaPrimitiveType).apply { isAccessible=true }.invoke(a,true)
+        a.requests.first { it.word=="list" && !it.body.has("status") }.done(JSONObject().put("agents",JSONArray()
+            .put(JSONObject().put("id","agent:main").put("primary",true))
+            .put(JSONObject().put("id","agent:helper").put("name","材料帮手"))),null)
+        a.requests.first { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",JSONArray()
+            .put(task("tax","交报税材料").put("due_at",now-1000))
+            .put(task("price","比较跑鞋价格").put("assignee","agent:main").put("status","doing").put("note","在核对你选的三双跑鞋"))
+            .put(task("address","确认收货地址").put("assignee","agent:helper").put("status","waiting").put("note","需要你给收货地址").put("source",JSONObject().put("message","source-address")))),null)
+        flush()
+        assertTrue(text(a,"3 条待办 · 可直接完成、改期或回来源跟进").text.isNotEmpty())
         val adapter=(get(a,"list") as androidx.recyclerview.widget.RecyclerView).adapter as KeyedRowsAdapter
         val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
         while(adapter.currentList.none { it.key=="task:tax" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}

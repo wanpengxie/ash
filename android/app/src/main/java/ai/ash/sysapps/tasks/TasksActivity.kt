@@ -194,7 +194,7 @@ open class TasksActivity : SystemAppActivity() {
                         items.addAll(parsed.getOrThrow()); val next = data.optLong("next_before")
                         if (next > 0 && next != before) { page(next); return@ui }
                         state = state.success(generation, items.distinctBy { it.id }); loading = false
-                        feedback.text = if (pendingAdd != null) "上次添加待核对，点添加继续" else "${items.size} 条待办 · 点一条修改，变化会自动更新"
+                        feedback.text = if (pendingAdd != null) "上次添加待核对，点添加继续" else "${items.size} 条待办 · 可直接完成、改期或回来源跟进"
                         render(); if (dirty) refresh()
                     }
                 }
