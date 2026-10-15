@@ -57,7 +57,7 @@ class CodexActivityAcceptanceTest {
             override fun closed(info: CloseInfo) { base.closed(info); ai.ash.ui.LedgerFeed.connectionChanged(false) }
         } })
         conn = link.connect(); Screen.client = link.client
-        details["t1"] = detail("t1", "修复结算页重复扣款")
+        details["t1"] = detail("t1", "修复结算页重复扣款", JSONArray().put(progress()))
         details["t2"] = detail("t2", "整理跑步计划", JSONArray().put(JSONObject().put("kind", "agent").put("text", "明天先跑三公里，轻松配速；周末再回顾跑量和膝盖的感觉。")))
         controller = Robolectric.buildActivity(Screen::class.java, intent(mac, "t1")).create().start().resume().visible().windowFocusChanged(true)
         waitFor("existing work") { texts().contains("修复结算页重复扣款") }
@@ -78,6 +78,7 @@ class CodexActivityAcceptanceTest {
     private fun detail(id: String, title: String, items: JSONArray = JSONArray()) = JSONObject().put("id", id).put("title", title)
         .put("turns", JSONArray().put(JSONObject().put("id", "running").put("status", "inProgress").put("items", items)))
         .put("state", "running").put("open", true).put("approvals", JSONArray())
+    private fun progress() = JSONObject().put("kind", "agent").put("text", "已定位到支付回调重复写入退款记录，接下来验证幂等键。")
     private fun item(id: String, text: String) = JSONObject().put("kind", "user").put("text", text).put("client_id", id)
     private fun answer(frame: JSONObject, data: JSONObject?, error: String? = null) {
         val reply = if (error == null) JSONObject().put("ok", true).put("result", JSONObject().put("data", data ?: JSONObject()))
@@ -179,12 +180,13 @@ class CodexActivityAcceptanceTest {
         assertEquals(1, pending().size)
         val client = requests.last { it.optString("word") == "x.codex.send" }.getJSONObject("body").getString("client_id")
         event(from = "person:owner", body = JSONObject().put("client_id", client))
-        details["t1"] = detail("t1", "修复结算页重复扣款", JSONArray().put(item("agent-same-text", "先跑退款回归，再提交")))
+        details["t1"] = detail("t1", "修复结算页重复扣款", JSONArray().put(progress()).put(item("agent-same-text", "先跑退款回归，再提交")))
         event(body = JSONObject().put("client_id", "agent-same-text")); waitFor("agent text does not settle owner operation") { texts().count { it == "先跑退款回归，再提交" } >= 2 }
         assertEquals(1, pending().size)
         details["t1"]!!.getJSONArray("turns").getJSONObject(0).getJSONArray("items").put(item(client, "先跑退款回归，再提交"))
         details["t1"]!!.put("approvals", JSONArray().put(JSONObject().put("request_id", "refund-test").put("summary", "运行退款回归测试")))
         event(); waitFor("exact pending settled and approval shown") { pending().isEmpty() && texts().contains("运行退款回归测试") }
+        assertTrue("concrete existing work visible", texts().any { it.contains("已定位到支付回调") })
         assertTrue("owner origin visible", texts().contains("你"))
         assertTrue("Ash origin visible", texts().contains("Ash"))
         capture("refunds-waiting-approval")
