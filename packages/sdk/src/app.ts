@@ -261,7 +261,11 @@ export function appToolContract(appId: string, tool: McpTool, appName?: string):
  */
 export interface SystemApp { id: string; name: string; summary: string; icon: string }
 export const SYSTEM_APPS: readonly SystemApp[] = [
+  { id: "devices", name: "设备", summary: "设备、能力与连接", icon: "laptop" },
   { id: "codex", name: "Codex", summary: "电脑上的 Codex：会话、新对话和审批", icon: "laptop" },
+  { id: "team", name: "团队", summary: "Ash 的帮手和团队往来", icon: "grid" },
+  { id: "ash", name: "Ash", summary: "她现在的工作、记忆、日记与成长", icon: "heart" },
+  { id: "tasks", name: "任务", summary: "待办、提醒和 Ash 手上的事", icon: "list" },
 ];
 
 /** A system app as `apps.list` shows it: always there, on, and the owner's. */

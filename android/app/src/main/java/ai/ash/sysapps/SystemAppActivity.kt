@@ -23,7 +23,7 @@ import org.json.JSONObject
  * The frame of a system app (spec ARCH-APPS §3): one Activity per app, its own task-free screen opened from the apps grid,
  * from `person:owner/open {app}` or from another app. It gives every app the same skeleton (MOBILE-ARCH §1): a header
  * (back, title, a slot for actions), the window's one insets owner, back through the dispatcher, the hub reached as the
- * owner without taking the chat's page ([call]), and a line over the top of the page while Ash cannot be reached.
+ * owner without taking the chat's page ([call]), and a stable status slot while Ash cannot be reached.
  *
  * An app is a subclass that builds its page into [content] ([build]) and keeps its own model. A page that rides the
  * keyboard (a conversation) names its deck in [deck]; any other is laid out above the keyboard.
@@ -38,6 +38,7 @@ abstract class SystemAppActivity : Activity() {
     /** Where the app draws its page. */
     protected lateinit var content: FrameLayout
     private lateinit var offline: android.widget.TextView
+    private var imeVisible = false
     private val back = BackRouter(this, { canGoBack() }, { goBack() })
 
     /** The page's deck that rides the keyboard (MOBILE-ARCH §4.4), or null to be laid out above it. */
@@ -51,7 +52,7 @@ abstract class SystemAppActivity : Activity() {
     protected abstract fun build(saved: Bundle?)
 
     /**
-     * A message of the ledger (its summary: `from`, `to`, `word`…) while the app is on screen: refresh what it shows when it is
+     * A complete message of the ledger (`from`, `to`, `word`, `body`, `payload`…) while the app is on screen: refresh what it shows when it is
      * about it (filter by word or member). Not called while the app is behind; read again when it comes back ([onStart]).
      */
     protected open fun onLedger(message: JSONObject) {}
@@ -75,7 +76,7 @@ abstract class SystemAppActivity : Activity() {
         actions = AshUi.hstack(this, 2)
         val header = AshUi.hstack(this, 6).apply {
             gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), 0, dp(6), 0)
-            addView(AshUi.iconButton(this@SystemAppActivity, getDrawable(R.drawable.ash_ic_back)!!, "返回") { if (canGoBack()) { goBack(); syncBack() } else finish() })
+            addView(AshUi.iconButton(this@SystemAppActivity, getDrawable(R.drawable.ash_ic_back)!!, "返回") { toolbarBack() })
             addView(title, LinearLayout.LayoutParams(0, -2, 1f))
             addView(actions)
         }
@@ -96,9 +97,15 @@ abstract class SystemAppActivity : Activity() {
             addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         }
         setContentView(root)
-        WindowInsetsOwner.install(root, front = { deck })
+        WindowInsetsOwner.install(root, front = { deck }, onKeyboard = { imeVisible = it })
         build(saved)
         syncBack()
+    }
+
+    private fun toolbarBack() {
+        if (imeVisible) {
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(content.windowToken, 0)
+        } else if (canGoBack()) { goBack(); syncBack() } else finish()
     }
 
     /** Call when what [canGoBack] answers may have changed (the system's back gesture is offered to the app only then). */

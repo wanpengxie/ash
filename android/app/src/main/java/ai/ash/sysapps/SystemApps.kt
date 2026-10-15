@@ -4,7 +4,6 @@ import ai.ash.R
 import ai.ash.apps.Ui
 import ai.ash.host.BackgroundLaunch
 import ai.ash.link.PresentOutcome
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 
@@ -13,12 +12,22 @@ import android.content.Intent
  * Opening an app id that is not here opens the installed app of that id (its WebView page).
  */
 object SystemApps {
-    private val screens: Map<String, Class<out Activity>> = mapOf("codex" to ai.ash.sysapps.codex.CodexActivity::class.java)
+    // Class names mirror Manifest declarations. The individual app implementations are delivered independently.
+    private val screens = mapOf(
+        "devices" to "ai.ash.sysapps.devices.DevicesActivity",
+        "codex" to "ai.ash.sysapps.codex.CodexActivity",
+        "team" to "ai.ash.sysapps.team.TeamActivity",
+        "ash" to "ai.ash.sysapps.ash.AshActivity",
+        "tasks" to "ai.ash.sysapps.tasks.TasksActivity",
+    )
 
     /** The line icon the hub names for a system app (`icon`), when the shell has it. */
     fun icon(name: String): Int? = when (name) {
         "laptop" -> R.drawable.ash_ic_laptop
         "grid" -> R.drawable.ash_ic_grid
+        "phone" -> R.drawable.ash_ic_phone
+        "heart" -> R.drawable.ash_ic_heart
+        "list" -> R.drawable.ash_ic_list
         else -> null
     }
 
@@ -26,7 +35,7 @@ object SystemApps {
 
     /** The intent that opens app [id] (asked to show [arg]): its native screen, or the installed app's page. */
     fun intent(ctx: Context, id: String, arg: String? = null): Intent =
-        screens[id]?.let { Intent(ctx, it).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).apply { if (!arg.isNullOrEmpty()) putExtra(SystemAppActivity.EXTRA_ARG, arg) } }
+        screens[id]?.let { Intent().setClassName(ctx, it).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).apply { if (!arg.isNullOrEmpty()) putExtra(SystemAppActivity.EXTRA_ARG, arg) } }
             ?: Ui.appIntent(ctx, id, arg?.ifEmpty { null })
 
     /** `person:owner/open {app, arg}`: opens it now when the system lets Ash start a screen, else offers it in a notice. */

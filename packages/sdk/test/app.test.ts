@@ -113,3 +113,15 @@ test("a system app as apps.list shows it passes the word's own result schema", a
   assert.ok(validate({ apps: [info] }), JSON.stringify(validate.errors));
   assert.deepEqual([info.kind, info.ui, info.granted, info.enabled], ["system", "native", true, true]);
 });
+
+
+test("every native app in the shared catalogue has a unique id and passes the discovery contract", async () => {
+  const { SYSTEM_APPS, systemAppInfo } = await import("../src/app");
+  const { wordContract } = await import("../src/words");
+  const validate = compileSchema(wordContract("service:apps", "apps.list")!.result_schema!);
+  const ids = SYSTEM_APPS.map((app) => app.id);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(ids, ["devices", "codex", "team", "ash", "tasks"]);
+  assert.ok(SYSTEM_APPS.every((app) => app.name && app.icon && app.summary));
+  assert.ok(validate({ apps: SYSTEM_APPS.map(systemAppInfo) }), JSON.stringify(validate.errors));
+});

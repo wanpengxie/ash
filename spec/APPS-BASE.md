@@ -16,3 +16,8 @@
 注册由底座作者统一修改：SDK `SYSTEM_APPS`、Android `SystemApps` 和 Manifest。只有具体 Activity 已交付时才登记，避免格子指向尚不存在的页面。系统应用随 Ash 发布，不提供 Web 应用的安装/删除/固定到 Android 桌面动作。
 
 验证：TypeScript 编译；SDK app/link、human channels、apps service 相关单测；Android compileDebugKotlin 与 LedgerMessages、ChatBridgeState、AppInfoNeeds、FramesConformance、ManifestClasses 单测。完整事件载荷与 open app 协议有回归。未操作手机，IME、预测返回、字体/无障碍等真实系统交互尚未验证。
+
+
+## 第一批统一注册
+
+五个 id：`devices`、`codex`、`team`、`ash`、`tasks`。Android 的 Activity/id 对照、Manifest、图标和中枢 SDK 目录在一个独立注册提交中交付。该提交必须在四个应用实现都引入以后再应用；底座/Codex 分支不复制它们的业务源码。此分支只能编译注册接线和验证 SDK 目录；总控在集成树运行 ManifestClassesTest，确认四个依赖类存在后再交付。各应用自己的 Activity 编译证据由对应作者提供。
