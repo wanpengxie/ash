@@ -150,7 +150,8 @@ class CodexActivityAcceptanceTest {
         assertTrue(target.performClick())
     }
     private fun capture(name: String) {
-        layout()
+        settleWire(); layout()
+        assertTrue("toolbar and composer are on screen", input.isShown && input.height > 0 && controller.get().window.decorView.findViewById<View>(android.R.id.content).height > 0)
         val root = controller.get().window.decorView
         val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
         root.draw(Canvas(bitmap))
@@ -266,7 +267,11 @@ class CodexActivityAcceptanceTest {
         } catch (e: IllegalStateException) {
             throw AssertionError("expected reading place=$before; actual=${ai.ash.ui.Anchor.of(list, lm, rows)}; transitions=$traces", e)
         }
+        println("reading place restored=$before actual=${ai.ash.ui.Anchor.of(list, lm, rows)}")
+        settleWire()
+        assertEquals("reading place remains after later layouts", before, ai.ash.ui.Anchor.of(list, lm, rows))
         capture("returned-to-reading-place")
+        assertEquals("drawing keeps the same reading place", before, ai.ash.ui.Anchor.of(list, lm, rows))
     }
 
     @Test fun anUnknownSendRetryUsesTheSameClientIdAndOfflineStatusDoesNotMoveTheConversation() {
@@ -286,6 +291,7 @@ class CodexActivityAcceptanceTest {
         waitFor("offline banner") { texts().contains("暂时连不上 Ash，连上后会自动恢复") && !link.client.channelOpen("human") }
         assertEquals(bounds, views().filterIsInstance<RecyclerView>().map { listOf(it.top, it.height) })
         assertEquals("拼音还在输入", input.text.toString()); assertEditorFocus()
+        println("actual editor composing after offline=${BaseInputConnection.getComposingSpanStart(input.text)}..${BaseInputConnection.getComposingSpanEnd(input.text)}")
         assertEquals(2, input.selectionStart); assertEquals(0, BaseInputConnection.getComposingSpanStart(input.text))
         capture("offline-keeps-editor-and-content")
     }

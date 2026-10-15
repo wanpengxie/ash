@@ -59,3 +59,11 @@ TMPDIR=/data/atoll/tmp node --expose-internals --import tsx --test packages/core
 `SystemAppsEntryTest` 直接走 `SystemApps.open`：有前台 Activity 时检查系统收到的 Intent；后台检查通知，点通知后检查 Activity 类、参数和 SINGLE_TOP/CLEAR_TOP 路由。
 
 未验证：真实手机中文 IME/候选栏、厂商系统后台拉起限制和通知权限、物理键盘动画、真实已登录电脑 Codex 新版本协议。桌面 owner window 与模型仍为可控替身，不能把本地通过表述成用户设备验收通过。四个业务 Activity 的热启动行为由各自应用作者与集成验收负责。
+
+## 定向诊断（尚未最终签收）
+
+`ash-codex-diagnostic.log` 已实际执行三个诊断用例：共用按钮真实 padding 是 `0,0`，预期 `42,42`（density=3，14dp）；原非 native 渲染的字宽读数不作为产品文字宽度证据。`8178f5a7` 将背景放在 padding 前、补 minimumWidth=48dp，保持已有视觉尺寸与大字换行；回归已改 native 与实际主题，等待集成重跑。
+
+中文测试原来实例化的 BaseInputConnection 使用其自身 Editable，没有向真实输入框建立 composing，不能据此判输入丢失。改用 EditText.onCreateInputConnection 后，严格验证断线前 `0..2`，断线后仍是 `0..2`，实际 decor 焦点和选区也通过。原“composing 丢失”结论撤销。
+
+阅读位置诊断验证：离页确实存入 `step-9/-21`，进页也选中同一锚点；首次实际 layout 已恢复到它，但紧邻下一 layout 漂到 `step-11/-186`，中间没有新 submit/commit。原代码在差分提交时就清除恢复意图，给后续布局/动画留下漂移空间。修复把恢复意图保留到对应路由完成实际布局并将绘制，在这段明确恢复期间关闭预测行动画、不自动跟随末尾；拖动或明确发送立即交还用户控制。没有定时延迟、没有循环滚动。严格回归还需验证布局完成后与绘制后均保持同 key+offset。
