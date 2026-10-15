@@ -379,6 +379,98 @@ test("persona: editing SOUL.md in the body changes nothing a session loads", asy
   assert.ok(!hub.sent.some((s) => s.msg.to === "body:main" && ["MEMORY.md", "USER.md"].includes((s.msg.body as any).path)));
 });
 
+test("persona, the Ash app's words: memory files, the diary, notes that wake her, and persona.changed saying who did it", async () => {
+  const hub = await startedHub();
+  const data = async (word: string, body: unknown = {}, caller = OWNER) => { const r = await hub.send("service:persona", word, body, caller); assert.ok(r.ok, `${word}: ${JSON.stringify(r)}`); return (r as any).result.data; };
+  const changes = () => hub.sent.filter((s) => s.msg.word === "persona.changed").map((s) => s.msg.body);
+
+  // memory files: read as they are in the body (a missing one is said so), written whole
+  hub.files.set("USER.md", "# 关于你\n- 爱喝美式\n");
+  const memory = await data("memory.get");
+  assert.deepEqual(memory.files.map((f: any) => [f.file, f.content, !!f.missing]), [["USER.md", "# 关于你\n- 爱喝美式\n", false], ["MEMORY.md", "", true], ["PROACTIVE.md", "", true]]);
+  await data("memory.set", { file: "USER.md", content: "# 关于你\n- 不喝咖啡了\n", reason: "主人纠正" });
+  assert.equal(hub.files.get("USER.md"), "# 关于你\n- 不喝咖啡了\n");
+  const after = (await data("memory.get", { file: "USER.md" })).files[0];
+  assert.deepEqual([after.by, after.at], ["person:owner", hub.t]);
+  hub.files.set("USER.md", "# 关于你\n- 不喝咖啡了\n- 早睡\n");   // she edits the file herself
+  assert.equal((await data("memory.get", { file: "USER.md" })).files[0].by, undefined);
+
+  // the diary: days newest first with their first lines, a page at a time; one day whole
+  hub.files.set("memory/2026-10-10.md", "# 10 月 10 日\n## 今天发生了什么\n- 改了会议时间\n- 查了天气\n<!-- review:done -->\n");
+  hub.files.set("memory/2026-10-11.md", "# 10 月 11 日\n今天很安静\n");
+  hub.files.set("memory/notes.md", "not a day");
+  const page = await data("diary.list", { limit: 1 });
+  assert.deepEqual(page.days, [{ date: "2026-10-11", excerpt: "今天很安静", done: false, notes: 0 }]);
+  assert.equal(page.next_before, "2026-10-11");
+  const next = await data("diary.list", { before: page.next_before });
+  assert.deepEqual(next.days, [{ date: "2026-10-10", excerpt: "改了会议时间 查了天气", done: true, notes: 0 }]);
+  assert.equal(next.next_before, undefined);
+  const missing = await hub.send("service:persona", "diary.get", { date: "2026-10-01" });
+  assert.equal(!missing.ok && missing.error.code, "not_found");
+
+  // a note from the owner is kept with the day and wakes her on the back lane; her answer shows under it
+  const before = hub.wakes("agent:main").length;
+  const note = await data("note", { about: "diary:2026-10-10", text: "会议是改到周三，不是周二" });
+  assert.equal(note.told, true);
+  const wake = hub.wakes("agent:main").slice(before);
+  assert.deepEqual(wake.map((w) => [w.reason, w.lane, w.context]), [["owner_note", "back", { note: note.id, about: "diary:2026-10-10", text: "会议是改到周三，不是周二", by: "person:owner" }]]);
+  await data("note.reply", { id: note.id, text: "改好了，日记和 USER.md 都更正了" }, AGENT);
+  const day = await data("diary.get", { date: "2026-10-10" });
+  assert.equal(day.done, true);
+  assert.deepEqual(day.notes.map((n: any) => [n.text, n.by, n.reply, n.replied_by]), [["会议是改到周三，不是周二", "person:owner", "改好了，日记和 USER.md 都更正了", "agent:main"]]);
+  assert.equal((await data("diary.list", { limit: 5 })).days.find((d: any) => d.date === "2026-10-10").notes, 1);
+  // her own note does not wake her
+  const own = await data("note", { about: "now", text: "我在试新的提醒节奏" }, AGENT);
+  assert.equal(own.told, false);
+  assert.deepEqual((await data("notes.list")).notes.map((n: any) => n.about), ["now", "diary:2026-10-10"]);
+  const nobody = await hub.send("service:persona", "note.reply", { id: "n_nope", text: "x" }, AGENT);
+  assert.equal(!nobody.ok && nobody.error.code, "not_found");
+
+  // the persona's history; every change above was told, with who did it
+  await data("propose", { file: "SOUL.md", content: "# SOUL\nbe brief\n", reason: "主人说太啰嗦" });
+  const versions = (await data("versions", { file: "SOUL.md" })).versions;
+  assert.deepEqual(versions.map((v: any) => [v.by, v.reason]), [["person:owner", "主人说太啰嗦"], ["template", "the starting text shipped with ash"]]);
+  assert.deepEqual(changes(), [
+    { part: "memory", about: "memory:USER.md", by: "person:owner" },
+    { part: "notes", about: "diary:2026-10-10", by: "person:owner" },
+    { part: "notes", about: "diary:2026-10-10", by: "agent:main" },
+    { part: "notes", about: "now", by: "agent:main" },
+    { part: "identity", about: "identity:SOUL.md", by: "person:owner" },
+  ]);
+  const bad = await hub.send("service:persona", "note", { about: "somewhere", text: "x" });
+  assert.equal(!bad.ok && bad.error.code, "bad_request");
+  hub.invalid.splice(0);
+  assert.deepEqual(hub.invalid, []);
+});
+
+test("persona: diary and growth writes are shared, persistent and announce their author", async () => {
+  const hub = await startedHub();
+  const data = async (word: string, body: unknown = {}, caller = AGENT) => {
+    const reply = await hub.send("service:persona", word, body, caller);
+    assert.ok(reply.ok, JSON.stringify(reply)); return (reply as any).result.data;
+  };
+  await data("diary.set", { date: "2026-10-12", content: "# 今天\n## 复盘\n我学会少打扰你。\n<!-- review:done -->" });
+  assert.equal((await data("diary.get", { date: "2026-10-12" })).done, true);
+  const invalid = await hub.send("service:persona", "diary.set", { date: "2026-02-30", content: "x" });
+  assert.equal(!invalid.ok && invalid.error.code, "bad_request");
+  const change = { id: "learn-quiet", title: "少打扰你", why: "你说昨晚提醒太多", did: "我合并了重复提醒", effect: "还在观察", next: "下周回看", evidence: ["m_feedback"] };
+  await data("growth.put", change);
+  await data("growth.put", { ...change, effect: "减少了三次重复提醒" });
+  await hub.restart();
+  const items = (await data("growth.list")).items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0].by, "agent:main");
+  assert.deepEqual(items[0].evidence, ["m_feedback"]);
+  assert.equal(items[0].effect, "减少了三次重复提醒");
+  const note = await data("note", { about: "growth:learn-quiet", text: "请保留早上的提醒" }, OWNER);
+  assert.equal(note.told, true);
+  assert.ok(hub.sent.some(s => s.msg.word === "persona.changed" && (s.msg.body as any).part === "diary" && (s.msg.body as any).by === "agent:main"));
+  hub.bodyUp = false;
+  const offline = await hub.send("service:persona", "diary.list", {});
+  assert.equal(!offline.ok && offline.error.code, "offline");
+  assert.deepEqual(hub.invalid, []);
+});
+
 test("persona: a body that was away at start is seeded by a later tick", async () => {
   const hub = newHub();
   hub.bodyUp = false;

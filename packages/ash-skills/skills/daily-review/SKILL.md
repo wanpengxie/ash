@@ -21,7 +21,7 @@ whenToUse: 被 reason 为 daily 的唤醒叫醒时（每晚 21:30，或错过后
 
 ## 二、写日记
 
-文件 `memory/YYYY-MM-DD.md`（在你的家目录里，没有 `memory/` 就建）。格式固定，四节：
+用 `service:persona/diary.get {date}` 读已有日记（not_found 表示这天尚未写），合并草稿后用 `service:persona/diary.set {date, content}` 写全文。它仍存为 `memory/YYYY-MM-DD.md`，并通知 Ash 应用刷新。格式固定，四节：
 
 ```
 # 10 月 10 日
@@ -44,7 +44,7 @@ whenToUse: 被 reason 为 daily 的唤醒叫醒时（每晚 21:30，或错过后
 - `MEMORY.md`：关于事和经验（做成过什么、哪个办法管用、哪里踩过坑）。
 - `USER.md`：关于主人（称呼、习惯、偏好、重要的人、作息）。
 
-过时的删掉，被主人纠正的改掉并记一条新的。直接在家目录里改文件，不用审批，会话里下一次就能看到。**每一条改动，在当天日记里记一笔出处**（哪句话、哪次对话）。
+过时的删掉，被主人纠正的改掉并记一条新的。用 `service:persona/memory.get` 读取，用 `service:persona/memory.set {file, content}` 保存全文，不用审批，会话里下一次就能看到，Ash 应用也能收到变化。**每一条改动，在当天日记里记一笔出处**（哪句话、哪次对话）。
 
 记忆**不回滚**：人的记忆没法回滚，被纠正了就改掉、记新的；不要为了「留旧版」另存一份。只有资料（你做出来的文档、代码）才需要版本，那是你自己用 git 管的事。
 
@@ -63,6 +63,8 @@ whenToUse: 被 reason 为 daily 的唤醒叫醒时（每晚 21:30，或错过后
 今天被主人纠正过说话方式，或者发现 `SOUL.md`、`IDENTITY.md` 和实际相处对不上：用 `service:persona/propose {file, content, reason}` 提一次。写清理由和出处（哪句话），内容给全文。**主人批了才生效**，而且在下一次重新载入会话（每天 04:00）才出现在你的开头里；他拒了就不变，不要再原样提。直接改 `SOUL.md` 文件没有用：会话只载入批准过的版本。
 
 ## 六、收尾
+
+确实学会了技能、造了应用或改进了做法时，用 `service:persona/growth.put` 记一条：稳定 id、title、why、did、effect、next、evidence。用第一人称白话说明，附出处；没有实际进展就不写。进行中的工作留在 `service:tasks`，不复制待办。
 
 在日记最后一行写上 `<!-- review:done -->` 标完成（中枢据此判断这天复盘过了，补做时不会重复叫你）。不给主人发消息，除非有一件必须明天一早就知道的事，那就一句话。
 

@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "9f7a83a0166db9244b4834f2d2e7a4dfa73212c9aca482dc9111a23576d4ba30",
+ "hash": "84841a44d3c8b864c6896a0628c93b00dcf612110c26fd700959b19f15b0b02c",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -5239,6 +5239,40 @@
            "type": "null"
           }
          ]
+        },
+        "doing": {
+         "type": "object",
+         "properties": {
+          "turn": {
+           "type": "string",
+           "minLength": 1
+          },
+          "lane": {
+           "type": "string",
+           "minLength": 1
+          },
+          "since": {
+           "type": "integer",
+           "minimum": 0,
+           "maximum": 9007199254740991
+          },
+          "about": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "turn",
+          "lane",
+          "since"
+         ],
+         "additionalProperties": false
+        },
+        "waiting_on": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+         }
         }
        },
        "required": [
@@ -5587,6 +5621,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -6086,6 +6154,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -6437,6 +6539,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -6750,6 +6886,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -6969,6 +7139,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -7188,6 +7392,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -7449,6 +7687,40 @@
         "type": "null"
        }
       ]
+     },
+     "doing": {
+      "type": "object",
+      "properties": {
+       "turn": {
+        "type": "string",
+        "minLength": 1
+       },
+       "lane": {
+        "type": "string",
+        "minLength": 1
+       },
+       "since": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "about": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "turn",
+       "lane",
+       "since"
+      ],
+      "additionalProperties": false
+     },
+     "waiting_on": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+      }
      }
     },
     "required": [
@@ -8324,6 +8596,64 @@
    ],
    "label": {
     "doing": "在调整帮手的插件"
+   }
+  },
+  {
+   "member": "service:agents",
+   "word": "agent.changed",
+   "kind": "event",
+   "direction": "out",
+   "description": "An agent was declared, changed, removed, started, stopped, restarted or made primary (`by`: who did it), or its process came up, went down or was given up on by itself (`change: state`). Turns starting and ending are the agent's own turn.started / turn.ended. Goes into the ledger, so a page that shows the team reads it again.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "agent": {
+      "type": "string",
+      "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+     },
+     "change": {
+      "type": "string",
+      "enum": [
+       "declared",
+       "updated",
+       "removed",
+       "started",
+       "stopped",
+       "restarted",
+       "primary",
+       "state"
+      ]
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "idle",
+       "working",
+       "starting",
+       "stopped",
+       "error"
+      ]
+     },
+     "by": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "agent",
+     "change",
+     "state"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "record": true,
+   "label": {
+    "doing": "在记下帮手的变化"
    }
   },
   {
@@ -11161,6 +11491,840 @@
    ],
    "label": {
     "doing": "在提议改人格"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "versions",
+   "kind": "request",
+   "direction": "in",
+   "description": "Every approved version of SOUL.md or IDENTITY.md, newest first: when, who made or approved it ('template' for the shipped text) and why. Not the texts; get has the one in force.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "enum": [
+       "SOUL.md",
+       "IDENTITY.md"
+      ]
+     }
+    },
+    "required": [
+     "file"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "versions": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "file": {
+         "type": "string",
+         "enum": [
+          "SOUL.md",
+          "IDENTITY.md"
+         ]
+        },
+        "version": {
+         "type": "string",
+         "minLength": 1
+        },
+        "approved_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "by": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "file",
+        "version",
+        "approved_at",
+        "by",
+        "reason"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "versions"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在看人格的变化"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "memory.get",
+   "kind": "request",
+   "direction": "in",
+   "description": "The primary agent's memory files as they are in the main body: USER.md (about the owner), MEMORY.md (her notes on things and experience), PROACTIVE.md (what she may bring to the owner unasked). missing: the file is not there yet. by, at: who wrote it last and when, while it is still what memory.set wrote (left out after an edit made directly in the body).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "enum": [
+       "USER.md",
+       "MEMORY.md",
+       "PROACTIVE.md"
+      ]
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "file": {
+         "type": "string",
+         "enum": [
+          "USER.md",
+          "MEMORY.md",
+          "PROACTIVE.md"
+         ]
+        },
+        "content": {
+         "type": "string"
+        },
+        "missing": {
+         "type": "boolean"
+        },
+        "by": {
+         "type": "string",
+         "minLength": 1
+        },
+        "at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        }
+       },
+       "required": [
+        "file",
+        "content"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "files"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看她记得的事"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "memory.set",
+   "kind": "request",
+   "direction": "in",
+   "description": "Write one of the memory files whole (USER.md, MEMORY.md, PROACTIVE.md) and tell it with persona.changed. The owner's corrections from the Ash app come this way; the primary agent may also edit these files directly in her body.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "enum": [
+       "USER.md",
+       "MEMORY.md",
+       "PROACTIVE.md"
+      ]
+     },
+     "content": {
+      "type": "string",
+      "maxLength": 200000
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "file",
+     "content"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "saved": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "saved"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在改她记得的事"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "growth.list",
+   "kind": "request",
+   "direction": "in",
+   "description": "Learned skills, built apps and changed habits, in her own words: why, what changed, the effect and the next step. evidence holds optional source references. Ongoing tasks and themes live only in service:tasks.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1
+        },
+        "title": {
+         "type": "string",
+         "minLength": 1
+        },
+        "why": {
+         "type": "string"
+        },
+        "did": {
+         "type": "string",
+         "minLength": 1
+        },
+        "effect": {
+         "type": "string"
+        },
+        "next": {
+         "type": "string"
+        },
+        "evidence": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "by": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "required": [
+        "id",
+        "title",
+        "why",
+        "did",
+        "effect",
+        "next",
+        "evidence",
+        "at",
+        "by"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看她的成长"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "growth.put",
+   "kind": "request",
+   "direction": "in",
+   "description": "Write or correct a growth record under a stable caller-chosen id (reuse it on retry). First person, plain words and sources; do not invent progress. Does not create tasks or themes.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "why": {
+      "type": "string"
+     },
+     "did": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+     },
+     "effect": {
+      "type": "string"
+     },
+     "next": {
+      "type": "string"
+     },
+     "evidence": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "id",
+     "title",
+     "did"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "saved": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id",
+     "saved"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在记下她的成长"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "diary.set",
+   "kind": "request",
+   "direction": "in",
+   "description": "Save a whole diary day to memory/YYYY-MM-DD.md and emit persona.changed. Read the existing day and merge drafts before writing. The nightly review uses this word and ends with <!-- review:done -->.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+     },
+     "content": {
+      "type": "string",
+      "maxLength": 200000
+     }
+    },
+    "required": [
+     "date",
+     "content"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "saved": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "saved"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在写她的日记"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "diary.list",
+   "kind": "request",
+   "direction": "in",
+   "description": "The primary agent's diary days (memory/YYYY-MM-DD.md, written in the nightly review), newest first: the first lines, whether the review was finished, how many notes the day has. before: only days before this date (for the next page, give next_before).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "before": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "days": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "date": {
+         "type": "string",
+         "minLength": 1
+        },
+        "excerpt": {
+         "type": "string"
+        },
+        "done": {
+         "type": "boolean"
+        },
+        "notes": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        }
+       },
+       "required": [
+        "date",
+        "excerpt",
+        "done",
+        "notes"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "next_before": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "days"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在翻她的日记"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "diary.get",
+   "kind": "request",
+   "direction": "in",
+   "description": "One day of the primary agent's diary, whole, with the notes written on it (oldest first). not_found: no diary that day.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+     }
+    },
+    "required": [
+     "date"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "date": {
+      "type": "string",
+      "minLength": 1
+     },
+     "content": {
+      "type": "string"
+     },
+     "done": {
+      "type": "boolean"
+     },
+     "notes": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1
+        },
+        "about": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 200,
+         "pattern": "^(now|diary:[0-9]{4}-[0-9]{2}-[0-9]{2}|memory:(USER|MEMORY|PROACTIVE)\\.md|identity:(SOUL|IDENTITY)\\.md|task:.+|line:.+|growth:.+)$"
+        },
+        "text": {
+         "type": "string"
+        },
+        "by": {
+         "type": "string",
+         "minLength": 1
+        },
+        "at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "reply": {
+         "type": "string"
+        },
+        "replied_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "replied_by": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "required": [
+        "id",
+        "about",
+        "text",
+        "by",
+        "at"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "date",
+     "content",
+     "done",
+     "notes"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在读她的日记"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "note",
+   "kind": "request",
+   "direction": "in",
+   "description": "A note or a correction on something of the primary agent's: about is what it is on (now, diary:<date>, memory:<file>, identity:<file>, task:<id>, line:<id>). Kept with that thing; the primary agent is woken with it (reason owner_note) unless she wrote it herself, so she can fix what it is about and answer with note.reply.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "about": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(now|diary:[0-9]{4}-[0-9]{2}-[0-9]{2}|memory:(USER|MEMORY|PROACTIVE)\\.md|identity:(SOUL|IDENTITY)\\.md|task:.+|line:.+|growth:.+)$"
+     },
+     "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+     }
+    },
+    "required": [
+     "about",
+     "text"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "told": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在给她留批注"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "note.reply",
+   "kind": "request",
+   "direction": "in",
+   "description": "Answer a note: what was changed because of it, or why nothing was. Shown under the note; a later answer replaces the earlier one.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+     }
+    },
+    "required": [
+     "id",
+     "text"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "replied": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "replied"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在回批注"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "notes.list",
+   "kind": "request",
+   "direction": "in",
+   "description": "The notes on the primary agent's things, newest first: on one thing (about), or all. A note without reply has not been answered yet.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "about": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(now|diary:[0-9]{4}-[0-9]{2}-[0-9]{2}|memory:(USER|MEMORY|PROACTIVE)\\.md|identity:(SOUL|IDENTITY)\\.md|task:.+|line:.+|growth:.+)$"
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "notes": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1
+        },
+        "about": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 200,
+         "pattern": "^(now|diary:[0-9]{4}-[0-9]{2}-[0-9]{2}|memory:(USER|MEMORY|PROACTIVE)\\.md|identity:(SOUL|IDENTITY)\\.md|task:.+|line:.+|growth:.+)$"
+        },
+        "text": {
+         "type": "string"
+        },
+        "by": {
+         "type": "string",
+         "minLength": 1
+        },
+        "at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "reply": {
+         "type": "string"
+        },
+        "replied_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "replied_by": {
+         "type": "string",
+         "minLength": 1
+        }
+       },
+       "required": [
+        "id",
+        "about",
+        "text",
+        "by",
+        "at"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "notes"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看批注"
+   }
+  },
+  {
+   "member": "service:persona",
+   "word": "persona.changed",
+   "kind": "event",
+   "direction": "out",
+   "description": "Something of the primary agent's changed through service:persona: her persona (identity:<file>), a memory file (memory:<file>), or a note on something (its about). by: who did it. Goes into the ledger so the Ash app reads again and can say who changed it.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "part": {
+      "type": "string",
+      "enum": [
+       "identity",
+       "memory",
+       "notes",
+       "diary",
+       "growth"
+      ]
+     },
+     "about": {
+      "type": "string",
+      "minLength": 1
+     },
+     "by": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "part",
+     "about",
+     "by"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "record": true,
+   "label": {
+    "doing": "在记下她的变化"
    }
   },
   {
@@ -14339,6 +15503,153 @@
    ],
    "label": {
     "doing": "在读历史原文"
+   }
+  },
+  {
+   "member": "service:history",
+   "word": "exchanges",
+   "kind": "request",
+   "direction": "in",
+   "description": "The team's own conversation, newest first: what agents (and the owner, when speaking to a helper) asked and told each other, through service:agents/ask, tell and spawn or straight to an agent, each with its answer and whether it is still waiting. `agent` keeps the ones that agent sent or received. Not the owner's conversation with the primary agent (that is history.window). Page back with next_before.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "agent": {
+      "type": "string",
+      "pattern": "^agent:[a-z][a-z0-9_-]{0,31}$"
+     },
+     "before": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1
+        },
+        "seq": {
+         "type": "integer",
+         "minimum": 1,
+         "maximum": 9007199254740991
+        },
+        "ts": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "from": {
+         "type": "string",
+         "minLength": 1
+        },
+        "to": {
+         "type": "string",
+         "minLength": 1
+        },
+        "word": {
+         "type": "string",
+         "enum": [
+          "ask",
+          "tell",
+          "spawn"
+         ]
+        },
+        "text": {
+         "type": "string"
+        },
+        "thread": {
+         "type": "string",
+         "minLength": 1
+        },
+        "turn": {
+         "type": "string",
+         "minLength": 1
+        },
+        "state": {
+         "type": "string",
+         "enum": [
+          "waiting",
+          "answered",
+          "failed",
+          "sent"
+         ]
+        },
+        "answer": {
+         "type": "object",
+         "properties": {
+          "seq": {
+           "type": "integer",
+           "minimum": 1,
+           "maximum": 9007199254740991
+          },
+          "ts": {
+           "type": "integer",
+           "minimum": 0,
+           "maximum": 9007199254740991
+          },
+          "text": {
+           "type": "string"
+          },
+          "error": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "seq",
+          "ts"
+         ],
+         "additionalProperties": false
+        }
+       },
+       "required": [
+        "id",
+        "seq",
+        "ts",
+        "from",
+        "to",
+        "word",
+        "text",
+        "state"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "next_before": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在看帮手之间的往来"
    }
   },
   {

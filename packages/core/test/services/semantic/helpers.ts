@@ -156,6 +156,13 @@ export function newHub(options: { ledger?: Ledger; t?: number; budget?: number; 
     stub("service:widgets", "service", { "widget.list": () => ({ widgets: Array.from({ length: hub.cardWidgets }, (_, i) => ({ id: `w${i}`, type: "card", card: null })), cards: [] }) }, now),
     stub("body:main", "body", {
       "workspace.read": (body) => { if (!hub.bodyUp) throw new WordError("offline", "body is away"); const text = hub.files.get(body.path); if (text === undefined) throw new WordError("not_found", "no such file"); return { path: body.path, text }; },
+      "workspace.ls": (body) => {
+        if (!hub.bodyUp) throw new WordError("offline", "body is away");
+        const dir = `${body.path}/`;
+        const entries = [...hub.files.keys()].filter((p) => p.startsWith(dir) && !p.slice(dir.length).includes("/")).map((p) => ({ name: p.slice(dir.length), type: "file", size: hub.files.get(p)!.length }));
+        if (!entries.length) throw new WordError("not_found", "no such directory");
+        return { path: body.path, entries };
+      },
       "workspace.write": (body) => { if (!hub.bodyUp) throw new WordError("offline", "body is away"); hub.files.set(body.path, body.content); return { path: body.path, bytes: body.content.length }; },
     }, now),
   ];

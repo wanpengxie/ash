@@ -602,6 +602,39 @@ add("service:persona", "get", "request", obj({ file: personaFile }), obj({ files
 add("service:persona", "propose", "request", obj({ file: personaFile, content: { type: "string", minLength: 1, maxLength: 60000 }, reason: nonempty }, ["file", "content", "reason"]), obj({ proposed: bool, applied: bool }, ["proposed"]),
   { callers: OWNER_AGENT, effect: "write", risk: "structure", label: "在提议改人格", description: "Propose a new SOUL.md or IDENTITY.md with the reason. The gate decides whether the owner is asked; a change the owner makes takes effect at once. It shows in new sessions after the next reload." });
 
+// The words of the system app 「Ash」 (spec APPS-R1 §4): her memory files, her diary, the notes on them, the persona's history.
+const memoryFile = choice("USER.md", "MEMORY.md", "PROACTIVE.md");
+const noteAbout: JsonSchema = { type: "string", minLength: 1, maxLength: 200, pattern: "^(now|diary:[0-9]{4}-[0-9]{2}-[0-9]{2}|memory:(USER|MEMORY|PROACTIVE)\\.md|identity:(SOUL|IDENTITY)\\.md|task:.+|line:.+|growth:.+)$" };
+const personaNote = obj({ id, about: noteAbout, text: str, by: id, at: nonnegativeSafe, reply: str, replied_at: nonnegativeSafe, replied_by: id }, ["id", "about", "text", "by", "at"]);
+add("service:persona", "versions", "request", obj({ file: personaFile }, ["file"]),
+  obj({ versions: array(obj({ file: personaFile, version: nonempty, approved_at: nonnegativeSafe, by: str, reason: str }, ["file", "version", "approved_at", "by", "reason"])) }, ["versions"]),
+  { label: "在看人格的变化", description: "Every approved version of SOUL.md or IDENTITY.md, newest first: when, who made or approved it ('template' for the shipped text) and why. Not the texts; get has the one in force." });
+add("service:persona", "memory.get", "request", obj({ file: memoryFile }), obj({ files: array(obj({ file: memoryFile, content: str, missing: bool, by: id, at: nonnegativeSafe }, ["file", "content"])) }, ["files"]),
+  { callers: OWNER_AGENT, label: "在看她记得的事", description: "The primary agent's memory files as they are in the main body: USER.md (about the owner), MEMORY.md (her notes on things and experience), PROACTIVE.md (what she may bring to the owner unasked). missing: the file is not there yet. by, at: who wrote it last and when, while it is still what memory.set wrote (left out after an edit made directly in the body)." });
+add("service:persona", "memory.set", "request", obj({ file: memoryFile, content: { type: "string", maxLength: 200000 }, reason: str }, ["file", "content"]), obj({ saved: bool }, ["saved"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在改她记得的事", description: "Write one of the memory files whole (USER.md, MEMORY.md, PROACTIVE.md) and tell it with persona.changed. The owner's corrections from the Ash app come this way; the primary agent may also edit these files directly in her body." });
+const growthItem = obj({ id, title: nonempty, why: str, did: nonempty, effect: str, next: str, evidence: strings, at: nonnegativeSafe, by: id }, ["id", "title", "why", "did", "effect", "next", "evidence", "at", "by"]);
+add("service:persona", "growth.list", "request", obj({ limit: { type: "integer", minimum: 1, maximum: 200 } }), obj({ items: array(growthItem) }, ["items"]),
+  { callers: OWNER_AGENT, label: "在看她的成长", description: "Learned skills, built apps and changed habits, in her own words: why, what changed, the effect and the next step. evidence holds optional source references. Ongoing tasks and themes live only in service:tasks." });
+add("service:persona", "growth.put", "request", obj({ id, title: { type: "string", minLength: 1, maxLength: 500 }, why: str, did: { type: "string", minLength: 1, maxLength: 8000 }, effect: str, next: str, evidence: strings }, ["id", "title", "did"]), obj({ id, saved: bool }, ["id", "saved"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在记下她的成长", description: "Write or correct a growth record under a stable caller-chosen id (reuse it on retry). First person, plain words and sources; do not invent progress. Does not create tasks or themes." });
+add("service:persona", "diary.set", "request", obj({ date: { type: "string", pattern: DATE_PATTERN }, content: { type: "string", maxLength: 200000 } }, ["date", "content"]), obj({ saved: bool }, ["saved"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在写她的日记", description: "Save a whole diary day to memory/YYYY-MM-DD.md and emit persona.changed. Read the existing day and merge drafts before writing. The nightly review uses this word and ends with <!-- review:done -->." });
+add("service:persona", "diary.list", "request", obj({ before: { type: "string", pattern: DATE_PATTERN }, limit: { type: "integer", minimum: 1, maximum: 60 } }),
+  obj({ days: array(obj({ date: nonempty, excerpt: str, done: bool, notes: nonnegativeSafe }, ["date", "excerpt", "done", "notes"])), next_before: str }, ["days"]),
+  { callers: OWNER_AGENT, label: "在翻她的日记", description: "The primary agent's diary days (memory/YYYY-MM-DD.md, written in the nightly review), newest first: the first lines, whether the review was finished, how many notes the day has. before: only days before this date (for the next page, give next_before)." });
+add("service:persona", "diary.get", "request", obj({ date: { type: "string", pattern: DATE_PATTERN } }, ["date"]),
+  obj({ date: nonempty, content: str, done: bool, notes: array(personaNote) }, ["date", "content", "done", "notes"]),
+  { callers: OWNER_AGENT, label: "在读她的日记", description: "One day of the primary agent's diary, whole, with the notes written on it (oldest first). not_found: no diary that day." });
+add("service:persona", "note", "request", obj({ about: noteAbout, text: { type: "string", minLength: 1, maxLength: 4000 } }, ["about", "text"]), obj({ id, told: bool }, ["id"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在给她留批注", description: "A note or a correction on something of the primary agent's: about is what it is on (now, diary:<date>, memory:<file>, identity:<file>, task:<id>, line:<id>). Kept with that thing; the primary agent is woken with it (reason owner_note) unless she wrote it herself, so she can fix what it is about and answer with note.reply." });
+add("service:persona", "note.reply", "request", obj({ id, text: { type: "string", minLength: 1, maxLength: 4000 } }, ["id", "text"]), obj({ replied: bool }, ["replied"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在回批注", description: "Answer a note: what was changed because of it, or why nothing was. Shown under the note; a later answer replaces the earlier one." });
+add("service:persona", "notes.list", "request", obj({ about: noteAbout, limit: { type: "integer", minimum: 1, maximum: 200 } }), obj({ notes: array(personaNote) }, ["notes"]),
+  { callers: OWNER_AGENT, label: "在看批注", description: "The notes on the primary agent's things, newest first: on one thing (about), or all. A note without reply has not been answered yet." });
+add("service:persona", "persona.changed", "event", obj({ part: choice("identity", "memory", "notes", "diary", "growth"), about: nonempty, by: id }, ["part", "about", "by"]), undefined,
+  { record: true, label: "在记下她的变化", description: "Something of the primary agent's changed through service:persona: her persona (identity:<file>), a memory file (memory:<file>), or a note on something (its about). by: who did it. Goes into the ledger so the Ash app reads again and can say who changed it." });
+
 // ===================================================================================================================
 // service:cost: usage and quota
 // ===================================================================================================================

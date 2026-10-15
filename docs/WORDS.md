@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `9f7a83a0166db924`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `84841a44d3c8b864`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -13,18 +13,18 @@
 - [`service:vault`](#servicevault) (12)
 - [`service:devices`](#servicedevices) (18)
 - [`service:link`](#servicelink) (13)
-- [`service:agents`](#serviceagents) (32)
+- [`service:agents`](#serviceagents) (33)
 - [`service:apps`](#serviceapps) (19)
 - [`service:clock`](#serviceclock) (5)
 - [`service:llm`](#servicellm) (4)
-- [`service:persona`](#servicepersona) (2)
+- [`service:persona`](#servicepersona) (14)
 - [`service:widgets`](#servicewidgets) (13)
 - [`service:pulse`](#servicepulse) (7)
 - [`service:cost`](#servicecost) (4)
 - [`service:reflex`](#servicereflex) (4)
 - [`service:senses`](#servicesenses) (12)
 - [`service:directory`](#servicedirectory) (2)
-- [`service:history`](#servicehistory) (9)
+- [`service:history`](#servicehistory) (10)
 - [`service:blobs`](#serviceblobs) (2)
 - [`service:host`](#servicehost) (26)
 - [`service:bodies`](#servicebodies) (4)
@@ -192,6 +192,7 @@
 | `session.restart` | owner, agent, app | act / none | - | agent*, key | 在重启会话进程 | Restart the agent's process and resume its sessions (one lane, or all when key is left out). |
 | `configure` | owner, agent, app | write / none | - | agent*, key, config | 在配置帮手 | Set the runtime's own configuration for an agent (model, effort level, other options the runtime reports it supports), or read it when config is left out. This is the temporary way: it changes what is in force now and is forgotten when the hub restarts; the lasting way is `update` with `runtime`. On the pi runtime: `config: {model: "deepseek/deepseek-flash", effort: "high"}` takes effect from the next turn; `config: {login: "openai-codex"}` starts Codex's browser login (pi's standard one) and returns {url} (the owner opens it in the phone's browser, with the phone's VPN on, and signs in; the browser comes back to the phone itself and you are told when it is done). The read-back gives `effective` (in force now: model, effort, whether it fell back to DeepSeek and why, the route to the model, the login state) and `saved` (the declaration's lasting settings). |
 | `plugins` | owner, agent, app | write / structure | - | agent*, key, op*, name | 在调整帮手的插件 | List, enable or disable the plugins of one agent's runtime. Plugins change what the agent can do; the gate decides whether the owner is asked. |
+| `agent.changed` | kernel | read / none | event out, record | agent*, change*, state*, by | 在记下帮手的变化 | An agent was declared, changed, removed, started, stopped, restarted or made primary (`by`: who did it), or its process came up, went down or was given up on by itself (`change: state`). Turns starting and ending are the agent's own turn.started / turn.ended. Goes into the ledger, so a page that shows the team reads it again. |
 | `env.changed` | kernel | read / none | event in | what*, network*, online*, saver* | 在处理网络变化 | The host reports that the network or the power state changed (what: network with the proxy and whether the device is online, or power with whether it is in power-saving mode); when the proxy is a different one, the agents module restarts at once the agents running on this phone (they are told the turn was cut off; their waiting messages go to the new process). Sent by the host module; not recorded. |
 | `usage.recorded` | kernel | read / none | event out | caller*, provider*, model*, input_tokens*, output_tokens*, cache_read_tokens, cost, ok*, at* | 在记下用量 | An agent driver's model usage, passed to service:cost. |
 
@@ -244,6 +245,18 @@
 |---|---|---|---|---|---|---|
 | `get` | owner, agent, app | read / none | - | file | 在看人格 | The approved versions of SOUL.md and IDENTITY.md, the only ones sessions load. Editing the files in the body changes nothing until a change is proposed and approved. |
 | `propose` | owner, agent | write / structure | - | file*, content*, reason* | 在提议改人格 | Propose a new SOUL.md or IDENTITY.md with the reason. The gate decides whether the owner is asked; a change the owner makes takes effect at once. It shows in new sessions after the next reload. |
+| `versions` | owner, agent, app | read / none | - | file* | 在看人格的变化 | Every approved version of SOUL.md or IDENTITY.md, newest first: when, who made or approved it ('template' for the shipped text) and why. Not the texts; get has the one in force. |
+| `memory.get` | owner, agent | read / none | - | file | 在看她记得的事 | The primary agent's memory files as they are in the main body: USER.md (about the owner), MEMORY.md (her notes on things and experience), PROACTIVE.md (what she may bring to the owner unasked). missing: the file is not there yet. by, at: who wrote it last and when, while it is still what memory.set wrote (left out after an edit made directly in the body). |
+| `memory.set` | owner, agent | write / none | - | file*, content*, reason | 在改她记得的事 | Write one of the memory files whole (USER.md, MEMORY.md, PROACTIVE.md) and tell it with persona.changed. The owner's corrections from the Ash app come this way; the primary agent may also edit these files directly in her body. |
+| `growth.list` | owner, agent | read / none | - | limit | 在看她的成长 | Learned skills, built apps and changed habits, in her own words: why, what changed, the effect and the next step. evidence holds optional source references. Ongoing tasks and themes live only in service:tasks. |
+| `growth.put` | owner, agent | write / none | - | id*, title*, why, did*, effect, next, evidence | 在记下她的成长 | Write or correct a growth record under a stable caller-chosen id (reuse it on retry). First person, plain words and sources; do not invent progress. Does not create tasks or themes. |
+| `diary.set` | owner, agent | write / none | - | date*, content* | 在写她的日记 | Save a whole diary day to memory/YYYY-MM-DD.md and emit persona.changed. Read the existing day and merge drafts before writing. The nightly review uses this word and ends with <!-- review:done -->. |
+| `diary.list` | owner, agent | read / none | - | before, limit | 在翻她的日记 | The primary agent's diary days (memory/YYYY-MM-DD.md, written in the nightly review), newest first: the first lines, whether the review was finished, how many notes the day has. before: only days before this date (for the next page, give next_before). |
+| `diary.get` | owner, agent | read / none | - | date* | 在读她的日记 | One day of the primary agent's diary, whole, with the notes written on it (oldest first). not_found: no diary that day. |
+| `note` | owner, agent | write / none | - | about*, text* | 在给她留批注 | A note or a correction on something of the primary agent's: about is what it is on (now, diary:<date>, memory:<file>, identity:<file>, task:<id>, line:<id>). Kept with that thing; the primary agent is woken with it (reason owner_note) unless she wrote it herself, so she can fix what it is about and answer with note.reply. |
+| `note.reply` | owner, agent | write / none | - | id*, text* | 在回批注 | Answer a note: what was changed because of it, or why nothing was. Shown under the note; a later answer replaces the earlier one. |
+| `notes.list` | owner, agent | read / none | - | about, limit | 在看批注 | The notes on the primary agent's things, newest first: on one thing (about), or all. A note without reply has not been answered yet. |
+| `persona.changed` | kernel | read / none | event out, record | part*, about*, by* | 在记下她的变化 | Something of the primary agent's changed through service:persona: her persona (identity:<file>), a memory file (memory:<file>), or a note on something (its about). by: who did it. Goes into the ledger so the Ash app reads again and can say who changed it. |
 
 ## `service:widgets`
 
@@ -323,6 +336,7 @@
 |---|---|---|---|---|---|---|
 | `query` | owner, agent, app | read / none | - | text, speaker, lane, thread, before, after, limit | 在翻聊天记录 | Search the ledger: messages by text, speaker, lane or thread, newest first. Long bodies are summaries with an attachment reference; read them with service:blobs/read. |
 | `read` | owner, agent, app | read / none | - | from_seq*, to_seq* | 在读历史原文 | Read ledger messages by sequence range, as recorded (secret values masked). |
+| `exchanges` | owner, agent, app | read / none | - | agent, before, limit | 在看帮手之间的往来 | The team's own conversation, newest first: what agents (and the owner, when speaking to a helper) asked and told each other, through service:agents/ask, tell and spawn or straight to an agent, each with its answer and whether it is still waiting. `agent` keeps the ones that agent sent or received. Not the owner's conversation with the primary agent (that is history.window). Page back with next_before. |
 | `turn` | owner, agent, app | read / none | - | turn* | 在看某一轮做了什么 | What happened in one turn of an agent: the messages it was given, its tool calls and results (summaries), and what it said. |
 | `activity` | owner, agent, app | read / none | - | id*, offset | 在看活动详情 | The detail of one activity entry (a turn's tool calls), paged by offset. |
 | `window` | owner, agent | read / none | - | before, after, limit, snapshot_seq, around_id | 在翻聊天记录 | A bounded window of display items with complete answer, delivery and reaction state at snapshot_seq. Before, after and around_id are mutually exclusive. Long text is a preview and blob reference. Oversized marks one legitimate item returned alone. |

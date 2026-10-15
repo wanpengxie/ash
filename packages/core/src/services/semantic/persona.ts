@@ -12,17 +12,41 @@
  * there changes nothing a session loads. An approved change shows in a session only when that session is opened, that
  * is at the next `session.reload` (the agents module sees the static text changed and opens a new session then).
  * The body's copy is rewritten with the approved text so the file the agent reads is the one in force.
+ *
+ * It is also the words of the system app 「Ash」 (spec APPS-R1 §4): everything about the primary agent that the owner reads
+ * and corrects, the same words for the owner and for her.
+ *
+ *   versions     {file}                         the approved versions of SOUL.md / IDENTITY.md: when, by whom, why
+ *   memory.get   {file?}                        USER.md, MEMORY.md, PROACTIVE.md as they are in the main body, and who wrote
+ *                                               them last when that was through memory.set
+ *   memory.set   {file, content, reason?}       write one of them (she also edits them herself, as files)
+ *   diary.list   {before?, limit?}              her diary days (`memory/YYYY-MM-DD.md`, written by the daily review), newest first
+ *   diary.get    {date}                         one day's diary, with the notes on it
+ *   note         {about, text}                  a note or a correction on something of hers; the primary agent is woken
+ *                                               with it (reason `owner_note`) unless she wrote it herself
+ *   note.reply   {id, text}                     her answer to a note (what she changed, or why not)
+ *   notes.list   {about?, limit?}               the notes, newest first
+ *
+ * Every change made through these words is told with the event `persona.changed {part, about, by}` (recorded, so the
+ * app sees the ledger move and reads again). Her own file edits in the body are not words and send no event; the app
+ * reads again whenever the ledger moves, and her turns move it.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { WordError, type HandleContext, type Message, type WordResult } from "../../../../sdk/src/message";
 import type { Member, WordContract } from "../../../../sdk/src/word";
 import { wordsOf } from "../../../../sdk/src/words";
 import type { Ledger } from "../../kernel/ledger";
-import { seedBodyFile, writeBodyFile, type Sender } from "./shared";
+import { DONE_MARK } from "./daily";
+import { ask, dataOf, primaryAgent, readBodyFile, seedBodyFile, wakeAgent, writeBodyFile, type Sender } from "./shared";
 
 export const PERSONA_ID = "service:persona";
 export const PERSONA_FILES = ["SOUL.md", "IDENTITY.md"] as const;
 export type PersonaFile = (typeof PERSONA_FILES)[number];
+/** Her memory of the owner and her notes to herself, and what may come to the owner unasked: plain files of the main body. */
+export const MEMORY_FILES = ["USER.md", "MEMORY.md", "PROACTIVE.md"] as const;
+export type MemoryFile = (typeof MEMORY_FILES)[number];
+const DIARY_DIR = "memory";
+const DIARY_NAME = /^([0-9]{4}-[0-9]{2}-[0-9]{2})\.md$/;
 
 export interface PersonaOptions {
   ledger: Pick<Ledger, "db">;
@@ -34,11 +58,20 @@ export interface PersonaOptions {
 }
 
 export interface PersonaVersion { file: PersonaFile; content: string; version: string; approved_at: number; by: string; reason: string }
+export interface PersonaNote { id: string; about: string; text: string; by: string; at: number; reply?: string; replied_at?: number; replied_by?: string }
 
 const SQL = `CREATE TABLE IF NOT EXISTS persona_versions (
   id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT NOT NULL, content TEXT NOT NULL, version TEXT NOT NULL,
   approved_at INTEGER NOT NULL, approved_by TEXT NOT NULL, reason TEXT NOT NULL);
-  CREATE INDEX IF NOT EXISTS persona_versions_file ON persona_versions(file, id);`;
+  CREATE INDEX IF NOT EXISTS persona_versions_file ON persona_versions(file, id);
+  CREATE TABLE IF NOT EXISTS persona_notes (
+  id TEXT PRIMARY KEY, about TEXT NOT NULL, text TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL,
+  reply TEXT, replied_at INTEGER, replied_by TEXT);
+  CREATE INDEX IF NOT EXISTS persona_notes_about ON persona_notes(about, at);
+  CREATE TABLE IF NOT EXISTS persona_growth (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, why TEXT NOT NULL, did TEXT NOT NULL, effect TEXT NOT NULL, next TEXT NOT NULL,
+  evidence TEXT NOT NULL, at INTEGER NOT NULL, by TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS persona_writes (file TEXT PRIMARY KEY, version TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL);`;
 
 const versionOf = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 12);
 
@@ -96,8 +129,130 @@ export class PersonaService implements Member {
     switch (msg.word) {
       case "get": return { data: this.get(body.file as PersonaFile | undefined) };
       case "propose": return { data: await this.propose(body, ctx) };
+      case "versions": return { data: { versions: this.versions(body.file as PersonaFile).map(({ content: _c, ...v }) => v).reverse() } };
+      case "memory.get": return { data: await this.memoryGet(body.file as MemoryFile | undefined) };
+      case "memory.set": return { data: await this.memorySet(body, ctx) };
+      case "growth.list": return { data: { items: this.db.prepare("SELECT * FROM persona_growth ORDER BY at DESC, rowid DESC LIMIT ?").all(Number(body.limit ?? 50)).map((r: any) => ({ ...r, evidence: JSON.parse(r.evidence) })) } };
+      case "growth.put": return { data: this.growthPut(body, ctx) };
+      case "diary.set": return { data: await this.diarySet(body, ctx) };
+      case "diary.list": return { data: await this.diaryList(body) };
+      case "diary.get": return { data: await this.diaryGet(String(body.date)) };
+      case "note": return { data: await this.note(body, ctx) };
+      case "note.reply": return { data: this.noteReply(body, ctx) };
+      case "notes.list": return { data: { notes: this.notes(body.about as string | undefined, Number(body.limit ?? 50)) } };
       default: throw new WordError("not_found", `service:persona has no word ${msg.word}`);
     }
+  }
+
+  /** `persona.changed`: recorded, so whoever shows these things hears the ledger move. */
+  private changed(part: "identity" | "memory" | "notes" | "diary" | "growth", about: string, by: string): void {
+    this.options.router.send({ to: null, kind: "event", word: "persona.changed", body: { part, about, by } }, { member: PERSONA_ID, via: "service", local: true })
+      .then((reply) => { if (!reply.ok) this.options.log?.(`persona.changed: ${reply.error.code}: ${reply.error.message}`); }, (error) => this.options.log?.("persona.changed failed", error));
+  }
+
+  // ---- memory files ----
+
+  private async memoryGet(file?: MemoryFile) {
+    const files = [];
+    for (const f of file ? [file] : MEMORY_FILES) {
+      const read = await readBodyFile(this.options.router, PERSONA_ID, f);
+      // Who wrote it last, when it is still what memory.set wrote (an edit she made in her body since is not known here).
+      const last = read.ok ? this.db.prepare("SELECT version, by, at FROM persona_writes WHERE file=?").get(f) as { version: string; by: string; at: number } | undefined : undefined;
+      if (read.ok) files.push({ file: f, content: read.text, ...(last && last.version === versionOf(read.text) ? { by: last.by, at: last.at } : {}) });
+      else if (read.missing) files.push({ file: f, content: "", missing: true });
+      else throw new WordError("offline", `could not read ${f}: ${read.message}`);
+    }
+    return { files };
+  }
+
+  private async memorySet(body: Record<string, unknown>, ctx: HandleContext) {
+    const file = body.file as MemoryFile;
+    const reply = await ask(this.options.router, PERSONA_ID, "body:main", "workspace.write", { path: file, content: String(body.content ?? "") });
+    if (!reply.ok) throw new WordError(reply.error.code === "too_large" ? "too_large" : "offline", `could not write ${file}: ${reply.error.message}`);
+    this.db.prepare("INSERT OR REPLACE INTO persona_writes (file, version, by, at) VALUES (?,?,?,?)").run(file, versionOf(String(body.content ?? "")), ctx.caller.member, this.now());
+    this.changed("memory", `memory:${file}`, ctx.caller.member);
+    return { saved: true };
+  }
+
+  // Growth is a record of a learned change, not another task or theme store. Work in progress stays in service:tasks.
+  private growthPut(body: Record<string, unknown>, ctx: HandleContext) {
+    const id = String(body.id);
+    this.db.prepare(`INSERT INTO persona_growth (id,title,why,did,effect,next,evidence,at,by) VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title,why=excluded.why,did=excluded.did,effect=excluded.effect,
+      next=excluded.next,evidence=excluded.evidence,at=excluded.at,by=excluded.by`).run(id, String(body.title), String(body.why ?? ""),
+      String(body.did), String(body.effect ?? ""), String(body.next ?? ""), JSON.stringify(body.evidence ?? []), this.now(), ctx.caller.member);
+    this.changed("growth", `growth:${id}`, ctx.caller.member);
+    return { id, saved: true };
+  }
+
+  // ---- diary ----
+
+  private async diarySet(body: Record<string, unknown>, ctx: HandleContext) {
+    const date = String(body.date);
+    if (!DIARY_NAME.test(`${date}.md`) || Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date)
+      throw new WordError("bad_request", "date must be a calendar date YYYY-MM-DD");
+    const result = await ask(this.options.router, PERSONA_ID, "body:main", "workspace.write", { path: `${DIARY_DIR}/${date}.md`, content: String(body.content) });
+    if (!result.ok) throw new WordError(result.error.code === "too_large" ? "too_large" : "offline", `could not write diary: ${result.error.message}`);
+    this.changed("diary", `diary:${date}`, ctx.caller.member);
+    return { saved: true };
+  }
+
+  private async diaryList(body: Record<string, unknown>) {
+    const limit = Number(body.limit ?? 14);
+    const before = typeof body.before === "string" ? body.before : null;
+    const listed = await ask(this.options.router, PERSONA_ID, "body:main", "workspace.ls", { path: DIARY_DIR, limit: 1000 });
+    if (!listed.ok && listed.error.code !== "not_found") throw new WordError("offline", `could not list the diary: ${listed.error.message}`);
+    const dates = (dataOf<{ entries?: { name?: string; type?: string }[] }>(listed)?.entries ?? [])
+      .map((e) => (e.type === "file" ? DIARY_NAME.exec(e.name ?? "")?.[1] : undefined)).filter((d): d is string => !!d && (!before || d < before))
+      .sort().reverse();
+    const days = [];
+    for (const date of dates.slice(0, limit)) {
+      const read = await readBodyFile(this.options.router, PERSONA_ID, `${DIARY_DIR}/${date}.md`);
+      if (!read.ok) throw new WordError(read.missing ? "not_found" : "offline", `could not read diary ${date}: ${read.message}`);
+      const text = read.text;
+      days.push({ date, excerpt: excerptOf(text), done: text.includes(DONE_MARK), notes: this.notes(`diary:${date}`, 100).length });
+    }
+    return { days, ...(dates.length > limit ? { next_before: dates[limit - 1] } : {}) };
+  }
+
+  private async diaryGet(date: string) {
+    const read = await readBodyFile(this.options.router, PERSONA_ID, `${DIARY_DIR}/${date}.md`);
+    if (!read.ok) throw new WordError(read.missing ? "not_found" : "offline", read.missing ? `no diary for ${date}` : read.message);
+    return { date, content: read.text, done: read.text.includes(DONE_MARK), notes: this.notes(`diary:${date}`, 100).reverse() };
+  }
+
+  // ---- notes ----
+
+  private async note(body: Record<string, unknown>, ctx: HandleContext) {
+    const note: PersonaNote = { id: `n_${randomUUID()}`, about: String(body.about), text: String(body.text).slice(0, 4000), by: ctx.caller.member, at: this.now() };
+    this.db.prepare("INSERT INTO persona_notes (id, about, text, by, at) VALUES (?,?,?,?,?)").run(note.id, note.about, note.text, note.by, note.at);
+    this.changed("notes", note.about, note.by);
+    // She is told, on her back lane, so she can fix what the note is about and answer it (skill owner-notes).
+    const agent = await primaryAgent(this.options.router, PERSONA_ID);
+    let told = false;
+    if (agent && agent !== note.by) {
+      const woke = await wakeAgent(this.options.router, PERSONA_ID, agent, "owner_note", { note: note.id, about: note.about, text: note.text, by: note.by });
+      told = woke.ok;
+      if (!woke.ok) this.options.log?.(`persona: could not wake ${agent} for note ${note.id}: ${woke.error.message}`);
+    }
+    return { id: note.id, told };
+  }
+
+  private noteReply(body: Record<string, unknown>, ctx: HandleContext) {
+    const id = String(body.id);
+    const done = this.db.prepare("UPDATE persona_notes SET reply=?, replied_at=?, replied_by=? WHERE id=?").run(String(body.text).slice(0, 4000), this.now(), ctx.caller.member, id);
+    if (done.changes === 0) throw new WordError("not_found", `no note ${id}`);
+    const about = (this.db.prepare("SELECT about FROM persona_notes WHERE id=?").get(id) as { about: string }).about;
+    this.changed("notes", about, ctx.caller.member);
+    return { replied: true };
+  }
+
+  /** Notes, newest first (on one thing, or all). */
+  notes(about: string | undefined, limit: number): PersonaNote[] {
+    const rows = (about
+      ? this.db.prepare("SELECT * FROM persona_notes WHERE about=? ORDER BY at DESC, rowid DESC LIMIT ?").all(about, limit)
+      : this.db.prepare("SELECT * FROM persona_notes ORDER BY at DESC, rowid DESC LIMIT ?").all(limit)) as unknown as Record<string, unknown>[];
+    return rows.map((r) => Object.fromEntries(Object.entries(r).filter(([, v]) => v !== null)) as unknown as PersonaNote);
   }
 
   private get(file?: PersonaFile) {
@@ -114,8 +269,15 @@ export class PersonaService implements Member {
     if (this.current(file)?.content === content) return { proposed: false, applied: false };
     // Reaching here means the gate let the call through: the owner made it, or the owner approved it.
     this.insert(file, content, ctx.caller.member, String(body.reason).slice(0, 500));
+    this.changed("identity", `identity:${file}`, ctx.caller.member);
     if (!(await writeBodyFile(this.options.router, PERSONA_ID, file, content))) this.options.log?.(`persona: could not write ${file} into the body; the approved version is in force anyway`);
     return { proposed: true, applied: true };
   }
 }
 
+
+/** The first few lines of a diary day that say something (headings, the done mark and empty lines left out), for the list. */
+export function excerptOf(text: string): string {
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#") && !l.startsWith("<!--"))
+    .slice(0, 2).map((l) => l.replace(/^(?:[-*+]|\d+[.)])\s+/, "")).join(" ").slice(0, 160);
+}
