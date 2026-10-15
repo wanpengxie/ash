@@ -64,6 +64,12 @@ class ChatScreen(
     private val list = AshUi.vstack(ctx, 8).apply { setPadding(dp(14), dp(8), dp(14), dp(12)) }
     private val scroll = object : ScrollView(ctx) {
         override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) { super.onScrollChanged(l, t, oldl, oldt); if (t < dp(200)) loadOlder(); paintToBottom() }
+        // The keyboard coming up shrinks the list from below: keep its bottom edge where it was, so the latest messages move up
+        // above the input (as in any chat) instead of being covered; going down again keeps the top.
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            if (oldh > 0 && h < oldh) post { scrollBy(0, oldh - h) }
+        }
     }.apply { isFillViewport = true; addView(list) }
     /** Ids of the long messages the owner opened; kept here so a repaint or a page of older messages does not fold them again. */
     private val unfolded = HashSet<String>()
@@ -222,9 +228,12 @@ class ChatScreen(
         option?.let { body.put("in_reply_to", it.first).put("option_id", it.second) }
         outbox.add(JSONObject().put("to", to).put("kind", "request").put("word", "say").put("body", body).put("client_id", UUID.randomUUID().toString()))
         paintList()
-        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        toEnd()
         flush()
     }
+
+    /** To the latest message. Not `fullScroll`: that also moves the focus to the last row, which closes the keyboard. */
+    private fun toEnd() { scroll.post { scroll.scrollTo(0, list.height) } }
 
     /** Sends what waits, oldest first, one at a time; a lost connection leaves the rest for the next one. */
     private fun flush() {
@@ -479,7 +488,7 @@ class ChatScreen(
         }
         rows.clear(); rows.putAll(next)
         firstPaint = false
-        if (atBottom) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        if (atBottom) toEnd()
         scroll.post { paintToBottom() }
     }
 
