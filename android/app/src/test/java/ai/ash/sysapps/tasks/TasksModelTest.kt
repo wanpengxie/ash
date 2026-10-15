@@ -52,6 +52,8 @@ class TasksModelTest {
         assertTrue(TasksModel.delivery(ordinary).contains("未取得"));assertTrue(TasksModel.delivery(pending).contains("提醒尚未安排"))
         val assigned=pending.copy(remindersPending=false,deliveryKnown=true,reminderDelivery="ready")
         assertEquals("提醒已安排",TasksModel.delivery(assigned))
+        assertEquals("未设置提醒",TasksModel.delivery(assigned.copy(remindAt=null)))
+        assertEquals("到期跟进已安排",TasksModel.delivery(assigned.copy(remindAt=null,dueAt=now+1000)))
     }
 
 }

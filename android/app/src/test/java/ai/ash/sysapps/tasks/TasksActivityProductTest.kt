@@ -241,9 +241,9 @@ class TasksActivityProductTest {
         a.requests.first { it.word=="list" && !it.body.has("status") }.done(JSONObject().put("agents",JSONArray()
             .put(JSONObject().put("id","agent:main").put("primary",true))
             .put(JSONObject().put("id","agent:helper").put("name","资料帮手"))),null)
-        val recovery=task("recovery","寄出报税补充材料").put("note","周一寄出补充材料；取件前核对清单。")
+        val recovery=task("recovery","寄出报税补充材料").put("note","周一寄出补充材料；取件前核对清单。").put("source",JSONObject().put("message","source-tax"))
             .put("remind_at",now+3*86_400_000L).put("delivery",JSONObject().put("saved",true).put("reminders","pending").put("conversation","pending"))
-        val waiting=task("compare","比较日常慢跑鞋").put("assignee","agent:main").put("status","waiting").put("note","候选价格已记下，正等商家确认退换条件。先核对原比较，再决定。")
+        val waiting=task("compare","比较日常慢跑鞋").put("source",JSONObject().put("message","source-compare")).put("assignee","agent:main").put("status","waiting").put("note","候选价格已记下，正等商家确认退换条件。先核对原比较，再决定。")
         val helper=task("helper","核对住宿退款条款并补齐比较依据").put("subject","ash").put("assignee","agent:helper").put("status","todo").put("note","原退款条款和来源尚待核对。")
         val future=task("future","交报税材料").put("remind_at",now+3_600_000L)
         val normal=JSONArray().put(recovery).put(waiting).put(helper).put(future)
@@ -275,6 +275,8 @@ class TasksActivityProductTest {
         capture("tasks-quiet")
         ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"id\":\"compare\"}"));layout();capture("tasks-ash-detail")
         assertTrue(views(decor).filterIsInstance<TextView>().any { it.text.toString()==waiting.getString("note") })
+        (text(a,"看原始交代").parent as View).performClick()
+        assertEquals("source-compare",shadowOf(a).nextStartedActivity.getStringExtra("ai.ash.extra.MESSAGE_ID"))
         text(a,"编辑记录").performClick();layout()
         val note=(get(a,"fields") as Map<*,*>)["note"] as EditText
         note.setText("已核对两家商户，继续等最后一家回复。")
@@ -285,7 +287,18 @@ class TasksActivityProductTest {
         assertEquals(setOf("id","note","result"),save.body.keys().asSequence().toSet())
         save.done(JSONObject().put("task",JSONObject(waiting.toString()).put("note",note.text.toString())),null);flush();layout();capture("tasks-edited")
         assertTrue(views(decor).filterIsInstance<TextView>().any { it.text.toString()=="已核对两家商户，继续等最后一家回复。" })
+        invoke(a,"goBack");set(a,"quickExpanded",true);invoke(a,"render");layout()
+        val input=get(a,"quick") as EditText;input.setText("买出差用的洗漱用品与充电线")
+        (get(a,"quickReminder") as View).performClick();choice(2)
+        text(a,"记下").performClick();flush()
+        val add=a.requests.last { it.word=="add" }
+        val added=task("travel",add.body.getString("title")).put("remind_at",add.body.getLong("remind_at")).put("delivery",JSONObject().put("saved",true).put("reminders","ready").put("conversation","ready"))
+        add.done(JSONObject().put("task",added),null);flush()
+        a.requests.last { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",JSONArray().put(added)),null);flush();awaitRow(adapter,"all:task:travel")
+        layout();val receipt=get(a,"feedback") as TextView
+        assertTrue(receipt.text.contains("已记下：买出差用的洗漱用品与充电线"));assertTrue(receipt.text.contains("已安排"));assertTrue(receipt.lineCount>=2);visible(receipt)
+        capture("tasks-added")
         set(a,"visible",false);ctl.destroy();flush()
     }
-    private fun task(id:String,title:String)=JSONObject().put("id",id).put("title",title).put("assignee","person:owner").put("subject","owner").put("status","todo").put("due_at",JSONObject.NULL).put("remind_at",JSONObject.NULL).put("updated_at",2).put("delivery",JSONObject().put("saved",true).put("reminders","ready").put("conversation","ready"))
+    private fun task(id:String,title:String)=JSONObject().put("id",id).put("title",title).put("assignee","person:owner").put("subject","owner").put("status","todo").put("due_at",JSONObject.NULL).put("remind_at",JSONObject.NULL).put("updated_at",2).put("delivery",JSONObject().put("saved",true).put("reminders","none").put("conversation","ready"))
 }

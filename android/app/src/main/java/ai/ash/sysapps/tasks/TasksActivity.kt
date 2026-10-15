@@ -363,9 +363,9 @@ open class TasksActivity : SystemAppActivity() {
         record.addView(AshUi.text(this,"当前记录",AshTokens.Type.callout,c.text2));record.addView(ui.note(t.note.ifBlank { "还没有补充记录。" }))
         if(t.result.isNotBlank()){record.addView(AshUi.text(this,"结果记录",AshTokens.Type.callout,c.text2));record.addView(ui.note(t.result))}
         record.addView(ui.actions(ui.action("编辑这件事"){beginEdit(t)},ui.action("改提醒"){chooseTime("提醒时间",t.remindAt){at -> rowWrite(t,"update",JSONObject().put("id",t.id).put("remind_at",at ?: JSONObject.NULL))}}))
-        if(t.source?.message?.isNotBlank()==true)record.addView(ui.action("看原始交代",outline=true){source(t)})
+        if(t.source?.message?.isNotBlank()==true)record.addView(ui.source("看原始交代"){source(t)})
         record.addView(ui.line())
-        record.addView(ui.action(if(historyExpanded)"收起修改记录" else "谁改过这件事"){historyExpanded=!historyExpanded;if(historyExpanded)readHistory(t);showDetail(t)})
+        record.addView(ui.disclosure("谁改过这件事",historyExpanded){historyExpanded=!historyExpanded;if(historyExpanded)readHistory(t);showDetail(t)})
         if(historyExpanded){
             if(historyTask==t.id && history.isNotEmpty())history.forEach { record.addView(AshUi.text(this,it,AshTokens.Type.sub,c.text2)) }
             else record.addView(AshUi.text(this,if(historyTask==t.id)"还没有修改记录" else "正在读取修改记录…",AshTokens.Type.sub,c.text2))

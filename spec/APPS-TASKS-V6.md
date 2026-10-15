@@ -31,7 +31,14 @@
 - tasks-quiet.png：ready快照，普通waiting/未来无处理提示，仍可看agent与个人事项。
 - tasks-ash-detail.png：原agent事项与note，不画固定候选。
 - tasks-edited.png：真实输入、刷新保同一EditText/选区、保存回执后的原note。
+- tasks-added.png：同一实际360×800窗口完成快速填写、选明天、add回执与列表重读，检查多行成功反馈完整可见。
 
 保留原选择器、负责人单选、冷热路由、未知请求重试、新草稿不丢的真实View回归；Model直接区分已到提醒/截止、普通等待、未来、pending与缺delivery。结果和截图必须实际运行、打开后才记通过，源码就绪不算通过。
 
 本轮不改任务后端。此前真实Router/Clock/对话脚本13项结果仅证明其当时后端路径，不代签新界面。跨应用完整注册和HomeActivity来源回跳在总控集成依赖中；本树不复制其他应用/注册表，未冒称跨App集成已通过。真实IME、系统手势返回、200%字体/RTL/TalkBack、OEM通知后台及真机帧耗时未验；不操作手机、不打包、不推送或合主线。
+
+## 第一轮实际运行与看图
+
+指定单命令已退出0：Activity 11/11、Model 6/6，0失败；包含生产与测试Kotlin编译。实际打开home/detail/quiet/ash-detail/edited五图，正文与恢复动作可见，普通waiting/未来无当前需人提示，实际记录保存和刷新保输入通过。此时尚未包括下面看图修正，不用17项绿测试替代当前图片复验。
+
+看图明确修正：详情经过与来源改成稿中的无底展开/来源行；无时间不能因ready字段写“提醒已安排”，有截止但无提醒则称到期跟进安排；fixture无时间使用none，并给原source验证发出的同消息Intent。公共nav标签未居中已交base，业务不另修公共类。补充同窗口quick-add成功图，尚待总控下一时段复验后打开。

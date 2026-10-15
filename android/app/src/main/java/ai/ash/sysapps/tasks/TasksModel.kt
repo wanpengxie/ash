@@ -54,7 +54,11 @@ object TasksModel {
     fun delivery(task: Task): String = when {
         needsRecovery(task) -> listOfNotNull("已保存", if(task.remindersPending)"提醒尚未安排" else null,if(task.conversationPending)"对话卡待恢复" else null).joinToString(" · ")
         !task.deliveryKnown -> "提醒与对话卡状态未取得"
-        task.reminderDelivery == "ready" -> "提醒已安排"
+        task.reminderDelivery == "ready" -> when {
+            task.remindAt!=null -> "提醒已安排"
+            task.dueAt!=null -> "到期跟进已安排"
+            else -> "未设置提醒"
+        }
         task.reminderDelivery == "none" -> if (task.remindAt == null && task.dueAt == null) "未设置提醒" else "没有待安排的提醒"
         else -> "提醒状态未取得"
     }

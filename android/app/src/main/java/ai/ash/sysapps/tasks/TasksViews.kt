@@ -55,6 +55,18 @@ internal class TasksViews(private val ctx: Context) {
     fun actions(vararg buttons:TextView) = AshUi.hstack(ctx,8).apply {
         buttons.forEach { addView(it,LinearLayout.LayoutParams(0,-2,1f)) }
     }
+    fun disclosure(label:String,expanded:Boolean,onClick:()->Unit):View=AshUi.hstack(ctx,12).apply {
+        minimumHeight=dp(48)
+        addView(text(label),LinearLayout.LayoutParams(0,-2,1f))
+        addView(icon(R.drawable.ash_ic_down).apply { rotation=if(expanded)180f else 0f })
+        isClickable=true;isFocusable=true;AshUi.role(this,android.widget.Button::class.java.name);setOnClickListener { onClick() }
+    }
+    fun source(label:String,onClick:()->Unit):View=AshUi.hstack(ctx,8).apply {
+        minimumHeight=dp(48)
+        addView(icon(R.drawable.ash_ic_msg));addView(AshUi.text(ctx,label,AshTokens.Type.callout,c.text2),LinearLayout.LayoutParams(0,-2,1f))
+        addView(icon(R.drawable.ash_ic_chev))
+        isClickable=true;isFocusable=true;AshUi.role(this,android.widget.Button::class.java.name);setOnClickListener { onClick() }
+    }
     fun recovery(t:TasksModel.Task,onOpen:()->Unit,onRetry:()->Unit,enabled:Boolean=true):View = AshUi.vstack(ctx,12).apply {
         tag="recovery:${t.id}";setPadding(dp(16),dp(16),dp(16),dp(16))
         background=AshUi.rounded(c.surface,dp(AshTokens.Radius.card).toFloat(),c.line,dp(1))
