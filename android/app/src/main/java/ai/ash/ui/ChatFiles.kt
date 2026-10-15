@@ -298,23 +298,35 @@ class ChatFiles(private val activity: Activity, private val port: HumanPort) : C
         val type = card.optString("type")
         if (type != "file" && type != "image") return null
         val ref = FileLinks.ref(card.optString("workspace"), card.optString("path"), card.optString("name").ifEmpty { null }) ?: return null
-        if (type == "image") return imageCard(ref, card.optString("alt"))
+        if (type == "image") return imageCard(ref, card.optString("alt"), card)
         return AshUi.card(activity, 6).apply {
             setPadding(AshUi.dp(activity, 14), AshUi.dp(activity, 10), AshUi.dp(activity, 14), AshUi.dp(activity, 10))
             addView(chip(ref.baseName.ifEmpty { "打开文件" }, image = false, framed = false) { viewer.open(ref) }, LinearLayout.LayoutParams(-1, -2))
         }
     }
 
-    /** An image card: the picture itself in the chat, and a tap opens it large in the viewer; until it is read (or when it cannot be) a chip stands in for it. */
-    private fun imageCard(ref: FileRef, alt: String): View {
-        val box = AshUi.vstack(activity, 6)
-        val open = { viewer.open(ref) }
-        val chip = chip("查看图片", image = true, onClick = open)
-        box.addView(chip, LinearLayout.LayoutParams(-1, -2))
+    /**
+     * An image card: the picture itself in the chat, and a tap opens it large in the viewer. Its box has its final size from the
+     * start (the card's width and height when it gives them, else 4:3), so the picture arriving fills it and moves nothing;
+     * until then (or when it cannot be read) the box shows an image glyph.
+     */
+    private fun imageCard(ref: FileRef, alt: String, card: JSONObject): View {
+        val (w, h) = cardBox(card.optInt("width"), card.optInt("height"))
+        val c = AshUi.p(activity)
+        val r = AshUi.dpF(activity, AshTokens.Radius.md.toFloat())
+        val box = FrameLayout(activity).apply {
+            background = AshUi.rounded(c.surface2, r)
+            outlineProvider = object : ViewOutlineProvider() { override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, r) } }
+            clipToOutline = true; isClickable = true; contentDescription = alt.ifEmpty { "图片" }
+            setOnClickListener { viewer.open(ref) }
+            layoutParams = ViewGroup.LayoutParams(AshUi.dp(activity, w), AshUi.dp(activity, h))
+        }
+        val glyph = View(activity).apply { background = AshPage.icon(activity, R.drawable.ash_ic_image).apply { setTint(c.text3) } }
+        box.addView(glyph, FrameLayout.LayoutParams(AshUi.dp(activity, 28), AshUi.dp(activity, 28), Gravity.CENTER))
         loadCardThumb(ref) { bitmap ->
-            if (bitmap == null || chip.parent !== box) return@loadCardThumb
-            box.removeView(chip)
-            box.addView(thumbnail(bitmap, alt.ifEmpty { "图片" }, CARD_THUMB_W, CARD_THUMB_H, open))
+            if (bitmap == null || glyph.parent !== box) return@loadCardThumb
+            box.removeView(glyph)
+            box.addView(ImageView(activity).apply { setImageBitmap(bitmap); scaleType = ImageView.ScaleType.CENTER_CROP }, FrameLayout.LayoutParams(-1, -1))
         }
         return box
     }
@@ -417,5 +429,12 @@ class ChatFiles(private val activity: Activity, private val port: HumanPort) : C
         private const val CARD_THUMB_W = 260
         private const val CARD_THUMB_H = 200
         private const val RETRY_MS = 60_000L
+
+        /** An image card's box in dp: the picture's own shape fitted into [CARD_THUMB_W] x [CARD_THUMB_H] (not lower than 80), or 4:3 when its size is not known. */
+        fun cardBox(width: Int, height: Int): Pair<Int, Int> {
+            if (width <= 0 || height <= 0) return CARD_THUMB_W to CARD_THUMB_W * 3 / 4
+            val scale = minOf(CARD_THUMB_W.toFloat() / width, CARD_THUMB_H.toFloat() / height)
+            return Math.round(width * scale).coerceAtLeast(80) to Math.round(height * scale).coerceAtLeast(80)
+        }
     }
 }

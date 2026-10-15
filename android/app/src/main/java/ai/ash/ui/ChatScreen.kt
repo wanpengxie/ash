@@ -14,13 +14,17 @@ import android.text.TextWatcher
 import android.text.method.LinkMovementMethod
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
+import androidx.recyclerview.widget.DefaultItemAnimator
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
 import ai.ash.host.PresentRoutes
 import ai.ash.R
 import ai.ash.apps.Ui
@@ -61,38 +65,32 @@ class ChatScreen(
     private val banner = AshUi.text(ctx, "", AshType(12.5f, 17f, 400, Role.TEXT_2)).apply {
         background = AshUi.rounded(c.surface2, AshUi.dpF(ctx, 12f)); setPadding(dp(12), dp(8), dp(12), dp(8)); visibility = View.GONE
     }
-    private val list = AshUi.vstack(ctx, 8).apply { setPadding(dp(14), dp(8), dp(14), dp(12)) }
+    private val rowsAdapter = Rows()
+    private val lm = LinearLayoutManager(ctx).apply { stackFromEnd = true }
+    private val animator = DefaultItemAnimator().apply { supportsChangeAnimations = false; addDuration = AshTokens.Motion.message }
     /**
-     * The conversation is laid out from its end, as a chat is: the place the owner reads is kept as a distance from the bottom,
-     * and every layout keeps that distance. So the keyboard coming up, the input growing, a new message at the end and a page
-     * of older ones above all leave the reading place alone, and at the bottom it stays at the newest message, with no code
-     * scrolling after them. Only the owner's own scrolling (and 「回到底部」, sending) changes it.
+     * The conversation, laid out from its end as a chat is (`stackFromEnd`): when the list gets shorter (the keyboard is up,
+     * the input grew) or a page of older messages comes in above, the list keeps the row at its bottom where it was, so the
+     * reading place stays, and at the end the newest message stays right above the input. Rows are updated one by one
+     * ([ChatRows.diff]): a refresh that changes nothing moves nothing. Only the owner's scrolling, 「回到底部」, sending, and a new
+     * message arriving while the newest one is in sight move it ([paintList]).
      */
-    private val scroll = object : ScrollView(ctx) {
-        private var fromBottom = 0
-        override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
-            super.onScrollChanged(l, t, oldl, oldt)
-            fromBottom = maxOf(0, list.height - (t + height))
-            if (t < dp(200)) loadOlder()
-            paintToBottom()
-        }
-        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
-            val keep = fromBottom
-            super.onLayout(changed, l, t, r, b)
-            val at = maxOf(0, list.height - height - keep)
-            if (scrollY != at) scrollTo(0, at)
-        }
-    }.apply {
-        isFillViewport = true; addView(list)
-        // A drag of the conversation puts the keyboard away (once per drag); the list's own layout never does.
-        var dragged = false
-        setOnTouchListener { _, e ->
-            when (e.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> dragged = false
-                android.view.MotionEvent.ACTION_MOVE -> if (!dragged) { dragged = true; dropKeyboard() }
+    private val list = RecyclerView(ctx).apply {
+        layoutManager = lm; adapter = rowsAdapter; itemAnimator = animator
+        // Every row stands 8 above the one under it (the first one's 8 is the list's top padding).
+        setPadding(dp(14), 0, dp(14), dp(12)); clipToPadding = false
+        setItemViewCacheSize(12)
+        addItemDecoration(object : RecyclerView.ItemDecoration() {
+            override fun getItemOffsets(out: android.graphics.Rect, v: View, parent: RecyclerView, state: RecyclerView.State) { out.top = dp(8) }
+        })
+        addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            // A drag of the conversation puts the keyboard away; the list's own scrolling never does.
+            override fun onScrollStateChanged(rv: RecyclerView, state: Int) { if (state == RecyclerView.SCROLL_STATE_DRAGGING) dropKeyboard() }
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                if (lm.findFirstVisibleItemPosition() in 0..2) loadOlder()
+                paintToBottom()
             }
-            false
-        }
+        })
     }
     /** Ids of the long messages the owner opened; kept here so a repaint or a page of older messages does not fold them again. */
     private val unfolded = HashSet<String>()
@@ -105,7 +103,7 @@ class ChatScreen(
         isClickable = true; contentDescription = "回到最新消息"; alpha = 0f; visibility = View.GONE
         addView(View(ctx).apply { background = ctx.getDrawable(R.drawable.ash_ic_down)!!.mutate().apply { setTint(c.text) } }, FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER))
         addView(toBottomDot, FrameLayout.LayoutParams(dp(10), dp(10), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(8), dp(8), 0) })
-        setOnClickListener { scroll.smoothScrollBy(0, list.height - scroll.scrollY - scroll.height) }
+        setOnClickListener { if (rowsAdapter.itemCount > 0) list.smoothScrollToPosition(rowsAdapter.itemCount - 1) }
     }
     private val scrollHost = FrameLayout(ctx)
     private val deck = AshUi.vstack(ctx, 0)
@@ -146,10 +144,7 @@ class ChatScreen(
     private val items = TreeMap<Long, JSONObject>()
     private var moreBefore = false
     private var loadingOlder = false
-    private val rows = HashMap<String, Pair<String, View>>()
-    private val seen = HashSet<String>()
     private val FOLD_LINES = 4
-    private var firstPaint = true
     private var current: JSONObject? = null
     private var refreshQueued = false
     private var lastTyping = 0L
@@ -168,7 +163,7 @@ class ChatScreen(
         view.addView(banner, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(14), 0, dp(14), dp(4)) })
         view.addView(leaseBar, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(14), 0, dp(14), dp(4)) })
         LeaseState.onChange(onLease)
-        scrollHost.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        scrollHost.addView(list, FrameLayout.LayoutParams(-1, -1))
         scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), dp(10)) })
         // The conversation and the input are one piece standing on the keyboard: [deck] holds them, and the keyboard moves it
         // (see [keyboard]); [stage] is the room under the header, so the piece slides under the header, not over it.
@@ -253,13 +248,9 @@ class ChatScreen(
         if (attachments.length() > 0) body.put("attachments", attachments)
         option?.let { body.put("in_reply_to", it.first).put("option_id", it.second) }
         outbox.add(JSONObject().put("to", to).put("kind", "request").put("word", "say").put("body", body).put("client_id", UUID.randomUUID().toString()))
-        paintList()
-        toEnd()
+        paintList(toEnd = true)
         flush()
     }
-
-    /** To the latest message (after the owner sends). Not `fullScroll`: that also moves the focus to the last row, which closes the keyboard. */
-    private fun toEnd() { scroll.post { scroll.scrollTo(0, list.height) } }
 
     /** Sends what waits, oldest first, one at a time; a lost connection leaves the rest for the next one. */
     private fun flush() {
@@ -480,9 +471,9 @@ class ChatScreen(
 
     /** The round 「回到底部」 button: up once the owner has scrolled more than a screen away from the newest message; its dot says something new came meanwhile. */
     private fun paintToBottom() {
-        val away = list.height - (scroll.scrollY + scroll.height)
-        val show = away > scroll.height
-        if (away <= dp(24)) unseenBelow = false
+        val away = list.computeVerticalScrollRange() - list.computeVerticalScrollOffset() - list.computeVerticalScrollExtent()
+        val show = away > list.height
+        if (!list.canScrollVertically(1)) unseenBelow = false
         toBottomDot.visibility = if (unseenBelow) View.VISIBLE else View.GONE
         val up = toBottom.visibility == View.VISIBLE && toBottom.tag == true
         if (show == up) return
@@ -491,37 +482,60 @@ class ChatScreen(
         else toBottom.animate().alpha(0f).setDuration(150).withEndAction { if (toBottom.tag != true) toBottom.visibility = View.GONE }.start()
     }
 
-    private fun paintList() {
-        val atBottom = !scroll.canScrollVertically(1)
-        val wanted = ArrayList<Pair<String, () -> View?>>()
-        for (item in items.values) wanted.add(item.optString("id") + "#" + item.toString().hashCode() to { row(item) })
-        for (o in outbox.items()) wanted.add("out:" + o.optString("client_id") + o.optString("status") to { pending(o) })
-        if (wanted.isEmpty()) {
-            list.removeAllViews(); rows.clear()
-            list.addView(AshUi.text(ctx, if (port.open) "还没有消息，跟她说点什么吧。" else "正在连接…", AshTokens.Type.body, c.text3).apply { gravity = Gravity.CENTER; setPadding(0, dp(40), 0, 0) })
-            return
+    /**
+     * Hands the list its rows; only the rows that changed are drawn again. The list moves only when: [toEnd] (the owner sent),
+     * a new row came at the end while the end was in sight (it stays in sight), or it is the first fill (it opens at the end,
+     * without rows rising in). A new row at the end while the owner reads further up leaves the place alone and dots 「回到底部」.
+     * [then] runs once the list has the rows.
+     */
+    private fun paintList(toEnd: Boolean = false, then: (() -> Unit)? = null) {
+        val next = ChatRows.build(items.values, outbox.items(), moreBefore, { note("往上翻看更早的消息") }, ::row, ::pending)
+            .ifEmpty { listOf(ChatRow(EMPTY, port.open.toString()) { empty() }) }
+        val before = rowsAdapter.currentList
+        val first = before.none { it.key != EMPTY } && next.first().key != EMPTY
+        val atEnd = !list.canScrollVertically(1)
+        val newAtEnd = !first && before.none { it.key == next.last().key }
+        if (newAtEnd && !atEnd && !toEnd) unseenBelow = true
+        if (first) {
+            list.itemAnimator = null
+            list.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                override fun onLayoutChange(v: View, l: Int, t: Int, r: Int, b: Int, ol: Int, ot: Int, or: Int, ob: Int) {
+                    v.removeOnLayoutChangeListener(this); list.itemAnimator = animator
+                }
+            })
         }
-        val next = HashMap<String, Pair<String, View>>()
-        list.removeAllViews()
-        if (moreBefore) list.addView(note("往上翻看更早的消息"))
-        for ((key, make) in wanted) {
-            val id = key.substringBefore('#')
-            val v = rows[id]?.takeIf { it.first == key }?.second ?: make() ?: continue
-            next[id] = key to v
-            (v.parent as? android.view.ViewGroup)?.removeView(v)
-            list.addView(v)
-            if (seen.add(id) && !firstPaint) { enter(v); if (!atBottom) unseenBelow = true }
+        rowsAdapter.submitList(next) {
+            if (toEnd || first || (newAtEnd && atEnd)) lm.scrollToPosition(next.size - 1)
+            then?.invoke()
+            paintToBottom()
         }
-        rows.clear(); rows.putAll(next)
-        firstPaint = false
-        scroll.post { paintToBottom() }
     }
 
-    /** A new row rises in (once; the system's "remove animations" turns it off). */
-    private fun enter(v: View) {
-        if (!AshUi.motionOn(ctx)) return
-        v.alpha = 0f; v.translationY = AshUi.dpF(ctx, 6f)
-        v.animate().alpha(1f).translationY(0f).setDuration(AshTokens.Motion.message).setInterpolator(AshTokens.Motion.easing()).start()
+    private fun empty(): View = AshUi.text(ctx, if (port.open) "还没有消息，跟她说点什么吧。" else "正在连接…", AshTokens.Type.body, c.text3).apply { gravity = Gravity.CENTER; setPadding(0, dp(40), 0, 0) }
+
+    /** Keeps [v]'s row's top where it is through the next layout (a bubble opening grows down, under the owner's finger). */
+    private fun keepTop(v: View) {
+        val row = list.findContainingItemView(v) ?: return
+        val pos = list.getChildAdapterPosition(row).takeIf { it >= 0 } ?: return
+        lm.scrollToPositionWithOffset(pos, lm.getDecoratedTop(row) - list.paddingTop)
+    }
+
+    private class Holder(val box: FrameLayout) : RecyclerView.ViewHolder(box)
+
+    /** One holder per row on screen; binding draws the row with its own function ([ChatRow.make]), keeping the view's own size. */
+    private inner class Rows : ListAdapter<ChatRow, Holder>(ChatRows.diff) {
+        override fun onCreateViewHolder(parent: ViewGroup, type: Int) = Holder(FrameLayout(ctx).apply { layoutParams = RecyclerView.LayoutParams(-1, -2) })
+        override fun onBindViewHolder(h: Holder, position: Int) {
+            h.box.removeAllViews()
+            val v = getItem(position).make() ?: return
+            (v.parent as? ViewGroup)?.removeView(v)
+            val lp = when (val own = v.layoutParams) {
+                null -> FrameLayout.LayoutParams(-1, -2)
+                is ViewGroup.MarginLayoutParams -> FrameLayout.LayoutParams(own)
+                else -> FrameLayout.LayoutParams(own)
+            }
+            h.box.addView(v, lp)
+        }
     }
 
     /** One item of the window (the projected conversation: `say`, `ask`, `card`, `failed`). */
@@ -544,9 +558,7 @@ class ChatScreen(
                 .let { box.addView(it, LinearLayout.LayoutParams(-2, -2).apply { gravity = if (mine) Gravity.END else Gravity.START }) }
         }
         if (text.isNotBlank()) {
-            val bubble = AshUi.bubbleText(ctx, if (mine) text else Md.render(text, c.surface2, c.her) { files.openLink(it) }, mine).apply {
-                setTextIsSelectable(true); movementMethod = LinkMovementMethod.getInstance()
-            }
+            val bubble = AshUi.bubbleText(ctx, if (mine) text else Md.render(text, c.surface2, c.her) { files.openLink(it) }, mine)
             val side = LinearLayout.LayoutParams(-2, -2).apply { gravity = if (mine) Gravity.END else Gravity.START }
             box.addView(foldable(bubble, item.optString("id")), side)
         }
@@ -556,55 +568,27 @@ class ChatScreen(
         return box
     }
 
-    /**
-     * A bubble longer than four lines shows four, its last ones fading out (as the web timeline masks a folded message), with a 「展开全文 ⌄」
-     * button under it; open, the button reads 「收起 ⌃」. Whether it is long is the laid-out text's own line count (the layout holds every line;
-     * maxLines only cuts what is drawn): a selectable bubble with links never ellipsizes. The fade is a gradient on the text's paint, so it
-     * works on any bubble colour. The bubble keeps its taps for selecting text and following links.
-     */
+    /** A bubble longer than four lines shows four, fading out, with 「展开全文 ⌄」 under it ([FoldBubble], which decides it in one layout). */
     private fun foldable(bubble: TextView, id: String): View {
-        // The bubble's face moves to a frame that holds the text and, under it inside the bubble, the 「展开全文 ⌄」 / 「收起 ⌃」 link.
-        val frame = AshUi.vstack(ctx, 2).apply {
+        val toggle = AshUi.text(ctx, "", AshTokens.Type.callout, bubble.currentTextColor).apply { alpha = 0.75f; setPadding(0, dp(4), 0, 0) }
+        // The bubble's face (background, padding, shadow, outline) moves to the fold, which holds the text and, under it, the toggle.
+        // Only an opened message is selectable (a selectable text takes the focus from the input); links work either way.
+        fun selectable(open: Boolean) { bubble.setTextIsSelectable(open); bubble.movementMethod = LinkMovementMethod.getInstance() }
+        val opened = id.isNotEmpty() && id in unfolded
+        selectable(opened)
+        val fold = FoldBubble(ctx, bubble, toggle, FOLD_LINES, dp(2), opened) { v, open ->
+            if (id.isNotEmpty()) { if (open) unfolded.add(id) else unfolded.remove(id) }
+            selectable(open)
+            keepTop(v)
+        }.apply {
             background = bubble.background
             setPadding(bubble.paddingLeft, bubble.paddingTop, bubble.paddingRight, bubble.paddingBottom)
-            // Its shadow and outline go with the face, or the text would cast a second box inside the bubble.
             elevation = bubble.elevation; translationZ = bubble.translationZ; outlineProvider = bubble.outlineProvider
         }
         bubble.elevation = 0f; bubble.translationZ = 0f; bubble.outlineProvider = null
         bubble.background = null
         bubble.setPadding(0, 0, 0, 0)
-        val fader = FadeBottom(ctx).apply { addView(bubble, android.widget.FrameLayout.LayoutParams(-2, -2)) }
-        frame.addView(fader, LinearLayout.LayoutParams(-2, -2))
-        val toggle = AshUi.text(ctx, "展开全文 ⌄", AshTokens.Type.callout, bubble.currentTextColor).apply {
-            visibility = View.GONE; alpha = 0.75f; setPadding(0, dp(4), 0, 0); isClickable = true
-        }
-        frame.addView(toggle, LinearLayout.LayoutParams(-2, -2))
-        fun open() = id.isNotEmpty() && id in unfolded
-        fun fade() {
-            val l = bubble.layout
-            val folded = !open() && l != null && l.lineCount > FOLD_LINES
-            fader.fadePx = if (folded) Math.round(l!!.getLineBottom(0) * 1.6f) else 0
-        }
-        fun apply() {
-            val open = open()
-            bubble.maxLines = if (open) Int.MAX_VALUE else FOLD_LINES
-            // A folded bubble is a preview: no selecting and no links, or the text view scrolls its cut-off lines inside itself.
-            // Open, it gets both back.
-            bubble.setTextIsSelectable(open)
-            bubble.movementMethod = if (open) LinkMovementMethod.getInstance() else null
-            if (!open) bubble.scrollTo(0, 0)
-            toggle.text = if (open) "收起 ⌃" else "展开全文 ⌄"
-            fade()
-        }
-        apply()
-        bubble.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            val long = (bubble.layout?.lineCount ?: 0) > FOLD_LINES
-            val want = if (long) View.VISIBLE else View.GONE
-            if (toggle.visibility != want) toggle.post { toggle.visibility = want }
-            fade()
-        }
-        toggle.setOnClickListener { if (id.isEmpty()) return@setOnClickListener; if (!unfolded.add(id)) unfolded.remove(id); apply() }
-        return frame
+        return fold
     }
 
     private fun pending(o: JSONObject): View {
@@ -712,8 +696,8 @@ class ChatScreen(
 
     /** Shows message [id]: where it is when it is on screen, otherwise after reading the window around it. */
     fun jumpTo(id: String) {
-        fun show() { rows[id]?.second?.let { v -> scroll.post { scroll.smoothScrollTo(0, maxOf(0, v.top - dp(60))) } } }
-        if (rows.containsKey(id)) { show(); return }
+        fun show() { rowsAdapter.currentList.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { lm.scrollToPositionWithOffset(it, dp(60)) } }
+        if (rowsAdapter.currentList.any { it.id == id }) { show(); return }
         port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", id)) { data, _ ->
             if (data == null) return@call
             val had = moreBefore
@@ -721,7 +705,7 @@ class ChatScreen(
             take(data, newest = false)
             // reaching further back than what was loaded: that window says whether there is more; otherwise what was said stands
             if (items.firstKey() >= oldest) moreBefore = had
-            paintList(); show()
+            paintList(then = ::show)
         }
     }
 
@@ -811,28 +795,9 @@ class ChatScreen(
 
     companion object {
         private const val PAGE = 60
+        private const val EMPTY = "empty"
         private val RETRY = setOf("offline", "unavailable", "timeout", "result_unknown", "internal")
         private val PERMISSIONS = mapOf("calendar" to "日历", "notifications" to "通知", "battery" to "后台运行", "accessibility" to "无障碍",
             "photos" to "照片和文件", "all_files" to "所有文件", "usage" to "使用情况", "write_settings" to "系统设置", "overlay" to "悬浮窗")
-    }
-}
-
-/**
- * Fades its content out over its bottom [fadePx] (as the web timeline's mask-image does a folded message): the content is drawn
- * into a layer and a gradient erases its last lines, so text, code blocks and quotes all fade alike and the bubble shows through.
- */
-private class FadeBottom(ctx: android.content.Context) : android.widget.FrameLayout(ctx) {
-    var fadePx = 0
-        set(value) { if (field != value) { field = value; invalidate() } }
-    private val eraser = android.graphics.Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
-
-    override fun dispatchDraw(canvas: android.graphics.Canvas) {
-        if (fadePx <= 0 || height <= 0) { super.dispatchDraw(canvas); return }
-        val w = width.toFloat(); val h = height.toFloat(); val top = (h - fadePx).coerceAtLeast(0f)
-        val save = canvas.saveLayer(0f, 0f, w, h, null)
-        super.dispatchDraw(canvas)
-        eraser.shader = android.graphics.LinearGradient(0f, top, 0f, h, 0x00000000, 0xFF000000.toInt(), android.graphics.Shader.TileMode.CLAMP)
-        canvas.drawRect(0f, top, w, h, eraser)
-        canvas.restoreToCount(save)
     }
 }

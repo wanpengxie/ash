@@ -112,6 +112,8 @@ dependencies {
     implementation("androidx.core:core:1.12.0")
     // Spring physics for the island's transitions (SpringAnimation).
     implementation("androidx.dynamicanimation:dynamicanimation:1.0.0")
+    // The chat's conversation: a list laid out from its end, updated row by row (ChatScreen).
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     // Health Connect (read only): the platform's store on Android 14+, the Health Connect app before that.
     // 1.1.0-beta01: the last release that builds with compileSdk 35 and this Android Gradle plugin (1.1.0 needs 36 / 8.9.1).
     implementation("androidx.health.connect:connect-client:1.1.0-beta01")
