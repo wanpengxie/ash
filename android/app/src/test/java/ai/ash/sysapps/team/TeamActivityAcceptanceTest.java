@@ -8,6 +8,7 @@ import ai.ash.ui.UiIo;
 import ai.ash.ui.UiDrafts;
 import ai.ash.link.Repo;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
@@ -177,7 +178,7 @@ public class TeamActivityAcceptanceTest {
         }
     }
     @Test public void homePutsRealDelegationBeforeTheFullMemberListThenShowsReplyAndContinue() throws Exception {
-        JSONObject session=new JSONObject(Files.readString(Repo.INSTANCE.getRoot().toPath().resolve("packages/core/test/fixtures/team-session.json")));
+        JSONObject session=new JSONObject(new String(Files.readAllBytes(Repo.INSTANCE.getRoot().toPath().resolve("packages/core/test/fixtures/team-session.json")),StandardCharsets.UTF_8));
         JSONObject during=session.getJSONObject("during"), answered=session.getJSONObject("answered");
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,new Intent(RuntimeEnvironment.getApplication(),TeamActivity.class)).create().start().resume().visible()) {
             TeamActivity a=c.get(); last("list").answer(during.getJSONObject("members").toString());
