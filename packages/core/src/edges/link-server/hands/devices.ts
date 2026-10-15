@@ -105,12 +105,17 @@ export class Devices implements Member {
   private readonly config = new Map<string, Record<string, string>>();
   /** The release each computer was last told to install by the automatic update: once per hub run, so a failing one is not retried in a loop. */
   private readonly autoTried = new Map<string, string>();
+  /** The release a computer was told to install and has not come back with yet. */
+  private readonly updating = new Map<string, string>();
+  /** The version a hand had before its current connection, to tell that it came back on another. */
+  private readonly before = new Map<string, string | null>();
   private readonly now: () => number;
 
   constructor(private readonly d: DevicesDeps) {
     this.now = d.now ?? Date.now;
-    d.hands.onManifest((id) => void this.autoUpdate(id));
+    d.hands.onManifest((id) => { this.cameBack(id); void this.autoUpdate(id); });
     d.hands.onOnline((id) => {
+      this.before.set(id, d.hands.get(id)?.version ?? null);
       for (const pair of this.pairs.values()) if (pair.state === "approved" && pair.device === deviceId(id)) this.move(pair, "connected");
     });
   }
@@ -123,6 +128,7 @@ export class Devices implements Member {
    */
   pairingFailed(handId: string, reason: string): void {
     this.d.hands.revoke(handId);
+    this.changed(handId, "revoked", DEVICES_ID);
     void this.d.gateway?.revoke(handId).catch(() => {});
     const pair = [...this.pairs.values()].find((p) => p.device === deviceId(handId) && (p.state === "approved" || p.state === "connected"));
     if (pair) { pair.reason = reason; this.move(pair, "failed"); }
@@ -143,7 +149,7 @@ export class Devices implements Member {
       case "list": {
         // Revoked hands stay on record (restore brings one back) but are listed only when asked for.
         const shown = (h: HandRecord) => h.revoked_at === null || input.include_revoked === true;
-        return { data: { devices: this.d.hands.list().filter(shown).map((h) => this.info(h)) } };
+        return { data: { devices: this.d.hands.list().filter(shown).map((h) => this.info(h)), release: DEVICE_ASSETS.version } };
       }
       case "describe": return { data: this.describe(this.hand(input.device)) };
       case "pair_start": return { data: this.pairStart(input.kind, input.name, ctx.caller.member, await this.gateway().issue(input.kind)) };
@@ -155,7 +161,7 @@ export class Devices implements Member {
       }
       case "pair_status": return { data: this.pairInfo(this.pair(input.pair_id)) };
       case "pair_pending": return { data: { pairs: [...this.pairs.values()].filter((p) => this.stateOf(p) === "requested").map((p) => this.pairInfo(p)) } };
-      case "pair_approve": return { data: await this.pairApprove(this.pair(input.pair_id), input) };
+      case "pair_approve": return { data: await this.pairApprove(this.pair(input.pair_id), input, ctx.caller.member) };
       case "pair_reject": {
         const pair = this.requested(input.pair_id);
         await this.gateway().reject(pair.request!.request_id);
@@ -166,28 +172,38 @@ export class Devices implements Member {
         const hand = this.hand(input.device);
         this.d.hands.revoke(hand.id);
         if (hand.paired_by === "gateway") await this.d.gateway?.revoke(hand.id);
+        this.changed(hand.id, "revoked", ctx.caller.member);
         return { data: { revoked: true } };
       }
       case "restore": {
         const hand = this.hand(input.device);
         const was = hand.revoked_at !== null;
         this.d.hands.restore(hand.id);
+        if (was) this.changed(hand.id, "restored", ctx.caller.member);
         return { data: { restored: was } };
       }
       case "rename": {
         const hand = this.live(input.device);
         this.d.hands.rename(hand.id, input.name.trim());
+        this.changed(hand.id, "renamed", ctx.caller.member);
         return { data: { device: deviceId(hand.id), name: input.name.trim() } };
       }
-      case "access_set": return { data: await this.accessSet(this.live(input.device), input) };
+      case "access_set": {
+        const hand = this.live(input.device);
+        const info = await this.accessSet(hand, input);
+        this.changed(hand.id, "access", ctx.caller.member);
+        return { data: info };
+      }
       case "update": {
         const hand = this.live(input.device);
         const release = this.release(hand, input.version, input.sha256);
         const reply = await this.d.router.send({ to: deviceId(hand.id), kind: "request", word: "x.ash.update", body: release }, SERVICE);
         if (!reply.ok) throw failure(reply.error);
+        this.updating.set(hand.id, release.version);
+        this.changed(hand.id, "updating", ctx.caller.member, { version: release.version });
         return { data: { started: true, ...release } };
       }
-      case "pair.changed": return;
+      case "pair.changed": case "device.changed": return;
       case "config.changed": {
         const hand = msg.from.startsWith("device:") ? msg.from.slice("device:".length) : null;
         if (hand) this.config.set(hand, { ...this.config.get(hand), [String(input.item)]: String(input.state) });
@@ -235,6 +251,29 @@ export class Devices implements Member {
       return null;
     });
     if (reply && !reply.ok) this.d.log?.(`updating ${hand.name} to ${release.version} was refused: ${reply.error.code} ${reply.error.message}`);
+    if (reply?.ok) {
+      this.updating.set(id, release.version);
+      this.changed(id, "updating", DEVICES_ID, { version: release.version });
+    }
+  }
+
+  /** A hand's manifest came in: if it is back on another version than before, it was updated. */
+  private cameBack(id: string): void {
+    const hand = this.d.hands.get(id);
+    if (!hand || !this.before.has(id)) return;
+    const was = this.before.get(id);
+    this.before.delete(id);
+    const target = this.updating.get(id);
+    if (target && !versionBefore(hand.version, target)) this.updating.delete(id);
+    if (hand.version && was && hand.version !== was) this.changed(id, "updated", deviceId(id), { version: hand.version });
+  }
+
+  /**
+   * `device.changed`: what changed on one device and who did it (recorded, so every screen on the ledger refreshes). Coming and
+   * going online is `service:link connected / disconnected`; a pairing is `pair.changed`.
+   */
+  private changed(handId: string, change: string, by: string, extra: Record<string, unknown> = {}): void {
+    void this.d.router.send({ to: DEVICES_ID, kind: "event", word: "device.changed", body: { device: deviceId(handId), change, by, ...extra } }, SERVICE).catch(() => {});
   }
 
   // ---- hands ---------------------------------------------------------------------------------------------------------
@@ -244,6 +283,11 @@ export class Devices implements Member {
       device: deviceId(h.id), name: h.name, kind: h.kind, online: this.d.hands.online(h.id), tier: h.tier,
       lend: h.lend, body: this.d.bodies.isBound(h.id), local_agents: h.local_agents,
       via: this.d.hands.via(h.id) ?? h.paired_by,
+      ...(h.version ? { version: h.version } : {}), ...(h.platform ? { platform: h.platform } : {}),
+      // Whether the computer runs the hub's release (null: the hub has no package for it, e.g. a phone), and the release on its way.
+      ...(releaseFor(h.platform) ? { latest: !versionBefore(h.version, DEVICE_ASSETS.version) } : {}),
+      ...(this.updating.has(h.id) ? { updating: this.updating.get(h.id) } : {}),
+      capabilities: this.d.hands.capabilities(h.id),
       ...(h.last_seen !== null ? { last_seen: h.last_seen } : {}), ...(h.revoked_at !== null ? { revoked_at: h.revoked_at } : {}),
     };
   }
@@ -336,7 +380,7 @@ export class Devices implements Member {
     return { pair_id: pair.pair_id, state: this.stateOf(pair), name: pair.name, kind: pair.kind, expires_at: pair.expires_at, ...(pair.device ? { device: pair.device } : {}), ...(pair.reason ? { reason: pair.reason } : {}) };
   }
 
-  private async pairApprove(pair: Pair, input: Record<string, any>) {
+  private async pairApprove(pair: Pair, input: Record<string, any>, by: string) {
     this.requested(pair.pair_id);
     const request = pair.request!;
     const access = { tier: input.tier ?? "ask", lend: input.lend !== false, local_agents: input.local_agents === true };
@@ -348,6 +392,7 @@ export class Devices implements Member {
     await this.gateway().approve(request.request_id, permissions, { hand: request.hand_id, secret: pair.secret });
     pair.device = deviceId(request.hand_id);
     this.move(pair, "approved");
+    this.changed(request.hand_id, "paired", by);
     if (input.body === true) await this.bindBody(request.hand_id, true);
     return this.pairInfo(pair);
   }

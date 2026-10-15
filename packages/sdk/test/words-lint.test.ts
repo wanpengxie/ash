@@ -71,7 +71,7 @@ test("the events SPEC-02 names exist, and the ones that go in the ledger are mar
   const recorded = events.filter((word) => word.record).map((word) => `${word.member}/${word.word}`).sort();
   assert.deepEqual(recorded, [
     "agent:*/agent.tool", "agent:*/turn.ended", "agent:*/turn.started", "service:admin/settings.changed",
-    "service:devices/pair.changed", "service:link/connected", "service:link/disconnected",
+    "service:devices/device.changed", "service:devices/pair.changed", "service:link/connected", "service:link/disconnected", "service:link/gateway.changed",
   ]);
   for (const word of events) assert.deepEqual([word.effect, word.risk], ["read", "none"]);
   assert.ok(!WORD_CONTRACTS.some((word) => word.kind === "event" && /^sense\./.test(word.word) && word.record), "sense.* is not recorded");

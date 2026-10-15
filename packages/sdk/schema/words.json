@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "f98e57789f43da552a9fe188fecf2e19f35812875b8f2f9f6acb65adeea04ac3",
+ "hash": "27cba037ed3cfd7cb03a98073e91b408b1191872e7b49100299a74e623429ff1",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -3154,7 +3154,7 @@
    "word": "list",
    "kind": "request",
    "direction": "in",
-   "description": "The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. Revoked ones (kept on record for restore) only with include_revoked.",
+   "description": "The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier, its program version (latest: whether it runs the hub's release of the computer program, `release`; updating: the release on its way), and the names of the capabilities it gives the hub. Revoked ones (kept on record for restore) only with include_revoked.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3221,6 +3221,24 @@
          "type": "integer",
          "minimum": 0,
          "maximum": 9007199254740991
+        },
+        "version": {
+         "type": "string"
+        },
+        "platform": {
+         "type": "string"
+        },
+        "latest": {
+         "type": "boolean"
+        },
+        "updating": {
+         "type": "string"
+        },
+        "capabilities": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
         }
        },
        "required": [
@@ -3230,6 +3248,9 @@
        ],
        "additionalProperties": true
       }
+     },
+     "release": {
+      "type": "string"
      }
     },
     "required": [
@@ -3318,6 +3339,24 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
+     },
+     "version": {
+      "type": "string"
+     },
+     "platform": {
+      "type": "string"
+     },
+     "latest": {
+      "type": "boolean"
+     },
+     "updating": {
+      "type": "string"
+     },
+     "capabilities": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      }
     },
     "required": [
@@ -3955,6 +3994,24 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
+     },
+     "version": {
+      "type": "string"
+     },
+     "platform": {
+      "type": "string"
+     },
+     "latest": {
+      "type": "boolean"
+     },
+     "updating": {
+      "type": "string"
+     },
+     "capabilities": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      }
     },
     "required": [
@@ -4125,6 +4182,56 @@
    "record": true,
    "label": {
     "doing": "在记下配对进展"
+   }
+  },
+  {
+   "member": "service:devices",
+   "word": "device.changed",
+   "kind": "event",
+   "direction": "out",
+   "description": "Something about one device changed and who changed it (by: the owner, an agent, or the service itself for an automatic update): renamed, access (what it may do), revoked, restored, updating (the release it was told to install), updated (it came back on another version), paired. Coming and going online is service:link connected / disconnected; a pairing's progress is pair.changed.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "device": {
+      "type": "string",
+      "pattern": "^device:[A-Za-z0-9_-]{22}$"
+     },
+     "change": {
+      "type": "string",
+      "enum": [
+       "renamed",
+       "access",
+       "revoked",
+       "restored",
+       "updating",
+       "updated",
+       "paired"
+      ]
+     },
+     "by": {
+      "type": "string",
+      "minLength": 1
+     },
+     "version": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "device",
+     "change",
+     "by"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "record": true,
+   "label": {
+    "doing": "在记下设备变化"
    }
   },
   {
@@ -4683,6 +4790,37 @@
    ],
    "label": {
     "doing": "在改用中转站"
+   }
+  },
+  {
+   "member": "service:link",
+   "word": "gateway.changed",
+   "kind": "event",
+   "direction": "out",
+   "description": "The hub's connection to its relay came up or went down (only when it changes).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "connected": {
+      "type": "boolean"
+     },
+     "url": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "connected"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "record": true,
+   "label": {
+    "doing": "在记下中转站连通变化"
    }
   },
   {

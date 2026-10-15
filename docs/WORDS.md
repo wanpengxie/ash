@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `f98e57789f43da55`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `27cba037ed3cfd7c`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -11,8 +11,8 @@
 - [`service:health`](#servicehealth) (2)
 - [`service:gate`](#servicegate) (17)
 - [`service:vault`](#servicevault) (12)
-- [`service:devices`](#servicedevices) (17)
-- [`service:link`](#servicelink) (12)
+- [`service:devices`](#servicedevices) (18)
+- [`service:link`](#servicelink) (13)
 - [`service:agents`](#serviceagents) (32)
 - [`service:apps`](#serviceapps) (19)
 - [`service:clock`](#serviceclock) (5)
@@ -121,7 +121,7 @@
 
 | 词 | 调用方 | effect / risk | 标记 | 输入 | 进行时 | 说明 |
 |---|---|---|---|---|---|---|
-| `list` | owner, agent, app | read / none | - | include_revoked | 在看已连接设备 | The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. Revoked ones (kept on record for restore) only with include_revoked. |
+| `list` | owner, agent, app | read / none | - | include_revoked | 在看已连接设备 | The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier, its program version (latest: whether it runs the hub's release of the computer program, `release`; updating: the release on its way), and the names of the capabilities it gives the hub. Revoked ones (kept on record for restore) only with include_revoked. |
 | `describe` | owner, agent, app | read / none | - | device* | 在看设备详情 | One hand in detail: how it connects, what it was allowed, when it was last seen. |
 | `pair_start` | owner, agent, app | act / none | - | kind, name | 在开始设备配对 | Start pairing a new computer or server. You get the pair_id and the whole install command to run in the new computer's terminal: it downloads Ash's program from its GitHub release, checks it, and pairs with a one-time code and a one-time secret. The secret never goes to the relay, so the relay cannot swap either side's key; it lives only in this command, so give the command to the owner in the conversation (or run it yourself on a computer you can already use), nowhere else. The device's request comes back to you; pair_approve lets it in. As the pairing moves on you get a background message; pair_status to look. |
 | `pair_status` | owner, agent, app | read / none | - | pair_id* | 在看配对进展 | Where a pairing is: waiting for the command to be run, requested (a device asked to join), approved, connected, rejected, expired, or failed (with the reason: the device or the hub could not prove the pairing secret on the first connection, so a key was swapped on the way; pair again). |
@@ -135,6 +135,7 @@
 | `update` | owner, agent, app | write / structure | - | device*, version, sha256 | 在更新设备程序 | Have a computer update its Ash program from its GitHub release (device-v<version>), checked against sha256, and restart. Give only device: the hub installs the release it was built with and knows the checksum for the computer's platform. Give version and sha256 (the platform's line in that release's SHA256SUMS) for another release. Computers older than the hub's release are also updated by themselves when they connect, unless the setting devices.auto_update is false. Approved here once; the update itself is then run by the hub. The gate decides whether the owner is asked. |
 | `pair_code` | owner, agent | read / none | - | pair_id* | 在看配对命令 | The install command of a pairing still waiting, again. It only lets the device ask; pair_approve lets it in. |
 | `pair.changed` | kernel | read / none | event out, record | pair_id*, state*, device, reason | 在记下配对进展 | A pairing moved on (requested, approved, rejected, connected, expired, failed with its reason). The one who started it is told by a background message. |
+| `device.changed` | kernel | read / none | event out, record | device*, change*, by*, version | 在记下设备变化 | Something about one device changed and who changed it (by: the owner, an agent, or the service itself for an automatic update): renamed, access (what it may do), revoked, restored, updating (the release it was told to install), updated (it came back on another version), paired. Coming and going online is service:link connected / disconnected; a pairing's progress is pair.changed. |
 | `config.changed` | kernel | read / none | event in | item*, state* | 在记下手机设置变化 | A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded. |
 | `codex.turn_ended` | kernel | read / none | event in | thread*, title, outcome, said | 在记下 Codex 做完一轮 | A computer reports that a session of its Codex app finished a turn. The owner is told in a short message; not recorded. |
 | `codex.approval_pending` | kernel | read / none | event in | thread*, title, request_id*, kind, summary | 在记下 Codex 等批准 | A computer reports that a session of its Codex app is waiting for an approval. The owner is told in a short message; not recorded. |
@@ -151,6 +152,7 @@
 | `refresh_manifest` | owner, agent | act / none | - | hand* | 在请手重发能力清单 | Ask a hand to send its capability list again, for example after you changed what it may lend. |
 | `gateway.status` | owner, agent | read / none | - | - | 在看中转站 | The relay: whether there is one, its address, whether it is claimed by this hub, whether the hub is connected to it, and the latest error. The relay itself (deploying it, taking it back, its domain) is the agent's to run with wrangler: skill relay. |
 | `gateway.use` | owner, agent | write / structure | - | url*, claim_ref | 在改用中转站 | Use the relay at this address: claim it if it has no owner yet and connect. The relay is the owner's own gateway (deployed in the owner's Cloudflare account, skill relay), not a third party's; the hub asks it first and refuses at once what cannot work. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. The gate decides whether the owner is asked. |
+| `gateway.changed` | kernel | read / none | event out, record | connected*, url | 在记下中转站连通变化 | The hub's connection to its relay came up or went down (only when it changes). |
 | `connected` | kernel | read / none | event out, record | hand*, conn*, channels | 在记下设备连上 | A hand finished the handshake and is connected. Goes into the ledger. |
 | `disconnected` | kernel | read / none | event out, record | hand*, conn, channel, code, reason | 在记下设备断开 | A hand's connection closed, with the close code and reason. Goes into the ledger. |
 | `handshake_failed` | kernel | read / none | event out | hand, conn, channel, code*, reason | 在记下握手失败 | A connection attempt failed the handshake (4001 identity, 4003 revoked, 4008 version, ...). Not recorded; service:link/diagnose reports the recent ones. |

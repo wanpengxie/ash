@@ -70,6 +70,14 @@ export class LinkMember implements Member {
     }
   }
 
+  /** The relay connection came up or went down: recorded once per change, so screens showing it refresh. */
+  relayChanged(connected: boolean, url: string): void {
+    if (this.relayUp === connected) return;
+    this.relayUp = connected;
+    this.emit("gateway.changed", { connected, url });
+  }
+  private relayUp: boolean | null = null;
+
   private emit(word: string, body: Record<string, unknown>): void {
     void this.d.router.send({ to: LINK_ID, kind: "event", word, body }, SERVICE).catch(() => {});
   }
@@ -113,7 +121,7 @@ export class LinkMember implements Member {
       case "gateway.status": return { data: this.d.gateway.status() };
       case "gateway.use": return { data: { url: await this.d.gateway.use(input.url, typeof input.claim_ref === "string" ? { claimRef: input.claim_ref } : {}) } };
       case "env.changed": this.d.gateway.reconnectRelay(); return;
-      case "connected": case "disconnected": case "handshake_failed": return;
+      case "connected": case "disconnected": case "handshake_failed": case "gateway.changed": return;
       default: throw new WordError("not_found", `${LINK_ID} has no word ${msg.word}`);
     }
   }
@@ -219,8 +227,12 @@ export interface LinkControl {
 }
 
 export function createLinkControl(deps: LinkControlDeps): LinkControl {
-  const gateway = new GatewayControl({ db: deps.db, link: deps.link, hands: deps.hands, vault: deps.vault, identity: deps.identity, relay: deps.relay, ownerName: deps.ownerName, retryMs: deps.retryMs, log: deps.log });
-  const member = new LinkMember({ router: deps.router, link: deps.link, hands: deps.hands, gateway, now: deps.now });
+  let member!: LinkMember;
+  const gateway = new GatewayControl({
+    db: deps.db, link: deps.link, hands: deps.hands, vault: deps.vault, identity: deps.identity, relay: deps.relay, ownerName: deps.ownerName, retryMs: deps.retryMs, log: deps.log,
+    onConnection: (connected, url) => member.relayChanged(connected, url),
+  });
+  member = new LinkMember({ router: deps.router, link: deps.link, hands: deps.hands, gateway, now: deps.now });
   return {
     member, pairing: gateway.pairing, gateway,
     bindDevices: (devices) => gateway.bindDevices(devices),

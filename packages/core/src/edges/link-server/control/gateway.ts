@@ -39,6 +39,8 @@ export interface GatewayControlDeps {
   ownerName?: string;
   /** The first wait before looking again after a tunnel closed; doubles while it keeps happening. Default 1 s. */
   retryMs?: number;
+  /** The hub's connection to the relay at [url] came up or went down. */
+  onConnection?: (connected: boolean, url: string) => void;
   log?: (message: string, error?: unknown) => void;
 }
 
@@ -195,6 +197,7 @@ export class GatewayControl {
       handlers: {
         devices: (list) => this.reconcile(list),
         pairRequest: (request) => this.pairRequest(request),
+        connection: (connected) => this.d.onConnection?.(connected, url),
       },
     };
     return (this.d.relay ?? ((o) => new Relay(o)))(options);

@@ -258,11 +258,12 @@ const accessFields = { tier: choice("ask", "full"), lend: bool, body: bool, loca
 const deviceInfo = obj({
   device: deviceRef, name: str, kind: str, online: bool, tier: choice("ask", "full"), lend: bool, body: bool, local_agents: bool,
   via: choice("local", "gateway"), ip: str, last_seen: nonnegativeSafe, revoked_at: nonnegativeSafe,
+  version: str, platform: str, latest: bool, updating: str, capabilities: strings,
 }, ["device", "name", "online"], true);
 const pairState = choice("waiting", "requested", "approved", "connected", "rejected", "expired", "failed");
 const pairInfo = obj({ pair_id: id, state: pairState, name: str, kind: pairKind, expires_at: nonnegativeSafe, device: deviceRef, reason: str }, ["pair_id", "state"]);
-add("service:devices", "list", "request", obj({ include_revoked: bool }), obj({ devices: array(deviceInfo) }, ["devices"]),
-  { label: "在看已连接设备", description: "The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. Revoked ones (kept on record for restore) only with include_revoked." });
+add("service:devices", "list", "request", obj({ include_revoked: bool }), obj({ devices: array(deviceInfo), release: str }, ["devices"]),
+  { label: "在看已连接设备", description: "The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier, its program version (latest: whether it runs the hub's release of the computer program, `release`; updating: the release on its way), and the names of the capabilities it gives the hub. Revoked ones (kept on record for restore) only with include_revoked." });
 add("service:devices", "describe", "request", obj({ device: deviceRef }, ["device"]), deviceInfo,
   { label: "在看设备详情", description: "One hand in detail: how it connects, what it was allowed, when it was last seen." });
 add("service:devices", "pair_start", "request", obj({ kind: pairKind, name: nonempty }),
@@ -290,6 +291,8 @@ add("service:devices", "pair_code", "request", obj({ pair_id: id }, ["pair_id"])
   { callers: OWNER_AGENT, label: "在看配对命令", description: "The install command of a pairing still waiting, again. It only lets the device ask; pair_approve lets it in." });
 add("service:devices", "pair.changed", "event", obj({ pair_id: id, state: pairState, device: deviceRef, reason: str }, ["pair_id", "state"]), undefined,
   { record: true, label: "在记下配对进展", description: "A pairing moved on (requested, approved, rejected, connected, expired, failed with its reason). The one who started it is told by a background message." });
+add("service:devices", "device.changed", "event", obj({ device: deviceRef, change: choice("renamed", "access", "revoked", "restored", "updating", "updated", "paired"), by: nonempty, version: str }, ["device", "change", "by"]), undefined,
+  { record: true, label: "在记下设备变化", description: "Something about one device changed and who changed it (by: the owner, an agent, or the service itself for an automatic update): renamed, access (what it may do), revoked, restored, updating (the release it was told to install), updated (it came back on another version), paired. Coming and going online is service:link connected / disconnected; a pairing's progress is pair.changed." });
 add("service:devices", "config.changed", "event", obj({ item: nonempty, state: nonempty }, ["item", "state"]), undefined,
   { direction: "in", label: "在记下手机设置变化", description: "A hand reports that one of its own permissions or switches changed (config.*). Sent by the hands module; not recorded." });
 add("service:devices", "codex.turn_ended", "event", obj({ thread: nonempty, title: str, outcome: str, said: str }, ["thread"]), undefined,
@@ -320,6 +323,8 @@ add("service:link", "gateway.status", "request", empty,
 add("service:link", "gateway.use", "request", obj({ url: { type: "string", minLength: 1, maxLength: 2048 }, claim_ref: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$" } }, ["url"]), obj({ url: str }, ["url"]),
   { callers: LINK_CALLERS, effect: "write", risk: "structure", label: "在改用中转站", description: "Use the relay at this address: claim it if it has no owner yet and connect. The relay is the owner's own gateway (deployed in the owner's Cloudflare account, skill relay), not a third party's; the hub asks it first and refuses at once what cannot work. claim_ref names the vault entry holding the relay's BOOTSTRAP_SECRET (store it first with service:vault/put; skill relay); it is needed only to claim a relay that has no owner. The gate decides whether the owner is asked." });
 const linkEvent = { hand: handRef, conn: id, channel: choice("device", "human", "agent"), code: integer, reason: str };
+add("service:link", "gateway.changed", "event", obj({ connected: bool, url: str }, ["connected"]), undefined,
+  { record: true, label: "在记下中转站连通变化", description: "The hub's connection to its relay came up or went down (only when it changes)." });
 add("service:link", "connected", "event", obj({ hand: handRef, conn: id, channels: strings }, ["hand", "conn"]), undefined,
   { record: true, label: "在记下设备连上", description: "A hand finished the handshake and is connected. Goes into the ledger." });
 add("service:link", "disconnected", "event", obj({ ...linkEvent }, ["hand"]), undefined,

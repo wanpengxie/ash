@@ -84,7 +84,7 @@ test("access_set can bind or unbind the computer as a body, through service:bodi
   hub.bodies.bound.add(computer.identity.handId);
   await call("access_set", { device: dev(computer), body: false });
   await call("access_set", { device: dev(computer), body: true }); // already bound: nothing to do
-  const sent = hub.router.sent.map((s) => [s.msg.to, s.msg.word, s.msg.body, s.caller.member]);
+  const sent = hub.router.sent.filter((s) => s.msg.word !== "device.changed").map((s) => [s.msg.to, s.msg.word, s.msg.body, s.caller.member]);
   assert.deepEqual(sent, [
     ["service:bodies", "bind", { hand: computer.identity.handId }, "service:devices"],
     ["service:bodies", "unbind", { body: `body:${computer.identity.handId}` }, "service:devices"],
@@ -161,7 +161,7 @@ test("update has the computer's x.ash.update run, asked by this service", async 
   const computer = await connected(hub, { kind: "computer" });
   const body = { device: dev(computer), version: "0.2.0", sha256: "a".repeat(64) };
   assert.deepEqual(await call("update", body), { started: true, version: "0.2.0", sha256: "a".repeat(64) });
-  assert.deepEqual(hub.router.sent.map((s) => [s.msg.to, s.msg.word, s.msg.body, s.caller.member]), [[dev(computer), "x.ash.update", { version: "0.2.0", sha256: "a".repeat(64) }, "service:devices"]]);
+  assert.deepEqual(hub.router.sent.filter((s) => s.msg.word !== "device.changed").map((s) => [s.msg.to, s.msg.word, s.msg.body, s.caller.member]), [[dev(computer), "x.ash.update", { version: "0.2.0", sha256: "a".repeat(64) }, "service:devices"]]);
   hub.router.answers.set(`${dev(computer)}/x.ash.update`, () => ({ ok: false, error: { code: "offline", message: "gone" } }));
   assert.equal(await refused("update", body), "offline");
 });
@@ -276,6 +276,52 @@ test("a computer older than the hub's release is updated when its manifest comes
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(updates().map((s) => s.msg.to), [dev(old)], "not the current one, not a phone, not with the setting off");
   void current; void phone; void off;
+});
+
+test("device.changed says what changed on a device and who did it; the list carries version, whether it is the latest, and its capabilities", async (t) => {
+  const { hub, call, gateway } = await setup(t);
+  const mac = await connected(hub, { kind: "computer", name: "Mac", platform: "darwin-arm64", version: "0.1.0", capabilities: [cap("x.ash.update"), cap("x.codex.sessions")] });
+  const changes = () => hub.router.sent.filter((s) => s.msg.word === "device.changed").map((s) => s.msg.body as Record<string, unknown>);
+  void gateway;
+
+  const listed = await call("list");
+  const row = listed.devices.find((d: any) => d.device === dev(mac));
+  assert.equal(listed.release, DEVICE_ASSETS.version);
+  assert.deepEqual([row.version, row.platform, row.latest, row.capabilities], ["0.1.0", "darwin-arm64", false, ["x.ash.update", "x.codex.sessions"]]);
+  const phone = await connected(hub, { kind: "phone", name: "Find X8" });
+  assert.equal((await call("list")).devices.find((d: any) => d.device === dev(phone)).latest, undefined, "no release of the computer program for a phone");
+
+  await call("rename", { device: dev(mac), name: "书房 Mac" });
+  await call("access_set", { device: dev(mac), local_agents: true }, agent);
+  await call("update", { device: dev(mac) });
+  assert.equal((await call("list")).devices.find((d: any) => d.device === dev(mac)).updating, DEVICE_ASSETS.version);
+  await call("revoke", { device: dev(mac) });
+  await call("restore", { device: dev(mac) });
+  await eventually(() => changes().length === 6, "six changes");
+  assert.deepEqual(changes(), [
+    { device: dev(mac), change: "updating", by: "service:devices", version: DEVICE_ASSETS.version }, // the automatic update, as it connected
+    { device: dev(mac), change: "renamed", by: "person:owner" },
+    { device: dev(mac), change: "access", by: "agent:main" },
+    { device: dev(mac), change: "updating", by: "person:owner", version: DEVICE_ASSETS.version },
+    { device: dev(mac), change: "revoked", by: "person:owner" },
+    { device: dev(mac), change: "restored", by: "person:owner" },
+  ]);
+  assert.ok(hub.router.sent.filter((s) => s.msg.word === "device.changed").every((s) => s.msg.to === "service:devices" && s.msg.kind === "event"));
+});
+
+test("a computer that comes back on another version is recorded as updated, and is no longer shown as updating", async (t) => {
+  const { hub, call } = await setup(t);
+  const identity = await newIdentity();
+  const old = await connected(hub, { identity, kind: "computer", platform: "linux-x64", version: "0.1.0", capabilities: [cap("x.ash.update")] });
+  await call("update", { device: dev(old) });
+  old.client.stop();
+  await eventually(() => !hub.hands.online(identity.handId), "gone");
+  await connected(hub, { identity, kind: "computer", platform: "linux-x64", version: DEVICE_ASSETS.version, capabilities: [cap("x.ash.update")] });
+  await eventually(() => hub.router.sent.some((s) => s.msg.word === "device.changed" && (s.msg.body as { change: string }).change === "updated"), "updated");
+  const updated = hub.router.sent.find((s) => s.msg.word === "device.changed" && (s.msg.body as { change: string }).change === "updated")!.msg.body;
+  assert.deepEqual(updated, { device: dev(old), change: "updated", by: dev(old), version: DEVICE_ASSETS.version });
+  const row = (await call("list")).devices.find((d: any) => d.device === dev(old));
+  assert.deepEqual([row.latest, row.updating], [true, undefined]);
 });
 
 test("config.changed from a hand is kept for describe", async (t) => {

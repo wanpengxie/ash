@@ -385,3 +385,12 @@ test("the words are the contract's, every one, and agents may use them", async (
   }
   assert.deepEqual(await w.link("list", {}, agent), { connections: [] });
 });
+
+test("the relay connection coming up and going down is recorded once per change (gateway.changed)", async (t) => {
+  const w = await startWorld(t);
+  await eventually(() => w.events("gateway.changed").length === 1, "up");
+  assert.deepEqual(w.events("gateway.changed"), [{ connected: true, url: w.gw.url }]);
+  w.gw.owner!.terminate();
+  await eventually(() => w.events("gateway.changed").length === 3, "down and up again");
+  assert.deepEqual(w.events("gateway.changed").map((e) => e.connected), [true, false, true]);
+});
