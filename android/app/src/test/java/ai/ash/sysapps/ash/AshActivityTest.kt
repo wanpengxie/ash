@@ -96,8 +96,13 @@ class AshActivityTest {
         val output = System.getenv("ASH_ACCEPTANCE_ARTIFACTS") ?: return
         settle()
         val root = activity.window.decorView
+        assertTrue("screenshot decor must be attached to its window", root.isAttachedToWindow)
+        assertTrue("screenshot must contain visible product text", all(root).filterIsInstance<TextView>().any { it.isShown && it.text.isNotBlank() })
         val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
         root.draw(Canvas(bitmap))
+        val colors = HashSet<Int>()
+        for (y in 0 until bitmap.height step 3) for (x in 0 until bitmap.width step 3) colors.add(bitmap.getPixel(x, y))
+        assertTrue("screenshot is empty or only flat backgrounds (${colors.size} colors)", colors.size > 16)
         val file = File(output, "$name.png"); file.parentFile!!.mkdirs()
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
