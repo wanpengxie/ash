@@ -20,7 +20,13 @@ export const TASKS_ID = "service:tasks";
 export type CardKind = "noted" | "remind" | "follow";
 const OPEN = new Set(["todo", "doing", "waiting"]);
 
+export interface Delivery {
+  saved: true;
+  reminders: "ready" | "pending" | "none";
+  conversation: "ready" | "pending";
+}
 export interface Task {
+  delivery?: Delivery;
   id: string; title: string; note: string; subject: "owner" | "ash"; assignee: string; status: string;
   due_at: number | null; remind_at: number | null; source: { message?: string; turn?: string; agent?: string } | null;
   thread: string | null; result: string | null; created_by: string; created_at: number; updated_by: string; updated_at: number; done_at: number | null;

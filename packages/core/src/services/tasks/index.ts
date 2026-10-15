@@ -1,5 +1,5 @@
 /** The task app's single durable state. All reminders use service:clock; no UI owns a timer. */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isAgentId, OWNER_ID } from "../../../../sdk/src/ids";
 import { WordError, type Caller, type HandleContext, type Message, type Reply, type WordResult } from "../../../../sdk/src/message";
 import { wordsOf, TASK_STATUSES } from "../../../../sdk/src/words";
@@ -113,17 +113,24 @@ export class TasksService implements Member {
     this.db.prepare("INSERT INTO task_changes(task_id,at,by,change) VALUES(?,?,?,?)").run(task.id,this.now(),by,change);
   }
   private async event(task: Task, change: string, by: string) {
-    const r = await this.o.router.send({to:null,kind:"event",word:"task.changed",body:{id:task.id,change,by,task}},SELF);
-    if (!r.ok) this.o.log?.("task event failed", r.error);
+    try {
+      const r = await this.o.router.send({to:null,kind:"event",word:"task.changed",body:{id:task.id,change,by,task}},SELF);
+      if (!r.ok) this.o.log?.("task event failed", r.error);
+    } catch(error) { this.o.log?.("task event pending refresh",error); }
   }
   private async add(b: Body, caller: Caller) {
     if(b.remind_in !== undefined && b.remind_at !== undefined) throw new WordError("bad_request","give remind_at or remind_in, not both");
-    const key = b.client_id ? `${caller.member}:${b.client_id}` : null;
+    const capturedSource = this.source(b,caller);
+    // An agent retrying the same capture in the same agent turn must not make a new task.
+    // No time-window/title guessing: deliberately separate items can always use separate client_id values.
+    const captureKey = caller.turn;
+    const key = b.client_id ? `${caller.member}:${b.client_id}` : captureKey
+      ? `${caller.member}:capture:${captureKey}:${createHash("sha256").update(fingerprint(b)).digest("hex")}` : null;
     if (key) {
       const old = this.db.prepare("SELECT data,client_body FROM tasks WHERE client_key=?").get(key) as {data:string;client_body:string}|undefined;
       if (old) {
         if(old.client_body!==fingerprint(b)) throw new WordError("conflict","client_id was already used for different task content; use the original content to reconcile");
-        await this.sync(); return {task:JSON.parse(old.data),created:false};
+        await this.sync(); return {task:this.get(JSON.parse(old.data).id),created:false};
       }
     }
     const subject = b.subject ?? "owner";
@@ -133,13 +140,13 @@ export class TasksService implements Member {
       assignee:b.assignee ?? (subject === "ash" ? (isAgentId(caller.member) ? caller.member : primary) : OWNER_ID),
       status:b.status ?? "todo", due_at:parseTime(b.due_at,"due_at") ?? null,
       remind_at:b.remind_in ? now+b.remind_in*60_000 : parseTime(b.remind_at,"remind_at") ?? null,
-      source:this.source(b,caller),thread:b.thread ?? null,result:null,created_by:caller.member,created_at:now,updated_by:caller.member,updated_at:now,done_at:null};
+      source:capturedSource,thread:b.thread ?? null,result:null,created_by:caller.member,created_at:now,updated_by:caller.member,updated_at:now,done_at:null};
     this.validate(task);
     this.o.ledger.tx(() => {
       this.db.prepare("INSERT INTO tasks(id,data,client_key,client_body) VALUES(?,?,?,?)").run(task.id,JSON.stringify(task),key,fingerprint(b));
       this.change(task,"added",caller.member); this.notice(task,"noted",now);
     });
-    await this.event(task,"added",caller.member); await this.sync(); return {task,created:true};
+    await this.event(task,"added",caller.member); await this.sync(); return {task:this.get(task.id),created:true};
   }
   private async update(b: Body, caller: Caller) {
     if(b.remind_in !== undefined && b.remind_at !== undefined) throw new WordError("bad_request","give remind_at or remind_in, not both");
@@ -149,13 +156,13 @@ export class TasksService implements Member {
     for (const key of ["due_at","remind_at"] as const) if(b[key]!==undefined) task[key]=parseTime(b[key],key)!;
     if(b.remind_in!==undefined) task.remind_at=now+b.remind_in*60_000;
     this.validate(task);
-    if(caller.via === "agent" && task.subject === "ash") {
+    if(caller.via === "agent") {
       if((task.status === "done" || task.status === "dropped") && !task.result?.trim())
         throw new WordError("bad_request","give result: what you completed, or why you could not do it");
       if(task.status === "waiting" && !task.note.trim())
         throw new WordError("bad_request","give note: who or what you are waiting for");
     }
-    if(JSON.stringify(old)===JSON.stringify(task)) {await this.sync();return old;}
+    if(JSON.stringify(old)===JSON.stringify(task)) {await this.sync();return this.get(task.id);}
     task.updated_by=caller.member;task.updated_at=now;
     task.done_at=isOpen(task)?null:(isOpen(old)?now:old.done_at);
     const change=task.status===old.status?"updated":task.status==="done"?"done":task.status==="dropped"?"dropped":!isOpen(old)?"reopened":"updated";
@@ -164,9 +171,9 @@ export class TasksService implements Member {
         follow_sent=CASE WHEN ? THEN NULL ELSE follow_sent END WHERE id=?`).run(JSON.stringify(task),Number(task.remind_at!==old.remind_at || (!isOpen(old)&&isOpen(task))),Number(task.due_at!==old.due_at || (!isOpen(old)&&isOpen(task))),task.id);
       this.change(task,change,caller.member);
       this.db.prepare("UPDATE task_notices SET sent=2 WHERE task_id=? AND sent=1").run(task.id);
-      if(!isOpen(task)&&isOpen(old)&&task.subject==="ash") this.notice(task,"report",now);
+      if(!isOpen(task)&&isOpen(old)&&(task.source !== null || isAgentId(old.assignee) || isAgentId(task.assignee))) this.notice(task,"report",now);
     });
-    await this.event(task,change,caller.member); await this.sync(); return task;
+    await this.event(task,change,caller.member); await this.sync(); return this.get(task.id);
   }
   private async due(b: Body) {
     const row=this.row(b.id);if(!row)return;
@@ -181,12 +188,13 @@ export class TasksService implements Member {
     });
   }
   private async send(to:string,word:string,body:unknown,reply_to?:string):Promise<Reply>{
-    return this.o.router.send({to,kind:"request",word,body,...(reply_to?{reply_to}:{})},SELF);
+    try { return await this.o.router.send({to,kind:"request",word,body,...(reply_to?{reply_to}:{})},SELF); }
+    catch(error) { return {ok:false,error:{code:"unavailable",message:error instanceof Error?error.message:String(error)}}; }
   }
-  private async sync():Promise<void>{
+  private async syncTimers():Promise<boolean>{
     // A single durable maintenance timer also repairs transient delivery failures. It does not poll any screen.
     const listed=await this.send("service:clock","list",{});
-    if(!listed.ok) throw new WordError("unavailable","task stored; clock is unavailable, reminders will be restored when the hub starts");
+    if(!listed.ok) {this.o.log?.("task reminders pending clock recovery",listed.error);return false;}
     const have=(listed.result?.data as {timers?: {id:string;label:string;created_by:string}[]})?.timers ?? [];
     const want=new Map<string,{at?:number;every?:number;word:string;body:unknown}>();
     want.set(`${PREFIX}sync`,{every:60,word:"task.sync",body:{}});
@@ -201,7 +209,12 @@ export class TasksService implements Member {
     for(const t of have.filter(t=>t.created_by===TASKS_ID&&t.label.startsWith(PREFIX))){
       if(want.has(t.label)) want.delete(t.label); else await this.send("service:clock","cancel",{id:t.id});
     }
-    for(const [label,t] of want){const r=await this.send("service:clock","set",{...t,to:TASKS_ID,label});if(!r.ok)throw new WordError("unavailable",`task stored; timer could not be set: ${r.error.message}`);}
+    let ready=true;
+    for(const [label,t] of want){const r=await this.send("service:clock","set",{...t,to:TASKS_ID,label});if(!r.ok){ready=false;this.o.log?.("task timer pending",r.error);}}
+    return ready;
+  }
+  private async sync():Promise<void>{
+    const timersReady=await this.syncTimers();
     const primary=await this.primary();
     for(const n of this.db.prepare("SELECT * FROM task_notices WHERE sent=0 ORDER BY rowid LIMIT 100").all() as Notice[]){
       const task=this.get(n.task_id);
@@ -231,6 +244,18 @@ export class TasksService implements Member {
       const task=this.get(n.task_id);
       const r=await this.send(OWNER_ID,"card.update",{id:n.id,...cardOf(task,n.kind==="report"?"noted":n.kind,this.now(),primary)});
       if(r.ok || r.error.code==="not_found")this.mark(n);
+    }
+    for(const row of this.db.prepare("SELECT data,reminder_sent,follow_sent FROM tasks").all() as Stored[]){
+      const task=JSON.parse(row.data) as Task;
+      const needsClock=isOpen(task) && ((task.remind_at!==null && row.reminder_sent!==task.remind_at) ||
+        (task.due_at!==null && row.follow_sent!==followUpAt(task)));
+      const pending=this.db.prepare("SELECT 1 FROM task_notices WHERE task_id=? AND sent!=1 LIMIT 1").get(task.id);
+      const delivery:NonNullable<Task["delivery"]>={saved:true,reminders:needsClock?(timersReady?"ready":"pending"):"none",conversation:pending?"pending":"ready"};
+      if(JSON.stringify(task.delivery)!==JSON.stringify(delivery)){
+        task.delivery=delivery;
+        this.db.prepare("UPDATE tasks SET data=? WHERE id=?").run(JSON.stringify(task),task.id);
+        await this.event(task,"updated",TASKS_ID);
+      }
     }
   }
   private mark(n:Notice){this.db.prepare("UPDATE task_notices SET sent=1 WHERE id=?").run(n.id);}

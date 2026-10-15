@@ -11,6 +11,7 @@ object TasksModel {
         val assignee: String = "person:owner", val status: String = "todo", val dueAt: Long? = null,
         val remindAt: Long? = null, val source: Source? = null, val result: String = "",
         val updatedBy: String = "", val updatedAt: Long = 0,
+        val remindersPending: Boolean = false, val conversationPending: Boolean = false,
     ) {
         val open get() = status in setOf("todo", "doing", "waiting")
         val key get() = "task:$id"
