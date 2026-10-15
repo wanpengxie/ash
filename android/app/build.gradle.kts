@@ -91,6 +91,8 @@ android {
 
     sourceSets["main"].assets.srcDir(linkSchemaAssets)
     buildFeatures { buildConfig = true; aidl = true }
+    // Activity/View acceptance runs with real Android resources, without an APK or device.
+    testOptions { unitTests.isIncludeAndroidResources = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -123,6 +125,7 @@ dependencies {
     // On-phone inference for ocr.read (PP-OCRv6 medium ONNX models, downloaded on first use). The AAR carries arm64 libraries only after abiFilters.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     // The same ai.onnxruntime API with desktop libraries, so the reader can be run end to end in a unit test when the models are at hand (see OcrEndToEndTest).
