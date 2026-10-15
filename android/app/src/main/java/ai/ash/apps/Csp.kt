@@ -7,13 +7,12 @@ import java.net.URI
  * them in its `csp {connectDomains, resourceDomains}` ([fromJson]; none given means none allowed): nothing but these, ever.
  * The page gets them as a Content-Security-Policy meta tag, and the WebView refuses every other request as well.
  */
-class Csp(connectDomains: List<String>, resourceDomains: List<String>, private val inlineOnly: Boolean = false) {
+class Csp(connectDomains: List<String>, resourceDomains: List<String>) {
     val connect: List<String> = connectDomains.mapNotNull(::source).distinct()
     val resource: List<String> = resourceDomains.mapNotNull(::source).distinct()
 
     /** The policy: the spec's restrictive default, opened only for the declared origins. */
     fun header(): String {
-        if (inlineOnly) return INLINE_ONLY
         val r = resource.joinToString("") { " $it" }
         val c = if (connect.isEmpty()) "'none'" else connect.joinToString(" ")
         return listOf(
@@ -46,13 +45,6 @@ class Csp(connectDomains: List<String>, resourceDomains: List<String>, private v
         .put("connectDomains", org.json.JSONArray(connect)).put("resourceDomains", org.json.JSONArray(resource))
 
     companion object {
-        /** A card's mini app: its own inline code and styles, pictures and fonts given inline; nothing else, no network. */
-        private const val INLINE_ONLY = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; " +
-            "media-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-
-        /** The rules of a page that declares no network and loads nothing but its own inline content (a card's mini app). */
-        fun inlineOnly(): Csp = Csp(emptyList(), emptyList(), inlineOnly = true)
-
         private val SOURCE = Regex("(https|wss)://(\\*\\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?")
 
         /** One declared origin, normalised; anything else (a keyword, a path, plain http, a wildcard alone) is dropped. */
