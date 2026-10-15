@@ -407,6 +407,7 @@ open class DevicesActivity : SystemAppActivity() {
         private val header = AshUi.text(this@DevicesActivity, getString(R.string.dev_loading), AshTokens.Type.title, c.ink)
         private val presenceLabel = AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2)
         private val identity = AshUi.hstack(this@DevicesActivity, 16)
+        private val deviceObject = DeviceObjectView(this@DevicesActivity, "computer")
         private val notice = surface(16)
         private val status = text("")
         private val nextStep = text("")
@@ -485,8 +486,7 @@ open class DevicesActivity : SystemAppActivity() {
         private val unknown = HashSet<String>()
         init {
             identity.setPadding(0, dp(8), 0, dp(16))
-            val kind = model.device(id)?.kind ?: "computer"
-            identity.addView(DeviceObjectView(this@DevicesActivity, kind), LinearLayout.LayoutParams(dp(80), dp(72)))
+            identity.addView(deviceObject, LinearLayout.LayoutParams(dp(80), dp(72)))
             identity.addView(AshUi.vstack(this@DevicesActivity, 4).apply { addView(header); addView(presenceLabel) }, LinearLayout.LayoutParams(0, -2, 1f))
             root.addView(identity)
             notice.addView(status); notice.addView(nextStep); notice.addView(diagnose); notice.addView(restore); notice.addView(revokeNote)
@@ -534,6 +534,7 @@ open class DevicesActivity : SystemAppActivity() {
             val d = model.device(id)
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; restore.visibility = View.GONE; return }
             header.text = d.name
+            deviceObject.kind = d.kind
             presenceLabel.text = devicePresence(d)
             if (diagnosisState != null && diagnosisState != (d.online to d.revoked) && "diagnose" !in pending) clearDiagnosis()
             val noAccess = !d.lend && !d.body && !d.localAgents
@@ -749,6 +750,8 @@ open class DevicesActivity : SystemAppActivity() {
         private val decision = surface(16)
         private val pairName = AshUi.text(this@DevicesActivity, "", AshTokens.Type.headline, c.ink)
         private val pairScope = AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2)
+        private val decisionLabel = AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_decision_label), AshTokens.Type.sub, c.text2)
+        private val question = AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_question), AshTokens.Type.headline, c.ink)
         private var scopeOpen = false
         private val scopeButton = linkButton(R.string.dev_adjust_pair_scope, R.drawable.ash_ic_shield) {
             scopeOpen = !scopeOpen; bind()
@@ -785,9 +788,9 @@ open class DevicesActivity : SystemAppActivity() {
             permissions.restore(pairDraft)
             if (compact) {
                 decision.addView(AshUi.hstack(this@DevicesActivity, 8).apply {
-                    addView(icon(R.drawable.ash_ic_check, 20)); addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_decision_label), AshTokens.Type.sub, c.text2))
+                    addView(icon(R.drawable.ash_ic_check, 20)); addView(decisionLabel)
                 })
-                decision.addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_question), AshTokens.Type.headline, c.ink))
+                decision.addView(question)
                 decision.addView(AshUi.hstack(this@DevicesActivity, 16).apply {
                     addView(DeviceObjectView(this@DevicesActivity, "computer"), LinearLayout.LayoutParams(dp(64), dp(56)))
                     addView(pairName, LinearLayout.LayoutParams(0, -2, 1f))
@@ -814,6 +817,8 @@ open class DevicesActivity : SystemAppActivity() {
             if (command.text.toString() != waiting?.command.orEmpty()) command.text = waiting?.command.orEmpty()
             copy.visibility = command.visibility
             val asking = s is PairFlow.Step.Asking || s is PairFlow.Step.Approving
+            decisionLabel.text = getString(if (s is PairFlow.Step.Asking) R.string.dev_pair_decision_label else R.string.dev_pair_progress)
+            question.text = getString(if (s is PairFlow.Step.Approved) R.string.dev_pair_waiting_online else R.string.dev_pair_question)
             permissions.root.visibility = visible(asking && (!compact || scopeOpen))
             permissions.enabled(!deciding && !pairUncertain && s is PairFlow.Step.Asking)
             val connectedDevice = (s as? PairFlow.Step.Connected)?.device?.let(model::device)?.takeIf { it.online && !it.revoked }

@@ -9,7 +9,9 @@ import android.graphics.RectF
 import android.view.View
 
 /** A device object, never an agent avatar or a claim about its screen contents (SPEC C05/V06). */
-internal class DeviceObjectView(context: Context, private val kind: String) : View(context) {
+internal class DeviceObjectView(context: Context, kind: String) : View(context) {
+    var kind: String = kind
+        set(value) { if (field != value) { field = value; invalidate() } }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
     override fun onDraw(canvas: Canvas) {

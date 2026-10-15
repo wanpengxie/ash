@@ -29,8 +29,8 @@
     <string name="dev_full_help">关闭时按规则和影响审批；开启后不再逐次询问</string>
     <string name="dev_update">现在升级</string>
     <string name="dev_diagnose">连接诊断</string>
-    <string name="dev_revoke">撤销设备</string>
-    <string name="dev_restore">恢复设备</string>
+    <string name="dev_revoke">撤销访问</string>
+    <string name="dev_restore">恢复访问</string>
     <string name="dev_revoke_question">撤销这台设备？</string>
     <string name="dev_revoke_help">撤销后它不能再连接或经 Ash 使用能力；不保证停止设备上已运行的原生进程，也不会回滚已发生的外部效果。以后可在已撤销列表恢复访问。</string>
     <string name="dev_cancel">取消</string>
@@ -113,7 +113,7 @@
     <string name="dev_detail_revoked">Ash 已不能使用这台设备的能力，设备也不能再连接。</string>
     <string name="dev_detail_restore_next">需要继续使用“%1$s”，请先恢复设备，再到那台设备打开 Ash。</string>
     <string name="dev_detail_offline_next">请在“%1$s”这台%2$s上启动 Ash，并检查它的网络。完成后点下面的“检查连接”，确认连接是否恢复。</string>
-    <string name="dev_detail_access_next">连接已就绪。要让 Ash 操作这台设备，请展开下面的“设备设置”，开启需要的访问范围。</string>
+    <string name="dev_detail_access_next">连接已就绪。请在下面“允许她做什么”选择需要开放的范围。</string>
     <string name="dev_detail_online_next">连接已就绪。Ash 可使用上方列出的能力；如遇问题，点“检查连接”。</string>
     <string name="dev_connection_check_needed">连接需检查</string>
     <string name="dev_detail_connection_review">连接状态待核实，Ash 的操作可能受影响。</string>
@@ -154,4 +154,6 @@
     <string name="dev_now">现在</string>
     <string name="dev_permissions">权限</string>
     <string name="dev_detail_more">设备更多</string>
+    <string name="dev_pair_progress">接入进度</string>
+    <string name="dev_pair_waiting_online">等待设备上线</string>
 </resources>

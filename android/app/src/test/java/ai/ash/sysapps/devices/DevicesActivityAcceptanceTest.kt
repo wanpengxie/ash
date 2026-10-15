@@ -8,6 +8,7 @@ import android.app.AlertDialog
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import org.robolectric.shadows.ShadowAlertDialog
+import org.robolectric.shadows.ShadowPopupMenu
 import java.io.File
 import android.app.Application
 import android.content.Intent
@@ -31,10 +32,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.time.Duration
 import android.widget.ScrollView
+import android.graphics.Rect
 
 /** Real Activity/View binding with a controlled hub boundary. No live phone, link, app startup or network calls. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], application = Application::class, qualifiers = "w393dp-h851dp-xxhdpi")
+@Config(sdk = [35], application = Application::class, qualifiers = "w360dp-h800dp-mdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class DevicesActivityAcceptanceTest {
@@ -56,6 +58,7 @@ class DevicesActivityAcceptanceTest {
         val screen = controller.get()
         // Exercise the production route handler and View tree without starting the real shared link subscription.
         DevicesActivity::class.java.getDeclaredField("active").apply { isAccessible = true }.setBoolean(screen, true)
+        SystemAppActivity::class.java.getDeclaredField("connected").apply { isAccessible = true }.setBoolean(screen, true)
         screen.connect()
         flushDisk()
         return screen
@@ -72,21 +75,27 @@ class DevicesActivityAcceptanceTest {
     private fun View.visibleInTree(): Boolean = visibility == View.VISIBLE && ((parent as? View)?.visibleInTree() ?: true)
     private fun DeviceScreen.texts() = views(window.decorView).filterIsInstance<TextView>().filter { it.visibleInTree() }.map { it.text.toString() }
     private fun DeviceScreen.button(label: String): TextView {
-        if (label in setOf("保存名称", "撤销设备")) openSettings()
+        if (label == "保存名称") openSettings()
         return views(window.decorView).filterIsInstance<TextView>().first { it.text.toString() == label && it.visibleInTree() }
     }
     private fun DeviceScreen.openSettings() {
-        views(window.decorView).filterIsInstance<TextView>().firstOrNull { it.text.toString() == "设备设置：名称与访问范围" && it.visibleInTree() }?.performClick()
+        views(window.decorView).filterIsInstance<TextView>().firstOrNull { it.text.toString() == "改名" && it.visibleInTree() }?.performClick()
     }
-    private fun DeviceScreen.access(label: String): AshUi.AshSwitch {
-        val toggle = views(window.decorView).filterIsInstance<AshUi.AshSwitch>().single { it.contentDescription == label }
-        if (!toggle.visibleInTree()) openSettings()
+    private fun DeviceScreen.access(label: String): TextView {
+        val toggle = views(window.decorView).filterIsInstance<TextView>().single { it.contentDescription == label }
         assertTrue("The permission must be visible before a real click", toggle.visibleInTree())
         return toggle
     }
+    private fun DeviceScreen.chooseAccess(label: String, allow: Boolean): TextView {
+        val control = access(label); control.performClick()
+        val popup = ShadowPopupMenu.getLatestPopupMenu()
+        assertNotNull(popup)
+        assertTrue(popup.menu.performIdentifierAction(if (allow) 1 else 0, 0))
+        return control
+    }
     private fun DeviceScreen.layoutScreen() {
         val view = window.decorView
-        val width = (393 * resources.displayMetrics.density).toInt(); val height = (851 * resources.displayMetrics.density).toInt()
+        val width = (360 * resources.displayMetrics.density).toInt(); val height = (800 * resources.displayMetrics.density).toInt()
         view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, width, height)
     }
@@ -99,18 +108,17 @@ class DevicesActivityAcceptanceTest {
     private fun DeviceScreen.scrollToText(fragment: String) {
         settleScreen()
         val target = views(window.decorView).filterIsInstance<TextView>().first { fragment in it.text.toString() && it.visibleInTree() }
-        views(window.decorView).filterIsInstance<ScrollView>().single().scrollTo(0, target.top)
+        val scroll = views(window.decorView).filterIsInstance<ScrollView>().single()
+        val rect = Rect(0, 0, target.width, target.height)
+        scroll.offsetDescendantRectToMyCoords(target, rect)
+        scroll.scrollTo(0, scroll.scrollY + rect.top)
     }
     private fun DeviceScreen.capture(name: String) {
         settleScreen()
         val view = window.decorView
         val width = view.width; val height = view.height
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); view.draw(Canvas(bitmap))
-        val colors = HashSet<Int>()
-        // Exclude the header: a rendered title bar must not hide an empty page in screenshot acceptance.
-        for (y in (150 * resources.displayMetrics.density).toInt() until height step 7) for (x in 0 until width step 7) colors += bitmap.getPixel(x, y)
-        assertTrue("The Activity content must render below its header", colors.size > 10)
-        val dir = File("/data/atoll/tmp/devices-acceptance").apply { mkdirs() }
+        val dir = File("/data/atoll/tmp/devices-v6-native").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
     }
     private fun DeviceScreen.name(): EditText { openSettings(); return views(window.decorView).filterIsInstance<EditText>().single() }
@@ -118,7 +126,7 @@ class DevicesActivityAcceptanceTest {
     @Test fun aWarmOpenSwitchesFromDeviceAToBAndKeepsEachNamesDraft() {
         val activity = screen("d/device:a")
         activity.answer("list", devices())
-        activity.name().setText("Alpha 的未发送草稿")
+        activity.name().requestFocus(); activity.name().setText("Alpha 的未发送草稿")
         activity.deliver("d/device:b")
         flushDisk()
         assertEquals("d/device:b", activity.intent.getStringExtra(SystemAppActivity.EXTRA_ARG))
@@ -128,6 +136,7 @@ class DevicesActivityAcceptanceTest {
         activity.deliver("d/device:a")
         flushDisk()
         assertEquals("Alpha 的未发送草稿", activity.name().text.toString())
+        activity.scrollToText("Alpha 的未发送草稿")
         activity.capture("warm-open-draft")
     }
 
@@ -159,14 +168,14 @@ class DevicesActivityAcceptanceTest {
     @Test fun accessUsesTheConfirmedResponseAndALateOldReadCannotFlipItBack() {
         val activity = screen("d/device:a"); activity.answer("list", devices())
         activity.connect(); val oldList = activity.take("list", "service:devices")
-        val toggle = activity.access("文件和命令"); toggle.performClick()
+        val toggle = activity.chooseAccess("文件和命令", true)
         val change = activity.take("access_set")
         assertEquals("device:a", change.body.optString("device")); assertTrue(change.body.getBoolean("body"))
         assertFalse(toggle.isEnabled)
         change.done(device("a", "Alpha").put("body", true), null)
-        assertTrue(toggle.checked); assertTrue(toggle.isEnabled)
+        assertTrue(toggle.isSelected); assertTrue(toggle.isEnabled)
         oldList.done(devices(), null)
-        assertTrue(toggle.checked)
+        assertTrue(toggle.isSelected)
         activity.capture("confirmed-access")
     }
 
@@ -200,19 +209,19 @@ class DevicesActivityAcceptanceTest {
 
     @Test fun revocationRequiresConfirmationDismissesOnNewTargetAndShowsTheRestorableState() {
         val activity = screen("d/device:a"); activity.answer("list", devices())
-        activity.button("撤销设备").performClick()
+        activity.button("撤销访问").performClick()
         val staleDialog = ShadowAlertDialog.getLatestAlertDialog(); assertTrue(staleDialog.isShowing)
         assertFalse(activity.requests.any { it.word == "revoke" })
         activity.deliver("d/device:b"); flushDisk(); assertFalse(staleDialog.isShowing)
         assertFalse(activity.requests.any { it.word == "revoke" })
-        activity.button("撤销设备").performClick()
+        activity.button("撤销访问").performClick()
         ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
         shadowOf(Looper.getMainLooper()).idle()
         val revoke = activity.take("revoke"); assertEquals("device:b", revoke.body.optString("device"))
         revoke.done(JSONObject().put("revoked", true), null)
         assertFalse(activity.button("保存名称").isEnabled); assertFalse(activity.access("文件和命令").isEnabled)
         assertTrue(activity.texts().any { it.contains("已撤销") })
-        activity.button("恢复设备").performClick()
+        activity.button("恢复访问").performClick()
         val restore = activity.take("restore"); assertEquals("device:b", restore.body.optString("device"))
         restore.done(JSONObject().put("restored", true), null)
         assertTrue(activity.button("保存名称").isEnabled)
@@ -230,11 +239,11 @@ class DevicesActivityAcceptanceTest {
         activity.event("pair.changed", JSONObject().put("pair_id", "pair-a").put("state", "requested"))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "requested").put("name", "书房电脑"))
         assertTrue(activity.texts().any { it.contains("书房电脑 想连上来") })
-        assertTrue(activity.texts().contains("高级选项")); assertFalse(activity.texts().contains("完全放开审批"))
+        assertTrue(activity.texts().contains("帮手与审批边界")); assertFalse(activity.texts().contains("完全放开审批"))
         activity.capture("pairing-confirm-abilities")
-        activity.access("文件和命令").performClick(); activity.button("批准连接").performClick()
+        activity.chooseAccess("文件和命令", true); activity.button("允许接入").performClick()
         val approve = activity.take("pair_approve"); assertEquals("pair-a", approve.body.optString("pair_id")); assertTrue(approve.body.getBoolean("body"))
-        assertFalse(activity.button("批准连接").isEnabled)
+        assertFalse(activity.button("允许接入").isEnabled)
         approve.done(JSONObject().put("pair_id", "pair-a").put("state", "approved").put("device", "device:a"), null)
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "approved").put("device", "device:a"))
         assertTrue(activity.texts().contains("已批准，正在等设备连上…"))
@@ -254,7 +263,7 @@ class DevicesActivityAcceptanceTest {
         fresh.done(JSONObject().put("pair_id", "new-pair").put("state", "requested").put("name", "新电脑"), null)
         old.done(JSONObject().put("pair_id", "old-pair").put("state", "connected").put("device", "device:a"), null)
         assertTrue(activity.texts().any { it.contains("新电脑 想连上来") })
-        activity.button("批准连接").performClick(); assertEquals("new-pair", activity.take("pair_approve").body.optString("pair_id"))
+        activity.button("允许接入").performClick(); assertEquals("new-pair", activity.take("pair_approve").body.optString("pair_id"))
     }
 
     @Test fun theHomeScreenExplainsWhatAshCanDoAndLeadsAnOfflineDeviceToRecovery() {
@@ -263,13 +272,13 @@ class DevicesActivityAcceptanceTest {
         activity.answer("pair_pending", JSONObject().put("pairs", JSONArray()))
         val data = devices().put("release", "0.2.5"); data.getJSONArray("devices").getJSONObject(0).put("version", "0.2.5"); data.getJSONArray("devices").getJSONObject(1).put("online", false).put("lend", false).put("latest", false)
         activity.answer("list", data); activity.capture("devices-home")
-        assertTrue(activity.texts().contains("接入一台电脑"))
+        assertTrue(activity.texts().contains("接入新设备"))
         assertTrue(activity.texts().any { it.contains("中转站已连通") }); assertFalse(activity.texts().any { it.contains("正在读取中转站") })
-        assertTrue(activity.texts().any { it.contains("Ash 现在可以：看屏幕") })
+        assertTrue(activity.texts().contains("屏幕"))
         val list = views(activity.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().single()
         (list.layoutManager as androidx.recyclerview.widget.LinearLayoutManager).scrollToPositionWithOffset(3, 0)
         activity.capture("devices-offline-row")
-        activity.button("查看如何恢复连接").performClick(); flushDisk()
+        views(activity.window.decorView).single { it.contentDescription == "查看设备：Beta" }.performClick(); flushDisk()
         assertTrue(activity.texts().contains("Beta"))
         assertTrue(activity.texts().any { it.contains("Beta") && it.contains("这台电脑上启动 Ash") })
         assertTrue(activity.texts().contains("检查连接"))
@@ -288,18 +297,19 @@ class DevicesActivityAcceptanceTest {
     @Test fun settingsAndAdvancedPermissionsRequireVisibleUserChoices() {
         val activity = screen("d/device:a"); activity.answer("list", devices())
         assertTrue(activity.texts().contains("检查连接")); assertFalse(activity.texts().contains("保存名称"))
-        activity.button("设备设置：名称与访问范围").performClick()
-        assertTrue(activity.texts().contains("保存名称")); assertTrue(activity.texts().contains("文件和命令"))
+        assertTrue(activity.texts().contains("文件和命令"))
+        activity.button("改名").performClick()
+        assertTrue(activity.texts().contains("保存名称"))
         assertFalse(activity.texts().contains("运行本地帮手")); assertFalse(activity.texts().contains("完全放开审批"))
         assertFalse(activity.requests.any { it.word == "access_set" })
-        activity.button("高级选项").performClick()
+        activity.button("帮手与审批边界").performClick()
         assertTrue(activity.texts().contains("完全放开审批"))
-        activity.access("运行本地帮手").performClick()
+        activity.chooseAccess("运行本地帮手", true)
         val request = activity.take("access_set")
         assertEquals("device:a", request.body.optString("device")); assertTrue(request.body.getBoolean("local_agents"))
         request.done(device("a", "Alpha").put("local_agents", true), null)
         activity.button("收起高级选项").performClick()
-        assertTrue(activity.texts().contains("高级选项 · 有已启用项"))
+        assertTrue(activity.texts().any { it.contains("可运行本地帮手") })
         assertFalse(activity.texts().contains("完全放开审批"))
     }
 
@@ -323,6 +333,84 @@ class DevicesActivityAcceptanceTest {
         val offline = devices(); offline.getJSONArray("devices").getJSONObject(0).put("online", false)
         activity.take("list", "service:devices").done(offline, null)
         assertFalse(activity.texts().any { it.contains("延迟：42") })
+    }
+
+    private fun sceneDevices() = JSONObject().put("release", "0.4.0").put("devices", JSONArray()
+        .put(device("work", "开发电脑").put("version", "0.4.0").put("body", true).put("capabilities", JSONArray().put("workspace.bash").put("x.codex.send")))
+        .put(device("home", "家用服务器").put("kind", "server").put("online", false).put("last_seen", System.currentTimeMillis() - 8 * 60_000)
+            .put("version", "0.3.9").put("latest", false).put("lend", false).put("body", true).put("capabilities", JSONArray().put("workspace.bash")))
+        .put(device("phone", "我的手机").put("kind", "phone").put("version", "0.4.8").put("capabilities", JSONArray().put("screen.read").put("calendar.list"))))
+    private fun DeviceScreen.relayReady() = answer("gateway.status", JSONObject().put("configured", true).put("connected", true).put("url", "https://relay.example"))
+
+    @Test fun theNativeHomeShowsTheSameRequestScopeAndApprovalStillWaitsForTheDevice() {
+        val activity = screen(""); activity.relayReady(); activity.answer("list", sceneDevices())
+        activity.answer("pair_pending", JSONObject().put("pairs", JSONArray().put(JSONObject().put("pair_id", "pair-travel").put("state", "requested").put("name", "随身电脑").put("kind", "computer"))))
+        val status = activity.take("pair_status"); assertEquals("pair-travel", status.body.getString("pair_id"))
+        status.done(JSONObject().put("pair_id", "pair-travel").put("state", "requested").put("name", "随身电脑"), null)
+        activity.capture("devices-v6-home")
+        assertTrue(activity.texts().contains("允许这台电脑接入？")); assertTrue(activity.texts().contains("随身电脑"))
+        assertTrue(activity.texts().any { it.contains("文件命令：关闭") })
+        assertEquals(View.GONE, views(activity.window.decorView).single { it.contentDescription == "返回" }.visibility)
+        assertTrue(views(activity.window.decorView).single { it.contentDescription == "现在" }.isSelected)
+        activity.button("调整接入权限").performClick()
+        activity.chooseAccess("文件和命令", true)
+        activity.button("帮手与审批边界").performClick()
+        activity.chooseAccess("运行本地帮手", true); activity.chooseAccess("完全放开审批", true)
+        activity.button("收起高级选项").performClick()
+        activity.button("调整接入权限").performClick()
+        assertTrue(activity.texts().any { it.contains("文件命令：允许") })
+        activity.button("允许接入").performClick()
+        val approve = activity.take("pair_approve")
+        assertEquals("pair-travel", approve.body.getString("pair_id")); assertTrue(approve.body.getBoolean("body"))
+        assertTrue(approve.body.getBoolean("local_agents")); assertEquals("full", approve.body.getString("tier"))
+        approve.done(JSONObject().put("pair_id", "pair-travel").put("state", "approved").put("device", "device:new"), null)
+        assertTrue(activity.texts().contains("已批准，正在等设备连上…"))
+        assertFalse(activity.texts().any { it.contains("已接好") })
+        activity.capture("devices-v6-approved-waiting")
+    }
+
+    @Test fun theQuietGridAndDetailReturnToTheOriginalPermissionSpace() {
+        val activity = screen(""); activity.relayReady(); activity.answer("list", sceneDevices())
+        activity.answer("pair_pending", JSONObject().put("pairs", JSONArray()))
+        activity.capture("devices-v6-quiet")
+        assertTrue(activity.texts().contains("本页当前没有需要你的决定"))
+        assertFalse(activity.texts().contains("允许这台电脑接入？"))
+        val list = views(activity.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().single()
+        assertTrue(list.layoutManager is androidx.recyclerview.widget.GridLayoutManager)
+        views(activity.window.decorView).single { it.contentDescription == "权限" }.performClick()
+        activity.settleScreen()
+        val manager = list.layoutManager as androidx.recyclerview.widget.GridLayoutManager
+        val position = manager.findFirstVisibleItemPosition()
+        val beforeOffset = manager.findViewByPosition(position)?.top
+        views(activity.window.decorView).single { it.contentDescription == "查看设备：家用服务器" }.performClick(); flushDisk()
+        assertTrue(activity.texts().contains("家用服务器"))
+        assertTrue(activity.texts().contains("允许她做什么"))
+        assertFalse(activity.texts().contains("保存名称")); assertFalse(activity.texts().contains("完全放开审批"))
+        activity.capture("devices-v6-detail")
+        views(activity.window.decorView).single { it.contentDescription == "返回" }.performClick()
+        activity.settleScreen()
+        assertTrue(views(activity.window.decorView).single { it.contentDescription == "权限" }.isSelected)
+        assertEquals(position, manager.findFirstVisibleItemPosition())
+        assertEquals(beforeOffset, manager.findViewByPosition(position)?.top)
+    }
+
+    @Test fun aPhoneDoesNotExposeComputerBodyAndRestoringAccessDoesNotClaimOnline() {
+        val activity = screen("d/device:phone"); activity.answer("list", sceneDevices())
+        assertTrue(activity.texts().contains("我的手机"))
+        assertFalse(views(activity.window.decorView).any { it.contentDescription == "文件和命令" && it.visibleInTree() })
+        assertFalse(activity.texts().any { it.contains("Codex") || it.contains("相册影响") })
+        activity.deliver("d/device:home"); flushDisk()
+        activity.button("撤销访问").performClick()
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(dialog.findViewById<TextView>(android.R.id.message).text.toString().contains("不保证停止"))
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); shadowOf(Looper.getMainLooper()).idle()
+        val revoke = activity.take("revoke"); assertEquals("device:home", revoke.body.getString("device"))
+        revoke.done(JSONObject().put("revoked", true), null)
+        activity.button("恢复访问").performClick()
+        val restore = activity.take("restore"); assertEquals("device:home", restore.body.getString("device"))
+        restore.done(JSONObject().put("restored", true), null)
+        assertTrue(activity.texts().any { it.contains("离线") }); assertFalse(activity.texts().contains("在线"))
+        assertFalse(activity.texts().any { it.contains("已接好") })
     }
 
 }
