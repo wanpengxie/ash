@@ -367,8 +367,10 @@ export class AgentManager {
   /** The process is stopped and started again; the member stays in the registry meanwhile, and those who ask and wait are told it was stopped. */
   async restartAgent(id: string, why = "重启"): Promise<void> {
     const slot = this.slots.get(id);
+    // Cut the running turns first: their effects are unknown. Questions not yet running are merely unavailable.
+    const stopped = slot ? this.halt(slot, "restart") : Promise.resolve();
     this.rejectWaiters(id, new WordError("unavailable", `${id} stopped`));
-    if (slot) await this.halt(slot, "restart");
+    await stopped;
     this.runs.setDesired(id, "on");
     await this.startAgent(id, why);
   }
@@ -378,8 +380,10 @@ export class AgentManager {
     const slot = this.slots.get(id);
     this.runs.setDesired(id, "off");
     this.deps.registry.remove(id);
+    if (slot) slot.troubled = false;
+    const stopped = slot ? this.halt(slot, reason) : Promise.resolve();
     this.rejectWaiters(id, new WordError("unavailable", `${id} stopped`));
-    if (slot) { slot.troubled = false; await this.halt(slot, reason); }
+    await stopped;
   }
 
   /** Remove an agent altogether: stop it, drop its inbox and its declaration, and have the clock take back the timers it set. */

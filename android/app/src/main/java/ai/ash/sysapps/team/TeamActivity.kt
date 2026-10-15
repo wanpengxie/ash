@@ -10,6 +10,7 @@ import ai.ash.ui.UiIo
 import ai.ash.ui.design.AshTokens
 import ai.ash.ui.design.AshUi
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -20,6 +21,7 @@ import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.HorizontalScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -52,6 +54,8 @@ class TeamActivity : SystemAppActivity() {
         get() = pendingLoaded
         set(value) { pendingLoaded = value }
     private var restoringTarget = false
+    private var restoringDraft = false
+    private var moreMember = false
     private lateinit var list: RecyclerView
     private lateinit var lm: LinearLayoutManager
     private lateinit var rows: KeyedRowsAdapter
@@ -79,10 +83,11 @@ class TeamActivity : SystemAppActivity() {
         target = saved?.getString("target") ?: selected
         restoringEdit = saved?.getString("route") == "edit"
         route = saved?.getString("route") ?: if (selected == null) "team" else "member"
-        if (route !in setOf("team", "member")) route = if (selected == null) "team" else "member"
+        if (route !in setOf("team", "member", "members")) route = if (selected == null) "team" else "member"
         savedKey = saved?.getString("anchor"); savedOffset = saved?.getInt("offset") ?: 0
         saved?.getStringArrayList("opened")?.let(opened::addAll)
         title.text = "团队"
+        actions.addView(button("成员") { move(null, "members") })
         actions.addView(button("刷新") { refresh() })
         actions.addView(button("新建") { edit(null) })
         status = AshUi.text(this, "正在读取团队…", AshTokens.Type.caption, c.text2).apply { minLines = 2; setPadding(dp(16), dp(4), dp(16), dp(4)) }
@@ -104,7 +109,7 @@ class TeamActivity : SystemAppActivity() {
         })
         targets = Spinner(this).apply { minimumHeight = dp(48); contentDescription = "点名的团队成员" }
         input = EditText(this).apply { id = View.generateViewId(); hint = "点名对帮手说话"; minHeight = dp(48); maxLines = 4; setTextColor(c.text); setHintTextColor(c.text3) }
-        input.addTextChangedListener(watcher { drafts.keep(draftKey(), it) })
+        input.addTextChangedListener(watcher { if (!restoringDraft) drafts.keep(draftKey(), it) })
         send = button("发送") { sendQuestion() }
         composer = AshUi.vstack(this, 4).apply {
             setPadding(dp(16), dp(4), dp(16), dp(8))
@@ -116,7 +121,7 @@ class TeamActivity : SystemAppActivity() {
         targets.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
             override fun onItemSelected(parent: AdapterView<*>?, v: View?, position: Int, id: Long) {
-                if (!restoringTarget) targetIds.getOrNull(position)?.let { next -> if (target != next) { target = next; input.setText(drafts.text(draftKey())) } }
+                if (!restoringTarget) targetIds.getOrNull(position)?.let { next -> if (target != next) switchTarget(next) }
             }
         }
         formSlot = AshUi.vstack(this).apply { visibility = View.GONE }
@@ -133,6 +138,15 @@ class TeamActivity : SystemAppActivity() {
             UiIo.ui { if (!isDestroyed) { loaded.forEach { pending.putIfAbsent(it.clientId, if (it.ledgerId == null && it.error == null) it.copy(error = "上次发送结果尚未确认，请确认结果") else it) }; outboxReady = true; render() } }
         }
         render()
+    }
+    override fun onNewIntent(next: Intent) {
+        super.onNewIntent(next)
+        setIntent(next)
+        restoringEdit = false
+        val id = runCatching { JSONObject(next.getStringExtra(EXTRA_ARG).orEmpty()).optString("agent") }.getOrNull()
+            ?.takeIf { Regex("^agent:[a-z][a-z0-9_-]*$").matches(it) }
+        move(id, if (id == null) "team" else "member")
+        if (active) readMembers()
     }
     override fun onStart() { active = true; super.onStart() }
     override fun onStop() { active = false; members.invalidate(); costs.invalidate(); exchanges.invalidate(); super.onStop() }
@@ -198,18 +212,32 @@ class TeamActivity : SystemAppActivity() {
             if (refreshExchanges) { refreshExchanges = false; readExchanges() }
         }
     }
+    private fun switchTarget(next: String?) {
+        if (target == next && input.text.isNotEmpty()) return
+        if (target != next && target != null) drafts.keep(draftKey(), input.text.toString())
+        target = next
+        restoringDraft = true
+        input.setText(drafts.text(draftKey()))
+        restoringDraft = false
+    }
     private fun updateTargets() {
         val all = members.value.orEmpty()
-        val ids = all.map { it.id }
-        val labels = all.map { it.name }
-        if (ids == targetIds && labels == targetLabels) return
+        val ids = all.map { it.id }.toMutableList()
+        val labels = all.map { it.name }.toMutableList()
+        // A stale open must never silently retarget a question to the first member.
+        target?.takeIf { it !in ids }?.let { ids.add(it); labels.add("成员暂不可用") }
+        if (target == null) switchTarget(selected ?: ids.firstOrNull())
+        if (ids == targetIds && labels == targetLabels) {
+            restoringTarget = true
+            targets.setSelection(ids.indexOf(target).coerceAtLeast(0))
+            restoringTarget = false
+            return
+        }
         restoringTarget = true
-        val previous = target
         targetIds = ids; targetLabels = labels
-        if (target !in ids) target = selected?.takeIf { it in ids } ?: ids.firstOrNull()
         targets.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         targets.setSelection(ids.indexOf(target).coerceAtLeast(0))
-        if (previous != target || input.text.isEmpty()) input.setText(drafts.text(draftKey()))
+        if (input.text.isEmpty()) switchTarget(target)
         restoringTarget = false
     }
     private fun draftKey() = "team:ask:${target ?: "none"}"
@@ -221,9 +249,10 @@ class TeamActivity : SystemAppActivity() {
     private fun member(id: String? = selected) = members.value.orEmpty().firstOrNull { it.id == id }
     private fun move(id: String?, next: String) {
         selected = id; route = next; routeGeneration++; exchanges.invalidate(); exchanges = TeamModel.Read(); before = null
-        extra = emptyList(); moreExtra = null; savedKey = null; sourceRequest = null; armedAction = null; resetPosition = true
+        extra = emptyList(); moreExtra = null; savedKey = null; sourceRequest = null; armedAction = null; resetPosition = true; moreMember = false
         list.visibility = View.VISIBLE; formSlot.visibility = View.GONE
-        if (id != null) { target = id; updateTargets(); targets.setSelection(targetIds.indexOf(id).coerceAtLeast(0)); input.setText(drafts.text(draftKey())) }
+        if (id != null) switchTarget(id)
+        updateTargets()
         render(); syncBack(); readExchanges()
     }
     override fun canGoBack() = route != "team"
@@ -235,20 +264,35 @@ class TeamActivity : SystemAppActivity() {
     }
     private fun render() {
         if (!::rows.isInitialized || route == "edit") return
-        title.text = when (route) { "team" -> "团队"; "member" -> member()?.name ?: "成员"; "logs" -> "成员日志"; "memory" -> "载入的记忆"; else -> "往来原文" }
+        title.text = when (route) { "team" -> "团队"; "members" -> "团队成员"; "member" -> member()?.name ?: "成员"; "logs" -> "成员日志"; "memory" -> "载入的记忆"; else -> "往来原文" }
         composer.visibility = if (route in setOf("team", "member")) View.VISIBLE else View.GONE
-        send.isEnabled = outboxReady && target != null && pending.values.none { it.agent == target && it.ledgerId == null }
+        send.isEnabled = outboxReady && member(target) != null && pending.values.none { it.agent == target && it.ledgerId == null }
         val all = members.value.orEmpty(); val names = all.associate { it.id to it.name }
         val built = ArrayList<ChatRow>()
-        if (route !in setOf("team", "member")) { built.addAll(extra); moreExtra?.let { more -> built.add(ChatRow("extra:more", "more") { button("继续读取", more) }) } }
+        if (route !in setOf("team", "member", "members")) { built.addAll(extra); moreExtra?.let { more -> built.add(ChatRow("extra:more", "more") { button("继续读取", more) }) } }
         else {
             if (route == "team") {
-                built.add(note("members:title", "团队成员"))
+                val working = all.filter { it.state == "working" || it.waiting.isNotEmpty() }
+                val overview = (working + all).distinctBy { it.id }.take(6)
+                val overviewText = if (members.value == null) "正在读取团队状态…" else if (working.isEmpty()) "成员当前没有正在执行的工作" else working.take(2).joinToString("；") { "${it.name}：${it.status(names)}" } + if (working.size > 2) "；还有 ${working.size - 2} 位在忙" else ""
+                built.add(ChatRow("team:overview", overviewText + overview.map { it.id to it.name }) {
+                    AshUi.card(this).apply {
+                        addView(text(overviewText))
+                        addView(HorizontalScrollView(this@TeamActivity).apply {
+                            isHorizontalScrollBarEnabled = false
+                            addView(AshUi.hstack(this@TeamActivity, 6).apply {
+                                overview.forEach { m -> addView(button(m.name) { move(m.id, "member") }) }
+                            })
+                        })
+                    }
+                })
+            } else if (route == "members") {
+                built.add(note("members:title", "点成员查看工作和往来"))
                 all.forEach { m ->
                     val cost = costs.value?.get(m.id)?.label() ?: if (costs.value != null) "今天尚无用量记录" else "花费尚未读取"
                     val sig = listOf(m.name, m.role, m.model, m.state, m.doing, m.waiting.toString(), cost, m.primary.toString()).joinToString("|")
                     built.add(ChatRow("member:${m.id}", sig) {
-                        box(m.name + if (m.primary) " · 主 agent" else "", m.role, m.model.ifBlank { "模型由运行时选择" }, m.status(names), cost).apply {
+                        box(m.name + if (m.primary) " · 主 agent" else "", m.status(names), m.role, "配置模型：${m.model.ifBlank { "由运行时选择" }}", cost).apply {
                             contentDescription = "${m.name}，${m.role}，${m.status(names)}，$cost"
                             addView(button("查看成员") { move(m.id, "member") })
                         }
@@ -256,19 +300,30 @@ class TeamActivity : SystemAppActivity() {
                 }
                 if (members.value != null && all.isEmpty()) built.add(note("members:empty", "还没有团队成员，可以从右上角新建。"))
             } else member()?.let { m ->
-                built.add(ChatRow("detail:${m.id}", m.toString() + busy.toString() + armedAction) {
-                    box(m.role, m.status(names), "模型：${m.model.ifBlank { "由运行时选择" }}", "角色：${m.brief}", "工具：${m.tools?.joinToString("、") ?: "全部"}", "接口：${m.words?.joinToString("、") ?: "全部"}").apply {
+                built.add(ChatRow("detail:${m.id}", m.toString() + busy.toString() + armedAction + moreMember + costs.value?.get(m.id)) {
+                    box(m.status(names), m.role, "配置模型：${m.model.ifBlank { "由运行时选择" }}", costs.value?.get(m.id)?.label().orEmpty()).apply {
                         addView(button("修改配置") { edit(m) })
                         addView(button(if (m.state == "stopped" || m.state == "error") "启动" else if (armedAction == "${m.id}:state") "确认停下，会中断工作" else "停下") { action("state", m.id, if (m.state == "stopped" || m.state == "error") "start" else "stop") })
-                        addView(button("重启") { action("restart", m.id, "restart") })
-                        addView(button("记忆") { memory(m) }); addView(button("日志") { route = "logs"; routeGeneration++; extra = emptyList(); moreExtra = null; resetPosition = true; logs(); render(); syncBack() })
+                        addView(button(if (moreMember) "收起更多" else "更多操作") { moreMember = !moreMember; render() })
+                        if (moreMember) {
+                            addView(button("重启") { action("restart", m.id, "restart") })
+                            addView(button("记忆") { memory(m) })
+                            addView(button("日志") { route = "logs"; routeGeneration++; extra = emptyList(); moreExtra = null; resetPosition = true; logs(); render(); syncBack() })
+                        }
                     }
                 })
             } ?: built.add(note("member:gone", "成员已不存在，返回团队查看当前成员。"))
-            built.add(note("exchanges:title", if (route == "team") "团队往来" else "这个成员的往来"))
+            if (route != "members") {
+            built.add(note("exchanges:title", if (route == "team") "委托与回复" else "这个成员的委托与回复"))
             pending.values.filter { selected == null || selected == it.agent }.forEach { p ->
                 built.add(ChatRow("pending:${p.clientId}", p.toString()) {
-                    box("你 → ${TeamModel.label(p.agent, all)}", p.text, p.error ?: if (p.ledgerId == null) "正在发送…" else "已提交，等回答").apply {
+                    box("你 → ${TeamModel.label(p.agent, all)}", p.text, when {
+                        "send:${p.clientId}" in busy -> if (p.error == null) "正在提交中枢…" else "正在确认发送结果…"
+                        p.refused -> "未发出：${p.error.orEmpty()}"
+                        p.error != null -> "发送结果未知：${p.error}"
+                        p.ledgerId != null -> "已提交中枢，等回答"
+                        else -> "已保存，准备发送"
+                    }).apply {
                         if (p.error != null && !p.refused) addView(button("确认发送结果") { dispatch(p) })
                         if (p.refused) addView(button("保留文字，结束这次发送") {
                             pending.remove(p.clientId); savePending()
@@ -278,7 +333,7 @@ class TeamActivity : SystemAppActivity() {
                     }
                 })
             }
-            exchanges.value.orEmpty().forEach { e ->
+            exchanges.value.orEmpty().sortedWith(compareByDescending<TeamModel.Exchange> { it.state == "waiting" }.thenByDescending { it.seq }).forEach { e ->
                 val expanded = e.id in opened
                 built.add(ChatRow("exchange:${e.id}", e.toString() + expanded + names[e.from] + names[e.to]) {
                     box("${TeamModel.label(e.from, all)} → ${TeamModel.label(e.to, all)}", "${when (e.word) { "tell" -> "告知"; "spawn" -> "临时任务"; else -> "委托" }} · ${ai.ash.ui.HomeModel.dayTime(e.ts)} · ${e.status}", e.preview(expanded)).apply {
@@ -286,12 +341,16 @@ class TeamActivity : SystemAppActivity() {
                         if (e.text.length > 180 || (e.answer?.text?.length ?: 0) > 220) addView(button(if (expanded) "收起" else "展开") { if (!opened.add(e.id)) opened.remove(e.id); render() })
                         addView(button("查看委托原文") { source(e.seq, false, e.word) })
                         e.answer?.let { a -> addView(button("查看回答原文") { source(a.seq, true, e.word) }) }
+                        if (e.answer?.error.isNullOrBlank() && e.state == "answered" && member(e.to) != null) addView(button("继续问") {
+                            switchTarget(e.to); updateTargets(); input.hint = "继续问 ${TeamModel.label(e.to, all)}"; input.requestFocus()
+                        })
                     }
                 })
             }
             if (exchanges.value != null && exchanges.value!!.isEmpty()) built.add(note("exchanges:empty", "还没有团队往来。可以在下面点名发话。"))
             if ((exchanges.value?.size ?: 0) >= 500) built.add(note("exchanges:limit", "已载入最近 500 条。可按成员查看其往来。"))
             before?.let { cursor -> built.add(ChatRow("exchanges:more", "$cursor:${exchanges.busy}") { button("更早的往来") { readExchanges(true) }.apply { isEnabled = !exchanges.busy } }) }
+            }
         }
         val pos = lm.findFirstVisibleItemPosition()
         val reset = resetPosition
@@ -330,7 +389,7 @@ class TeamActivity : SystemAppActivity() {
     private fun sendQuestion() {
         val id = target ?: return
         val value = input.text.toString().trim()
-        if (value.isBlank() || !outboxReady || pending.values.any { it.agent == id && it.ledgerId == null }) return
+        if (value.isBlank() || member(id) == null || !outboxReady || pending.values.any { it.agent == id && it.ledgerId == null }) return
         val p = TeamSend(UUID.randomUUID().toString(), id, value)
         pending[p.clientId] = p
         savePending { ok ->
@@ -342,6 +401,7 @@ class TeamActivity : SystemAppActivity() {
     private fun dispatch(p: TeamSend) {
         val key = "send:${p.clientId}"
         if (!busy.add(key)) return
+        render()
         HumanCall.request(this, p.request()) { result, failure ->
             busy.remove(key)
             val accepted = result?.let(p::receipt)
@@ -350,7 +410,8 @@ class TeamActivity : SystemAppActivity() {
             savePending { ok ->
                 if (!isDestroyed) {
                     if (accepted != null && target == p.agent && input.text.toString().trim() == p.text) input.setText("")
-                    render(); say(if (!ok) "回执保存失败，保留原请求用于确认" else if (accepted != null) "已提交，回答会出现在委托下面" else next.error.orEmpty())
+                    render()
+                    if (target == p.agent && route in setOf("team", "member")) say(if (!ok) "回执保存失败，保留原请求用于确认" else if (accepted != null) "已提交中枢，回答会出现在委托下面" else next.error.orEmpty())
                     if (active) readExchanges()
                 }
             }
@@ -374,48 +435,55 @@ class TeamActivity : SystemAppActivity() {
         val fields = AshUi.vstack(this, 10).apply { setPadding(dp(16), dp(8), dp(16), dp(16)) }
         formSlot.addView(ScrollView(this).apply { addView(fields) }, LinearLayout.LayoutParams(-1, -1))
         val key = "team:edit:${m?.id ?: "new"}"
-        fun field(label: String, suffix: String, initial: String, multiline: Boolean = false): EditText {
-            fields.addView(text(label, true))
+        val advanced = AshUi.vstack(this, 10).apply { visibility = View.GONE }
+        val advancedToggle = button("高级配置") { advanced.visibility = if (advanced.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
+        fun field(label: String, suffix: String, initial: String, multiline: Boolean = false, into: LinearLayout = fields): EditText {
+            into.addView(text(label, true))
             val stored = drafts.text("$key:$suffix")
             val value = if (stored.startsWith("value:")) stored.removePrefix("value:") else initial
             return EditText(this).apply {
-                id = View.generateViewId(); minHeight = dp(48); setTextColor(c.text); setHintTextColor(c.text3)
+                id = View.generateViewId(); contentDescription = label; minHeight = dp(48); setTextColor(c.text); setHintTextColor(c.text3)
                 isSingleLine = !multiline; if (multiline) minLines = 3
-                setText(value); addTextChangedListener(watcher { drafts.keep("$key:$suffix", "value:$it") }); fields.addView(this, LinearLayout.LayoutParams(-1, -2))
+                setText(value); addTextChangedListener(watcher { drafts.keep("$key:$suffix", "value:$it") }); into.addView(this, LinearLayout.LayoutParams(-1, -2))
             }
         }
         val name = field("名字", "name", m?.name.orEmpty())
         val role = field("一句话说明角色", "role", m?.role.orEmpty())
-        val brief = field("角色说明", "brief", m?.brief.orEmpty(), true)
-        fields.addView(text("运行时", true))
+        val brief = field("完整角色说明", "brief", m?.brief.orEmpty(), true, advanced)
+        advanced.addView(text("运行时", true))
         val kinds = Spinner(this).apply { minimumHeight = dp(48); contentDescription = "帮手的运行时" }
-        fields.addView(kinds, LinearLayout.LayoutParams(-1, -2))
+        advanced.addView(kinds, LinearLayout.LayoutParams(-1, -2))
         fields.addView(text("模型", true))
         val models = Spinner(this).apply { minimumHeight = dp(48); contentDescription = "帮手使用的模型" }
         fields.addView(models, LinearLayout.LayoutParams(-1, -2))
-        val tools = m?.let { field("允许使用的工具（每行一个；清空表示不允许，原本全部时留空保留）", "tools", it.tools?.joinToString("\n").orEmpty(), true) }
-        val words = m?.let { field("允许调用的接口（每行一个；清空表示不允许，原本全部时留空保留）", "words", it.words?.joinToString("\n").orEmpty(), true) }
+        advanced.addView(text("每行一个工具或接口。* 表示已授权的全部；清空表示不允许。角色或工具变更会重启正在运行的帮手。", true))
+        val tools = field("可用工具", "tools", m?.tools?.joinToString("\n") ?: "*", true, advanced)
+        val words = field("可调用接口", "words", m?.words?.joinToString("\n") ?: "*", true, advanced)
+        fields.addView(advancedToggle)
+        fields.addView(advanced, LinearLayout.LayoutParams(-1, -2))
         val formNote = text("正在读取可用模型…", true); fields.addView(formNote)
         var runtimeIds = emptyList<String>()
         var modelIds = emptyList<String>()
         var runtimeRows = emptyList<JSONObject>()
         val gen = routeGeneration
         fun setModels(ids: List<String>) {
-            val current = m?.model.orEmpty()
+            val chosenKind = runtimeIds.getOrNull(kinds.selectedItemPosition)
+            val current = m?.takeIf { it.kind == chosenKind }?.model.orEmpty()
+            val beforeSelection = modelIds.getOrNull(models.selectedItemPosition)
             modelIds = (listOf(current).filter { it.isNotBlank() } + ids).distinct()
             models.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, modelIds)
-            val preferred = drafts.text("$key:model").ifBlank { current }
+            val preferred = beforeSelection?.takeIf { it in modelIds } ?: drafts.text("$key:model").ifBlank { current }
             models.setSelection(modelIds.indexOf(preferred).coerceAtLeast(0))
-            formNote.text = if (modelIds.isEmpty()) "这个运行时没有返回可选模型，暂时不能保存。" else "保存后从下一轮使用；密钥和授权由中枢检查。"
+            formNote.text = if (modelIds.isEmpty()) "这个运行时没有返回可选模型，暂时不能保存。" else "模型选择由中枢校验；尚缺密钥或登录时，会明确提示。"
         }
         models.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(p: AdapterView<*>?) {}
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { modelIds.getOrNull(pos)?.let { drafts.keep("$key:model", it) } }
         }
-        kinds.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(p: AdapterView<*>?) {}
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                val kind = runtimeIds.getOrNull(pos) ?: return
+        var loadedKind: String? = null
+        fun loadKind(kind: String) {
+            if (loadedKind == kind) return
+            loadedKind = kind
                 drafts.keep("$key:kind", kind)
                 val raw = runtimeRows.firstOrNull { it.optString("kind") == kind }?.optJSONArray("models") ?: JSONArray()
                 setModels((0 until raw.length()).mapNotNull { raw.optJSONObject(it)?.optString("id")?.takeIf(String::isNotBlank) })
@@ -431,6 +499,12 @@ class TeamActivity : SystemAppActivity() {
                     }
                     setModels(ids)
                 }
+
+        }
+        kinds.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                runtimeIds.getOrNull(pos)?.let(::loadKind)
             }
         }
         val save = button("保存") {
@@ -439,21 +513,19 @@ class TeamActivity : SystemAppActivity() {
             if (name.text.isBlank() || role.text.isBlank() || kind == null || model == null) { formNote.text = "请填写名字、角色，并选择可用模型。"; return@button }
             if (!busy.add("form")) return@button
             val body = JSONObject().put("name", name.text.toString().trim()).put("summary", role.text.toString().trim())
-                .put("brief", brief.text.toString().ifBlank { role.text.toString() }).put("runtime", JSONObject().put("kind", kind).put("model", model))
+                .put("brief", if (m != null && role.text.toString() != m.role && brief.text.toString() == m.brief) role.text.toString() else brief.text.toString().ifBlank { role.text.toString() }).put("runtime", JSONObject().put("kind", kind).put("model", model))
             val id = m?.id ?: drafts.text("$key:id").ifBlank { "agent:helper-" + UUID.randomUUID().toString().take(8) }.also { drafts.keep("$key:id", it) }
-            if (m == null) body.put("id", id) else {
-                body.put("agent", id)
-                fun lines(e: EditText?) = e?.text.toString().lines().map(String::trim).filter(String::isNotBlank)
-                body.put("tools", JSONArray(lines(tools))); body.put("words", JSONArray(lines(words)))
-            }
-            // Empty lists are real restrictions. The form labels reserve blank for unrestricted, represented by omitting an unchanged null policy.
-            if (m != null && m.tools == null && tools?.text.isNullOrBlank()) body.remove("tools")
-            if (m != null && m.words == null && words?.text.isNullOrBlank()) body.remove("words")
+            if (m == null) body.put("id", id) else body.put("agent", id)
+            fun lines(e: EditText) = e.text.toString().lines().map(String::trim).filter(String::isNotBlank)
+            val toolPolicy = lines(tools); val wordPolicy = lines(words)
+            if (m?.tools != null || toolPolicy != listOf("*")) body.put("tools", JSONArray(toolPolicy))
+            if (m?.words != null || wordPolicy != listOf("*")) body.put("words", JSONArray(wordPolicy))
             formNote.text = "正在保存…"
             call("service:agents", if (m == null) "declare" else "update", body) { data, failure ->
                 busy.remove("form")
                 if (gen != routeGeneration) return@call
                 if (failure != null) { formNote.text = "${failure.message}；草稿已保留，请查看成员状态后再决定。"; readMembers(); return@call }
+                if (data?.optString("id") != id) { formNote.text = "尚未确认保存结果，草稿已保留。请先查看成员状态。"; readMembers(); return@call }
                 listOf("name", "role", "brief", "kind", "model", "tools", "words", "id").forEach { drafts.clear("$key:$it") }
                 formNote.text = data?.optJSONArray("notes")?.toString().orEmpty()
                 selected = id; move(id, "member"); readMembers()
@@ -468,7 +540,9 @@ class TeamActivity : SystemAppActivity() {
             runtimeIds = runtimeRows.map { it.optString("kind") }.filter(String::isNotBlank)
             kinds.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, runtimeIds)
             val wanted = drafts.text("$key:kind").ifBlank { m?.kind ?: member(members.value?.firstOrNull()?.id)?.kind.orEmpty() }
-            kinds.setSelection(runtimeIds.indexOf(wanted).coerceAtLeast(0))
+            val position = runtimeIds.indexOf(wanted).coerceAtLeast(0)
+            kinds.setSelection(position)
+            runtimeIds.getOrNull(position)?.let(::loadKind)
         }
     }
     private var logsBusy = false

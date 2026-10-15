@@ -29,7 +29,7 @@ object TeamModel {
     }
     data class Answer(val seq: Long, val ts: Long, val text: String, val error: String)
     data class Exchange(val id: String, val seq: Long, val ts: Long, val from: String, val to: String, val word: String, val text: String, val state: String, val answer: Answer?) {
-        val status get() = when (state) { "answered" -> "已回答"; "failed" -> "没有完成"; "sent" -> "已送达"; else -> "等回答" }
+        val status get() = when (state) { "answered" -> "已回答"; "failed" -> if (answer?.error?.startsWith("结果未知：") == true) "结果未知" else "没有完成"; "sent" -> "已送达"; else -> "等回答" }
         fun preview(open: Boolean): String = if (open || text.length <= 180) text else text.take(180) + "…"
     }
     fun members(data: JSONObject): List<Member> {

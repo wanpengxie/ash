@@ -117,7 +117,7 @@ export function createHistoryService(options: HistoryOptions): Member {
       const toldRow = m.word === "tell" ? db.prepare("SELECT id FROM messages WHERE reply_to=? AND kind='request' AND word='tell' AND \"from\"=? ORDER BY seq LIMIT 1").get(id, to) as { id: string } | undefined : undefined;
       const told = toldRow ? ledger.get(toldRow.id) : null;
       const answerMessage = told ?? r;
-      const answer = told ? { text: cut(textOf((told.body as Record<string, unknown>)?.text)) } : r ? (reply.ok === false ? { error: textOf(reply.error?.message) || textOf(reply.error?.code) || "failed" } : { text: cut(textOf(data.answer)) }) : null;
+      const answer = told ? { text: cut(textOf((told.body as Record<string, unknown>)?.text)) } : r ? (reply.ok === false ? { error: reply.error?.code === "result_unknown" || reply.error?.code === "timeout" ? "结果未知：中断前可能已经处理，请先确认原委托。" : textOf(reply.error?.message) || textOf(reply.error?.code) || "failed" } : { text: cut(textOf(data.answer)) }) : null;
       const state = told ? "answered" : !r ? "waiting" : reply.ok === false ? "failed" : m.word === "tell" ? "sent" : "answered";
       return {
         id: m.id, seq: m.seq, ts: m.ts, from: m.from, to, word: m.word, text: cut(textOf(m.word === "spawn" ? b.task : b.text)),

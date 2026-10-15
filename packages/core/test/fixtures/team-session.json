@@ -1,0 +1,1077 @@
+{
+  "during": {
+    "members": {
+      "agents": [
+        {
+          "id": "agent:main",
+          "name": "main",
+          "summary": "the main agent",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": true,
+          "ephemeral": false,
+          "brief": "You are main.",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "native": {
+            "on": "body:main",
+            "cwd": "/root/work"
+          },
+          "created_by": "service:agents",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ],
+              "guide": "PULSE.md"
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper1",
+          "name": "帮手1",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper2",
+          "name": "帮手2",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper3",
+          "name": "帮手3",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper4",
+          "name": "帮手4",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper5",
+          "name": "帮手5",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper6",
+          "name": "帮手6",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper7",
+          "name": "帮手7",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper8",
+          "name": "帮手8",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:research",
+          "name": "资料帮手",
+          "summary": "整理资料",
+          "state": "working",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "只回答委托人",
+          "runtime": {
+            "kind": "dsh",
+            "model": "model-one"
+          },
+          "created_by": "person:owner",
+          "tools": [
+            "read"
+          ],
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "doing": {
+            "turn": "t21",
+            "lane": "back",
+            "since": 1792084119117,
+            "about": "整理这次应用验收结果，先检查团队入口复用"
+          },
+          "waiting_on": []
+        }
+      ]
+    },
+    "exchanges": {
+      "items": [
+        {
+          "id": "m_2LmIHS0UExGy",
+          "seq": 3,
+          "ts": 1792084119686,
+          "from": "person:owner",
+          "to": "agent:research",
+          "word": "ask",
+          "text": "整理这次应用验收结果，先检查团队入口复用",
+          "state": "waiting"
+        }
+      ]
+    }
+  },
+  "answered": {
+    "members": {
+      "agents": [
+        {
+          "id": "agent:main",
+          "name": "main",
+          "summary": "the main agent",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": true,
+          "ephemeral": false,
+          "brief": "You are main.",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "native": {
+            "on": "body:main",
+            "cwd": "/root/work"
+          },
+          "created_by": "service:agents",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ],
+              "guide": "PULSE.md"
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper1",
+          "name": "帮手1",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper2",
+          "name": "帮手2",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper3",
+          "name": "帮手3",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper4",
+          "name": "帮手4",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper5",
+          "name": "帮手5",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper6",
+          "name": "帮手6",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper7",
+          "name": "帮手7",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper8",
+          "name": "帮手8",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:research",
+          "name": "资料帮手",
+          "summary": "整理资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "只回答委托人",
+          "runtime": {
+            "kind": "dsh",
+            "model": "model-one"
+          },
+          "created_by": "person:owner",
+          "tools": [
+            "read"
+          ],
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        }
+      ]
+    },
+    "exchanges": {
+      "items": [
+        {
+          "id": "m_2LmIHS0UExGy",
+          "seq": 3,
+          "ts": 1792084119686,
+          "from": "person:owner",
+          "to": "agent:research",
+          "word": "ask",
+          "text": "整理这次应用验收结果，先检查团队入口复用",
+          "state": "answered",
+          "answer": {
+            "seq": 12,
+            "ts": 1792084119717,
+            "text": "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。"
+          }
+        }
+      ]
+    }
+  },
+  "continued": {
+    "members": {
+      "agents": [
+        {
+          "id": "agent:main",
+          "name": "main",
+          "summary": "the main agent",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": true,
+          "ephemeral": false,
+          "brief": "You are main.",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "native": {
+            "on": "body:main",
+            "cwd": "/root/work"
+          },
+          "created_by": "service:agents",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ],
+              "guide": "PULSE.md"
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper1",
+          "name": "帮手1",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper2",
+          "name": "帮手2",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper3",
+          "name": "帮手3",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper4",
+          "name": "帮手4",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper5",
+          "name": "帮手5",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper6",
+          "name": "帮手6",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper7",
+          "name": "帮手7",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:helper8",
+          "name": "帮手8",
+          "summary": "整理专项资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "整理后回复委托人",
+          "runtime": {
+            "kind": "dsh"
+          },
+          "created_by": "person:owner",
+          "tools": null,
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        },
+        {
+          "id": "agent:research",
+          "name": "资料帮手",
+          "summary": "整理资料",
+          "state": "idle",
+          "available": true,
+          "reachable": true,
+          "primary": false,
+          "ephemeral": false,
+          "brief": "只回答委托人",
+          "runtime": {
+            "kind": "dsh",
+            "model": "model-one"
+          },
+          "created_by": "person:owner",
+          "tools": [
+            "read"
+          ],
+          "words": null,
+          "lanes": {
+            "front": {
+              "from": [
+                "person:owner"
+              ]
+            },
+            "back": {
+              "from": [
+                "wake",
+                "event"
+              ]
+            }
+          },
+          "modules": null,
+          "waiting_on": []
+        }
+      ]
+    },
+    "exchanges": {
+      "items": [
+        {
+          "id": "m_FTi_IWJuaS0D",
+          "seq": 21,
+          "ts": 1792084119734,
+          "from": "person:owner",
+          "to": "agent:research",
+          "word": "ask",
+          "text": "这个问题会丢掉我刚输入的内容吗？",
+          "state": "answered",
+          "answer": {
+            "seq": 22,
+            "ts": 1792084119737,
+            "text": "会有串稿风险。正在补 A、B 两位帮手之间的切换及晚回执保护。"
+          }
+        },
+        {
+          "id": "m_2LmIHS0UExGy",
+          "seq": 3,
+          "ts": 1792084119686,
+          "from": "person:owner",
+          "to": "agent:research",
+          "word": "ask",
+          "text": "整理这次应用验收结果，先检查团队入口复用",
+          "state": "answered",
+          "answer": {
+            "seq": 12,
+            "ts": 1792084119717,
+            "text": "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。"
+          }
+        }
+      ]
+    }
+  }
+}

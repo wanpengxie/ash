@@ -91,16 +91,17 @@ test("a declared agent starts at once, is registered while it runs, and goes wit
   await assert.rejects(g.service("describe", { agent: "agent:nope" }), code("not_found"));
 });
 
-test("update: changing the runtime, where it lives or its lanes restarts the agent; other changes apply from the next turn", async () => {
+test("update: runtime, installed role and lane changes restart with the saved declaration", async () => {
   const f = fixture();
   await f.start();
   await f.service("declare", decl("agent:b"));
   const d = f.driver();
   await f.service("update", { agent: "agent:b", brief: "other" });
-  assert.equal(d.of("start").filter((c) => c[1] === "agent:b").length, 1);
-  await f.service("update", { agent: "agent:b", lanes: { front: { from: ["person:owner"] }, reflect: { on: ["front:turn.ended"], speak: false } } });
   assert.equal(d.of("start").filter((c) => c[1] === "agent:b").length, 2);
-  assert.deepEqual((d.of("start")[2]![2] as any).lanes, ["front", "reflect"]);
+  assert.ok((d.of("start").at(-1)![2] as any).modules.static.some((m: any) => m.content.includes("other")));
+  await f.service("update", { agent: "agent:b", lanes: { front: { from: ["person:owner"] }, reflect: { on: ["front:turn.ended"], speak: false } } });
+  assert.equal(d.of("start").filter((c) => c[1] === "agent:b").length, 3);
+  assert.deepEqual((d.of("start").at(-1)![2] as any).lanes, ["front", "reflect"]);
   const info: any = (await f.service("describe", { agent: "agent:b" }))!.data;
   assert.deepEqual(Object.keys(info.lanes), ["front", "reflect"]);
   assert.deepEqual(Object.keys(((await f.service("describe", { agent: M }))!.data as any).lanes), ["front", "back"]);

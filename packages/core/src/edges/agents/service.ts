@@ -81,9 +81,12 @@ export function createAgentsService(manager: AgentManager): Member {
     const sameKind = before.runtime.kind === decl.runtime.kind;
     const placeMoved = JSON.stringify([before.native, Object.keys(lanesOf(before))]) !== JSON.stringify([decl.native, Object.keys(lanesOf(decl))]);
     const runtimeChanged = JSON.stringify(before.runtime) !== JSON.stringify(decl.runtime);
+    // Tool grants and static role/modules are installed when the driver starts; a saved declaration alone cannot update them.
+    const installedChanged = JSON.stringify([before.tools, before.brief, before.modules]) !== JSON.stringify([decl.tools, decl.brief, decl.modules]);
+    if (before.name !== decl.name && manager.deps.registry.get(run.id)) manager.deps.registry.add(manager.memberFor(run.id));
     const live = manager.liveOf(run.id);
     await manager.because(run.id, "updated", ctx.caller.member, async () => {
-      if (live && (placeMoved || !sameKind)) await manager.restartAgent(run.id);
+      if (live && (placeMoved || !sameKind || installedChanged)) await manager.restartAgent(run.id);
       else if (live && runtimeChanged) {
         // A runtime that takes its settings between turns is told; any other starts again with them.
         if (live.driver.info.abilities.runtime_live) await live.driver.configure(live.id, undefined, { runtime: decl.runtime });

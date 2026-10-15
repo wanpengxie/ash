@@ -47,3 +47,40 @@ test("answering news sends the sender a tell linked to that original question", 
   assert.equal(f.router.to("agent:h", "tell").at(-1)!.msg.reply_to, result.message_id);
   f.driver().finish("agent:main", "back"); await f.agents.stopAll();
 });
+
+test("saved tool restrictions reach the running driver's next session", async () => {
+  const f = fixture(); await f.start();
+  await f.service("declare", { id: "agent:editor", name: "编辑", summary: "整理", brief: "help", tools: ["read"] });
+  await f.service("update", { agent: "agent:editor", tools: ["write"] });
+  const start = f.driver().of("start").filter((c) => c[1] === "agent:editor").at(-1)!;
+  assert.deepEqual((start[2] as any).tools.allowed, ["write"]);
+  await f.agents.stopAll();
+});
+
+test("renaming a member keeps its execution id and updates the capability directory name", async () => {
+  const f = fixture(); await f.start();
+  await f.service("declare", { id: "agent:editor", name: "旧名", summary: "整理", brief: "help" });
+  await f.service("update", { agent: "agent:editor", name: "新名字" });
+  assert.equal(f.registry.describe("agent:editor")!.info.name, "新名字");
+  assert.equal(f.registry.describe("agent:editor")!.info.id, "agent:editor");
+  await f.agents.stopAll();
+});
+
+test("changing installed tools interrupts the old turn once instead of swapping grants during execution", async () => {
+  const f = fixture(); await f.start();
+  await f.service("declare", { id: "agent:editor", name: "编辑", summary: "整理", brief: "read", tools: ["read"] });
+  const old = f.service("ask", { agent: "agent:editor", text: "旧任务" }).then(() => "unexpected success", (e) => e.code);
+  await waitFor(() => f.driver().running.has("agent:editor/back"));
+  await f.service("update", { agent: "agent:editor", tools: ["write"], brief: "write only" });
+  assert.equal(await old, "result_unknown");
+  assert.equal(f.driver().of("send").filter((c) => c[1] === "agent:editor").flatMap((c) => c[3] as any[]).filter((m) => m.word === "ask").length, 1, "the interrupted question was not replayed");
+  const starts = f.driver().of("start").filter((c) => c[1] === "agent:editor");
+  assert.deepEqual((starts[0]![2] as any).tools.allowed, ["read"]);
+  assert.deepEqual((starts[1]![2] as any).tools.allowed, ["write"]);
+  await f.service("stop", { agent: "agent:editor" });
+  await f.service("update", { agent: "agent:editor", tools: [] });
+  assert.equal(f.driver().of("start").filter((c) => c[1] === "agent:editor").length, 2, "editing a stopped member does not start it");
+  await f.service("start", { agent: "agent:editor" });
+  assert.deepEqual((f.driver().of("start").at(-1)![2] as any).tools.allowed, []);
+  await f.agents.stopAll();
+});
