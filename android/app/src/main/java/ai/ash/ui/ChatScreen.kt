@@ -49,7 +49,6 @@ class ChatScreen(
     private val files: ChatHooks.Files,
     private val home: ChatHooks.Home,
     private val onApps: () -> Unit,
-    private val onCodex: () -> Unit = {},
 ) : KeyboardDeck {
     private val ctx: Context = activity
     private val c = AshUi.p(ctx)
@@ -312,6 +311,7 @@ class ChatScreen(
                 now?.let { current = it }
                 outbox.drop(window.clientIds(), window.ids())
                 paintPresence(); paintProgress(); paintList(); paintStatus(); flush()
+                jumpPending?.let(::jumpTo)
                 if (readAgain) { readAgain = false; refresh() }
                 else if (window.failedAt > 0 && shown) main.postDelayed({ refresh() }, 5_000)
             }
@@ -429,7 +429,6 @@ class ChatScreen(
             contentDescription = "打开她的主页"
         }
         addView(who, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(AshUi.button(ctx, "Codex", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { onCodex() }.apply { contentDescription = "电脑上的 Codex" })
         addView(AshUi.iconButton(ctx, ctx.getDrawable(R.drawable.ash_ic_grid)!!, "应用") { onApps() })
     }
 
@@ -869,13 +868,22 @@ class ChatScreen(
     /** Words from her home page go into the message box, which gets the cursor. */
     fun compose(text: String) { input.setText(text); input.setSelection(input.text.length); focusInput() }
 
-    /** Shows message [id]: where it is when it is on screen, otherwise after reading the window around it. */
+    private var jumpPending: String? = null
+    private var jumpReading = false
+
+    /** Shows a source message, waiting for the initial read/connection before fetching its window. */
     fun jumpTo(id: String) {
+        jumpPending = id
+        if (!port.open || reading || refreshQueued || jumpReading) return
         place = null
         fun show() { rowsAdapter.currentList.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let { lm.scrollToPositionWithOffset(it, dp(60)) } }
-        if (rowsAdapter.currentList.any { it.id == id }) { show(); return }
+        if (rowsAdapter.currentList.any { it.id == id }) { jumpPending = null; show(); return }
+        jumpReading = true
         port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", id)) { data, _ ->
+            jumpReading = false
+            if (jumpPending != id) { jumpPending?.let(::jumpTo); return@call }
             if (data == null) return@call
+            jumpPending = null
             window.older(data)
             paintList(then = ::show)
         }

@@ -260,7 +260,9 @@ export function appToolContract(appId: string, tool: McpTool, appName?: string):
  * `person:owner/open {app}` opens them. `icon` names one of the shell's line icons. Add one line per system app.
  */
 export interface SystemApp { id: string; name: string; summary: string; icon: string }
-export const SYSTEM_APPS: readonly SystemApp[] = [];
+export const SYSTEM_APPS: readonly SystemApp[] = [
+  { id: "codex", name: "Codex", summary: "电脑上的 Codex：会话、新对话和审批", icon: "laptop" },
+];
 
 /** A system app as `apps.list` shows it: always there, on, and the owner's. */
 export const systemAppInfo = (a: SystemApp) => ({ id: a.id, name: a.name, summary: a.summary, icon: a.icon, kind: "system" as const, ui: "native" as const, version: "", enabled: true, granted: true, running: true });

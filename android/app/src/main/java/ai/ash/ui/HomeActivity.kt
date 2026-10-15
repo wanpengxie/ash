@@ -32,26 +32,22 @@ class HomeActivity : Activity() {
     private lateinit var files: ChatFiles
     private lateinit var home: HomePages
     private var appsPane: AppsPane? = null
-    private var codexPane: CodexPane? = null
     private var tab = HomeTab.CHAT
     private var resumed = false
     private val ui = Handler(Looper.getMainLooper())
     private val night get() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     private var themedNight = false
-    /** What the activity was given when it was made again (the Codex page's route waits here until the page is made). */
-    private var saved: Bundle? = null
     private val backRouter = BackRouter(this, ::canGoBack, ::goBack)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         themedNight = night
         setTheme(if (themedNight) R.style.Ash_Dark else R.style.Ash_Light)
         super.onCreate(savedInstanceState)
-        saved = savedInstanceState
         ai.ash.apps.Ui.systemBars(this)
         port = HumanPort(Link.get(this).chat)
         files = ChatFiles(this, port)
         home = HomePages(this, port)
-        chatScreen = ChatScreen(this, port, files, home, { showTab(HomeTab.APPS) }, { showTab(HomeTab.CODEX) })
+        chatScreen = ChatScreen(this, port, files, home, { showTab(HomeTab.APPS) })
         home.composeHook = { text, _ -> showTab(HomeTab.CHAT); chatScreen.compose(text) }
         home.jumpHook = { id -> showTab(HomeTab.CHAT); chatScreen.jumpTo(id) }
         home.onName = { name -> chatScreen.setName(name) }
@@ -68,7 +64,7 @@ class HomeActivity : Activity() {
             addView(chatScreen.view, FrameLayout.LayoutParams(-1, -1))
             addView(home.view, FrameLayout.LayoutParams(-1, -1))
         }
-        // The window's one insets owner: the chat or a Codex session in front rides the keyboard, any other page is laid out above it.
+        // The window's one insets owner: the chat rides the keyboard; other shell pages fit above it.
         WindowInsetsOwner.install(content, front = ::frontDeck)
         setContentView(content)
         val saved = HomeTab.of(savedInstanceState?.getString(STATE_TAB))
@@ -95,6 +91,16 @@ class HomeActivity : Activity() {
 
     /** An app (her status) pointed the owner to a page of her home. */
     private fun openHomePageFrom(i: Intent?) {
+        i?.getStringExtra(EXTRA_MESSAGE_ID)?.takeIf { it.isNotBlank() }?.let { id ->
+            home.close(); showTab(HomeTab.CHAT); chatScreen.jumpTo(id)
+            i.removeExtra(EXTRA_MESSAGE_ID)
+            return
+        }
+        // Pending notifications from before the migration still reach the new application.
+        if (i?.getStringExtra(HomeRoute.EXTRA_TAB) == "codex") {
+            i.removeExtra(HomeRoute.EXTRA_TAB)
+            startActivity(ai.ash.sysapps.SystemApps.intent(this, "codex"))
+        }
         val page = i?.getStringExtra(EXTRA_HOME_PAGE) ?: return
         i.removeExtra(EXTRA_HOME_PAGE)
         home.openPage(page, null, i.getStringExtra(EXTRA_HOME_ARG))
@@ -106,17 +112,14 @@ class HomeActivity : Activity() {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_TAB, tab.key)
         chatScreen.save(outState)
-        // The Codex page keeps its route; not made this time, the route it had before is kept for the next time.
-        codexPane?.save(outState) ?: saved?.getBundle(CodexPane.STATE)?.let { outState.putBundle(CodexPane.STATE, it) }
     }
 
     /** The chat is what the owner sees (not another tab, not a home page over it). */
     private fun chatInFront() = tab == HomeTab.CHAT && home.view.visibility != View.VISIBLE
 
-    /** The page in front that rides the keyboard ([KeyboardDeck]): the chat, or the Codex page; null for the others. */
+    /** The page in front that rides the keyboard ([KeyboardDeck]): the chat; null for other shell pages. */
     private fun frontDeck(): KeyboardDeck? = when {
         chatInFront() -> chatScreen
-        tab == HomeTab.CODEX -> codexPane
         else -> null
     }
 
@@ -127,15 +130,9 @@ class HomeActivity : Activity() {
             appsPane = AppsPane(this, Ash(this, null, inProcess = true)) { showTab(HomeTab.CHAT) }
                 .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)) }
         }
-        if (next == HomeTab.CODEX && codexPane == null) {
-            codexPane = CodexPane(this, port, saved) { showTab(HomeTab.CHAT) }
-                .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)); it.onRouteChange = { backRouter.sync() } }
-        }
         if (next != HomeTab.CHAT) chatScreen.dropKeyboard()
         chatScreen.view.visibility = if (next == HomeTab.CHAT) View.VISIBLE else View.GONE
         appsPane?.view?.visibility = if (next == HomeTab.APPS) View.VISIBLE else View.GONE
-        codexPane?.view?.visibility = if (next == HomeTab.CODEX) View.VISIBLE else View.GONE
-        codexPane?.shown(next == HomeTab.CODEX && resumed)
         if (next == HomeTab.APPS && resumed) appsPane?.refresh()
         syncFront()
         backRouter.sync()
@@ -167,7 +164,6 @@ class HomeActivity : Activity() {
         Link.get(this).presence.tell()
         syncChatShown()
         if (tab == HomeTab.APPS) appsPane?.refresh()
-        codexPane?.shown(tab == HomeTab.CODEX)
         // The kernel package: not installed, the guide's first step offers to install it (once); not running, it is started from here (in front, the app may).
         when (KernelGate.action(KernelLauncher.state(this), 0)) {
             KernelGate.Action.INSTALL -> OnboardingActivity.offerKernel(this)
@@ -183,7 +179,6 @@ class HomeActivity : Activity() {
         HandRuntime.appLeft()
         Link.get(this).presence.tell()
         chatScreen.shown(false)
-        codexPane?.shown(false)
         super.onPause()
     }
 
@@ -205,7 +200,6 @@ class HomeActivity : Activity() {
     private fun goBack() {
         when {
             tab == HomeTab.APPS -> if (appsPane?.back() != true) showTab(HomeTab.CHAT)
-            tab == HomeTab.CODEX -> if (codexPane?.back() != true) showTab(HomeTab.CHAT)
             else -> home.back()
         }
     }
@@ -220,7 +214,6 @@ class HomeActivity : Activity() {
         chatScreen.close()
         port.stop()
         appsPane?.close()
-        codexPane?.close()
         super.onDestroy()
     }
 
@@ -230,6 +223,8 @@ class HomeActivity : Activity() {
         /** Open her home on a page ([HomePages.openPage]: `keys`, `device` with `d/<device>`). */
         const val EXTRA_HOME_PAGE = "ai.ash.extra.HOME_PAGE"
         const val EXTRA_HOME_ARG = "ai.ash.extra.HOME_ARG"
+        /** An app links back to the ledger message that a task came from. */
+        const val EXTRA_MESSAGE_ID = "ai.ash.extra.MESSAGE_ID"
         private const val STATE_TAB = "ai.ash.state.TAB"
     }
 }

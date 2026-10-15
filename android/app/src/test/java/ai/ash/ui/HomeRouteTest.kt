@@ -35,7 +35,7 @@ class HomeRouteTest {
     @Test fun anUnknownTabNameIsNone() {
         assertNull(HomeTab.of("settings")); assertNull(HomeTab.of(null)); assertNull(HomeTab.of(""))
         assertEquals(APPS, HomeTab.of(APPS.key))
-        assertEquals(listOf("chat", "apps", "codex"), HomeTab.values().map { it.key })
+        assertEquals(listOf("chat", "apps"), HomeTab.values().map { it.key })
     }
 
     @Test fun theLauncherIntentIsMainPlusLauncher() {

@@ -13,7 +13,7 @@ import android.content.Intent
  * Opening an app id that is not here opens the installed app of that id (its WebView page).
  */
 object SystemApps {
-    private val screens: Map<String, Class<out Activity>> = mapOf()
+    private val screens: Map<String, Class<out Activity>> = mapOf("codex" to ai.ash.sysapps.codex.CodexActivity::class.java)
 
     /** The line icon the hub names for a system app (`icon`), when the shell has it. */
     fun icon(name: String): Int? = when (name) {
@@ -26,7 +26,7 @@ object SystemApps {
 
     /** The intent that opens app [id] (asked to show [arg]): its native screen, or the installed app's page. */
     fun intent(ctx: Context, id: String, arg: String? = null): Intent =
-        screens[id]?.let { Intent(ctx, it).apply { if (!arg.isNullOrEmpty()) putExtra(SystemAppActivity.EXTRA_ARG, arg) } }
+        screens[id]?.let { Intent(ctx, it).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).apply { if (!arg.isNullOrEmpty()) putExtra(SystemAppActivity.EXTRA_ARG, arg) } }
             ?: Ui.appIntent(ctx, id, arg?.ifEmpty { null })
 
     /** `person:owner/open {app, arg}`: opens it now when the system lets Ash start a screen, else offers it in a notice. */

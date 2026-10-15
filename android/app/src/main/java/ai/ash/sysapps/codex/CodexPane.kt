@@ -1,4 +1,7 @@
-package ai.ash.ui
+package ai.ash.sysapps.codex
+
+import ai.ash.ui.*
+import ai.ash.link.Link
 
 import ai.ash.R
 import ai.ash.ui.design.AshTokens
@@ -27,14 +30,14 @@ import java.util.UUID
  * 「Codex」: the Codex app on the owner's computer, seen and driven from the phone. A list of its sessions (the running ones
  * marked); a session opens to what it did, a box to say something to it, a button to stop the turn, and the approvals it is
  * waiting for, to approve or refuse where they stand. The sessions stay in the Codex app on the computer; this reads them and
- * sends words, through [port] as the owner (`x.codex.*` on the computer), and keeps nothing of its own but the owner's drafts.
+ * sends words, through the shared human channel as the owner (`x.codex.*` on the computer), and keeps nothing of its own but the owner's drafts.
  *
  * Built as the chat is (MOBILE-ARCH §2, §4.4): a fixed header, and under it a clipped stage whose deck — the lists and the
  * box — rides the keyboard; the sessions and a session's turns are keyed lists updated row by row, so a poll that changes
  * one thing redraws that one thing and never the box being typed in. What it reads is held in [CodexState]. [view] goes into
- * the home screen's content area; call [shown] as it comes and goes, [back] for the back key (false: go to the chat).
+ * CodexActivity; call [shown] as it comes and goes, [back] for the back key.
  */
-class CodexPane(private val activity: Activity, private val port: HumanPort, saved: Bundle? = null, private val toChat: () -> Unit) : KeyboardDeck {
+class CodexPane(private val activity: Activity, private val title: android.widget.TextView, actions: LinearLayout, saved: Bundle? = null) : KeyboardDeck {
     val view = FrameLayout(activity)
     private val c = AshUi.p(activity)
     private val main = Handler(Looper.getMainLooper())
@@ -50,6 +53,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     private val ops = ChatOutbox(activity, "codex-outbox")
     /** Approvals being answered (their buttons wait). */
     private val answering = HashSet<String>()
+    private var computersChanged = true
     private var loading = false
     private var readAgain = false
     private var shown = false
@@ -58,7 +62,6 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     /** The route changed (a session opened or closed): the activity offers back to this page only inside a session. */
     var onRouteChange: (() -> Unit)? = null
 
-    private val title = AshUi.text(activity, "Codex", AshTokens.Type.listTitle)
     private val stop = AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_stop)!!, "停止这一轮") { stopTurn() }.apply { visibility = View.GONE }
     private val input = EditText(activity)
     private val sendButton = AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_up)!!, "发送", filled = true) { sendTapped() }
@@ -91,6 +94,10 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     private val problemLine = AshUi.text(activity, "", AshTokens.Type.callout, c.text2).apply {
         gravity = Gravity.CENTER; setPadding(d(14), d(6), d(14), d(6)); setBackgroundColor(c.bg); visibility = View.GONE
     }
+    private val changeLine = AshUi.text(activity, "最近操作", AshTokens.Type.caption, c.text3, maxLines = 1).apply {
+        visibility = View.INVISIBLE
+        setPadding(d(14), 0, d(14), 0)
+    }
     private val deck = AshUi.vstack(activity, 0)
 
     private val tick = object : Runnable {
@@ -99,12 +106,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
 
     init {
         val column = AshUi.vstack(activity)
-        column.addView(AshUi.hstack(activity, 6).apply {
-            gravity = Gravity.CENTER_VERTICAL; setPadding(d(6), 0, d(6), 0)
-            addView(AshUi.iconButton(activity, activity.getDrawable(R.drawable.ash_ic_back)!!, "返回") { if (!back()) toChat() })
-            addView(title, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(stop)
-        }, LinearLayout.LayoutParams(-1, d(56)))
+        actions.addView(stop)
+        column.addView(changeLine, LinearLayout.LayoutParams(-1, -2))
         val lists = FrameLayout(activity).apply {
             addView(sessionList, FrameLayout.LayoutParams(-1, -1))
             addView(talkList, FrameLayout.LayoutParams(-1, -1))
@@ -128,7 +131,28 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         }
     }
 
-    fun close() { closed = true; main.removeCallbacksAndMessages(null) }
+    fun close() { closed = true; state.invalidate(); main.removeCallbacksAndMessages(null) }
+
+    private fun call(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
+        HumanCall.call(activity, to, word, body, done)
+
+    /** The shared ledger invalidates immediately; polling also reads Codex's changes on the computer. */
+    fun changed(message: JSONObject) {
+        val onComputer = message.optString("to") == state.device || message.optString("from") == state.device
+        if (onComputer) CodexOpen.actorLine(message)?.let { changeLine.text = it; changeLine.visibility = View.VISIBLE }
+        if (CodexOpen.affectsComputers(message)) { computersChanged = true; refresh() }
+        else if (onComputer && CodexOpen.affectsSession(message)) refresh()
+    }
+
+    fun connected() { computersChanged = true; if (shown) refresh() }
+
+    /** An application open may name a device and thread; saved state takes precedence on recreation. */
+    fun openArg(arg: String?) {
+        val route = CodexOpen.route(arg) ?: return
+        route.device?.let { state.choose(it) }
+        route.thread?.let { state.open(it, null) }
+        moved(); refresh()
+    }
 
     /** The page comes to the front or goes: it reads again at once, and then every few seconds while it is there. */
     fun shown(visible: Boolean) {
@@ -163,15 +187,18 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
 
     /** One read out at a time; asked again meanwhile, it reads once more when that one is back. */
     private fun refresh() {
-        if (closed) return
+        if (closed || !shown) return
         if (loading) { readAgain = true; return }
-        if (!port.open) { problem("还没连上 Ash"); return }
+        if (!Link.get(activity).client.channelOpen("human")) { problem("还没连上 Ash"); return }
         val now = System.currentTimeMillis()
         // The computers are read again now and then, so one that comes online shows up beside the others.
-        if (state.device == null || now - state.computersAt > 15_000) {
+        if (computersChanged || state.device == null || now - state.computersAt > 15_000) {
             loading = true
-            port.call("service:devices", "list") { data, failure ->
+            val gen = state.generation
+            computersChanged = false
+            call("service:devices", "list") { data, failure ->
                 loading = false
+                if (gen != state.generation) { again(); return@call }
                 val had = state.generation
                 state.computersRead(data, failure?.code, System.currentTimeMillis())
                 if (state.generation != had) moved() else paint()
@@ -195,8 +222,8 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
             }
             again()
         }
-        if (thread == null) port.call(dev, CodexModel.SESSIONS, JSONObject().put("limit", 50), done)
-        else port.call(dev, CodexModel.SESSION, JSONObject().put("thread", thread).put("turns", 8).put("max_chars", 1200), done)
+        if (thread == null) call(dev, CodexModel.SESSIONS, JSONObject().put("limit", 50), done)
+        else call(dev, CodexModel.SESSION, JSONObject().put("thread", thread).put("turns", 8).put("max_chars", 1200), done)
     }
 
     private fun again() { if (readAgain) { readAgain = false; refresh() } }
@@ -278,7 +305,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         val word = if (new) CodexModel.NEW else CodexModel.SEND
         val req = if (new) JSONObject().put("cwd", b.optString("cwd")).put("text", b.optString("text")).put("client_id", op.clientId)
             else JSONObject().put("thread", b.optString("thread")).put("text", b.optString("text")).put("client_id", op.clientId)
-        port.call(to, word, req) { data, failure ->
+        call(to, word, req) { data, failure ->
             when {
                 failure == null && new -> {
                     // The session exists: the operation is done; the session opens if the owner is still on that new page.
@@ -298,7 +325,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     private fun stopTurn() {
         val dev = state.device ?: return
         val id = state.thread ?: return
-        port.call(dev, CodexModel.STOP, JSONObject().put("thread", id)) { _, failure ->
+        call(dev, CodexModel.STOP, JSONObject().put("thread", id)) { _, failure ->
             if (failure != null) toast(CodexModel.failure(failure.code, failure.message)) else main.postDelayed({ refresh() }, 600)
         }
     }
@@ -309,7 +336,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
         val id = state.thread ?: return
         if (!answering.add(a.requestId)) return
         paintTalk()
-        port.call(dev, CodexModel.APPROVE, JSONObject().put("thread", id).put("request_id", a.requestId).put("decision", decision)) { _, failure ->
+        call(dev, CodexModel.APPROVE, JSONObject().put("thread", id).put("request_id", a.requestId).put("decision", decision)) { _, failure ->
             answering.remove(a.requestId)
             if (failure != null) toast(CodexModel.failure(failure.code, failure.message))
             paintTalk(); refresh()
@@ -350,6 +377,7 @@ class CodexPane(private val activity: Activity, private val port: HumanPort, sav
     }
 
     private fun paint() {
+        if (closed) return
         if (closed) return
         val talk = state.inTalk
         composer.visibility = if (talk) View.VISIBLE else View.GONE

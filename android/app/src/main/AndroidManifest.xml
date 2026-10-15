@@ -97,6 +97,10 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".sysapps.codex.CodexActivity"
+            android:exported="false" android:enableOnBackInvokedCallback="true"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- First-launch permission guide (also reachable from diagnostics). -->
         <activity
             android:name=".ui.OnboardingActivity"

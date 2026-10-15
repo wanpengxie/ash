@@ -53,7 +53,8 @@ object CodexModel {
 
     /** The computers that can be asked: those of `service:devices list` that are computers and online, in its order. */
     fun computers(data: JSONObject?): List<Computer> =
-        data?.optJSONArray("devices").mapObjects { it }.filter { it.optString("kind") == "computer" && it.optBoolean("online") && it.optString("device").isNotEmpty() }
+        data?.optJSONArray("devices").mapObjects { it }.filter { it.optString("kind") == "computer" && it.optBoolean("online") && it.optString("device").isNotEmpty() &&
+                (it.optJSONArray("capabilities")?.let { caps -> (0 until caps.length()).any { i -> caps.optString(i).startsWith("x.codex.") } } ?: true) }
             .map { Computer(it.optString("device"), it.str("name") ?: "电脑") }
 
     /** The computer shown: the one chosen before while it is still there, else the first. */

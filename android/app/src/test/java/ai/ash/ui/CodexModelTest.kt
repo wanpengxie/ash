@@ -46,6 +46,15 @@ class CodexModelTest {
         assertNull(CodexModel.pick(CodexModel.computers(null), null))
     }
 
+    @Test fun computersWithAnAdvertisedManifestMustActuallyOfferCodex() {
+        val data = JSONObject("""{"devices":[
+            {"device":"device:mac","kind":"computer","online":true,"capabilities":["x.codex.sessions"]},
+            {"device":"device:other","kind":"computer","online":true,"capabilities":["workspace.read"]},
+            {"device":"device:empty","kind":"computer","online":true,"capabilities":[]},
+            {"device":"device:older-hub","kind":"computer","online":true}]}""")
+        assertEquals(listOf("device:mac", "device:older-hub"), CodexModel.computers(data).map { it.id })
+    }
+
     @Test fun sessionsGoByProjectTheBusyAndRecentFirst() {
         val data = JSONObject("""{"sessions":[
             {"id":"a","title":"A","state":"idle","cwd":"/w/app","updated_at":100},

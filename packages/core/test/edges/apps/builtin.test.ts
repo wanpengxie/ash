@@ -208,7 +208,7 @@ test("folders that are not app names (.new-x, _release) are never listed as apps
   const w = world({ root, fixture: false });
   await w.apps.start();
   const list = dataOf(await call(w, "service:apps", "apps.list", {})).apps as { id: string }[];
-  assert.deepEqual(list.map((item) => item.id), ["fixture"]);
+  assert.deepEqual(list.filter((item: any) => item.kind !== "system").map((item) => item.id), ["fixture"]);
 });
 
 test("a folder without a record is told about once, not at every start", async () => {

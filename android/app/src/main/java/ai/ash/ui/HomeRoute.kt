@@ -3,14 +3,12 @@ package ai.ash.ui
 import android.content.Context
 import android.content.Intent
 
-/** The pages of Ash's home screen: there is no tab bar, the chat is the screen and the apps and Codex open over it (the chat's 「应用」 and 「Codex」 buttons). */
+/** The pages of Ash's home screen: there is no tab bar, the chat is the screen and the apps grid opens over it. */
 enum class HomeTab(val key: String) {
     /** The chat, drawn natively. */
     CHAT("chat"),
     /** The owner's apps (each one opens in its own task, in the isolated process). */
-    APPS("apps"),
-    /** The Codex app on the owner's computer, looked at and driven from here ([CodexPane]). */
-    CODEX("codex");
+    APPS("apps");
 
     companion object {
         fun of(key: String?): HomeTab? = values().firstOrNull { it.key == key }

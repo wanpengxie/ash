@@ -115,8 +115,10 @@ object Notifications {
     }
 
     private fun openApp(ctx: Context, req: Int, tab: String? = null): PendingIntent =
-        PendingIntent.getActivity(ctx, req, Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .apply { if (tab != null) putExtra(ai.ash.ui.HomeRoute.EXTRA_TAB, tab) }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        PendingIntent.getActivity(ctx, req,
+            (if (tab == "codex") ai.ash.sysapps.SystemApps.intent(ctx, "codex") else Intent(ctx, HomeActivity::class.java))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
     private fun action(ctx: Context, id: String, choice: String, mutable: Boolean = false): PendingIntent {
         val uri = Uri.Builder().scheme("ash").authority("present-action").appendPath(id).appendPath(choice).build()
