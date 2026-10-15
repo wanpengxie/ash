@@ -53,3 +53,11 @@
 截图测试明确 w360dp-h800dp-xxhdpi；布局由 360×800dp 乘实际 density 得到 1080×2400px，同时断言 density=3、实际 metrics=1080×2400、配置=360×800dp。保留 Native Graphics、真实 decor 挂窗和图片非空检查。补充实际 View 点击：读进展、批注都不调用 done，只有「完成这件事」才对同一任务调用一次 done；手机页面需要时先滚动再点击。
 
 本轮仅通过资源 XML 解析和 git diff --check；按串行构建安排没有启动 Gradle。新增点击断言与修正后的手机截图均待集成复验，不能沿用上一轮图片作为手机效果证据。
+
+## 手机首屏补验入口
+
+总控反馈 e3c9489b 在完整注册集成树实际通过 18/18，已打开四张 360dp 手机图，记忆纠正到关联回应、承诺受阻到结果两条路径本轮定向通过；这不代表整应用或真实 IME 验收通过。
+
+首屏另增真实 Activity 用例 AshActivityTest.homeShowsCurrentWorkAndTheSharedPromisesOnAPhone，截图 ash-home-now-and-promises.png。沿用同一 TestActivity 和数据端口：history/current 返回正在整理下周行程，service:tasks/list 返回 subject:ash 的进行中和等待确认两件承诺；额外 owner 待办不应出现。不新增展示 Model 或业务状态。测试断言实际手机 View 中现在、进行中承诺与等待确认承诺均在首屏可见，并断言读取参数 subject:ash/status:all、没有 done 调用。仍是代表性 fixture 的实际 Activity 绘制，不冒充实际账户当前工作或真实模型自动行为。
+
+保持统一 360×800dp / xxhdpi、Native Graphics 和截图非空检查。此次只增测试入口和文档，未启动 Gradle；入口与首屏图待下一时段运行。非阻断打磨记录：独立动作卡留白较多，后续可收紧，当前不因此变更框架。

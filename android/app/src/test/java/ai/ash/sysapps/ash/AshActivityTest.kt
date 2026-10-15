@@ -140,6 +140,32 @@ class AshActivityTest {
         all(card).filterIsInstance<TextView>().first { it.text.toString() == "重试通知" }.performClick(); settle()
     }
 
+    @Test fun homeShowsCurrentWorkAndTheSharedPromisesOnAPhone() {
+        val now = System.currentTimeMillis()
+        Port.current = JSONObject().put("as_of", now)
+            .put("presence", JSONObject().put("state", "working").put("text", "正在整理你下周的行程"))
+            .put("progress", JSONObject().put("started", now - 60_000))
+        Port.tasks = JSONArray()
+            .put(JSONObject().put("id", "t_schedule").put("subject", "ash").put("title", "整理下周行程")
+                .put("assignee", "agent:main").put("status", "doing").put("note", "正在核对已有安排，检查时间冲突"))
+            .put(JSONObject().put("id", "t_meeting").put("subject", "ash").put("title", "帮你改会议")
+                .put("assignee", "agent:main").put("status", "waiting").put("note", "在等你确认周三下午的时间"))
+            .put(JSONObject().put("id", "t_owner").put("subject", "owner").put("title", "用户自己的待办").put("status", "todo"))
+        open("now")
+        assertTrue(texts().any { it.contains("正在整理你下周的行程") })
+        for (title in listOf("我现在在做什么", "整理下周行程", "帮你改会议")) {
+            assertTrue("home screenshot must visibly show $title", all().filterIsInstance<TextView>().any {
+                it.text.toString() == title && it.isShown && it.getGlobalVisibleRect(Rect())
+            })
+        }
+        assertTrue(texts().any { it.contains("在等你确认周三下午的时间") })
+        assertFalse(texts().contains("用户自己的待办"))
+        val listRead = Port.calls.first { it.first == "service:tasks" && it.second == "list" }.third
+        assertEquals("ash", listRead.getString("subject")); assertEquals("all", listRead.getString("status"))
+        assertFalse(Port.calls.any { it.second == "done" })
+        screenshot("ash-home-now-and-promises")
+    }
+
     @Test fun aSingleFactCorrectionPreservesNewFactsAndShowsWhetherAshWasNotified() {
         open("memory")
         val advanced = texts().indexOf("全文与整页批注（高级）")
