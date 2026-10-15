@@ -35,7 +35,7 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
     private var shown = false
     private var wasDown = false
     private var changeQueued = false
-    private val onChange = { if (!changeQueued) { changeQueued = true; main.postDelayed({ changeQueued = false; if (shown) stack.toList().forEach { it.page.changed() } }, 120) } }
+    private val onChange: (org.json.JSONObject?) -> Unit = { if (!changeQueued) { changeQueued = true; main.postDelayed({ changeQueued = false; if (shown) stack.toList().forEach { it.page.changed() } }, 120) } }
 
     var composeHook: ((text: String, turn: String?) -> Unit)? = null
     var jumpHook: ((id: String) -> Unit)? = null

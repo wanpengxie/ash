@@ -29,6 +29,8 @@ internal object Surfaces {
                 when (op) {
                     "card.preview" -> ChatCardPreview.present(app, body)
                     "card.patch" -> chat.deliver(op, body)
+                    // An app (`person:owner/open {app}`): its own screen, not the chat's page.
+                    "open" -> if (body.has("app")) ai.ash.sysapps.SystemApps.open(app, body.optString("app"), body.optString("arg").ifEmpty { null }) else chat.present(op, body)
                     else -> chat.present(op, body)
                 }
             },

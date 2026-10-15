@@ -249,3 +249,18 @@ export function appToolContract(appId: string, tool: McpTool, appName?: string):
     label: { doing: upstreamDoingLabel({ ...(declared ? { title: declared } : {}), word: tool.name, ...(appName ? { owner: appName } : {}), ownerId: appId, noun: "功能" }) },
   };
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// system apps
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * The apps that come with Ash (spec ARCH-APPS §3): their screens are native, part of the phone app; what they do is the
+ * hub's words. `service:apps/apps.list` lists them with the installed apps (`kind: "system"`, `ui: "native"`), and
+ * `person:owner/open {app}` opens them. `icon` names one of the shell's line icons. Add one line per system app.
+ */
+export interface SystemApp { id: string; name: string; summary: string; icon: string }
+export const SYSTEM_APPS: readonly SystemApp[] = [];
+
+/** A system app as `apps.list` shows it: always there, on, and the owner's. */
+export const systemAppInfo = (a: SystemApp) => ({ id: a.id, name: a.name, summary: a.summary, icon: a.icon, kind: "system" as const, ui: "native" as const, version: "", enabled: true, granted: true, running: true });

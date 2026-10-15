@@ -173,7 +173,7 @@ class ChatScreen(
     private val cards by lazy { ChatCards(activity, port, { to, body -> post(to, body) }, ::toast) { refresh() } }
     private var flushing = false
     private val tick = object : Runnable { override fun run() { paintProgress(); paintLease(); if (shown) main.postDelayed(this, 1_000) } }
-    private val onChange: () -> Unit = { refresh() }
+    private val onChange: (JSONObject?) -> Unit = { refresh() }
     /** A card that changed (`card.patch`): only its row is drawn again. */
     private val onCard: (JSONObject) -> Unit = { patch(it) }
     /** Cards changed by a patch lately, by card id, with when: a window read that started before it does not undo it. */

@@ -90,6 +90,7 @@ object Link {
         private fun humanChannelChanged(open: Boolean, welcome: JSONObject?) {
             val grant = welcome?.optJSONObject("channels")?.optJSONObject("human")
             chat.linkChanged(open, grant?.optString("client"), grant?.optBoolean("local") ?: false)
+            ai.ash.ui.LedgerFeed.connectionChanged(open)
             if (open) { presence.tell(); Present.flushAsync(ctx); ai.ash.caps.config.CheckupWatch.connected(ctx); ai.ash.ui.VScreenPreview.sync(ctx) }
             TaskStatus.refresh()
         }

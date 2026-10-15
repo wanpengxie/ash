@@ -198,3 +198,14 @@ test("the virtual screen being made or closed reaches the channels that show sta
   await quiet();
   assert.equal(hub.human.viewing(), false, "being in front is not watching a live view");
 });
+
+test("open an app: the app and what it is asked to show go to the channel; without target or app it is refused", async (t) => {
+  const hub = await startHumanHub(); t.after(() => hub.stop());
+  const phone = await Channel.open(hub, { label: "手机" });
+  phone.presence({ visible: true });
+  await eventually(() => hub.human.clients().find((c) => c.client === phone.clientId)?.visible, "the phone visible");
+  assert.deepEqual(await hub.mini.send(open({ app: "codex", arg: "t_1" }), AGENT), { ok: true, result: { data: { opened: true } } });
+  assert.deepEqual((await phone.present((f) => f.surface === "chat" && f.op === "open", "the app")).body, { app: "codex", arg: "t_1" });
+  const neither = await hub.mini.send(open({}), AGENT);
+  assert.ok(!neither.ok && neither.error.code === "bad_request");
+});

@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "10069854518498f9fc53421dc36036f4a38a0fe5baae3ba2b3dbbe03c9a05528",
+ "hash": "655ba9843e9e705e2e05390a2d6ab4c78140b84f1ea1d69a9d891a8e4ebf2f00",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -8345,7 +8345,7 @@
    "word": "apps.list",
    "kind": "request",
    "direction": "in",
-   "description": "Every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running. An installed app whose folder is gone is listed too (error says so); apps.remove or apps.revoke clears it.",
+   "description": "The system apps that come with Ash (kind system, a native screen on the phone; person:owner/open {app} opens one), then every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running. An installed app whose folder is gone is listed too (error says so); apps.remove or apps.revoke clears it.",
    "input_schema": {
     "type": "object",
     "properties": {},
@@ -8387,6 +8387,23 @@
         },
         "running": {
          "type": "boolean"
+        },
+        "kind": {
+         "type": "string",
+         "enum": [
+          "system",
+          "app"
+         ]
+        },
+        "ui": {
+         "type": "string",
+         "enum": [
+          "native",
+          "web"
+         ]
+        },
+        "icon": {
+         "type": "string"
         },
         "needs": {
          "type": "array",
@@ -8541,6 +8558,23 @@
      "running": {
       "type": "boolean"
      },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "system",
+       "app"
+      ]
+     },
+     "ui": {
+      "type": "string",
+      "enum": [
+       "native",
+       "web"
+      ]
+     },
+     "icon": {
+      "type": "string"
+     },
      "needs": {
       "type": "array",
       "items": {
@@ -8686,6 +8720,23 @@
      },
      "running": {
       "type": "boolean"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "system",
+       "app"
+      ]
+     },
+     "ui": {
+      "type": "string",
+      "enum": [
+       "native",
+       "web"
+      ]
+     },
+     "icon": {
+      "type": "string"
      },
      "needs": {
       "type": "array",
@@ -8833,6 +8884,23 @@
      "running": {
       "type": "boolean"
      },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "system",
+       "app"
+      ]
+     },
+     "ui": {
+      "type": "string",
+      "enum": [
+       "native",
+       "web"
+      ]
+     },
+     "icon": {
+      "type": "string"
+     },
      "needs": {
       "type": "array",
       "items": {
@@ -8978,6 +9046,23 @@
      },
      "running": {
       "type": "boolean"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "system",
+       "app"
+      ]
+     },
+     "ui": {
+      "type": "string",
+      "enum": [
+       "native",
+       "web"
+      ]
+     },
+     "icon": {
+      "type": "string"
      },
      "needs": {
       "type": "array",
@@ -9129,6 +9214,23 @@
      "running": {
       "type": "boolean"
      },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "system",
+       "app"
+      ]
+     },
+     "ui": {
+      "type": "string",
+      "enum": [
+       "native",
+       "web"
+      ]
+     },
+     "icon": {
+      "type": "string"
+     },
      "needs": {
       "type": "array",
       "items": {
@@ -9272,6 +9374,23 @@
         },
         "running": {
          "type": "boolean"
+        },
+        "kind": {
+         "type": "string",
+         "enum": [
+          "system",
+          "app"
+         ]
+        },
+        "ui": {
+         "type": "string",
+         "enum": [
+          "native",
+          "web"
+         ]
+        },
+        "icon": {
+         "type": "string"
         },
         "needs": {
          "type": "array",
@@ -17323,7 +17442,7 @@
    "word": "open",
    "kind": "request",
    "direction": "in",
-   "description": "Open or suggest a page on one of the owner's channels: settings, the activity of a turn, a file (id says which). `client` picks the channel; leave it out for the one the owner is on. Check `opened`: a suggestion may be declined.",
+   "description": "Open or suggest a page on one of the owner's channels: settings, the activity of a turn, a file (id says which) — or an app (`app`: an id of service:apps/apps.list, system or installed; `arg`: what it is asked to show). Give target or app. `client` picks the channel; leave it out for the one the owner is on. Check `opened`: a suggestion may be declined.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -17340,6 +17459,13 @@
        "file"
       ]
      },
+     "app": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+     },
+     "arg": {
+      "type": "string"
+     },
      "id": {
       "type": "string"
      },
@@ -17355,10 +17481,20 @@
       "pattern": "^client:[A-Za-z0-9_-]{1,64}$"
      }
     },
-    "required": [
-     "target"
-    ],
-    "additionalProperties": false
+    "required": [],
+    "additionalProperties": false,
+    "anyOf": [
+     {
+      "required": [
+       "target"
+      ]
+     },
+     {
+      "required": [
+       "app"
+      ]
+     }
+    ]
    },
    "result_schema": {
     "type": "object",

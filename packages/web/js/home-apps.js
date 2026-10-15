@@ -35,7 +35,8 @@ export function appsPage(ctx, screen) {
     fill(box, waiting ? h("div", { class: "banner hm-bannerwarn" }, ico("shield", "i-s"), `${waiting} 个应用等你批准`) : null, grid, btn("重新查找应用", "a-btn btn-ghost btn-block", () => void load("apps.refresh"), { id: "homeAppsRefresh" }));
   };
   async function load(word = "apps.list") {
-    try { apps = await readApps(screen, word); } catch (error) { if (error?.code === "stale") return; apps = undefined; }
+    // The system apps have native screens on the phone only: the web page lists the installed apps.
+    try { apps = await readApps(screen, word); if (Array.isArray(apps)) apps = apps.filter((app) => app.kind !== "system"); } catch (error) { if (error?.code === "stale") return; apps = undefined; }
     if (apps === null) apps = undefined;
     if (screen.alive()) draw();
   }

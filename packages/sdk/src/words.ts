@@ -445,9 +445,9 @@ add("person:owner", "ask", "request", {
   else: { required: ["options"], properties: { options: { type: "array" } } },
 }, obj({ choice: nonempty, text: str }, ["choice"]),
   { callers: ["agent"], effect: "act", timeout_ms: 604_800_000, label: "在问你", description: "A durable question to the owner, who must choose before something continues. Only title is required; a question (the default human_kind) also needs options, while a confirmation without options gets yes and no from the owner's side. detail, source and expires_at are optional: the gate fills them for an approval, the tools fill expires_at from approval_ttl_minutes, and the owner's side ends the question at expires_at (at most seven days). The tools human_ask and human_confirm are this word under two names and take exactly this input. The answer (or the expiry) comes back as the response; an approval does not execute anything by itself. The hub's gate uses this for approval cards." });
-add("person:owner", "open", "request", obj({ target: choice("activity", "upcoming", "approvals", "identity", "memory", "settings", "turn", "file"), id: str, mode: choice("perform", "suggest"), client: { type: "string", pattern: CLIENT_ID_PATTERN } }, ["target"]),
+add("person:owner", "open", "request", { ...obj({ target: choice("activity", "upcoming", "approvals", "identity", "memory", "settings", "turn", "file"), app: { type: "string", pattern: APP_NAME_PATTERN }, arg: str, id: str, mode: choice("perform", "suggest"), client: { type: "string", pattern: CLIENT_ID_PATTERN } }), anyOf: [{ required: ["target"] }, { required: ["app"] }] },
   obj({ opened: bool }, ["opened"]),
-  { callers: TO_OWNER, effect: "act", label: "在打开页面", description: "Open or suggest a page on one of the owner's channels: settings, the activity of a turn, a file (id says which). `client` picks the channel; leave it out for the one the owner is on. Check `opened`: a suggestion may be declined." });
+  { callers: TO_OWNER, effect: "act", label: "在打开页面", description: "Open or suggest a page on one of the owner's channels: settings, the activity of a turn, a file (id says which) — or an app (`app`: an id of service:apps/apps.list, system or installed; `arg`: what it is asked to show). Give target or app. `client` picks the channel; leave it out for the one the owner is on. Check `opened`: a suggestion may be declined." });
 
 // ===================================================================================================================
 // agent:*: the words every declared agent speaks
@@ -872,10 +872,11 @@ add("service:pulse", "pulse.due", "request", obj({ kind: choice("wake", "daily",
 // Independent apps (contract ash-app/1): discovery, install with the owner's approval of what an app needs, and grants.
 const appId: JsonSchema = { type: "string", pattern: APP_NAME_PATTERN };
 const appInfo = obj({ id: appId, name: str, version: str, summary: str, role: str, publisher: str, enabled: bool, granted: bool, running: bool,
+  kind: choice("system", "app"), ui: choice("native", "web"), icon: str,
   needs: array(obj({}, [], true)), surfaces: array(obj({}, [], true)), events: strings, tools: strings, error: str, badge: choice("warn", "err", "paused"),
   cards: array(obj({ id: str, title: str, size: str, card: widgetCardId, problem: str }, ["id", "title", "size", "card"])) }, ["id", "name", "version", "enabled", "granted", "running"], true);
 add("service:apps", "apps.list", "request", empty, obj({ apps: array(appInfo) }, ["apps"]),
-  { label: "在看有哪些应用", description: "Every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running. " +
+  { label: "在看有哪些应用", description: "The system apps that come with Ash (kind system, a native screen on the phone; person:owner/open {app} opens one), then every app found in the container (/root/apps/<id>/app.json): name, version, whether the owner installed (granted) it and whether it is running. " +
     "An installed app whose folder is gone is listed too (error says so); apps.remove or apps.revoke clears it." });
 add("service:apps", "apps.describe", "request", obj({ id: appId }, ["id"]), appInfo,
   { label: "在看应用详情", description: "One app: what it needs from ash (needs), its screens (surfaces), events and tools." });

@@ -66,7 +66,7 @@ class AppsPane(private val activity: Activity, private val ash: Ash, private val
         loading = true
         Thread({
             val result = runCatching { ash.apps() }
-            result.getOrNull()?.forEach { a -> if (!icons.containsKey(a.id)) icons[a.id] = ash.icon(a.id) }
+            result.getOrNull()?.forEach { a -> if (!icons.containsKey(a.id)) icons[a.id] = if (a.system) systemIcon(a) else ash.icon(a.id) }
             activity.runOnUiThread {
                 loading = false
                 if (closed || activity.isDestroyed) return@runOnUiThread
@@ -177,11 +177,23 @@ class AppsPane(private val activity: Activity, private val ash: Ash, private val
             addView(AshUi.text(activity, if (stopped) "${a.name} · 停用" else a.name, AshType(12.5f, 17f, 400, if (stopped) Role.TEXT_3 else Role.TEXT), maxLines = 2)
                 .apply { gravity = Gravity.CENTER; if (stopped) setTextColor(c.text3) })
             setOnClickListener { open(a) }
-            setOnLongClickListener { actions(a); true }
+            setOnLongClickListener { if (a.system) false else { actions(a); true } }
         }
     }
 
+    /** A system app's tile: its line icon on the app colour (drawn here; the hub has no picture of it). */
+    private fun systemIcon(a: AppInfo): android.graphics.Bitmap? {
+        val res = ai.ash.sysapps.SystemApps.icon(a.icon) ?: return null
+        val size = d(AppTile.GRID.sizeDp)
+        val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+        canvas.drawColor(AshUi.p(activity).youSoft)
+        activity.getDrawable(res)?.mutate()?.apply { setTint(AshUi.p(activity).youText); val m = size / 4; setBounds(m, m, size - m, size - m); draw(canvas) }
+        return bitmap
+    }
+
     private fun open(a: AppInfo) {
+        if (a.system) { activity.startActivity(ai.ash.sysapps.SystemApps.intent(activity, a.id)); return }
         if (a.usable) { activity.startActivity(Ui.appIntent(activity, a.id)); return }
         if (a.broken) { detail = a.id; sure = false; note = null; render(); return }
         stopped(a)

@@ -32,6 +32,8 @@ data class AppInfo(
     val problem: String = "",
     /** The app's own state, which it keeps up to date itself (`service:apps/apps.badge`): `warn`, `err` or `paused`; blank when it is simply fine. The grid draws a dot of it. */
     val badge: String = "",
+    /** A system app (it comes with Ash; its screen is native, [ai.ash.sysapps.SystemApps]), and the line icon it is drawn with. */
+    val system: Boolean = false, val icon: String = "",
 ) {
     /** The app's app.json cannot be read or does not pass: it cannot be installed and cannot be opened. (An older kernel gave no kind: a not-yet-installed app with an error is such a one.) */
     val broken get() = problem == "manifest" || (problem.isEmpty() && error.isNotBlank() && !granted)
@@ -73,7 +75,7 @@ data class AppInfo(
                 AppInfo(id, o.optString("name", id).ifBlank { id }.take(60), o.optString("version").take(40), o.optString("summary").take(300),
                     surfaces, o.optBoolean("enabled", true), o.optBoolean("granted", false),
                     needs(o.optJSONArray("needs")), o.optBoolean("running", false), o.optString("error").trim().take(300), o.optString("problem").trim().take(20),
-                    o.optString("badge").takeIf { it in BADGES } ?: "")
+                    o.optString("badge").takeIf { it in BADGES } ?: "", o.optString("kind") == "system", o.optString("icon").take(40))
             }
 
         private fun needs(a: JSONArray?): List<Need> = if (a == null) emptyList() else (0 until a.length()).mapNotNull { i ->

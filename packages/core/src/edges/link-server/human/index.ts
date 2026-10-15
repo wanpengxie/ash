@@ -303,12 +303,13 @@ export function createHuman(deps: HumanDeps): HumanEdge {
     throw failure;
   }
 
-  /** `open`: a page on the named channel, else the one the owner is on. */
-  async function open(body: { target: string; id?: string; mode?: string; client?: string }): Promise<WordResult> {
+  /** `open`: a page (or an app) on the named channel, else the one the owner is on. */
+  async function open(body: { target?: string; app?: string; arg?: string; id?: string; mode?: string; client?: string }): Promise<WordResult> {
+    if (!body.target && !body.app) throw new WordError("bad_request", "give target (a page) or app (an app's id)");
     const c = body.client ? clients.get(body.client) : clients.current();
     if (!c) throw new WordError("offline", body.client ? `${body.client} is not connected` : "the owner has no channel open");
     if (!c.surfaces.includes("chat")) throw new WordError("unavailable", `${c.client} does not show chat pages`);
-    const result = await presenter.send(c, { surface: "chat", op: "open", body: { target: body.target, ...(body.id !== undefined ? { id: body.id } : {}), ...(body.mode !== undefined ? { mode: body.mode } : {}) } });
+    const result = await presenter.send(c, { surface: "chat", op: "open", body: { ...(body.target ? { target: body.target } : {}), ...(body.app ? { app: body.app } : {}), ...(body.arg !== undefined ? { arg: body.arg } : {}), ...(body.id !== undefined ? { id: body.id } : {}), ...(body.mode !== undefined ? { mode: body.mode } : {}) } });
     if (!result.ok) throw new WordError(result.error.code, result.error.message);
     return { data: { opened: (result.data as { opened?: unknown } | undefined)?.opened !== false } };
   }

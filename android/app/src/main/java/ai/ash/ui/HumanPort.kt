@@ -33,7 +33,7 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     private var sid: String? = null
     private val waiting = HashMap<String, (JSONObject) -> Unit>()
     private val linkListeners = ArrayList<(Boolean) -> Unit>()
-    private val changeListeners = ArrayList<() -> Unit>()
+    private val changeListeners = ArrayList<(JSONObject?) -> Unit>()
     private val cardListeners = ArrayList<(JSONObject) -> Unit>()
     private class Partial(val mime: String, val bytes: ByteArrayOutputStream = ByteArrayOutputStream())
     private val incoming = HashMap<String, Partial>()
@@ -61,8 +61,12 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     }
 
     fun onLink(l: (Boolean) -> Unit) { linkListeners.add(l); l(open) }
-    fun onChange(l: () -> Unit) { changeListeners.add(l) }
-    fun removeChange(l: () -> Unit) { changeListeners.remove(l) }
+    /**
+     * The ledger moved: [l] gets each new message (its summary, as the follow `sync` sends it; null when a page said only that
+     * something changed). System apps use their own [LedgerFeed] subscription on the shared link.
+     */
+    fun onChange(l: (JSONObject?) -> Unit) { changeListeners.add(l) }
+    fun removeChange(l: (JSONObject?) -> Unit) { changeListeners.remove(l) }
     /** A card in the conversation changed (`chat` present `card.patch {card}`): [l] gets the whole card as it is now. */
     fun onCard(l: (JSONObject) -> Unit) { cardListeners.add(l) }
     fun removeCard(l: (JSONObject) -> Unit) { cardListeners.remove(l) }
@@ -108,7 +112,12 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     private fun frame(f: JSONObject, bytes: ByteArray?) {
         when (f.optString("t")) {
             "send.result" -> waiting.remove(f.optString("id"))?.invoke(f)
-            "sync.page", "sync.msg" -> if (f.optString("sid") == sid) changeListeners.toList().forEach { it() }
+            "sync.page", "sync.msg" -> if (f.optString("sid") == sid) {
+                val messages = f.optJSONObject("message")?.let { listOf(it) }
+                    ?: f.optJSONArray("messages")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+                if (messages.isEmpty()) changeListeners.toList().forEach { it(null) }
+                for (m in messages) changeListeners.toList().forEach { it(m) }
+            }
             // A `chat` present: a card that changed is drawn again where it is; focus / open: the chat is the app's front screen, it is up.
             "present" -> {
                 if (f.optString("op") == "card.patch") f.optJSONObject("body")?.optJSONObject("card")?.let { card -> cardListeners.toList().forEach { it(card) } }

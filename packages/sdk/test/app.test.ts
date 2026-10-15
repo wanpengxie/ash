@@ -104,3 +104,12 @@ test("listens and wake_events as the schema accepts them", () => {
   assert.equal(bad({ wake_events: [{ event: "a.b", extra: 1 }] }), false);
   assert.equal(bad({ wake_events: [{ event: "nodot" }] }), false);
 });
+
+test("a system app as apps.list shows it passes the word's own result schema", async () => {
+  const { wordContract } = await import("../src/words");
+  const { systemAppInfo } = await import("../src/app");
+  const validate = compileSchema(wordContract("service:apps", "apps.list")!.result_schema!);
+  const info = systemAppInfo({ id: "codex", name: "Codex", summary: "电脑上的 Codex", icon: "laptop" });
+  assert.ok(validate({ apps: [info] }), JSON.stringify(validate.errors));
+  assert.deepEqual([info.kind, info.ui, info.granted, info.enabled], ["system", "native", true, true]);
+});

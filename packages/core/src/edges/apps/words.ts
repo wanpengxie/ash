@@ -1,7 +1,7 @@
 // `service:apps`: the words of the app edge (SPEC-02 §4.1). Each word is a thin call into the runtime; the checks, the
 // install card and the grants are the runtime's. Who may call which word, and the approval of an agent's install or
 // enable, are the contracts' and the gate's business, not repeated here.
-import { APP_SCHEMA } from "../../../../sdk/src/app";
+import { APP_SCHEMA, SYSTEM_APPS, systemAppInfo } from "../../../../sdk/src/app";
 import { errorBody, WordError, type HandleContext, type Message, type Reply, type WordResult } from "../../../../sdk/src/message";
 import { APP_CONTRACT } from "../../../../sdk/src/versions";
 import type { Member, WordContract } from "../../../../sdk/src/word";
@@ -17,10 +17,15 @@ export function createAppsService(runtime: AppRuntime): Member {
   async function run(msg: Message, ctx: HandleContext): Promise<WordResult> {
     const body = msg.body as Record<string, unknown>;
     const id = text(body, "id");
+    const system = SYSTEM_APPS.find((app) => app.id === id);
+    if (system && !["apps.list", "apps.refresh", "apps.describe"].includes(msg.word))
+      throw new WordError("forbidden", "system apps are updated with Ash");
     switch (msg.word) {
-      case "apps.list": return { data: { apps: runtime.list() } };
-      case "apps.refresh": await runtime.refresh(); return { data: { apps: runtime.list() } };
+      // The system apps first (they come with Ash), then the installed ones.
+      case "apps.list": return { data: { apps: [...SYSTEM_APPS.map(systemAppInfo), ...runtime.list()] } };
+      case "apps.refresh": await runtime.refresh(); return { data: { apps: [...SYSTEM_APPS.map(systemAppInfo), ...runtime.list()] } };
       case "apps.describe": {
+        if (system) return { data: systemAppInfo(system) };
         // The hub starts the clock before the apps: until the apps are loaded "not found" would be a guess (the clock asks this to
         // tell a removed app from one that has not come up yet).
         if (!runtime.isStarted()) throw new WordError("unavailable", "the apps are still loading", { recovery_hint: "Try again in a moment." });
