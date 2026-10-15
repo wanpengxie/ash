@@ -129,7 +129,7 @@ export class LinkMember implements Member {
   // ---- connections -----------------------------------------------------------------------------------------------------
 
   private info(c: LinkConnection) {
-    return { conn: c.conn, hand: c.hand, name: c.name, kind: c.kind, channels: c.channels, via: c.via, since: c.since };
+    return { conn: c.conn, hand: c.hand, name: c.name, kind: c.kind, channels: c.channels, via: c.via, since: c.since, latency: c.latency ?? null };
   }
 
   private describe(input: { hand?: string; conn?: string }) {
@@ -192,7 +192,11 @@ export class LinkMember implements Member {
     for (const r of this.refusals.filter((x) => !hand || x.hand === hand).slice(-10)) {
       add(`handshake.${r.code}`, `${r.via} handshake${r.hand ? ` of ${nameOf(r.hand)}` : ""} refused: ${meaning(r.code)}${r.reason ? ` (${r.reason})` : ""}.`);
     }
-    return { ok: !findings.some((f) => PROBLEMS.has(f.code)), findings };
+    return {
+      ok: !findings.some((f) => PROBLEMS.has(f.code)), findings,
+      // Keep each connection's identity: callers must not substitute another hand's or channel's measurement.
+      connections: this.d.link.connections().filter((c) => !hand || c.hand === hand).map((c) => this.info(c)),
+    };
   }
 }
 

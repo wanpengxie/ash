@@ -55,6 +55,8 @@ export interface LinkConnection {
   grants: Partial<Record<LinkChannel, { accepted: boolean; reason?: string }>>;
   via: "local" | "gateway";
   since: number;
+  /** Per-session measured RTT, read live rather than frozen at the handshake. */
+  latency?: { rtt_ms: number; age_ms: number } | null;
 }
 
 /** What `observe` reports: connections coming and going, and handshakes that were refused. */
@@ -182,6 +184,7 @@ export function createLinkServer(options: LinkServerOptions): HubLinkServer {
     return {
       conn: session.id, hand: session.handId, name: session.hello.hand.name, kind: session.hello.hand.kind, grants,
       channels: (Object.keys(grants) as LinkChannel[]).filter((c) => grants[c]?.accepted), via: local ? "local" : "gateway", since: Date.now(),
+      get latency() { return session.latency?.() ?? null; },
     };
   };
 

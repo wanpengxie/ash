@@ -10,7 +10,7 @@ import {
 } from "../../sdk/src/link";
 import { systemClock, type Clock } from "./clock";
 import { newId } from "./codec";
-import { FrameConn } from "./conn";
+import { FrameConn, type RoundTrip } from "./conn";
 import type { LinkSocket } from "./socket";
 import { StreamReceiver, sendStream, type ReceivedStream, type StreamSendOptions } from "./stream";
 
@@ -59,6 +59,7 @@ export interface LinkServerOptions {
   /** The hand is in: the welcome is sent right after this returns. Take the session's handlers here. */
   onSession(session: LinkSession): SessionHandlers | void;
   clock?: Clock;
+  monotonicNow?(): number;
   log?(message: string, error?: unknown): void;
   /** A connection was closed because of its protocol version, before [authenticate] was asked. [meta] is what was passed to [LinkServer.accept]. */
   refused?(info: { code: number; reason: string; meta?: unknown }): void;
@@ -86,6 +87,8 @@ export interface LinkSession {
   readonly hello: HelloFrame;
   readonly channels: WelcomeFrame["channels"];
   readonly closed: boolean;
+  /** Latest heartbeat sample for this exact session; no extra probe is sent. */
+  latency?(): RoundTrip | null;
   /** Sends a frame. False when the connection is closed. */
   send(frame: Frame): boolean;
   /** Calls a capability of the hand. Rejects with [LinkError] when the connection ends or the deadline passes first. */
@@ -130,6 +133,7 @@ export function createLinkServer(options: LinkServerOptions): LinkServer {
     const conn: FrameConn = new FrameConn({
       socket: { send: (data) => socket.send(data), close: (code, reason) => socket.close(code, reason), terminate: () => socket.terminate?.() },
       clock,
+      monotonicNow: options.monotonicNow,
       role: "kernel",
       onFrame: (frame) => {
         if (phase === "hello" && frame.t === "hello") void authenticate(frame);
@@ -263,6 +267,7 @@ class Session implements LinkSession {
   }
 
   get closed(): boolean { return this.i.conn.closed; }
+  latency(): RoundTrip | null { return this.i.conn.latency(); }
   use(handlers: SessionHandlers): void { this.handlers = handlers; }
   private open(ch: LinkChannel): boolean {
     const grant = this.channels[ch];
