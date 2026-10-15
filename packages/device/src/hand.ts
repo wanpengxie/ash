@@ -86,7 +86,7 @@ export function createHand(parts: HandParts): Hand {
       return { ok: true, content: [{ type: "text", text: JSON.stringify(result ?? {}) }], data: (result ?? {}) as Record<string, unknown> };
     }
     if (name.startsWith("x.codex.")) {
-      if (!parts.codex?.online) throw new WordError("unavailable", "The Codex app is not running on this computer");
+      if (!parts.codex?.available) throw new WordError("unavailable", "The Codex app is not installed on this computer");
       return parts.codex.call(name, frame.args, signal);
     }
     if (name.startsWith("browser.") || name.startsWith("x.kimi.")) {

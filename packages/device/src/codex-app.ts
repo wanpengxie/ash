@@ -14,6 +14,7 @@ import { execFile } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { CapabilitySpec } from "../../sdk/src/link";
@@ -117,8 +118,12 @@ export interface CodexAppOptions {
   startThread?: (cwd: string, title: string) => Promise<string>;
   /** Have the app open a session (default: its own link codex://threads/<id>, opened in the background). */
   openThread?: (id: string) => Promise<void>;
-  /** How long to wait for the app to take up a session it was asked to open (default 20 s). */
+  /** How long to wait for the app to take up a session it was asked to open, or to come up when started (default 20 s). */
   openWaitMs?: number;
+  /** The Codex app installed on this computer (default: Codex.app or ChatGPT.app in /Applications or ~/Applications), or null. */
+  app?: string | null;
+  /** Start the app in the background (default: `open -g -a <app>`). */
+  launchApp?: (app: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -147,14 +152,19 @@ export class CodexApp {
   private listing: Promise<Listed[]> | null = null;
   /** Sessions made here (x.codex.new): known to exist before the runtime lists them. */
   private readonly made = new Set<string>();
-  private readonly o: Required<Pick<CodexAppOptions, "socketPath" | "reconnectMs" | "ownerWaitMs" | "openWaitMs" | "openThread" | "now">> & CodexAppOptions;
+  private readonly o: Required<Pick<CodexAppOptions, "socketPath" | "reconnectMs" | "ownerWaitMs" | "openWaitMs" | "openThread" | "now" | "app" | "launchApp">> & CodexAppOptions;
 
   constructor(options: CodexAppOptions = {}) {
-    this.o = { socketPath: defaultSocket(), reconnectMs: 2000, ownerWaitMs: 2500, openWaitMs: 20_000, openThread: openWithLink, now: Date.now, ...options };
+    this.o = { socketPath: defaultSocket(), reconnectMs: 2000, ownerWaitMs: 2500, openWaitMs: 20_000, openThread: openWithLink, now: Date.now, app: installedApp(), launchApp: launchInBackground, ...options };
   }
 
   get online(): boolean { return this.clientId !== null && this.socket?.writable === true; }
-  capabilities(): CapabilitySpec[] { return this.online ? CODEX_CAPABILITIES : []; }
+  /**
+   * Offered whenever the app is installed, running or not: the sessions are read without it, and acting starts it. Offered
+   * only while it runs, nobody away from the computer could ever start it again.
+   */
+  get available(): boolean { return this.online || this.o.app !== null; }
+  capabilities(): CapabilitySpec[] { return this.available ? CODEX_CAPABILITIES : []; }
   events(): typeof CODEX_EVENTS { return this.online ? CODEX_EVENTS : []; }
 
   start(): void { this.connect(); }
@@ -390,7 +400,6 @@ export class CodexApp {
   }
 
   async sessions(limit = 30, helpers = false) {
-    this.requireOnline();
     await this.discover();
     const rows = await this.listRows(limit);
     const out = new Map<string, Rec>();
@@ -406,8 +415,7 @@ export class CodexApp {
   }
 
   async session(id: string, turns = 6, max = 600) {
-    this.requireOnline();
-    const conv = await this.owned(id, this.o.ownerWaitMs);
+    const conv = this.online ? await this.owned(id, this.o.ownerWaitMs) : null;
     if (conv) return this.view(conv, turns, max);
     // Not open in the app: read what was saved. It cannot be messaged until it is opened there.
     const saved = await (this.o.readThread ?? readWithAppServer)(id).catch(() => null);
@@ -417,7 +425,7 @@ export class CodexApp {
   }
 
   async approvals() {
-    this.requireOnline();
+    // The app not running has no session open, so nothing waits for an approval.
     await this.discover();
     const approvals = [...this.convs.values()].flatMap((c) => approvalsOf(c.raw).map((a) => ({ thread: c.id, title: this.titleOf(c.raw, c.id), ...a })));
     return { approvals };
@@ -425,8 +433,18 @@ export class CodexApp {
 
   // ---- acting ----
 
-  private requireOnline(): void {
-    if (!this.online) throw new WordError("unavailable", "The Codex app is not running on this computer", { recovery_hint: "open the Codex app" });
+  /** The app, started in the background when it is installed but not running. */
+  private async ready(): Promise<void> {
+    if (this.online) return;
+    if (this.o.app === null) throw new WordError("unavailable", "The Codex app is not installed on this computer");
+    try { await this.o.launchApp(this.o.app); }
+    catch (error) { throw new WordError("failed", `the Codex app could not be started: ${clip(errorText(error), 200)}`); }
+    const until = this.o.now() + this.o.openWaitMs;
+    while (!this.online && this.o.now() < until) {
+      this.connect();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (!this.online) throw new WordError("unavailable", "The Codex app was started but did not come up in time", { recovery_hint: "the computer may be locked or asleep; try again" });
   }
 
   private owned(id: string, timeoutMs: number): Promise<Conv | null> {
@@ -464,7 +482,7 @@ export class CodexApp {
    * session, so it is made by the Codex runtime (named, so it is kept), opened in the app like a past one, and spoken to there.
    */
   async create(cwd: string, text: string, title?: string): Promise<Rec> {
-    this.requireOnline();
+    await this.ready();
     if (!isAbsolute(cwd) || !(await stat(cwd).then((s) => s.isDirectory(), () => false))) throw new WordError("bad_request", `${cwd} is not a directory on this computer`, { recovery_hint: "use the cwd of a session from x.codex.sessions, or an absolute path" });
     const name = clip(title?.trim() || text.trim().split("\n")[0], 60);
     let id: string;
@@ -477,7 +495,7 @@ export class CodexApp {
   }
 
   async open(id: string) {
-    this.requireOnline();
+    await this.ready();
     const was = !!(await this.owned(id, this.o.ownerWaitMs));
     const conv = was ? this.convs.get(id)! : await this.opened(id);
     return { opened: true, already: was, ...this.view(conv, 0) };
@@ -497,7 +515,7 @@ export class CodexApp {
 
   /** Idle: a new turn. Running: added to it. A lost answer is never turned into a second send. */
   async send(id: string, text: string, clientId?: string) {
-    this.requireOnline();
+    await this.ready();
     const key = `${id}\u0000${clientId ?? randomUUID()}`;
     const again = this.sends.get(key);
     if (clientId && again) { const result = await again.done; return { ...result, repeated: true }; }
@@ -541,7 +559,7 @@ export class CodexApp {
   }
 
   async stop(id: string) {
-    this.requireOnline();
+    await this.ready();
     const conv = await this.owned(id, this.o.ownerWaitMs);
     if (!conv) throw new WordError("unavailable", "The Codex app does not have this session open", { recovery_hint: "open the session in the Codex app" });
     const turns = canonicalTurns(conv.raw);
@@ -558,7 +576,7 @@ export class CodexApp {
   }
 
   async approve(id: string, requestId: string, decision: "approve" | "approve_session" | "deny") {
-    this.requireOnline();
+    await this.ready();
     const conv = await this.owned(id, this.o.ownerWaitMs);
     const request = conv && (Array.isArray(conv.raw.requests) ? conv.raw.requests : []).map(rec).find((r) => r && String(r.id) === requestId && APPROVALS.has(String(r.method)));
     if (!conv || !request) throw new WordError("not_found", "That approval is no longer waiting");
@@ -731,6 +749,18 @@ async function openWithLink(id: string): Promise<void> {
   const url = `codex://threads/${encodeURIComponent(id)}`;
   const [command, args] = process.platform === "darwin" ? ["open", ["-g", url]] : ["xdg-open", [url]];
   await new Promise<void>((resolve, reject) => execFile(command, args, { timeout: 15_000 }, (error) => (error ? reject(error) : resolve())));
+}
+
+/** The Codex app on this computer: the standalone app, or the ChatGPT app that carries it (macOS). */
+function installedApp(): string | null {
+  if (process.platform !== "darwin") return null;
+  const roots = ["/Applications", join(homedir(), "Applications")];
+  for (const name of ["Codex.app", "ChatGPT.app"]) for (const root of roots) if (existsSync(join(root, name))) return join(root, name);
+  return null;
+}
+
+async function launchInBackground(app: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => execFile("open", ["-g", "-a", app], { timeout: 15_000 }, (error) => (error ? reject(error) : resolve())));
 }
 
 async function withRuntime<T>(use: (p: JsonProcess) => Promise<T>, client = OWNER_CLIENT): Promise<T> {

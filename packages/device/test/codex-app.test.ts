@@ -255,8 +255,8 @@ test("the app quits and starts again: the capabilities go away and come back, an
   const path = desktop.path;
   await desktop.stop();
   await until(() => !app.online, "going offline");
-  assert.deepEqual(app.capabilities(), []);
-  await assert.rejects(app.sessions(), code("unavailable"));
+  assert.deepEqual(app.capabilities(), [], "not installed here (the fixture's app is null off macOS) and not running: nothing offered");
+  assert.deepEqual((await app.sessions()).sessions.map((r: F) => r.id), ["t1", "t2"], "the sessions are still read from the runtime");
 
   const again = new Desktop(path);
   await again.listen();
@@ -298,4 +298,27 @@ test("the capabilities are valid, extensions, need no approval card, and are off
   assert.ok(!hand.manifest().some((c) => c.name.startsWith("x.codex.")));
   const gone = await hand.handlers.call(frame("x.codex.sessions", {}), { signal: new AbortController().signal, progress() {} });
   assert.ok(!gone.ok && gone.error.code === "unavailable");
+});
+
+test("the app installed but not running: the words are offered, the sessions are read without it, and acting starts it", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ash-cx-"));
+  const desktop = new Desktop(join(dir, "ipc.sock"));
+  const launched: string[] = [];
+  const listed: Listed[] = [{ id: "t1", title: "Fix the build", cwd: "/work/app", updated_at: 2000 }];
+  const app = new CodexApp({
+    socketPath: desktop.path, reconnectMs: 30, ownerWaitMs: 200, openWaitMs: 3000, app: "/Applications/ChatGPT.app",
+    launchApp: async (path) => { launched.push(path); await desktop.listen(); await desktop.owner(); },
+    openThread: async () => {}, listThreads: async () => listed, readThread: async () => null,
+  });
+  app.start();
+  t.after(async () => { await app.close(); await desktop.stop().catch(() => {}); });
+  assert.equal(app.online, false);
+  assert.equal(app.capabilities().length, CODEX_CAPABILITIES.length, "offered while installed, so the phone can start it");
+  assert.deepEqual((await app.sessions()).sessions.map((r: F) => r.id), ["t1"]);
+  assert.deepEqual(await app.approvals(), { approvals: [] });
+  assert.deepEqual(launched, [], "reading starts nothing");
+  desktop.state.set("t1", { revision: 1, raw: snapshot() });
+  await app.stop("t1").catch(() => {});
+  assert.deepEqual(launched, ["/Applications/ChatGPT.app"], "acting starts the app in the background");
+  assert.equal(app.online, true);
 });
