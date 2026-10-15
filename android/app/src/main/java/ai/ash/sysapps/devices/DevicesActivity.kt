@@ -206,10 +206,14 @@ open class DevicesActivity : SystemAppActivity() {
                 Refresh.PAIRS -> data?.takeIf { it.optJSONArray("pairs") != null }
                 Refresh.RELAY -> data?.takeIf { it.has("configured") && it.has("connected") }
             }
-            when (what) { Refresh.DEVICES -> model.devicesRead(gen, valid); Refresh.RELAY -> model.relayRead(gen, valid); Refresh.PAIRS -> model.requestsRead(gen, valid) }
+            val devicesAccepted = when (what) {
+                Refresh.DEVICES -> model.devicesRead(gen, valid)
+                Refresh.RELAY -> { model.relayRead(gen, valid); false }
+                Refresh.PAIRS -> { model.requestsRead(gen, valid); false }
+            }
             if (valid == null) readErrors[what] = error(failure) else if (failure == null) {
                 readErrors.remove(what)
-                if (reviewedDetail === detail) reviewedDetail?.connectionReadSucceeded()
+                if (devicesAccepted && reviewedDetail === detail && reviewedDetail?.id?.let(model::device) != null) reviewedDetail?.connectionReadSucceeded()
                 if (what == Refresh.DEVICES && reconcileDetail === detail) { detail?.reconciled(); reconcileDetail = null }
             }
             if (active) { render(); if (dirty.remove(what)) read(what) }
@@ -487,7 +491,7 @@ open class DevicesActivity : SystemAppActivity() {
             diagnosisToggle.visibility = View.GONE; diagnosisRaw.visibility = View.GONE; rawOpen = false
             request("service:link", "diagnose", JSONObject().put("hand", id.removePrefix("device:"))) { data, failure ->
                 if (detail !== this) return@request
-                if (data == null) { pending.remove("diagnose"); diagnosis.text = error(failure); diagnosisIssue = getString(R.string.dev_diag_incomplete); diagnosisState = model.device(id)?.let { it.online to it.revoked }; bind(); return@request }
+                if (data == null) { pending.remove("diagnose"); diagnosis.text = error(failure); diagnosisIssue = getString(R.string.dev_diag_incomplete); model.begin(Refresh.DEVICES); diagnosisState = model.device(id)?.let { it.online to it.revoked }; bind(); return@request }
                 request("service:link", "list") { links, linkFailure ->
                     pending.remove("diagnose")
                     if (detail !== this) return@request
@@ -511,6 +515,8 @@ open class DevicesActivity : SystemAppActivity() {
                     }
                     val conclusionText = if (conclusion == R.string.dev_diag_tunnel_missing) getString(conclusion, d?.name.orEmpty()) else getString(conclusion)
                     diagnosisIssue = conclusionText.takeIf { conclusion != R.string.dev_diag_connected }
+                    // A list already in flight predates this finding. Reuse the existing read ordering to discard it.
+                    if (diagnosisIssue != null) model.begin(Refresh.DEVICES)
                     diagnosis.text = getString(R.string.dev_diag_layout, conclusionText, relaySummary(), count, latencyText(conns, id))
                     diagnosisRaw.text = listOfNotNull(lines.takeIf { it.isNotEmpty() }, model.relay?.error, linkFailure?.let(::error)).joinToString("\n")
                     diagnosisToggle.visibility = visible(diagnosisRaw.text.isNotEmpty())

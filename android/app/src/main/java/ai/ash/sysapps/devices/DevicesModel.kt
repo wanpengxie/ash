@@ -211,10 +211,11 @@ class DevicesState {
     fun begin(what: Refresh): Int = (generation[what] ?: 0).plus(1).also { generation[what] = it }
     private fun current(what: Refresh, gen: Int) = generation[what] == gen
 
-    fun devicesRead(gen: Int, data: JSONObject?) {
-        if (!current(Refresh.DEVICES, gen)) return
-        if (data == null) { error = "设备列表没读到，显示的是上次的结果"; return }
+    fun devicesRead(gen: Int, data: JSONObject?): Boolean {
+        if (!current(Refresh.DEVICES, gen)) return false
+        if (data == null) { error = "设备列表没读到，显示的是上次的结果"; return false }
         devices = DevicesJson.devices(data); release = DevicesJson.release(data); error = null
+        return true
     }
     fun relayRead(gen: Int, data: JSONObject?) { if (current(Refresh.RELAY, gen) && data != null) relay = DevicesJson.relay(data) }
     fun requestsRead(gen: Int, data: JSONObject?) { if (current(Refresh.PAIRS, gen) && data != null) requests = DevicesJson.requests(data) }

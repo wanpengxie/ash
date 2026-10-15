@@ -43,9 +43,9 @@ class DevicesModelTest {
         assertEquals(listOf("device:a"), s.devices!!.map { it.id })
         assertTrue(s.rows(now).any { it is DevicesState.Row.Note && it.text.contains("上次") })
         val third = s.begin(Refresh.DEVICES)
-        s.devicesRead(second, list())                     // late answer to an older read
+        assertFalse(s.devicesRead(second, list()))        // late answer to an older read
         assertEquals(listOf("device:a"), s.devices!!.map { it.id })
-        s.devicesRead(third, list(dev("b", "Linux")))
+        assertTrue(s.devicesRead(third, list(dev("b", "Linux"))))
         assertEquals(listOf("device:b"), s.devices!!.map { it.id })
         assertNull(s.error)
     }
