@@ -285,7 +285,10 @@ class HmKeys(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         call("service:vault", "list") { v ->
             call("service:llm", "keys.status") { s ->
                 if (!v.ok && v.code != "unavailable") { HomeModel.KEYS.forEach { status[it.ref] = "读取失败，请重试。" }; draw(); return@call }
-                locked = !v.ok; vault = if (v.ok) v.data.list("entries") else emptyList(); health = if (s.ok) s.data.list("keys") else emptyList(); draw()
+                locked = !v.ok; vault = if (v.ok) v.data.list("entries") else emptyList()
+                // A failed health read keeps what was known (an empty list would read as "no problem").
+                if (s.ok) health = s.data.list("keys") else HomeModel.KEYS.forEach { if (status[it.ref].isNullOrEmpty()) status[it.ref] = "没能问到密钥状态，稍后再看。" }
+                draw()
                 for (k in HomeModel.KEYS) { val h = health.firstOrNull { it.str("ref") == k.ref }; if (saved(k.ref) && h?.optBoolean("configured") == true && h.str("status") == "unknown" && !h.has("checked_at")) verify(k) }
             }
         }
