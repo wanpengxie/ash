@@ -62,15 +62,38 @@ class ChatScreen(
         background = AshUi.rounded(c.surface2, AshUi.dpF(ctx, 12f)); setPadding(dp(12), dp(8), dp(12), dp(8)); visibility = View.GONE
     }
     private val list = AshUi.vstack(ctx, 8).apply { setPadding(dp(14), dp(8), dp(14), dp(12)) }
+    /**
+     * The conversation is laid out from its end, as a chat is: the place the owner reads is kept as a distance from the bottom,
+     * and every layout keeps that distance. So the keyboard coming up, the input growing, a new message at the end and a page
+     * of older ones above all leave the reading place alone, and at the bottom it stays at the newest message, with no code
+     * scrolling after them. Only the owner's own scrolling (and 「回到底部」, sending) changes it.
+     */
     private val scroll = object : ScrollView(ctx) {
-        override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) { super.onScrollChanged(l, t, oldl, oldt); if (t < dp(200)) loadOlder(); paintToBottom() }
-        // The keyboard coming up shrinks the list from below: keep its bottom edge where it was, so the latest messages move up
-        // above the input (as in any chat) instead of being covered; going down again keeps the top.
-        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-            super.onSizeChanged(w, h, oldw, oldh)
-            if (oldh > 0 && h < oldh) post { scrollBy(0, oldh - h) }
+        private var fromBottom = 0
+        override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+            super.onScrollChanged(l, t, oldl, oldt)
+            fromBottom = maxOf(0, list.height - (t + height))
+            if (t < dp(200)) loadOlder()
+            paintToBottom()
         }
-    }.apply { isFillViewport = true; addView(list) }
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val keep = fromBottom
+            super.onLayout(changed, l, t, r, b)
+            val at = maxOf(0, list.height - height - keep)
+            if (scrollY != at) scrollTo(0, at)
+        }
+    }.apply {
+        isFillViewport = true; addView(list)
+        // A drag of the conversation puts the keyboard away (once per drag); the list's own layout never does.
+        var dragged = false
+        setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> dragged = false
+                android.view.MotionEvent.ACTION_MOVE -> if (!dragged) { dragged = true; dropKeyboard() }
+            }
+            false
+        }
+    }
     /** Ids of the long messages the owner opened; kept here so a repaint or a page of older messages does not fold them again. */
     private val unfolded = HashSet<String>()
     /** New rows that came while the owner was reading further up: the 「回到底部」 button wears a dot until the bottom is reached. */
@@ -205,11 +228,8 @@ class ChatScreen(
         port.call("service:history", "window", JSONObject().put("limit", PAGE).put("before", before)) { data, _ ->
             loadingOlder = false
             if (data == null) return@call
-            val height = list.height
             take(data, newest = false)
             paintList()
-            // Keep what was on screen where it was.
-            list.post { scroll.scrollBy(0, list.height - height) }
         }
     }
 
@@ -232,7 +252,7 @@ class ChatScreen(
         flush()
     }
 
-    /** To the latest message. Not `fullScroll`: that also moves the focus to the last row, which closes the keyboard. */
+    /** To the latest message (after the owner sends). Not `fullScroll`: that also moves the focus to the last row, which closes the keyboard. */
     private fun toEnd() { scroll.post { scroll.scrollTo(0, list.height) } }
 
     /** Sends what waits, oldest first, one at a time; a lost connection leaves the rest for the next one. */
@@ -488,7 +508,6 @@ class ChatScreen(
         }
         rows.clear(); rows.putAll(next)
         firstPaint = false
-        if (atBottom) toEnd()
         scroll.post { paintToBottom() }
     }
 
@@ -698,6 +717,13 @@ class ChatScreen(
             if (items.firstKey() >= oldest) moreBefore = had
             paintList(); show()
         }
+    }
+
+    /** Put the keyboard away: the owner left the chat (another tab) or dragged the conversation, as in any chat app. */
+    fun dropKeyboard() {
+        if (!input.hasFocus()) return
+        input.clearFocus()
+        ctx.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(input.windowToken, 0)
     }
 
     /** Puts the cursor in the message box and raises the keyboard. */

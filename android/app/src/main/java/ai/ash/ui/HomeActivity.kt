@@ -105,6 +105,7 @@ class HomeActivity : Activity() {
             codexPane = CodexPane(this, port) { showTab(HomeTab.CHAT) }
                 .also { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)) }
         }
+        if (next != HomeTab.CHAT) chatScreen.dropKeyboard()
         chatScreen.view.visibility = if (next == HomeTab.CHAT) View.VISIBLE else View.GONE
         appsPane?.view?.visibility = if (next == HomeTab.APPS) View.VISIBLE else View.GONE
         codexPane?.view?.visibility = if (next == HomeTab.CODEX) View.VISIBLE else View.GONE
