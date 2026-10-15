@@ -105,4 +105,4 @@ Task 字段：id/title/note/subject/assignee/status/due_at/remind_at/source/thre
 
 修复前日志保存在施工临时目录，分别为 tasks-review-before-views.log（3 个真实 Activity 反例）、tasks-review-before-router.log（2 个真实 Router 反例）、tasks-review-before-responsibility.log（责任反例）。不把编译、纯 Model 测试或静态代码审查当这些产品路径的通过证据。
 
-真实 IME、预测返回手势、OEM 通知限制、字体/无障碍的真机交互仍未验证；本次不操作手机、不安装、不打包、不推送、不合主线。真实 View 的验证基于统一 bd76b539 测试依赖，按总控安排串行运行。产品截图由标准 NATIVE graphics 绘制 Activity 实际 decor 和附着的 RecyclerView 行，不拼接背景图或脱屏组件。
+真实 IME、预测返回手势、OEM 通知限制、字体/无障碍的真机交互仍未验证；本次不操作手机、不安装、不打包、不推送、不合主线。真实 View 的验证基于统一 bd76b539 测试依赖，按总控安排串行运行。产品截图由标准 NATIVE graphics 绘制 Activity 实际 decor 和附着的 RecyclerView 行，不拼接背景图或脱屏组件。412dp × 915dp、mdpi、正常字体；home 图包括快捷提醒入口，added 图从实际输入/选时/add 成功回执/列表重读后生成，检查多行确认完整可见，输出 build/reports/tasks/tasks-product-home.png 与 tasks-product-added.png。

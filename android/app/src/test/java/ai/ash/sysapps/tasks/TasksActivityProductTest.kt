@@ -265,11 +265,42 @@ class TasksActivityProductTest {
         assertEquals("completion must not be clipped horizontally",complete.width,visibleBounds.width())
         assertEquals("completion must not be clipped vertically",complete.height,visibleBounds.height())
         assertTrue(visibleBounds.left >= 0 && visibleBounds.right <= decor.width && visibleBounds.top >= 0 && visibleBounds.bottom <= decor.height)
-        val bitmap=Bitmap.createBitmap(decor.width,decor.height,Bitmap.Config.ARGB_8888)
-        decor.draw(Canvas(bitmap))
-        val target=File("build/reports/tasks/tasks-product-home.png")
-        target.parentFile?.mkdirs();target.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
-        bitmap.recycle();ctl.destroy();flush()
+        fun assertVisible(v:View) {
+            val bounds=Rect()
+            assertTrue(v.getGlobalVisibleRect(bounds))
+            assertEquals(v.width,bounds.width());assertEquals(v.height,bounds.height())
+            assertTrue(bounds.top>=0 && bounds.bottom<=decor.height && bounds.left>=0 && bounds.right<=decor.width)
+        }
+        fun capture(name:String) {
+            val bitmap=Bitmap.createBitmap(decor.width,decor.height,Bitmap.Config.ARGB_8888)
+            decor.draw(Canvas(bitmap))
+            val target=File("build/reports/tasks/$name.png")
+            target.parentFile?.mkdirs();target.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
+            bitmap.recycle()
+        }
+        assertVisible(get(a,"quickReminder") as View)
+        capture("tasks-product-home")
+        // Continue through actual input, picker, add callback and the following list refresh in this phone window.
+        val title="买下周出差用的洗漱用品和充电线"
+        (get(a,"quick") as EditText).setText(title)
+        (get(a,"quickReminder") as View).performClick();choice(2)
+        text(a,"记一条").performClick();flush()
+        val add=a.requests.last { it.word=="add" }
+        val stored=task("travel",title).put("remind_at",add.body.getLong("remind_at")).put("delivery",JSONObject().put("reminders","ready"))
+        add.done(JSONObject().put("task",stored),null);flush()
+        a.requests.last { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",JSONArray().put(stored)),null);flush()
+        val nextDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
+        while(adapter.currentList.none { it.key=="task:travel" } && System.nanoTime()<nextDeadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
+        decor.measure(View.MeasureSpec.makeMeasureSpec(412,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(915,View.MeasureSpec.EXACTLY))
+        decor.layout(0,0,412,915);flush()
+        val receipt=get(a,"feedback") as TextView
+        assertTrue(receipt.text.toString().contains("已记下：$title"))
+        assertTrue(receipt.text.toString().contains("已安排"))
+        assertTrue("the actual confirmation wraps at phone width",receipt.lineCount>=2)
+        assertVisible(receipt);assertVisible(get(a,"quickReminder") as View)
+        assertTrue(views(decor).any { it.tag=="task:travel" })
+        capture("tasks-product-added")
+        set(a,"visible",false);ctl.destroy();flush()
     }
     private fun task(id:String,title:String)=JSONObject().put("id",id).put("title",title).put("assignee","person:owner").put("subject","owner").put("status","todo").put("due_at",JSONObject.NULL).put("remind_at",JSONObject.NULL).put("updated_at",2)
 }
