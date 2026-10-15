@@ -92,8 +92,8 @@ anything that cannot draw the card show that.
 
 - Token-level streaming of a card while the model writes it: the runtimes deliver a tool call whole. A long card streams
   by `show` with what is ready (missing children draw as placeholders) and `card.update` as the rest arrives.
-- Data by reference: `data` values `{"$ref": "<message id>", "pointer": "/…"}` are read from the recorded response by the hub
-  at render time. Agents learn message ids only from their own receipts today, so this is supported but rarely usable.
+- Data by reference: a card's numbers are written into its `data` by the agent. Binding a card to a recorded tool result
+  by id needs the agent to know that result's ledger id, which its receipts do not carry yet; it comes with that.
 - Maps (a live map): use an Image and an `openUrl` geo: action.
 
 ## 9. Delivery

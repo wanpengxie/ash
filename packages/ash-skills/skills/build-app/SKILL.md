@@ -25,11 +25,11 @@ whenToUse: 主人想要一个长期用的小工具（记账、书单、习惯、
 5. **卡片**（`cards`，最多 8 张）：画卡片的工具只读，从现在的数据画，大小按 `widgets-design` 选（多数 `4x2`），不要硬塞 30 条；`action` 工具处理卡上的勾选。卡片 id 在桌面是 `<应用 id>.<卡片 id>`，主人想放桌面就 `widget.bind`。
 
 需要手机的东西（健康数据等）才写 `needs`：成员写 `device:*`（任何一只手，不写死 id），服务里用 `capability_list` 找到手机的 id 再调；每项写给主人看的 `why`；不需要就留空，这样安装时主人看到的是「不需要用 Ash 的其他东西」。
-要以主人身份调一个外部服务（他连好的 Gmail、Slack……或保险箱里的密钥），`needs` 写 `{credential: "<名字>", why}`，用的时候 `call("service:vault", "token", {ref})` 现取，见技能 `credentials`。
+要以主人身份调一个外部服务（他连好的 Gmail、Slack……或保险箱里的密钥），`needs` 写 `{credential: "<名字>", why}`，用的时候 `call("service:vault", "token", {ref})` 现取，或在 `server.env` 里写 `"$vault.<名字>"` 启动时拿到，见技能 `credentials`。只是跑一条命令用个密码，不用写应用：`workspace.bash` 的 `env` 里写 `$vault.<名字>` 就行。
 
 ## 做法
 
-1. `apps.scaffold {id, name, summary, role, surfaces, tools}`：写出一个能直接运行的清单应用（工具 `list/add/done/remove`、一张卡片 `card`/`card.tap`、第一页）。你在 `tools` 里另起名字的工具先回占位话。它会替你写好 `publisher`，已有 `app.json` 的文件夹不会被覆盖。
+1. `apps.scaffold {id, name, summary, role, surfaces, tools}`：写出一个能直接运行的清单应用（工具 `list/add/done/remove`、一张卡片（card 和它的点击 card.tap）、第一页）。你在 `tools` 里另起名字的工具先回占位话。它会替你写好 `publisher`，已有 `app.json` 的文件夹不会被覆盖。
 2. 改 `/root/apps/<id>/`：`server.mjs` 里的 `TOOLS` 和 `handle()`、`card()`，`ui/<页面>.html` 的正文；`ui/app.js`、`ui/app.css`、`icon.png` 不用动（图标要 PNG 或 WebP）。服务只用 Node 自带模块最省事。**stdout 只能写协议**，日志用 `console.error`（脚手架已把 `console.log` 转到 stderr）。
 3. `apps.validate {id}`：像安装一样检查并真的启动一次、调一次每张卡片的工具。`error` 必须清零，`warning`（没写 `role`、没标 `readOnlyHint`、只有只读工具、页面用了 `localStorage`……）也都改掉。
 4. 自测：见下面「怎么核对」。

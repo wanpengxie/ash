@@ -67,6 +67,8 @@ const FIXED_ROWS: Row[] = [
     description: "Ask the owner a question with options to tap (human_kind question, the default). Returns a receipt at once: the answer comes back through await_result with the receipt's request_id. Only title and options are needed." }],
   ["human_confirm", "person:owner", "ask", "ask", { approval: true, adapt: asking("confirmation"),
     description: "Ask the owner for an explicit yes or no (the same word as human_ask with human_kind confirmation; without options the owner's side offers yes and no). Returns a receipt at once; the answer comes back through await_result with the receipt's request_id. Nothing is done by the confirmation itself." }],
+  ["human_card_update", "person:owner", "card.update", "sync"],
+  ["human_form", "person:owner", "form", "ask", { description: "Ask the owner to fill in a form card in the conversation (person:owner/form): all the fields you need in one card, password fields straight into the vault. Returns a receipt at once: the filled-in values (passwords only as {ref, masked}; use them as $vault.<ref>) come back through await_result with the receipt's request_id, or cancelled." }],
   ["human_pending", "service:gate", "pending.list", "sync"],
   ["human_pending_get", "service:gate", "pending.get", "sync"],
   ["human_pending_redeem", "service:gate", "pending.redeem", "receipt"],
