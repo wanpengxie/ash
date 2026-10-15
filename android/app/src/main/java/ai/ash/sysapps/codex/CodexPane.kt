@@ -1,7 +1,7 @@
 package ai.ash.sysapps.codex
 
 import ai.ash.ui.*
-import ai.ash.link.Link
+import ai.ash.link.LinkClient
 
 import ai.ash.R
 import ai.ash.ui.design.AshTokens
@@ -37,7 +37,7 @@ import java.util.UUID
  * one thing redraws that one thing and never the box being typed in. What it reads is held in [CodexState]. [view] goes into
  * CodexActivity; call [shown] as it comes and goes, [back] for the back key.
  */
-class CodexPane(private val activity: Activity, private val title: android.widget.TextView, actions: LinearLayout, saved: Bundle? = null) : KeyboardDeck {
+class CodexPane(private val activity: Activity, private val title: android.widget.TextView, actions: LinearLayout, private val client: LinkClient, saved: Bundle? = null) : KeyboardDeck {
     val view = FrameLayout(activity)
     private val c = AshUi.p(activity)
     private val main = Handler(Looper.getMainLooper())
@@ -59,6 +59,9 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     private var shown = false
     private var closed = false
     private var restoring = false
+    private var loadedDraftKey: String? = null
+    private val actors = LinkedHashMap<String, String>()
+    private val readingPlaces = LinkedHashMap<String, Anchor>()
     /** The route changed (a session opened or closed): the activity offers back to this page only inside a session. */
     var onRouteChange: (() -> Unit)? = null
 
@@ -88,11 +91,13 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     /** Where the session was read, to bring back once it is read again after the activity was made again. */
     private var place: Anchor? = null
     /**
-     * Why the last read failed, floating over the top of the lists (§1.2): it covers their top — the oldest rows — while it
-     * shows, and lays nothing out coming and going.
+     * A measured one-line status slot (§1.2). A read failure neither covers nor resizes the conversation.
      */
-    private val problemLine = AshUi.text(activity, "", AshTokens.Type.callout, c.text2).apply {
-        gravity = Gravity.CENTER; setPadding(d(14), d(6), d(14), d(6)); setBackgroundColor(c.bg); visibility = View.GONE
+    private val problemLine = AshUi.text(activity, "暂时读不到 Codex，内容会保留", AshTokens.Type.callout, c.text2, maxLines = 1).apply {
+        gravity = Gravity.CENTER; minLines = 1; setPadding(d(14), d(6), d(14), d(6)); setBackgroundColor(c.bg); visibility = View.INVISIBLE
+    }
+    private val computerLine = AshUi.text(activity, "电脑上的 Codex", AshTokens.Type.caption, c.text3, maxLines = 1).apply {
+        setPadding(d(14), 0, d(14), 0)
     }
     private val changeLine = AshUi.text(activity, "最近操作", AshTokens.Type.caption, c.text3, maxLines = 1).apply {
         visibility = View.INVISIBLE
@@ -107,11 +112,12 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     init {
         val column = AshUi.vstack(activity)
         actions.addView(stop)
+        column.addView(computerLine, LinearLayout.LayoutParams(-1, -2))
         column.addView(changeLine, LinearLayout.LayoutParams(-1, -2))
+        column.addView(problemLine, LinearLayout.LayoutParams(-1, -2))
         val lists = FrameLayout(activity).apply {
             addView(sessionList, FrameLayout.LayoutParams(-1, -1))
             addView(talkList, FrameLayout.LayoutParams(-1, -1))
-            addView(problemLine, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         }
         deck.addView(lists, LinearLayout.LayoutParams(-1, 0, 1f))
         deck.addView(composer, LinearLayout.LayoutParams(-1, -2))
@@ -120,13 +126,18 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         column.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         view.addView(column, FrameLayout.LayoutParams(-1, -1))
         saved?.getBundle(STATE)?.let { b ->
-            state.restore(b.keySet().filter { it != PLACE && it != OFFSET }.associateWith { b.getString(it).orEmpty() })
+            b.getBundle("places")?.let { savedPlaces -> savedPlaces.keySet().forEach { key ->
+                savedPlaces.getBundle(key)?.let { value -> value.getString(PLACE)?.let { readingPlaces[key] = Anchor(it, value.getInt(OFFSET)) } }
+            } }
+            state.restore(b.keySet().filter { it != PLACE && it != OFFSET && it != "places" }.associateWith { b.getString(it).orEmpty() })
             place = b.getString(PLACE)?.let { Anchor(it, b.getInt(OFFSET)) }
+            draftKey()?.let { key -> place?.let { readingPlaces.putIfAbsent(key, it) } }
         }
         moved()
         // Stored operations come back; one that was going out when the app went is shown as not sent (重发 keeps its id).
         ops.whenReady {
-            ops.items().filter { it.status == Pending.SENDING }.forEach { ops.mark(it.clientId, Pending.FAILED) }
+            ops.items().forEach { actors[it.to + ":" + it.clientId] = "你" }
+            ops.items().filter { it.status == Pending.SENDING }.forEach { ops.mark(it.clientId, Pending.UNSENT) }
             paint()
         }
     }
@@ -134,12 +145,18 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     fun close() { closed = true; state.invalidate(); main.removeCallbacksAndMessages(null) }
 
     private fun call(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
-        HumanCall.call(activity, to, word, body, done)
+        HumanCall.call(client, to, word, body, done)
 
     /** The shared ledger invalidates immediately; polling also reads Codex's changes on the computer. */
     fun changed(message: JSONObject) {
         val onComputer = message.optString("to") == state.device || message.optString("from") == state.device
-        if (onComputer) CodexOpen.actorLine(message)?.let { changeLine.text = it; changeLine.visibility = View.VISIBLE }
+        if (message.optString("word") == CodexModel.SEND) {
+            val id = message.optJSONObject("body")?.optString("client_id").orEmpty()
+            val actor = CodexOpen.actor(message)
+            if (id.isNotEmpty() && actor != null) actors[message.optString("to") + ":" + id] = actor
+            while (actors.size > 200) actors.remove(actors.keys.first())
+        }
+        if (onComputer) CodexOpen.actorLine(message)?.let { setLine(changeLine, it); changeLine.visibility = View.VISIBLE }
         if (CodexOpen.affectsComputers(message)) { computersChanged = true; refresh() }
         else if (onComputer && CodexOpen.affectsSession(message)) refresh()
     }
@@ -149,6 +166,10 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     /** An application open may name a device and thread; saved state takes precedence on recreation. */
     fun openArg(arg: String?) {
         val route = CodexOpen.route(arg) ?: return
+        val sameDevice = route.device == null || route.device == state.device
+        if (sameDevice && route.thread == state.thread && (route.thread != null || !state.inTalk)) return
+        rememberPlace(); dropKeyboard()
+        if (route.device != null && route.thread == null) state.back()
         route.device?.let { state.choose(it) }
         route.thread?.let { state.open(it, null) }
         moved(); refresh()
@@ -160,13 +181,15 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         main.removeCallbacks(tick)
         // Gone: what is being read no longer counts, and no read follows it.
         if (!visible) { dropKeyboard(); state.invalidate(); readAgain = false }
-        if (visible && !closed) { refresh(); main.postDelayed(tick, 3_000) }
+        if (visible && !closed) { paint(); refresh(); main.postDelayed(tick, 3_000) }
     }
 
     /** The back key: from a session to the list; false when the list itself is showing. */
     fun back(): Boolean {
+        rememberPlace()
         if (!state.back()) return false
         dropKeyboard()
+        computersChanged = true
         moved(); refresh()
         return true
     }
@@ -175,8 +198,12 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     fun canGoBack() = state.inTalk
 
     fun save(out: Bundle) {
+        rememberPlace()
         out.putBundle(STATE, Bundle().apply {
             state.route().forEach { (k, v) -> putString(k, v) }
+            putBundle("places", Bundle().apply { readingPlaces.forEach { (key, anchor) ->
+                putBundle(key, Bundle().apply { putString(PLACE, anchor.key); putInt(OFFSET, anchor.offset) })
+            } })
             if (state.inTalk) Anchor.of(talkList, talkLm, talkRows)?.let { putString(PLACE, it.key); putInt(OFFSET, it.offset) }
         })
     }
@@ -189,7 +216,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     private fun refresh() {
         if (closed || !shown) return
         if (loading) { readAgain = true; return }
-        if (!Link.get(activity).client.channelOpen("human")) { problem("还没连上 Ash"); return }
+        if (!client.channelOpen("human")) { problem("还没连上 Ash"); return }
         val now = System.currentTimeMillis()
         // The computers are read again now and then, so one that comes online shows up beside the others.
         if (computersChanged || state.device == null || now - state.computersAt > 15_000) {
@@ -228,16 +255,35 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     private fun again() { if (readAgain) { readAgain = false; refresh() } }
 
-    private fun problem(text: String) { problemLine.text = text; problemLine.visibility = View.VISIBLE }
+    /** Keep AshUi's line-height span when a status changes; replacing it with plain text changes list geometry. */
+    private fun setLine(view: android.widget.TextView, text: String) {
+        val styled = view.text as? android.text.Spanned
+        val spans = styled?.getSpans(0, styled.length, android.text.style.LineHeightSpan::class.java).orEmpty()
+        view.text = android.text.SpannableString(text).apply {
+            spans.forEach { setSpan(it, 0, length, android.text.Spanned.SPAN_INCLUSIVE_INCLUSIVE) }
+        }
+    }
+
+    private fun problem(text: String) { setLine(problemLine, text); problemLine.visibility = View.VISIBLE }
 
     // ---- moving ----
 
-    private fun choose(computer: String) { if (state.choose(computer)) { moved(); refresh() } }
-    private fun startNew(p: CodexModel.Project) { state.startNew(p); moved(); input.requestFocus() }
-    private fun open(s: CodexModel.Session) { state.open(s.id, s.title); moved(); refresh() }
+    private fun choose(computer: String) { rememberPlace(); if (state.choose(computer)) { moved(); refresh() } }
+    private fun startNew(p: CodexModel.Project) { rememberPlace(); state.startNew(p); moved(); input.requestFocus() }
+    private fun open(s: CodexModel.Session) { rememberPlace(); state.open(s.id, s.title); moved(); refresh() }
+
+    private fun rememberPlace() {
+        if (!state.inTalk) return
+        val key = draftKey() ?: return
+        val anchor = Anchor.of(talkList, talkLm, talkRows)
+        if (anchor == null) readingPlaces.remove(key) else readingPlaces[key] = anchor
+        while (readingPlaces.size > 32) readingPlaces.remove(readingPlaces.keys.first())
+    }
 
     /** The route changed: the lists are handed over anew and the box shows this conversation's own draft. */
     private fun moved() {
+        changeLine.visibility = View.INVISIBLE
+        if (draftKey() != loadedDraftKey) place = draftKey()?.let(readingPlaces::get)
         talkRows.submitList(null)
         loadDraft()
         paint()
@@ -250,8 +296,11 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     }
 
     private fun loadDraft() {
+        val key = draftKey()
+        if (key == loadedDraftKey) return
+        loadedDraftKey = key
         restoring = true
-        input.setText(draftKey()?.let(drafts::text).orEmpty()); input.setSelection(input.text.length)
+        input.setText(key?.let(drafts::text).orEmpty()); input.setSelection(input.text.length)
         restoring = false
     }
 
@@ -273,14 +322,16 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         if (storing) return
         storing = true
         val key = draftKey()
+        val intentGeneration = state.generation
         val op = Pending(UUID.randomUUID().toString(), dev, body, at = System.currentTimeMillis())
         ops.add(op) { kept ->
             storing = false
             if (!kept) { toast("没能存下来，还在输入框里，再点一次试试"); return@add }
+            actors[dev + ":" + op.clientId] = "你"
             if (draftKey() == key && input.text.toString().trim() == text) input.setText("")
             place = null
             paintTalk(toEnd = true)
-            go(op)
+            go(op, intentGeneration)
         }
     }
     private var storing = false
@@ -297,7 +348,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     }
 
     /** Sends [op] to the computer it was stored for, with its own client id — the same on every try (§6.2). */
-    private fun go(op: Pending) {
+    private fun go(op: Pending, navigationGeneration: Int = state.generation) {
         val to = op.to ?: return
         ops.mark(op.clientId, Pending.SENDING); paint()
         val b = op.body
@@ -312,12 +363,12 @@ class CodexPane(private val activity: Activity, private val title: android.widge
                     ops.remove(op.clientId)
                     // store() already cleared only the submitted draft. A later draft belongs to the owner, not this reply.
                     val thread = CodexModel.created(data)
-                    if (thread != null && state.device == to && state.newIn?.cwd == b.optString("cwd")) { state.open(thread, null); moved(); main.postDelayed({ refresh() }, 600) }
+                    if (thread != null && navigationGeneration == state.generation && state.device == to && state.newIn?.cwd == b.optString("cwd")) { state.open(thread, null); moved(); main.postDelayed({ refresh() }, 600) }
                     else paint()
                 }
-                // Sent: kept (by the turn it started) until the session shows that turn; without a turn, gone now, and read again.
-                failure == null -> { ops.taken(op.clientId, data?.optString("turn")?.ifEmpty { null }); paint(); refresh() }
-                else -> { ops.mark(op.clientId, Pending.FAILED); paint() }
+                // A receipt is not the transcript: keep the row until the exact client id appears on the computer.
+                failure == null -> { ops.mark(op.clientId, Pending.SENT); paint(); refresh() }
+                else -> { ops.mark(op.clientId, if (failure.code == "result_unknown") Pending.UNSENT else Pending.FAILED); paint() }
             }
         }
     }
@@ -377,15 +428,16 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     }
 
     private fun paint() {
-        if (closed) return
-        if (closed) return
+        if (closed || !shown) return
+        val name = state.deviceName ?: state.computers.firstOrNull { it.id == state.device }?.name ?: state.device?.removePrefix("device:") ?: "电脑"
+        setLine(computerLine, "$name · ${state.title ?: state.newIn?.name ?: "Codex 会话"}")
         val talk = state.inTalk
         composer.visibility = if (talk) View.VISIBLE else View.GONE
         sessionList.visibility = if (talk) View.GONE else View.VISIBLE
         talkList.visibility = if (talk) View.VISIBLE else View.GONE
         val p = state.problem
-        problemLine.visibility = if (p == null) View.GONE else View.VISIBLE
-        if (p != null) problemLine.text = p
+        problemLine.visibility = if (p == null) View.INVISIBLE else View.VISIBLE
+        if (p != null) setLine(problemLine, p)
         if (talk) paintTalk() else paintSessions()
     }
 
@@ -442,7 +494,9 @@ class CodexPane(private val activity: Activity, private val title: android.widge
                 input.hint = if (dt.session.open) "跟 Codex 说…" else "跟 Codex 说…（会先在电脑上打开这个会话）"
                 for (turn in dt.turns) turn.items.forEachIndexed { i, item ->
                     if (item.kind == "thinking" || (item.kind in setOf("user", "agent") && item.text.isBlank())) return@forEachIndexed
-                    rows += ChatRow(CodexModel.itemKey(turn, i, ops::sentAs), item.kind + "|" + item.text) { itemView(item) }
+                    val actor = item.clientId?.let { actors[state.device + ":" + it] }
+                        ?: if (ops.items().any { it.clientId == item.clientId && it.to == state.device }) "你" else "电脑上的消息"
+                    rows += ChatRow(CodexModel.itemKey(turn, i), item.kind + "|" + item.text + "|" + actor) { itemView(item, actor) }
                 }
                 if (dt.session.running && dt.approvals.isEmpty()) rows += ChatRow("running", "running") { AshUi.text(activity, "在做事…", AshTokens.Type.caption, c.text3).apply { layoutParams = side(false) } }
                 for (a in dt.approvals) rows += ChatRow("approval:" + a.requestId, a.summary + "|" + (a.requestId in answering)) { approvalCard(a) }
@@ -467,14 +521,18 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     private fun side(mine: Boolean) = LinearLayout.LayoutParams(-2, -2).apply { gravity = if (mine) Gravity.END else Gravity.START }
 
     /** One bubble or tool line, on its own side of the row. */
-    private fun itemView(i: CodexModel.Item): View {
+    private fun itemView(i: CodexModel.Item, actor: String): View {
         val mine = i.kind == "user"
         val v = when (i.kind) {
             "user" -> AshUi.bubbleText(activity, i.text, true).apply { setTextIsSelectable(true) }
             "agent" -> AshUi.bubbleText(activity, Md.render(i.text, c.surface2, c.her), false).apply { setTextIsSelectable(true); movementMethod = LinkMovementMethod.getInstance() }
             else -> AshUi.text(activity, "▸ " + toolLabel(i), AshTokens.Type.caption, c.text3, maxLines = 2)
         }
-        return LinearLayout(activity).apply { gravity = if (mine) Gravity.END else Gravity.START; addView(v, side(mine)) }
+        return AshUi.vstack(activity, 2).apply {
+            gravity = if (mine) Gravity.END else Gravity.START
+            if (mine) addView(AshUi.text(activity, actor, AshTokens.Type.caption, c.text3), side(true))
+            addView(v, side(mine))
+        }
     }
 
     /** A message (or a new session) sent from here that the computer does not show yet: sending, sent, or not sent with 「重发」 and 「删掉」 (same client id). */
@@ -483,14 +541,15 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         addView(AshUi.bubbleText(activity, op.text, true).apply { alpha = 0.7f }, side(true))
         val status = when (op.status) {
             Pending.FAILED -> "没发出去"
-            Pending.SENT -> "已发出"
+            Pending.SENT -> "已发出，等待电脑显示"
+            Pending.UNSENT -> "没有收到确认，可用同一编号核对重试"
             else -> if (op.body.optString("op") == "new") "正在电脑上开新会话…" else "发送中…"
         }
         addView(AshUi.hstack(activity, 12).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(AshUi.text(activity, status, AshTokens.Type.caption, c.text3))
-            if (op.status == Pending.FAILED) {
-                addView(AshUi.button(activity, "重发", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.get(op.clientId)?.let(::go) })
+            if (op.status in setOf(Pending.FAILED, Pending.UNSENT)) {
+                addView(AshUi.button(activity, "重发", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.get(op.clientId)?.let { go(it) } })
                 addView(AshUi.button(activity, "删掉", AshUi.Kind.GHOST, AshUi.BtnSize.SM) { ops.remove(op.clientId); paint() })
             }
         }, side(true))

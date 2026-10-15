@@ -20,7 +20,7 @@ object CodexModel {
         val waiting get() = state == "waiting_approval"
     }
     /** One item of a turn; [id] is Codex's own id, when it has one. */
-    data class Item(val kind: String, val text: String, val id: String? = null)
+    data class Item(val kind: String, val text: String, val id: String? = null, val clientId: String? = null)
     data class Turn(val id: String, val status: String, val items: List<Item>)
     data class Approval(val requestId: String, val kind: String, val summary: String)
     data class Detail(val session: Session, val turns: List<Turn>, val approvals: List<Approval>)
@@ -44,7 +44,7 @@ object CodexModel {
         if (data == null || data.optString("id").isEmpty()) return null
         val turns = data.optJSONArray("turns").mapObjects { t ->
             Turn(t.optString("id"), t.str("status") ?: "unknown", t.optJSONArray("items").mapObjects {
-                Item(it.optString("kind"), it.optString("text"), it.str("id"))
+                Item(it.optString("kind"), it.optString("text"), it.str("id"), it.str("client_id"))
             })
         }
         val approvals = data.optJSONArray("approvals").mapObjects { Approval(it.optString("request_id"), it.optString("kind"), it.optString("summary")) }
@@ -72,19 +72,20 @@ object CodexModel {
     }
 
     /**
-     * The row key of item [i] of [turn] (MOBILE-ARCH §2.2): the first message of a turn sent from here keeps the key of the
-     * row it waited in (its client id, by the turn it started: [sentAs]); others are keyed by Codex's id, else their place.
+     * The row key of item [i] of [turn] (MOBILE-ARCH §2.2): a user message keeps its exact client id,
+     * including messages added to a running turn. Never guess identity from text or turn membership.
      */
-    fun itemKey(turn: Turn, i: Int, sentAs: (String) -> String?): String {
+    fun itemKey(turn: Turn, i: Int): String {
         val item = turn.items[i]
-        if (item.kind == "user" && turn.items.indexOfFirst { it.kind == "user" } == i) sentAs(turn.id)?.let { return it }
+        if (item.kind == "user") item.clientId?.let { return it }
         return item.id?.let { "id:$it" } ?: "${turn.id}~$i"
     }
 
-    /** The messages sent to [thread] on [device] whose turn the session now shows: they no longer wait apart. */
+    /** The messages sent to [thread] on [device] whose exact client id the session now shows: they no longer wait apart. */
     fun settled(ops: List<Pending>, device: String, thread: String, d: Detail): List<String> {
-        val turns = d.turns.map { it.id }.toSet()
-        return ops.filter { it.to == device && it.body.optString("op") == "send" && it.body.optString("thread") == thread && it.ledgerId in turns }.map { it.clientId }
+        if (d.session.id != thread) return emptyList()
+        val clients = d.turns.flatMap { it.items }.filter { it.kind == "user" }.mapNotNull { it.clientId }.toSet()
+        return ops.filter { it.to == device && it.body.optString("op") == "send" && it.body.optString("thread") == thread && it.clientId in clients }.map { it.clientId }
     }
 
     /** The new session's id from x.codex.new. */
@@ -127,6 +128,7 @@ class CodexState {
     var computers: List<CodexModel.Computer> = emptyList(); private set
     var device: String? = null; private set
     var chosen: String? = null; private set
+    var deviceName: String? = null; private set
     var thread: String? = null; private set
     var title: String? = null; private set
     var newIn: CodexModel.Project? = null; private set
@@ -149,14 +151,17 @@ class CodexState {
         computersAt = now
         if (failure != null && data == null) { problem = CodexModel.unreachable(failure); return }
         computers = CodexModel.computers(data)
-        val next = CodexModel.pick(computers, chosen)
-        if (next != device) { device = next; sessions = null; detail = null; moved() }
+        val next = if (inTalk && device != null) device else CodexModel.pick(computers, chosen ?: device)
+        if (next != device) { device = next; deviceName = null; sessions = null; detail = null; moved() }
+        computers.firstOrNull { it.id == device }?.name?.let { deviceName = it }
         if (device == null) problem = "没有在线的电脑。电脑上的 Ash 连上以后，这里就能看到 Codex。"
+        else if (computers.none { it.id == device }) problem = "这台电脑暂时不在线，内容和草稿会保留。"
+        else problem = null
     }
 
     fun choose(computer: String): Boolean {
         if (computer == device) return false
-        chosen = computer; device = computer; sessions = null; detail = null; moved()
+        chosen = computer; device = computer; deviceName = computers.firstOrNull { it.id == computer }?.name; sessions = null; detail = null; moved()
         return true
     }
 
@@ -173,7 +178,7 @@ class CodexState {
     /** The list, read with [t]: false when it no longer counts. */
     fun listRead(gen: Int, data: org.json.JSONObject?, failure: String?): Boolean {
         if (gen != generation || thread != null) return false
-        if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
+        if (failure != null) { problem = CodexModel.unreachable(failure) }
         else { sessions = CodexModel.sessions(data); problem = null }
         return true
     }
@@ -181,24 +186,32 @@ class CodexState {
     /** A session, read with [t]: false when it no longer counts. */
     fun detailRead(gen: Int, data: org.json.JSONObject?, failure: String?): Boolean {
         if (gen != generation || thread == null) return false
-        if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
-        else { CodexModel.detail(data)?.let { detail = it; title = it.session.title }; problem = null }
+        if (failure != null) { problem = CodexModel.unreachable(failure) }
+        else {
+            val read = CodexModel.detail(data)?.takeIf { it.session.id == thread }
+            if (read != null) { detail = read; title = read.session.title; problem = null }
+            else problem = "暂时没有读到这个会话，内容会保留。"
+        }
         return true
     }
 
     /** Where to come back to when the page is made again. */
     fun route(): Map<String, String> = buildMap {
         (chosen ?: device)?.let { put("device", it) }
+        deviceName?.let { put("device_name", it) }
         thread?.let { put("thread", it) }; title?.let { put("title", it) }
         newIn?.cwd?.let { put("new_cwd", it); put("new_name", newIn!!.name) }
     }
 
     fun restore(route: Map<String, String>) {
         route["device"]?.let { chosen = it }
+        deviceName = route["device_name"]
         val cwd = route["new_cwd"]
         when {
             route["thread"] != null -> open(route.getValue("thread"), route["title"])
             cwd != null -> startNew(CodexModel.Project(cwd, route["new_name"] ?: cwd.substringAfterLast('/'), emptyList()))
         }
+        // A restored open conversation still belongs to its original computer, even while that computer is offline.
+        if (inTalk) device = chosen
     }
 }

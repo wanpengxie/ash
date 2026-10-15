@@ -68,4 +68,28 @@ class CodexStateTest {
         val fresh = ready().apply { startNew(CodexModel.Project("/work/app", "app", emptyList())) }
         assertEquals("/work/app", CodexState().apply { restore(fresh.route()) }.newIn!!.cwd)
     }
+
+    @Test fun offlineReadsAndOtherComputersDoNotMoveAnOpenConversationOrLoseItsDraftTarget() {
+        val s = ready(); s.open("t1", "One"); s.detailRead(s.generation, detail("t1"), null)
+        s.detailRead(s.generation, null, "offline")
+        assertEquals("device:mac", s.device)
+        s.computersRead(JSONObject("""{"devices":[{"device":"device:mini","kind":"computer","online":true}]}"""), null, 3)
+        assertEquals("device:mac", s.device)
+        assertEquals("t1", s.detail!!.session.id)
+    }
+
+    @Test fun aWrongSessionReplyNeverReplacesTheVisibleConversation() {
+        val s = ready(); s.open("t1", "One"); s.detailRead(s.generation, detail("t1"), null)
+        s.detailRead(s.generation, detail("t2"), null)
+        assertEquals("t1", s.detail!!.session.id)
+    }
+    @Test fun anOfflineRestoredConversationNeverReadsItsThreadFromAnotherComputer() {
+        val original = ready().apply { open("t1", "One") }
+        val restored = CodexState().apply { restore(original.route()) }
+        restored.computersRead(JSONObject("""{"devices":[{"device":"device:mini","kind":"computer","online":true,"name":"mini"}]}"""), null, 2)
+        assertEquals("device:mac", restored.device)
+        assertEquals("Mac", restored.deviceName)
+        assertEquals("t1", restored.thread)
+    }
+
 }

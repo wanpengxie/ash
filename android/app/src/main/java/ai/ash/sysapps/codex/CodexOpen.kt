@@ -25,13 +25,7 @@ object CodexOpen {
     /** The actor on a mutating request, not the device that later answers it. */
     fun actorLine(message: JSONObject): String? {
         if (message.optString("kind") != "request" || !affectsSession(message)) return null
-        val from = message.optString("from")
-        val who = when {
-            from == "person:owner" -> "你"
-            from == "agent:main" -> "Ash"
-            from.startsWith("agent:") -> from.removePrefix("agent:")
-            else -> return null
-        }
+        val who = actor(message) ?: return null
         val action = when (message.optString("word")) {
             CodexModel.SEND -> "发送消息"
             CodexModel.NEW -> "新建会话"
@@ -39,6 +33,17 @@ object CodexOpen {
             else -> "回答审批"
         }
         return "$who 发起：$action"
+    }
+
+    fun actor(message: JSONObject): String? {
+        if (message.optString("kind") != "request") return null
+        val from = message.optString("from")
+        return when {
+            from == "person:owner" -> "你"
+            from == "agent:main" -> "Ash"
+            from.startsWith("agent:") -> from.removePrefix("agent:")
+            else -> return null
+        }
     }
 
     fun affectsComputers(message: JSONObject): Boolean = message.optString("kind") == "event" &&

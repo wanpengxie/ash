@@ -8,13 +8,13 @@ import android.widget.FrameLayout
 import org.json.JSONObject
 
 /** One application for Codex on every connected computer. All business actions use the human channel. */
-class CodexActivity : SystemAppActivity() {
+open class CodexActivity : SystemAppActivity() {
     private lateinit var pane: CodexPane
     override val deck: KeyboardDeck? get() = if (::pane.isInitialized) pane else null
 
     override fun build(saved: Bundle?) {
         title.text = "Codex"
-        pane = CodexPane(this, title, actions, saved)
+        pane = CodexPane(this, title, actions, humanClient, saved)
         pane.onRouteChange = ::syncBack
         content.addView(pane.view, FrameLayout.LayoutParams(-1, -1))
         if (saved == null) pane.openArg(intent.getStringExtra(EXTRA_ARG))
