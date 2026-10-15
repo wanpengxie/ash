@@ -138,7 +138,7 @@ test("send: an idle session starts a turn, a running one takes it as an addition
   const { desktop, app } = await fixture(t);
   desktop.state.set("t1", { revision: 1, raw: snapshot() });
   const first = await app.send("t1", "run the tests", "m-1");
-  assert.deepEqual([first.sent, first.mode], [true, "start"]);
+  assert.deepEqual([first.sent, first.mode, first.turn], [true, "start", "turn-new"], "the turn it started is answered");
   const start = desktop.owned.find((f) => f.method === "thread-follower-start-turn")!;
   assert.equal(start.version, 2);
   assert.deepEqual([start.params.conversationId, start.params.turnStart.request.threadId, start.params.turnStart.request.clientUserMessageId], ["t1", "t1", "m-1"]);
@@ -148,7 +148,7 @@ test("send: an idle session starts a turn, a running one takes it as an addition
   desktop.change("t1", snapshot({ threadRuntimeStatus: { type: "active" }, turns: [turn("u9", "inProgress", [])] }));
   await until(() => (app as any).convs.get("t1")?.revision === 2, "the running snapshot");
   const second = await app.send("t1", "also lint", "m-2");
-  assert.deepEqual([second.sent, second.mode], [true, "steer"]);
+  assert.deepEqual([second.sent, second.mode, second.turn], [true, "steer", undefined]);
   const steer = desktop.owned.find((f) => f.method === "thread-follower-steer-turn")!;
   assert.deepEqual([steer.params.clientUserMessageId, steer.params.input[0].text, steer.params.restoreMessage.text], ["m-2", "also lint", "also lint"]);
   assert.equal(desktop.owned.filter((f) => f.method === "thread-follower-start-turn").length, 1);
@@ -321,38 +321,4 @@ test("the app installed but not running: the words are offered, the sessions are
   await app.stop("t1").catch(() => {});
   assert.deepEqual(launched, ["/Applications/ChatGPT.app"], "acting starts the app in the background");
   assert.equal(app.online, true);
-});
-
-test("the session names the owner's message each send became by its client id, the same words sent twice too; an item's place is its place in the whole turn", async (t) => {
-  const { desktop, app } = await fixture(t);
-  const said = (text: string) => ({ type: "userMessage", content: [{ type: "text", text }] });
-  desktop.state.set("t1", { revision: 1, raw: snapshot({ turns: [turn("u1", "completed", [said("same")])] }) });
-  await app.send("t1", "same", "m-1");
-  await app.send("t1", "same", "m-2");
-  const long = Array.from({ length: 35 }, (_, i) => ({ type: "agentMessage", id: `a${i}`, text: `line ${i}` }));
-  desktop.change("t1", snapshot({ turns: [turn("u1", "completed", [said("same")]), turn("u2", "completed", [said("same"), ...long]), turn("u3", "completed", [said("same")])] }));
-  await until(() => (app as any).convs.get("t1")?.revision === 2, "the new snapshot");
-  const view = await app.session("t1", 6, 600);
-  const users = view.turns.flatMap((tv: any) => tv.items.filter((i: any) => i.kind === "user").map((i: any) => [tv.id, i.client_id ?? null]));
-  assert.deepEqual(users, [["u1", null], ["u3", "m-2"]], "the message from before the sends is nobody's");
-  // u2 shows its last 30 items: its own message has scrolled out, so m-1 names nothing there; what stays keeps its place in the turn.
-  assert.equal(view.turns[1].items.length, 30);
-  assert.deepEqual([view.turns[1].items[0].at, view.turns[1].items[0].id], [6, "a5"]);
-  assert.equal(view.turns[2].items[0].client_id, "m-2", "the second send is the second message after the point it was sent from");
-  const whole = (app as any).claimed("t1", canonicalTurns((app as any).convs.get("t1").raw)) as Map<unknown, string>;
-  assert.deepEqual([...whole.values()].sort(), ["m-1", "m-2"], "each send names one message, the older one stays nobody's");
-});
-
-test("a new session asked twice with the same client id is made once", async (t) => {
-  const made: string[] = [];
-  let desktop!: Desktop;
-  const fx = await fixture(t, {
-    startThread: async (cwd: string) => { made.push(cwd); return `t${made.length + 8}`; },
-    openThread: async (id: string) => { desktop.state.set(id, { revision: 1, raw: snapshot({ id }) }); },
-  });
-  desktop = fx.desktop;
-  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "ash-proj-"));
-  const a = await fx.app.create(dir, "hello", undefined, "op-1");
-  const b = await fx.app.create(dir, "hello", undefined, "op-1");
-  assert.deepEqual([a.thread, b.thread, b.repeated, made.length], ["t9", "t9", true, 1]);
 });

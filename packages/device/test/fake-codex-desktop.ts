@@ -72,7 +72,7 @@ export class Desktop {
       this.owned.push(f);
       if (this.silent.has(f.method)) { socket.destroy(); return; }
       const error = this.fail.get(f.method);
-      send(socket, { type: "response", requestId: f.requestId, method: f.method, handledByClientId: this.ownerId, ...(error ? { resultType: "error", error } : { resultType: "success", result: { ok: true, result: { interruptedTurnId: "turn-2" } } }) });
+      send(socket, { type: "response", requestId: f.requestId, method: f.method, handledByClientId: this.ownerId, ...(error ? { resultType: "error", error } : { resultType: "success", result: { ok: true, result: f.method === "thread-follower-start-turn" ? { turn: { id: "turn-new" } } : { interruptedTurnId: "turn-2" } } }) });
     }
   }
   broadcast(socket: Socket, method: string, params: F, targets: string[] | null) { send(socket, { type: "broadcast", method, sourceClientId: this.ownerId, targetClientIds: targets, version: method === "thread-stream-state-changed" ? 11 : 1, params }); }

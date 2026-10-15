@@ -42,15 +42,13 @@ class ChatWindow(
         return true
     }
 
-    /** A page further back (older messages, or the window around a message); a failed one changes nothing. */
-    fun older(window: JSONObject?, keepMore: Boolean = false) {
+    /** A page further back (older messages, or the window around a message); a failed one changes nothing. Only a page reaching further back says whether there is more. */
+    fun older(window: JSONObject?) {
         window ?: return
-        val had = moreBefore
         val oldest = items.firstEntry()?.key ?: Long.MAX_VALUE
-        moreBefore = window.optBoolean("has_more_before")
-        put(window.optJSONArray("items") ?: JSONArray())
-        // A window that did not reach further back than what was loaded says nothing about what is before it.
-        if (keepMore && (items.firstEntry()?.key ?: Long.MAX_VALUE) >= oldest) moreBefore = had
+        val got = window.optJSONArray("items") ?: JSONArray()
+        put(got)
+        if (got.length() == 0 || items.firstKey() < oldest) moreBefore = window.optBoolean("has_more_before")
     }
 
     private fun put(got: JSONArray) { for (i in 0 until got.length()) got.optJSONObject(i)?.let { items[it.optLong("seq")] = adjust(it) } }
@@ -76,12 +74,4 @@ class Drafts(private val store: Store) {
         fun codex(device: String, thread: String) = "codex:$device:$thread"
         fun codexNew(device: String, cwd: String) = "codex-new:$device:$cwd"
     }
-}
-
-/** The picked files once a send took [sent] of them (the very entries, MOBILE-ARCH §3.5): what was picked meanwhile stays. */
-object Picked {
-    fun entries(a: JSONArray): List<Any> = (0 until a.length()).map { a.get(it) }
-
-    fun afterSend(picked: JSONArray, sent: List<Any>): JSONArray =
-        JSONArray().apply { for (e in entries(picked)) if (sent.none { it === e }) put(e) }
 }
