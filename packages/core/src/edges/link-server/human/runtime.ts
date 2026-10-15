@@ -414,11 +414,17 @@ export class CardRuntime {
       if (now) { try { this.d.cards.update(now, { data: { [path]: value } }); } catch (error) { this.d.log(`card ${row.id} result not written`, error); } }
     };
     if ("call" in action) {
-      if (!r?.app) return { ok: false, text: "这张卡没有后端应用，按钮调不了中枢的能力。" };
       const c = action.call;
+      // A built-in task card is a surface of service:tasks. It can only edit its own task;
+      // it keeps the actual caller and passes through the same router as the native task app.
+      const taskCard = row.owner === "service:tasks" && c.member === "service:tasks" &&
+        ["update", "done"].includes(c.word) && typeof c.body === "object" && c.body !== null &&
+        typeof (c.body as Record<string, unknown>).id === "string" &&
+        row.id.startsWith(`task.${(c.body as Record<string, unknown>).id}.`);
+      if (!r?.app && !taskCard) return { ok: false, text: "这张卡没有后端应用，按钮调不了中枢的能力。" };
       // Pressed by the owner on his screen: the card's app calls, and the gate may ask him (he is there). Pressed by anyone
       // else (an agent): it is that caller's own call, judged as theirs; nobody borrows the app's grants or the owner's presence.
-      const caller: Caller | undefined = by?.via === "human" ? { member: `app:${r.app}`, via: "app", local: true, card: row.id } : by;
+      const caller: Caller | undefined = by?.via === "human" && !taskCard ? { member: `app:${r!.app}`, via: "app", local: true, card: row.id } : by;
       if (!caller) return { ok: false, text: "不知道是谁按的，没有做。" };
       const reply = await within(this.d.router.send({ to: c.member, kind: "request", word: c.word, body: c.body }, caller), c.timeout_s ?? CALL_TIMEOUT_S);
       if (reply === "timeout") return { ok: false, text: failure("timeout", "") };

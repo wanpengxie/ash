@@ -51,6 +51,7 @@ import type { Vault } from "./kernel/types";
 import { createAdminService, tailFile } from "./services/admin";
 import { createHealthService } from "./services/health";
 import { createBlobsService } from "./services/blobs";
+import { TasksService } from "./services/tasks";
 import { createClockService } from "./services/clock";
 import { createCostService } from "./services/cost";
 import { createDirectoryService } from "./services/directory";
@@ -204,6 +205,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     onError: (where, error) => log(where, error),
   });
   const clock = createClockService({ ledger, router, now });
+  const tasks = new TasksService({ ledger, router, now, log });
   const senses = createSensesService({ dataDir, now });
   const cost = createCostService({ ledger, now });
   const reflex = createReflexService({ ledger, router, jev: createJev({ post: (req) => llm.post("service:reflex", req) }) });
@@ -331,7 +333,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
 
   // 7. everybody into the registry
   for (const member of [
-    blobs, gateService, clock, senses, cost, reflex, history, admin, health, widgets, directory, vaultService, ...semantic.members,
+    blobs, gateService, clock, tasks, senses, cost, reflex, history, admin, health, widgets, directory, vaultService, ...semantic.members,
     body, devices, bodies, linkControl.member, human.member, human.cards, agents.service, apps.service, createLlmService(llm), hostService.member,
   ]) registry.add(member);
 
@@ -351,6 +353,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     semantic.stop();
     linkControl.stop();
     clock.stop();
+    await tasks.stop();
     gateService.stop();
     vaultService.oauth.stop();
     await agents.stopAll();
@@ -372,6 +375,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     gateService.start();
     router.subscribe({}, (m) => gateService.observe(m));
     clock.start();
+    await tasks.start();
     widgets.start();
     await linkControl.start();
     await semantic.start();

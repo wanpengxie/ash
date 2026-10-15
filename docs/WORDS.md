@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `ad8abee76c4099d1`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `0ae045d48fb25d7f`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -34,6 +34,7 @@
 - [`device:*`](#device) (65)
 - [`body:*`](#body) (10)
 - [`service:cards`](#servicecards) (9)
+- [`service:tasks`](#servicetasks) (8)
 
 ## 错误码
 
@@ -528,4 +529,17 @@
 | `keep` | owner, agent | write / none | - | id* | 在保留卡片的应用 | The card's temporary app becomes a lasting one: it is no longer removed when its cards are closed (「存成应用」). |
 | `act` | owner, agent | act / none | timeout 660s | card*, component*, data, request | 在按卡片上的按钮 | Press a button of a card (its component id) with the values on the card now: pressed by the owner, its call runs as the card's app through the gate (which may ask him); pressed by an agent, the call is the agent's own, judged as any of its calls. Its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here, and may call only its own app's words. |
 | `seen` | owner, agent | read / none | - | cards* | 在记下看到的卡片 | The card ids on a screen of the owner now (the conversation reports them when it stops scrolling): those cards are active, the others go idle in time. Not recorded. |
+
+## `service:tasks`
+
+| 词 | 调用方 | effect / risk | 标记 | 输入 | 进行时 | 说明 |
+|---|---|---|---|---|---|---|
+| `add` | owner, agent, app | write / none | - | title*, note, assignee, due_at, remind_at, remind_in, thread, subject, status, source, client_id | 在记待办 | Write down a to-do the moment one comes up: the owner says he has to do something (「提醒我周四晚上交材料」), or you promise to do something (「我晚上帮你查」: subject ash). With remind_at the owner is reminded at that time in the conversation (a card with 完成 / 晚点 buttons); for subject ash the assignee is woken then to do it. With due_at, a task still open at that time is followed up once. When an agent adds one, a card 「记下了：…」 appears in the conversation by itself (the owner can change it there): do not repeat it at length, one short sentence is enough. The source is the owner's message of your turn unless given. client_id makes a retry return the same task (created: false). A task: title (what is to be done, readable on its own: 「周五前交报税材料」, not 「那件事」), note, subject (owner: the owner's own matter; ash: something you, Ash, took on), assignee (who does it: person:owner or an agent id; default person:owner for subject owner, the calling agent for subject ash), status (todo, doing, waiting: for someone else, done, dropped: not done after all), due_at (the deadline) and remind_at (when to remind), each Unix ms or ISO text like 2026-10-16T20:00 (local time; a date alone is the end of that day), source (the conversation it came from), thread (a theme it belongs to; later). |
+| `update` | owner, agent, app | write / none | - | id*, title, note, assignee, due_at, remind_at, remind_in, thread, subject, status, result | 在改待办 | Change a task: any of its fields; null clears due_at, remind_at or thread. Moving a time sets new reminders (a follow-up happens again for a new due_at). status dropped with result says why it is not done (say why when you cannot do one of yours); status todo reopens a done one. Everyone changes the same tasks (the owner in the 任务 app or on a card, you here); the last change wins and each one is announced as task.changed with who made it. A task: title (what is to be done, readable on its own: 「周五前交报税材料」, not 「那件事」), note, subject (owner: the owner's own matter; ash: something you, Ash, took on), assignee (who does it: person:owner or an agent id; default person:owner for subject owner, the calling agent for subject ash), status (todo, doing, waiting: for someone else, done, dropped: not done after all), due_at (the deadline) and remind_at (when to remind), each Unix ms or ISO text like 2026-10-16T20:00 (local time; a date alone is the end of that day), source (the conversation it came from), thread (a theme it belongs to; later). |
+| `done` | owner, agent, app | write / none | - | id*, result | 在勾掉待办 | Mark a task done, with result: what came of it (for one of yours, what you did and found, in a sentence; it is written on the task's card in the conversation). Then tell the owner yourself when it is news to him. Done again is harmless. |
+| `list` | owner, agent, app | read / none | - | status, subject, assignee, thread, limit, before | 在看待办 | The tasks: status open (default: todo, doing, waiting; soonest time first, then the newest without a time), closed (done and dropped, the latest first, paged with before = next_before) or all; narrowed by subject (owner / ash), assignee or thread. limit default 200. Look here before adding one that may already be there, and for what you have promised (subject ash). |
+| `get` | owner, agent, app | read / none | - | id* | 在看一条待办 | One task, with its changes from the ledger (when, who, what kind: added, updated, done, reminded …), oldest first. |
+| `task.due` | kernel | write / none | - | id*, kind*, at* | 在响应到点的待办 | Internal: the clock reports a task's time: remind (remind_at came) or due (due_at came and it is still open). The hub itself calls this; nobody else. |
+| `task.sync` | kernel | write / none | - | - | 在恢复待办提醒 | Internal: reconcile durable task timers and finish pending conversation deliveries after a restart or temporary failure. |
+| `task.changed` | kernel | read / none | event out, record | id*, change*, by*, task* | 在记下待办的变化 | A task was added or changed (by whom, what kind of change, the task as it is now); reminded and followed_up say the hub reminded the owner or followed up on it. Goes into the ledger, so every screen showing tasks follows it. |
 

@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "ad8abee76c4099d1df316f11c7ec2aa79cc9b0dd601289ba990bc80b3a0ec702",
+ "hash": "0ae045d48fb25d7fc8c85068148e894de3072d9b41611ba491fade202df085e5",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -25536,6 +25536,1483 @@
    ],
    "label": {
     "doing": "在记下看到的卡片"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "add",
+   "kind": "request",
+   "direction": "in",
+   "description": "Write down a to-do the moment one comes up: the owner says he has to do something (「提醒我周四晚上交材料」), or you promise to do something (「我晚上帮你查」: subject ash). With remind_at the owner is reminded at that time in the conversation (a card with 完成 / 晚点 buttons); for subject ash the assignee is woken then to do it. With due_at, a task still open at that time is followed up once. When an agent adds one, a card 「记下了：…」 appears in the conversation by itself (the owner can change it there): do not repeat it at length, one short sentence is enough. The source is the owner's message of your turn unless given. client_id makes a retry return the same task (created: false). A task: title (what is to be done, readable on its own: 「周五前交报税材料」, not 「那件事」), note, subject (owner: the owner's own matter; ash: something you, Ash, took on), assignee (who does it: person:owner or an agent id; default person:owner for subject owner, the calling agent for subject ash), status (todo, doing, waiting: for someone else, done, dropped: not done after all), due_at (the deadline) and remind_at (when to remind), each Unix ms or ISO text like 2026-10-16T20:00 (local time; a date alone is the end of that day), source (the conversation it came from), thread (a theme it belongs to; later).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+     },
+     "note": {
+      "type": "string",
+      "maxLength": 2000
+     },
+     "assignee": {
+      "type": "string",
+      "minLength": 1
+     },
+     "due_at": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "remind_at": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "remind_in": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 525600,
+      "description": "the reminder this many minutes from now (instead of remind_at)"
+     },
+     "thread": {
+      "anyOf": [
+       {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "subject": {
+      "type": "string",
+      "enum": [
+       "owner",
+       "ash"
+      ]
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "todo",
+       "doing",
+       "waiting"
+      ]
+     },
+     "source": {
+      "type": "object",
+      "properties": {
+       "message": {
+        "type": "string",
+        "minLength": 1
+       }
+      },
+      "required": [
+       "message"
+      ],
+      "additionalProperties": false
+     },
+     "client_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+     }
+    },
+    "required": [
+     "title"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1
+       },
+       "note": {
+        "type": "string"
+       },
+       "subject": {
+        "type": "string",
+        "enum": [
+         "owner",
+         "ash"
+        ]
+       },
+       "assignee": {
+        "type": "string",
+        "minLength": 1
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "todo",
+         "doing",
+         "waiting",
+         "done",
+         "dropped"
+        ]
+       },
+       "due_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "remind_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "source": {
+        "anyOf": [
+         {
+          "type": "object",
+          "properties": {
+           "message": {
+            "type": "string"
+           },
+           "turn": {
+            "type": "string"
+           },
+           "agent": {
+            "type": "string"
+           }
+          },
+          "required": [],
+          "additionalProperties": true
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "thread": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "result": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "created_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "created_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "updated_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "updated_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "done_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "id",
+       "title",
+       "subject",
+       "assignee",
+       "status",
+       "due_at",
+       "remind_at",
+       "created_by",
+       "created_at",
+       "updated_by",
+       "updated_at"
+      ],
+      "additionalProperties": true
+     },
+     "created": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "task",
+     "created"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在记待办"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "update",
+   "kind": "request",
+   "direction": "in",
+   "description": "Change a task: any of its fields; null clears due_at, remind_at or thread. Moving a time sets new reminders (a follow-up happens again for a new due_at). status dropped with result says why it is not done (say why when you cannot do one of yours); status todo reopens a done one. Everyone changes the same tasks (the owner in the 任务 app or on a card, you here); the last change wins and each one is announced as task.changed with who made it. A task: title (what is to be done, readable on its own: 「周五前交报税材料」, not 「那件事」), note, subject (owner: the owner's own matter; ash: something you, Ash, took on), assignee (who does it: person:owner or an agent id; default person:owner for subject owner, the calling agent for subject ash), status (todo, doing, waiting: for someone else, done, dropped: not done after all), due_at (the deadline) and remind_at (when to remind), each Unix ms or ISO text like 2026-10-16T20:00 (local time; a date alone is the end of that day), source (the conversation it came from), thread (a theme it belongs to; later).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+     },
+     "note": {
+      "type": "string",
+      "maxLength": 2000
+     },
+     "assignee": {
+      "type": "string",
+      "minLength": 1
+     },
+     "due_at": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "remind_at": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "remind_in": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 525600,
+      "description": "the reminder this many minutes from now (instead of remind_at)"
+     },
+     "thread": {
+      "anyOf": [
+       {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "subject": {
+      "type": "string",
+      "enum": [
+       "owner",
+       "ash"
+      ]
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "todo",
+       "doing",
+       "waiting",
+       "done",
+       "dropped"
+      ]
+     },
+     "result": {
+      "type": "string",
+      "maxLength": 2000
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1
+       },
+       "note": {
+        "type": "string"
+       },
+       "subject": {
+        "type": "string",
+        "enum": [
+         "owner",
+         "ash"
+        ]
+       },
+       "assignee": {
+        "type": "string",
+        "minLength": 1
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "todo",
+         "doing",
+         "waiting",
+         "done",
+         "dropped"
+        ]
+       },
+       "due_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "remind_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "source": {
+        "anyOf": [
+         {
+          "type": "object",
+          "properties": {
+           "message": {
+            "type": "string"
+           },
+           "turn": {
+            "type": "string"
+           },
+           "agent": {
+            "type": "string"
+           }
+          },
+          "required": [],
+          "additionalProperties": true
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "thread": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "result": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "created_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "created_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "updated_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "updated_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "done_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "id",
+       "title",
+       "subject",
+       "assignee",
+       "status",
+       "due_at",
+       "remind_at",
+       "created_by",
+       "created_at",
+       "updated_by",
+       "updated_at"
+      ],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "task"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在改待办"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "done",
+   "kind": "request",
+   "direction": "in",
+   "description": "Mark a task done, with result: what came of it (for one of yours, what you did and found, in a sentence; it is written on the task's card in the conversation). Then tell the owner yourself when it is news to him. Done again is harmless.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "result": {
+      "type": "string",
+      "maxLength": 2000
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1
+       },
+       "note": {
+        "type": "string"
+       },
+       "subject": {
+        "type": "string",
+        "enum": [
+         "owner",
+         "ash"
+        ]
+       },
+       "assignee": {
+        "type": "string",
+        "minLength": 1
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "todo",
+         "doing",
+         "waiting",
+         "done",
+         "dropped"
+        ]
+       },
+       "due_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "remind_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "source": {
+        "anyOf": [
+         {
+          "type": "object",
+          "properties": {
+           "message": {
+            "type": "string"
+           },
+           "turn": {
+            "type": "string"
+           },
+           "agent": {
+            "type": "string"
+           }
+          },
+          "required": [],
+          "additionalProperties": true
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "thread": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "result": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "created_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "created_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "updated_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "updated_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "done_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "id",
+       "title",
+       "subject",
+       "assignee",
+       "status",
+       "due_at",
+       "remind_at",
+       "created_by",
+       "created_at",
+       "updated_by",
+       "updated_at"
+      ],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "task"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在勾掉待办"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "list",
+   "kind": "request",
+   "direction": "in",
+   "description": "The tasks: status open (default: todo, doing, waiting; soonest time first, then the newest without a time), closed (done and dropped, the latest first, paged with before = next_before) or all; narrowed by subject (owner / ash), assignee or thread. limit default 200. Look here before adding one that may already be there, and for what you have promised (subject ash).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed",
+       "all"
+      ]
+     },
+     "subject": {
+      "type": "string",
+      "enum": [
+       "owner",
+       "ash"
+      ]
+     },
+     "assignee": {
+      "type": "string",
+      "minLength": 1
+     },
+     "thread": {
+      "type": "string",
+      "minLength": 1
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500
+     },
+     "before": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "tasks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1
+        },
+        "title": {
+         "type": "string",
+         "minLength": 1
+        },
+        "note": {
+         "type": "string"
+        },
+        "subject": {
+         "type": "string",
+         "enum": [
+          "owner",
+          "ash"
+         ]
+        },
+        "assignee": {
+         "type": "string",
+         "minLength": 1
+        },
+        "status": {
+         "type": "string",
+         "enum": [
+          "todo",
+          "doing",
+          "waiting",
+          "done",
+          "dropped"
+         ]
+        },
+        "due_at": {
+         "anyOf": [
+          {
+           "type": "integer",
+           "minimum": 0,
+           "maximum": 9007199254740991
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "remind_at": {
+         "anyOf": [
+          {
+           "type": "integer",
+           "minimum": 0,
+           "maximum": 9007199254740991
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "source": {
+         "anyOf": [
+          {
+           "type": "object",
+           "properties": {
+            "message": {
+             "type": "string"
+            },
+            "turn": {
+             "type": "string"
+            },
+            "agent": {
+             "type": "string"
+            }
+           },
+           "required": [],
+           "additionalProperties": true
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "thread": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "result": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "created_by": {
+         "type": "string",
+         "minLength": 1
+        },
+        "created_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "updated_by": {
+         "type": "string",
+         "minLength": 1
+        },
+        "updated_at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "done_at": {
+         "anyOf": [
+          {
+           "type": "integer",
+           "minimum": 0,
+           "maximum": 9007199254740991
+          },
+          {
+           "type": "null"
+          }
+         ]
+        }
+       },
+       "required": [
+        "id",
+        "title",
+        "subject",
+        "assignee",
+        "status",
+        "due_at",
+        "remind_at",
+        "created_by",
+        "created_at",
+        "updated_by",
+        "updated_at"
+       ],
+       "additionalProperties": true
+      }
+     },
+     "next_before": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "tasks"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在看待办"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "get",
+   "kind": "request",
+   "direction": "in",
+   "description": "One task, with its changes from the ledger (when, who, what kind: added, updated, done, reminded …), oldest first.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1
+       },
+       "note": {
+        "type": "string"
+       },
+       "subject": {
+        "type": "string",
+        "enum": [
+         "owner",
+         "ash"
+        ]
+       },
+       "assignee": {
+        "type": "string",
+        "minLength": 1
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "todo",
+         "doing",
+         "waiting",
+         "done",
+         "dropped"
+        ]
+       },
+       "due_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "remind_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "source": {
+        "anyOf": [
+         {
+          "type": "object",
+          "properties": {
+           "message": {
+            "type": "string"
+           },
+           "turn": {
+            "type": "string"
+           },
+           "agent": {
+            "type": "string"
+           }
+          },
+          "required": [],
+          "additionalProperties": true
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "thread": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "result": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "created_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "created_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "updated_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "updated_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "done_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "id",
+       "title",
+       "subject",
+       "assignee",
+       "status",
+       "due_at",
+       "remind_at",
+       "created_by",
+       "created_at",
+       "updated_by",
+       "updated_at"
+      ],
+      "additionalProperties": true
+     },
+     "changes": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "at": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 9007199254740991
+        },
+        "by": {
+         "type": "string",
+         "minLength": 1
+        },
+        "change": {
+         "type": "string",
+         "enum": [
+          "added",
+          "updated",
+          "done",
+          "dropped",
+          "reopened",
+          "reminded",
+          "followed_up"
+         ]
+        }
+       },
+       "required": [
+        "at",
+        "by",
+        "change"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "task",
+     "changes"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在看一条待办"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "task.due",
+   "kind": "request",
+   "direction": "in",
+   "description": "Internal: the clock reports a task's time: remind (remind_at came) or due (due_at came and it is still open). The hub itself calls this; nobody else.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "remind",
+       "due"
+      ]
+     },
+     "at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "id",
+     "kind",
+     "at"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "accepted": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "accepted"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "label": {
+    "doing": "在响应到点的待办"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "task.sync",
+   "kind": "request",
+   "direction": "in",
+   "description": "Internal: reconcile durable task timers and finish pending conversation deliveries after a restart or temporary failure.",
+   "input_schema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "accepted": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "accepted"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "write",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "label": {
+    "doing": "在恢复待办提醒"
+   }
+  },
+  {
+   "member": "service:tasks",
+   "word": "task.changed",
+   "kind": "event",
+   "direction": "out",
+   "description": "A task was added or changed (by whom, what kind of change, the task as it is now); reminded and followed_up say the hub reminded the owner or followed up on it. Goes into the ledger, so every screen showing tasks follows it.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
+     "change": {
+      "type": "string",
+      "enum": [
+       "added",
+       "updated",
+       "done",
+       "dropped",
+       "reopened",
+       "reminded",
+       "followed_up"
+      ]
+     },
+     "by": {
+      "type": "string",
+      "minLength": 1
+     },
+     "task": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "minLength": 1
+       },
+       "title": {
+        "type": "string",
+        "minLength": 1
+       },
+       "note": {
+        "type": "string"
+       },
+       "subject": {
+        "type": "string",
+        "enum": [
+         "owner",
+         "ash"
+        ]
+       },
+       "assignee": {
+        "type": "string",
+        "minLength": 1
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "todo",
+         "doing",
+         "waiting",
+         "done",
+         "dropped"
+        ]
+       },
+       "due_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "remind_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "source": {
+        "anyOf": [
+         {
+          "type": "object",
+          "properties": {
+           "message": {
+            "type": "string"
+           },
+           "turn": {
+            "type": "string"
+           },
+           "agent": {
+            "type": "string"
+           }
+          },
+          "required": [],
+          "additionalProperties": true
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "thread": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "result": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "created_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "created_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "updated_by": {
+        "type": "string",
+        "minLength": 1
+       },
+       "updated_at": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+       },
+       "done_at": {
+        "anyOf": [
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+         },
+         {
+          "type": "null"
+         }
+        ]
+       }
+      },
+      "required": [
+       "id",
+       "title",
+       "subject",
+       "assignee",
+       "status",
+       "due_at",
+       "remind_at",
+       "created_by",
+       "created_at",
+       "updated_by",
+       "updated_at"
+      ],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "id",
+     "change",
+     "by",
+     "task"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "kernel"
+   ],
+   "record": true,
+   "label": {
+    "doing": "在记下待办的变化"
    }
   }
  ]

@@ -575,6 +575,58 @@ add("service:clock", "wake.fired", "event", obj({ at: nonnegativeSafe }, ["at"])
   { direction: "in", label: "在响应唤醒闹钟", description: "The host's alarm went off (the device woke); the clock checks which timers are due. Sent by the host module." });
 
 // ===================================================================================================================
+// service:tasks: the to-dos, the owner's and Ash's own (the 任务 app's words)
+// ===================================================================================================================
+export const TASK_STATUSES = ["todo", "doing", "waiting", "done", "dropped"] as const;
+export const TASK_CHANGES = ["added", "updated", "done", "dropped", "reopened", "reminded", "followed_up"] as const;
+/** A time: Unix ms, or ISO 8601 text (`2026-10-16T20:00`; without a zone it is the hub's local time; a date alone is the end of that day). null clears it. */
+const taskTime: JsonSchema = { anyOf: [nonnegativeSafe, { type: "string", minLength: 0, maxLength: 40 }, { type: "null" }] };
+const taskTitle: JsonSchema = { type: "string", minLength: 1, maxLength: 200 };
+const taskText: JsonSchema = { type: "string", maxLength: 2000 };
+const taskSubject = choice("owner", "ash");
+const taskInfo = obj({
+  id: nonempty, title: nonempty, note: str, subject: taskSubject, assignee: nonempty, status: choice(...TASK_STATUSES),
+  due_at: nullable(nonnegativeSafe), remind_at: nullable(nonnegativeSafe),
+  source: nullable(obj({ message: str, turn: str, agent: str }, [], true)), thread: nullable(str), result: nullable(str),
+  created_by: nonempty, created_at: nonnegativeSafe, updated_by: nonempty, updated_at: nonnegativeSafe, done_at: nullable(nonnegativeSafe),
+}, ["id", "title", "subject", "assignee", "status", "due_at", "remind_at", "created_by", "created_at", "updated_by", "updated_at"], true);
+const taskEdit = {
+  title: taskTitle, note: taskText, assignee: nonempty, due_at: taskTime, remind_at: taskTime,
+  remind_in: { type: "integer", minimum: 1, maximum: 525_600, description: "the reminder this many minutes from now (instead of remind_at)" },
+  thread: nullable({ type: "string", minLength: 1, maxLength: 64 }),
+};
+const TASK_FIELDS = "A task: title (what is to be done, readable on its own: 「周五前交报税材料」, not 「那件事」), note, subject (owner: the owner's own matter; ash: something you, Ash, took on), " +
+  "assignee (who does it: person:owner or an agent id; default person:owner for subject owner, the calling agent for subject ash), status (todo, doing, waiting: for someone else, done, dropped: not done after all), " +
+  "due_at (the deadline) and remind_at (when to remind), each Unix ms or ISO text like 2026-10-16T20:00 (local time; a date alone is the end of that day), source (the conversation it came from), thread (a theme it belongs to; later).";
+add("service:tasks", "add", "request", obj({ ...taskEdit, subject: taskSubject, status: choice("todo", "doing", "waiting"), source: obj({ message: nonempty }, ["message"]), client_id: ref }, ["title"]),
+  obj({ task: taskInfo, created: bool }, ["task", "created"]),
+  { effect: "write", label: "在记待办", description: "Write down a to-do the moment one comes up: the owner says he has to do something (「提醒我周四晚上交材料」), or you promise to do something (「我晚上帮你查」: subject ash). " +
+    "With remind_at the owner is reminded at that time in the conversation (a card with 完成 / 晚点 buttons); for subject ash the assignee is woken then to do it. With due_at, a task still open at that time is followed up once. " +
+    "When an agent adds one, a card 「记下了：…」 appears in the conversation by itself (the owner can change it there): do not repeat it at length, one short sentence is enough. " +
+    "The source is the owner's message of your turn unless given. client_id makes a retry return the same task (created: false). " + TASK_FIELDS });
+add("service:tasks", "update", "request", obj({ id: nonempty, ...taskEdit, subject: taskSubject, status: choice(...TASK_STATUSES), result: taskText }, ["id"]),
+  obj({ task: taskInfo }, ["task"]),
+  { effect: "write", label: "在改待办", description: "Change a task: any of its fields; null clears due_at, remind_at or thread. Moving a time sets new reminders (a follow-up happens again for a new due_at). status dropped with result says why it is not done (say why when you cannot do one of yours); status todo reopens a done one. " +
+    "Everyone changes the same tasks (the owner in the 任务 app or on a card, you here); the last change wins and each one is announced as task.changed with who made it. " + TASK_FIELDS });
+add("service:tasks", "done", "request", obj({ id: nonempty, result: taskText }, ["id"]),
+  obj({ task: taskInfo }, ["task"]),
+  { effect: "write", label: "在勾掉待办", description: "Mark a task done, with result: what came of it (for one of yours, what you did and found, in a sentence; it is written on the task's card in the conversation). Then tell the owner yourself when it is news to him. Done again is harmless." });
+add("service:tasks", "list", "request", obj({ status: choice("open", "closed", "all"), subject: taskSubject, assignee: nonempty, thread: nonempty,
+  limit: { type: "integer", minimum: 1, maximum: 500 }, before: positiveSafe }),
+  obj({ tasks: array(taskInfo), next_before: positiveSafe }, ["tasks"]),
+  { label: "在看待办", description: "The tasks: status open (default: todo, doing, waiting; soonest time first, then the newest without a time), closed (done and dropped, the latest first, paged with before = next_before) or all; " +
+    "narrowed by subject (owner / ash), assignee or thread. limit default 200. Look here before adding one that may already be there, and for what you have promised (subject ash)." });
+add("service:tasks", "get", "request", obj({ id: nonempty }, ["id"]),
+  obj({ task: taskInfo, changes: array(obj({ at: nonnegativeSafe, by: nonempty, change: choice(...TASK_CHANGES) }, ["at", "by", "change"])) }, ["task", "changes"]),
+  { label: "在看一条待办", description: "One task, with its changes from the ledger (when, who, what kind: added, updated, done, reminded …), oldest first." });
+add("service:tasks", "task.due", "request", obj({ id: nonempty, kind: choice("remind", "due"), at: nonnegativeSafe }, ["id", "kind", "at"]), accepted,
+  { callers: KERNEL, effect: "write", label: "在响应到点的待办", description: "Internal: the clock reports a task's time: remind (remind_at came) or due (due_at came and it is still open). The hub itself calls this; nobody else." });
+add("service:tasks", "task.sync", "request", empty, accepted,
+  { callers: KERNEL, effect: "write", label: "在恢复待办提醒", description: "Internal: reconcile durable task timers and finish pending conversation deliveries after a restart or temporary failure." });
+add("service:tasks", "task.changed", "event", obj({ id: nonempty, change: choice(...TASK_CHANGES), by: nonempty, task: taskInfo }, ["id", "change", "by", "task"]), undefined,
+  { record: true, label: "在记下待办的变化", description: "A task was added or changed (by whom, what kind of change, the task as it is now); reminded and followed_up say the hub reminded the owner or followed up on it. Goes into the ledger, so every screen showing tasks follows it." });
+
+// ===================================================================================================================
 // service:llm: the hub's small model, for the owner, agents and apps
 // ===================================================================================================================
 add("service:llm", "complete", "request", obj({

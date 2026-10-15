@@ -34,10 +34,10 @@ test("no contract names an agent or the old fixed members", () => {
 });
 
 test("the services of SPEC-02 §4.1 are all there, and the removed ones are not", () => {
-  for (const service of ["admin", "gate", "vault", "devices", "link", "agents", "apps", "clock", "llm", "persona", "widgets", "pulse", "cost", "reflex", "senses", "directory", "history", "blobs", "host", "bodies", "health", "cards"]) {
+  for (const service of ["admin", "gate", "vault", "devices", "link", "agents", "apps", "clock", "llm", "persona", "widgets", "pulse", "cost", "reflex", "senses", "directory", "history", "blobs", "host", "bodies", "health", "cards", "tasks"]) {
     assert.ok(SERVICE_NAMES.includes(`service:${service}`), service);
   }
-  assert.equal(SERVICE_NAMES.length, 22);
+  assert.equal(SERVICE_NAMES.length, 23);
   const has = (member: string, ...words: string[]) => words.forEach((word) => assert.ok(wordContract(member, word), `${member}/${word}`));
   has("service:gate", "rules.list", "rules.set", "rules.revoke", "mode.set", "audit", "history", "pending.list", "pending.get", "pending.redeem", "pending.skip", "pending.withdraw");
   has("service:vault", "list", "describe", "set", "delete", "put", "generate", "request", "services", "connect", "provider");
@@ -52,6 +52,7 @@ test("the services of SPEC-02 §4.1 are all there, and the removed ones are not"
   has("service:cost", "usage.get", "balance.get", "quota.check");
   has("service:health", "status", "recent");
   has("service:persona", "get", "propose");
+  has("service:tasks", "add", "update", "done", "list", "get", "task.due", "task.changed");
   has("service:directory", "list", "describe");
   has("service:apps", "apps.surface", "apps.icon", "apps.install", "apps.validate");
   assert.equal(wordContract("service:apps", "surface"), undefined);
@@ -71,7 +72,7 @@ test("the events SPEC-02 names exist, and the ones that go in the ledger are mar
   const recorded = events.filter((word) => word.record).map((word) => `${word.member}/${word.word}`).sort();
   assert.deepEqual(recorded, [
     "agent:*/agent.tool", "agent:*/turn.ended", "agent:*/turn.started", "service:admin/settings.changed",
-    "service:devices/device.changed", "service:devices/pair.changed", "service:link/connected", "service:link/disconnected", "service:link/gateway.changed", "service:persona/persona.changed",
+    "service:devices/device.changed", "service:devices/pair.changed", "service:link/connected", "service:link/disconnected", "service:link/gateway.changed", "service:persona/persona.changed", "service:tasks/task.changed",
   ]);
   for (const word of events) assert.deepEqual([word.effect, word.risk], ["read", "none"]);
   assert.ok(!WORD_CONTRACTS.some((word) => word.kind === "event" && /^sense\./.test(word.word) && word.record), "sense.* is not recorded");
