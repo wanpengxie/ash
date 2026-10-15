@@ -193,7 +193,10 @@ class CodexPane(private val activity: Activity, private val title: android.widge
             if (id.isNotEmpty() && actor != null) actors[message.optString("to") + ":" + id] = actor
             while (actors.size > 200) actors.remove(actors.keys.first())
         }
-        if (onComputer) CodexOpen.actorLine(message)?.let { lastActorLine = it }
+        val body = message.optJSONObject("body")
+        val sameWork = !state.inTalk || (state.thread != null && body?.optString("thread") == state.thread) ||
+            (state.newIn != null && body?.optString("cwd") == state.newIn?.cwd)
+        if (onComputer && sameWork) CodexOpen.actorLine(message)?.let { lastActorLine = it }
         if (CodexOpen.affectsComputers(message)) { computersChanged = true; refresh() }
         else if (onComputer && CodexOpen.affectsSession(message)) refresh()
     }

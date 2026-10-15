@@ -163,9 +163,10 @@ class CodexActivityAcceptanceTest {
         assertSame(input, controller.get().currentFocus)
     }
     private fun event(word: String = "x.codex.send", from: String = "agent:main", body: JSONObject = JSONObject()) {
+        val actualBody = JSONObject(body.toString()).apply { if (!has("thread")) put("thread", "t1") }
         val sync = conn.framesOf("sync").last()
         conn.send(JSONObject().put("t", "sync.msg").put("sid", sync.getString("sid")).put("message", JSONObject().put("seq", sequence++)
-            .put("kind", "request").put("from", from).put("to", mac).put("word", word).put("body", body)))
+            .put("kind", "request").put("from", from).put("to", mac).put("word", word).put("body", actualBody)))
     }
     private fun click(label: String) {
         val target = views().firstOrNull { it.contentDescription?.toString() == label && it.isClickable }
@@ -227,6 +228,8 @@ class CodexActivityAcceptanceTest {
         controller.newIntent(intent(mac, "t1"))
         assertSame(input, controller.get().currentFocus)
         assertEquals(composing, BaseInputConnection.getComposingSpanStart(input.text))
+        event(body = JSONObject().put("thread", "another-work")); settleWire()
+        assertFalse("a different work on the same computer does not claim the current action", texts().any { it.contains("Ash 发起") })
         event(); waitFor("refresh without replacing editor") { texts().any { it.contains("Ash 发起") } }
         assertSame(input, views().filterIsInstance<EditText>().single()); assertEditorFocus()
         assertEquals(4, input.selectionStart); assertEquals(composing, BaseInputConnection.getComposingSpanStart(input.text))
