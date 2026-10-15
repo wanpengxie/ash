@@ -1,0 +1,20 @@
+{"id":"checkup-confirm","text":"确认预约体检：10月22日 周三 8:00，美年大健康 望京分院","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["title","kv","warn","acts"]},
+{"id":"title","component":"Text","text":"确认预约体检？","variant":"h3"},
+{"id":"kv","component":"Column","gap":8,"children":["k1","k2","k3"]},
+{"id":"k1","component":"Row","children":["k1l","k1v"]},
+{"id":"k1l","component":"Text","text":"时间","style":{"width":56,"color":"textSecondary"}},
+{"id":"k1v","component":"Text","text":"10月22日 周三 08:00","weight":1},
+{"id":"k2","component":"Row","children":["k2l","k2v"]},
+{"id":"k2l","component":"Text","text":"地点","style":{"width":56,"color":"textSecondary"}},
+{"id":"k2v","component":"Text","text":"美年大健康 望京分院","weight":1},
+{"id":"k3","component":"Row","children":["k3l","k3v"]},
+{"id":"k3l","component":"Text","text":"套餐","style":{"width":56,"color":"textSecondary"}},
+{"id":"k3v","component":"Text","text":"入职体检 · 公司付","weight":1},
+{"id":"warn","component":"Text","text":"前一天 20:00 后禁食，我会提前提醒你。","variant":"caption"},
+{"id":"acts","component":"Row","justify":"end","align":"center","gap":8,"children":["chg","ok"]},
+{"id":"chg","component":"Button","variant":"borderless","child":"chg.t","action":{"event":{"name":"change"}}},
+{"id":"chg.t","component":"Text","text":"换个时间"},
+{"id":"ok","component":"Button","variant":"primary","child":"ok.t","action":{"event":{"name":"confirm","context":{"date":"2026-10-22T08:00"}}}},
+{"id":"ok.t","component":"Text","text":"确认预约"}
+]}}

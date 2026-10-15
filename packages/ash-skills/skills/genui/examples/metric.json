@@ -1,0 +1,23 @@
+{"id":"power-2026-09","text":"9 月电费 186 元，比 8 月少 64 元","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","trend","div","rows"]},
+{"id":"head","component":"Column","gap":2,"children":["label","num","delta"]},
+{"id":"label","component":"Text","text":"9 月电费","variant":"caption"},
+{"id":"num","component":"Text","text":"¥186","variant":"h1"},
+{"id":"delta","component":"Text","text":"比 8 月少 ¥64 · 空调用得少了","style":{"color":"green"}},
+{"id":"trend","component":"Column","gap":4,"children":["chart","axis"]},
+{"id":"chart","component":"Chart","style":{"height":88},"gap":10,"series":[{"type":"bars","values":[142,168,230,250,186],"color":"surfaceVariant","lastColor":"accent"}]},
+{"id":"axis","component":"Row","justify":"stretch","children":["a1","a2","a3","a4","a5"]},
+{"id":"a1","component":"Text","text":"5月","variant":"caption","style":{"textAlign":"center"}},
+{"id":"a2","component":"Text","text":"6月","variant":"caption","style":{"textAlign":"center"}},
+{"id":"a3","component":"Text","text":"7月","variant":"caption","style":{"textAlign":"center"}},
+{"id":"a4","component":"Text","text":"8月","variant":"caption","style":{"textAlign":"center"}},
+{"id":"a5","component":"Text","text":"9月","variant":"caption","style":{"textAlign":"center"}},
+{"id":"div","component":"Divider"},
+{"id":"rows","component":"Column","gap":8,"children":["r1","r2"]},
+{"id":"r1","component":"Row","justify":"spaceBetween","children":["r1l","r1v"]},
+{"id":"r1l","component":"Text","text":"用电","style":{"color":"textSecondary"}},
+{"id":"r1v","component":"Text","text":"**302 度**"},
+{"id":"r2","component":"Row","justify":"spaceBetween","children":["r2l","r2v"]},
+{"id":"r2l","component":"Text","text":"缴费截止","style":{"color":"textSecondary"}},
+{"id":"r2v","component":"Text","text":"**10月25日**"}
+]}}

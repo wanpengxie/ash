@@ -1,0 +1,10 @@
+{"id":"meeting-slot","text":"和王总的会撞了，选个新时间","a2ui":{"data":{"slot":["15:00"]},"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","pick","acts"]},
+{"id":"head","component":"Column","gap":2,"children":["title","why"]},
+{"id":"title","component":"Text","text":"周四的会换个时间？","variant":"h3"},
+{"id":"why","component":"Text","text":"14:00 和牙医预约撞了","variant":"caption","style":{"color":"orange"}},
+{"id":"pick","component":"ChoicePicker","label":"王总周四还空着","variant":"mutuallyExclusive","displayStyle":"chips","options":[{"label":"11:00","value":"11:00"},{"label":"15:00","value":"15:00"},{"label":"16:30","value":"16:30"}],"value":{"path":"/slot"}},
+{"id":"acts","component":"Row","justify":"end","children":["ok"]},
+{"id":"ok","component":"Button","variant":"primary","child":"ok.t","action":{"event":{"name":"move","context":{"meeting":"wang-thu"}}}},
+{"id":"ok.t","component":"Text","text":"改到这个"}
+]}}

@@ -1,0 +1,21 @@
+{"id":"pourover","text":"手冲咖啡：15g 粉，225ml 92° 水，约 3 分钟","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","tabs"]},
+{"id":"head","component":"Column","gap":2,"children":["title","sub"]},
+{"id":"title","component":"Text","text":"手冲咖啡 · 一人份","variant":"h3"},
+{"id":"sub","component":"Text","text":"约 3 分钟 · 粉水比 1:15","variant":"caption"},
+{"id":"tabs","component":"Tabs","tabs":[{"title":"步骤","child":"steps"},{"title":"用料","child":"items"}]},
+{"id":"steps","component":"Column","gap":8,"children":["s1","s2","s3","s4"]},
+{"id":"s1","component":"Row","align":"start","children":["n1","t1"]},
+{"id":"n1","component":"Text","text":"1","style":{"width":24,"fontWeight":"bold","color":"textSecondary"}},
+{"id":"t1","component":"Text","text":"热水冲湿滤纸，倒掉。","weight":1},
+{"id":"s2","component":"Row","align":"start","children":["n2","t2"]},
+{"id":"n2","component":"Text","text":"2","style":{"width":24,"fontWeight":"bold","color":"textSecondary"}},
+{"id":"t2","component":"Text","text":"倒入咖啡粉，注水 30ml 闷蒸 **30 秒**。","weight":1},
+{"id":"s3","component":"Row","align":"start","children":["n3","t3"]},
+{"id":"n3","component":"Text","text":"3","style":{"width":24,"fontWeight":"bold","color":"textSecondary"}},
+{"id":"t3","component":"Text","text":"由内向外画圈，分两次注到 **225ml**。","weight":1},
+{"id":"s4","component":"Row","align":"start","children":["n4","t4"]},
+{"id":"n4","component":"Text","text":"4","style":{"width":24,"fontWeight":"bold","color":"textSecondary"}},
+{"id":"t4","component":"Text","text":"2:30–3:00 滴完，摇匀再喝。","weight":1},
+{"id":"items","component":"Table","columns":["用料","用量"],"rows":[["咖啡豆","15g 中细研磨"],["热水","225ml · 92°C"],["滤纸","1 张"]]}
+]}}

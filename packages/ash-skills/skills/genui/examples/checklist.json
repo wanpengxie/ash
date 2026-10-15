@@ -1,0 +1,11 @@
+{"id":"groceries-1015","text":"买菜清单 5 样，还差 3 样","a2ui":{"data":{"items":[{"id":"a","t":"鸡蛋 一盒","done":true},{"id":"b","t":"牛奶 两瓶","done":true},{"id":"c","t":"青菜","done":false},{"id":"d","t":"排骨 500g","done":false},{"id":"e","t":"酱油（快用完了）","done":false}]},"components":[
+{"id":"root","component":"Column","gap":8,"children":["hd","list","foot"]},
+{"id":"hd","component":"Row","align":"center","justify":"spaceBetween","children":["title","badge"]},
+{"id":"title","component":"Text","text":"买菜清单","variant":"h3"},
+{"id":"badge","component":"Badge","text":"还差 3 样"},
+{"id":"list","component":"List","children":{"componentId":"item","path":"/items"}},
+{"id":"item","component":"CheckBox","label":{"path":"t"},"value":{"path":"done"}},
+{"id":"foot","component":"Row","justify":"end","children":["save"]},
+{"id":"save","component":"Button","variant":"borderless","child":"save.t","action":{"event":{"name":"save_list"}}},
+{"id":"save.t","component":"Text","text":"记下勾选"}
+]}}

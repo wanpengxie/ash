@@ -31,7 +31,7 @@ whenToUse: 要连一个经过中枢的服务（OAuth），要存一个你在服�
 - 应用的 `server.env`、帮手声明里 `native.env` 也能写 `"$vault.<名字>"`，启动时换成真值（应用要在 `needs` 里声明这个 `credential`）。
 - 名字不存在返回 `not_found`，失效返回 `unavailable`：用 `human_form`（`secret` 字段）或 `request` 让主人填。
 
-要主人给的是一组信息（地址、用户名、密码……），用 `human_form` 一张卡要齐，密码字段写进 `secret`，见技能 `cards`。
+要主人给的是一组信息（地址、用户名、密码……），用 `human_form` 一张卡要齐，密码字段写进 `secret`，见技能 `genui`。
 
 ## 连一个服务（OAuth）
 

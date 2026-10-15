@@ -1,0 +1,17 @@
+{"id":"flight-chg","text":"改签办理中：已提交，预计 14:30 前出票","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","progress","div","latest"]},
+{"id":"head","component":"Column","gap":2,"children":["label","status","eta"]},
+{"id":"label","component":"Text","text":"CA1831 改签 · 10月20日","variant":"caption"},
+{"id":"status","component":"Text","text":"航司处理中","variant":"h2"},
+{"id":"eta","component":"Text","text":"预计 **14:30** 前出票"},
+{"id":"progress","component":"Column","gap":4,"children":["bar","steps"]},
+{"id":"bar","component":"ProgressBar","value":2,"max":3},
+{"id":"steps","component":"Row","justify":"spaceBetween","children":["s1","s2","s3"]},
+{"id":"s1","component":"Text","text":"已提交","variant":"caption"},
+{"id":"s2","component":"Text","text":"**处理中**","variant":"caption","style":{"color":"text"}},
+{"id":"s3","component":"Text","text":"出票","variant":"caption"},
+{"id":"div","component":"Divider"},
+{"id":"latest","component":"Column","gap":8,"children":["l1","l2"]},
+{"id":"l1","component":"Text","text":"13:52 航司已受理，差价 ¥0"},
+{"id":"l2","component":"Text","text":"13:40 提交改签：19:30 → 21:00","variant":"caption"}
+]}}

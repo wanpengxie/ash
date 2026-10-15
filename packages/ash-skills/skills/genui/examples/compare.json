@@ -1,0 +1,9 @@
+{"id":"earbuds-cmp","text":"AirPods Pro 3 和 Sony WF-1000XM6：通勤降噪选 Sony，苹果全家桶选 AirPods","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","body"]},
+{"id":"head","component":"Column","gap":8,"children":["title","verdict"]},
+{"id":"title","component":"Text","text":"降噪耳机怎么选","variant":"h3"},
+{"id":"verdict","component":"Text","text":"通勤降噪选 **Sony**；用 iPhone 和 Mac 选 **AirPods**。"},
+{"id":"body","component":"Column","gap":8,"children":["tbl","note"]},
+{"id":"tbl","component":"Table","columns":["","AirPods Pro 3","Sony XM6"],"rows":[["价格","1899","**1699**"],["降噪","强","**更强**"],["续航","6 小时","**8 小时**"],["切设备","**自动**","手动"]]},
+{"id":"note","component":"Text","text":"加粗是这一项更好的一方。价格为京东 10 月到手价。","variant":"caption"}
+]}}
