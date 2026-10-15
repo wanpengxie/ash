@@ -7,6 +7,8 @@ import ai.ash.ui.LedgerFeed;
 import ai.ash.ui.UiIo;
 import ai.ash.ui.UiDrafts;
 import ai.ash.link.Repo;
+import ai.ash.link.LinkClient;
+import ai.ash.link.TestLink;
 import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 import android.app.Application;
@@ -37,6 +39,7 @@ import kotlin.jvm.functions.Function1;
 import kotlin.jvm.functions.Function2;
 import org.json.JSONObject;
 import org.junit.Before;
+import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
@@ -52,8 +55,10 @@ import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 35, qualifiers = "w360dp-h800dp-mdpi", application = Application.class, instrumentedPackages = {"ai.ash.ui"}, shadows = {TeamActivityAcceptanceTest.Port.class, TeamActivityAcceptanceTest.Feed.class, TeamActivityAcceptanceTest.Io.class})
+@Config(sdk = 35, qualifiers = "w360dp-h800dp-mdpi", application = Application.class, instrumentedPackages = {"ai.ash.ui", "ai.ash.sysapps"}, shadows = {TeamActivityAcceptanceTest.BaseClient.class, TeamActivityAcceptanceTest.Port.class, TeamActivityAcceptanceTest.Feed.class, TeamActivityAcceptanceTest.Io.class})
 public class TeamActivityAcceptanceTest {
+    // Supply the existing test LinkClient at the base's documented seam; no host Runtime/Keystore is started.
+    static TestLink link;
     static final class Read {
         final String word; final JSONObject body; final Function2<JSONObject, HumanPort.Failure, Unit> done;
         Read(String word, JSONObject body, Function2<JSONObject, HumanPort.Failure, Unit> done) { this.word = word; this.body = body; this.done = done; }
@@ -67,16 +72,19 @@ public class TeamActivityAcceptanceTest {
     static EditText input(TeamActivity a) { return ReflectionHelpers.getField(a, "input"); }
     static String member(TeamActivity a) { return ReflectionHelpers.getField(a, "selected"); }
     @Before public void reset() {
-        reads.clear(); Feed.listener = null;
+        link = new TestLink(); reads.clear(); Feed.listener = null; Feed.client = null; Port.clientCalls = 0;
         ReflectionHelpers.setStaticField(UiDrafts.class, "drafts", null);
         Map<?,?> pending = ReflectionHelpers.getStaticField(TeamActivity.class, "sharedPending"); pending.clear();
         ReflectionHelpers.setStaticField(TeamActivity.class, "pendingLoaded", false);
         RuntimeEnvironment.getApplication().getSharedPreferences("ash.drafts", Context.MODE_PRIVATE).edit().clear().commit();
         RuntimeEnvironment.getApplication().getSharedPreferences("ash.team.pending", Context.MODE_PRIVATE).edit().clear().commit();
     }
+    @After public void closeLink() { if(link!=null)link.close(); }
     @Test public void reusedActivityOpensNewMemberAndRetainsEachDraft() throws Exception {
         try (ActivityController<TeamActivity> c = Robolectric.buildActivity(TeamActivity.class, intent("agent:a")).create().start().resume().visible()) {
             TeamActivity a = c.get(); idle();
+            assertTrue("Base reads must use the LinkClient overload",Port.clientCalls>0);
+            assertSame(link.getClient(),Feed.client);
             last("list").answer("{\"agents\":[{\"id\":\"agent:a\",\"name\":\"Alice\",\"state\":\"idle\"},{\"id\":\"agent:b\",\"name\":\"Bob\",\"state\":\"idle\"}]}");
             input(a).setText("Alice draft");
             Read old = last("exchanges");
@@ -272,13 +280,22 @@ public class TeamActivityAcceptanceTest {
     }
     @Implements(value = HumanCall.class, isInAndroidSdk = false)
     public static class Port {
+        static int clientCalls;
         @Implementation protected void call(Context ctx, String to, String word, JSONObject body, Function2<JSONObject, HumanPort.Failure, Unit> done) { reads.add(new Read(word, body, done)); }
+        @Implementation protected void call(LinkClient client, String to, String word, JSONObject body, Function2<JSONObject, HumanPort.Failure, Unit> done) { assertSame(link.getClient(),client); clientCalls++; reads.add(new Read(word, body, done)); }
         @Implementation protected void request(Context ctx, JSONObject request, Function2<JSONObject, HumanPort.Failure, Unit> done) { reads.add(new Read("send", request, done)); }
+        @Implementation protected void request(LinkClient client, JSONObject request, Function2<JSONObject, HumanPort.Failure, Unit> done) { assertSame(link.getClient(),client); reads.add(new Read("send", request, done)); }
+    }
+    @Implements(value = SystemAppActivity.class, isInAndroidSdk = false)
+    public static class BaseClient {
+        @Implementation protected LinkClient getHumanClient() { return link.getClient(); }
     }
     @Implements(value = LedgerFeed.class, isInAndroidSdk = false)
     public static class Feed {
         static Function1<JSONObject,Unit> listener;
+        static LinkClient client;
         @Implementation protected void listen(Context ctx, Function1<JSONObject, Unit> message, Function1<Boolean, Unit> connection) { listener=message; connection.invoke(true); }
+        @Implementation protected void listen(LinkClient existing, Function1<JSONObject, Unit> message, Function1<Boolean, Unit> connection) { assertSame(link.getClient(),existing); client=existing; listener=message; connection.invoke(true); }
         @Implementation protected void remove(Function1<JSONObject, Unit> message) {}
     }
     @Implements(value = UiIo.class, isInAndroidSdk = false)
