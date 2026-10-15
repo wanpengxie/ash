@@ -341,6 +341,33 @@ add("service:bodies", "bind", "request", obj({ hand: handRef }, ["hand"]), bodyI
 add("service:bodies", "unbind", "request", obj({ body: bodyRef }, ["body"]), obj({ unbound: bool }, ["unbound"]),
   { effect: "write", label: "在解绑身体", description: "Unbind a body: workspace.* goes offline at once; the computer stays as a hand and as a host for local agents. body:main cannot be unbound." });
 // ===================================================================================================================
+// service:cards: the cards in the conversation that hold resources, and their lifecycle (docs/CARD-RUNTIME.md)
+// ===================================================================================================================
+const cardLife = choice("active", "idle", "dormant", "closed");
+const cardRunInfo = obj({ id: nonempty, message: nonempty, owner: nonempty, app: str, temporary_app: bool, life: cardLife, pinned: bool, text: str,
+  sources: strings, last_seen: num, last_used: num, expires_at: num, updated_at: num }, ["id", "owner", "life", "pinned"]);
+const cardRef = obj({ id: nonempty }, ["id"]);
+add("service:cards", "list", "request", obj({ life: cardLife }), obj({ cards: array(cardRunInfo), limits: obj({}, [], true) }, ["cards"]),
+  { callers: OWNER_AGENT, label: "在看运行中的卡片", description: "The cards in the conversation that are not closed (or those in one state): whose they are, which app runs them, their live sources, whether they are active, idle, dormant or pinned, when they were last seen and used; and the limits (how many may be active, how many sources, how many temporary apps)." });
+add("service:cards", "describe", "request", cardRef, obj({ card: cardRunInfo, actions: obj({}, [], true) }, ["card"]),
+  { callers: OWNER_AGENT, label: "在看一张卡片", description: "One card's runtime: its state, sources, app and the state of its buttons." });
+add("service:cards", "sleep", "request", cardRef, obj({ life: cardLife }, ["life"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在让卡片休眠", description: "Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it." });
+add("service:cards", "wake", "request", cardRef, obj({ life: cardLife }, ["life"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在唤醒卡片", description: "Wake a sleeping card: its app is started, its live data runs again and it is drawn fresh." });
+add("service:cards", "close", "request", cardRef, obj({ closed: bool }, ["closed"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在收起卡片", description: "Close a card (the same as person:owner/card.close): a static picture of it stays in the conversation." });
+add("service:cards", "pin", "request", obj({ id: nonempty, pinned: bool }, ["id", "pinned"]), obj({ pinned: bool }, ["pinned"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在固定卡片", description: "A pinned card never sleeps and keeps its live data running off screen (a delivery being tracked); unpin to let it sleep again." });
+add("service:cards", "keep", "request", cardRef, obj({ app: str, kept: bool }, ["kept"]),
+  { callers: OWNER_AGENT, effect: "write", label: "在保留卡片的应用", description: "The card's temporary app becomes a lasting one: it is no longer removed when its cards are closed (「存成应用」)." });
+add("service:cards", "act", "request", obj({ card: nonempty, component: nonempty, data: obj({}, [], true),
+  request: { type: "object", description: "only from a card's mini app: {call: {member, word, body}} | {ask: {text}} | {tell: {text}}" } }, ["card", "component"]),
+  obj({ state: choice("ok", "failed", "running"), result: any, text: str }, ["state"]),
+  { callers: OWNER_AGENT, effect: "act", timeout_ms: 660_000, label: "在按卡片上的按钮", description: "Press a button of a card (its component id) with the values on the card now: its call runs as the card's app through the gate, its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here." });
+add("service:cards", "seen", "request", obj({ cards: { type: "array", items: nonempty, maxItems: 50 } }, ["cards"]), obj({ active: strings }, ["active"]),
+  { callers: OWNER_AGENT, label: "在记下看到的卡片", description: "The card ids on a screen of the owner now (the conversation reports them when it stops scrolling): those cards are active, the others go idle in time. Not recorded." });
+// ===================================================================================================================
 // person:owner: the owner's words (what the hub says to the owner). The owner's own words are the other words.
 // ===================================================================================================================
 const TO_OWNER: CallerKind[] = ["agent", "app"];
@@ -373,15 +400,19 @@ export const CHAT_A2UI_GUIDE = "a2ui is the same A2UI as a home-screen card (wid
   "Row, Column, List and Grid take gap (dp between their children; none when left out). A Chart series takes min (the bottom of its axis, for a price or a weight). The conversation draws the card's frame: do not give the root a background, padding or corners. Inputs with value {path} write the owner's value into data on the phone itself: tabs, toggles, choices, sliders and typing need no round trip to you, and any Text or visible that reads such a path follows at once. " +
   "A Button with action {event:{name, context?}} sends you the owner's message `[card <id>, action <name>] {context, data}` with the card's current data. Lists may scroll horizontally here. " +
   "What cannot be drawn is left out and listed in problems; a component named but not given yet shows as a placeholder.";
-add("person:owner", "show", "request", { ...obj({ card: CARD_SCHEMA, a2ui: obj({}, [], true), id: chatCardId, text: { type: "string", maxLength: 2000 } }), oneOf: [{ required: ["card"], properties: { card: { type: "object" } } }, { required: ["a2ui"], properties: { a2ui: { type: "object" } } }] },
+add("person:owner", "show", "request", { ...obj({ card: CARD_SCHEMA, a2ui: obj({}, [], true), id: chatCardId, text: { type: "string", maxLength: 2000 },
+  app: { type: "string", pattern: APP_NAME_PATTERN }, temporary_app: bool, ttl_min: { type: "integer", minimum: 1, maximum: 43200 } }), oneOf: [{ required: ["card"], properties: { card: { type: "object" } } }, { required: ["a2ui"], properties: { a2ui: { type: "object" } } }] },
   obj({ accepted: bool, card: str, problems: strings, hints: strings }, ["accepted"]),
   { callers: TO_OWNER, effect: "act", label: "在给你看卡片", description: "Put a card in the conversation. Either card: a file, image, link, a permission page to switch on, or choices; or a2ui: any card you design — text, tables, charts, lists, images, tabs, buttons, inputs, a small sandboxed page — drawn natively in the chat, in the same card language as the home-screen cards. " +
     "Show the owner what you want to show and ask for choices and input this way, in the conversation: never send them to another page for it. " +
+    "app makes the card a surface of that Ash app (docs: card runtime): its buttons may call words ({call}) and its data may be fed live (a2ui.sources), always as app:<app>, within what the app was granted and through the gate; without app a card only talks to agents and does things on the phone. temporary_app: the app exists only for this card and is removed when its cards are closed (unless the owner keeps it). ttl_min closes the card after so many minutes. " +
     "id names the card (default: this message's id) so card.update can change it later in place: a follow-up updates the card instead of sending another one. text is a short plain summary for notifications and screens that cannot draw the card (written from the card when left out). " +
     "Answers {accepted, card, problems, hints}: problems lists what was left out and why, hints what usually looks worse (too many accents, icons, titles); fix them with card.update, and look at it with card.preview. A card that cannot be drawn at all is refused with the reason. Showing choices does not itself authorize anything. " + CHAT_A2UI_GUIDE });
 add("person:owner", "card.update", "request", obj({ id: chatCardId, a2ui: obj({}, [], true), data: { type: "object", description: "JSON pointer -> new value, merged into the card's data" }, text: { type: "string", maxLength: 2000 } }, ["id"]),
   obj({ updated: bool, problems: strings, hints: strings }, ["updated"]),
   { callers: TO_OWNER, effect: "act", label: "在更新卡片", description: "Change a card you showed in the conversation, where it is: a new a2ui (its layout), and/or data as {\"/pointer\": value} merged into its data model (keeps what the owner entered unless you set it). For a follow-up, a result arriving, or filling in a long card part by part. Only the card's creator may change it. Answers problems like show." });
+add("person:owner", "card.close", "request", obj({ id: chatCardId }, ["id"]), obj({ closed: bool }, ["closed"]),
+  { callers: TO_OWNER, effect: "act", label: "在收起卡片", description: "Close a card you showed (its creator, its app, or the owner): it stays in the conversation as it is now, its live data and buttons stop, and a temporary app whose cards are all closed is removed. Close a card when its task is done." });
 add("person:owner", "card.draft", "request", obj({ card: chatCardId, data: obj({}, [], true) }, ["card", "data"]),
   obj({ card: str, plan: obj({}, [], true) }, ["card"]),
   { callers: OWNER_AGENT, label: "在记下卡片上填的", description: "What has been entered on a card so far (its whole data model; the owner's screen sends it as he types, an agent may fill in for him): kept with the card so it is there again after a refresh, and when something on the card reads it, the card drawn again (plan). Nothing is sent to anyone; an action on the card carries the values. A password box is never part of it." });
@@ -855,6 +886,10 @@ add("service:apps", "apps.refresh", "request", empty, obj({ apps: array(appInfo)
 // within what the owner already granted, or narrow it.
 add("service:apps", "apps.badge", "request", obj({ tone: choice("ok", "warn", "err", "paused") }, ["tone"]), obj({ tone: choice("ok", "warn", "err", "paused") }, ["tone"]),
   { callers: ["app"], effect: "write", label: "在亮应用的小点", description: "An app says how it is, for the dot on its icon in the app grid: ok (no dot), warn, err or paused. Only about itself; it shows while the app runs and is asked again by the app when it starts." });
+add("service:apps", "apps.sleep", "request", obj({ id: appId }, ["id"]), obj({ id: appId, sleeping: bool }, ["id", "sleeping"]),
+  { effect: "write", label: "在让应用休眠", description: "Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again. service:cards does this for an app whose cards are all asleep." });
+add("service:apps", "apps.wake", "request", obj({ id: appId }, ["id"]), obj({ id: appId, running: bool }, ["id", "running"]),
+  { effect: "write", label: "在唤醒应用", description: "Start an app put to sleep with apps.sleep (an app that is turned off stays off: apps.enable)." });
 add("service:apps", "apps.restart", "request", obj({ id: appId }, ["id"]), obj({ id: appId, running: bool, problems: array(obj({}, [], true)) }, ["id", "running"], true),
   { effect: "act", label: "在重启应用", description: "Restart an installed app's server so edits to its files (server.mjs, tools, app.json cards) take effect. It is checked first as apps.validate does: " +
     "a failing app is not restarted and the problems come back (error.detail.problems). If app.json's needs changed, use apps.install instead (the owner approves them). Pages need no restart." });

@@ -475,6 +475,50 @@
           "const": "chat"
         },
         "op": {
+          "const": "card.patch"
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "card": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          "required": [
+            "card"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "t",
+        "ch",
+        "id",
+        "surface",
+        "op",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "t": {
+          "const": "present"
+        },
+        "ch": {
+          "const": "human"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "surface": {
+          "const": "chat"
+        },
+        "op": {
           "const": "open"
         },
         "body": {

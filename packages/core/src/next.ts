@@ -313,7 +313,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   // 7. everybody into the registry
   for (const member of [
     blobs, gateService, clock, senses, cost, reflex, history, admin, health, widgets, directory, vaultService, ...semantic.members,
-    body, devices, bodies, linkControl.member, human.member, agents.service, apps.service, createLlmService(llm), hostService.member,
+    body, devices, bodies, linkControl.member, human.member, human.cards, agents.service, apps.service, createLlmService(llm), hostService.member,
   ]) registry.add(member);
 
   // 8. start. The agents are told the tool address, so the port opens first; the registry already holds the services

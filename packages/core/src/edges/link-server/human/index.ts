@@ -30,6 +30,7 @@ import type { ChannelAttach } from "../index";
 import { Asks } from "./ask";
 import { Cards, planOf } from "./cards";
 import { formCard, Forms } from "./form";
+import { CardRuntime } from "./runtime";
 import { Clients, SURFACES, type ClientInfo, type LiveClient, type Surface } from "./clients";
 import { Inbound, Recorded } from "./inbound";
 import { Notifier } from "./notify";
@@ -63,6 +64,8 @@ export interface HumanDeps {
 export interface HumanEdge {
   /** `person:owner`: add it to the registry. */
   member: Member;
+  /** `service:cards`: the cards that hold resources and their lifecycle (docs/CARD-RUNTIME.md); add it to the registry too. */
+  cards: Member;
   /** For `link.onChannel("human", …)`. */
   attach: ChannelAttach;
   clients(): ClientInfo[];
@@ -117,6 +120,12 @@ export function createHuman(deps: HumanDeps): HumanEdge {
     changed: () => status.asksChanged(),
   });
   const cards = new Cards(db, now);
+  // The conversation's live cards: each change goes to every screen that shows the conversation, as one present frame.
+  const runtime = new CardRuntime({
+    db, cards, router: deps.router, settings: deps.settings, now, log,
+    viewing: () => clients.all().some((c) => c.visible),
+    push: (card) => { for (const c of clients.withSurface("chat")) void presenter.send(c, { surface: "chat", op: "card.patch", body: { card } as never }); },
+  });
   const forms: Forms = new Forms({ now, cards, vaultHas: deps.vaultHas ?? (() => false), changed: () => status.asksChanged() });
   const inbound = new Inbound({ router: deps.router, ledger: deps.ledger, recorded, asks, forms, now, recordMs: t.recordMs, log });
 
@@ -174,13 +183,24 @@ export function createHuman(deps: HumanDeps): HumanEdge {
         case "show": {
           if (body.a2ui === undefined) return { data: { accepted: true } };
           const row = cards.put({ id: typeof body.id === "string" ? body.id : msg.id, message: msg.id, owner: msg.from, a2ui: body.a2ui, ...(typeof body.text === "string" ? { text: body.text } : {}) });
+          // An app showing its own card is its app; an agent names the app the card belongs to.
+          const app = typeof body.app === "string" ? body.app : msg.from.startsWith("app:") ? msg.from.slice(4) : undefined;
+          runtime.register(row, { ...(app ? { app } : {}), temporary: body.temporary_app === true, ...(typeof body.ttl_min === "number" ? { ttl_min: body.ttl_min } : {}) });
+          if (!app && Object.keys(row.plan.sources).length) row.plan.problems.push("a2ui.sources need the card's app (show {app}): a card without an app gets no live data");
           void notifier.say({ ...msg, body: { text: row.text } }).catch((error) => log("notification failed", error));
           return { data: { accepted: true, card: row.id, ...(row.plan.problems.length ? { problems: row.plan.problems } : {}), ...(row.plan.hints.length ? { hints: row.plan.hints } : {}) } };
         }
         case "card.update": {
           const row = ownCard(body.id, msg.from);
           const next = cards.update(row, { ...(body.a2ui ? { a2ui: body.a2ui } : {}), ...(body.data ? { data: body.data } : {}), ...(typeof body.text === "string" ? { text: body.text } : {}) });
+          runtime.changed(next.id);
           return { data: { updated: true, ...(next.plan.problems.length ? { problems: next.plan.problems } : {}), ...(next.plan.hints.length ? { hints: next.plan.hints } : {}) } };
+        }
+        case "card.close": {
+          const row = cards.get(body.id);
+          if (!row) throw new WordError("not_found", `no card ${body.id} in the conversation`);
+          if (row.owner !== msg.from && !runtime.isApp(row, msg.from)) throw new WordError("forbidden", `card ${row.id} belongs to ${row.owner}; the owner closes it with service:cards/close`);
+          return { data: { closed: runtime.closeCard(row.id) } };
         }
         case "card.draft": {
           const row = cards.get(body.card);
@@ -221,7 +241,7 @@ export function createHuman(deps: HumanDeps): HumanEdge {
   function ownCard(id: unknown, from: string) {
     const row = typeof id === "string" ? cards.get(id) : null;
     if (!row) throw new WordError("not_found", `no card ${String(id)} in the conversation`, { recovery_hint: "Show it first with person:owner/show {a2ui, id}." });
-    if (row.owner !== from) throw new WordError("forbidden", `card ${row.id} belongs to ${row.owner}; only its creator changes it`);
+    if (row.owner !== from && !runtime.isApp(row, from)) throw new WordError("forbidden", `card ${row.id} belongs to ${row.owner}; only its creator or its app changes it`);
     if (row.form) throw new WordError("conflict", "a form card changes only by the owner's answer");
     return row;
   }
@@ -244,7 +264,7 @@ export function createHuman(deps: HumanDeps): HumanEdge {
     if (!row) throw new WordError("not_found", `no card ${body.id} in the conversation`);
     let failure: WordError = new WordError("offline", "no channel that can draw the card is connected (the phone draws it)");
     for (const c of clients.withSurface("chat")) {
-      const result = await presenter.send(c, { surface: "chat", op: "card.preview", body: { card: cards.item(row), theme: body.theme === "dark" ? "dark" : "light" } as never });
+      const result = await presenter.send(c, { surface: "chat", op: "card.preview", body: { card: { ...cards.item(row), ...runtime.extra(row.id) }, theme: body.theme === "dark" ? "dark" : "light" } as never });
       if (!result.ok) { failure = new WordError(result.error.code, result.error.message); continue; }
       const image = result.data as { type?: unknown; data?: unknown; width?: unknown; height?: unknown } | undefined;
       if (image?.type !== "image" || typeof image.data !== "string") continue;
@@ -357,7 +377,7 @@ export function createHuman(deps: HumanDeps): HumanEdge {
   }
 
   return {
-    member, attach,
+    member, attach, cards: runtime.member,
     openStream(client, bytes, mime) {
       const c = client ? clients.get(client) : undefined;
       if (!c) throw new WordError("unavailable", "this connection cannot receive a stream");
@@ -377,6 +397,6 @@ export function createHuman(deps: HumanDeps): HumanEdge {
       const c = client ? clients.get(client) : clients.current();
       return c ? presenter.send(c, { surface: "chat", op: "focus", body: {} }) : { ok: false, error: { code: "offline", message: "the owner has no channel open" } };
     },
-    close() { unsubscribe(); status.close(); },
+    close() { unsubscribe(); status.close(); runtime.close(); },
   };
 }

@@ -11431,6 +11431,7 @@ var present = union(
   presentOf("widget", "preview", obj({ card: anything(), size: anything() })),
   presentOf("chat", "focus", obj({})),
   presentOf("chat", "card.preview", obj({ card: record(), theme: string() })),
+  presentOf("chat", "card.patch", obj({ card: record() })),
   presentOf("chat", "open", obj({ target: string() }, { id: string(), mode: string() }))
 );
 var presentResult = union(

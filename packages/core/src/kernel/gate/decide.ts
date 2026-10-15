@@ -108,7 +108,8 @@ export function createGate(deps: GateDeps, store: GateStore, options: GateOption
       if (answer === "none" || answer === "outward" || answer === "structure") { risk = answer; assessed = true; }
     }
 
-    if (caller.via === "app") {
+    // An app's call from a card the owner just pressed is judged like an agent's (below): he is there to be asked.
+    if (caller.via === "app" && !caller.card) {
       if (contract.effect === "read" || risk === "none") return { verdict: "allow", by: "app", offer_always: false };
       return { verdict: "deny", by: "app", offer_always: false, reason: "needs_approval: an app cannot ask the owner; leave it to an agent or the owner" };
     }

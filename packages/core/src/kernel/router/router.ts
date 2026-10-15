@@ -228,7 +228,7 @@ export class HubRouter implements Router {
     } else {
       const decision = await gate.decide(view, contract, caller);
       if (decision.verdict === "deny") {
-        return fail(caller.via === "app" ? errorBody("forbidden", decision.reason ?? "an app cannot do this", { recovery_hint: "An app cannot ask the owner. Leave it to an agent or the owner." })
+        return fail(caller.via === "app" && !caller.card ? errorBody("forbidden", decision.reason ?? "an app cannot do this", { recovery_hint: "An app cannot ask the owner. Leave it to an agent or the owner." })
           : errorBody("denied", decision.reason ?? "the gate refused"));
       }
       if (decision.verdict === "ask") return this.holdForOwner(this.park(stamped, view, raw, contract, caller, decision.offer_always, opts, member, decision.review_reason, decision.note), stamped, caller, opts);
@@ -272,7 +272,7 @@ export class HubRouter implements Router {
   private async holdForOwner(parked: Reply, stamped: Message, caller: Caller, opts: SendOptions): Promise<SendReply> {
     const data = parked.ok ? parked.result?.data as { status?: unknown; expires_at?: unknown } | undefined : undefined;
     const wait = this.deps.fastWaitMs?.() ?? 0;
-    if (caller.via !== "agent" || data?.status !== "waiting_owner" || typeof data.expires_at !== "number" || !(wait > 0)) return parked;
+    if ((caller.via !== "agent" && !(caller.via === "app" && caller.card)) || data?.status !== "waiting_owner" || typeof data.expires_at !== "number" || !(wait > 0)) return parked;
     const ms = Math.min(wait, CALL_BUDGET_MS - (this.now() - stamped.ts), data.expires_at - this.now());
     if (!(ms > 0)) return parked;
     opts.waiting?.(this.now() + ms);

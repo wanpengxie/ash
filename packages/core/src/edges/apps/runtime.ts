@@ -121,6 +121,8 @@ export class AppRuntime {
   private readonly running = new Map<string, Running>();
   private readonly failures = new Map<string, number>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Apps put to sleep (apps.sleep): turned on but not running; the first call to one of their words starts them again. */
+  private readonly sleeping = new Set<string>();
   private readonly lastError = new Map<string, string>();
   /** The dot an app asked for on its icon (apps.badge); memory only, shown while it runs. */
   private readonly badges = new Map<string, "warn" | "err" | "paused">();
@@ -156,9 +158,12 @@ export class AppRuntime {
 
   granted(app: string, to: string | null, word: string): boolean {
     const id = app.replace(/^app:/, "");
-    const state = this.running.get(id);
-    if (!state || !this.grants.get(id)?.enabled) return false;
-    if (to === null) return (state.manifest.events ?? []).includes(word);
+    // A sleeping app keeps what it was granted: its first call wakes it.
+    const manifest = this.running.get(id)?.manifest ?? (this.sleeping.has(id) ? this.manifest(id) : null);
+    if (!manifest || !this.grants.get(id)?.enabled) return false;
+    if (to === null) return (manifest.events ?? []).includes(word);
+    // Its own words: a card of the app calls its backend (service:cards/act).
+    if (to === `app:${id}`) return true;
     return this.grants.allows(app, to, word);
   }
 
@@ -274,7 +279,7 @@ export class AppRuntime {
       if (!item || !("manifest" in item) || !grant?.enabled) await this.stop(id);
       else if (item.manifest.version !== this.running.get(id)!.manifest.version) await this.stop(id);
     }
-    for (const [id, item] of this.found) if ("manifest" in item && this.grants.get(id)?.enabled && !this.running.has(id)) await this.launch(id);
+    for (const [id, item] of this.found) if ("manifest" in item && this.grants.get(id)?.enabled && !this.running.has(id) && !this.sleeping.has(id)) await this.launch(id);
   }
 
   manifest(id: string): AppJson | null { const item = this.found.get(id); return item && "manifest" in item ? item.manifest : null; }
@@ -349,6 +354,7 @@ export class AppRuntime {
 
   private async launch(id: string): Promise<void> {
     if (this.closed || this.running.has(id)) return;
+    this.sleeping.delete(id);
     const found = this.manifest(id);
     const launcher = this.options.launcher;
     const dir = this.dir(id);
@@ -487,7 +493,39 @@ export class AppRuntime {
     this.timers.set(id, timer);
   }
 
+  /**
+   * apps.sleep: stop the server without turning the app off. Its words stay in the registry, standing for it: the first call
+   * starts it again (events it would hear are not delivered while it sleeps).
+   */
+  async sleep(id: string): Promise<{ id: string; sleeping: boolean }> {
+    if (!this.running.has(id)) return { id, sleeping: this.sleeping.has(id) };
+    const awake = this.options.registry.get(`app:${id}`);
+    const words = awake?.words() ?? [];
+    await this.stop(id);
+    this.sleeping.add(id);
+    this.options.registry.add({
+      id: `app:${id}`, kind: "app", name: awake?.name ?? id, words: () => structuredClone(words),
+      handle: async (msg, ctx) => {
+        if (msg.kind === "event") return;
+        await this.wake(id);
+        const state = this.running.get(id);
+        if (!state) throw fail("offline", `app:${id} could not be started`, { recovery_hint: "apps.logs says why." });
+        return this.handleMessage(state, msg, ctx);
+      },
+    });
+    return { id, sleeping: true };
+  }
+
+  /** apps.wake: start an app put to sleep (an app that is turned off stays off). */
+  async wake(id: string): Promise<{ id: string; running: boolean }> {
+    if (this.sleeping.has(id) && this.grants.get(id)?.enabled) await this.launch(id);
+    return { id, running: this.running.get(id)?.online === true };
+  }
+
+  isSleeping(id: string): boolean { return this.sleeping.has(id); }
+
   async stop(id: string): Promise<void> {
+    this.sleeping.delete(id);
     clearTimeout(this.timers.get(id)); this.timers.delete(id);
     const state = this.running.get(id);
     this.bridge.unbind(id);

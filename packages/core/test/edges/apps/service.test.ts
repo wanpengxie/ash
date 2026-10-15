@@ -19,8 +19,8 @@ const words = (w: World, word: string, body: unknown = {}, caller?: Parameters<t
 test("service:apps speaks every word its contract lists, and no word more", async () => {
   const w = await installed();
   const names = wordsOf("service:apps").map((word) => word.word);
-  assert.equal(names.length, 17);
-  assert.ok(["apps.list", "apps.describe", "apps.install", "apps.enable", "apps.disable", "apps.revoke", "apps.refresh", "apps.restart", "apps.logs", "apps.reset",
+  assert.equal(names.length, 19);
+  assert.ok(["apps.list", "apps.describe", "apps.install", "apps.enable", "apps.disable", "apps.revoke", "apps.refresh", "apps.sleep", "apps.wake", "apps.restart", "apps.logs", "apps.reset",
     "apps.remove", "apps.contract", "apps.scaffold", "apps.validate", "apps.surface", "apps.icon", "apps.badge"].every((name) => names.includes(name)));
   assert.deepEqual(w.apps.service.words().map((word) => word.word), names);
   for (const word of names) {
