@@ -149,3 +149,15 @@ test("balance.get: one provider failing is reported next to the other; all faili
   assert.equal(await code(nothing.call("balance.get")), "unavailable");
   assert.equal(await code(setup().call("balance.get")), "unavailable");
 });
+
+test("team costs are today's totals per agent, with unknown prices kept visible", async () => {
+  const f = setup();
+  await f.record({ caller: "agent:h", cost: 8, at: NOW - DAY });
+  await f.record({ caller: "agent:h", cost: 0.1 });
+  await f.record({ caller: "agent:h", model: "unknown" });
+  const data = (await f.call("usage.get")).data as any;
+  assert.equal(data.by_caller_today.length, 1);
+  assert.equal(data.by_caller_today[0].cost_usd, 0.1);
+  assert.equal(data.by_caller_today[0].unpriced_calls, 1);
+  assert.equal(data.by_caller[0].cost_usd, 8.1);
+});

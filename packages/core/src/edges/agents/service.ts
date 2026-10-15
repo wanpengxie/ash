@@ -31,10 +31,12 @@ export function createAgentsService(manager: AgentManager): Member {
   const info = (run: Run) => {
     const d = run.spec.decl;
     const state = manager.stateOf(run.id);
+    const doing = state === "working" ? manager.doingOf(run.id) : undefined;
     return {
       id: run.id, name: d.name, summary: d.summary, state, available: state === "idle" || state === "working", reachable: manager.reachable(run.id), primary: !!d.primary, ephemeral: !!d.ephemeral,
       brief: d.brief, runtime: d.runtime, ...(d.native ? { native: d.native } : {}), created_by: d.created_by,
       tools: d.tools ?? null, words: d.words ?? null, lanes: lanesOf(d), modules: d.modules ?? null,
+      ...(doing ? { doing } : {}), waiting_on: manager.waitingOn(run.id),
     };
   };
 
@@ -58,7 +60,7 @@ export function createAgentsService(manager: AgentManager): Member {
     checkPower(ctx, decl);
     await checkRuntime(decl.id, decl.runtime);
     runs.put({ id: decl.id, spec: { decl, sessions: {}, static_hash: {}, usage_since: 0 } });
-    await manager.startAgent(decl.id, "新建").catch((e) => manager.deps.log?.("agents: start after declare:", e));
+    await manager.because(decl.id, "declared", ctx.caller.member, () => manager.startAgent(decl.id, "新建")).catch((e) => manager.deps.log?.("agents: start after declare:", e));
     return data(info(runs.get(decl.id)!));
   }
 
@@ -80,12 +82,14 @@ export function createAgentsService(manager: AgentManager): Member {
     const placeMoved = JSON.stringify([before.native, Object.keys(lanesOf(before))]) !== JSON.stringify([decl.native, Object.keys(lanesOf(decl))]);
     const runtimeChanged = JSON.stringify(before.runtime) !== JSON.stringify(decl.runtime);
     const live = manager.liveOf(run.id);
-    if (live && (placeMoved || !sameKind)) await manager.restartAgent(run.id);
-    else if (live && runtimeChanged) {
-      // A runtime that takes its settings between turns is told; any other starts again with them.
-      if (live.driver.info.abilities.runtime_live) await live.driver.configure(live.id, undefined, { runtime: decl.runtime });
-      else await manager.restartAgent(run.id);
-    }
+    await manager.because(run.id, "updated", ctx.caller.member, async () => {
+      if (live && (placeMoved || !sameKind)) await manager.restartAgent(run.id);
+      else if (live && runtimeChanged) {
+        // A runtime that takes its settings between turns is told; any other starts again with them.
+        if (live.driver.info.abilities.runtime_live) await live.driver.configure(live.id, undefined, { runtime: decl.runtime });
+        else await manager.restartAgent(run.id);
+      }
+    });
     return data({ ...info(runs.get(run.id)!), ...(notes.length ? { notes } : {}) });
   }
 
@@ -175,10 +179,10 @@ export function createAgentsService(manager: AgentManager): Member {
     });
   }
 
-  async function remove(id: string): Promise<WordResult> {
+  async function remove(id: string, by: string): Promise<WordResult> {
     const run = manager.run(id);
     if (run.spec.decl.primary) throw new WordError("conflict", "the primary agent cannot be removed; hand primary to another agent first");
-    await manager.forget(id, "removed");
+    await manager.because(id, "removed", by, () => manager.forget(id, "removed"));
     return data({ removed: true });
   }
 
@@ -283,14 +287,15 @@ export function createAgentsService(manager: AgentManager): Member {
       case "runtime.catalog": return runtimeCatalog(body);
       case "declare": return declare(body, ctx);
       case "update": return update(body, ctx);
-      case "start": manager.run(body.agent); manager.runs.setDesired(body.agent, "on"); await manager.startAgent(body.agent, "启动"); return data(info(manager.run(body.agent)));
+      case "start": manager.run(body.agent); manager.runs.setDesired(body.agent, "on"); await manager.because(body.agent, "started", ctx.caller.member, () => manager.startAgent(body.agent, "启动")); return data(info(manager.run(body.agent)));
       case "stop":
-        await manager.stopAgent(manager.run(body.agent).id, "stopped"); return data(info(manager.run(body.agent)));
-      case "restart": manager.run(body.agent); await manager.restartAgent(body.agent); return data(info(manager.run(body.agent)));
-      case "remove": return remove(body.agent);
+        await manager.because(manager.run(body.agent).id, "stopped", ctx.caller.member, () => manager.stopAgent(body.agent, "stopped")); return data(info(manager.run(body.agent)));
+      case "restart": manager.run(body.agent); await manager.because(body.agent, "restarted", ctx.caller.member, () => manager.restartAgent(body.agent)); return data(info(manager.run(body.agent)));
+      case "remove": return remove(body.agent, ctx.caller.member);
       case "primary.set":
         manager.run(body.agent);
         runs.setPrimary(body.agent);
+        manager.changed(body.agent, "primary", ctx.caller.member);
         return data(info(manager.run(body.agent)));
       case "ask": case "tell": {
         manager.running(body.agent);

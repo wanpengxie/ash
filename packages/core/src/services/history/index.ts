@@ -6,6 +6,7 @@
  *   read {from_seq, to_seq}     messages by sequence range, oldest first, at most 200
  *   turn {turn}                 one turn of an agent: what it was given, what it said, its tool calls
  *   activity {id, offset}       the detail of one tool call (request and answer), paged by characters
+ *   exchanges {agent?, before?, limit?}   the team's own conversation (asks, tells, spawned tasks and their answers), newest first
  *
  * The ledger holds only masked versions (SPEC-01 §10.0), so a row is safe for every caller as stored; nothing is
  * masked again here.
@@ -31,6 +32,13 @@ export interface HistoryOptions {
 }
 
 const MAX_SEQ = Number.MAX_SAFE_INTEGER;
+export const DEFAULT_EXCHANGES = 30;
+/** The words of an exchange are cut to this many characters; the page folds what is long. */
+const EXCHANGE_CHARS = 4000;
+/** A string in a ledger body, or the summary of one that was kept apart as a blob. */
+const textOf = (value: unknown): string => typeof value === "string" ? value
+  : value && typeof value === "object" && typeof (value as { summary?: unknown }).summary === "string" ? (value as { summary: string }).summary : "";
+const cut = (text: string) => text.length > EXCHANGE_CHARS ? `${text.slice(0, EXCHANGE_CHARS)}…` : text;
 const BATCH = 1000;
 const MAX_BATCHES = 20;
 
@@ -84,6 +92,39 @@ export function createHistoryService(options: HistoryOptions): Member {
     return { messages: messages };
   }
 
+  /**
+   * Asks, tells and spawned tasks between members of the team: to service:agents (the target is `body.agent`; a spawned
+   * worker's id is in the answer) or straight to an agent, from an agent or the owner. The owner's `say` is not one: that is
+   * the main conversation.
+   */
+  function exchanges(body: Record<string, unknown>) {
+    const limit = (body.limit as number | undefined) ?? DEFAULT_EXCHANGES;
+    const agent = body.agent as string | undefined;
+    const rows = db.prepare(`SELECT id FROM messages WHERE kind='request' AND seq<? AND word IN ('ask','tell','spawn')
+      AND (("to"='service:agents') OR ("to" LIKE 'agent:%' AND word<>'spawn')) AND ("from" LIKE 'agent:%' OR "from"='person:owner')
+      ${agent ? `AND ("from"=? OR "to"=? OR json_extract(body,'$.agent')=? OR EXISTS
+        (SELECT 1 FROM messages r WHERE r.reply_to=messages.id AND r.kind='response' AND json_extract(r.body,'$.result.data.agent')=?))` : ""}
+      ORDER BY seq DESC LIMIT ?`).all(...[(body.before as number | undefined) ?? MAX_SEQ, ...(agent ? [agent, agent, agent, agent] : []), limit]) as { id: string }[];
+    const items = rows.map(({ id }) => {
+      const m = ledger.get(id)!;
+      const b = (m.body ?? {}) as Record<string, unknown>;
+      const answerRow = db.prepare("SELECT id FROM messages WHERE reply_to=? AND kind='response' ORDER BY seq LIMIT 1").get(id) as { id: string } | undefined;
+      const r = answerRow ? ledger.get(answerRow.id) : null;
+      const reply = (r?.body ?? {}) as { ok?: boolean; result?: { data?: Record<string, unknown> }; error?: { code?: string; message?: string } };
+      const data = reply.result?.data ?? {};
+      const to = m.to === "service:agents" ? textOf(b.agent) || textOf(data.agent) || "agent:worker" : m.to!;
+      const answer = r ? (reply.ok === false ? { error: textOf(reply.error?.message) || textOf(reply.error?.code) || "failed" } : { text: cut(textOf(data.answer)) }) : null;
+      const state = !r ? "waiting" : reply.ok === false ? "failed" : m.word === "tell" ? "sent" : "answered";
+      return {
+        id: m.id, seq: m.seq, ts: m.ts, from: m.from, to, word: m.word, text: cut(textOf(m.word === "spawn" ? b.task : b.text)),
+        ...(m.thread ? { thread: m.thread } : {}), ...(m.turn ? { turn: m.turn } : {}), state,
+        ...(r && answer && (m.word !== "tell" || "error" in answer) ? { answer: { seq: r.seq, ts: r.ts, ...answer } } : {}),
+      };
+    });
+    const last = items[items.length - 1];
+    return { items, ...(items.length >= limit && last ? { next_before: last.seq } : {}) };
+  }
+
   function turn(body: Record<string, unknown>) {
     const turnId = body.turn as string;
     const ids = (sql: string, ...args: string[]) => (db.prepare(sql).all(...args) as { id: string }[]).map((r) => r.id);
@@ -131,6 +172,7 @@ export function createHistoryService(options: HistoryOptions): Member {
         case "query": return { data: query(body) };
         case "read": return { data: read(body) };
         case "turn": return { data: turn(body) };
+        case "exchanges": return { data: exchanges(body) };
         case "activity": return { data: activity(body) };
         default: throw new WordError("not_found", `service:history has no word ${msg.word}`);
       }

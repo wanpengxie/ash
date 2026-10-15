@@ -107,6 +107,8 @@ const BATCH = 20;
 interface Lane {
   key: string;
   busy: boolean;
+  /** When the turn running now began. */
+  since?: number;
   /** A batch is being prepared or handed to the driver. */
   sending: boolean;
   turn?: string;
@@ -178,6 +180,8 @@ export class AgentManager {
   private readonly drivers = new Map<string, AgentDriver>();
   private readonly waiters = new Map<string, Waiter>();
   private readonly outputs = new Map<string, string[]>();
+  /** The last state `agent.changed` told of, per agent (running stands for idle and working: turns are their own events). */
+  private readonly told = new Map<string, string>();
   private paused = false;
   /** Per agent: the keys being written into its runtime now (settled when none is); no turn of that agent opens before they are in. */
   private readonly keySync = new Map<string, Promise<void>>();
@@ -293,6 +297,32 @@ export class AgentManager {
     // starting, waiting for the next try, or stopping to start again: all of it is "on its way" while the intent is on
     return slot.phase !== "stopped" && this.runs.get(id)?.desired === "on" ? "starting" : "stopped";
   }
+  /** What a working agent is doing: the turn of its first busy lane, and the first words it was given in it. */
+  doingOf(id: string): { turn: string; lane: string; since: number; about: string } | undefined {
+    const lane = [...this.upOf(id)?.lanes.values() ?? []].find((l) => l.busy && l.turn);
+    if (!lane?.turn) return undefined;
+    const first = this.inbox.byTurn(lane.turn).find((r) => r.agent === id);
+    return { turn: lane.turn, lane: lane.key, since: lane.since ?? this.now(), about: (first?.text ?? "").replace(/\s+/g, " ").slice(0, 120) };
+  }
+  /** The agents this one has asked and is waiting on. */
+  waitingOn(id: string): string[] { return [...new Set([...this.waiters.values()].filter((w) => w.from === id).map((w) => w.agent))]; }
+  /**
+   * `service:agents/agent.changed` into the ledger: a word changed the agent (`by` did it), or its process came up, went down or
+   * was given up on (`state`, told once per change; idle and working are the turns' own events).
+   */
+  changed(id: string, change: string, by?: string): void {
+    const state = this.runs.get(id) ? this.stateOf(id) : "stopped";
+    const coarse = state === "idle" || state === "working" ? "running" : state;
+    if (change === "state") {
+      if (this.told.get(id) === coarse) return;
+    }
+    if (change === "removed") this.told.delete(id); else this.told.set(id, coarse);
+    this.bg(this.deps.router.send({ to: null, kind: "event", word: "agent.changed", body: { agent: id, change, state, ...(by ? { by } : {}) } }, SERVICE_CALLER), "agent.changed");
+  }
+  /** Record who requested the change, including when a persisted change could not restart the process. */
+  async because<T>(id: string, change: string, by: string, work: () => Promise<T>): Promise<T> {
+    try { return await work(); } finally { this.changed(id, change, by); }
+  }
   /** Whether the agent takes messages: it is a member of the registry, and the inbox keeps what comes while its process starts or is started again. Different from `available` (the process is up and can run a turn). */
   reachable(id: string): boolean { return this.deps.registry.get(id) !== null; }
   /** A member of the registry while the agent is meant to be on, process or not. */
@@ -379,11 +409,11 @@ export class AgentManager {
     const live = slot.live;
     slot.live = undefined;
     this.deps.revokeTools?.(slot.id);
-    if (!live) { slot.phase = "stopped"; return Promise.resolve(); }
+    if (!live) { slot.phase = "stopped"; this.changed(slot.id, "state"); return Promise.resolve(); }
     this.cutTurns(live, reason, dead);
     slot.phase = "stopping";
     const gone = dead ? Promise.resolve() : live.driver.stop(slot.id, reason).catch((error) => this.log(`agents: stopping ${slot.id}: ${errorText(error)}`));
-    return slot.stopped = gone.then(() => { slot.phase = "stopped"; slot.stopped = undefined; });
+    return slot.stopped = gone.then(() => { slot.phase = "stopped"; slot.stopped = undefined; this.changed(slot.id, "state"); });
   }
   /**
    * The one place where a turn that was running when its process went away is ended: whatever discards a `Live` (the process
@@ -425,6 +455,7 @@ export class AgentManager {
     for (const key of Object.keys(lanes)) live.lanes.set(key, newLane(key));
     Object.assign(slot, { phase: "starting", live, proxy: this.proxy });
     this.ensureMember(id);
+    this.changed(id, "state");
     const current = () => slot.gen === gen;
     let statics: PromptModule[] = [];
     try {
@@ -452,6 +483,7 @@ export class AgentManager {
     if (live.ended) return this.failed(slot, live.ended, true);
     slot.phase = "running";
     live.startedAt = this.now();
+    this.changed(id, "state");
     const hash = staticHash(statics);
     this.runs.patch(id, (spec) => { for (const key of Object.keys(lanes)) if (!spec.sessions[key] || !spec.static_hash[key]) spec.static_hash[key] ??= hash; });
     this.deps.started?.(id);
@@ -507,6 +539,7 @@ export class AgentManager {
 
   private giveUp(slot: Slot, reason: string, failures: number): void {
     slot.gaveUp = true;
+    this.changed(slot.id, "state");
     this.deps.registry.remove(slot.id);
     this.rejectWaiters(slot.id, new WordError("failed", `${slot.id} could not be started: ${reason}`));
     this.tellOwner(`${slot.id} 起不来了：连着失败了${failures}次（${reason}）。我先停下它，不再自动重试；你可以在设置里让它重启。`);
@@ -785,6 +818,7 @@ export class AgentManager {
       case "turn.started":
         lane.busy = true;
         lane.turn = ev.turn;
+        lane.since = this.now();
         lane.turnsSince++;
         this.outputs.set(ev.turn, []);
         if (ev.ids?.length) this.inbox.mark(ev.ids, "sent", ev.turn);

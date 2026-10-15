@@ -70,6 +70,7 @@ export function summarize(db: Db, days: number, now: number, timeZone: string) {
   const today = dayOf(now), week = dayStart(6), month = dayStart(29), shown = dayStart(span - 1);
   const periods = { today: zero(), "7d": zero(), "30d": zero() };
   const byCaller = new Map<string, Totals>();
+  const byCallerToday = new Map<string, Totals>();
   const byDay = new Map<string, Totals>();
   const recent: UsageCall[] = [];
   for (const call of readUsage(db, now - (Math.max(span, 30) + 1) * 86_400_000)) {
@@ -77,13 +78,14 @@ export function summarize(db: Db, days: number, now: number, timeZone: string) {
     if (day < first || day > today) continue;
     if (day >= month) add(periods["30d"], call);
     if (day >= week) { add(periods["7d"], call); add(byCaller.get(call.caller) ?? byCaller.set(call.caller, zero()).get(call.caller)!, call); }
-    if (day === today) add(periods.today, call);
+    if (day === today) { add(periods.today, call); add(byCallerToday.get(call.caller) ?? byCallerToday.set(call.caller, zero()).get(call.caller)!, call); }
     if (day >= shown) add(byDay.get(day) ?? byDay.set(day, zero()).get(day)!, call);
     recent.push(call);
   }
   return {
     as_of: now, currency: "USD", estimated: true, periods,
     by_caller: [...byCaller].map(([caller, totals]) => ({ caller, ...totals })).sort((a, b) => b.cost_usd - a.cost_usd || b.calls - a.calls),
+    by_caller_today: [...byCallerToday].map(([caller, totals]) => ({ caller, ...totals })).sort((a, b) => b.cost_usd - a.cost_usd || b.calls - a.calls),
     by_day: [...byDay].map(([date, totals]) => ({ date, ...totals })).sort((a, b) => a.date.localeCompare(b.date)),
     recent: recent.slice(-15).reverse(),
   };

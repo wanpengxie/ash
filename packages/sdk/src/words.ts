@@ -492,8 +492,12 @@ const agentFields: Record<string, JsonSchema> = {
   name: nonempty, summary: nonempty, brief: nonempty, runtime: AGENT_RUNTIME, native: AGENT_NATIVE, tools: strings, words: strings,
   lanes: AGENT_LANES, modules: AGENT_MODULES, primary: bool,
 };
-const agentInfo = obj({ notes: array(str), id: agentRef, name: str, summary: str, state: choice("idle", "working", "starting", "stopped", "error"), available: bool, reachable: bool, primary: bool, ephemeral: bool,
-  brief: str, runtime: AGENT_RUNTIME, native: AGENT_NATIVE, created_by: str, tools: nullable(strings), words: nullable(strings), lanes: AGENT_LANES, modules: nullable(AGENT_MODULES) },
+/** What a working agent is doing: the turn it is in, on which lane, since when, and the first words it was given in it. */
+const AGENT_DOING = obj({ turn: id, lane: nonempty, since: nonnegativeSafe, about: str }, ["turn", "lane", "since"]);
+const AGENT_STATE = choice("idle", "working", "starting", "stopped", "error");
+const agentInfo = obj({ notes: array(str), id: agentRef, name: str, summary: str, state: AGENT_STATE, available: bool, reachable: bool, primary: bool, ephemeral: bool,
+  brief: str, runtime: AGENT_RUNTIME, native: AGENT_NATIVE, created_by: str, tools: nullable(strings), words: nullable(strings), lanes: AGENT_LANES, modules: nullable(AGENT_MODULES),
+  doing: AGENT_DOING, waiting_on: array(agentRef) },
 ["id", "name", "summary", "state"]);
 const sessionKey = nonempty;
 const sessionTarget = { agent: agentRef, key: sessionKey };
@@ -552,6 +556,8 @@ add("service:agents", "configure", "request", obj({ agent: agentRef, key: sessio
   { effect: "write", label: "在配置帮手", description: "Set the runtime's own configuration for an agent (model, effort level, other options the runtime reports it supports), or read it when config is left out. This is the temporary way: it changes what is in force now and is forgotten when the hub restarts; the lasting way is `update` with `runtime`. On the pi runtime: `config: {model: \"deepseek/deepseek-flash\", effort: \"high\"}` takes effect from the next turn; `config: {login: \"openai-codex\"}` starts Codex's browser login (pi's standard one) and returns {url} (the owner opens it in the phone's browser, with the phone's VPN on, and signs in; the browser comes back to the phone itself and you are told when it is done). The read-back gives `effective` (in force now: model, effort, whether it fell back to DeepSeek and why, the route to the model, the login state) and `saved` (the declaration's lasting settings)." });
 add("service:agents", "plugins", "request", obj({ agent: agentRef, key: sessionKey, op: choice("list", "enable", "disable"), name: nonempty }, ["agent", "op"]), free,
   { effect: "write", risk: "structure", label: "在调整帮手的插件", description: "List, enable or disable the plugins of one agent's runtime. Plugins change what the agent can do; the gate decides whether the owner is asked." });
+add("service:agents", "agent.changed", "event", obj({ agent: agentRef, change: choice("declared", "updated", "removed", "started", "stopped", "restarted", "primary", "state"), state: AGENT_STATE, by: id }, ["agent", "change", "state"]), undefined,
+  { record: true, label: "在记下帮手的变化", description: "An agent was declared, changed, removed, started, stopped, restarted or made primary (`by`: who did it), or its process came up, went down or was given up on by itself (`change: state`). Turns starting and ending are the agent's own turn.started / turn.ended. Goes into the ledger, so a page that shows the team reads it again." });
 add("service:agents", "env.changed", "event", ENV_CHANGED, undefined,
   { direction: "in", label: "在处理网络变化", description: "The host reports that the network or the power state changed (what: network with the proxy and whether the device is online, or power with whether it is in power-saving mode); when the proxy is a different one, the agents module restarts at once the agents running on this phone (they are told the turn was cut off; their waiting messages go to the new process). Sent by the host module; not recorded." });
 // ===================================================================================================================
@@ -675,6 +681,14 @@ add("service:history", "query", "request", obj({ text: nonempty, speaker: id, la
   { label: "在翻聊天记录", description: "Search the ledger: messages by text, speaker, lane or thread, newest first. Long bodies are summaries with an attachment reference; read them with service:blobs/read." });
 add("service:history", "read", "request", obj({ from_seq: positiveSafe, to_seq: positiveSafe }, ["from_seq", "to_seq"]), obj({ messages: array(free) }, ["messages"]),
   { label: "在读历史原文", description: "Read ledger messages by sequence range, as recorded (secret values masked)." });
+/** One message between members of the team (an ask, a tell or a spawned task), with its answer when there is one. */
+const exchange = obj({
+  id, seq: positiveSafe, ts: nonnegativeSafe, from: id, to: id, word: choice("ask", "tell", "spawn"), text: str, thread: id, turn: id,
+  state: choice("waiting", "answered", "failed", "sent"), answer: obj({ seq: positiveSafe, ts: nonnegativeSafe, text: str, error: str }, ["seq", "ts"]),
+}, ["id", "seq", "ts", "from", "to", "word", "text", "state"]);
+add("service:history", "exchanges", "request", obj({ agent: agentRef, before: positiveSafe, limit: { type: "integer", minimum: 1, maximum: 100 } }),
+  obj({ items: array(exchange), next_before: positiveSafe }, ["items"]),
+  { label: "在看帮手之间的往来", description: "The team's own conversation, newest first: what agents (and the owner, when speaking to a helper) asked and told each other, through service:agents/ask, tell and spawn or straight to an agent, each with its answer and whether it is still waiting. `agent` keeps the ones that agent sent or received. Not the owner's conversation with the primary agent (that is history.window). Page back with next_before." });
 add("service:history", "turn", "request", obj({ turn: id }, ["turn"]), obj({ turn: id, messages: array(free), tools: array(free) }, ["turn"]),
   { label: "在看某一轮做了什么", description: "What happened in one turn of an agent: the messages it was given, its tool calls and results (summaries), and what it said." });
 add("service:history", "activity", "request", obj({ id, offset: nonnegativeSafe }, ["id"]), obj({ items: array(free), next_offset: nullable(nonnegativeSafe) }, ["items"]),
