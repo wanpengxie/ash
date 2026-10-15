@@ -19,6 +19,8 @@ export const DEVICE_VERSION = "0.2.4";
 export const DEVICE_MIN_VERSION = "0.2.4";
 /** Where its releases are published (`<this>/device-v<version>/<asset>`). */
 export const DEVICE_RELEASES = "https://github.com/wanpengxie/ash/releases/download";
+/** `owner/name` of the GitHub repository the phone's packages are released in (`v<version>`: app-, kernel-<version>.apk, SHA256SUMS). */
+export const PHONE_RELEASES = "wanpengxie/ash-drop";
 /** The kernel host contract (host.json, host interface, host events). */
 export const HOST_CONTRACT = "ash-host/1";
 /** The app contract (app.json, the app bridge). */

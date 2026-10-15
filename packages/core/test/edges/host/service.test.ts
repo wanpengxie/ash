@@ -4,6 +4,7 @@ import test from "node:test";
 import { lintWords } from "../../../../sdk/src/word";
 import type { Message, Outgoing, Reply, WordResult } from "../../../../sdk/src/message";
 import { createHostPipe, createHostService, createVirtualScreen } from "../../../src/edges/host";
+import type { PhoneRelease, ReleaseOptions } from "../../../src/edges/host/release";
 
 const capOfMethod = (m: string) => (m.startsWith("vscreen.") ? "vscreen" : m === "input.key" ? "input" : "apps");
 const PHONE_RESULTS: Record<string, unknown> = {
@@ -13,7 +14,9 @@ const PHONE_RESULTS: Record<string, unknown> = {
   "input.key": { message: "Media key play_pause sent." },
   "apps.open": { package: "com.x", opened: true, message: "started and confirmed in front (com.x)" },
 };
-const setup = (offline: string[] = [], onNetwork?: (network: unknown, online: boolean) => void, phoneCaps: string[] = ["vscreen", "input", "apps"], hands: string[] = ["device:h1"]) => {
+const RELEASE: PhoneRelease = { version: "0.4.49", packages: [{ package: "ai.ash.agent", url: "https://api.github.com/a/1", sha256: "a".repeat(64) }, { package: "ai.ash.kernel", url: "https://api.github.com/a/2", sha256: "b".repeat(64) }] };
+const setup = (offline: string[] = [], onNetwork?: (network: unknown, online: boolean) => void, phoneCaps: string[] = ["vscreen", "input", "apps"], hands: string[] = ["device:h1"], vault: Record<string, string> = {}) => {
+  const asked: ReleaseOptions[] = [];
   const sent: { msg: Outgoing; from: string }[] = [];
   const calls: unknown[][] = [];
   const stops: unknown[][] = [];
@@ -26,7 +29,8 @@ const setup = (offline: string[] = [], onNetwork?: (network: unknown, online: bo
     powerHold: async (ms: number, reason: string) => { calls.push(["powerHold", ms, reason]); return supported({}); },
     powerRelease: async () => supported({}),
     handsHandoff: async (port: number, token: string) => { calls.push(["handoff", port, token]); return supported({ delivered: ["x"] }); },
-    updateInstall: async () => supported({}),
+    updateInstall: async (req: unknown) => { calls.push(["updateInstall", req]); return supported({ started: true as const, via: "shell" as const }); },
+    updateStatus: async () => supported({ state: "downloading", version: "0.4.49" }),
     has: (cap: string) => caps.has(cap),
     phone: async (method: string, req: unknown): Promise<any> => {
       calls.push(["phone", method, req]);
@@ -46,8 +50,11 @@ const setup = (offline: string[] = [], onNetwork?: (network: unknown, online: bo
   };
   const registry = { findByWord: (word: string) => (word === "apps.open_direct" ? hands.map((id) => ({ id })) : []) as never[] };
   const virtual = createVirtualScreen(client);
-  const service = createHostService({ client, router, registry, virtual, onStop: (deadline, reason) => { stops.push([deadline, reason]); }, ...(onNetwork ? { onNetwork } : {}), log: (m) => logs.push(m) });
-  return { service, sent, calls, stops, logs, virtual };
+  const service = createHostService({
+    client, router, registry, virtual, onStop: (deadline, reason) => { stops.push([deadline, reason]); }, ...(onNetwork ? { onNetwork } : {}), log: (m) => logs.push(m),
+    vault: { use: (ref) => vault[ref] ?? null }, release: async (o) => { asked.push(o); return { ...RELEASE, version: o.version?.replace(/^v/, "") ?? RELEASE.version }; },
+  });
+  return { service, sent, calls, stops, logs, virtual, asked };
 };
 const msg = (word: string, body: unknown): Message => ({ seq: 1, id: "m1", ts: 1, from: "service:clock", to: "service:host", kind: "request", word, body });
 const ctx = { signal: new AbortController().signal, caller: { member: "service:clock", via: "service" as const, local: true }, raw: undefined };
@@ -170,7 +177,7 @@ test("vscreen.record.stop: the host's video is copied into the main body's work 
   const sent: Outgoing[] = [];
   const client = {
     wakeAt: async () => ({ supported: false as const }), wakeClear: async () => ({ supported: false as const }), powerHold: async () => ({ supported: false as const }),
-    powerRelease: async () => ({ supported: false as const }), handsHandoff: async () => ({ supported: false as const }), updateInstall: async () => ({ supported: false as const }),
+    powerRelease: async () => ({ supported: false as const }), handsHandoff: async () => ({ supported: false as const }), updateInstall: async () => ({ supported: false as const }), updateStatus: async () => ({ supported: false as const }),
     lifecycleRestart: async () => ({}), has: (cap: string) => cap === "vscreen",
     phone: async (method: string): Promise<any> => ({ supported: true as const, result: method === "vscreen.record.stop" ? { path: video, seconds: 4.5, bytes: 18, reason: "stopped" } : { message: "ok" } }),
   };
@@ -190,4 +197,20 @@ test("vscreen.record.stop: the host's video is copied into the main body's work 
   assert.equal(shows.length, 1);
   assert.deepEqual((shows[0]!.body as { card: Record<string, unknown> }).card, { type: "file", workspace: "body:main", path: shows[0] && (shows[0].body as any).card.path, name: (shows[0]!.body as any).card.name, mime_type: "video/mp4", size: 18 });
   assert.equal(shows[0]!.to, "person:owner");
+});
+
+test("service:host update.install: only the version is asked; the release comes from GitHub and the token goes to the host, never into the answer", async () => {
+  const s = setup([], undefined, undefined, undefined, { GITHUB_TOKEN: "ghp_readonly" });
+  const answer = await s.service.member.handle(msg("update.install", { version: "v0.4.49" }), ctx) as WordResult;
+  assert.deepEqual(answer, { data: { started: true, version: "0.4.49", via: "shell", packages: ["ai.ash.agent", "ai.ash.kernel"] } });
+  assert.deepEqual(s.asked, [{ repo: "wanpengxie/ash-drop", version: "v0.4.49", token: "ghp_readonly" }]);
+  assert.deepEqual(s.calls.at(-1), ["updateInstall", { version: "0.4.49", packages: RELEASE.packages, token: "ghp_readonly" }]);
+  assert.ok(!JSON.stringify(answer).includes("ghp_"));
+  assert.deepEqual(await s.service.member.handle(msg("update.status", {}), ctx), { data: { state: "downloading", version: "0.4.49" } });
+
+  // Without a token: the latest public release, and no token sent.
+  const open = setup();
+  await open.service.member.handle(msg("update.install", {}), ctx);
+  assert.deepEqual(open.asked, [{ repo: "wanpengxie/ash-drop", token: null }]);
+  assert.deepEqual(open.calls.at(-1), ["updateInstall", { version: "0.4.49", packages: RELEASE.packages }]);
 });

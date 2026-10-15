@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "1c955d8640bf308f29859d0d4fdba0b9e4c4325ee4764ec7654f0031939d694b",
+ "hash": "b67f29597114e04816eb2456148ddda71382a043c6c821c4b995c4440fcc1bda",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -15158,34 +15158,46 @@
    "word": "update.install",
    "kind": "request",
    "direction": "in",
-   "description": "Have the host download and install a new kernel package (checked against sha256). The gate decides whether the owner is asked.",
+   "description": "Update Ash on this phone to a release (both packages: the app, then the kernel; without version: the latest). The hub reads the release's SHA256SUMS on GitHub (a private repository with the vault's GITHUB_TOKEN); the host downloads each APK, checks it and only then installs it. It answers at once and works in the background: follow it with update.status. With the debug identity it installs by itself (via shell); without it the system installer asks the owner to tap 「安装」 in a notification, once per package (via installer). Installing the kernel restarts the hub: you come back on the new version. The gate decides whether the owner is asked.",
    "input_schema": {
     "type": "object",
     "properties": {
      "version": {
       "type": "string",
-      "minLength": 1
-     },
-     "url": {
-      "type": "string",
-      "minLength": 1
-     },
-     "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"
      }
     },
-    "required": [
-     "version",
-     "url",
-     "sha256"
-    ],
+    "required": [],
     "additionalProperties": false
    },
    "result_schema": {
     "type": "object",
-    "properties": {},
-    "required": [],
+    "properties": {
+     "started": {
+      "type": "boolean"
+     },
+     "version": {
+      "type": "string"
+     },
+     "via": {
+      "type": "string",
+      "enum": [
+       "shell",
+       "installer"
+      ]
+     },
+     "packages": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "started",
+     "version",
+     "via"
+    ],
     "additionalProperties": false
    },
    "effect": "execute",
@@ -15195,7 +15207,52 @@
     "agent"
    ],
    "label": {
-    "doing": "在安装大脑更新"
+    "doing": "在升级手机上的 Ash"
+   }
+  },
+  {
+   "member": "service:host",
+   "word": "update.status",
+   "kind": "request",
+   "direction": "in",
+   "description": "Where the phone's update is: idle, downloading, installing, waiting_user (the owner must tap the system's install confirmation), done or failed (message says why; nothing was installed when a download or checksum failed).",
+   "input_schema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "state": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string"
+     },
+     "message": {
+      "type": "string"
+     },
+     "at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "state"
+    ],
+    "additionalProperties": true
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在看手机升级进度"
    }
   },
   {

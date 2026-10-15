@@ -295,7 +295,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
     summarize: createSummarizer({ llm }),
   });
-  const hostService = createHostService({ client: host, router, registry, virtual, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
+  const hostService = createHostService({ client: host, router, registry, virtual, vault, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);
   link.mount("/mcp", tools.handler);
   link.mount("/", staticWeb());

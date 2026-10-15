@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `1c955d8640bf308f`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `b67f29597114e048`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -26,7 +26,7 @@
 - [`service:directory`](#servicedirectory) (2)
 - [`service:history`](#servicehistory) (9)
 - [`service:blobs`](#serviceblobs) (2)
-- [`service:host`](#servicehost) (23)
+- [`service:host`](#servicehost) (24)
 - [`service:bodies`](#servicebodies) (4)
 - [`person:owner`](#personowner) (9)
 - [`agent:*`](#agent) (8)
@@ -346,7 +346,8 @@
 | `env.changed` | kernel | read / none | event out | what*, network*, online*, saver* | 在转达环境变化 | The network or the power state changed: the host module passes it on to service:agents and service:link (which reconnects the relay). |
 | `restart` | owner, agent, app | act / structure | - | reason | 在重启大脑 | Have the host restart the kernel: it is away for about ten seconds and what it was doing is cut off (the calling agent's turn too). The gate decides whether the owner is asked; an app puts the question on its own screen. |
 | `hands.handoff` | kernel | act / none | - | port*, token* (secret) | 在交接本机的手 | Hand the local link port and token to the hands on this device (the phone app) so they connect. The token is held in memory and never written down. |
-| `update.install` | owner, agent | execute / structure | - | version*, url*, sha256* | 在安装大脑更新 | Have the host download and install a new kernel package (checked against sha256). The gate decides whether the owner is asked. |
+| `update.install` | owner, agent | execute / structure | - | version | 在升级手机上的 Ash | Update Ash on this phone to a release (both packages: the app, then the kernel; without version: the latest). The hub reads the release's SHA256SUMS on GitHub (a private repository with the vault's GITHUB_TOKEN); the host downloads each APK, checks it and only then installs it. It answers at once and works in the background: follow it with update.status. With the debug identity it installs by itself (via shell); without it the system installer asks the owner to tap 「安装」 in a notification, once per package (via installer). Installing the kernel restarts the hub: you come back on the new version. The gate decides whether the owner is asked. |
+| `update.status` | owner, agent | read / none | - | - | 在看手机升级进度 | Where the phone's update is: idle, downloading, installing, waiting_user (the owner must tap the system's install confirmation), done or failed (message says why; nothing was installed when a download or checksum failed). |
 | `input.key` | owner, agent, app | act / outward | foreground | key*, long_press | 在按手机按键 | Press a key on the phone: media keys (play_pause, next, previous ...), volume keys, and other keys (back, home, recents, power ... or an Android keycode number). Keys other than media and volume need the phone's debug identity (「后台也能动手」), which the owner connects. |
 | `vscreen.create` | owner, agent, app | act / structure | - | orientation, short_edge, dpi | 在创建虚拟屏 | Create (or reuse) the virtual screen: a separate phone-shaped display, invisible to the owner, where apps can be launched, seen and operated without disturbing the real screen. Only one exists; calling again with another size recreates it. Needs the phone's debug identity (「后台也能动手」), which the owner connects (Android 10+). |
 | `vscreen.close` | owner, agent, app | act / structure | - | - | 在关闭虚拟屏 | Destroy the virtual screen (apps running on it are closed or moved) and stop its server. Call it when the task is done. Needs the phone's debug identity (「后台也能动手」), which the owner connects (Android 10+). |

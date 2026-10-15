@@ -57,7 +57,9 @@ class KernelService : Service() {
             override fun onStatus(text: String, state: String) = supervisor.onStatus(text, state)
         }
         // On its own identity the kernel can only press media and volume keys; the rest of the phone actions need the shell host.
-        val api = HostApi(HostApi.CAPABILITIES + "input", Keys, wake, AndroidPower.get(this), connector, callbacks, { Log.w(TAG, it) }, ai.ash.kernel.host.AppPhone(this))
+        // Its own updates go through the system installer: the owner confirms each package (the shell host installs without asking).
+        val updater = Updater(java.io.File(cacheDir, "update"), SessionInstaller(this) { Log.i(TAG, it) }, { Log.i(TAG, it) })
+        val api = HostApi(HostApi.CAPABILITIES + "input" + "update", Keys, wake, AndroidPower.get(this), connector, callbacks, { Log.w(TAG, it) }, ai.ash.kernel.host.AppPhone(this), updater)
         val pipe = HostPipe(api) { log.note(it) }
 
         supervisor = KernelSupervisor(
