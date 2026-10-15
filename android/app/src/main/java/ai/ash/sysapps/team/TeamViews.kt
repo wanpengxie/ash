@@ -17,6 +17,8 @@ internal class TeamViews(private val ctx: Context) {
     private fun d(v: Int) = AshUi.dp(ctx, v)
     fun text(value: String, type: AshType = AshTokens.Type.body, muted: Boolean = false) =
         AshUi.text(ctx, value, type, if (muted) c.text2 else c.text).apply { setTextIsSelectable(true) }
+    // A clickable row owns its tap; only the reading surface offers text selection.
+    private fun label(value: String, type: AshType = AshTokens.Type.body, muted: Boolean = false) = text(value,type,muted).apply { setTextIsSelectable(false) }
     fun divider() = View(ctx).apply { setBackgroundColor(c.line); layoutParams = LinearLayout.LayoutParams(-1, d(1)) }
     fun section(value: String) = AshUi.vstack(ctx).apply {
         setPadding(0,d(24),0,d(12)); addView(text(value,AshTokens.Type.headline))
@@ -27,7 +29,7 @@ internal class TeamViews(private val ctx: Context) {
     }
     private fun avatar(m: TeamModel.Member, size: Int): View = if (m.primary) {
         AshUi.AvatarView(ctx).apply { image = OnboardingViews.face(ctx,"default"); layoutParams = LinearLayout.LayoutParams(d(size),d(size)) }
-    } else text(m.name.take(1),if(size>36) AshTokens.Type.display else AshTokens.Type.headline).apply {
+    } else label(m.name.take(1),if(size>36) AshTokens.Type.display else AshTokens.Type.headline).apply {
         gravity = Gravity.CENTER; setTextColor(c.helperPurple)
         background = AshUi.rounded(c.surface2,AshUi.dpF(ctx,size*0.32f))
         layoutParams = LinearLayout.LayoutParams(d(size),d(size))
@@ -39,9 +41,9 @@ internal class TeamViews(private val ctx: Context) {
             minimumHeight=d(76); setPadding(0,d(12),0,d(12)); gravity=Gravity.CENTER_VERTICAL
             addView(avatar(m,36))
             addView(AshUi.vstack(ctx,4).apply {
-                addView(text(m.name,AshTokens.Type.headline)); addView(text(work,AshTokens.Type.sub,true))
+                addView(label(m.name,AshTokens.Type.headline)); addView(label(work,AshTokens.Type.sub,true))
             },LinearLayout.LayoutParams(0,-2,1f))
-            addView(text(cost,AshTokens.Type.sub,true).apply { maxWidth=d(108); gravity=Gravity.END })
+            addView(label(cost,AshTokens.Type.sub,true).apply { maxWidth=d(108); gravity=Gravity.END })
             isClickable=true; isFocusable=true; contentDescription="${m.name}，$work，$cost"; setOnClickListener { onClick() }
             AshUi.role(this,android.widget.Button::class.java.name)
         })
@@ -65,10 +67,13 @@ internal class TeamViews(private val ctx: Context) {
         val row=AshUi.hstack(ctx,12)
         row.addView(View(ctx).apply { background=ctx.getDrawable(R.drawable.ash_ic_file)?.mutate()?.apply{setTint(c.helperPurple)}; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO },LinearLayout.LayoutParams(d(40),d(52)))
         row.addView(AshUi.vstack(ctx,4).apply {
-            addView(text(e.text.lineSequence().firstOrNull().orEmpty().take(90).ifBlank{"原委托"},AshTokens.Type.headline))
-            addView(text("${names[e.to]?:e.to.removePrefix("agent:")} → ${if(e.from=="person:owner") "你" else names[e.from]?:e.from.removePrefix("agent:")} · ${e.status}",AshTokens.Type.sub,true))
+            addView(label(e.text.lineSequence().firstOrNull().orEmpty().take(90).ifBlank{"原委托"},AshTokens.Type.headline))
+            val from=if(e.from=="person:owner") "你" else names[e.from]?:e.from.removePrefix("agent:")
+            val to=names[e.to]?:e.to.removePrefix("agent:")
+            val direction=if(e.answer!=null) "$to → $from" else "$from → $to"
+            addView(label("$direction · ${e.status}",AshTokens.Type.sub,true))
             val answer=e.answer?.let{it.error.ifBlank{it.text}} ?: e.text
-            addView(text(answer.take(100)+if(answer.length>100)"…" else "",AshTokens.Type.sub,true).apply { maxLines=3; ellipsize=android.text.TextUtils.TruncateAt.END })
+            addView(label(answer.take(100)+if(answer.length>100)"…" else "",AshTokens.Type.sub,true).apply { maxLines=3; ellipsize=android.text.TextUtils.TruncateAt.END })
         },LinearLayout.LayoutParams(0,-2,1f)); addView(row)
         minimumHeight=d(100); isClickable=true; isFocusable=true; contentDescription="查看原委托与回答"; setOnClickListener{onClick()}; AshUi.role(this,android.widget.Button::class.java.name)
     }
