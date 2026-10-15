@@ -29,6 +29,8 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.time.Duration
+import android.widget.ScrollView
 
 /** Real Activity/View binding with a controlled hub boundary. No live phone, link, app startup or network calls. */
 @RunWith(RobolectricTestRunner::class)
@@ -71,15 +73,32 @@ class DevicesActivityAcceptanceTest {
     private fun DeviceScreen.texts() = views(window.decorView).filterIsInstance<TextView>().filter { it.visibleInTree() }.map { it.text.toString() }
     private fun DeviceScreen.button(label: String): TextView = views(window.decorView).filterIsInstance<TextView>().first { it.text.toString() == label && it.visibleInTree() }
     private fun DeviceScreen.access(label: String) = views(window.decorView).filterIsInstance<AshUi.AshSwitch>().single { it.contentDescription == label }
-    private fun DeviceScreen.capture(name: String) {
+    private fun DeviceScreen.layoutScreen() {
         val view = window.decorView
         val width = (393 * resources.displayMetrics.density).toInt(); val height = (851 * resources.displayMetrics.density).toInt()
         view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, width, height)
+    }
+    private fun DeviceScreen.settleScreen() {
+        layoutScreen()
+        // RecyclerView inserts animate after its first layout. Advance the actual main-loop animation frames before drawing.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
+        layoutScreen()
+    }
+    private fun DeviceScreen.scrollToText(fragment: String) {
+        settleScreen()
+        val target = views(window.decorView).filterIsInstance<TextView>().first { fragment in it.text.toString() && it.visibleInTree() }
+        views(window.decorView).filterIsInstance<ScrollView>().single().scrollTo(0, target.top)
+    }
+    private fun DeviceScreen.capture(name: String) {
+        settleScreen()
+        val view = window.decorView
+        val width = view.width; val height = view.height
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); view.draw(Canvas(bitmap))
         val colors = HashSet<Int>()
-        for (y in 0 until height step 7) for (x in 0 until width step 7) colors += bitmap.getPixel(x, y)
-        assertTrue("The actual Activity screenshot must contain rendered content, not a solid background", colors.size > 10)
+        // Exclude the header: a rendered title bar must not hide an empty page in screenshot acceptance.
+        for (y in (150 * resources.displayMetrics.density).toInt() until height step 7) for (x in 0 until width step 7) colors += bitmap.getPixel(x, y)
+        assertTrue("The Activity content must render below its header", colors.size > 10)
         val dir = File("/data/atoll/tmp/devices-acceptance").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
     }
@@ -152,7 +171,7 @@ class DevicesActivityAcceptanceTest {
         assertTrue(activity.texts().any { it.contains("延迟：尚无可用测量") })
         assertFalse(activity.texts().contains(raw))
         activity.button("查看诊断原文").performClick(); assertTrue(activity.texts().contains(raw))
-        activity.button("收起诊断原文").performClick(); activity.capture("diagnosis-conclusion")
+        activity.button("收起诊断原文").performClick(); activity.scrollToText("设备已到达中转站"); activity.capture("diagnosis-conclusion")
     }
 
     @Test fun revocationRequiresConfirmationDismissesOnNewTargetAndShowsTheRestorableState() {
@@ -182,6 +201,7 @@ class DevicesActivityAcceptanceTest {
         activity.answer("pair_start", JSONObject().put("pair_id", "pair-a").put("command", "TEST-ONE-TIME-COMMAND").put("expires_at", System.currentTimeMillis() + 60_000))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "waiting"))
         assertTrue(activity.texts().contains("TEST-ONE-TIME-COMMAND"))
+        assertTrue(activity.texts().any { it.contains("终端粘贴并运行") })
         activity.capture("pairing-install-command")
         activity.event("pair.changed", JSONObject().put("pair_id", "pair-a").put("state", "requested"))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "requested").put("name", "书房电脑"))
@@ -242,7 +262,7 @@ class DevicesActivityAcceptanceTest {
         diagnose(JSONArray().put(connection("b", "device", 2.0)).put(connection("a", "human", 7.0)).put(connection("a", "device", 42.0)))
         assertTrue(activity.texts().any { it.contains("延迟：42") && it.contains("12 秒前的心跳样本") })
         assertFalse(activity.texts().any { it.contains("延迟：2.0") || it.contains("延迟：7.0") })
-        activity.capture("measured-device-latency")
+        activity.scrollToText("延迟：42"); activity.capture("measured-device-latency")
         activity.connect()
         val offline = devices(); offline.getJSONArray("devices").getJSONObject(0).put("online", false)
         activity.take("list", "service:devices").done(offline, null)

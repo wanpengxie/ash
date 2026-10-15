@@ -42,7 +42,7 @@
     <string name="dev_server">服务器</string>
     <string name="dev_issue">生成安装命令</string>
     <string name="dev_pair_intro">在要连接的电脑或服务器上打开终端，运行安装命令，然后在这里批准。</string>
-    <string name="dev_pair_wait">还剩 %1$s。命令含一次性密钥，只能用一次，请勿转发。</string>
+    <string name="dev_pair_wait">复制下面的命令，在这台电脑的终端粘贴并运行，再回到这里确认连接。\n还剩 %1$s。命令含一次性密钥，只能用一次，请勿转发。</string>
     <string name="dev_pair_expired">安装命令已过期，请重新生成。</string>
     <string name="dev_copy">复制命令</string>
     <string name="dev_copied">已复制</string>

@@ -539,7 +539,7 @@ open class DevicesActivity : SystemAppActivity() {
             addView(computer, LinearLayout.LayoutParams(0, -2, 1f)); addView(server, LinearLayout.LayoutParams(0, -2, 1f))
         }
         private val issue = AshUi.button(this@DevicesActivity, getString(R.string.dev_issue), AshUi.Kind.PRIMARY, block = true) { issue() }
-        private val copy: TextView = button(R.string.dev_copy) {
+        private val copy: TextView = AshUi.button(this@DevicesActivity, getString(R.string.dev_copy), AshUi.Kind.PRIMARY, block = true) {
             val waiting = pair.step as? PairFlow.Step.Waiting ?: return@button
             if (waiting.command.isEmpty() || pair.expiredBy(System.currentTimeMillis())) return@button
             copyButton().isEnabled = false
@@ -552,12 +552,12 @@ open class DevicesActivity : SystemAppActivity() {
         private val approve = AshUi.button(this@DevicesActivity, getString(R.string.dev_approve), AshUi.Kind.PRIMARY, block = true) { decide(true) }
         private val reject = button(R.string.dev_reject) { decide(false) }
         private val restart = button(R.string.dev_restart) { pair.reset(); pairUncertain = false; result.text = ""; bind() }
-        private val open = button(R.string.dev_open_device) {
+        private val open = AshUi.button(this@DevicesActivity, getString(R.string.dev_open_device), AshUi.Kind.PRIMARY, block = true) {
             val id = (pair.step as? PairFlow.Step.Connected)?.device ?: (pair.step as? PairFlow.Step.Approved)?.device
             if (!id.isNullOrEmpty()) showRoute("d/$id")
         }
         private var deciding = false
-        init { permissions.restore(pairDraft); listOf(kinds, explanation, issue, command, copy, permissions.root, approve, reject, connectedAbilities, result, restart, open).forEach(root::addView); kindState() }
+        init { permissions.restore(pairDraft); listOf(kinds, explanation, issue, command, copy, permissions.root, approve, reject, connectedAbilities, result, open, restart).forEach(root::addView); kindState() }
         fun accessDraft() = permissions.args().toString()
         private fun kindState() { computer.isSelected = pairingKind == "computer"; server.isSelected = pairingKind == "server"; computer.alpha = if (computer.isSelected) 1f else 0.5f; server.alpha = if (server.isSelected) 1f else 0.5f }
         fun bind() {
