@@ -42,3 +42,27 @@
 指定单命令已退出0：Activity 11/11、Model 6/6，0失败；包含生产与测试Kotlin编译。实际打开home/detail/quiet/ash-detail/edited五图，正文与恢复动作可见，普通waiting/未来无当前需人提示，实际记录保存和刷新保输入通过。此时尚未包括下面看图修正，不用17项绿测试替代当前图片复验。
 
 看图明确修正：详情经过与来源改成稿中的无底展开/来源行；无时间不能因ready字段写“提醒已安排”，有截止但无提醒则称到期跟进安排；fixture无时间使用none，并给原source验证发出的同消息Intent。公共nav标签未居中已交base，业务不另修公共类。补充同窗口quick-add成功图，尚待总控下一时段复验后打开。
+
+## 最终定向交付记录
+
+第二轮指定单命令退出0：`TasksActivityProductTest` 11/11、`TasksModelTest` 6/6，0失败；生产/测试Kotlin编译通过。日志保存在施工指定临时目录的 tasks-v6-repeat-views.log，XML在 app/build/test-results/testDebugUnitTest/。未再运行构建或扩大测试矩阵。
+
+实际逐张打开本轮 tasks-home/detail/quiet/ash-detail/edited/added 六图（均在 android/app/build/reports/tasks/），核对正常待恢复、同id恢复详情、平静/普通等待与未来、原agent记录、编辑后记录、真实填写选时并收到add回执后的多行确认。已确认输入刷新保实例/选区、只写note/result、来源Intent仍同message；未知添加沿原body且保新标题/时间的用例继续通过。native截图是确定性测试端口的实际Activity窗口，不是线上数据或真机截图。
+
+总控 agent:codex:1790670726888 已独立读取本轮XML并实际打开六图，给出本轮定向done：与当前冻结稿无阻断偏离。未设置提醒在详情重复一处作为非阻断记录，不继续打磨。该结论不替代总控后续统一集成回归。
+
+本轮自己的业务提交顺序：fab60114 → 3d4d486d → c7c652d3 → 4d70cedd → a2e0e22f，之后仅本最终文档提交。所有本轮业务/文档提交带Codex共同作者。
+
+依赖副本必须排除（主线已有原提交时不重复引入）：
+
+| 本树副本 | 公共原提交 | 内容 |
+|---|---|---|
+| a085d82f | a1714cd9 | HumanCall原始请求回执 |
+| fd8964a5 | 80fdcef9 | 现有LinkClient端口与共享订阅顺序 |
+| c8d5ad28 | e708fb3e | 可选原生应用身份/目的地/详情外壳 |
+| a33bf4f1 | d013fbb5 | 状态槽稳定预算 |
+| 2e69258c | 5b80be54 | 底栏标签居中 |
+
+e708冲突采用其完整官方SystemAppActivity文件，未自行修改公共API；不引全应用注册混合提交。完整跨应用注册、HomeActivity来源导航和其他业务仍由总控集成，不用本树的来源Intent断言冒充跨App端到端通过。
+
+最终边界：未验证真机IME/选词、键盘动画/手势返回、OEM通知/后台、TalkBack/RTL/200%字体、深色实测和帧耗时；dark只沿既有tokens实现，未声称审计通过。未操作手机、未打包/安装、未合主线或推送，无遗留命令。
