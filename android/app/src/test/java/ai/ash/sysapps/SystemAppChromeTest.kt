@@ -77,6 +77,7 @@ class SystemAppChromeTest {
             val a = controller.get(); val views = all(a.window.decorView)
             assertEquals(View.GONE, views.single { it.contentDescription == "返回" }.visibility)
             assertTrue(views.filterIsInstance<TextView>().any { it.text.toString() == "Codex" })
+            assertEquals(android.view.Gravity.CENTER, views.filterIsInstance<TextView>().single { it.text.toString() == "会话" }.gravity)
             views.single { it.contentDescription == "会话" }.performClick(); assertEquals("sessions", a.picked)
             a.picked("sessions"); a.detail()
             assertEquals(View.VISIBLE, all(a.window.decorView).single { it.contentDescription == "返回" }.visibility)

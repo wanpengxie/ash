@@ -219,7 +219,7 @@ abstract class SystemAppActivity : Activity() {
                 if (selected) background = AshUi.rounded(AshUi.withAlpha(accent.color(this@SystemAppActivity), 0.07f), dp(12).toFloat())
                 addView(AppUi.icon(this@SystemAppActivity, destination.icon, tint))
                 addView(AshUi.text(this@SystemAppActivity, destination.label, AshTokens.Type.sub,
-                    if (selected && AshUi.night(this@SystemAppActivity)) c.ink else tint))
+                    if (selected && AshUi.night(this@SystemAppActivity)) c.ink else tint).apply { gravity = Gravity.CENTER })
                 isSelected = selected; isClickable = true; isFocusable = true; contentDescription = destination.label
                 AshUi.role(this, android.widget.Button::class.java.name)
                 setOnClickListener { if (destination.id != selectedDestination) onDestination?.invoke(destination.id) }
