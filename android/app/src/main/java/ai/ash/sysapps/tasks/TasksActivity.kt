@@ -1,6 +1,10 @@
 package ai.ash.sysapps.tasks
 
+import ai.ash.R
 import ai.ash.sysapps.SystemAppActivity
+import ai.ash.sysapps.AppIdentity
+import ai.ash.sysapps.AppAccent
+import ai.ash.sysapps.AppDestination
 import ai.ash.ui.Flow
 import ai.ash.ui.ChatRow
 import ai.ash.ui.HumanPort
@@ -18,11 +22,13 @@ import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.View
 import android.widget.EditText
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.PopupMenu
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -37,12 +43,25 @@ import java.util.UUID
 
 /** The hub owns task state. This screen stores only drafts, request identity and reading state. */
 open class TasksActivity : SystemAppActivity() {
+    override val appIdentity get()=AppIdentity("任务",R.drawable.ash_ic_clock,AppAccent.TASKS)
     private var state = TasksModel.State()
     private var view = TasksModel.View.TODAY
     private var visible = false
     private var loading = false
     private var dirty = false
     private var selected: String? = null
+    private val ui by lazy { TasksViews(this) }
+    private var editing = false
+    private var recordOnly = false
+    private var quickExpanded = false
+    private var confirmedAt: Long? = null
+    private var historyExpanded = false
+    private var historyTask: String? = null
+    private var history = emptyList<String>()
+    private lateinit var quickPanel: LinearLayout
+    private lateinit var detailContent: LinearLayout
+    private lateinit var record: LinearLayout
+    private lateinit var detailActions: LinearLayout
     private val names = mutableMapOf("person:owner" to "你", "service:tasks" to "Ash")
     private val pendingRows = mutableSetOf<String>()
     private val agents = mutableListOf("person:owner")
@@ -87,7 +106,7 @@ open class TasksActivity : SystemAppActivity() {
         super.onNewIntent(next)
         dialog?.dismiss(); dialog = null
         setIntent(next); routeGeneration++; state = state.request(); loading = false; dirty = false
-        editorId = null; restoreField = null; restoreKey = null
+        editorId = null; restoreField = null; restoreKey = null; editing=false;historyExpanded=false;historyTask=null
         route(next); render(); syncBack(); refresh()
     }
     /** Same production hub port, overridable only to exercise Activity callbacks with controlled transport responses. */
@@ -102,51 +121,57 @@ open class TasksActivity : SystemAppActivity() {
         restoreSelection = saved?.getInt("selection") ?: 0
         state = (lastNonConfigurationInstance as? TasksModel.State) ?: state
         route(intent, saved)
-        val root = AshUi.vstack(this, 6).apply { setPadding(dp(14), 0, dp(14), dp(8)) }
-        val tabs = AshUi.hstack(this, 6)
-        TasksModel.View.entries.forEach { tab -> tabs.addView(AshUi.button(this, tab.label, AshUi.Kind.NEUTRAL) {
-            routeGeneration++; dialog?.dismiss(); view = tab; selected = null; editorId = null; render(); syncBack()
-        }) }
-        root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(tabs) })
-        feedback = AshUi.text(this, "正在读取…", AshTokens.Type.callout, c.text2).apply {
-            minLines = 2; accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        editing=saved?.getBoolean("editing") ?: false
+        recordOnly=saved?.getBoolean("recordOnly") ?: false
+        quickExpanded=saved?.getBoolean("quickExpanded") ?: false
+        val root=AshUi.vstack(this)
+        feedback=AshUi.text(this,"",AshTokens.Type.callout,c.text2).apply {
+            setPadding(dp(16),dp(8),dp(16),dp(8));visibility=View.GONE
+            accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE
             setOnClickListener { refresh() }
+            watch { visibility=if(text.isBlank())View.GONE else View.VISIBLE }
         }
         root.addView(feedback)
-        quick = Hk.field(this, "待办标题（先记一条）").apply { id = 0x007a1101; isEnabled = false }
-        quickButton = AshUi.button(this, "记一条", AshUi.Kind.PRIMARY) { addQuick() }
-        root.addView(AshUi.text(this, "填标题，可直接选提醒；想用一句话安排，请在对话里告诉 Ash。", AshTokens.Type.callout, c.text2))
-        root.addView(AshUi.hstack(this, 8).apply {
-            addView(quick, LinearLayout.LayoutParams(0, -2, 1f)); addView(quickButton)
-        })
-        quickReminder = AshUi.button(this,"提醒：未设置",AshUi.Kind.NEUTRAL).apply {
-            tag="task.quick.remind_at";isEnabled=false
-            setOnClickListener {
-                chooseTime("提醒时间",quickRemindAt) { at ->
-                    quickRemindAt=at;quickReceipt=null;syncQuickReminder()
-                    drafts.put("quickRemindAt",at ?: JSONObject.NULL);persist()
-                }
-            }
-        }
-        root.addView(quickReminder)
-        adapter = KeyedRowsAdapter(this).apply {
-            stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY
-        }
-        list = RecyclerView(this).apply {
-            id = 0x007a1102; layoutManager = LinearLayoutManager(this@TasksActivity)
-            adapter = this@TasksActivity.adapter; itemAnimator = null
-            addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) { scrollVersion++ }
-                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) { if (scrollState != RecyclerView.SCROLL_STATE_IDLE) scrollVersion++ }
+        adapter=KeyedRowsAdapter(this).apply { stateRestorationPolicy=RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY }
+        list=RecyclerView(this).apply {
+            id=0x007a1102;layoutManager=LinearLayoutManager(this@TasksActivity)
+            adapter=this@TasksActivity.adapter;itemAnimator=null;clipToPadding=false
+            setPadding(dp(16),dp(8),dp(16),dp(24))
+            addOnScrollListener(object:RecyclerView.OnScrollListener(){
+                override fun onScrollStateChanged(recyclerView:RecyclerView,newState:Int){scrollVersion++}
+                override fun onScrolled(recyclerView:RecyclerView,dx:Int,dy:Int){if(scrollState!=RecyclerView.SCROLL_STATE_IDLE)scrollVersion++}
             })
         }
-        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
-        form = AshUi.vstack(this, 10)
-        detail = ScrollView(this).apply { addView(form); visibility = View.GONE }
-        root.addView(detail, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(list,LinearLayout.LayoutParams(-1,0,1f))
+        form=AshUi.vstack(this,12)
+        record=AshUi.vstack(this,16)
+        detailContent=AshUi.vstack(this).apply { addView(record);addView(form) }
+        detail=ScrollView(this).apply { setPadding(dp(16),dp(8),dp(16),dp(24));isFillViewport=false;addView(detailContent);visibility=View.GONE }
+        root.addView(detail,LinearLayout.LayoutParams(-1,0,1f))
+        detailActions=AshUi.hstack(this,8).apply { setPadding(dp(16),dp(10),dp(16),dp(12));visibility=View.GONE }
+        quick=Hk.field(this,"例如：交报税材料").apply { id=0x007a1101;isEnabled=false }
+        quickButton=ui.action("记下",primary=true) { addQuick() }
+        quickReminder=ui.action("提醒：未设置") {
+            chooseTime("提醒时间",quickRemindAt) { at ->
+                quickRemindAt=at;quickReceipt=null;syncQuickReminder()
+                drafts.put("quickRemindAt",at ?: JSONObject.NULL);persist()
+            }
+        }.apply { tag="task.quick.remind_at";isEnabled=false }
+        quickPanel=AshUi.vstack(this,8).apply {
+            setPadding(dp(16),dp(12),dp(16),dp(12))
+            addView(ui.line());addView(AshUi.text(this@TasksActivity,"记一件事",AshTokens.Type.headline))
+            addView(AshUi.text(this@TasksActivity,"标题",AshTokens.Type.sub,c.text2))
+            addView(AshUi.hstack(this@TasksActivity,8).apply { addView(quick,LinearLayout.LayoutParams(0,-2,1f));addView(quickButton) })
+            addView(quickReminder)
+            addView(ui.action("收起") { quickExpanded=false;render() })
+            visibility=View.GONE
+        }
+        root.addView(quickPanel)
         content.addView(root)
-        actions.addView(AshUi.button(this, "刷新", AshUi.Kind.GHOST) { quickReceipt=null;refresh() })
-        quick.watch { if (ready) { quickReceipt=null;drafts.put("quick", quick.text.toString()); persist() } }
+        setDestinations(listOf(AppDestination("now","现在",R.drawable.ash_ic_pulse),AppDestination("all","全部",R.drawable.ash_ic_grid),AppDestination("yours","你的事",R.drawable.ash_ic_check)),destination()){id ->
+            changeSpace(when(id){"yours"->TasksModel.View.WAITING;"all"->TasksModel.View.ALL;else->TasksModel.View.TODAY})
+        }
+        quick.watch { if(ready){quickReceipt=null;drafts.put("quick",quick.text.toString());persist()} }
         UiIo.disk {
             val stored = runCatching { if (file.isFile) JSONObject(file.readText()) else JSONObject() }.getOrDefault(JSONObject())
             UiIo.ui {
@@ -154,7 +179,7 @@ open class TasksActivity : SystemAppActivity() {
                 drafts = stored; pendingAdd = stored.optJSONObject("pendingAdd")
                 quickRemindAt=if(stored.has("quickRemindAt") && !stored.isNull("quickRemindAt"))stored.optLong("quickRemindAt") else null
                 quick.setText(stored.optString("quick")); ready = true; quick.isEnabled = true;quickReminder.isEnabled=true;syncQuickReminder()
-                if (pendingAdd != null) feedback.text = "上次添加尚未确认；点添加会核对同一次请求，输入保留。"
+                if(pendingAdd!=null){quickExpanded=true;feedback.text="上次记下的结果尚未确认；点记下核对原请求，新输入保留。"}
                 render()
             }
         }
@@ -207,8 +232,8 @@ open class TasksActivity : SystemAppActivity() {
                         if (parsed.isFailure) { loading = false; feedback.text = "待办格式有误，保留上次内容"; return@ui }
                         items.addAll(parsed.getOrThrow()); val next = data.optLong("next_before")
                         if (next > 0 && next != before) { page(next); return@ui }
-                        state = state.success(generation, items.distinctBy { it.id }); loading = false
-                        feedback.text = if (pendingAdd != null) "上次添加待核对，点添加继续" else quickReceipt ?: "${items.size} 条待办 · 可直接完成、改期或回来源跟进"
+                        state = state.success(generation, items.distinctBy { it.id }); loading = false;confirmedAt=System.currentTimeMillis()
+                        feedback.text=if(pendingAdd!=null)"上次添加待核对，点记下继续" else quickReceipt.orEmpty()
                         render(); if (dirty) refresh()
                     }
                 }
@@ -217,120 +242,178 @@ open class TasksActivity : SystemAppActivity() {
         page()
     }
     private fun render() {
-        if (!::list.isInitialized) return
-        list.visibility = if (selected == null) View.VISIBLE else View.GONE
-        detail.visibility = if (selected == null) View.GONE else View.VISIBLE
-        quick.visibility = if (selected == null) View.VISIBLE else View.GONE; quickButton.visibility = quick.visibility; quickReminder.visibility=quick.visibility
-        if (selected != null) {
-            val task = state.tasks.find { it.id == selected }
-            if (task != null) {
-                if (editorId != selected && ready) edit(task)
-                else if (editorVersion != task.updatedAt && editorId == selected)
-                    feedback.text = "这条待办有更新（${names[task.updatedBy] ?: task.updatedBy}）；你的编辑保留，返回后可重新打开。"
-            } else {
-                form.removeAllViews(); fields.clear(); times.clear()
-                if(state.loaded) feedback.text = "没有找到这条待办，返回可看全部"
+        if(!::list.isInitialized)return
+        val showingObject=selected!=null
+        list.visibility=if(showingObject)View.GONE else View.VISIBLE
+        detail.visibility=if(showingObject)View.VISIBLE else View.GONE
+        quickPanel.visibility=if(quickExpanded && !showDetail)View.VISIBLE else View.GONE
+        record.visibility=if(showingObject && !editing)View.VISIBLE else View.GONE
+        form.visibility=if(showingObject && editing)View.VISIBLE else View.GONE
+        detailActions.visibility=if(showingObject && !editing)View.VISIBLE else View.GONE
+        refreshChrome()
+        if(showingObject){
+            val task=state.tasks.find { it.id==selected }
+            if(task!=null){
+                if(editing){
+                    if(editorId!=task.id && ready)edit(task)
+                    else if(editorVersion!=task.updatedAt && editorId==task.id)feedback.text="这件事有更新；你的编辑保留，返回后可重新打开。"
+                }else showDetail(task)
+            }else{
+                record.removeAllViews();record.addView(ui.text(if(state.loaded)"没有找到这件事，返回可看全部" else "正在读取这件事…"))
+                form.removeAllViews();fields.clear();times.clear();detailActions.removeAllViews()
             }
             return
         }
-        title.text = if (view == TasksModel.View.TODAY) "今天的事" else "任务 · ${view.label}"
-        val rows = mutableListOf<ChatRow>()
-        fun group(key: String, heading: String, tasks: List<TasksModel.Task>, empty: String? = null) {
-            if (tasks.isEmpty() && empty == null) return
-            rows.add(ChatRow("section:$key", "$heading:${tasks.size}") { AshUi.text(this, "$heading · ${tasks.size}", AshTokens.Type.headline) })
-            tasks.forEach { rows.add(taskRow(it)) }
-            if (tasks.isEmpty()) rows.add(ChatRow("empty:$key", empty.orEmpty()) { AshUi.text(this, empty.orEmpty(), AshTokens.Type.callout, c.text2) })
+        val rows=mutableListOf<ChatRow>()
+        fun section(key:String,label:String,items:List<TasksModel.Task>,recovery:Boolean=false){
+            rows.add(ChatRow("section:$key","$label:${items.size}"){ui.section(label,items.size)})
+            items.forEach { t -> rows.add(taskRow(t,recovery,key)) }
         }
-        if (view == TasksModel.View.TODAY) {
-            val attention = state.tasks.filter { it.remindersPending || it.conversationPending }
-            group("attention", "需要补上", attention)
-            val attentionIds = attention.map { it.id }.toSet()
-            group("you", "今天轮到你", TasksModel.rows(state.tasks, view, System.currentTimeMillis()).filter { it.assignee == "person:owner" && it.id !in attentionIds }, "今天没有到期或逾期的事；还没定时间的在「待我处理」。")
-            val work = state.tasks.filter { it.open && it.assignee.startsWith("agent:") && it.id !in attentionIds }
-            group("blocked", "Ash 卡在哪里", work.filter { it.status == "waiting" })
-            group("working", "Ash 正在推进", work.filter { it.status == "doing" })
-            group("queued", "Ash 还未开始", work.filter { it.status == "todo" })
-        } else group("all", view.label, TasksModel.rows(state.tasks, view, System.currentTimeMillis()), if (state.loaded) "这里还没有待办" else "正在读取待办…")
-        val lm = list.layoutManager as LinearLayoutManager
-        val first = lm.findFirstVisibleItemPosition(); val key = adapter.currentList.getOrNull(first)?.key
-        val offset = lm.findViewByPosition(first)?.let { lm.getDecoratedTop(it) }
-        val reading = restoreKey ?: key
-        val top = if (restoreKey != null) restoreOffset else offset
-        val epoch = scrollVersion
-        adapter.submitList(rows) {
-            val index = rows.indexOfFirst { it.key == reading }
-            if (index >= 0 && top != null && selected == null && epoch == scrollVersion && list.scrollState == RecyclerView.SCROLL_STATE_IDLE) {
-                lm.scrollToPositionWithOffset(index, top); restoreKey = null
-            }
+        if(view==TasksModel.View.TODAY){
+            val now=TasksModel.now(state.tasks,System.currentTimeMillis())
+            if(now.recovery.isNotEmpty())section("recovery","需要补上",now.recovery,true)
+            if(now.current.isNotEmpty())section("current","现在需处理",now.current)
+            if(state.loaded && now.recovery.isEmpty() && now.current.isEmpty())rows.add(ChatRow("quiet","quiet") {
+                AshUi.text(this,"本页当前没有需要你处理的事",AshTokens.Type.callout,c.text2).apply { setPadding(0,dp(20),0,dp(12)) }
+            })
+            section("agents","Ash 与帮手负责的事",now.agents.take(2))
+            if(now.agents.size>2)rows.add(ChatRow("more-agents",now.agents.size.toString()){ui.action("查看全部 ${now.agents.size} 项",outline=true){changeSpace(TasksModel.View.ALL)}})
+            section("yours","你的待办",now.yours)
+            if(state.loaded && now.yours.isEmpty())rows.add(ChatRow("empty:yours","empty"){AshUi.text(this,"暂时没有待做的个人事项。",AshTokens.Type.callout,c.text2)})
+            section("results","最近结果",now.results.take(3))
+            if(state.loaded && now.results.isEmpty())rows.add(ChatRow("empty:results","empty"){AshUi.text(this,"还没有新的完成结果。",AshTokens.Type.callout,c.text2)})
+        }else{
+            val tasks=TasksModel.rows(state.tasks,view,System.currentTimeMillis())
+            section("all",view.label,tasks)
+            if(state.loaded && tasks.isEmpty())rows.add(ChatRow("empty:all","empty"){AshUi.text(this,"这里还没有事项。",AshTokens.Type.callout,c.text2)})
+        }
+        rows.add(ChatRow("capture",quickExpanded.toString()){ui.action(if(quick.text.isNotBlank())"继续记一件事" else "记一件事",outline=true){quickExpanded=true;render();quick.requestFocus()}})
+        submitRows(rows)
+    }
+    private fun submitRows(rows:List<ChatRow>){
+        val lm=list.layoutManager as LinearLayoutManager
+        val first=lm.findFirstVisibleItemPosition();val key=adapter.currentList.getOrNull(first)?.key
+        val offset=lm.findViewByPosition(first)?.let { lm.getDecoratedTop(it) }
+        val reading=restoreKey ?: key;val top=if(restoreKey!=null)restoreOffset else offset;val epoch=scrollVersion
+        adapter.submitList(rows){
+            val index=rows.indexOfFirst { it.key==reading }
+            if(index>=0 && top!=null && selected==null && epoch==scrollVersion && list.scrollState==RecyclerView.SCROLL_STATE_IDLE){lm.scrollToPositionWithOffset(index,top);restoreKey=null}
         }
     }
-    private fun openTask(task: TasksModel.Task) { routeGeneration++; selected = task.id; editorId = null; render(); syncBack() }
-    private fun source(task: TasksModel.Task) {
-        task.source?.message?.takeIf { it.isNotBlank() }?.let {
-            startActivity(Intent(this, HomeActivity::class.java).putExtra("ai.ash.extra.MESSAGE_ID", it).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        }
+    private fun taskRow(t:TasksModel.Task,recovery:Boolean=false,scope:String="all"):ChatRow=ChatRow("$scope:${t.key}",
+        listOf(t,t.reminderDelivery,t.conversationDelivery,names[t.assignee],pendingRows.contains(t.id)).joinToString("|")) {
+        if(recovery)ui.recovery(t,{openTask(t)},{rowWrite(t,"update",JSONObject().put("id",t.id))}).apply { isEnabled=t.id !in pendingRows }
+        else ui.row(t,names,taskSubtitle(t,scope)){openTask(t)}
     }
-    private fun taskRow(t: TasksModel.Task): ChatRow = ChatRow(t.key,
-        listOf(t.title,t.note,t.status,t.subject,t.assignee,t.dueAt,t.remindAt,t.updatedBy,t.result,t.remindersPending,t.conversationPending,names[t.assignee],pendingRows.contains(t.id)).joinToString("|")) {
-        AshUi.vstack(this, AshTokens.Space.xxs).apply {
-            tag = t.key
-            setPadding(dp(AshTokens.Space.xs),dp(AshTokens.Space.xs),dp(AshTokens.Space.xs),dp(AshTokens.Space.sm))
-            addView(AshUi.text(this@TasksActivity,t.title,AshTokens.Type.headline))
-            val person = TasksModel.assignee(t,names)
-            val progress = when {
-                t.status == "done" -> "做完了"
-                t.status == "dropped" -> "已决定不做"
-                t.status == "waiting" -> if (t.assignee == "person:owner") "在等对方" else "$person 暂时卡住了"
-                t.status == "doing" -> if (t.assignee == "person:owner") "你正在处理" else "$person 正在处理"
-                else -> if (t.assignee == "person:owner") "轮到你做" else "$person 负责，还未开始"
-            }
-            val at = t.dueAt ?: t.remindAt
-            val timing = at?.let { "${if (t.dueAt != null) "原定" else "提醒"} ${editTime(it)}${if (t.open && it < System.currentTimeMillis()) " · 已过时间" else ""}" }
-            addView(AshUi.text(this@TasksActivity,listOfNotNull(progress,timing).joinToString(" · "),AshTokens.Type.callout,c.text2))
-            val detail = t.result.ifEmpty { t.note }
-            if (detail.isNotBlank()) addView(AshUi.text(this@TasksActivity,detail,AshTokens.Type.body))
-            if (t.remindersPending || t.conversationPending) addView(AshUi.text(this@TasksActivity,listOfNotNull(if(t.remindersPending)"已保存，提醒尚未安排；请点重试提醒，此前不能保证到点提醒" else null,if(t.conversationPending)"对话里的确认或结果待送达" else null).joinToString(" · "),AshTokens.Type.callout,c.text2))
-            val buttons = Flow(this@TasksActivity,dp(AshTokens.Space.xs),dp(AshTokens.Space.xxs))
-            fun action(label: String, kind: AshUi.Kind = AshUi.Kind.GHOST, run: () -> Unit) {
-                buttons.addView(AshUi.button(this@TasksActivity,label,kind) { if (t.id !in pendingRows) run() }.apply { isEnabled = t.id !in pendingRows })
-            }
-            if(t.remindersPending)action("重试提醒",AshUi.Kind.SECONDARY) { rowWrite(t,"update",JSONObject().put("id",t.id)) }
-            if(t.conversationPending)action("重试对话卡") { rowWrite(t,"update",JSONObject().put("id",t.id)) }
-            if (t.open) {
-                if (t.assignee == "person:owner") action("完成",AshUi.Kind.SECONDARY) { rowWrite(t,"done",JSONObject().put("id",t.id)) }
-                else action("记录结果",AshUi.Kind.SECONDARY) {
-                    val input = Hk.field(this@TasksActivity,"这件事的结果是什么？")
-                    val epoch=routeGeneration
-                    showDialog(AlertDialog.Builder(this@TasksActivity).setTitle(t.title).setView(input).setPositiveButton("完成并回报") { _, _ ->
-                        if(epoch==routeGeneration && input.text.isNotBlank())rowWrite(t,"done",JSONObject().put("id",t.id).put("result",input.text.toString()))
-                    }.setNegativeButton("取消",null).create())
-                }
-                action("改期") {
-                    chooseTime("改到什么时候",t.remindAt ?: t.dueAt) { at ->
-                        val b=JSONObject().put("id",t.id).put("remind_at",at ?: JSONObject.NULL)
-                        if(t.dueAt!=null)b.put("due_at",at ?: JSONObject.NULL)
-                        rowWrite(t,"update",b)
-                    }
-                }
-            }
-            if(t.source?.message?.isNotBlank()==true)action(if(t.status=="waiting")"去对话跟进" else "回来源对话") { source(t) }
-            action("详细设置") { openTask(t) }
-            addView(buttons)
-            if(t.updatedBy.isNotBlank())addView(AshUi.text(this@TasksActivity,"${names[t.updatedBy] ?: t.updatedBy.removePrefix("agent:")} 更新",AshTokens.Type.callout,c.text2))
-        }
+    private fun taskSubtitle(t:TasksModel.Task,scope:String):String {
+        if(!t.open)return listOfNotNull(if(t.updatedBy=="person:owner")"你标记${if(t.status=="done")"完成" else "不做了"}" else "${TasksModel.assignee(t,names)} · ${TasksModel.status(t)}",t.result.takeIf { it.isNotBlank() }).joinToString(" · ")
+        val reason=if(scope=="current")TasksModel.currentReason(t,System.currentTimeMillis()) else null
+        return listOfNotNull(TasksModel.assignee(t,names),TasksModel.status(t),reason,timeNote(t).takeIf { t.assignee=="person:owner" && (t.dueAt!=null || t.remindAt!=null) }).joinToString(" · ")
     }
-    private fun rowWrite(task: TasksModel.Task, word: String, body: JSONObject) {
+    private fun timeNote(t:TasksModel.Task):String {
+        val now=System.currentTimeMillis()
+        fun at(label:String,value:Long)= "$label${editTime(value)} · ${if(value>now)"尚未到点" else "已到时间"}"
+        return listOfNotNull(t.remindAt?.let { at("提醒",it) },t.dueAt?.let { at("截止",it) }).joinToString("\n").ifBlank { "未设置提醒" }
+    }
+    private fun rememberList(){
+        val lm=list.layoutManager as LinearLayoutManager;val first=lm.findFirstVisibleItemPosition()
+        restoreKey=adapter.currentList.getOrNull(first)?.key;restoreOffset=lm.findViewByPosition(first)?.let { lm.getDecoratedTop(it) } ?: 0
+    }
+    private fun openTask(task:TasksModel.Task){rememberList();routeGeneration++;selected=task.id;editing=false;editorId=null;historyExpanded=false;historyTask=null;render();syncBack()}
+    private fun changeSpace(next:TasksModel.View){
+        rememberList();routeGeneration++;dialog?.dismiss();view=next;selected=null;editing=false;editorId=null;restoreKey=null;render();syncBack()
+    }
+    private fun source(task:TasksModel.Task){task.source?.message?.takeIf { it.isNotBlank() }?.let {
+        startActivity(Intent(this,HomeActivity::class.java).putExtra("ai.ash.extra.MESSAGE_ID",it).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }}
+    private fun rowWrite(task:TasksModel.Task,word:String,body:JSONObject){
         if(!pendingRows.add(task.id))return
-        val epoch=routeGeneration; render()
-        taskCall("service:tasks",word,body) { data,failure ->
+        val epoch=routeGeneration;render()
+        taskCall("service:tasks",word,body){data,failure ->
             pendingRows.remove(task.id)
             if(epoch!=routeGeneration)return@taskCall
-            feedback.text=if(failure!=null || data?.optJSONObject("task")==null) "${failure?.message ?: "结果尚未确认"} · 保留待办，请刷新核对" else savedMessage(data.optJSONObject("task"))
-            refresh();render()
+            val saved=data?.optJSONObject("task")
+            if(failure!=null || saved==null)feedback.text="${failure?.message ?: "结果尚未确认"} · 原记录保留，请刷新核对"
+            else {
+                runCatching { parse(saved) }.getOrNull()?.let { t -> state=state.copy(tasks=state.tasks.map { if(it.id==t.id)t else it }) }
+                feedback.text=savedMessage(saved)
+            }
+            render();refresh()
         }
     }
+    private fun beginEdit(task:TasksModel.Task,onlyRecord:Boolean=false){editing=true;recordOnly=onlyRecord;editorId=null;render();syncBack()}
+    private fun showDetail(t:TasksModel.Task){
+        record.removeAllViews();detailActions.removeAllViews()
+        record.addView(AshUi.text(this,"${TasksModel.assignee(t,names)}负责 · ${TasksModel.status(t)} · ${if(t.subject=="ash")"Ash 的承诺" else "主人的事项"}",AshTokens.Type.sub,c.text2))
+        record.addView(AshUi.text(this,t.title,AshTokens.Type.title))
+        record.addView(ui.text("${timeNote(t)} · 本机时间"))
+        if(TasksModel.needsRecovery(t)){
+            record.addView(AshUi.vstack(this,12).apply {
+                setPadding(dp(12),dp(16),dp(12),dp(16));background=AshUi.rounded(c.surface2,dp(16).toFloat())
+                addView(AshUi.text(this@TasksActivity,TasksModel.delivery(t),AshTokens.Type.headline))
+                addView(ui.text(if(t.remindersPending)"这件事已记下。补上前不能保证到点提醒。" else "这件事已记下，对话里的卡片尚未恢复。"))
+                addView(ui.action(TasksModel.recoveryAction(t),outline=true){rowWrite(t,"update",JSONObject().put("id",t.id))}.apply { isEnabled=t.id !in pendingRows })
+            })
+        }else record.addView(AshUi.text(this,TasksModel.delivery(t),AshTokens.Type.sub,c.text2))
+        record.addView(AshUi.text(this,"当前记录",AshTokens.Type.callout,c.text2));record.addView(ui.note(t.note.ifBlank { "还没有补充记录。" }))
+        if(t.result.isNotBlank()){record.addView(AshUi.text(this,"结果记录",AshTokens.Type.callout,c.text2));record.addView(ui.note(t.result))}
+        record.addView(ui.actions(ui.action("编辑这件事"){beginEdit(t)},ui.action("改提醒"){chooseTime("提醒时间",t.remindAt){at -> rowWrite(t,"update",JSONObject().put("id",t.id).put("remind_at",at ?: JSONObject.NULL))}}))
+        if(t.source?.message?.isNotBlank()==true)record.addView(ui.action("看原始交代",outline=true){source(t)})
+        record.addView(ui.line())
+        record.addView(ui.action(if(historyExpanded)"收起修改记录" else "谁改过这件事"){historyExpanded=!historyExpanded;if(historyExpanded)readHistory(t);showDetail(t)})
+        if(historyExpanded){
+            if(historyTask==t.id && history.isNotEmpty())history.forEach { record.addView(AshUi.text(this,it,AshTokens.Type.sub,c.text2)) }
+            else record.addView(AshUi.text(this,if(historyTask==t.id)"还没有修改记录" else "正在读取修改记录…",AshTokens.Type.sub,c.text2))
+        }
+        fun bottom(label:String,primary:Boolean=false,run:()->Unit){detailActions.addView(ui.action(label,primary,onClick=run),LinearLayout.LayoutParams(0,-2,1f))}
+        if(t.open && t.assignee=="person:owner")bottom("标记我已完成",true){rowWrite(t,"done",JSONObject().put("id",t.id))}
+        else if(t.source?.message?.isNotBlank()==true)bottom("回原对话继续",true){source(t)}
+        else if(!t.open)bottom("重新打开",true){rowWrite(t,"update",JSONObject().put("id",t.id).put("status","todo"))}
+        bottom("编辑记录"){beginEdit(t,true)}
+    }
+    private fun readHistory(t:TasksModel.Task){
+        val epoch=routeGeneration
+        taskCall("service:tasks","get",JSONObject().put("id",t.id)){data,failure ->
+            if(epoch!=routeGeneration || selected!=t.id)return@taskCall
+            if(failure!=null){feedback.text="修改记录暂时读不到，原事项保留";return@taskCall}
+            historyTask=t.id
+            val changes=data?.optJSONArray("changes")
+            history=(0 until (changes?.length() ?: 0)).mapNotNull { i -> changes?.optJSONObject(i)?.let { change ->
+                "${editTime(change.optLong("at"))} · ${names[change.optString("by")] ?: change.optString("by")} · ${change.optString("change")}" }
+            }
+            if(!editing)showDetail(t)
+        }
+    }
+    private fun destination()=when(view){TasksModel.View.TODAY->"now";TasksModel.View.WAITING->"yours";else->"all"}
+    private fun refreshChrome(){
+        showPage(if(selected==null)"任务" else if(editing)"编辑这件事" else "一件事",detail=selected!=null,showNavigation=selected==null)
+        selectDestination(destination())
+        setStatus(if(selected!=null)null else confirmedAt?.let { "最近确认 · ${editTime(it)}" } ?: if(state.loaded)"事项记录" else "正在读取事项…")
+        setBottomAction(if(selected!=null && !editing)detailActions else null)
+        actions.removeAllViews()
+        actions.addView(AshUi.iconButton(this,getDrawable(if(selected==null)R.drawable.ash_ic_slider else R.drawable.ash_ic_more)!!,if(selected==null)"任务选项" else "事项操作"){openMenu(actions)})
+    }
+    private fun openMenu(anchor:View){
+        val menu=PopupMenu(this,anchor)
+        val task=state.tasks.find { it.id==selected }
+        fun item(label:String,run:()->Unit){menu.menu.add(label).setOnMenuItemClickListener { run();true }}
+        if(task==null){
+            item("记一件事"){quickExpanded=true;render();quick.requestFocus()}
+            item("刷新事项"){quickReceipt=null;refresh()}
+            item("Ash 自己的承诺"){changeSpace(TasksModel.View.ASH)}
+            item("已完成与不做了"){changeSpace(TasksModel.View.CLOSED)}
+        }else{
+            item("完整设置"){beginEdit(task)}
+            if(task.open){
+                item("标记完成"){rowWrite(task,"done",JSONObject().put("id",task.id))}
+                item("不做了"){rowWrite(task,"update",JSONObject().put("id",task.id).put("status","dropped"))}
+            }else item("重新打开"){rowWrite(task,"update",JSONObject().put("id",task.id).put("status","todo"))}
+            item("刷新这件事"){refresh()}
+        }
+        menu.show()
+    }
     private fun edit(task: TasksModel.Task) {
-        editorId = task.id; editorVersion = task.updatedAt; title.text = "待办详情"
+        editorId = task.id; editorVersion = task.updatedAt; title.text = if(recordOnly)"编辑记录" else "编辑这件事"
         form.removeAllViews(); fields.clear(); times.clear(); timeButtons.clear()
         val saved = drafts.optJSONObject(task.id)
         status = saved?.optString("status") ?: task.status; subject = saved?.optString("subject") ?: task.subject
@@ -340,10 +423,12 @@ open class TasksActivity : SystemAppActivity() {
             val input = Hk.field(this, label, saved?.optString(key) ?: value)
             input.watch { saveEditor() }; fields[key] = input; form.addView(input)
         }
-        field("title", "内容", task.title); field("note", "补充 / 在等谁、为什么", task.note)
+        if(!recordOnly)field("title", "内容", task.title)
+        field("note", "当前记录", task.note)
+        field("result", "结果记录", task.result)
+        if(!recordOnly){
         timeField("due_at", "截止时间", task.dueAt, saved)
         timeField("remind_at", "提醒时间", task.remindAt, saved)
-        field("result", "结果 / 不做的原因", task.result)
         form.addView(AshUi.button(this, "负责人：${names[assignee] ?: assignee}", AshUi.Kind.NEUTRAL).apply {
             tag = "task.assignee"
             setOnClickListener {
@@ -371,14 +456,15 @@ open class TasksActivity : SystemAppActivity() {
                 setOnClickListener { status = code; statusLabel.text = "状态：$label"; saveEditor(); feedback.text = "状态选为 $label · 保存后生效" }
             })
         }
-        form.addView(AshUi.button(this, "保存", AshUi.Kind.PRIMARY) { saveTask(task.id) })
-        if (task.open) form.addView(AshUi.button(this, "完成这件事", AshUi.Kind.SECONDARY) { status = "done"; saveTask(task.id) })
+        }
+        form.addView(ui.action("保存",primary=true) { saveTask(task.id) })
+
         task.source?.message?.takeIf { it.isNotBlank() }?.let { message ->
             form.addView(AshUi.button(this, "回到来源对话", AshUi.Kind.GHOST) {
                 startActivity(Intent(this, HomeActivity::class.java).putExtra("ai.ash.extra.MESSAGE_ID", message).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
             })
         }
-        form.addView(AshUi.text(this, "${names[task.updatedBy] ?: task.updatedBy} · ${editTime(task.updatedAt)}", AshTokens.Type.callout, c.text2))
+        if(task.updatedBy.isNotBlank() && task.updatedAt>0)form.addView(AshUi.text(this,"${names[task.updatedBy] ?: task.updatedBy} · ${editTime(task.updatedAt)}",AshTokens.Type.sub,c.text2))
         restoreField?.let { key -> fields[key]?.let { input -> input.requestFocus(); input.setSelection(restoreSelection.coerceIn(0, input.length())) } }
         restoreField = null
     }
@@ -420,24 +506,23 @@ open class TasksActivity : SystemAppActivity() {
             4 -> accept(null)
         }}.setNegativeButton("取消",null).create())
     }
-    private fun savedMessage(task: JSONObject?): String {
-        val delivery = task?.optJSONObject("delivery")
-        return listOfNotNull("已保存", if (delivery?.optString("reminders") == "pending") "提醒尚未安排，请在列表点重试提醒" else null,
-            if (delivery?.optString("conversation") == "pending") "对话卡待恢复" else null).joinToString(" · ")
+    private fun savedMessage(task:JSONObject?):String {
+        if(task==null)return "结果尚未确认"
+        return runCatching { "已保存 · ${TasksModel.delivery(parse(task))}".removePrefix("已保存 · 已保存 · ") }.getOrDefault("已保存，安排状态待核对")
     }
     private fun saveEditor() {
         val id = editorId ?: return
-        val values = JSONObject().put("status", status).put("subject", subject).put("assignee", assignee)
+        val values=JSONObject(drafts.optJSONObject(id)?.toString() ?: "{}").put("status",status).put("subject",subject).put("assignee",assignee)
         fields.forEach { (key, input) -> values.put(key, input.text.toString()) }
         times.forEach { (key, at) -> values.put(key, at ?: JSONObject.NULL) }
         drafts.put(id, values); persist()
     }
     private fun saveTask(id: String) {
         if (busy || !ready) return
-        val title = fields["title"]?.text.toString().trim()
-        if (title.isEmpty()) { feedback.text = "内容还没填"; return }
-        val body = JSONObject().put("id", id).put("title", title).put("note", fields["note"]?.text.toString()).put("subject", subject).put("assignee", assignee).put("status", status).put("result", fields["result"]?.text.toString())
-        if (status == "dropped" && body.optString("result").isBlank()) { feedback.text = "写一句不做的原因，Ash 也能看到"; return }
+        val title=fields["title"]?.text?.toString()?.trim()
+        if(!recordOnly && title.isNullOrEmpty()){feedback.text="内容还没填";return}
+        val body=JSONObject().put("id",id).put("note",fields["note"]?.text.toString()).put("result",fields["result"]?.text.toString())
+        if(!recordOnly)body.put("title",title).put("subject",subject).put("assignee",assignee).put("status",status)
         times.forEach { (key, at) -> body.put(key, at ?: JSONObject.NULL) }
         busy = true; feedback.text = "正在保存…"; val draftAtSend = drafts.optJSONObject(id)?.toString()
         val routeAtSend = routeGeneration
@@ -449,9 +534,12 @@ open class TasksActivity : SystemAppActivity() {
             }
             if (drafts.optJSONObject(id)?.toString() == draftAtSend) {
                 drafts.remove(id); persist()
-                if (routeAtSend == routeGeneration && selected == id) { selected = null; editorId = null; render(); syncBack() }
+                if(routeAtSend==routeGeneration && selected==id){editing=false;editorId=null;render();syncBack()}
             }
-            if (routeAtSend == routeGeneration) { feedback.text = savedMessage(data.optJSONObject("task")); refresh() }
+            if(routeAtSend==routeGeneration){
+                runCatching { parse(data.getJSONObject("task")) }.getOrNull()?.let { updated -> state=state.copy(tasks=state.tasks.map { if(it.id==id)updated else it }) }
+                feedback.text=savedMessage(data.optJSONObject("task"));render();refresh()
+            }
         }
     }
     private fun syncQuickReminder() {
@@ -482,7 +570,7 @@ open class TasksActivity : SystemAppActivity() {
             taskCall("service:tasks", "add", body) { data, failure ->
                 busy = false
                 if (failure != null || data?.optJSONObject("task") == null) {
-                    if (routeAtSend == routeGeneration) feedback.text = "${failure?.message ?: "结果尚未确认"} · 标题保留，再点记一条核对同一次请求"
+                    if (routeAtSend == routeGeneration) feedback.text = "${failure?.message ?: "结果尚未确认"} · 标题保留，再点记下核对同一次请求"
                     return@taskCall
                 }
                 pendingAdd = null; drafts.remove("pendingAdd")
@@ -493,7 +581,7 @@ open class TasksActivity : SystemAppActivity() {
                 }
                 persist()
                 if (routeAtSend == routeGeneration) {
-                    view = TasksModel.View.WAITING; render()
+                    view = TasksModel.View.WAITING; quickExpanded = !unchanged;render()
                     quickReceipt=quickSavedMessage(data.getJSONObject("task"),body) + if(unchanged)"" else " · 新输入仍保留"
                     feedback.text=quickReceipt;refresh()
                 }
@@ -510,16 +598,20 @@ open class TasksActivity : SystemAppActivity() {
     }
     override fun onDestroy() { dialog?.dismiss(); dialog = null; super.onDestroy() }
     override fun canGoBack() = selected != null
-    override fun goBack() { routeGeneration++; dialog?.dismiss(); selected = null; editorId = null; render(); syncBack() }
+    override fun goBack(){
+        routeGeneration++;dialog?.dismiss()
+        if(editing){editing=false;editorId=null}else{selected=null;editorId=null;historyExpanded=false}
+        render();syncBack()
+    }
     override fun onSaveInstanceState(out: Bundle) {
-        super.onSaveInstanceState(out); out.putString("task", selected); out.putString("view", view.name)
+        super.onSaveInstanceState(out); out.putString("task",selected);out.putString("view",view.name);out.putBoolean("editing",editing);out.putBoolean("recordOnly",recordOnly);out.putBoolean("quickExpanded",quickExpanded)
         val lm = list.layoutManager as LinearLayoutManager
         val first = lm.findFirstVisibleItemPosition()
         adapter.currentList.getOrNull(first)?.let { out.putString("anchor", it.key) }
         lm.findViewByPosition(first)?.let { out.putInt("offset", lm.getDecoratedTop(it)) }
         fields.entries.find { it.value.hasFocus() }?.let { out.putString("field", it.key); out.putInt("selection", it.value.selectionStart) }
     }
-    private fun EditText.watch(changed: () -> Unit) = addTextChangedListener(object : TextWatcher {
+    private fun TextView.watch(changed: () -> Unit) = addTextChangedListener(object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = changed()
         override fun afterTextChanged(s: Editable?) {}
@@ -534,7 +626,7 @@ open class TasksActivity : SystemAppActivity() {
         private fun parse(o: JSONObject): TasksModel.Task {
             fun time(key: String): Long? = if (o.isNull(key) || !o.has(key)) null else o.getLong(key)
             val source = o.optJSONObject("source")
-            return TasksModel.Task(o.getString("id"), o.getString("title"), o.optString("note"), o.optString("subject", "owner"), o.getString("assignee"), o.getString("status"), time("due_at"), time("remind_at"), source?.let { TasksModel.Source(it.optString("message"), it.optString("agent")) }, o.optString("result").takeUnless { it == "null" }.orEmpty(), o.optString("updated_by"), o.optLong("updated_at"), o.optJSONObject("delivery")?.optString("reminders") == "pending", o.optJSONObject("delivery")?.optString("conversation") == "pending")
+            return TasksModel.Task(o.getString("id"), o.getString("title"), o.optString("note"), o.optString("subject", "owner"), o.getString("assignee"), o.getString("status"), time("due_at"), time("remind_at"), source?.let { TasksModel.Source(it.optString("message"), it.optString("agent")) }, o.optString("result").takeUnless { it == "null" }.orEmpty(), o.optString("updated_by"), o.optLong("updated_at"), o.optJSONObject("delivery")?.optString("reminders") == "pending", o.optJSONObject("delivery")?.optString("conversation") == "pending",o.optJSONObject("delivery")!=null,o.optJSONObject("delivery")?.optString("reminders"),o.optJSONObject("delivery")?.optString("conversation"),time("done_at"))
         }
     }
 }
