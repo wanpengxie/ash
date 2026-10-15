@@ -63,8 +63,8 @@ android {
         // 28 on purpose: the payload's executables (node, git, python, proot) are run from the app's private files/,
         // which Android refuses for apps targeting 29 and above. Same reason the shared-storage permissions work as they do.
         targetSdk = 28
-        versionCode = 55
-        versionName = "0.4.55"
+        versionCode = 56
+        versionName = "0.4.58"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     ndkVersion = "27.2.12479018"
