@@ -55,7 +55,7 @@ internal class TasksViews(private val ctx: Context) {
     fun actions(vararg buttons:TextView) = AshUi.hstack(ctx,8).apply {
         buttons.forEach { addView(it,LinearLayout.LayoutParams(0,-2,1f)) }
     }
-    fun recovery(t:TasksModel.Task,onOpen:()->Unit,onRetry:()->Unit):View = AshUi.vstack(ctx,12).apply {
+    fun recovery(t:TasksModel.Task,onOpen:()->Unit,onRetry:()->Unit,enabled:Boolean=true):View = AshUi.vstack(ctx,12).apply {
         tag="recovery:${t.id}";setPadding(dp(16),dp(16),dp(16),dp(16))
         background=AshUi.rounded(c.surface,dp(AshTokens.Radius.card).toFloat(),c.line,dp(1))
         addView(AshUi.hstack(ctx,8).apply {
@@ -64,6 +64,6 @@ internal class TasksViews(private val ctx: Context) {
             isClickable=true;isFocusable=true;AshUi.role(this,android.widget.Button::class.java.name);setOnClickListener { onOpen() }
         })
         addView(AshUi.text(ctx,TasksModel.delivery(t),AshTokens.Type.body,c.text2))
-        addView(AshUi.hstack(ctx).apply { gravity=Gravity.END;addView(action(TasksModel.recoveryAction(t),outline=true,onClick=onRetry)) })
+        addView(AshUi.hstack(ctx).apply { gravity=Gravity.END;addView(action(TasksModel.recoveryAction(t),outline=true,onClick=onRetry).apply { isEnabled=enabled }) })
     }
 }

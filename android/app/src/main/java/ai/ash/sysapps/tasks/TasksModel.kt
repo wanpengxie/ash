@@ -59,7 +59,7 @@ object TasksModel {
         else -> "提醒状态未取得"
     }
     fun recoveryAction(task: Task) = if(task.remindersPending && task.conversationPending)"补上提醒与卡片" else if(task.remindersPending)"补上提醒" else "补上对话卡"
-    fun status(task: Task) = when (task.status) { "doing" -> "在做"; "waiting" -> "等对方"; "done" -> "完成"; "dropped" -> "不做了"; else -> "待做" }
+    fun status(task: Task) = when (task.status) { "doing" -> "在做"; "waiting" -> "等对方"; "done" -> "已标记完成"; "dropped" -> "不做了"; else -> "待做" }
     fun assignee(task: Task, names: Map<String, String> = emptyMap()) = names[task.assignee]
         ?: if (task.assignee == "person:owner") "你" else if (task.assignee == "agent:main") "Ash" else task.assignee.removePrefix("agent:")
     fun shouldRefresh(from: String, word: String) = from == "service:tasks" && word == "task.changed"

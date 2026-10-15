@@ -94,6 +94,7 @@ open class TasksActivity : SystemAppActivity() {
     private var restoreOffset = 0
     private var restoreField: String? = null
     private var restoreSelection = 0
+    private val places=mutableMapOf<TasksModel.View,Pair<String?,Int>>()
     private val file by lazy { File(filesDir, "drafts/tasks.json") }
     private fun route(from: Intent?, saved: Bundle? = null) {
         val arg = runCatching { JSONObject(from?.getStringExtra(EXTRA_ARG).orEmpty()) }.getOrNull()
@@ -246,7 +247,7 @@ open class TasksActivity : SystemAppActivity() {
         val showingObject=selected!=null
         list.visibility=if(showingObject)View.GONE else View.VISIBLE
         detail.visibility=if(showingObject)View.VISIBLE else View.GONE
-        quickPanel.visibility=if(quickExpanded && !showDetail)View.VISIBLE else View.GONE
+        quickPanel.visibility=if(quickExpanded && !showingObject)View.VISIBLE else View.GONE
         record.visibility=if(showingObject && !editing)View.VISIBLE else View.GONE
         form.visibility=if(showingObject && editing)View.VISIBLE else View.GONE
         detailActions.visibility=if(showingObject && !editing)View.VISIBLE else View.GONE
@@ -265,8 +266,8 @@ open class TasksActivity : SystemAppActivity() {
             return
         }
         val rows=mutableListOf<ChatRow>()
-        fun section(key:String,label:String,items:List<TasksModel.Task>,recovery:Boolean=false){
-            rows.add(ChatRow("section:$key","$label:${items.size}"){ui.section(label,items.size)})
+        fun section(key:String,label:String,items:List<TasksModel.Task>,recovery:Boolean=false,total:Int=items.size){
+            rows.add(ChatRow("section:$key","$label:$total"){ui.section(label,total)})
             items.forEach { t -> rows.add(taskRow(t,recovery,key)) }
         }
         if(view==TasksModel.View.TODAY){
@@ -276,7 +277,7 @@ open class TasksActivity : SystemAppActivity() {
             if(state.loaded && now.recovery.isEmpty() && now.current.isEmpty())rows.add(ChatRow("quiet","quiet") {
                 AshUi.text(this,"本页当前没有需要你处理的事",AshTokens.Type.callout,c.text2).apply { setPadding(0,dp(20),0,dp(12)) }
             })
-            section("agents","Ash 与帮手负责的事",now.agents.take(2))
+            section("agents","Ash 与帮手负责的事",now.agents.take(2),total=now.agents.size)
             if(now.agents.size>2)rows.add(ChatRow("more-agents",now.agents.size.toString()){ui.action("查看全部 ${now.agents.size} 项",outline=true){changeSpace(TasksModel.View.ALL)}})
             section("yours","你的待办",now.yours)
             if(state.loaded && now.yours.isEmpty())rows.add(ChatRow("empty:yours","empty"){AshUi.text(this,"暂时没有待做的个人事项。",AshTokens.Type.callout,c.text2)})
@@ -302,7 +303,7 @@ open class TasksActivity : SystemAppActivity() {
     }
     private fun taskRow(t:TasksModel.Task,recovery:Boolean=false,scope:String="all"):ChatRow=ChatRow("$scope:${t.key}",
         listOf(t,t.reminderDelivery,t.conversationDelivery,names[t.assignee],pendingRows.contains(t.id)).joinToString("|")) {
-        if(recovery)ui.recovery(t,{openTask(t)},{rowWrite(t,"update",JSONObject().put("id",t.id))}).apply { isEnabled=t.id !in pendingRows }
+        if(recovery)ui.recovery(t,{openTask(t)},{rowWrite(t,"update",JSONObject().put("id",t.id))},enabled=t.id !in pendingRows)
         else ui.row(t,names,taskSubtitle(t,scope)){openTask(t)}
     }
     private fun taskSubtitle(t:TasksModel.Task,scope:String):String {
@@ -318,10 +319,14 @@ open class TasksActivity : SystemAppActivity() {
     private fun rememberList(){
         val lm=list.layoutManager as LinearLayoutManager;val first=lm.findFirstVisibleItemPosition()
         restoreKey=adapter.currentList.getOrNull(first)?.key;restoreOffset=lm.findViewByPosition(first)?.let { lm.getDecoratedTop(it) } ?: 0
+        places[view]=restoreKey to restoreOffset
     }
     private fun openTask(task:TasksModel.Task){rememberList();routeGeneration++;selected=task.id;editing=false;editorId=null;historyExpanded=false;historyTask=null;render();syncBack()}
     private fun changeSpace(next:TasksModel.View){
-        rememberList();routeGeneration++;dialog?.dismiss();view=next;selected=null;editing=false;editorId=null;restoreKey=null;render();syncBack()
+        rememberList();routeGeneration++;dialog?.dismiss();view=next;selected=null;editing=false;editorId=null
+        val place=places[next];restoreKey=place?.first;restoreOffset=place?.second ?: 0
+        if(place==null)(list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(0,0)
+        render();syncBack()
     }
     private fun source(task:TasksModel.Task){task.source?.message?.takeIf { it.isNotBlank() }?.let {
         startActivity(Intent(this,HomeActivity::class.java).putExtra("ai.ash.extra.MESSAGE_ID",it).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
@@ -375,13 +380,14 @@ open class TasksActivity : SystemAppActivity() {
         val epoch=routeGeneration
         taskCall("service:tasks","get",JSONObject().put("id",t.id)){data,failure ->
             if(epoch!=routeGeneration || selected!=t.id)return@taskCall
-            if(failure!=null){feedback.text="修改记录暂时读不到，原事项保留";return@taskCall}
+            if(failure!=null || data?.optJSONArray("changes")==null){feedback.text="修改记录暂时读不到，原事项保留";return@taskCall}
             historyTask=t.id
             val changes=data?.optJSONArray("changes")
             history=(0 until (changes?.length() ?: 0)).mapNotNull { i -> changes?.optJSONObject(i)?.let { change ->
-                "${editTime(change.optLong("at"))} · ${names[change.optString("by")] ?: change.optString("by")} · ${change.optString("change")}" }
+                val action=when(change.optString("change")){"created"->"记下事项";"done"->"标记完成";"dropped"->"标记不做了";"reopened"->"重新打开";"reminded"->"发出提醒";"followed_up"->"跟进事项";else->"更新记录"}
+                "${change.optLong("at").takeIf { it>0 }?.let(::editTime) ?: "时间未记录"} · ${names[change.optString("by")] ?: change.optString("by")} · $action" }
             }
-            if(!editing)showDetail(t)
+            if(!editing)state.tasks.find { it.id==t.id }?.let(::showDetail)
         }
     }
     private fun destination()=when(view){TasksModel.View.TODAY->"now";TasksModel.View.WAITING->"yours";else->"all"}
@@ -420,7 +426,7 @@ open class TasksActivity : SystemAppActivity() {
         assignee = saved?.optString("assignee") ?: task.assignee
         fun field(key: String, label: String, value: String) {
             form.addView(AshUi.text(this, label, AshTokens.Type.callout, c.text2))
-            val input = Hk.field(this, label, saved?.optString(key) ?: value)
+            val input=Hk.field(this,label,if(saved?.has(key)==true)saved.optString(key) else value)
             input.watch { saveEditor() }; fields[key] = input; form.addView(input)
         }
         if(!recordOnly)field("title", "内容", task.title)
@@ -525,7 +531,7 @@ open class TasksActivity : SystemAppActivity() {
         if(!recordOnly)body.put("title",title).put("subject",subject).put("assignee",assignee).put("status",status)
         times.forEach { (key, at) -> body.put(key, at ?: JSONObject.NULL) }
         busy = true; feedback.text = "正在保存…"; val draftAtSend = drafts.optJSONObject(id)?.toString()
-        val routeAtSend = routeGeneration
+        val routeAtSend=routeGeneration;val partialAtSend=recordOnly
         taskCall("service:tasks", "update", body) { data, failure ->
             busy = false
             if (failure != null || data?.optJSONObject("task") == null) {
@@ -533,7 +539,10 @@ open class TasksActivity : SystemAppActivity() {
                 return@taskCall
             }
             if (drafts.optJSONObject(id)?.toString() == draftAtSend) {
-                drafts.remove(id); persist()
+                if(partialAtSend){
+                    drafts.optJSONObject(id)?.let { kept -> kept.remove("note");kept.remove("result");if(kept.length()==0)drafts.remove(id) }
+                }else drafts.remove(id)
+                persist()
                 if(routeAtSend==routeGeneration && selected==id){editing=false;editorId=null;render();syncBack()}
             }
             if(routeAtSend==routeGeneration){
@@ -597,10 +606,10 @@ open class TasksActivity : SystemAppActivity() {
         }
     }
     override fun onDestroy() { dialog?.dismiss(); dialog = null; super.onDestroy() }
-    override fun canGoBack() = selected != null
+    override fun canGoBack()=selected!=null || quickExpanded
     override fun goBack(){
         routeGeneration++;dialog?.dismiss()
-        if(editing){editing=false;editorId=null}else{selected=null;editorId=null;historyExpanded=false}
+        if(editing){editing=false;editorId=null}else if(selected!=null){selected=null;editorId=null;historyExpanded=false}else quickExpanded=false
         render();syncBack()
     }
     override fun onSaveInstanceState(out: Bundle) {

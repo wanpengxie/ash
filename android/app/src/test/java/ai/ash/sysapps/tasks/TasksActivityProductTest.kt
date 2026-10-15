@@ -63,7 +63,7 @@ class TasksActivityProductTest {
         flush()
         val a = ctl.get()
         set(a,"state",TasksModel.State(tasks = listOf(TasksModel.Task("one","第一条"),TasksModel.Task("two","第二条",subject="ash",assignee="agent:main")),loaded=true))
-        invoke(a,"render")
+        set(a,"editing",true);invoke(a,"render")
         return ctl
     }
     private fun text(a: TasksActivity, label: String): TextView = views(a.window.decorView).filterIsInstance<TextView>().first { it.text.toString()==label }
@@ -75,9 +75,9 @@ class TasksActivityProductTest {
         val ctl=screen();val a=ctl.get()
         views(a.window.decorView).filterIsInstance<EditText>().first { it.text.toString()=="第一条" }.setText("第一条的未发草稿")
         ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"id\":\"two\",\"subject\":\"ash\"}"))
-        assertEquals("two",get(a,"selected"))
+        assertEquals("two",get(a,"selected"));text(a,"编辑这件事").performClick()
         assertTrue(views(a.window.decorView).filterIsInstance<EditText>().any { it.text.toString()=="第二条" })
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"id\":\"one\"}"))
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"id\":\"one\"}"));text(a,"编辑这件事").performClick()
         assertTrue(views(a.window.decorView).filterIsInstance<EditText>().any { it.text.toString()=="第一条的未发草稿" })
         ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"subject\":\"ash\"}"))
         assertNull(get(a,"selected"));assertEquals(TasksModel.View.ASH,get(a,"view"))
@@ -128,28 +128,31 @@ class TasksActivityProductTest {
         assertTrue(views(a.window.decorView).filterIsInstance<EditText>().none { it.text.toString()=="过时的数据" })
         set(a,"visible",false);ctl.destroy();flush()
     }
-    @Test fun homeShowsWhoNeedsToActAndProvidesRowActionsInsteadOfASettingsForm() {
-        val ctl=screen();val a=ctl.get()
-        val now=System.currentTimeMillis()
+    @Test fun homeSeparatesActualDueReasonsFromWaitingAndOpensTheSameDetail() {
+        val ctl=screen();val a=ctl.get();val now=System.currentTimeMillis()
         set(a,"state",TasksModel.State(tasks=listOf(
-            TasksModel.Task("tax","今天交报税材料",dueAt=now-1000),
-            TasksModel.Task("price","Ash 正在比较跑鞋价格",subject="owner",assignee="agent:main",status="doing"),
-            TasksModel.Task("address","等待收货地址",subject="owner",assignee="agent:helper",status="waiting",note="需要你给收货地址"),
+            TasksModel.Task("tax","交报税材料",dueAt=now-1000),
+            TasksModel.Task("future","明天提醒的事",remindAt=now+86_400_000L),
+            TasksModel.Task("address","等收货地址",assignee="agent:helper",status="waiting",note="等商家确认送货范围"),
         ),loaded=true))
         ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
-        val list=get(a,"list") as androidx.recyclerview.widget.RecyclerView
-        val adapter=list.adapter as KeyedRowsAdapter
-        val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
-        while(adapter.currentList.none { it.key=="task:tax" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
-        assertEquals(setOf("section:you","section:working","section:blocked"),adapter.currentList.filter { it.key.startsWith("section:") }.map { it.key }.toSet())
-        // Draw the exact adapter row factory used by RecyclerView, with real Views and action listeners.
-        val row=adapter.currentList.first { it.key=="task:tax" }.make()!!
-        views(row).filterIsInstance<TextView>().first { it.text.toString()=="完成" }.performClick()
+        val adapter=(get(a,"list") as androidx.recyclerview.widget.RecyclerView).adapter as KeyedRowsAdapter
+        awaitRow(adapter,"current:task:tax")
+        assertTrue(adapter.currentList.none { it.key=="current:task:future" || it.key=="current:task:address" })
+        val row=adapter.currentList.first { it.key=="current:task:tax" }.make()!!
+        views(row).first { it.isClickable }.performClick()
+        assertEquals("tax",get(a,"selected"));text(a,"标记我已完成").performClick()
         assertEquals("done",a.requests.last().word);assertEquals("tax",a.requests.last().body.getString("id"))
-        val blocked=adapter.currentList.first { it.key=="task:address" }.make()!!
-        assertTrue(views(blocked).filterIsInstance<TextView>().any { it.text.toString()=="需要你给收货地址" })
-        assertTrue(views(row).none { it is EditText })
+        assertEquals(1,a.requests.last().body.length())
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"id\":\"address\"}"))
+        assertTrue(views(a.window.decorView).filterIsInstance<TextView>().any { it.text.toString()=="等商家确认送货范围" })
+        assertTrue(views(get(a,"record") as View).none { it is EditText })
         ctl.destroy();flush()
+    }
+    private fun awaitRow(adapter:KeyedRowsAdapter,key:String){
+        val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
+        while(adapter.currentList.none { it.key==key } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
+        assertTrue("missing row $key",adapter.currentList.any { it.key==key })
     }
     @Test fun futureReminderPendingIsVisibleTodayAndRetriesTheExistingTask() {
         val ctl=screen();val a=ctl.get()
@@ -157,22 +160,22 @@ class TasksActivityProductTest {
         ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
         val adapter=(get(a,"list") as androidx.recyclerview.widget.RecyclerView).adapter as KeyedRowsAdapter
         val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
-        while(adapter.currentList.none { it.key=="task:future" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
-        assertTrue(adapter.currentList.any { it.key=="section:attention" })
-        val row=adapter.currentList.first { it.key=="task:future" }.make()!!
-        assertTrue(views(row).filterIsInstance<TextView>().any { it.text.toString().contains("此前不能保证到点提醒") })
-        views(row).filterIsInstance<TextView>().first { it.text.toString()=="重试提醒" }.performClick()
+        while(adapter.currentList.none { it.key=="recovery:task:future" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
+        assertTrue(adapter.currentList.any { it.key=="section:recovery" })
+        val row=adapter.currentList.first { it.key=="recovery:task:future" }.make()!!
+        assertTrue(views(row).filterIsInstance<TextView>().any { it.text.toString().contains("提醒尚未安排") })
+        views(row).filterIsInstance<TextView>().first { it.text.toString()=="补上提醒" }.performClick()
         assertEquals("update",a.requests.last().word)
         assertEquals("{\"id\":\"future\"}",a.requests.last().body.toString())
         ctl.destroy();flush()
     }
     @Test fun quickCaptureChoosesTomorrowAndKeepsItsConfirmationAfterRefresh() {
         val ctl=screen();val a=ctl.get()
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));set(a,"quickExpanded",true);invoke(a,"render")
         (get(a,"quick") as EditText).setText("交材料")
         (get(a,"quickReminder") as View).performClick();choice(2)
         val at=java.time.LocalDate.now().plusDays(1).atTime(9,0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        text(a,"记一条").performClick();flush()
+        text(a,"记下").performClick();flush()
         val add=a.requests.last();assertEquals("add",add.word)
         assertEquals("交材料",add.body.getString("title"));assertEquals(at,add.body.getLong("remind_at"))
         val stored=task("captured","交材料").put("remind_at",at).put("delivery",JSONObject().put("reminders","ready"))
@@ -187,9 +190,9 @@ class TasksActivityProductTest {
     }
     @Test fun quickCaptureWithoutTimeSaysNoReminderWasSet() {
         val ctl=screen();val a=ctl.get()
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));set(a,"quickExpanded",true);invoke(a,"render")
         (get(a,"quick") as EditText).setText("整理书桌")
-        text(a,"记一条").performClick();flush()
+        text(a,"记下").performClick();flush()
         val add=a.requests.last();assertTrue(add.body.isNull("remind_at"))
         add.done(JSONObject().put("task",task("desk","整理书桌")),null);flush()
         val confirmation=(get(a,"feedback") as TextView).text.toString()
@@ -198,10 +201,10 @@ class TasksActivityProductTest {
     }
     @Test fun quickCaptureWithClockFailureSaysSavedButNotArranged() {
         val ctl=screen();val a=ctl.get()
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));set(a,"quickExpanded",true);invoke(a,"render")
         (get(a,"quick") as EditText).setText("交材料")
         (get(a,"quickReminder") as View).performClick();choice(2)
-        text(a,"记一条").performClick();flush()
+        text(a,"记下").performClick();flush()
         val add=a.requests.last()
         add.done(JSONObject().put("task",task("captured","交材料").put("remind_at",add.body.getLong("remind_at")).put("delivery",JSONObject().put("reminders","pending"))),null);flush()
         val confirmation=(get(a,"feedback") as TextView).text.toString()
@@ -210,16 +213,16 @@ class TasksActivityProductTest {
     }
     @Test fun retryOfUnknownCaptureKeepsOriginalBodyAndPreservesNewTitleAndTime() {
         val ctl=screen();val a=ctl.get()
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));set(a,"quickExpanded",true);invoke(a,"render")
         val input=get(a,"quick") as EditText
         input.setText("交材料")
         (get(a,"quickReminder") as View).performClick();choice(2)
-        text(a,"记一条").performClick();flush()
+        text(a,"记下").performClick();flush()
         val first=a.requests.last();first.done(null,HumanPort.Failure("offline","结果尚未确认"))
         input.setText("另一件事")
         (get(a,"quickReminder") as View).performClick();choice(3)
         val newAt=get(a,"quickRemindAt")
-        text(a,"记一条").performClick();flush()
+        text(a,"记下").performClick();flush()
         val retry=a.requests.last();assertEquals(first.body.toString(),retry.body.toString())
         retry.done(JSONObject().put("task",task("captured","交材料").put("remind_at",first.body.getLong("remind_at")).put("delivery",JSONObject().put("reminders","ready"))),null);flush()
         assertEquals("另一件事",input.text.toString());assertEquals(newAt,get(a,"quickRemindAt"))
@@ -229,78 +232,60 @@ class TasksActivityProductTest {
     }
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
-    @Config(qualifiers="w412dp-h915dp-mdpi")
-    fun productHomeRendersTheActualWindowWithNativeGraphics() {
-        val ctl=screen();val a=ctl.get()
-        val now=System.currentTimeMillis()
-        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"))
-        set(a,"visible",true)
-        TasksActivity::class.java.getDeclaredMethod("onConnectionChanged",Boolean::class.javaPrimitiveType).apply { isAccessible=true }.invoke(a,true)
+    @Config(qualifiers="w360dp-h800dp-mdpi")
+    fun frozenPhoneHomeRecoveryDetailQuietAndEditingUseTheActualWindow() {
+        val ctl=screen();val a=ctl.get();val now=System.currentTimeMillis()
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));set(a,"visible",true)
+        @Suppress("UNCHECKED_CAST") val connected=SystemAppActivity::class.java.getDeclaredField("connection").apply { isAccessible=true }.get(a) as (Boolean)->Unit
+        connected(true)
         a.requests.first { it.word=="list" && !it.body.has("status") }.done(JSONObject().put("agents",JSONArray()
             .put(JSONObject().put("id","agent:main").put("primary",true))
-            .put(JSONObject().put("id","agent:helper").put("name","材料帮手"))),null)
-        a.requests.first { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",JSONArray()
-            .put(task("tax","交报税材料").put("due_at",now-1000))
-            .put(task("price","比较跑鞋价格").put("assignee","agent:main").put("status","doing").put("note","在核对你选的三双跑鞋"))
-            .put(task("address","确认收货地址").put("assignee","agent:helper").put("status","waiting").put("note","需要你给收货地址").put("source",JSONObject().put("message","source-address")))),null)
-        flush()
-        assertTrue(text(a,"3 条待办 · 可直接完成、改期或回来源跟进").text.isNotEmpty())
+            .put(JSONObject().put("id","agent:helper").put("name","资料帮手"))),null)
+        val recovery=task("recovery","寄出报税补充材料").put("note","周一寄出补充材料；取件前核对清单。")
+            .put("remind_at",now+3*86_400_000L).put("delivery",JSONObject().put("saved",true).put("reminders","pending").put("conversation","pending"))
+        val waiting=task("compare","比较日常慢跑鞋").put("assignee","agent:main").put("status","waiting").put("note","候选价格已记下，正等商家确认退换条件。先核对原比较，再决定。")
+        val helper=task("helper","核对住宿退款条款并补齐比较依据").put("subject","ash").put("assignee","agent:helper").put("status","todo").put("note","原退款条款和来源尚待核对。")
+        val future=task("future","交报税材料").put("remind_at",now+3_600_000L)
+        val normal=JSONArray().put(recovery).put(waiting).put(helper).put(future)
+        a.requests.first { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",normal),null);flush()
         val adapter=(get(a,"list") as androidx.recyclerview.widget.RecyclerView).adapter as KeyedRowsAdapter
-        val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
-        while(adapter.currentList.none { it.key=="task:tax" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
-        val decor=a.window.decorView
-        val metrics=a.resources.displayMetrics
-        assertEquals(412,a.resources.configuration.screenWidthDp)
-        assertEquals(915,a.resources.configuration.screenHeightDp)
-        assertEquals(1f,metrics.density,0.001f)
-        assertEquals(1f,a.resources.configuration.fontScale,0.001f)
-        ctl.visible();flush()
-        decor.measure(View.MeasureSpec.makeMeasureSpec(412,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(915,View.MeasureSpec.EXACTLY))
-        decor.layout(0,0,412,915);flush()
-        assertEquals(412f,decor.width / metrics.density,0.1f)
-        val row=views(decor).first { it.tag=="task:tax" }
-        val complete=views(row).filterIsInstance<TextView>().first { it.text.toString()=="完成" }
-        val visibleBounds=Rect()
-        assertTrue("the primary completion action must be visible in the actual phone window",complete.getGlobalVisibleRect(visibleBounds))
-        assertEquals("completion must not be clipped horizontally",complete.width,visibleBounds.width())
-        assertEquals("completion must not be clipped vertically",complete.height,visibleBounds.height())
-        assertTrue(visibleBounds.left >= 0 && visibleBounds.right <= decor.width && visibleBounds.top >= 0 && visibleBounds.bottom <= decor.height)
-        fun assertVisible(v:View) {
-            val bounds=Rect()
-            assertTrue(v.getGlobalVisibleRect(bounds))
-            assertEquals(v.width,bounds.width());assertEquals(v.height,bounds.height())
-            assertTrue(bounds.top>=0 && bounds.bottom<=decor.height && bounds.left>=0 && bounds.right<=decor.width)
-        }
-        fun capture(name:String) {
-            val bitmap=Bitmap.createBitmap(decor.width,decor.height,Bitmap.Config.ARGB_8888)
-            decor.draw(Canvas(bitmap))
-            val target=File("build/reports/tasks/$name.png")
-            target.parentFile?.mkdirs();target.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
-            bitmap.recycle()
-        }
-        assertVisible(get(a,"quickReminder") as View)
-        capture("tasks-product-home")
-        // Continue through actual input, picker, add callback and the following list refresh in this phone window.
-        val title="买下周出差用的洗漱用品和充电线"
-        (get(a,"quick") as EditText).setText(title)
-        (get(a,"quickReminder") as View).performClick();choice(2)
-        text(a,"记一条").performClick();flush()
-        val add=a.requests.last { it.word=="add" }
-        val stored=task("travel",title).put("remind_at",add.body.getLong("remind_at")).put("delivery",JSONObject().put("reminders","ready"))
-        add.done(JSONObject().put("task",stored),null);flush()
-        a.requests.last { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",JSONArray().put(stored)),null);flush()
-        val nextDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
-        while(adapter.currentList.none { it.key=="task:travel" } && System.nanoTime()<nextDeadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
-        decor.measure(View.MeasureSpec.makeMeasureSpec(412,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(915,View.MeasureSpec.EXACTLY))
-        decor.layout(0,0,412,915);flush()
-        val receipt=get(a,"feedback") as TextView
-        assertTrue(receipt.text.toString().contains("已记下：$title"))
-        assertTrue(receipt.text.toString().contains("已安排"))
-        assertTrue("the actual confirmation wraps at phone width",receipt.lineCount>=2)
-        assertVisible(receipt);assertVisible(get(a,"quickReminder") as View)
-        assertTrue(views(decor).any { it.tag=="task:travel" })
-        capture("tasks-product-added")
+        awaitRow(adapter,"recovery:task:recovery")
+        assertTrue(adapter.currentList.none { it.key=="section:current" })
+        val decor=a.window.decorView;ctl.visible();flush()
+        assertEquals(360,a.resources.configuration.screenWidthDp);assertEquals(800,a.resources.configuration.screenHeightDp)
+        assertEquals(1f,a.resources.displayMetrics.density,0.001f);assertEquals(1f,a.resources.configuration.fontScale,0.001f)
+        fun layout(){decor.measure(View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));decor.layout(0,0,360,800);flush()}
+        fun visible(v:View){val bounds=Rect();assertTrue(v.getGlobalVisibleRect(bounds));assertEquals(v.width,bounds.width());assertEquals(v.height,bounds.height());assertTrue(bounds.left>=0 && bounds.top>=0 && bounds.right<=360 && bounds.bottom<=800)}
+        fun capture(name:String){layout();val bitmap=Bitmap.createBitmap(decor.width,decor.height,Bitmap.Config.ARGB_8888);decor.draw(Canvas(bitmap));val file=File("build/reports/tasks/$name.png");file.parentFile?.mkdirs();file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) };bitmap.recycle()}
+        layout();visible(text(a,"补上提醒与卡片"));assertEquals(360f,decor.width/a.resources.displayMetrics.density,0.1f)
+        capture("tasks-home")
+        // Click the real visible object row; the recovery action always updates this id.
+        text(a,"寄出报税补充材料").parent.let { (it as View).performClick() };layout()
+        assertEquals("recovery",get(a,"selected"));visible(text(a,"补上提醒与卡片"));capture("tasks-detail")
+        text(a,"补上提醒与卡片").performClick();assertEquals("update",a.requests.last().word);assertEquals("{\"id\":\"recovery\"}",a.requests.last().body.toString())
+        val failed=a.requests.last();failed.done(null,HumanPort.Failure("offline","安排尚未确认"));flush()
+        assertTrue(views(decor).filterIsInstance<TextView>().any { it.text.toString().contains("提醒尚未安排") })
+        invoke(a,"goBack");layout()
+        // A real list reply clears the pending state, but waiting and future reminders still create no current demand.
+        invoke(a,"refresh")
+        val ready=JSONObject(recovery.toString()).put("delivery",JSONObject().put("saved",true).put("reminders","ready").put("conversation","ready"))
+        val quiet=JSONArray().put(ready).put(waiting).put(helper)
+        a.requests.last { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",quiet),null);flush();awaitRow(adapter,"yours:task:recovery")
+        assertTrue(adapter.currentList.none { it.key=="section:current" || it.key=="section:recovery" })
+        capture("tasks-quiet")
+        ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{\"id\":\"compare\"}"));layout();capture("tasks-ash-detail")
+        assertTrue(views(decor).filterIsInstance<TextView>().any { it.text.toString()==waiting.getString("note") })
+        text(a,"编辑记录").performClick();layout()
+        val note=(get(a,"fields") as Map<*,*>)["note"] as EditText
+        note.setText("已核对两家商户，继续等最后一家回复。")
+        note.requestFocus();note.setSelection(4)
+        invoke(a,"refresh");a.requests.last { it.word=="list" && it.body.has("status") }.done(JSONObject().put("tasks",quiet),null);flush()
+        assertSame(note,(get(a,"fields") as Map<*,*>)["note"]);assertEquals(4,note.selectionStart)
+        text(a,"保存").performClick();val save=a.requests.last();assertEquals("update",save.word)
+        assertEquals(setOf("id","note","result"),save.body.keys().asSequence().toSet())
+        save.done(JSONObject().put("task",JSONObject(waiting.toString()).put("note",note.text.toString())),null);flush();layout();capture("tasks-edited")
+        assertTrue(views(decor).filterIsInstance<TextView>().any { it.text.toString()=="已核对两家商户，继续等最后一家回复。" })
         set(a,"visible",false);ctl.destroy();flush()
     }
-    private fun task(id:String,title:String)=JSONObject().put("id",id).put("title",title).put("assignee","person:owner").put("subject","owner").put("status","todo").put("due_at",JSONObject.NULL).put("remind_at",JSONObject.NULL).put("updated_at",2)
+    private fun task(id:String,title:String)=JSONObject().put("id",id).put("title",title).put("assignee","person:owner").put("subject","owner").put("status","todo").put("due_at",JSONObject.NULL).put("remind_at",JSONObject.NULL).put("updated_at",2).put("delivery",JSONObject().put("saved",true).put("reminders","ready").put("conversation","ready"))
 }
