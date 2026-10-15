@@ -26,8 +26,6 @@ object ChatRows {
     fun key(item: JSONObject, sentAs: (String) -> String? = { null }): String =
         item.optString("client_id").ifEmpty { sentAs(item.optString("id")) ?: item.optString("id") }
 
-    /** The row key of an outbox entry: the client id the kernel's copy will carry. */
-    fun outboxKey(o: JSONObject): String = o.optString("client_id")
 
     /** Whether a window item is drawn at all. */
     fun shows(item: JSONObject): Boolean = when (item.optString("type")) {
@@ -42,8 +40,8 @@ object ChatRows {
      * A key seen twice keeps its first row (an outbox entry the window already shows is that window row).
      */
     fun build(
-        items: Collection<JSONObject>, outbox: List<JSONObject>, moreBefore: Boolean,
-        more: () -> View, item: (JSONObject) -> View?, pending: (JSONObject) -> View?,
+        items: Collection<JSONObject>, outbox: List<Pending>, moreBefore: Boolean,
+        more: () -> View, item: (JSONObject) -> View?, pending: (Pending) -> View?,
         sentAs: (String) -> String? = { null },
     ): List<ChatRow> {
         val out = ArrayList<ChatRow>()
@@ -54,8 +52,8 @@ object ChatRows {
             if (keys.add(key)) out.add(ChatRow(key, it.toString(), it.optString("id")) { item(it) })
         }
         for (o in outbox) {
-            val key = outboxKey(o)
-            if (key.isNotEmpty() && keys.add(key)) out.add(ChatRow(key, "out:" + o.optString("status") + ":" + o.optJSONObject("body")?.optString("text"), o.optString("id")) { pending(o) })
+            val key = o.clientId
+            if (key.isNotEmpty() && keys.add(key)) out.add(ChatRow(key, "out:${o.status}:${o.attachments()?.length() ?: 0}:${o.text}", o.ledgerId.orEmpty()) { pending(o) })
         }
         if (moreBefore && out.isNotEmpty()) out.add(0, ChatRow(MORE, MORE) { more() })
         return out

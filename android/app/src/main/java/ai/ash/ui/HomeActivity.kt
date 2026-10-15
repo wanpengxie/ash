@@ -53,6 +53,7 @@ class HomeActivity : Activity() {
         home.composeHook = { text, _ -> showTab(HomeTab.CHAT); chatScreen.compose(text) }
         home.jumpHook = { id -> showTab(HomeTab.CHAT); chatScreen.jumpTo(id) }
         home.onName = { name -> chatScreen.setName(name) }
+        chatScreen.restore(savedInstanceState)
         // Edge to edge (targetSdk 35): the frame keeps clear of the bars and the keyboard; the chat is laid out in what is left.
         content = FrameLayout(this).apply {
             setBackgroundColor(AshUi.p(this@HomeActivity).bg)
@@ -95,6 +96,7 @@ class HomeActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_TAB, tab.key)
+        chatScreen.save(outState)
     }
 
     /** The chat is what the owner sees (not another tab, not a home page over it). */

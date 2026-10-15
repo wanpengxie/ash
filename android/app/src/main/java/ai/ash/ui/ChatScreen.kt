@@ -34,7 +34,6 @@ import ai.ash.ui.design.AshUi
 import ai.ash.ui.design.Role
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.TreeMap
 import java.util.UUID
 
 /**
@@ -131,31 +130,36 @@ class ChatScreen(
             val t = input.text.toString().trim()
             if (t.isEmpty() && picked.length() == 0) return@iconButton
             if (!Uploads.fits(t, picked)) { toast("附件太大：一条消息最多带约 3 MB"); return@iconButton }
-            val sending = picked
-            input.setText(""); picked = JSONArray(); paintPicked()
-            say(t, sending)
+            send(t, picked)
         } as FrameLayout
     }
     private val pickedChip = AshUi.hstack(ctx, 2).apply {
         background = AshUi.rounded(c.youSoft, AshUi.dpF(ctx, 15f)); setPadding(dp(12), 0, dp(2), 0); visibility = View.GONE
     }
 
-    /** The rows shown, by seq; the newest window replaces what it covers, older pages add below it. */
-    private val items = TreeMap<Long, JSONObject>()
-    private var moreBefore = false
+    /** The conversation as last read (only a successful read changes it). */
+    private val window = ChatWindow()
     private var loadingOlder = false
     private val FOLD_LINES = 4
     private var current: JSONObject? = null
     private var refreshQueued = false
+    /** One read of the newest window at a time; changes heard meanwhile make one more read after it. */
+    private var reading = false
+    private var readAgain = false
     private var lastTyping = 0L
     private var shown = false
     private var agents = JSONArray()
     private var chosen: String? = null
     /** Her name as her home page reads it from IDENTITY.md: the bar and the box's hint follow it. */
     private var herName = "Ash"
-    private val outbox = Outbox(ctx)
+    private val outbox = ChatOutbox(ctx)
+    /** What the owner typed and has not sent, per agent talked to; the box shows the one of [chosen]. */
+    private val drafts = UiDrafts.get(ctx)
+    private fun draftKey() = Drafts.chat(chosen)
+    /** A message being stored (between the send tap and its being kept): a second tap does not store it twice. */
+    private var storing = false
     /** Cards drawn from a plan (`show {a2ui}`, `form`): what the owner does on them is kept there across repaints. */
-    private val cards by lazy { ChatCards(activity, port, ::post, ::toast) { refresh() } }
+    private val cards by lazy { ChatCards(activity, port, { to, body -> post(to, body) }, ::toast) { refresh() } }
     private var flushing = false
     private val tick = object : Runnable { override fun run() { paintProgress(); paintLease(); if (shown) main.postDelayed(this, 1_000) } }
     private val onChange: () -> Unit = { refresh() }
@@ -178,9 +182,13 @@ class ChatScreen(
         view.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         port.onChange(onChange)
         port.onLink { open ->
-            paintPresence()
+            // What was asked over the old link no longer counts (it is answered as failed, and dropped).
+            window.invalidate(); reading = false
+            paintPresence(); paintStatus()
             if (open) { loadAgents(); refresh(); flush() }
         }
+        loadDraft()
+        outbox.whenReady { paintList(); flush() }
     }
 
     fun close() { port.removeChange(onChange); LeaseState.removeChange(onLease); cards.close() }
@@ -200,40 +208,47 @@ class ChatScreen(
 
     // --- reading ---
 
-    /** Reads the newest window and the current state again; a burst of changes is one read. */
+    /**
+     * Reads the newest window and the current state again; a burst of changes is one read, and one read is out at a time.
+     * A failed read keeps what is shown and says so ([paintStatus]); an answer from before the link changed is dropped.
+     */
     private fun refresh() {
-        if (!port.open || refreshQueued) return
+        if (!port.open) return
+        if (reading) { readAgain = true; return }
+        if (refreshQueued) return
         refreshQueued = true
         main.postDelayed({
             refreshQueued = false
-            var window: JSONObject? = null
+            if (!port.open) return@postDelayed
+            reading = true
+            val gen = window.begin()
+            var win: JSONObject? = null
             var now: JSONObject? = null
-            fun both() { if (window != null && now != null) { take(window!!, newest = true); current = now; paintPresence(); paintProgress(); paintList() } }
-            port.call("service:history", "window", JSONObject().put("limit", PAGE)) { data, _ -> window = data ?: JSONObject(); both() }
-            port.call("service:history", "current", JSONObject().put("limit", PAGE)) { data, _ -> now = data ?: JSONObject(); both() }
+            var answered = 0
+            fun both() {
+                if (++answered < 2) return
+                if (gen != window.generation) return
+                reading = false
+                window.newest(gen, win, System.currentTimeMillis())
+                now?.let { current = it }
+                outbox.drop(window.clientIds(), window.ids())
+                paintPresence(); paintProgress(); paintList(); paintStatus(); flush()
+                if (readAgain) { readAgain = false; refresh() }
+                else if (window.failedAt > 0 && shown) main.postDelayed({ refresh() }, 5_000)
+            }
+            port.call("service:history", "window", JSONObject().put("limit", PAGE)) { data, failure -> win = if (failure == null) data else null; both() }
+            port.call("service:history", "current", JSONObject().put("limit", PAGE)) { data, failure -> now = if (failure == null) data else null; both() }
         }, 150)
     }
 
-    private fun take(window: JSONObject, newest: Boolean) {
-        val got = window.optJSONArray("items") ?: JSONArray()
-        if (newest) {
-            val from = (0 until got.length()).mapNotNull { got.optJSONObject(it)?.optLong("seq") }.minOrNull()
-            if (from != null) items.tailMap(from, true).clear() else if (got.length() == 0) items.clear()
-            if (items.isEmpty()) moreBefore = window.optBoolean("has_more_before")
-        } else moreBefore = window.optBoolean("has_more_before")
-        for (i in 0 until got.length()) got.optJSONObject(i)?.let { items[it.optLong("seq")] = it }
-        // A message of the outbox that the kernel now shows is no longer waiting.
-        outbox.drop(items.values.mapNotNull { it.optString("client_id").ifEmpty { null } }.toSet(), items.values.map { it.optString("id") }.toSet())
-    }
-
     private fun loadOlder() {
-        if (!moreBefore || loadingOlder || !port.open || items.isEmpty()) return
+        if (!window.moreBefore || loadingOlder || !port.open || window.items.isEmpty()) return
         loadingOlder = true
-        val before = items.firstKey()
-        port.call("service:history", "window", JSONObject().put("limit", PAGE).put("before", before)) { data, _ ->
+        val before = window.items.firstKey()
+        port.call("service:history", "window", JSONObject().put("limit", PAGE).put("before", before)) { data, failure ->
             loadingOlder = false
-            if (data == null) return@call
-            take(data, newest = false)
+            if (failure != null) return@call
+            window.older(data)
             paintList()
         }
     }
@@ -245,35 +260,54 @@ class ChatScreen(
 
     // --- writing ---
 
-    private fun say(text: String, attachments: JSONArray = JSONArray(), option: Pair<String, String>? = null) {
-        val to = chosen ?: port.primary
-        if ((text.isBlank() && attachments.length() == 0) || to == null) return
+    /**
+     * The send button (MOBILE-ARCH §3.5, §4.2): the message is stored first; only once it is kept do the words and the files
+     * leave the box — and only those: what the owner typed meanwhile stays. Not kept (the disk refused): it all stays, and
+     * the owner is told. The box keeps its focus and the keyboard stays up.
+     */
+    private fun send(text: String, attachments: JSONArray) {
+        if (storing) return
+        val key = draftKey()
         val body = JSONObject().put("text", text)
         if (attachments.length() > 0) body.put("attachments", attachments)
+        storing = true
+        post(chosen, body) { kept ->
+            storing = false
+            if (!kept) { toast("这条消息没能存下来，还在输入框里，再点一次发送试试"); return@post }
+            if (draftKey() == key && input.text.toString().trim() == text) input.setText("")
+            if (picked === attachments) { picked = JSONArray(); paintPicked(); keepPicked() }
+        }
+    }
+
+    private fun say(text: String, option: Pair<String, String>? = null) {
+        if (text.isBlank()) return
+        val body = JSONObject().put("text", text)
         option?.let { body.put("in_reply_to", it.first).put("option_id", it.second) }
-        post(to, body)
+        post(chosen, body)
     }
 
-    /** The owner's `say` [body] to [to], through the outbox (a card's action goes this way too). */
-    private fun post(to: String, body: JSONObject) {
-        outbox.add(JSONObject().put("to", to).put("kind", "request").put("word", "say").put("body", body).put("client_id", UUID.randomUUID().toString()))
-        paintList(toEnd = true)
-        flush()
+    /** The owner's `say` [body] to [to] (null: the primary agent, decided when it goes), through the outbox (a card's action goes this way too). */
+    private fun post(to: String?, body: JSONObject, kept: ((Boolean) -> Unit)? = null) {
+        outbox.add(Pending(UUID.randomUUID().toString(), to, body, at = System.currentTimeMillis())) { ok ->
+            if (ok) { paintList(toEnd = true); flush() } else if (kept == null) toast("没能存下这条消息，再试一次")
+            kept?.invoke(ok)
+        }
     }
 
-    /** Sends what waits, oldest first, one at a time; a lost connection leaves the rest for the next one. */
+    /** Sends what waits, oldest first, one at a time, each with its own client id however often it is tried; a lost connection leaves the rest for the next one. */
     private fun flush() {
-        if (flushing || !port.open) return
+        if (flushing || !port.open || !outbox.ready) return
         val next = outbox.next() ?: return
+        // Written before the primary agent was known: it waits until it is.
+        val request = next.request(port.primary) ?: return
         flushing = true
-        // The queue's own bookkeeping (`status`, the ledger `id`) is not part of the request the kernel accepts.
-        port.send(JSONObject(next.toString()).apply { remove("status"); remove("id") }) { r ->
+        port.send(request) { r ->
             flushing = false
-            if (r.optBoolean("ok")) { outbox.sent(next, r.optJSONObject("message")?.optString("id")); refresh(); flush() }
+            if (r.optBoolean("ok")) { outbox.taken(next.clientId, r.optJSONObject("message")?.optString("id")); refresh(); flush() }
             else {
                 val code = r.optJSONObject("error")?.optString("code").orEmpty()
-                if (code in RETRY) { outbox.mark(next, "unsent"); main.postDelayed({ flush() }, 3_000) }
-                else outbox.mark(next, "failed")
+                if (code in RETRY) { outbox.mark(next.clientId, Pending.UNSENT); main.postDelayed({ flush() }, 3_000) }
+                else outbox.mark(next.clientId, Pending.FAILED)
                 paintList()
             }
         }
@@ -323,7 +357,7 @@ class ChatScreen(
                 files.pick { chosen ->
                     // Files picked one choice after another add up until sent (at most 32); a new pick never drops the earlier ones.
                     for (i in 0 until chosen.length()) if (picked.length() < Uploads.MAX_ATTACHMENTS) picked.put(chosen.get(i))
-                    paintPicked()
+                    paintPicked(); keepPicked()
                 }
             })
             input.apply {
@@ -338,6 +372,8 @@ class ChatScreen(
                     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
                     override fun onTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
                     override fun afterTextChanged(s: Editable?) {
+                        if (restoring) return
+                        drafts.keep(draftKey(), s?.toString().orEmpty())
                         val now = System.currentTimeMillis()
                         if (!s.isNullOrEmpty() && now - lastTyping > 3_000) { lastTyping = now; port.presence(typing = true) }
                         if (s?.toString() == "@") pickTarget()
@@ -394,7 +430,7 @@ class ChatScreen(
         pickedChip.addView(FrameLayout(ctx).apply {
             contentDescription = "移除附件"; isClickable = true
             addView(View(ctx).apply { background = ctx.getDrawable(R.drawable.ash_ic_x)!!.mutate().apply { setTint(c.youText) } }, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER))
-            setOnClickListener { picked = JSONArray(); paintPicked() }
+            setOnClickListener { picked = JSONArray(); paintPicked(); keepPicked() }
         }, LinearLayout.LayoutParams(dp(30), dp(30)))
     }
 
@@ -420,8 +456,10 @@ class ChatScreen(
             "${a.optString("name")} · $state"
         } }
         AlertDialog.Builder(ctx).setTitle("跟谁说").setItems(names.toTypedArray()) { _, i ->
-            chosen = agents.optJSONObject(i)?.optString("id")?.takeIf { it != port.primary }
             if (input.text.toString().startsWith("@")) input.setText(input.text.toString().removePrefix("@").trimStart())
+            val next = agents.optJSONObject(i)?.optString("id")?.takeIf { it != port.primary }
+            // Each agent has its own draft: switching puts this one away and brings that one back.
+            if (next != chosen) { chosen = next; loadDraft() }
             paintTarget(); focusInput()
         }.show()
     }
@@ -444,8 +482,17 @@ class ChatScreen(
         stateLine.text = if (port.open) text else "连接中…"
         stateLine.setTextColor(when { !port.open -> c.text3; state == "waiting_you" -> c.warn; state in setOf("thinking", "working", "listening") -> c.her; else -> c.text2 })
         dots.visibility = if (port.open && state == "thinking") View.VISIBLE else View.GONE
-        banner.text = "暂时连不上 Ash。你写的消息会先存着，连上就发。"
-        banner.visibility = if (port.open) View.GONE else View.VISIBLE
+    }
+
+    /** The line above the conversation: the link is down, or the last read failed (what is shown may be behind). */
+    private fun paintStatus() {
+        val text = when {
+            !port.open -> "暂时连不上 Ash。你写的消息会先存着，连上就发。"
+            window.failedAt > 0 -> "没读到最新消息（${java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA).format(java.util.Date(window.failedAt))}），稍后会再试。"
+            else -> null
+        }
+        banner.text = text.orEmpty()
+        banner.visibility = if (text == null) View.GONE else View.VISIBLE
     }
 
     private fun paintProgress() {
@@ -496,8 +543,9 @@ class ChatScreen(
      * [then] runs once the list has the rows.
      */
     private fun paintList(toEnd: Boolean = false, then: (() -> Unit)? = null) {
-        val next = ChatRows.build(items.values, outbox.items(), moreBefore, { note("往上翻看更早的消息") }, ::row, ::pending, outbox::sentAs)
-            .ifEmpty { listOf(ChatRow(EMPTY, port.open.toString()) { empty() }) }
+        val emptyText = when { !port.open -> "正在连接…"; window.failedAt > 0 -> "暂时读不到消息，稍后会再试。"; else -> "还没有消息，跟她说点什么吧。" }
+        val next = ChatRows.build(window.items.values, outbox.items(), window.moreBefore, { note("往上翻看更早的消息") }, ::row, ::pending, outbox::sentAs)
+            .ifEmpty { listOf(ChatRow(EMPTY, emptyText) { empty(emptyText) }) }
         val before = rowsAdapter.currentList
         val first = before.none { it.key != EMPTY } && next.first().key != EMPTY
         val atEnd = !list.canScrollVertically(1)
@@ -512,13 +560,16 @@ class ChatScreen(
             })
         }
         rowsAdapter.submitList(next) {
-            if (toEnd || first || (newAtEnd && atEnd)) lm.scrollToPosition(next.size - 1)
+            val back = if (first) restoreAnchor?.let { (key, offset) -> next.indexOfFirst { it.key == key }.takeIf { it >= 0 }?.let { it to offset } } else null
+            if (first) restoreAnchor = null
+            if (back != null && !toEnd) lm.scrollToPositionWithOffset(back.first, back.second)
+            else if (toEnd || first || (newAtEnd && atEnd)) lm.scrollToPosition(next.size - 1)
             then?.invoke()
             paintToBottom()
         }
     }
 
-    private fun empty(): View = AshUi.text(ctx, if (port.open) "还没有消息，跟她说点什么吧。" else "正在连接…", AshTokens.Type.body, c.text3).apply { gravity = Gravity.CENTER; setPadding(0, dp(40), 0, 0) }
+    private fun empty(text: String): View = AshUi.text(ctx, text, AshTokens.Type.body, c.text3).apply { gravity = Gravity.CENTER; setPadding(0, dp(40), 0, 0) }
 
     /** Keeps [v]'s row's top where it is through the next layout (a bubble opening grows down, under the owner's finger). */
     private fun keepTop(v: View) {
@@ -598,8 +649,8 @@ class ChatScreen(
         return fold
     }
 
-    private fun pending(o: JSONObject): View {
-        val body = o.optJSONObject("body") ?: JSONObject()
+    private fun pending(o: Pending): View {
+        val body = o.body
         val box = AshUi.vstack(ctx, 2).apply { gravity = Gravity.END }
         val attached = body.optJSONArray("attachments") ?: JSONArray()
         for (i in 0 until attached.length()) attached.optJSONObject(i)?.let { a ->
@@ -608,9 +659,9 @@ class ChatScreen(
         }
         if (body.optString("text").isNotBlank() || attached.length() == 0)
             box.addView(AshUi.bubbleText(ctx, body.optString("text"), true).apply { alpha = 0.7f }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END })
-        val status = when (o.optString("status")) { "failed" -> "没发出去 · 点这里删掉"; "unsent" -> "还没发出，连上就发"; else -> "发送中…" }
+        val status = when (o.status) { Pending.FAILED -> "没发出去 · 点这里删掉"; Pending.UNSENT -> "还没发出，连上就发"; else -> "发送中…" }
         box.addView(AshUi.text(ctx, status, AshType(11.5f, 15f, 400, Role.TEXT_3)).apply {
-            if (o.optString("status") == "failed") setOnClickListener { outbox.remove(o); paintList() }
+            if (o.status == Pending.FAILED) setOnClickListener { outbox.remove(o.clientId); paintList() }
         }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END })
         return box
     }
@@ -696,6 +747,46 @@ class ChatScreen(
 
     private fun toast(s: String) = android.widget.Toast.makeText(ctx, s, android.widget.Toast.LENGTH_SHORT).show()
 
+    /** Setting the box from a stored draft: not a change of the draft. */
+    private var restoring = false
+
+    /** Brings back the draft of the agent talked to now: its words at once, its files once read from disk. */
+    private fun loadDraft() {
+        val key = draftKey()
+        restoring = true
+        input.setText(drafts.text(key)); input.setSelection(input.text.length)
+        restoring = false
+        picked = JSONArray(); paintPicked()
+        UiDrafts.files(ctx, key) { files -> if (draftKey() == key && picked.length() == 0 && files.length() > 0) { picked = files; paintPicked() } }
+    }
+
+    /** The files picked for the draft go to disk (off the main thread), so they come back after the app is closed. */
+    private fun keepPicked() = UiDrafts.keepFiles(ctx, draftKey(), picked)
+
+    /** The agent talked to and where the conversation was read, for the activity to keep across its being made again. */
+    fun save(out: android.os.Bundle) {
+        chosen?.let { out.putString(STATE_TARGET, it) }
+        anchor()?.let { (key, offset) -> out.putString(STATE_ANCHOR, key); out.putInt(STATE_OFFSET, offset) }
+    }
+
+    fun restore(saved: android.os.Bundle?) {
+        saved ?: return
+        val target = saved.getString(STATE_TARGET)
+        if (target != chosen) { chosen = target; loadDraft(); paintTarget() }
+        restoreAnchor = saved.getString(STATE_ANCHOR)?.let { it to saved.getInt(STATE_OFFSET) }
+    }
+
+    /** The row at the top of the conversation and how far below the list's top it starts; null at the newest message (it follows it). */
+    private fun anchor(): Pair<String, Int>? {
+        if (!list.canScrollVertically(1)) return null
+        val pos = lm.findFirstVisibleItemPosition().takeIf { it >= 0 } ?: return null
+        val row = lm.findViewByPosition(pos) ?: return null
+        return rowsAdapter.currentList.getOrNull(pos)?.key?.let { it to (lm.getDecoratedTop(row) - list.paddingTop) }
+    }
+
+    /** Where to put the conversation once its rows are there again (after the activity was made again). */
+    private var restoreAnchor: Pair<String, Int>? = null
+
     /** Her name changed (her home page read IDENTITY.md): the bar and the hint say it. */
     fun setName(name: String) { herName = name; nameLine.text = name; paintTarget() }
 
@@ -708,11 +799,7 @@ class ChatScreen(
         if (rowsAdapter.currentList.any { it.id == id }) { show(); return }
         port.call("service:history", "window", JSONObject().put("limit", PAGE).put("around_id", id)) { data, _ ->
             if (data == null) return@call
-            val had = moreBefore
-            val oldest = items.firstEntry()?.key ?: Long.MAX_VALUE
-            take(data, newest = false)
-            // reaching further back than what was loaded: that window says whether there is more; otherwise what was said stands
-            if (items.firstKey() >= oldest) moreBefore = had
+            window.older(data, keepMore = true)
             paintList(then = ::show)
         }
     }
@@ -759,63 +846,15 @@ class ChatScreen(
         }
     }
 
-    /** What the owner wrote and the kernel has not taken yet; kept on the phone, so a closed app sends it next time. */
-    private class Outbox(ctx: Context) {
-        private val prefs = ctx.getSharedPreferences("ash.chat.outbox", Context.MODE_PRIVATE)
-        /** What is attached waits in files (a message may carry about 3 MB): the list in the preferences only names them. */
-        private val dir = java.io.File(ctx.filesDir, "outbox").apply { mkdirs() }
-        private val list = runCatching { JSONArray(prefs.getString("items", "[]")) }.getOrDefault(JSONArray())
-            .let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.toMutableList() }
-        /** Ledger id → the client id it was sent with: the window's copy of a sent message stays in the row it waited in. */
-        private val sent = HashMap<String, String>()
-        fun sentAs(id: String): String? = sent[id]
-        init {
-            list.forEach(::load); dir.listFiles()?.forEach { f -> if (list.none { f.name.startsWith(it.optString("client_id") + ".") }) f.delete() }
-            list.forEach { o -> o.optString("id").takeIf { it.isNotEmpty() }?.let { sent[it] = o.optString("client_id") } }
-        }
-
-        private fun attachments(o: JSONObject) = o.optJSONObject("body")?.optJSONArray("attachments")
-        private fun fileOf(o: JSONObject, i: Int) = java.io.File(dir, "${o.optString("client_id")}.$i")
-        private fun load(o: JSONObject) {
-            val a = attachments(o) ?: return
-            for (i in 0 until a.length()) a.optJSONObject(i)?.let { att ->
-                if (att.has("file")) { att.put("data", runCatching { fileOf(o, i).readText() }.getOrDefault("")); att.remove("file") }
-            }
-        }
-        private fun stored(o: JSONObject): JSONObject {
-            val copy = JSONObject(o.toString())
-            val a = attachments(copy) ?: return copy
-            for (i in 0 until a.length()) a.optJSONObject(i)?.let { att ->
-                val f = fileOf(o, i)
-                if (!f.exists()) runCatching { f.writeText(att.optString("data")) }
-                att.remove("data"); att.put("file", f.name)
-            }
-            return copy
-        }
-        private fun save() = prefs.edit().putString("items", JSONArray(list.map(::stored)).toString()).apply()
-        private fun forget(o: JSONObject) { dir.listFiles()?.forEach { if (it.name.startsWith(o.optString("client_id") + ".")) it.delete() } }
-        fun items(): List<JSONObject> = list.toList()
-        fun add(o: JSONObject) { o.put("status", "sending"); list.add(o); save() }
-        fun next(): JSONObject? = list.firstOrNull { it.optString("status") != "failed" && !it.has("id") }
-        fun mark(o: JSONObject, status: String) { o.put("status", status); save() }
-        fun sent(o: JSONObject, id: String?) {
-            if (id.isNullOrEmpty()) { list.remove(o); forget(o) } else { o.put("id", id).put("status", "sent"); sent[id] = o.optString("client_id") }
-            save()
-        }
-        fun remove(o: JSONObject) { list.remove(o); forget(o); save() }
-        /** Drops what the window now shows (by its ledger id or its client id). */
-        fun drop(clientIds: Set<String>, ids: Set<String>) {
-            val gone = list.filter { it.optString("client_id") in clientIds || it.optString("id") in ids }
-            if (gone.isNotEmpty()) { list.removeAll(gone.toSet()); gone.forEach(::forget); save() }
-        }
-    }
-
     /** Room the conversation always keeps at its bottom for the progress pill floating there (12 under the last row + the pill). */
     private val PILL_ROOM get() = dp(52)
 
     companion object {
         private const val PAGE = 60
         private const val EMPTY = "empty"
+        private const val STATE_TARGET = "ai.ash.chat.target"
+        private const val STATE_ANCHOR = "ai.ash.chat.anchor"
+        private const val STATE_OFFSET = "ai.ash.chat.offset"
         private val RETRY = setOf("offline", "unavailable", "timeout", "result_unknown", "internal")
         private val PERMISSIONS = mapOf("calendar" to "日历", "notifications" to "通知", "battery" to "后台运行", "accessibility" to "无障碍",
             "photos" to "照片和文件", "all_files" to "所有文件", "usage" to "使用情况", "write_settings" to "系统设置", "overlay" to "悬浮窗")

@@ -11,7 +11,9 @@ import java.util.UUID
 
 /**
  * The native screens' one way to the kernel: a page of the [ChatBridge], speaking the frames of the human channel (SPEC-05
- * §4.1) as the web page did. Everything here is called and answered on the main thread.
+ * §4.1) as the web page did. Everything here is called and answered on the main thread; what arrives is parsed (and a
+ * stream's bytes decoded) on [UiIo.decode] first, and what goes out is handed to the bridge in order on one thread of its
+ * own (MOBILE-ARCH §7.2). Every request has a time limit: past it the answer is `result_unknown` (§3.2).
  *
  *  - [call] a word and get its data (or the failure); [send] any request frame as it is.
  *  - [changed] listeners hear that the ledger moved (one follow `sync` is kept open while the channel is open); they read what
@@ -43,13 +45,20 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
     fun onChange(l: () -> Unit) { changeListeners.add(l) }
     fun removeChange(l: () -> Unit) { changeListeners.remove(l) }
 
-    override fun post(message: String) { main.post { receive(message) } }
+    override fun post(message: String) {
+        UiIo.decode {
+            val m = runCatching { JSONObject(message) }.getOrNull() ?: return@decode
+            val f = m.optJSONObject("frame")
+            val bytes = if (f != null && f.optString("t") == "stream" && f.optString("op") == "data")
+                runCatching { Base64.decode(f.optString("b64"), Base64.DEFAULT) }.getOrDefault(ByteArray(0)) else null
+            main.post { receive(m, bytes) }
+        }
+    }
 
-    private fun receive(message: String) {
-        val m = runCatching { JSONObject(message) }.getOrNull() ?: return
+    private fun receive(m: JSONObject, bytes: ByteArray?) {
         when (m.optString("type")) {
             "link" -> linkChanged(m.optBoolean("open"))
-            "frame" -> frame(m.optJSONObject("frame") ?: return)
+            "frame" -> frame(m.optJSONObject("frame") ?: return, bytes)
         }
     }
 
@@ -72,31 +81,37 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
         linkListeners.toList().forEach { it(open) }
     }
 
-    private fun frame(f: JSONObject) {
+    private fun frame(f: JSONObject, bytes: ByteArray?) {
         when (f.optString("t")) {
             "send.result" -> waiting.remove(f.optString("id"))?.invoke(f)
             "sync.page", "sync.msg" -> if (f.optString("sid") == sid) changeListeners.toList().forEach { it() }
             // A `chat` present (focus / open): the chat is the app's front screen, it is up.
             "present" -> out(JSONObject().put("t", "present.result").put("id", f.optString("id")).put("ok", true))
-            "stream" -> stream(f)
+            "stream" -> stream(f, bytes)
             "error" -> waiting.remove(f.optString("id"))?.invoke(JSONObject().put("ok", false)
                 .put("error", JSONObject().put("code", f.optString("code", "failed")).put("message", f.optString("message"))))
         }
     }
 
-    private fun out(frame: JSONObject) = Thread { bridge.fromPage(frame) }.start()
+    private fun out(frame: JSONObject) { outQueue.execute { runCatching { bridge.fromPage(frame) } } }
 
-    /** Sends one request (`{to, kind, word, body, ...}`); [done] gets the `send.result` frame. */
-    fun send(request: JSONObject, done: (JSONObject) -> Unit = {}) {
+    /**
+     * Sends one request (`{to, kind, word, body, ...}`); [done] gets the `send.result` frame. No answer within [timeoutMs]:
+     * `result_unknown` (it may still have been done — a write is checked, not repeated blindly).
+     */
+    fun send(request: JSONObject, timeoutMs: Long = TIMEOUT_MS, done: (JSONObject) -> Unit = {}) {
         if (!open) { done(JSONObject().put("ok", false).put("error", JSONObject().put("code", "offline").put("message", "还没连上"))); return }
         val id = "s_" + UUID.randomUUID()
         waiting[id] = done
         out(JSONObject().put("t", "send").put("ch", "human").put("id", id).put("request", request))
+        main.postDelayed({
+            waiting.remove(id)?.invoke(JSONObject().put("ok", false).put("error", JSONObject().put("code", "result_unknown").put("message", "等了太久没有回音")))
+        }, timeoutMs)
     }
 
     /** A request that waits for its answer: [done] gets the answer's data, or why there is none. */
     fun call(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, Failure?) -> Unit) =
-        send(JSONObject().put("to", to).put("kind", "request").put("word", word).put("body", body).put("wait", true)) { r ->
+        send(JSONObject().put("to", to).put("kind", "request").put("word", word).put("body", body).put("wait", true), TIMEOUT_MS) { r ->
             val reply = r.optJSONObject("response")
             when {
                 !r.optBoolean("ok") -> done(null, failureOf(r.optJSONObject("error")))
@@ -123,11 +138,11 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
         main.postDelayed({ streamWaiters.remove(sid)?.invoke(null, null, Failure("timeout", "文件没有送到")) }, 60_000)
     }
 
-    private fun stream(f: JSONObject) {
+    private fun stream(f: JSONObject, data: ByteArray?) {
         val s = f.optString("sid")
         when (f.optString("op")) {
             "open" -> incoming[s] = Partial(f.optString("mime"))
-            "data" -> incoming[s]?.bytes?.write(runCatching { Base64.decode(f.optString("b64"), Base64.DEFAULT) }.getOrDefault(ByteArray(0)))
+            "data" -> data?.let { incoming[s]?.bytes?.write(it) }
             "error" -> { incoming.remove(s); streamWaiters.remove(s)?.invoke(null, null, Failure(f.optString("code", "failed"), f.optString("message"))) }
             else -> {
                 val p = incoming.remove(s) ?: return
@@ -137,5 +152,12 @@ class HumanPort(private val bridge: ChatBridge) : ChatBridge.Page {
                 else { arrived[s] = p.mime to bytes; if (arrived.size > 16) arrived.remove(arrived.keys.first()) }
             }
         }
+    }
+
+    private val outQueue = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "ash-ui-link-out").apply { isDaemon = true } }
+
+    private companion object {
+        /** How long a request waits for its answer before it is `result_unknown`. */
+        const val TIMEOUT_MS = 45_000L
     }
 }
