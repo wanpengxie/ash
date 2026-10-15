@@ -29,6 +29,8 @@ import org.json.JSONObject
  * keyboard (a conversation) names its deck in [deck]; any other is laid out above the keyboard.
  */
 abstract class SystemAppActivity : Activity() {
+    /** The existing human connection. Overridable by a test Activity; no separate connection or chat page is created. */
+    protected open val humanClient: ai.ash.link.LinkClient get() = ai.ash.link.Link.get(this).client
     protected val c get() = AshUi.p(this)
     protected fun dp(v: Int) = AshUi.dp(this, v)
 
@@ -64,7 +66,7 @@ abstract class SystemAppActivity : Activity() {
     }
     private val ledger: (JSONObject) -> Unit = { if (!isDestroyed) onLedger(it) }
 
-    override fun onStart() { super.onStart(); LedgerFeed.listen(this, ledger, connection) }
+    override fun onStart() { super.onStart(); LedgerFeed.listen(humanClient, ledger, connection) }
     override fun onStop() { LedgerFeed.remove(ledger); super.onStop() }
 
     override fun onCreate(saved: Bundle?) {
@@ -116,7 +118,7 @@ abstract class SystemAppActivity : Activity() {
      * that means Ash is out of reach shows the offline line; the next answer that comes back takes it away.
      */
     protected fun call(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
-        HumanCall.call(this, to, word, body) { data, failure ->
+        HumanCall.call(humanClient, to, word, body) { data, failure ->
             if (isDestroyed) return@call
             if (failure?.code in UNREACHABLE) offline.visibility = View.VISIBLE
             else if (failure == null) offline.visibility = View.INVISIBLE

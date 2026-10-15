@@ -8,36 +8,47 @@ import org.json.JSONObject
 
 /** One follow on the app's existing link, only while a system app is visible. Never attaches a chat page. */
 object LedgerFeed {
+    private val subscription = LedgerSubscription(UiIo::decode, UiIo::ui)
+    fun listen(ctx: Context, message: (JSONObject) -> Unit, connection: (Boolean) -> Unit) =
+        subscription.listen(Link.get(ctx).client, message, connection)
+    fun listen(client: LinkClient, message: (JSONObject) -> Unit, connection: (Boolean) -> Unit) =
+        subscription.listen(client, message, connection)
+    fun remove(message: (JSONObject) -> Unit) = subscription.remove(message)
+    fun connectionChanged(open: Boolean) = UiIo.ui { subscription.connectionChanged(open) }
+}
+
+/** Owns only the existing link's sync lifetime; dispatch and work queues are explicit so the real wire can be tested. */
+internal class LedgerSubscription(private val work: (() -> Unit) -> Unit, private val main: (() -> Unit) -> Unit) {
     private val listeners = LinkedHashMap<(JSONObject) -> Unit, (Boolean) -> Unit>()
     private var client: LinkClient? = null
     private var sid: String? = null
     private var generation = 0
-    private var connected = false
+    private var ready = false
+    private var cursor: Long? = null
 
-    /** Main thread. Initial connection state is delivered immediately, including for a cold application entry. */
-    fun listen(ctx: Context, message: (JSONObject) -> Unit, connection: (Boolean) -> Unit) {
-        client = Link.get(ctx).client
+    /** Main queue. A connected callback means the follow is established, so the page's reread cannot precede it. */
+    fun listen(link: LinkClient, message: (JSONObject) -> Unit, connection: (Boolean) -> Unit) {
+        client = link
+        val first = listeners.isEmpty()
         listeners[message] = connection
-        connected = client?.channelOpen("human") == true
-        connection(connected)
-        if (listeners.size == 1 && connected) start()
+        connection(ready && link.channelOpen("human"))
+        if (first && link.channelOpen("human")) start()
     }
 
     fun remove(message: (JSONObject) -> Unit) {
         listeners.remove(message)
-        if (listeners.isEmpty()) stop()
+        if (listeners.isEmpty()) { stop(); cursor = null }
     }
 
-    /** Called by the shared link, including reconnects. Dispatch to the UI before touching page listeners. */
-    fun connectionChanged(open: Boolean) = UiIo.ui {
-        connected = open
+    fun connectionChanged(open: Boolean) {
         stop()
-        listeners.values.toList().forEach { it(open) }
+        listeners.values.toList().forEach { it(false) }
         if (open && listeners.isNotEmpty()) start()
     }
 
     private fun stop() {
         generation++
+        ready = false
         sid?.let { client?.closeSync(it) }
         sid = null
     }
@@ -45,23 +56,32 @@ object LedgerFeed {
     private fun start() {
         val link = client ?: return
         val gen = ++generation
-        // openSync waits for the link loop. Neither that loop nor the UI may block on it.
-        UiIo.decode {
+        val params = JSONObject().put("limit", 200).put("follow", true)
+        cursor?.let { params.put("after", it) } ?: params.put("limit", 1)
+        work {
             val opened = runCatching {
-                link.openSync(JSONObject().put("limit", 1).put("follow", true), object : SyncListener {
+                link.openSync(params, object : SyncListener {
                     override fun page(frame: JSONObject) = deliver(frame)
                     override fun message(frame: JSONObject) = deliver(frame)
                     private fun deliver(frame: JSONObject) {
                         val messages = LedgerMessages.of(frame)
-                        UiIo.ui {
-                            if (gen == generation && connected)
-                                messages.forEach { m -> listeners.keys.toList().forEach { it(m) } }
+                        main {
+                            if (gen != generation || listeners.isEmpty()) return@main
+                            for (m in messages) {
+                                if (m.has("seq")) cursor = maxOf(cursor ?: 0, m.optLong("seq"))
+                                listeners.keys.toList().forEach { it(m) }
+                            }
+                            if (frame.optString("t") == "sync.page" && frame.optBoolean("end") && !ready) {
+                                if (cursor == null) cursor = 0
+                                ready = true
+                                listeners.values.toList().forEach { it(true) }
+                            }
                         }
                     }
                 })
             }.getOrNull()
-            UiIo.ui {
-                if (gen == generation && connected && listeners.isNotEmpty()) sid = opened
+            main {
+                if (gen == generation && listeners.isNotEmpty()) sid = opened
                 else opened?.let(link::closeSync)
             }
         }
