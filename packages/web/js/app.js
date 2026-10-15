@@ -421,6 +421,8 @@ export function boot() {
     const value = input.value.trim();
     const files = addPicked(picked, fileInput.files);
     if (!value && !files.length) return;
+    // Sending keeps the keyboard up, as in any chat: the input keeps (or gets back) the focus.
+    const typingHere = document.activeElement === input || document.activeElement === sendButton;
     sendButton.disabled = true;
     try {
       const attachments = await prepareUploads(files, value);
@@ -434,8 +436,10 @@ export function boot() {
       showPicked();
       if (timeline.store.hasAfter) await locate().catch(error => presenceBar.problem(error.message)); else conversationView(log).position.latest();
     } catch (error) { presenceBar.problem(`没发出去：${error.message || "这台设备存不下待发送的消息"}`); }
-    finally { sendButton.disabled = false; sendable(); }
+    finally { sendButton.disabled = false; sendable(); if (typingHere) input.focus(); }
   });
+  // A tap on send must not take the focus from the input (that would close the keyboard).
+  sendButton.addEventListener("mousedown", (event) => event.preventDefault());
   input.addEventListener("input", typing);
   input.addEventListener("input", sendable);
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, window.innerHeight * 0.4)}px`; });
