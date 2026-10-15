@@ -21,15 +21,18 @@ object TeamModel {
             state == "starting" -> "正在启动"
             waiting.isNotEmpty() -> "在等 " + waiting.joinToString("、") { names[it] ?: it.removePrefix("agent:") }
             state == "working" -> if (doing.isBlank()) "正在工作" else "在做：$doing"
-            else -> "空闲"
+            state == "idle" -> "当前空闲"
+            else -> "当前状态未知"
         }
     }
     data class Cost(val usd: Double, val unpriced: Int) {
-        fun label() = String.format(Locale.US, "今天 $%.4f", usd) + if (unpriced > 0) " · $unpriced 次未计价" else ""
+        fun amount() = String.format(Locale.US,"US$%.4f",usd)
+        fun pricing() = if(unpriced>0) "今日费用 · $unpriced 次未计价" else "今日费用 · 暂无未计价项"
+        fun label() = amount() + if (unpriced > 0) " · $unpriced 次未计价" else ""
     }
     data class Answer(val seq: Long, val ts: Long, val text: String, val error: String)
     data class Exchange(val id: String, val seq: Long, val ts: Long, val from: String, val to: String, val word: String, val text: String, val state: String, val answer: Answer?) {
-        val status get() = when (state) { "answered" -> "已回答"; "failed" -> if (answer?.error?.startsWith("结果未知：") == true) "结果未知" else "没有完成"; "sent" -> "已送达"; else -> "等回答" }
+        val status get() = when (state) { "answered" -> "已回答"; "failed" -> if (answer?.error?.startsWith("结果未知：") == true) "结果未知" else "没有完成"; "sent" -> "已送达"; "waiting" -> "等回答"; else -> "状态未知" }
         fun preview(open: Boolean): String = if (open || text.length <= 180) text else text.take(180) + "…"
     }
     fun members(data: JSONObject): List<Member> {
