@@ -250,8 +250,12 @@ public class TeamActivityAcceptanceTest {
             String id=declaration.body.getString("id"); assertTrue(id.startsWith("agent:helper-"));
             assertEquals("验收帮手",declaration.body.getString("name"));
             assertEquals("逐项检查应用并回复结果",declaration.body.getString("brief")); assertEquals("two",declaration.body.getJSONObject("runtime").getString("model"));
-            declaration.answer("{\"id\":\""+id+"\",\"name\":\"验收帮手\",\"state\":\"idle\"}");
+            declaration.answer("{\"id\":\""+id+"\",\"name\":\"验收帮手\",\"state\":\"idle\",\"notes\":[\"所选模型的密钥尚未配置，当前使用备用模型\"]}");
             assertEquals(id,member(a)); assertEquals(id,ReflectionHelpers.getField(a,"target"));
+            last("list").answer("{\"agents\":[{\"id\":\""+id+"\",\"name\":\"验收帮手\",\"summary\":\"逐项检查应用并回复结果\",\"state\":\"idle\"}]}");
+            assertNotNull(screenText(a,"配置已保存，中枢提示：所选模型的密钥尚未配置，当前使用备用模型",false));
+            c.recreate(); last("list").answer("{\"agents\":[{\"id\":\""+id+"\",\"name\":\"验收帮手\",\"state\":\"idle\"}]}");
+            assertNotNull(screenText(c.get(),"配置已保存，中枢提示：所选模型的密钥尚未配置，当前使用备用模型",false));
         }
     }
     @Implements(value = HumanCall.class, isInAndroidSdk = false)

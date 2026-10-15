@@ -47,6 +47,7 @@ class TeamActivity : SystemAppActivity() {
     private var refreshCosts = false
     private var changedBy: String? = null
     private val opened = HashSet<String>()
+    private val configNotes = HashMap<String, String>()
     private val busy = HashSet<String>()
     // Process-wide pending state: callbacks from a recreated Activity cannot overwrite its new questions on disk.
     private val pending get() = sharedPending
@@ -86,6 +87,7 @@ class TeamActivity : SystemAppActivity() {
         if (route !in setOf("team", "member", "members")) route = if (selected == null) "team" else "member"
         savedKey = saved?.getString("anchor"); savedOffset = saved?.getInt("offset") ?: 0
         saved?.getStringArrayList("opened")?.let(opened::addAll)
+        saved?.getBundle("configNotes")?.let { notes -> notes.keySet().forEach { id -> notes.getString(id)?.let { configNotes[id] = it } } }
         title.text = "团队"
         actions.addView(button("成员") { move(null, "members") })
         actions.addView(button("刷新") { refresh() })
@@ -300,8 +302,9 @@ class TeamActivity : SystemAppActivity() {
                 }
                 if (members.value != null && all.isEmpty()) built.add(note("members:empty", "还没有团队成员，可以从右上角新建。"))
             } else member()?.let { m ->
-                built.add(ChatRow("detail:${m.id}", m.toString() + busy.toString() + armedAction + moreMember + costs.value?.get(m.id)) {
+                built.add(ChatRow("detail:${m.id}", m.toString() + busy.toString() + armedAction + moreMember + costs.value?.get(m.id) + configNotes[m.id]) {
                     box(m.status(names), m.role, "配置模型：${m.model.ifBlank { "由运行时选择" }}", costs.value?.get(m.id)?.label().orEmpty()).apply {
+                        configNotes[m.id]?.let { addView(text("配置已保存，中枢提示：$it")) }
                         addView(button("修改配置") { edit(m) })
                         addView(button(if (m.state == "stopped" || m.state == "error") "启动" else if (armedAction == "${m.id}:state") "确认停下，会中断工作" else "停下") { action("state", m.id, if (m.state == "stopped" || m.state == "error") "start" else "stop") })
                         addView(button(if (moreMember) "收起更多" else "更多操作") { moreMember = !moreMember; render() })
@@ -527,7 +530,9 @@ class TeamActivity : SystemAppActivity() {
                 if (failure != null) { formNote.text = "${failure.message}；草稿已保留，请查看成员状态后再决定。"; readMembers(); return@call }
                 if (data?.optString("id") != id) { formNote.text = "尚未确认保存结果，草稿已保留。请先查看成员状态。"; readMembers(); return@call }
                 listOf("name", "role", "brief", "kind", "model", "tools", "words", "id").forEach { drafts.clear("$key:$it") }
-                formNote.text = data?.optJSONArray("notes")?.toString().orEmpty()
+                val notes = data?.optJSONArray("notes")
+                val note = notes?.let { (0 until it.length()).mapNotNull { i -> it.optString(i).takeIf(String::isNotBlank) }.joinToString("\n") }.orEmpty()
+                if (note.isBlank()) configNotes.remove(id) else configNotes[id] = note
                 selected = id; move(id, "member"); readMembers()
             }
         }
@@ -631,6 +636,7 @@ class TeamActivity : SystemAppActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("member", selected); outState.putString("target", target); outState.putString("route", route)
         outState.putStringArrayList("opened", ArrayList(opened))
+        outState.putBundle("configNotes", Bundle().apply { configNotes.forEach { (id, note) -> putString(id, note) } })
         val pos = lm.findFirstVisibleItemPosition()
         rows.currentList.getOrNull(pos)?.let { row ->
             outState.putString("anchor", row.key)
