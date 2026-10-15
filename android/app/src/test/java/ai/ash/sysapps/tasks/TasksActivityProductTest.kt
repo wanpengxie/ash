@@ -10,6 +10,7 @@ import android.app.TimePickerDialog
 import android.content.DialogInterface
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.content.Intent
 import android.view.View
 import android.view.ViewGroup
@@ -181,10 +182,22 @@ class TasksActivityProductTest {
         val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
         while(adapter.currentList.none { it.key=="task:tax" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
         val decor=a.window.decorView
+        val metrics=a.resources.displayMetrics
+        assertEquals(412,a.resources.configuration.screenWidthDp)
+        assertEquals(915,a.resources.configuration.screenHeightDp)
+        assertEquals(1f,metrics.density,0.001f)
+        assertEquals(1f,a.resources.configuration.fontScale,0.001f)
         ctl.visible();flush()
         decor.measure(View.MeasureSpec.makeMeasureSpec(412,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(915,View.MeasureSpec.EXACTLY))
         decor.layout(0,0,412,915);flush()
-        assertTrue("real RecyclerView rows must be attached to the window",views(decor).any { it.tag=="task:tax" })
+        assertEquals(412f,decor.width / metrics.density,0.1f)
+        val row=views(decor).first { it.tag=="task:tax" }
+        val complete=views(row).filterIsInstance<TextView>().first { it.text.toString()=="完成" }
+        val visibleBounds=Rect()
+        assertTrue("the primary completion action must be visible in the actual phone window",complete.getGlobalVisibleRect(visibleBounds))
+        assertEquals("completion must not be clipped horizontally",complete.width,visibleBounds.width())
+        assertEquals("completion must not be clipped vertically",complete.height,visibleBounds.height())
+        assertTrue(visibleBounds.left >= 0 && visibleBounds.right <= decor.width && visibleBounds.top >= 0 && visibleBounds.bottom <= decor.height)
         val bitmap=Bitmap.createBitmap(decor.width,decor.height,Bitmap.Config.ARGB_8888)
         decor.draw(Canvas(bitmap))
         val target=File("build/reports/tasks/tasks-product-home.png")
