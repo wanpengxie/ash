@@ -73,6 +73,9 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
             activity.startActivity(ai.ash.sysapps.SystemApps.intent(activity, "team", arg))
             return
         }
+        if (section in setOf("memory", "identity", "promises")) {
+            openAsh(section!!); return
+        }
         if (section == "apps") { apps(); return }
         // Old app links/notifications still open the device app; no device page remains in the shell.
         if (section in setOf("device", "hands", "connect")) {
@@ -118,7 +121,10 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
         if (AshUi.motionOn(activity)) root.animate().alpha(0f).translationY(AshUi.dpF(activity, 24f)).setDuration(AshTokens.Motion.sheet).setInterpolator(AshTokens.Motion.easing()).withEndAction(done).start() else done()
     }
 
-    override fun go(id: String, arg: String?) { if (shown) push(id, arg, true) }
+    private fun openAsh(section: String) {
+        activity.startActivity(ai.ash.sysapps.SystemApps.intent(activity, "ash", org.json.JSONObject().put("section", section).toString()))
+    }
+    override fun go(id: String, arg: String?) { if (id in setOf("memory", "identity", "promises")) openAsh(id) else if (shown) push(id, arg, true) }
 
     override fun home() {
         val base = stack.firstOrNull() ?: return
@@ -141,9 +147,6 @@ class HomePages(private val activity: Activity, private val port: HumanPort) : C
             "settled" -> HmSettled(e, arg)
             "activity" -> HmActivity(e, arg)
             "upcoming", "plans" -> HmUpcoming(e, arg)
-            "memory" -> HmMemory(e, arg)
-            "identity" -> HmIdentity(e, arg)
-            "promises" -> HmPromises(e, arg)
             "browser" -> HmBrowser(e, arg)
             "backstage" -> HmBackstage(e, arg)
             "keys" -> HmKeys(e, arg)

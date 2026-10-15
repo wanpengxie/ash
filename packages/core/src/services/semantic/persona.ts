@@ -37,7 +37,7 @@ import type { Member, WordContract } from "../../../../sdk/src/word";
 import { wordsOf } from "../../../../sdk/src/words";
 import type { Ledger } from "../../kernel/ledger";
 import { DONE_MARK } from "./daily";
-import { ask, dataOf, primaryAgent, readBodyFile, seedBodyFile, wakeAgent, writeBodyFile, type Sender } from "./shared";
+import { ask, dataOf, primaryAgent, seedBodyFile, wakeAgent, writeBodyFile, type Sender } from "./shared";
 
 export const PERSONA_ID = "service:persona";
 export const PERSONA_FILES = ["SOUL.md", "IDENTITY.md"] as const;
@@ -152,10 +152,20 @@ export class PersonaService implements Member {
 
   // ---- memory files ----
 
+  /** Never offer a truncated document for whole-file editing. */
+  private async readContent(path: string): Promise<{ ok: true; text: string } | { ok: false; missing: boolean; message: string }> {
+    const reply = await ask(this.options.router, PERSONA_ID, "body:main", "workspace.read", { path, limit: 100000 });
+    if (!reply.ok) return { ok: false, missing: reply.error.code === "not_found", message: reply.error.message };
+    const data = dataOf<{ text?: unknown; truncated?: boolean }>(reply);
+    if (data?.truncated) throw new WordError("too_large", `the whole ${path} could not be read; do not overwrite a partial document`);
+    if (typeof data?.text !== "string") throw new WordError("offline", `could not read ${path}`);
+    return { ok: true, text: data.text };
+  }
+
   private async memoryGet(file?: MemoryFile) {
     const files = [];
     for (const f of file ? [file] : MEMORY_FILES) {
-      const read = await readBodyFile(this.options.router, PERSONA_ID, f);
+      const read = await this.readContent(f);
       // Who wrote it last, when it is still what memory.set wrote (an edit she made in her body since is not known here).
       const last = read.ok ? this.db.prepare("SELECT version, by, at FROM persona_writes WHERE file=?").get(f) as { version: string; by: string; at: number } | undefined : undefined;
       if (read.ok) files.push({ file: f, content: read.text, ...(last && last.version === versionOf(read.text) ? { by: last.by, at: last.at } : {}) });
@@ -207,7 +217,7 @@ export class PersonaService implements Member {
       .sort().reverse();
     const days = [];
     for (const date of dates.slice(0, limit)) {
-      const read = await readBodyFile(this.options.router, PERSONA_ID, `${DIARY_DIR}/${date}.md`);
+      const read = await this.readContent(`${DIARY_DIR}/${date}.md`);
       if (!read.ok) throw new WordError(read.missing ? "not_found" : "offline", `could not read diary ${date}: ${read.message}`);
       const text = read.text;
       days.push({ date, excerpt: excerptOf(text), done: text.includes(DONE_MARK), notes: this.notes(`diary:${date}`, 100).length });
@@ -216,7 +226,7 @@ export class PersonaService implements Member {
   }
 
   private async diaryGet(date: string) {
-    const read = await readBodyFile(this.options.router, PERSONA_ID, `${DIARY_DIR}/${date}.md`);
+    const read = await this.readContent(`${DIARY_DIR}/${date}.md`);
     if (!read.ok) throw new WordError(read.missing ? "not_found" : "offline", read.missing ? `no diary for ${date}` : read.message);
     return { date, content: read.text, done: read.text.includes(DONE_MARK), notes: this.notes(`diary:${date}`, 100).reverse() };
   }
@@ -224,7 +234,13 @@ export class PersonaService implements Member {
   // ---- notes ----
 
   private async note(body: Record<string, unknown>, ctx: HandleContext) {
-    const note: PersonaNote = { id: `n_${randomUUID()}`, about: String(body.about), text: String(body.text).slice(0, 4000), by: ctx.caller.member, at: this.now() };
+    const id = typeof body.id === "string" ? body.id : `n_${randomUUID()}`;
+    const old = this.db.prepare("SELECT about, text, by FROM persona_notes WHERE id=?").get(id) as { about: string; text: string; by: string } | undefined;
+    if (old) {
+      if (old.about !== body.about || old.text !== body.text || old.by !== ctx.caller.member) throw new WordError("bad_request", "this note id is already in use with different content");
+      return { id, told: false };
+    }
+    const note: PersonaNote = { id, about: String(body.about), text: String(body.text).slice(0, 4000), by: ctx.caller.member, at: this.now() };
     this.db.prepare("INSERT INTO persona_notes (id, about, text, by, at) VALUES (?,?,?,?,?)").run(note.id, note.about, note.text, note.by, note.at);
     this.changed("notes", note.about, note.by);
     // She is told, on her back lane, so she can fix what the note is about and answer it (skill owner-notes).

@@ -453,6 +453,12 @@ test("persona: diary and growth writes are shared, persistent and announce their
   assert.equal((await data("diary.get", { date: "2026-10-12" })).done, true);
   const invalid = await hub.send("service:persona", "diary.set", { date: "2026-02-30", content: "x" });
   assert.equal(!invalid.ok && invalid.error.code, "bad_request");
+  const stable = { id: "note-stable", about: "now", text: "相同请求只写一次" };
+  await data("note", stable);
+  const count = hub.wakes("agent:main").length;
+  await data("note", stable);
+  assert.equal(hub.wakes("agent:main").length, count);
+  assert.equal((await data("notes.list")).notes.filter((n: any) => n.id === "note-stable").length, 1);
   const change = { id: "learn-quiet", title: "少打扰你", why: "你说昨晚提醒太多", did: "我合并了重复提醒", effect: "还在观察", next: "下周回看", evidence: ["m_feedback"] };
   await data("growth.put", change);
   await data("growth.put", { ...change, effect: "减少了三次重复提醒" });
@@ -465,6 +471,12 @@ test("persona: diary and growth writes are shared, persistent and announce their
   const note = await data("note", { about: "growth:learn-quiet", text: "请保留早上的提醒" }, OWNER);
   assert.equal(note.told, true);
   assert.ok(hub.sent.some(s => s.msg.word === "persona.changed" && (s.msg.body as any).part === "diary" && (s.msg.body as any).by === "agent:main"));
+  const bodyMember = hub.members.get("body:main")!;
+  const handle = bodyMember.handle.bind(bodyMember);
+  bodyMember.handle = async (msg, ctx) => msg.word === "workspace.read" ? { data: { text: "partial", truncated: true } } : handle(msg, ctx);
+  const partial = await hub.send("service:persona", "memory.get", { file: "USER.md" });
+  assert.equal(!partial.ok && partial.error.code, "too_large");
+  bodyMember.handle = handle;
   hub.bodyUp = false;
   const offline = await hub.send("service:persona", "diary.list", {});
   assert.equal(!offline.ok && offline.error.code, "offline");

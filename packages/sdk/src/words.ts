@@ -626,7 +626,7 @@ add("service:persona", "diary.list", "request", obj({ before: { type: "string", 
 add("service:persona", "diary.get", "request", obj({ date: { type: "string", pattern: DATE_PATTERN } }, ["date"]),
   obj({ date: nonempty, content: str, done: bool, notes: array(personaNote) }, ["date", "content", "done", "notes"]),
   { callers: OWNER_AGENT, label: "在读她的日记", description: "One day of the primary agent's diary, whole, with the notes written on it (oldest first). not_found: no diary that day." });
-add("service:persona", "note", "request", obj({ about: noteAbout, text: { type: "string", minLength: 1, maxLength: 4000 } }, ["about", "text"]), obj({ id, told: bool }, ["id"]),
+add("service:persona", "note", "request", obj({ id, about: noteAbout, text: { type: "string", minLength: 1, maxLength: 4000 } }, ["about", "text"]), obj({ id, told: bool }, ["id"]),
   { callers: OWNER_AGENT, effect: "write", label: "在给她留批注", description: "A note or a correction on something of the primary agent's: about is what it is on (now, diary:<date>, memory:<file>, identity:<file>, task:<id>, line:<id>). Kept with that thing; the primary agent is woken with it (reason owner_note) unless she wrote it herself, so she can fix what it is about and answer with note.reply." });
 add("service:persona", "note.reply", "request", obj({ id, text: { type: "string", minLength: 1, maxLength: 4000 } }, ["id", "text"]), obj({ replied: bool }, ["replied"]),
   { callers: OWNER_AGENT, effect: "write", label: "在回批注", description: "Answer a note: what was changed because of it, or why nothing was. Shown under the note; a later answer replaces the earlier one." });

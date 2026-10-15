@@ -8,7 +8,7 @@ import org.json.JSONObject
  * checked without a device.
  *
  * Words it reads: `service:history/current` (what she is doing and waiting on), `service:pulse/pulse.get` (when she comes to you
- * next), the tasks app's `list` with `subject: "ash"` (her own to-dos and, later, her lines), `service:persona/*` (who she is,
+ * next), the tasks app's `list` with `subject: "ash"` (her own to-dos and, later, her lines), `service:persona` words (who she is,
  * her memory files, her diary, the notes on them). The tasks words are read loosely: a field it does not know is left out.
  */
 object AshModel {
@@ -50,7 +50,7 @@ object AshModel {
 
     /** One to-do. [status]: todo / doing / waiting / done / dropped (anything else is shown as todo). */
     data class Todo(val id: String, val title: String, val status: String, val assignee: String?, val due: Long?, val source: String?,
-                    val line: String?, val updatedAt: Long?, val updatedBy: String?) {
+                    val line: String?, val updatedAt: Long?, val updatedBy: String?, val note: String?, val result: String?) {
         val open get() = status != "done" && status != "dropped"
     }
     private val STATUSES = setOf("todo", "doing", "waiting", "done", "dropped")
@@ -59,7 +59,7 @@ object AshModel {
         val id = o.str("id") ?: return@mapNotNull null
         Todo(id, o.str("title") ?: o.str("text") ?: "（没写内容）", o.str("status")?.takeIf { it in STATUSES } ?: "todo", o.str("assignee") ?: o.str("owner"),
             o.long("due") ?: o.long("due_at") ?: o.long("remind_at"), o.optJSONObject("source").str("message") ?: o.optJSONObject("source").str("turn"),
-            o.str("thread"), o.long("updated_at"), o.str("updated_by"))
+            o.str("thread"), o.long("updated_at"), o.str("updated_by"), o.str("note"), o.str("result"))
     }
 
     /** In-progress work first; the closed records remain available in the task app. */
@@ -198,6 +198,7 @@ object AshModel {
             busy = true
             return ++generation
         }
+        fun accepts(ticket: Int) = busy && ticket == generation
         fun finish(ticket: Int, result: T?, failure: String? = null): Boolean {
             if (ticket != generation || !busy) return false
             busy = false

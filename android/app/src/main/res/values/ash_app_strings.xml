@@ -56,4 +56,13 @@
     <string name="ash_no_evidence">这条记录还没有附出处。</string>
     <string name="ash_read_failed">没能读取，请重试</string>
     <string name="ash_changed_by">%1$s 更新</string>
+    <item name="ash_editor" type="id" />
+    <string name="ash_growth_why">为什么开始：%1$s</string>
+    <string name="ash_growth_did">我做了什么：%1$s</string>
+    <string name="ash_growth_effect">效果怎样：%1$s</string>
+    <string name="ash_growth_next">接下来：%1$s</string>
+    <string name="ash_closed_hint">最近完成的事会显示在这里，点开可查全部。</string>
+    <string name="ash_version">%1$s 更新 · %2$s</string>
+    <string name="ash_more">更早的日记</string>
+    <string name="ash_applies_to">适用于：%1$s</string>
 </resources>

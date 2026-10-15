@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "84841a44d3c8b864c6896a0628c93b00dcf612110c26fd700959b19f15b0b02c",
+ "hash": "ad8abee76c4099d1df316f11c7ec2aa79cc9b0dd601289ba990bc80b3a0ec702",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -12098,6 +12098,10 @@
    "input_schema": {
     "type": "object",
     "properties": {
+     "id": {
+      "type": "string",
+      "minLength": 1
+     },
      "about": {
       "type": "string",
       "minLength": 1,

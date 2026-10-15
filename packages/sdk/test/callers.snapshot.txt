@@ -148,6 +148,18 @@
 * service:llm/keys.check  owner,agent
   service:persona/get  owner,agent,app
 * service:persona/propose  owner,agent
+  service:persona/versions  owner,agent,app
+* service:persona/memory.get  owner,agent
+* service:persona/memory.set  owner,agent
+* service:persona/growth.list  owner,agent
+* service:persona/growth.put  owner,agent
+* service:persona/diary.set  owner,agent
+* service:persona/diary.list  owner,agent
+* service:persona/diary.get  owner,agent
+* service:persona/note  owner,agent
+* service:persona/note.reply  owner,agent
+* service:persona/notes.list  owner,agent
+* service:persona/persona.changed  kernel  event-out
   service:cost/usage.get  owner,agent,app
   service:cost/balance.get  owner,agent,app
 * service:cost/quota.check  kernel

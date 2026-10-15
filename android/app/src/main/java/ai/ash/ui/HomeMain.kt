@@ -71,12 +71,7 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private var usage: JSONObject? = null
     private var agents: List<JSONObject>? = null
     private var timers: List<HomeModel.Timer>? = null
-    private var memory: List<HomeModel.MemGroup>? = null
-    private var quiet: String? = null; private var quietRead = false
-    private var mode: String? = null; private var rules: Int? = null
-    private var proactive: String? = null
     private var apps: List<JSONObject>? = null
-    private var soul: String? = null; private var soulRead = false
     private var files: List<JSONObject>? = null
     private var keys: Pair<String, String>? = null; private var provider = ""
     private var todo = 0
@@ -112,10 +107,7 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
 
     private val waitingBox = AshUi.vstack(ctx)
     private val upcomingBox = AshUi.vstack(ctx)
-    private val memoryBox = AshUi.vstack(ctx)
-    private val promisesBox = AshUi.vstack(ctx)
     private val handsBox = AshUi.vstack(ctx)
-    private val whoBox = AshUi.vstack(ctx)
     private val filesBox = AshUi.vstack(ctx)
     private val backBox = AshUi.vstack(ctx)
     private val pause = HomePause(env, ctx, Kind.GHOST) { word, b, id, done -> call("service:admin", word, b, id, done) }
@@ -127,7 +119,7 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     }
 
     init {
-        (listOf(waitingBox, upcomingBox) + if (her) listOf(memoryBox, promisesBox, handsBox, whoBox, filesBox, backBox) else emptyList()).forEach { blocks.addView(it) }
+        (listOf(waitingBox, upcomingBox) + if (her) listOf(handsBox, filesBox, backBox) else emptyList()).forEach { blocks.addView(it) }
         off = env.names.listen { if (alive) { drawHero(); drawBackstage() } }
         drawAll()
         every(1000) { if (since() != null) drawHero() }
@@ -223,40 +215,6 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
             if (t == null) Hk.note(ctx, "正在读取…") else if (cards.isNotEmpty()) Hk.strip(ctx, 10, cards) else Hk.list(ctx, listOf(Hk.row(ctx, "clock", "暂时没有计划", "她答应到点做的事会出现在这里")))))
     }
 
-    // ---- 她记得你
-    private fun drawMemory(): Unit = redraw(memoryBox) {
-        val g = memory
-        val total = g?.let { HomeModel.memoryCount(it) } ?: 0
-        val shown = g?.let { HomeModel.memoryChips(it) }
-        val content: View = when {
-            g == null -> Hk.note(ctx, "正在读取…")
-            shown != null && (shown.chips.isNotEmpty()) -> AshUi.card(ctx).apply {
-                addView(Flow(ctx, dp(8), dp(8)).also { f ->
-                    shown.chips.forEach { (text, urgent) -> f.addView(Hk.chip(ctx, text, if (urgent) c.err else c.text, if (urgent) c.errSoft else c.surface2)) }
-                    if (shown.more > 0) f.addView(Hk.chip(ctx, "还有 ${shown.more} 条", c.text3, c.surface2))
-                })
-            }
-            else -> Hk.list(ctx, listOf(Hk.row(ctx, "pen", "她还没记下关于你的事", "聊得多了，她会自己整理在这里")))
-        }
-        addView(Hk.section(ctx, "她记得你", if (g != null && total > 0) "$total 条" else null, { env.nav.go("memory") }, content))
-    }
-
-    // ---- 你们的约定
-    private fun drawPromises(): Unit = redraw(promisesBox) {
-        val rows = ArrayList<View>()
-        val q = quiet
-        rows.add(Hk.row(ctx, "moon", if (!quietRead) "正在读取…" else if (!q.isNullOrEmpty()) words(c, "每天 ", Hl(q.substringBefore("-")), " 到 ", Hl(q.substringAfter("-")), " 不主动找你") else "没有设置免打扰，她随时可能找你",
-            tall = true, chev = false) { env.nav.go("promises") })
-        rows.add(Hk.row(ctx, "shield", if (mode == "always") words(c, Hl("每次都"), "先问你再做事") else words(c, "做", Hl("有影响的事"), "之前先问你"),
-            sub = rules?.takeIf { it > 0 }?.let { "$it 件事你说过以后都可以" }, tall = true, chev = false) { env.nav.go("promises") })
-        val p = proactive
-        val line = p?.let { HomeModel.firstLine(it) }
-        rows.add(Hk.row(ctx, "bell", if (p == null) "正在读取…" else line?.ifEmpty { null } ?: "关于你的偏好，还没写", titleTone = if (!line.isNullOrEmpty()) null else "3",
-            sub = if (!line.isNullOrEmpty()) p.split(Regex("\\r?\\n")).map { it.trim() }.filter { it.isNotEmpty() }.getOrNull(1) else null,
-            trailing = if (p == null || !line.isNullOrEmpty()) null else AshUi.text(ctx, "写一句", AshTokens.Type.sub, c.youText), chev = false, tall = true) { env.nav.go("promises", "proactive") })
-        addView(Hk.section(ctx, "你们的约定", null, null, Hk.list(ctx, rows)))
-    }
-
     // ---- 她的手和眼
     private fun cell(icon: String, title: String, sub: String, tone: String? = null, subTone: String? = null, onClick: () -> Unit): LinearLayout = Hk.cell(ctx, 20, onClick).apply {
         setPadding(dp(14), dp(14), dp(14), dp(14)); minimumHeight = dp(AshTokens.Size.touch)
@@ -275,17 +233,6 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         cells.add(cell("grid", "应用", apps?.let { HomeModel.appsSummary(it).replace(Regex("^\\d+ 个应用 · "), "") } ?: "—") { env.nav.apps() })
         val tag: View? = if (todo > 0) AshUi.tag(ctx, "$todo 项要处理", Tone.WARN) else null
         addView(Hk.section(ctx, ctx.getString(ai.ash.R.string.dev_phone_apps), null, null, Hk.grid(ctx, 2, 10, cells), rightView = tag))
-    }
-
-    // ---- 她是谁
-    private fun drawWho(): Unit = redraw(whoBox) {
-        val quote = soul?.let { HomeModel.quoteOf(it) }
-        addView(Hk.section(ctx, "她是谁", "性格 · 名片", { env.nav.go("identity") }, AshUi.card(ctx, 10).apply {
-            setPadding(dp(18), dp(18), dp(18), dp(16))
-            addView(AshUi.text(ctx, "“", AshType(40f, 40f, 700, null), c.herFill), Hk.lp(ctx, -2, -2).apply { bottomMargin = -dp(26) })
-            addView(AshUi.text(ctx, if (!soulRead) "正在读取…" else quote?.ifEmpty { null } ?: "她的性格还没写下来。", AshType(15.5f, 26f, 400, Role.TEXT)))
-            addView(AshUi.text(ctx, "想给她换个名字？直接跟她说。", AshTokens.Type.caption).apply { minHeight = dp(28); gravity = Gravity.CENTER_VERTICAL; isClickable = true; setOnClickListener { env.nav.compose("我想给你换个名字，以后叫你") } })
-        }))
     }
 
     // ---- 她的文件
@@ -314,7 +261,7 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         addView(pause.root, Hk.lp(ctx, -1, -2, 10))
     }
 
-    private fun drawAll() { drawHero(); drawWaiting(); drawUpcoming(); if (her) { drawMemory(); drawPromises(); drawHands(); drawWho(); drawFiles(); drawBackstage() } }
+    private fun drawAll() { drawHero(); drawWaiting(); drawUpcoming(); if (her) { drawHands(); drawFiles(); drawBackstage() } }
 
     private fun openCheckup(part: String?) {
         ctx.startActivity(Intent(ctx, ConsoleActivity::class.java).also { i -> part?.let { i.putExtra(ConsoleActivity.EXTRA_PART, it) } })
@@ -330,19 +277,7 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
         call("service:agents", "list") { r -> if (r.ok) { agents = r.data.list("agents").filter { it.str("id") != null }; drawHero(); drawBackstage() } }
         call("service:clock", "list") { r -> if (r.ok) HomeModel.normalizeClock(r.data)?.let { timers = HomeModel.userPlans(it); drawUpcoming() } }
         if (!her) return
-        readFile("USER.md") { f -> if (f.ok) { memory = HomeModel.groupMemory(f.text); drawMemory() } }
-        call("service:admin", "settings.get", JSONObject().put("keys", JSONArray().put(HomeModel.QUIET_KEY))) { r -> if (r.ok) HomeModel.quietOf(r.data.optJSONObject("settings"))?.let { quiet = it; quietRead = true; drawPromises() } }
-        call("service:gate", "rules.list", JSONObject().put("limit", 100)) { r ->
-            if (r.ok) {
-                val now = System.currentTimeMillis()
-                mode = r.data.str("mode")?.takeIf { it == "always" || it == "auto" }
-                rules = r.data.list("rules").count { it.str("id") != null && it.num("revoked_at") == null && (it.num("expires_at") ?: 0) > now }
-                drawPromises()
-            }
-        }
-        readFile("PROACTIVE.md") { f -> if (f.ok) { proactive = f.text ?: ""; drawPromises() } }
         call("service:apps", "apps.list") { r -> if (r.ok) { apps = r.data.list("apps"); drawHands() } }
-        call("service:persona", "get", JSONObject().put("file", "SOUL.md")) { r -> if (r.ok) { soul = r.data.list("files").firstOrNull { it.str("file") == "SOUL.md" }?.str("content") ?: ""; soulRead = true; drawWho() } }
         call("body:main", "workspace.ls") { r -> if (r.ok) { files = r.data.list("entries").sortedBy { it.str("name") ?: "" }; drawFiles() } }
         call("service:vault", "list") { v ->
             if (!v.ok) return@call

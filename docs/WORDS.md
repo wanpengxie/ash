@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `84841a44d3c8b864`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `ad8abee76c4099d1`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -253,7 +253,7 @@
 | `diary.set` | owner, agent | write / none | - | date*, content* | 在写她的日记 | Save a whole diary day to memory/YYYY-MM-DD.md and emit persona.changed. Read the existing day and merge drafts before writing. The nightly review uses this word and ends with <!-- review:done -->. |
 | `diary.list` | owner, agent | read / none | - | before, limit | 在翻她的日记 | The primary agent's diary days (memory/YYYY-MM-DD.md, written in the nightly review), newest first: the first lines, whether the review was finished, how many notes the day has. before: only days before this date (for the next page, give next_before). |
 | `diary.get` | owner, agent | read / none | - | date* | 在读她的日记 | One day of the primary agent's diary, whole, with the notes written on it (oldest first). not_found: no diary that day. |
-| `note` | owner, agent | write / none | - | about*, text* | 在给她留批注 | A note or a correction on something of the primary agent's: about is what it is on (now, diary:<date>, memory:<file>, identity:<file>, task:<id>, line:<id>). Kept with that thing; the primary agent is woken with it (reason owner_note) unless she wrote it herself, so she can fix what it is about and answer with note.reply. |
+| `note` | owner, agent | write / none | - | id, about*, text* | 在给她留批注 | A note or a correction on something of the primary agent's: about is what it is on (now, diary:<date>, memory:<file>, identity:<file>, task:<id>, line:<id>). Kept with that thing; the primary agent is woken with it (reason owner_note) unless she wrote it herself, so she can fix what it is about and answer with note.reply. |
 | `note.reply` | owner, agent | write / none | - | id*, text* | 在回批注 | Answer a note: what was changed because of it, or why nothing was. Shown under the note; a later answer replaces the earlier one. |
 | `notes.list` | owner, agent | read / none | - | about, limit | 在看批注 | The notes on the primary agent's things, newest first: on one thing (about), or all. A note without reply has not been answered yet. |
 | `persona.changed` | kernel | read / none | event out, record | part*, about*, by* | 在记下她的变化 | Something of the primary agent's changed through service:persona: her persona (identity:<file>), a memory file (memory:<file>), or a note on something (its about). by: who did it. Goes into the ledger so the Ash app reads again and can say who changed it. |
