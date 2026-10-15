@@ -83,6 +83,7 @@
     <string name="dev_diag_incomplete">连接信息没读全，暂时无法确认。请点“检查连接”重试。</string>
     <string name="dev_diag_connections_unknown">未读到</string>
     <string name="dev_diag_layout">%1$s\n%2$s\n连接数：%3$s\n%4$s</string>
+    <string name="dev_diag_metrics">%1$s\n连接数：%2$s\n%3$s</string>
     <string name="dev_revoked_done">已撤销，设备不能再连接。需要时可恢复。</string>
     <string name="dev_restored_done">已恢复。请在设备上打开 Ash，连上后刷新查看。</string>
     <string name="dev_update_started">已请求升级。设备重启并连回后会更新版本状态。</string>

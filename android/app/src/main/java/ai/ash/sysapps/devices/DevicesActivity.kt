@@ -517,7 +517,11 @@ open class DevicesActivity : SystemAppActivity() {
                     diagnosisIssue = conclusionText.takeIf { conclusion != R.string.dev_diag_connected }
                     // A list already in flight predates this finding. Reuse the existing read ordering to discard it.
                     if (diagnosisIssue != null) model.begin(Refresh.DEVICES)
-                    diagnosis.text = getString(R.string.dev_diag_layout, conclusionText, relaySummary(), count, latencyText(conns, id))
+                    // A failure's conclusion and recovery steps are already above the primary action.
+                    // Revoked devices show their restore guidance there, so keep that diagnosis conclusion below.
+                    diagnosis.text = if (diagnosisIssue != null && d?.revoked != true)
+                        getString(R.string.dev_diag_metrics, relaySummary(), count, latencyText(conns, id))
+                    else getString(R.string.dev_diag_layout, conclusionText, relaySummary(), count, latencyText(conns, id))
                     diagnosisRaw.text = listOfNotNull(lines.takeIf { it.isNotEmpty() }, model.relay?.error, linkFailure?.let(::error)).joinToString("\n")
                     diagnosisToggle.visibility = visible(diagnosisRaw.text.isNotEmpty())
                     diagnosisToggle.text = getString(R.string.dev_diag_details)

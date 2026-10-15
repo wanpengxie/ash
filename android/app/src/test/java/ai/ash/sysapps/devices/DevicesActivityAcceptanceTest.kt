@@ -179,6 +179,7 @@ class DevicesActivityAcceptanceTest {
         diagnose.done(JSONObject().put("ok", false).put("findings", JSONArray().put(JSONObject().put("code", "tunnel.missing").put("message", raw))), null)
         activity.take("list", "service:link").done(JSONObject().put("connections", JSONArray()), null)
         assertTrue(activity.texts().any { it.contains("设备已到达中转站，但还没有接通 Ash") })
+        assertEquals(1, activity.texts().count { it.contains("设备已到达中转站，但还没有接通 Ash") })
         assertTrue(activity.texts().any { it.startsWith("连接需检查\n") && it.contains("连接状态待核实") })
         assertFalse(activity.texts().any { it.contains("连接已就绪") || it.contains("Ash 现在可以") })
         assertTrue(activity.texts().any { it.contains("Alpha") && it.contains("重启 Ash 并检查网络") })
