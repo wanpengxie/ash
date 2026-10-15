@@ -60,7 +60,7 @@ class DevicesModelTest {
         ))
         val items = s.rows(now).filterIsInstance<DevicesState.Row.Item>().associateBy { it.device.id }
         assertEquals("0.2.4 · 最新", items["device:a"]!!.version)
-        assertEquals("0.2.3 · 有新版本 0.2.4，连上时会自动升级", items["device:b"]!!.version)
+        assertEquals("0.2.3 · 有新版本 0.2.4，在线时可升级", items["device:b"]!!.version)
         assertEquals("0.2.3 · 正在升级到 0.2.4", items["device:c"]!!.version)
         assertEquals("0.4.49", items["device:p"]!!.version)
         assertEquals(listOf("文件和命令", "Codex", "浏览器", "其他 1 项"), items["device:a"]!!.abilities)

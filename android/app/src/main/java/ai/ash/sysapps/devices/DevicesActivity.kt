@@ -10,6 +10,7 @@ import ai.ash.ui.UiIo
 import ai.ash.ui.design.AshTokens
 import ai.ash.ui.design.AshUi
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,7 +27,7 @@ import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONObject
 
 /** Device app, APPS-R1 §1; MOBILE-ARCH §2–3, §5–6. All business actions use the hub. */
-class DevicesActivity : SystemAppActivity() {
+open class DevicesActivity : SystemAppActivity() {
     private lateinit var model: DevicesState
     private val pair = PairFlow()
     private lateinit var list: RecyclerView
@@ -36,6 +37,7 @@ class DevicesActivity : SystemAppActivity() {
     private var active = false
     private var detail: Detail? = null
     private var pairing: Pairing? = null
+    private var confirmation: AlertDialog? = null
     private val reading = HashSet<Refresh>()
     private val dirty = HashSet<Refresh>()
     private var reconcileDetail: Detail? = null
@@ -55,6 +57,10 @@ class DevicesActivity : SystemAppActivity() {
         override fun run() { if (active) { pairing?.tick(); handler.postDelayed(this, 1000) } }
     }
     private val prefs by lazy { getSharedPreferences("devices.ui", MODE_PRIVATE) }
+
+    /** Device app I/O boundary: the production implementation always uses the shared hub port. */
+    protected open fun request(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
+        call(to, word, body, done)
 
     override fun build(saved: Bundle?) {
         model = lastNonConfigurationInstance as? DevicesState ?: DevicesState()
@@ -79,7 +85,7 @@ class DevicesActivity : SystemAppActivity() {
         super.onStart(); active = true
         Refresh.entries.forEach(::read)
         readPair()
-        call("service:agents", "list") { data, _ ->
+        request("service:agents", "list") { data, _ ->
             val all = data?.optJSONArray("agents")
             primary = (0 until (all?.length() ?: 0)).mapNotNull { all?.optJSONObject(it) }.firstOrNull { it.optBoolean("primary") }?.optString("id")
             render()
@@ -102,6 +108,20 @@ class DevicesActivity : SystemAppActivity() {
     }
     override fun canGoBack() = route.isNotEmpty()
     override fun goBack() { showRoute("") }
+    override fun onNewIntent(next: Intent) {
+        super.onNewIntent(next)
+        setIntent(next)
+        val target = routeOf(next.getStringExtra(EXTRA_ARG))
+        if (target == route) { Refresh.entries.forEach(::read); readPair(); return }
+        if (target.startsWith("p/")) {
+            val id = target.removePrefix("p/")
+            if (id != pair.pairId) { pair.reset(); pairDraft = null; pairUncertain = false }
+            pair.resume(id)
+        } else if (target == "connect") {
+            pair.reset(); pairDraft = null; pairUncertain = false
+        }
+        showRoute(target)
+    }
     override fun onSaveInstanceState(out: Bundle) {
         out.putString("route", route); out.putBoolean("revoked", model.showRevoked)
         out.putBoolean("pairUncertain", pairUncertain)
@@ -132,8 +152,13 @@ class DevicesActivity : SystemAppActivity() {
     private fun canonicalId(id: String) = if (id.startsWith("device:")) id else "device:$id"
 
     private fun showRoute(next: String) {
+        confirmation?.dismiss(); confirmation = null
         routeGeneration++; route = next; detail = null; pairing = null; note = ""
-        currentFocus?.clearFocus()
+        readingPair = false; pairDirty = false; manualPairRead = false
+        currentFocus?.let {
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(it.windowToken, 0)
+            it.clearFocus()
+        }
         content.removeAllViews(); actions.removeAllViews()
         actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_refresh)!!, getString(R.string.dev_refresh)) {
             Refresh.entries.forEach(::read); readPair(manual = true)
@@ -173,7 +198,7 @@ class DevicesActivity : SystemAppActivity() {
         val member = if (what == Refresh.RELAY) "service:link" else "service:devices"
         val word = when (what) { Refresh.DEVICES -> "list"; Refresh.RELAY -> "gateway.status"; Refresh.PAIRS -> "pair_pending" }
         val args = if (what == Refresh.DEVICES) JSONObject().put("include_revoked", true) else JSONObject()
-        call(member, word, args) { data, failure ->
+        request(member, word, args) { data, failure ->
             reading.remove(what)
             val valid = when (what) {
                 Refresh.DEVICES -> data?.takeIf { it.optJSONArray("devices") != null }
@@ -190,14 +215,17 @@ class DevicesActivity : SystemAppActivity() {
     }
 
     private fun readPair(manual: Boolean = false) {
+        if (pairing == null) return
         if (manual) manualPairRead = true
         val id = pair.pairId ?: return
         if (!active) return
         if (readingPair) { pairDirty = true; return }
         readingPair = true
-        call("service:devices", "pair_status", JSONObject().put("pair_id", id)) { data, failure ->
+        val generation = routeGeneration
+        request("service:devices", "pair_status", JSONObject().put("pair_id", id)) { data, failure ->
+            if (generation != routeGeneration) return@request
             readingPair = false
-            if (pair.pairId != id) { if (active) readPair(); return@call }
+            if (pair.pairId != id) { if (active) readPair(); return@request }
             if (data != null) {
                 pair.changed(data)
                 if (data.optString("state") != "requested") pairUncertain = false
@@ -210,9 +238,11 @@ class DevicesActivity : SystemAppActivity() {
         }
     }
     private fun readCode(id: String) {
-        call("service:devices", "pair_code", JSONObject().put("pair_id", id)) { data, failure ->
+        val generation = routeGeneration
+        request("service:devices", "pair_code", JSONObject().put("pair_id", id)) { data, failure ->
+            if (generation != routeGeneration) return@request
             val waiting = pair.step as? PairFlow.Step.Waiting
-            if (pair.pairId != id || waiting == null) return@call
+            if (pair.pairId != id || waiting == null) return@request
             if (data != null) pair.restoreCommand(id, data.optString("command"), data.optLong("expires_at"))
             else pairing?.result?.text = error(failure)
             if (active) render()
@@ -234,11 +264,11 @@ class DevicesActivity : SystemAppActivity() {
         } else { detail?.bind(); pairing?.bind() }
     }
     private fun listRow(row: DevicesState.Row): View = when (row) {
-        is DevicesState.Row.Status -> section(row.text).apply {
+        is DevicesState.Row.Status -> section(relaySummary()).apply {
             addView(button(R.string.dev_relay_help) {
                 val agent = primary
                 if (agent == null) { note = getString(R.string.dev_agent_unavailable); render() }
-                else call("service:agents", "tell", JSONObject().put("agent", agent).put("text", getString(R.string.dev_relay_request))) { _, failure ->
+                else request("service:agents", "tell", JSONObject().put("agent", agent).put("text", getString(R.string.dev_relay_request))) { _, failure ->
                     note = if (failure == null) getString(R.string.dev_told) else error(failure); render()
                 }
             }.apply { isEnabled = primary != null })
@@ -249,8 +279,10 @@ class DevicesActivity : SystemAppActivity() {
         })
         is DevicesState.Row.Item -> column().apply {
             addView(text(row.device.name, true)); addView(text(row.presence))
+            addView(text(attention(row.device)))
             row.version?.let { addView(text(it)) }
-            addView(text(getString(R.string.dev_capabilities, row.abilities.joinToString("、").ifEmpty { getString(R.string.dev_none) })))
+            addView(text(capabilities(row.device)))
+            addView(text(accessDescription(row.device)))
             addView(button(R.string.dev_open_device) { showRoute("d/${row.device.id}") })
         }
         is DevicesState.Row.ShowRevoked -> button(if (row.shown) R.string.dev_hide_revoked else R.string.dev_show_revoked, row.count) { model.showRevoked = !model.showRevoked; render() }
@@ -294,13 +326,22 @@ class DevicesActivity : SystemAppActivity() {
         private val update: TextView = button(R.string.dev_update) { run("update", updateButton(), updateNote) }
         private fun updateButton() = update
         private val diagnosis = text("")
+        private val diagnosisRaw = text("").apply { setTextIsSelectable(true); visibility = View.GONE }
+        private var rawOpen = false
+        private val diagnosisToggle: TextView = button(R.string.dev_diag_details) {
+            rawOpen = !rawOpen; diagnosisRaw.visibility = visible(rawOpen)
+            diagnosisToggleButton().text = getString(if (rawOpen) R.string.dev_diag_hide_details else R.string.dev_diag_details)
+        }
+        private fun diagnosisToggleButton() = diagnosisToggle
         private val diagnose = button(R.string.dev_diagnose) { diagnose() }
         private val revokeNote = text("")
         private val revoke: TextView = button(R.string.dev_revoke) {
             val d = model.device(id) ?: return@button
             if (d.revoked) run("restore", revokeButton(), revokeNote)
-            else AlertDialog.Builder(this@DevicesActivity).setTitle(R.string.dev_revoke_question).setMessage(R.string.dev_revoke_help)
-                .setNegativeButton(R.string.dev_cancel, null).setPositiveButton(R.string.dev_confirm) { _, _ -> run("revoke", revokeButton(), revokeNote) }.show()
+            else confirmation = AlertDialog.Builder(this@DevicesActivity).setTitle(R.string.dev_revoke_question).setMessage(R.string.dev_revoke_help)
+                .setNegativeButton(R.string.dev_cancel, null).setPositiveButton(R.string.dev_confirm) { _, _ ->
+                    if (detail === this) run("revoke", revokeButton(), revokeNote)
+                }.show()
         }
         private fun revokeButton() = revoke
         private val pending = HashSet<String>()
@@ -309,6 +350,7 @@ class DevicesActivity : SystemAppActivity() {
             root.addView(header); root.addView(status); root.addView(change); root.addView(abilities)
             root.addView(name); root.addView(saveName); root.addView(nameNote); root.addView(access.root)
             root.addView(update); root.addView(updateNote); root.addView(diagnose); root.addView(diagnosis)
+            root.addView(diagnosisToggle.apply { visibility = View.GONE }); root.addView(diagnosisRaw)
             root.addView(revoke); root.addView(revokeNote)
             name.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -335,9 +377,10 @@ class DevicesActivity : SystemAppActivity() {
             val d = model.device(id)
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; return }
             header.text = d.name
-            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), DevicesText.version(d, model.release), readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).joinToString("\n")
+            title.text = d.name
+            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), attention(d), accessDescription(d), DevicesText.version(d, model.release), readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.joinToString("\n")
             change.text = model.changes[id]?.let { DevicesText.change(it, primary, System.currentTimeMillis()) }.orEmpty()
-            abilities.text = getString(R.string.dev_capabilities, DevicesText.abilities(d.capabilities).joinToString("、").ifEmpty { getString(R.string.dev_none) })
+            abilities.text = capabilities(d)
             if (awaitingName == d.name && name.text.toString().trim() == awaitingName) { nameDirty = false; awaitingName = null }
             if (!nameLoaded || (!nameDirty && !name.hasFocus() && name.text.toString() != d.name)) setName(d.name)
             else if (nameDirty && sourceName != null && sourceName != d.name) nameNote.text = getString(R.string.dev_rename_external)
@@ -358,11 +401,29 @@ class DevicesActivity : SystemAppActivity() {
             if (word in unknown || !pending.add(word)) return
             control.isEnabled = false; message.text = getString(R.string.dev_working)
             prefs.edit().putBoolean("pending/$id/$word", true).apply()
-            call("service:devices", word, args.put("device", id)) { _, failure ->
+            request("service:devices", word, args.put("device", id)) { data, failure ->
                 pending.remove(word)
                 if (isUnknown(failure)) unknown.add(word) else prefs.edit().remove("pending/$id/$word").apply()
+                if (failure == null) {
+                    // The next list read must not let a pre-action snapshot roll back a confirmed setting.
+                    model.begin(Refresh.DEVICES)
+                    model.device(id)?.let { previous ->
+                        val updated = when (word) {
+                            "access_set" -> data?.let { DevicesJson.devices(JSONObject().put("devices", org.json.JSONArray().put(it))).singleOrNull() }
+                            "rename" -> previous.copy(name = data?.optString("name")?.takeIf { it.isNotEmpty() } ?: args.optString("name"))
+                            "revoke" -> previous.copy(revoked = true, online = false)
+                            "restore" -> previous.copy(revoked = false)
+                            else -> null
+                        }
+                        updated?.let(model::replaceDevice)
+                    }
+                }
+                if (detail !== this) { if (active) read(Refresh.DEVICES); return@request }
                 if (failure == null) done()
-                message.text = if (failure == null) getString(R.string.dev_saved) else error(failure)
+                message.text = if (failure == null) getString(when (word) {
+                    "revoke" -> R.string.dev_revoked_done; "restore" -> R.string.dev_restored_done
+                    "update" -> R.string.dev_update_started; else -> R.string.dev_saved
+                }) else error(failure)
                 if (detail === this && active) { bind(); read(Refresh.DEVICES) }
             }
             bind()
@@ -370,18 +431,36 @@ class DevicesActivity : SystemAppActivity() {
         private fun diagnose() {
             if (!pending.add("diagnose")) return
             diagnose.isEnabled = false; diagnosis.text = getString(R.string.dev_working)
-            call("service:link", "diagnose", JSONObject().put("hand", id.removePrefix("device:"))) { data, failure ->
-                if (detail !== this) return@call
-                if (data == null) { pending.remove("diagnose"); diagnosis.text = error(failure); bind(); return@call }
-                call("service:link", "list") { links, linkFailure ->
+            diagnosis.visibility = View.VISIBLE
+            diagnosisToggle.visibility = View.GONE; diagnosisRaw.visibility = View.GONE; rawOpen = false
+            request("service:link", "diagnose", JSONObject().put("hand", id.removePrefix("device:"))) { data, failure ->
+                if (detail !== this) return@request
+                if (data == null) { pending.remove("diagnose"); diagnosis.text = error(failure); bind(); return@request }
+                request("service:link", "list") { links, linkFailure ->
                     pending.remove("diagnose")
-                    if (detail !== this) return@call
+                    if (detail !== this) return@request
                     val conns = links?.optJSONArray("connections")
-                    val count = (0 until (conns?.length() ?: 0)).count { conns?.optJSONObject(it)?.optString("hand") == id.removePrefix("device:") }
+                    val count = if (conns == null) getString(R.string.dev_diag_connections_unknown) else (0 until conns.length()).count { conns.optJSONObject(it)?.optString("hand") == id.removePrefix("device:") }.toString()
                     val findings = data.optJSONArray("findings")
                     val lines = (0 until (findings?.length() ?: 0)).mapNotNull { findings?.optJSONObject(it)?.optString("message") }.joinToString("\n")
-                    diagnosis.text = getString(R.string.dev_diagnosis, model.device(id)?.let { DevicesText.presence(it, System.currentTimeMillis()) }.orEmpty(), DevicesText.relay(model.relay).first, count,
-                        if (linkFailure != null) error(linkFailure) else lines.ifEmpty { getString(R.string.dev_no_findings) })
+                    val codes = (0 until (findings?.length() ?: 0)).mapNotNull { findings?.optJSONObject(it)?.optString("code") }.toSet()
+                    val d = model.device(id)
+                    val conclusion = when {
+                        d?.revoked == true -> R.string.dev_diag_revoked
+                        d?.via == "gateway" && "relay.down" in codes -> R.string.dev_diag_relay_down
+                        "tunnel.missing" in codes -> R.string.dev_diag_tunnel_missing
+                        "tunnel.not_allowed" in codes -> R.string.dev_diag_access_missing
+                        d?.online == false || "hand.offline" in codes -> R.string.dev_diag_offline
+                        linkFailure != null || conns == null -> R.string.dev_diag_incomplete
+                        !data.optBoolean("ok") -> R.string.dev_diag_problem
+                        codes.any { it.startsWith("handshake.") } && d?.online != true -> R.string.dev_diag_handshake
+                        d?.online == true -> R.string.dev_diag_connected
+                        else -> R.string.dev_diag_incomplete
+                    }
+                    diagnosis.text = getString(R.string.dev_diag_layout, getString(conclusion), relaySummary(), count, getString(R.string.dev_diag_latency_unknown))
+                    diagnosisRaw.text = listOfNotNull(lines.takeIf { it.isNotEmpty() }, model.relay?.error, linkFailure?.let(::error)).joinToString("\n")
+                    diagnosisToggle.visibility = visible(diagnosisRaw.text.isNotEmpty())
+                    diagnosisToggle.text = getString(R.string.dev_diag_details)
                     bind()
                 }
             }
@@ -440,7 +519,7 @@ class DevicesActivity : SystemAppActivity() {
             val waiting = pair.step as? PairFlow.Step.Waiting ?: return@button
             if (waiting.command.isEmpty() || pair.expiredBy(System.currentTimeMillis())) return@button
             copyButton().isEnabled = false
-            call(Link.get(this@DevicesActivity).deviceId, "clipboard.set", JSONObject().put("text", waiting.command)) { _, failure ->
+            request(Link.get(this@DevicesActivity).deviceId, "clipboard.set", JSONObject().put("text", waiting.command)) { _, failure ->
                 if (pairing === this) { result.text = if (failure == null) getString(R.string.dev_copied) else error(failure); copyButton().isEnabled = true }
             }
         }
@@ -497,8 +576,8 @@ class DevicesActivity : SystemAppActivity() {
             if (!pair.start()) return
             result.text = ""; bind()
             val generation = routeGeneration
-            call("service:devices", "pair_start", JSONObject().put("kind", pairingKind)) { data, failure ->
-                if (pairing !== this || routeGeneration != generation) return@call
+            request("service:devices", "pair_start", JSONObject().put("kind", pairingKind)) { data, failure ->
+                if (pairing !== this || routeGeneration != generation) return@request
                 pair.issued(data, failure?.code, failure?.message)
                 if (active) render()
                 readPair()
@@ -511,8 +590,9 @@ class DevicesActivity : SystemAppActivity() {
             if (allow) pair.approve()
             bind()
             val args = if (allow) permissions.args() else JSONObject()
-            call("service:devices", if (allow) "pair_approve" else "pair_reject", args.put("pair_id", asking.pairId)) { data, failure ->
-                if (pair.pairId != asking.pairId) return@call
+            val generation = routeGeneration
+            request("service:devices", if (allow) "pair_approve" else "pair_reject", args.put("pair_id", asking.pairId)) { data, failure ->
+                if (generation != routeGeneration || pair.pairId != asking.pairId) return@request
                 deciding = false; pairUncertain = isUnknown(failure)
                 if (allow) pair.approveAnswered(data, failure?.code, failure?.message)
                 else if (data != null) pair.changed(data)
@@ -524,8 +604,8 @@ class DevicesActivity : SystemAppActivity() {
     }
 
     private fun readChanges(id: String) {
-        call("service:history", "query", JSONObject().put("speaker", "service:devices").put("text", id).put("limit", 50)) { data, _ ->
-            val messages = data?.optJSONArray("messages") ?: return@call
+        request("service:history", "query", JSONObject().put("speaker", "service:devices").put("text", id).put("limit", 50)) { data, _ ->
+            val messages = data?.optJSONArray("messages") ?: return@request
             (0 until messages.length()).mapNotNull { messages.optJSONObject(it) }.forEach(model::heard)
             if (active) render()
         }
@@ -535,6 +615,31 @@ class DevicesActivity : SystemAppActivity() {
         isUnknown(f) -> getString(R.string.dev_unknown)
         f?.code == "unavailable" -> getString(R.string.dev_unavailable)
         else -> getString(R.string.dev_retry, f?.message.orEmpty())
+    }
+    private fun relaySummary(): String {
+        val relay = model.relay
+        return if (relay?.configured == true && !relay.connected) getString(R.string.dev_relay_down_next)
+            else DevicesText.relay(relay).first
+    }
+    private fun capabilities(d: Device): String {
+        val names = DevicesText.abilities(d.capabilities)
+        return if (names.isEmpty()) getString(R.string.dev_access_unknown) else getString(R.string.dev_capabilities, names.joinToString("、"))
+    }
+    private fun accessDescription(d: Device): String {
+        if (d.revoked) return getString(R.string.dev_access_revoked)
+        val allowed = listOfNotNull(
+            getString(R.string.dev_allowed_capabilities).takeIf { d.lend },
+            getString(R.string.dev_allowed_body).takeIf { d.body },
+            getString(R.string.dev_allowed_agents).takeIf { d.localAgents },
+        )
+        return if (allowed.isEmpty()) getString(R.string.dev_access_none) else getString(R.string.dev_access_allowed, allowed.joinToString("、"))
+    }
+    private fun attention(d: Device): String = when {
+        d.revoked -> getString(R.string.dev_access_revoked)
+        !d.online -> getString(R.string.dev_offline_next)
+        !d.lend && !d.body && !d.localAgents -> getString(R.string.dev_access_none)
+        d.latest == false && d.updating == null -> getString(R.string.dev_update_available)
+        else -> ""
     }
     private fun isUnknown(f: HumanPort.Failure?) = f?.code in setOf("result_unknown", "timeout", "offline")
     private fun visible(show: Boolean) = if (show) View.VISIBLE else View.GONE

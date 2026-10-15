@@ -111,7 +111,7 @@ object DevicesText {
         return when {
             d.updating != null -> "$v · 正在升级到 ${d.updating}"
             d.latest == true -> "$v · 最新"
-            d.latest == false && release != null -> "$v · 有新版本 $release，连上时会自动升级"
+            d.latest == false && release != null -> "$v · 有新版本 $release，在线时可升级"
             else -> v
         }
     }
@@ -255,6 +255,8 @@ class DevicesState {
     private fun item(d: Device, now: Long) = Row.Item(d, DevicesText.presence(d, now), DevicesText.version(d, release), DevicesText.abilities(d.capabilities))
 
     fun device(id: String): Device? = devices?.firstOrNull { it.id == id }
+    /** An acknowledged write may update its device before the next whole-list snapshot arrives. */
+    fun replaceDevice(device: Device) { devices = devices?.map { if (it.id == device.id) device else it } }
 }
 
 /**
