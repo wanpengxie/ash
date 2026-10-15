@@ -53,8 +53,10 @@ test("owner names a helper once, gets a receipt first, and both endpoints see th
   const during = await snapshot();
   const responseText = "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。";
   f.driver().say("agent:research", "back", responseText); f.driver().finish("agent:research", "back");
+  let answerEvent: unknown;
   for (const channel of [phone, web]) {
-    await channel.seen((m) => m.reply_to === first.message?.id && m.kind === "response", "later answer via sync");
+    const event = await channel.seen((m) => m.reply_to === first.message?.id && m.kind === "response", "later answer via sync");
+    assert.equal(event.from,"service:agents"); assert.equal(event.word,"ask"); answerEvent = event;
     const item = (await timeline(channel))[0];
     assert.equal(item.id, first.message?.id); assert.equal(item.to, "agent:research");
     assert.equal(item.state, "answered"); assert.equal(item.answer.text, responseText);
@@ -68,7 +70,7 @@ test("owner names a helper once, gets a receipt first, and both endpoints see th
   f.driver().say("agent:research", "back", "会有串稿风险。正在补 A、B 两位帮手之间的切换及晚回执保护。"); f.driver().finish("agent:research", "back");
   await web.seen((m) => m.reply_to === follow.message?.id && m.kind === "response", "follow-up answer on the other endpoint");
   const continued = await snapshot();
-  if (process.env.TEAM_CAPTURE === "1") writeFileSync(new URL("../../../fixtures/team-session.json", import.meta.url), JSON.stringify({ during, answered, continued }, null, 2) + "\n");
+  if (process.env.TEAM_CAPTURE === "1") writeFileSync(new URL("../../../fixtures/team-session.json", import.meta.url), JSON.stringify({ during, answered, continued, answerEvent }, null, 2) + "\n");
   assert.equal(hub.ledger.page({ limit: 200 }).filter((m) => m.to === "person:owner" && m.word === "say").length, 0);
   const interrupted = await phone.send({ ...question, body: { agent: "agent:research", text: "继续检查剩下的入口" }, client_id: "team-interrupted-three" });
   assert.ok(interrupted.ok); await waitFor(() => f.driver().running.has("agent:research/back"));

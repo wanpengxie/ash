@@ -331,7 +331,7 @@
           "doing": {
             "turn": "t21",
             "lane": "back",
-            "since": 1792084119117,
+            "since": 1792085945964,
             "about": "整理这次应用验收结果，先检查团队入口复用"
           },
           "waiting_on": []
@@ -341,9 +341,9 @@
     "exchanges": {
       "items": [
         {
-          "id": "m_2LmIHS0UExGy",
+          "id": "m_pHW2A3isQsB6",
           "seq": 3,
-          "ts": 1792084119686,
+          "ts": 1792085946159,
           "from": "person:owner",
           "to": "agent:research",
           "word": "ask",
@@ -689,9 +689,9 @@
     "exchanges": {
       "items": [
         {
-          "id": "m_2LmIHS0UExGy",
+          "id": "m_pHW2A3isQsB6",
           "seq": 3,
-          "ts": 1792084119686,
+          "ts": 1792085946159,
           "from": "person:owner",
           "to": "agent:research",
           "word": "ask",
@@ -699,7 +699,7 @@
           "state": "answered",
           "answer": {
             "seq": 12,
-            "ts": 1792084119717,
+            "ts": 1792085946189,
             "text": "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。"
           }
         }
@@ -1042,9 +1042,9 @@
     "exchanges": {
       "items": [
         {
-          "id": "m_FTi_IWJuaS0D",
+          "id": "m_d0FeMVL9Aj_f",
           "seq": 21,
-          "ts": 1792084119734,
+          "ts": 1792085946209,
           "from": "person:owner",
           "to": "agent:research",
           "word": "ask",
@@ -1052,14 +1052,14 @@
           "state": "answered",
           "answer": {
             "seq": 22,
-            "ts": 1792084119737,
+            "ts": 1792085946211,
             "text": "会有串稿风险。正在补 A、B 两位帮手之间的切换及晚回执保护。"
           }
         },
         {
-          "id": "m_2LmIHS0UExGy",
+          "id": "m_pHW2A3isQsB6",
           "seq": 3,
-          "ts": 1792084119686,
+          "ts": 1792085946159,
           "from": "person:owner",
           "to": "agent:research",
           "word": "ask",
@@ -1067,11 +1067,32 @@
           "state": "answered",
           "answer": {
             "seq": 12,
-            "ts": 1792084119717,
+            "ts": 1792085946189,
             "text": "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。"
           }
         }
       ]
     }
+  },
+  "answerEvent": {
+    "seq": 12,
+    "id": "m_bNmHXXrdWy0a",
+    "ts": 1792085946189,
+    "from": "service:agents",
+    "to": "person:owner",
+    "kind": "response",
+    "word": "ask",
+    "body": {
+      "ok": true,
+      "result": {
+        "data": {
+          "agent": "agent:research",
+          "answer": "发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。"
+        }
+      }
+    },
+    "reply_to": "m_pHW2A3isQsB6",
+    "summary": "{\"data\":{\"agent\":\"agent:research\",\"answer\":\"发现复用入口会留在上一个成员，已记录。接下来检查切换成员时的草稿与晚回执。\"}}",
+    "size": 179
   }
 }

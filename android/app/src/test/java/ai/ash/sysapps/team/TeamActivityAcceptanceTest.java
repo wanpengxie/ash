@@ -208,7 +208,10 @@ public class TeamActivityAcceptanceTest {
             layout(a);touch(a,described(a.getWindow().getDecorView(),"返回"));
             assertEquals("team",ReflectionHelpers.getField(a,"route"));
             last("exchanges").answer(during.getJSONObject("exchanges").toString());
-            Feed.listener.invoke(new JSONObject("{\"kind\":\"response\",\"from\":\"service:agents\",\"word\":\"ask\"}"));
+            Read priorMembers=last("list"),priorExchanges=last("exchanges");
+            Feed.listener.invoke(session.getJSONObject("answerEvent"));
+            assertNotSame("Production ledger handler must request fresh members",priorMembers,last("list"));
+            assertNotSame("Production ledger handler must request fresh exchanges",priorExchanges,last("exchanges"));
             last("list").answer(answered.getJSONObject("members").toString());
             last("exchanges").answer(answered.getJSONObject("exchanges").toString());
             assertNotNull(screenText(a,"成员当前没有正在执行的工作",false));
