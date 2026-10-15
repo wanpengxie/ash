@@ -6,6 +6,7 @@ import android.content.DialogInterface
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
 import java.io.File
 import android.os.Looper
 import android.view.View
@@ -32,7 +33,7 @@ import org.robolectric.shadows.ShadowAlertDialog
 
 /** Actual Activity, RecyclerView rows, editor, clicks and saved drafts. The port is deterministic; the Node scenario covers the real hub. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], application = Application::class)
+@Config(sdk = [35], application = Application::class, qualifiers = "w360dp-h800dp-xxhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AshActivityTest {
     class TestActivity : AshActivity() {
@@ -61,6 +62,10 @@ class AshActivityTest {
                 })
                 "list" -> if (to == "service:agents") JSONObject().put("agents", JSONArray().put(JSONObject().put("id", "agent:main").put("primary", true).put("name", "Ash"))) else JSONObject().put("tasks", tasks)
                 "get" -> JSONObject().put("task", (0 until tasks.length()).map { tasks.getJSONObject(it) }.firstOrNull { it.optString("id") == body.optString("id") })
+                "done" -> {
+                    val task = (0 until tasks.length()).map { tasks.getJSONObject(it) }.first { it.getString("id") == body.getString("id") }
+                    task.put("status", "done"); JSONObject().put("task", task)
+                }
                 "current" -> current ?: JSONObject().put("as_of", System.currentTimeMillis()).put("presence", JSONObject().put("state", "idle"))
                 "pulse.get" -> JSONObject().put("enabled", false)
                 "diary.get" -> JSONObject().put("content", "# 日记\n- 会议周三").put("notes", JSONArray())
@@ -81,6 +86,11 @@ class AshActivityTest {
         val intent = Intent().putExtra(SystemAppActivity.EXTRA_ARG, JSONObject().put("section", section).toString())
         controller = Robolectric.buildActivity(TestActivity::class.java, intent).create().visible()
         activity = controller!!.get(); activity.connect(); settle()
+        val metrics = activity.resources.displayMetrics
+        assertEquals(3f, metrics.density, 0.001f)
+        assertEquals(1080, metrics.widthPixels); assertEquals(2400, metrics.heightPixels)
+        assertEquals(360, activity.resources.configuration.screenWidthDp)
+        assertEquals(800, activity.resources.configuration.screenHeightDp)
     }
     private fun all(view: View = activity.window.decorView): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
     private fun texts() = all().filterIsInstance<TextView>().map { it.text.toString() }
@@ -88,7 +98,9 @@ class AshActivityTest {
         repeat(12) {
             shadowOf(Looper.getMainLooper()).idle()
             val root = activity.window.decorView
-            root.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)); root.layout(0, 0, 1080, 2400)
+            val width = (360 * activity.resources.displayMetrics.density).toInt()
+            val height = (800 * activity.resources.displayMetrics.density).toInt()
+            root.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)); root.layout(0, 0, width, height)
             Thread.sleep(10)
         }
     }
@@ -107,7 +119,15 @@ class AshActivityTest {
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
     }
-    private fun click(text: String) { settle(); val target = all().filterIsInstance<TextView>().firstOrNull { it.text.toString() == text && it.isShown }; assertNotNull("missing visible action $text: ${texts()}", target); target!!.performClick(); settle() }
+    private fun click(text: String) {
+        repeat(15) {
+            settle()
+            val target = all().filterIsInstance<TextView>().firstOrNull { it.text.toString() == text && it.isShown && it.getGlobalVisibleRect(Rect()) }
+            if (target != null) { target.performClick(); settle(); return }
+            all().filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().scrollBy(0, (300 * activity.resources.displayMetrics.density).toInt())
+        }
+        fail("missing visible action $text: ${texts()}")
+    }
     private fun clickCard(title: String) {
         settle()
         val heading = all().filterIsInstance<TextView>().first { it.text.toString() == title }
@@ -117,11 +137,13 @@ class AshActivityTest {
         settle()
         val status = all().filterIsInstance<TextView>().first { it.text.toString().contains("尚未通知 Ash") }
         val card = status.parent as ViewGroup
-        all(card).filterIsInstance<TextView>().first { it.text.toString() == "查看" }.performClick(); settle()
+        all(card).filterIsInstance<TextView>().first { it.text.toString() == "重试通知" }.performClick(); settle()
     }
 
     @Test fun aSingleFactCorrectionPreservesNewFactsAndShowsWhetherAshWasNotified() {
         open("memory")
+        val advanced = texts().indexOf("全文与整页批注（高级）")
+        assertTrue("specific memories must precede the advanced entry", advanced < 0 || texts().indexOf("会议周二") < advanced)
         assertTrue(texts().contains("会议周二")); assertFalse(texts().contains(Port.document)); screenshot("memory-before-correction")
         click("修改")
         val editor = activity.findViewById<EditText>(R.id.ash_editor)
@@ -152,7 +174,8 @@ class AshActivityTest {
         Port.tasks.put(task)
         open("now"); clickCard("帮你改会议")
         assertTrue(texts().contains("卡在这里")); assertTrue(texts().contains("在等你确认周三下午的时间")); screenshot("promise-blocked")
-        clickCard("打开任务应用")
+        assertFalse("viewing the task must not complete it", Port.calls.any { it.second == "done" })
+        click("打开任务")
         val launched = shadowOf(activity).nextStartedActivity
         assertEquals("ai.ash.sysapps.tasks.TasksActivity", launched.component!!.className)
         val arg = JSONObject(launched.getStringExtra(SystemAppActivity.EXTRA_ARG)!!)
@@ -161,6 +184,17 @@ class AshActivityTest {
         activity.connect(); settle()
         assertTrue(texts().contains("事情的结果")); assertTrue(texts().contains("会议已改到周三下午，日历已更新"))
         assertFalse(texts().contains("卡在这里")); screenshot("promise-result")
+    }
+
+    @Test fun onlyTheExplicitCompletionActionCompletesAPromise() {
+        Port.tasks.put(JSONObject().put("id", "t_meeting").put("subject", "ash").put("title", "帮你改会议").put("status", "waiting").put("note", "等你确认时间"))
+        open("now"); clickCard("帮你改会议")
+        click("批注 / 纠正")
+        assertFalse(Port.calls.any { it.second == "done" })
+        activity.backInside(); settle()
+        click("完成这件事")
+        val done = Port.calls.filter { it.second == "done" }
+        assertEquals(1, done.size); assertEquals("t_meeting", done.single().third.getString("id"))
     }
 
     @Test fun oldStatusAndUnsubstantiatedGrowthStayClearlyLabelled() {

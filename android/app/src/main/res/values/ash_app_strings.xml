@@ -51,8 +51,9 @@
     <string name="ash_saved_notice_failed">已保存；还没确认 Ash 收到通知，可在批注中查看。</string>
     <string name="ash_unknown">结果还未确认。草稿仍在，请返回查看最新内容再决定是否重试。</string>
     <string name="ash_write_failed">没能保存，草稿仍在。请检查连接后重试。</string>
-    <string name="ash_complete">标为完成</string>
-    <string name="ash_tasks_open">打开任务应用</string>
+    <string name="ash_complete">完成这件事</string>
+    <string name="ash_tasks_open">打开任务</string>
+    <string name="ash_retry_notice">重试通知</string>
     <string name="ash_no_evidence">这条记录还没有附出处。</string>
     <string name="ash_read_failed">没能读取，请重试</string>
     <string name="ash_changed_by">%1$s 更新</string>

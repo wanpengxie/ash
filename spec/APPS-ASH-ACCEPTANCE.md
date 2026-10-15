@@ -43,3 +43,13 @@
 在 android 目录，以标准单次 Gradle、--max-workers=1 运行 RobolectricResourcesTest、AshActivityTest、AshMemoryWriterTest、AshModelTest。先在集成树满足统一注册依赖，不修改业务以适应缺失注册的叶子树。
 
 设置 ASH_ACCEPTANCE_ARTIFACTS 为允许的临时输出目录，AshActivityTest 可导出 memory-before-correction.png、memory-corrected-and-answered.png、promise-blocked.png、promise-result.png。这些是代表性 fixture 的实际 View 绘制，不是真机或真实账户截图，也不证明真实模型的自主理解。
+
+## 集成首轮反馈后的产品修正
+
+总控反馈集成树已通过 17/17、原生 TasksActivity 同任务联动和结果回读；四张 Native 图片也已打开检查。该轮图片发现动作按钮笼统叫「查看」、高级全文入口抢占首屏，以及 mdpi 下 1080dp 宽视口不代表手机。
+
+本轮改动：任务操作直接显示「批注 / 纠正」「打开任务」「完成这件事」，不再在动作标题下面放一个含糊的「查看」。重试通知、修改约定、撤销和刷新也显示实际动作。所有具体记忆与纠正回应在前，全文高级入口移到记忆页末尾。继续使用现有 AshUi / AshTokens。
+
+截图测试明确 w360dp-h800dp-xxhdpi；布局由 360×800dp 乘实际 density 得到 1080×2400px，同时断言 density=3、实际 metrics=1080×2400、配置=360×800dp。保留 Native Graphics、真实 decor 挂窗和图片非空检查。补充实际 View 点击：读进展、批注都不调用 done，只有「完成这件事」才对同一任务调用一次 done；手机页面需要时先滚动再点击。
+
+本轮仅通过资源 XML 解析和 git diff --check；按串行构建安排没有启动 Gradle。新增点击断言与修正后的手机截图均待集成复验，不能沿用上一轮图片作为手机效果证据。

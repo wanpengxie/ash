@@ -192,17 +192,26 @@ open class AshActivity : SystemAppActivity() {
         if (!::rows.isInitialized) return
         title.text = editing?.title ?: when (route) { "identity" -> s(R.string.ash_identity); "memory" -> s(R.string.ash_memory); "diary" -> day ?: s(R.string.ash_diary); "growth" -> s(R.string.ash_growth); "promises" -> s(R.string.ash_promises); "notes" -> s(R.string.ash_notes); else -> name }
         val out = ArrayList<ChatRow>()
-        fun row(key: String, heading: String, text: String = "", action: (() -> Unit)? = null) {
-            out.add(ChatRow(key, "$heading|$text|${pending.contains(key)}|${feedback[key].orEmpty()}") {
+        fun row(key: String, heading: String, text: String = "", actionLabel: String = s(R.string.ash_open), action: (() -> Unit)? = null) {
+            out.add(ChatRow(key, "$heading|$text|$actionLabel|${pending.contains(key)}|${feedback[key].orEmpty()}") {
                 AshUi.card(this, AshTokens.Space.xs).apply {
                     addView(AshUi.text(context, heading, AshTokens.Type.headline))
                     if (text.isNotEmpty()) addView(AshUi.text(context, text, AshTokens.Type.body).apply { setTextIsSelectable(true) })
                     feedback[key]?.let { addView(AshUi.text(context, it, AshTokens.Type.callout)) }
-                    if (action != null) addView(AshUi.button(context, s(R.string.ash_open), AshUi.Kind.GHOST, block = true) { action() }.apply { isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
+                    if (action != null) addView(AshUi.button(context, actionLabel, AshUi.Kind.GHOST, block = true) { action() }.apply { isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
                 }
             })
         }
-        if (noticeStatus.isNotEmpty()) row("notice", s(R.string.ash_notice_title), noticeStatus) { val body = retryNotice; if (body != null) sendNotice(body) else navigate("notes") }
+        fun actionRow(key: String, label: String, hint: String = "", action: () -> Unit) {
+            out.add(ChatRow(key, "$label|$hint|${key in pending}|${feedback[key].orEmpty()}") {
+                AshUi.card(this, AshTokens.Space.xs).apply {
+                    if (hint.isNotEmpty()) addView(AshUi.text(context, hint, AshTokens.Type.body))
+                    feedback[key]?.let { addView(AshUi.text(context, it, AshTokens.Type.callout)) }
+                    addView(AshUi.button(context, label, AshUi.Kind.GHOST, block = true) { action() }.apply { isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
+                }
+            })
+        }
+        if (noticeStatus.isNotEmpty()) row("notice", s(R.string.ash_notice_title), noticeStatus, if (retryNotice != null) s(R.string.ash_retry_notice) else s(R.string.ash_open)) { val body = retryNotice; if (body != null) sendNotice(body) else navigate("notes") }
         when (route) {
             "task" -> {
                 val task = value("task:$taskId")?.optJSONObject("task")?.let { AshModel.todos(JSONObject().put("tasks", JSONArray().put(it))).firstOrNull() }
@@ -212,9 +221,9 @@ open class AshActivity : SystemAppActivity() {
                     val status = when (task.status) { "waiting" -> R.string.ash_task_blocked; "done" -> R.string.ash_task_result; "dropped" -> R.string.ash_task_dropped; "doing" -> R.string.ash_task_progress; else -> R.string.ash_task_todo }
                     row("progress", s(status), if (task.status in setOf("done", "dropped")) task.result ?: task.note ?: s(R.string.ash_task_no_result) else task.note ?: s(R.string.ash_task_no_detail))
                     task.due?.let { row("due", s(R.string.ash_task_time), HomeModel.dayTime(it, System.currentTimeMillis())) }
-                    row("task-comment", s(R.string.ash_comment)) { note("task:${task.id}", task.title) }
-                    row("task-manage", s(R.string.ash_tasks_open), s(R.string.ash_task_manage_hint)) { openTasks(task.id) }
-                    if (task.open) row("task:${task.id}", s(R.string.ash_complete)) { mutate("task:${task.id}", AshModel.TASKS, "done", JSONObject().put("id", task.id)) }
+                    actionRow("task-comment", s(R.string.ash_comment)) { note("task:${task.id}", task.title) }
+                    actionRow("task-manage", s(R.string.ash_tasks_open), s(R.string.ash_task_manage_hint)) { openTasks(task.id) }
+                    if (task.open) actionRow("task:${task.id}", s(R.string.ash_complete)) { mutate("task:${task.id}", AshModel.TASKS, "done", JSONObject().put("id", task.id)) }
                 }
             }
             "now" -> {
@@ -224,7 +233,7 @@ open class AshActivity : SystemAppActivity() {
                     value("now") == null -> s(R.string.ash_now_unknown)
                     !connected || slot("now").error != null || (value("now")?.optLong("as_of") ?: 0) < System.currentTimeMillis() - 300_000 -> s(R.string.ash_now_old, HomeModel.dayTime(slot("now").receivedAt ?: 0, System.currentTimeMillis()), AshModel.nowText(AshModel.now(true, value("now"), null, System.currentTimeMillis()), name))
                     else -> AshModel.nowText(now, name)
-                }, slot("now").receivedAt?.let { s(R.string.ash_last_checked, HomeModel.dayTime(it, System.currentTimeMillis())) }.orEmpty(), if (now.waitingYou > 0) s(R.string.ash_waiting, now.waitingYou) else "", rhythm).filter { it.isNotEmpty() }.joinToString("\n")) { note("now", s(R.string.ash_now)) }
+                }, slot("now").receivedAt?.let { s(R.string.ash_last_checked, HomeModel.dayTime(it, System.currentTimeMillis())) }.orEmpty(), if (now.waitingYou > 0) s(R.string.ash_waiting, now.waitingYou) else "", rhythm).filter { it.isNotEmpty() }.joinToString("\n"), s(R.string.ash_comment)) { note("now", s(R.string.ash_now)) }
                 val tasks = AshModel.todos(value("tasks")); val active = AshModel.activeTodos(tasks)
                 if (value("tasks") == null) row("tasks-loading", s(R.string.ash_tasks), s(R.string.ash_loading))
                 else if (active.isEmpty()) row("tasks-empty", s(R.string.ash_tasks), s(if (value("tasks")?.has("next_before") == true) R.string.ash_tasks_partial else R.string.ash_no_tasks))
@@ -232,7 +241,7 @@ open class AshActivity : SystemAppActivity() {
                     val meta = listOf(AshModel.statusText(task.status), task.due?.let { HomeModel.dayTime(it, System.currentTimeMillis()) }, task.assignee?.let { who(it) }, task.updatedBy?.let { s(R.string.ash_changed_by, who(it)) }).filterNotNull().joinToString(" · ")
                     row("task:${task.id}", task.title, listOfNotNull(meta, task.note).joinToString("\n")) { task(task) }
                 }
-                if (value("tasks")?.has("next_before") == true) row("tasks-more", s(R.string.ash_tasks_open), s(R.string.ash_tasks_partial)) { openTasks() }
+                if (value("tasks")?.has("next_before") == true) row("tasks-more", s(R.string.ash_tasks_open), s(R.string.ash_tasks_partial), s(R.string.ash_tasks_open)) { openTasks() }
                 AshModel.notes(value("notes")?.optJSONArray("notes")).firstOrNull { it.by == AshModel.OWNER }?.let { note ->
                     row("latest-correction", s(R.string.ash_correction), note.text + "\n" + (note.reply?.let { s(R.string.ash_reply, it) } ?: s(R.string.ash_no_reply))) { navigate("notes") }
                 }
@@ -244,38 +253,41 @@ open class AshActivity : SystemAppActivity() {
                 val version = AshModel.versions(value("versions:$file")).firstOrNull()
                 row("identity:$file", if (file == "SOUL.md") s(R.string.ash_soul) else s(R.string.ash_card), listOfNotNull(text, version?.let { s(R.string.ash_version, who(it.by), it.reason) }).joinToString("\n\n")) { document(file, text, true) }
             }
-            "memory" -> AshModel.memoryFiles(value("memory")).forEach { file ->
-                row("memory:${file.file}", memoryLabel(file.file), s(R.string.ash_memory_advanced)) { document(file.file, file.content, false) }
-                val items = AshModel.memoryItems(file.content)
-                if (items.isEmpty()) row("memory-empty:${file.file}", s(R.string.ash_empty_memory))
-                items.forEach { item ->
-                    val key = memoryKey(file.file, item)
-                    out.add(ChatRow(key, "${item.section}|${item.text}|${key in pending}") {
-                        AshUi.card(this, AshTokens.Space.xs).apply {
-                            if (item.section.isNotEmpty()) addView(AshUi.text(context, item.section, AshTokens.Type.callout))
-                            addView(AshUi.text(context, item.text).apply { setTextIsSelectable(true) })
-                            addView(AshUi.hstack(context, AshTokens.Space.xs).apply {
-                                fun action(label: Int, click: () -> Unit) { addView(AshUi.button(context, s(label), AshUi.Kind.GHOST) { click() }.apply { minimumHeight = AshUi.dp(context, 48); isEnabled = key !in pending }, LinearLayout.LayoutParams(0, -2, 1f)) }
-                                action(R.string.ash_edit_item) { editMemory(file.file, item) }
-                                action(R.string.ash_delete_item) { deleteMemory(file.file, item) }
-                                action(R.string.ash_comment) { note("memory:${file.file}", item.text) }
-                            })
-                        }
-                    })
+            "memory" -> {
+                val files = AshModel.memoryFiles(value("memory"))
+                files.forEach { file ->
+                    val items = AshModel.memoryItems(file.content)
+                    if (items.isEmpty()) row("memory-empty:${file.file}", s(R.string.ash_empty_memory))
+                    items.forEach { item ->
+                        val key = memoryKey(file.file, item)
+                        out.add(ChatRow(key, "${item.section}|${item.text}|${key in pending}") {
+                            AshUi.card(this, AshTokens.Space.xs).apply {
+                                if (item.section.isNotEmpty()) addView(AshUi.text(context, item.section, AshTokens.Type.callout))
+                                addView(AshUi.text(context, item.text).apply { setTextIsSelectable(true) })
+                                addView(AshUi.hstack(context, AshTokens.Space.xs).apply {
+                                    fun action(label: Int, click: () -> Unit) { addView(AshUi.button(context, s(label), AshUi.Kind.GHOST) { click() }.apply { minimumHeight = AshUi.dp(context, 48); isEnabled = key !in pending }, LinearLayout.LayoutParams(0, -2, 1f)) }
+                                    action(R.string.ash_edit_item) { editMemory(file.file, item) }
+                                    action(R.string.ash_delete_item) { deleteMemory(file.file, item) }
+                                    action(R.string.ash_comment) { note("memory:${file.file}", item.text) }
+                                })
+                            }
+                        })
+                    }
+                    AshModel.notes(value("notes")?.optJSONArray("notes")).filter { it.about == "memory:${file.file}" }.take(3).forEach { note ->
+                        row("correction:${note.id}", s(R.string.ash_correction), note.text + "\n" + (note.reply?.let { s(R.string.ash_reply, it) } ?: s(R.string.ash_no_reply))) { navigate("notes") }
+                    }
                 }
-                AshModel.notes(value("notes")?.optJSONArray("notes")).filter { it.about == "memory:${file.file}" }.take(3).forEach { note ->
-                    row("correction:${note.id}", s(R.string.ash_correction), note.text + "\n" + (note.reply?.let { s(R.string.ash_reply, it) } ?: s(R.string.ash_no_reply))) { navigate("notes") }
-                }
+                files.forEach { file -> actionRow("memory:${file.file}", s(R.string.ash_memory_advanced), memoryLabel(file.file)) { document(file.file, file.content, false) } }
             }
             "diary" -> {
                 if (day == null) {
                     val days = AshModel.days(value("diary"))
                     if (value("diary") != null && days.days.isEmpty()) row("empty-diary", s(R.string.ash_diary), s(R.string.ash_no_diary))
-                    days.nextBefore?.let { before -> row("diary-more", s(R.string.ash_more)) { read("diary", AshModel.PERSONA, "diary.list", JSONObject().put("before", before).put("limit", 60)) } }
+                    days.nextBefore?.let { before -> actionRow("diary-more", s(R.string.ash_more)) { read("diary", AshModel.PERSONA, "diary.list", JSONObject().put("before", before).put("limit", 60)) } }
                     days.days.forEach { d -> row("day:${d.date}", d.date, d.excerpt) { day = d.date; refresh(); draw(); syncBack() } }
                 } else value("day:$day")?.let { data ->
                     AshModel.diaryParts(data.optString("content")).forEachIndexed { i, part -> row("part:$i", part.title, part.lines.joinToString("\n")) }
-                    row("diary-note", s(R.string.ash_comment)) { note("diary:$day", day!!) }
+                    actionRow("diary-note", s(R.string.ash_comment)) { note("diary:$day", day!!) }
                     AshModel.notes(data.optJSONArray("notes")).forEach { n -> row("note:${n.id}", who(n.by), listOfNotNull(n.text, n.reply?.let { s(R.string.ash_reply, it) }).joinToString("\n")) }
                 }
             }
@@ -292,12 +304,12 @@ open class AshActivity : SystemAppActivity() {
             "promises" -> {
                 val settings = value("settings")?.optJSONObject("settings")
                 val quiet = settings?.let(HomeModel::quietOf)
-                row("quiet", s(R.string.ash_quiet), quiet?.takeIf { it.isNotEmpty() } ?: if (settings == null) s(R.string.ash_loading) else s(R.string.ash_quiet_none)) { if (settings != null) openEdit(Edit("quiet", s(R.string.ash_quiet), "service:admin", "settings.set", "{}", HomeModel.QUIET_KEY), quiet.orEmpty()) }
+                row("quiet", s(R.string.ash_quiet), quiet?.takeIf { it.isNotEmpty() } ?: if (settings == null) s(R.string.ash_loading) else s(R.string.ash_quiet_none), s(R.string.ash_edit_item)) { if (settings != null) openEdit(Edit("quiet", s(R.string.ash_quiet), "service:admin", "settings.set", "{}", HomeModel.QUIET_KEY), quiet.orEmpty()) }
                 val rules = value("rules")
-                row("mode", s(R.string.ash_approval), when (rules?.optString("mode")) { "auto" -> s(R.string.ash_mode_auto); "always" -> s(R.string.ash_mode_always); else -> s(R.string.ash_loading) }) { if (rules != null) mode() }
+                row("mode", s(R.string.ash_approval), when (rules?.optString("mode")) { "auto" -> s(R.string.ash_mode_auto); "always" -> s(R.string.ash_mode_always); else -> s(R.string.ash_loading) }, s(R.string.ash_edit_item)) { if (rules != null) mode() }
                 rules?.objects("rules")?.filter { (!it.has("revoked_at") || it.isNull("revoked_at")) && it.optLong("expires_at") > System.currentTimeMillis() }?.forEach { rule ->
                     val id = rule.optString("id")
-                    row("rule:$id", HomeModel.actionLabel(rule.optString("word"), rule.optString("risk")), listOf(rule.optString("member"), rule.optString("object_pattern"), s(R.string.ash_applies_to, who(rule.optString("subject")))).filter { it.isNotEmpty() }.joinToString(" · ")) {
+                    row("rule:$id", HomeModel.actionLabel(rule.optString("word"), rule.optString("risk")), listOf(rule.optString("member"), rule.optString("object_pattern"), s(R.string.ash_applies_to, who(rule.optString("subject")))).filter { it.isNotEmpty() }.joinToString(" · "), s(R.string.ash_revoke)) {
                         AlertDialog.Builder(this).setMessage(s(R.string.ash_revoke_question)).setNegativeButton(R.string.ash_cancel, null).setPositiveButton(R.string.ash_revoke) { _, _ -> mutate("rule:$id", "service:gate", "rules.revoke", JSONObject().put("id", id)) }.show()
                     }
                 }
@@ -306,7 +318,7 @@ open class AshActivity : SystemAppActivity() {
             }
         }
         val keys = when(route) { "task" -> listOf("task:$taskId"); "now" -> listOf("now", "tasks", "pulse"); "identity", "memory", "growth", "notes" -> listOf(route); "diary" -> listOf(day?.let { "day:$it" } ?: "diary"); else -> listOf("settings", "rules", "proactive") }
-        keys.forEach { key -> slot(key).error?.let { row("error:$key", it, s(R.string.ash_kept)) { refresh() } } }
+        keys.forEach { key -> slot(key).error?.let { row("error:$key", it, s(R.string.ash_kept), s(R.string.ash_refresh)) { refresh() } } }
         if (out.isEmpty()) row("loading", s(R.string.ash_loading))
         val pos = layout.findFirstVisibleItemPosition(); val key = rows.currentList.getOrNull(pos)?.key; val offset = layout.findViewByPosition(pos)?.let(layout::getDecoratedTop) ?: 0
         val scrolling = scrollGeneration
