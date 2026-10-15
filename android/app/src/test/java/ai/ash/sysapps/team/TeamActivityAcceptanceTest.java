@@ -199,6 +199,7 @@ public class TeamActivityAcceptanceTest {
             TextView question=screenText(a,"整理这次应用验收结果，先检查团队入口复用",false);
             assertTrue(visible(question)); assertTrue(during.getJSONObject("members").getJSONArray("agents").length()>6);
             assertNotNull(screenText(a,"委托与回复",false));
+            for(String action:new String[]{"成员","刷新","新建"})assertTrue("Header action needs a 48dp touch width",screenText(a,action,false).getWidth()>=48);
             assertFalse(text(a.getWindow().getDecorView()).contains("配置模型："));
             screenshot(a,"01-working-delegation");
             touch(a,screenText(a,"资料帮手",false));
@@ -208,7 +209,9 @@ public class TeamActivityAcceptanceTest {
             assertEquals("team",ReflectionHelpers.getField(a,"route"));
             last("exchanges").answer(during.getJSONObject("exchanges").toString());
             Feed.listener.invoke(new JSONObject("{\"kind\":\"response\",\"from\":\"service:agents\",\"word\":\"ask\"}"));
+            last("list").answer(answered.getJSONObject("members").toString());
             last("exchanges").answer(answered.getJSONObject("exchanges").toString());
+            assertNotNull(screenText(a,"成员当前没有正在执行的工作",false));
             TextView continueButton=screenText(a,"继续问",true);
             assertTrue(text(a.getWindow().getDecorView()).contains("发现复用入口会留在上一个成员"));
             screenshot(a,"02-reply-and-follow-up");
@@ -224,6 +227,7 @@ public class TeamActivityAcceptanceTest {
         try(ActivityController<TeamActivity> c=Robolectric.buildActivity(TeamActivity.class,intent("agent:a")).create().start().resume().visible()) {
             TeamActivity a=c.get(); last("list").answer(MEMBERS); label(detail(a),"修改配置").performClick();
             View form=ReflectionHelpers.getField(a,"formSlot");
+            assertTrue(label(form,"运行中的帮手：更改角色或工具会重启并中断当前委托；模型变更按运行时在下一轮生效或重启。").isShown());
             last("runtimes").answer("{\"runtimes\":[{\"kind\":\"dsh\",\"models\":[{\"id\":\"one\"},{\"id\":\"two\"}]}]}");
             last("runtime.catalog").answer("{\"providers\":[{\"models\":[{\"id\":\"one\"},{\"id\":\"two\"}]}]}");
             field(form,"名字").setText("编辑帮手"); field(form,"一句话说明角色").setText("编辑并回复结果");

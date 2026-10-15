@@ -244,7 +244,10 @@ class TeamActivity : SystemAppActivity() {
     }
     private fun draftKey() = "team:ask:${target ?: "none"}"
     private fun say(s: String) { status.text = s }
-    private fun button(label: String, click: () -> Unit): TextView = AshUi.button(this, label, AshUi.Kind.GHOST, onClick = click).apply { minHeight = dp(48) }
+    private fun button(label: String, click: () -> Unit): TextView = AshUi.button(this, label, AshUi.Kind.GHOST, onClick = click).apply {
+        minHeight = dp(48); minWidth = dp(48)
+        setPadding(dp(8), paddingTop, dp(8), paddingBottom)
+    }
     private fun text(s: String, muted: Boolean = false) = AshUi.text(this, s, if (muted) AshTokens.Type.caption else AshTokens.Type.body, if (muted) c.text2 else c.text).apply { setTextIsSelectable(true) }
     private fun box(vararg lines: String) = AshUi.card(this).apply { lines.filter { it.isNotBlank() }.forEach { addView(text(it)) } }
     private fun note(key: String, s: String) = ChatRow(key, s) { text(s, true) }
@@ -464,6 +467,7 @@ class TeamActivity : SystemAppActivity() {
         val words = field("可调用接口", "words", m?.words?.joinToString("\n") ?: "*", true, advanced)
         fields.addView(advancedToggle)
         fields.addView(advanced, LinearLayout.LayoutParams(-1, -2))
+        if (m != null) fields.addView(text("运行中的帮手：更改角色或工具会重启并中断当前委托；模型变更按运行时在下一轮生效或重启。", true))
         val formNote = text("正在读取可用模型…", true); fields.addView(formNote)
         var runtimeIds = emptyList<String>()
         var modelIds = emptyList<String>()
