@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CARD_ICON_GLYPHS, CARD_ICON_SHAPES, COPIED_MS, DRAFT_DELAY_MS, SeenReporter, actBody, actOnce, actProblem, actTimeoutMs, buttonLabel, buttonView, cardIdsOnScreen,
   cardState, cssColor, fieldPath, formAnswerBody, formCancelBody, formatClock, formatSpan, frameMessage, liveLine, masked, pinnable, miniAppDocument, miniAppRequest, MINI_APP_CSP,
-  parsePlan, patchA2uiCard, readPointer, renderA2uiCard, resetCards, runtimeKind, sayBody, secretsOf, stateLine, writePointer } from "../js/a2ui-card.js";
+  parsePlan, patchA2uiCard, readPointer, renderA2uiCard, resetCards, runtimeKind, sayBody, secretsOf, stateLine, writePointer,
+  updateA2uiCard, miniAppRpc, MINI_APP_MAX_BYTES } from "../js/a2ui-card.js";
 import { renderCard } from "../js/cards.js";
 import { ICON_SHAPES } from "../js/ash-icons.js";
 import { CARD_ICONS } from "../../sdk/src/card.ts";
@@ -13,8 +14,23 @@ import { tick, until } from "./support.js";
 class FakeNode {
   constructor(tag) {
     this.tag = tag; this.children = []; this.parent = null; this.attributes = {}; this.listeners = {}; this.dataset = {}; this.value = ""; this.className = "";
-    const style = {}; Object.defineProperty(style, "setProperty", { value: (k, v) => { style[k] = v; } }); this.style = style;
+    const style = {};
+    Object.defineProperty(style, "setProperty", { value: (k, v) => { style[k] = v; } });
+    Object.defineProperty(style, "removeProperty", { value: (k) => { delete style[k]; } });
+    Object.defineProperty(style, "cssText", { set: () => { for (const k of Object.keys(style)) delete style[k]; }, get: () => "" });
+    this.style = style;
   }
+  get parentNode() { return this.parent; }
+  get firstChild() { return this.children[0] ?? null; }
+  get nextSibling() { return this.parent ? this.parent.children[this.parent.children.indexOf(this) + 1] ?? null : null; }
+  insertBefore(node, ref) {
+    node.parent?.children.splice(node.parent.children.indexOf(node), 1);
+    node.parent = this;
+    const at = ref ? this.children.indexOf(ref) : -1;
+    if (at < 0) this.children.push(node); else this.children.splice(at, 0, node);
+    return node;
+  }
+  removeAttribute(k) { delete this.attributes[k]; }
   get ownerDocument() { return globalThis.document; }
   get classList() {
     const node = this;
@@ -49,6 +65,10 @@ function withDom(fn) {
   return result instanceof Promise ? result.finally(() => { delete globalThis.document; }) : result;
 }
 const byClass = (root, cls) => root.find((n) => n.has?.(cls));
+/** The token of [frame]'s current load, as its bridge has it. */
+const frameToken = (frame) => /g="([0-9a-f]+)"/.exec(frame.srcdoc)?.[1];
+/** A message event of the mini app in [frame], as its bridge posts it (JSON-RPC under the load's token). */
+const rpc = (frame, message, token = frameToken(frame)) => ({ source: frame.contentWindow, data: { g: token, m: JSON.stringify({ jsonrpc: "2.0", ...message }) } });
 const byId = (root, id) => root.find((n) => n.dataset?.a2Id === id);
 const control = (root, id, tag = "input") => byId(root, id)?.find((n) => n.tag === tag || n.tag === "textarea");
 
@@ -175,7 +195,7 @@ function recorder(extra = {}) {
   return ctx;
 }
 
-test("every component of a plan is drawn in the card shell; an unknown one is skipped and a hidden one left out", () => withDom(() => {
+test("every component of a plan is drawn in the card shell; an unknown one is skipped and a hidden one kept out of sight", () => withDom(() => {
   resetCards();
   const parent = new FakeNode("div");
   const item = { id: "m1", type: "card", side: "agent", card: { type: "a2ui", id: "c-all", owner: "agent:main", state: "open", updated_at: 1, text: "summary",
@@ -248,7 +268,7 @@ test("every component of a plan is drawn in the card shell; an unknown one is sk
   assert.ok(byId(root, "html").find((n) => n.tag === "button" && n.textContent === "存成应用"));
   assert.ok(byId(root, "sk").has("sk"));
   assert.equal(byId(root, "alien"), undefined);
-  assert.equal(byId(root, "hidden"), undefined);
+  assert.equal(byId(root, "hidden").style.display, "none", "drawn but not shown: showing it later is a patch, not a new subtree");
   assert.equal(byClass(root, "a2-status"), undefined, "an open card has no end line");
 }));
 
@@ -409,7 +429,7 @@ test("a newer version from the hub replaces the working copy unless the owner is
   assert.equal(control(root, "name").value, "from agent", "not editing: the hub's version wins");
 }));
 
-test("a reactive card is drawn again from the draft's answer, keeping the focused input focused with its caret", async () => withDom(async () => {
+test("a reactive card is patched from the draft's answer: the focused input is the same one, its caret and focus untouched", async () => withDom(async () => {
   resetCards();
   const plan = (n) => ({ root: "root", data: { n }, binds: ["/n"], reactive: true, components: [
     { id: "root", component: "Column", children: ["s", "t"] },
@@ -425,9 +445,9 @@ test("a reactive card is drawn again from the draft's answer, keeping the focuse
   await tick(DRAFT_DELAY_MS + 50);
   assert.equal(byId(root, "t").textContent, "n = 42");
   const again = control(root, "s");
-  assert.notEqual(again, input, "drawn again");
-  assert.deepEqual(again.caret, [2, 2]);
-  assert.equal(globalThis.document.activeElement, again);
+  assert.equal(again, input, "patched in place, never drawn again");
+  assert.equal(again.caret, undefined, "no caret put back: it never moved");
+  assert.equal(globalThis.document.activeElement, input);
   assert.equal(again.value, "42");
 }));
 
@@ -505,19 +525,28 @@ test("a button on an agent's card is the owner's say to the agent, with the card
   assert.deepEqual(opened, [{ openUrl: { url: "https://example.com/" } }]);
 }));
 
-test("only a frame this page made speaks for its card, and only with {ash: send, action, context}", async () => withDom(async () => {
+test("only the frame this page made, in its current load, speaks for its card; a card without an app has ash.send alone", async () => withDom(async () => {
   resetCards();
-  const ctx = recorder();
+  const ctx = recorder({ act: async (body) => { ctx.calls.push(["act", body]); return { state: "ok", text: "不该到这里" }; } });
   const item = { id: "m", type: "card", card: { type: "a2ui", id: "mini", owner: "agent:main", state: "open", updated_at: 1,
     plan: { root: "root", data: { k: 1 }, components: [{ id: "root", component: "Html", html: "<b>x</b>", height: 100 }] } } };
   const root = renderA2uiCard(new FakeNode("div"), item, ctx);
   const frame = root.find((n) => n.tag === "iframe");
-  frame.contentWindow = { name: "frame window" };
-  assert.equal(frameMessage({ source: { name: "someone else" }, data: { ash: "send", action: "go" } }), false);
-  assert.equal(frameMessage({ source: frame.contentWindow, data: { ash: "send", action: "bad name!" } }), false);
-  assert.equal(frameMessage({ source: frame.contentWindow, data: { ash: "send", action: "go", context: { n: 1 } } }), true);
+  const posted = [];
+  frame.contentWindow = { name: "frame window", postMessage: (message) => posted.push(message) };
+  assert.ok(frame.srcdoc.includes("window.ash=Object.freeze(a)") && !frame.srcdoc.includes("a.call="), "its bridge has ash.send alone");
+  assert.equal(frameMessage({ ...rpc(frame, { method: "ash/send", params: { action: "go" } }), source: { name: "someone else" } }), false);
+  assert.equal(frameMessage(rpc(frame, { method: "ash/send", params: { action: "bad name!" } })), false);
+  assert.equal(frameMessage(rpc(frame, { method: "ash/send", params: { action: "go", context: { n: 1 } } })), true);
   await until(() => ctx.calls.some(([k]) => k === "say"));
   assert.deepEqual(ctx.calls.find(([k]) => k === "say").slice(1), ["agent:main", "go", { id: "mini", action: "go", context: { n: 1 }, data: { k: 1 } }]);
+  // ash.call / ask / tell are not there for it: a page that posts one anyway is refused (and told so), nothing runs.
+  assert.equal(frameMessage(rpc(frame, { id: "r1", method: "ash/call", params: { member: "app:weather", word: "now", body: {} } })), false);
+  assert.equal(frameMessage(rpc(frame, { id: "r2", method: "ash/ask", params: { text: "明天呢" } })), false);
+  await tick();
+  assert.equal(ctx.calls.filter(([k]) => k === "act").length, 0);
+  assert.deepEqual(posted.map((m) => JSON.parse(m.m)), [{ jsonrpc: "2.0", id: "r1", result: { state: "failed", text: "这张卡不能这样做。" } },
+    { jsonrpc: "2.0", id: "r2", result: { state: "failed", text: "这张卡不能这样做。" } }]);
   root.find((n) => n.tag === "button" && n.textContent === "存成应用").click();
   await until(() => ctx.calls.filter(([k]) => k === "say").length === 2);
   assert.deepEqual(ctx.calls.filter(([k]) => k === "say")[1].slice(1), ["agent:main", "把这个小应用存成应用", { id: "mini", action: "save_app", context: { component: "root" }, data: { k: 1 } }]);
@@ -717,18 +746,22 @@ test("the footer: the live line, 「存成应用」 for a temporary app (gone on
   assert.equal(closed.find((n) => n.tag === "button" && n.textContent === "存成应用"), undefined);
 }));
 
-test("a pushed card replaces the card's state; a card held by the focus of a pressed button is drawn again in place", () => withDom(() => {
+test("a pushed card replaces the card's state and is patched in place, even while the focus is on one of its buttons", () => withDom(() => {
   resetCards();
   const ctx = recorder();
   const root = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-patch" }), ctx);
   assert.equal(patchA2uiCard({ id: "nobody", plan: {} }), false);
-  buttonOf(root, "go").focus();
+  const go = buttonOf(root, "go");
+  go.focus();
   const next = { ...runtimeItem({ id: "rt-patch" }).card, updated_at: 3000, fed_at: 2999, plan: { ...runtimeItem().card.plan, data: { city: "上海" } },
     actions: { go: { state: "ok", text: "已完成 · 10:42", at: 2990 } } };
   assert.equal(patchA2uiCard(next), true);
   assert.equal(cardState("rt-patch").item.card.fed_at, 2999, "the hub's card");
-  assert.deepEqual(cardState("rt-patch").data, { city: "杭州" }, "the owner is on the card: the working copy waits, as for any newer version");
-  assert.equal(lineOf(root, "go").textContent, "已完成 · 10:42", "drawn here: the timeline leaves a focused row alone");
+  assert.deepEqual(cardState("rt-patch").data, { city: "上海" }, "no field of it is being edited: the working copy follows the hub");
+  assert.equal(cardState("rt-patch").ui.root, root, "the same card on screen");
+  assert.equal(buttonOf(root, "go"), go, "the same button, still focused");
+  assert.equal(globalThis.document.activeElement, go);
+  assert.equal(lineOf(root, "go").textContent, "已完成 · 10:42", "its line drawn in place");
 }));
 
 test("the timeline takes a pushed card into every item showing it and redraws only those rows", async () => {
@@ -804,8 +837,8 @@ test("table cells are the card's Markdown, not raw marks", () => withDom(() => {
 
 test("the mini app's ash.call / ash.ask / ash.tell are presses of its card, answered into the frame, at most two a second", async () => withDom(async () => {
   resetCards();
-  const doc = miniAppDocument("<p>x</p>", { scheme: "light" });
-  for (const name of ["send:function", "call:function", "ask:function", "tell:function"]) assert.ok(doc.includes(name), name);
+  const doc = miniAppDocument("<p>x</p>", { scheme: "light" }, null, { token: "abc", full: true });
+  for (const part of ["send:function", "a.call=function", "a.ask=function", "a.tell=function", 'g="abc"', 'jsonrpc:"2.0"']) assert.ok(doc.includes(part), part);
   assert.deepEqual(miniAppRequest({ call: { member: "app:weather", word: "now", body: { city: "杭州" } } }), { call: { member: "app:weather", word: "now", body: { city: "杭州" } } });
   assert.deepEqual(miniAppRequest({ call: { member: "app:weather", word: "now" } }), { call: { member: "app:weather", word: "now", body: {} } });
   assert.deepEqual(miniAppRequest({ ask: { text: "明天呢" } }), { ask: { text: "明天呢" } });
@@ -818,22 +851,23 @@ test("the mini app's ash.call / ash.ask / ash.tell are presses of its card, answ
   const root = renderA2uiCard(new FakeNode("div"), item, ctx);
   assert.equal(root.find((n) => n.tag === "button" && n.textContent === "存成应用"), undefined, "a card of an app is saved through its footer, not the old way");
   const frame = root.find((n) => n.tag === "iframe");
+  assert.ok(frame.srcdoc.includes("a.call=function"), "a card of an app has call / ask / tell");
   const posted = [];
   frame.contentWindow = { postMessage: (message, origin) => posted.push([message, origin]) };
-  const source = frame.contentWindow;
-  assert.equal(frameMessage({ source, data: { ash: "act", id: "r1", request: { call: { member: "app:weather", word: "now", body: { city: "杭州" } } } } }), true);
+  const token = frameToken(frame);
+  assert.equal(frameMessage(rpc(frame, { id: "r1", method: "ash/call", params: { member: "app:weather", word: "now", body: { city: "杭州" } } })), true);
   await until(() => posted.length === 1);
   assert.deepEqual(ctx.calls.find(([k]) => k === "act")[1], { card: "mini-rt", component: "root", data: { k: 1 }, request: { call: { member: "app:weather", word: "now", body: { city: "杭州" } } } });
-  assert.deepEqual(posted[0], [{ ash: "answer", id: "r1", answer: { state: "ok", text: "已完成", result: { t: 21 } } }, "*"]);
-  assert.equal(frameMessage({ source, data: { ash: "act", id: "r2", request: { ask: { text: "明天呢" } } } }), true);
-  assert.equal(frameMessage({ source, data: { ash: "act", id: "r3", request: { tell: { text: "好" } } } }), true);
+  assert.deepEqual(posted[0], [{ g: token, m: JSON.stringify({ jsonrpc: "2.0", id: "r1", result: { state: "ok", text: "已完成", result: { t: 21 } } }) }, "*"]);
+  assert.equal(frameMessage(rpc(frame, { id: "r2", method: "ash/ask", params: { text: "明天呢" } })), true);
+  assert.equal(frameMessage(rpc(frame, { id: "r3", method: "ash/tell", params: { text: "好" } })), true);
   await until(() => posted.length === 3);
-  assert.deepEqual(posted.find(([m]) => m.id === "r3")[0].answer, { state: "failed", text: "太快了，稍后再试。" }, "a third in the same second is refused");
+  assert.deepEqual(posted.map(([m]) => JSON.parse(m.m)).find((m) => m.id === "r3").result, { state: "failed", text: "太快了，稍后再试。" }, "a third in the same second is refused");
   assert.equal(ctx.calls.filter(([k]) => k === "act").length, 2);
-  assert.equal(frameMessage({ source, data: { ash: "act", id: "r4", request: { nothing: true } } }), false);
+  assert.equal(frameMessage(rpc(frame, { id: "r4", method: "ash/call", params: { nothing: true } })), false);
   await until(() => posted.length === 4);
-  assert.equal(posted.at(-1)[0].answer.state, "failed", "a request it cannot read is answered too");
-  assert.equal(frameMessage({ source: { other: true }, data: { ash: "act", id: "r5", request: { ask: { text: "x" } } } }), false, "only its own frame");
+  assert.equal(JSON.parse(posted.at(-1)[0].m).result.state, "failed", "a request it cannot read is answered too");
+  assert.equal(frameMessage({ ...rpc(frame, { id: "r5", method: "ash/ask", params: { text: "x" } }), source: { other: true } }), false, "only its own frame");
 }));
 
 test("「常驻」 on an app's card: drawn from the start, set at once through service:cards/pin, put back with a short line when refused", async () => withDom(async () => {
@@ -863,7 +897,7 @@ test("「常驻」 on an app's card: drawn from the start, set at once through s
   patchA2uiCard({ ...runtimeItem({ id: "rt-pin", fed_at: at }).card, pinned: true, updated_at: 1001 });
   assert.equal(cardState("rt-pin").pinned, undefined, "the hub's card says the same now");
   renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin", fed_at: at, pinned: true, updated_at: 1001 }), ctx);
-  const again = cardState("rt-pin").root;
+  const again = cardState("rt-pin").ui.root;
   refuse = true;
   byClass(again, "a2-pin").click();
   assert.equal(byClass(again, "a2-pin").attributes["aria-checked"], "false");
@@ -874,4 +908,218 @@ test("「常驻」 on an app's card: drawn from the start, set at once through s
   // A closed card, or an agent's card without an app: no switch.
   assert.equal(byClass(renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin-closed", life: "closed" }), ctx), "a2-pin"), undefined);
   assert.equal(byClass(renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-pin-agent", app: undefined, life: "active" }), ctx), "a2-pin"), undefined);
+}));
+
+// ---- patched in place, component by component (spec: card surface §1; MOBILE-ARCH §12.6, §2.3, §3.3, §2.5) ----
+
+/** A card of an app with live data: a temperature, a field, a row, a picture, a press, a mini app. */
+const liveCard = ({ updated_at = 1, temp = "21°", data = { name: "" }, actions, html = "<p>mini</p>", ...rest } = {}) => ({
+  id: "m-live", seq: 5, ts: 1, type: "card", side: "agent",
+  card: { type: "a2ui", id: "live-1", owner: "agent:main", app: "weather", state: "open", life: "active", updated_at, ...(actions ? { actions } : {}), ...rest,
+    plan: { root: "root", data, components: [
+      { id: "root", component: "Column", children: ["temp", "name", "row", "img", "go", "html"] },
+      { id: "temp", component: "Text", text: temp },
+      { id: "name", component: "TextField", label: "名字", bind: "/name", text: "" },
+      { id: "row", component: "Row", children: ["a", "b"] }, { id: "a", component: "Badge", text: "晴" }, { id: "b", component: "Text", text: "杭州" },
+      { id: "img", component: "Image", url: "https://example.com/a.png" },
+      { id: "go", component: "Button", child: "go.t", action: { call: { member: "app:weather", word: "refresh", body: {} } } }, { id: "go.t", component: "Text", text: "刷新" },
+      { id: "html", component: "Html", html, height: 80 }] } } });
+/** [input]'s value with every write counted. */
+function spyValue(input) {
+  let value = input.value, writes = 0;
+  Object.defineProperty(input, "value", { get: () => value, set: (v) => { writes++; value = v; }, configurable: true });
+  return { writes: () => writes };
+}
+const outside = (root, inside) => root.all().filter((n) => !inside.contains(n) || n === inside);
+
+test("a patch that changes only a Text changes only that Text: every other element is the same instance, the field being typed in too", () => withDom(() => {
+  resetCards();
+  const ctx = recorder();
+  const root = renderA2uiCard(new FakeNode("div"), liveCard(), ctx);
+  const name = control(root, "name");
+  name.focus(); name.value = "小"; name.fire("input");
+  const temp = byId(root, "temp");
+  const before = outside(root, temp);
+  const frame = root.find((n) => n.tag === "iframe"), doc = frame.srcdoc;
+  const next = liveCard({ updated_at: 2, temp: "22°" });
+  assert.equal(patchA2uiCard(next.card), true, "the hub's push");
+  assert.equal(updateA2uiCard(root, next, ctx), true, "and the timeline's redraw of the row: a patch too");
+  assert.equal(byId(root, "temp"), temp);
+  assert.equal(temp.textContent, "22°");
+  const after = outside(root, temp);
+  assert.equal(after.length, before.length);
+  after.forEach((n, i) => assert.equal(n, before[i], `element ${i} (${n.tag}.${n.className}) is the one drawn before`));
+  assert.equal(control(root, "name"), name);
+  assert.equal(name.value, "小");
+  assert.equal(globalThis.document.activeElement, name);
+  assert.equal(frame.srcdoc, doc, "the mini app is not loaded again");
+  assert.equal(updateA2uiCard(new FakeNode("div"), next, ctx), false, "a root this card is not drawn in is drawn anew");
+}));
+
+test("a patch while a field is focused, composing or selected leaves its text, caret and composition alone; the hub's value comes in when the editing ends unless the owner changed it", async () => withDom(async () => {
+  resetCards();
+  const ctx = recorder();
+  const root = renderA2uiCard(new FakeNode("div"), liveCard(), ctx);
+  const name = control(root, "name");
+  const spy = spyValue(name);
+  const blur = () => { globalThis.document.activeElement = null; name.fire("blur"); };
+  // Focused, with a caret: nothing is written into it; the rest of the card follows.
+  name.focus(); name.selectionStart = name.selectionEnd = 0;
+  patchA2uiCard(liveCard({ updated_at: 2, temp: "22°", data: { name: "hub-1" } }).card);
+  assert.equal(spy.writes(), 0, "never set while focused");
+  assert.deepEqual([name.value, name.selectionStart, name.selectionEnd], ["", 0, 0]);
+  assert.equal(byId(root, "temp").textContent, "22°");
+  assert.deepEqual(cardState("live-1").data, { name: "" }, "the hub's value waits beside the field");
+  assert.deepEqual(cardState("live-1").held.get("name"), { path: "/name", value: "hub-1", local: "" });
+  blur(); await tick(5);
+  assert.equal(name.value, "hub-1", "the owner left it unchanged: the hub's value comes in");
+  assert.deepEqual(cardState("live-1").data, { name: "hub-1" });
+  // Composing with an IME (no focus needed to count): the composing text stays.
+  name.fire("compositionstart");
+  const writes = spy.writes();
+  patchA2uiCard(liveCard({ updated_at: 3, data: { name: "hub-2" } }).card);
+  assert.equal(spy.writes(), writes, "never set while composing");
+  assert.equal(name.value, "hub-1");
+  name.fire("compositionend"); await tick(5);
+  assert.equal(name.value, "hub-2");
+  // A selection in it.
+  let range = true;
+  globalThis.document.getSelection = () => ({ rangeCount: 1, isCollapsed: !range, containsNode: (n) => n === name });
+  patchA2uiCard(liveCard({ updated_at: 4, data: { name: "hub-3" } }).card);
+  assert.equal(name.value, "hub-2", "never set while selected");
+  range = false; name.fire("blur"); await tick(5);
+  assert.equal(name.value, "hub-3");
+  // The owner types while the hub's value waits: the owner's value wins and goes with the next draft.
+  name.focus();
+  patchA2uiCard(liveCard({ updated_at: 5, data: { name: "hub-4" } }).card);
+  name.value = "mine"; name.fire("input");
+  blur(); await tick(5);
+  assert.equal(name.value, "mine");
+  assert.deepEqual(cardState("live-1").data, { name: "mine" });
+  await until(() => ctx.calls.some(([k]) => k === "draft"));
+  assert.deepEqual(ctx.calls.filter(([k]) => k === "draft").at(-1).slice(1), ["live-1", { name: "mine" }]);
+  assert.equal(control(root, "name"), name, "one input instance all along");
+}));
+
+test("text the owner is selecting is not redrawn under the selection; it follows once the selection ends", async () => withDom(async () => {
+  resetCards();
+  const listeners = {};
+  globalThis.document.addEventListener = (type, fn) => { (listeners[type] ??= []).push(fn); };
+  const root = renderA2uiCard(new FakeNode("div"), liveCard(), recorder());
+  const temp = byId(root, "temp"), inner = temp.children[0];
+  let range = true;
+  globalThis.document.getSelection = () => ({ rangeCount: 1, isCollapsed: !range, containsNode: (n) => temp.contains(n) || n.contains(temp) });
+  patchA2uiCard(liveCard({ updated_at: 2, temp: "22°" }).card);
+  assert.equal(temp.children[0], inner, "the selected text's nodes stay");
+  assert.equal(temp.textContent, "21°");
+  range = false;
+  for (const fn of listeners.selectionchange ?? []) fn();
+  await tick(5);
+  assert.equal(temp.textContent, "22°");
+}));
+
+test("a button's state from the hub changes that button and its line only", () => withDom(() => {
+  resetCards();
+  const root = renderA2uiCard(new FakeNode("div"), runtimeItem({ id: "rt-only" }), recorder());
+  const before = root.all();
+  patchA2uiCard({ ...runtimeItem({ id: "rt-only" }).card, updated_at: 1001, actions: { go: { state: "ok", text: "已完成 · 10:42", at: 1000 } } });
+  const after = root.all();
+  assert.deepEqual(before.filter((n) => !after.includes(n)), [], "nothing taken away");
+  assert.deepEqual(after.filter((n) => !before.includes(n)), [lineOf(root, "go")], "one line added, under 「刷新」");
+  assert.equal(lineOf(root, "go").textContent, "已完成 · 10:42");
+  // Another screen's press runs: 「问问」 waits, its label kept aside (the same instance comes back), nothing else moves.
+  const label = byId(root, "ask.t"), others = root.all().filter((n) => !byId(root, "ask").contains(n));
+  patchA2uiCard({ ...runtimeItem({ id: "rt-only" }).card, updated_at: 1002, actions: { go: { state: "ok", text: "已完成 · 10:42", at: 1000 }, ask: { state: "running", at: 1001 } } });
+  assert.equal(buttonOf(root, "ask").textContent, "处理中…");
+  assert.equal(buttonOf(root, "ask").disabled, true);
+  assert.ok(others.every((n) => root.contains(n)), "every other element stays");
+  patchA2uiCard({ ...runtimeItem({ id: "rt-only" }).card, updated_at: 1003, actions: { go: { state: "ok", text: "已完成 · 10:42", at: 1000 }, ask: { state: "ok", text: "答了", at: 1002 } } });
+  assert.equal(byId(root, "ask.t"), label, "the same label back in the button");
+  assert.equal(lineOf(root, "ask").textContent, "答了");
+}));
+
+test("an image's box has its final size before the picture loads, and keeps it when the picture changes", () => withDom(() => {
+  resetCards();
+  const card = (url = "https://example.com/a.png") => ({ id: "m-img", type: "card", card: { type: "a2ui", id: "img-1", owner: "agent:main", state: "open", updated_at: url.length,
+    plan: { root: "root", components: [{ id: "root", component: "Column", children: ["plain", "wide", "header", "sized", "bad"] }, { id: "bad", component: "Image", url: "http://example.com/plain-http.png" },
+      { id: "plain", component: "Image", url },
+      { id: "wide", component: "Image", url, style: { width: 120 } },
+      { id: "header", component: "Image", url, variant: "header" },
+      { id: "sized", component: "Image", url, style: { width: 40, height: 30 } }] } } });
+  const root = renderA2uiCard(new FakeNode("div"), card(), recorder());
+  const plain = byId(root, "plain");
+  assert.equal(byId(root, "bad"), undefined, "a picture it may not load is left out");
+  assert.deepEqual([plain.style.aspectRatio, plain.style.width], ["16 / 9", "100%"], "no size given: 16:9 of the row's width");
+  assert.deepEqual([byId(root, "wide").style.aspectRatio, byId(root, "wide").style.width], ["16 / 9", "120px"]);
+  assert.equal(byId(root, "header").style.aspectRatio, undefined, "the variant's own box (160 high)");
+  assert.deepEqual([byId(root, "sized").style.width, byId(root, "sized").style.height, byId(root, "sized").style.aspectRatio], ["40px", "30px", undefined]);
+  const style = { ...plain.style };
+  plain.fire("load"); plain.fire("error");
+  assert.deepEqual({ ...plain.style }, style, "a load or a failure does not touch the box");
+  patchA2uiCard(card("https://example.com/b-longer.png").card);
+  assert.equal(byId(root, "plain"), plain, "the same box");
+  assert.equal(plain.src, "https://example.com/b-longer.png");
+  assert.deepEqual({ ...plain.style }, style);
+}));
+
+test("the mini app is loaded again only when its html changes; a message of an older load, or one that is no load's, is refused", () => withDom(() => {
+  resetCards();
+  const ctx = recorder();
+  const root = renderA2uiCard(new FakeNode("div"), liveCard(), ctx);
+  const frame = root.find((n) => n.tag === "iframe");
+  frame.contentWindow = { postMessage() {} };
+  const first = frameToken(frame), doc = frame.srcdoc;
+  patchA2uiCard(liveCard({ updated_at: 2, temp: "22°", data: { name: "x" }, actions: { go: { state: "ok", text: "好", at: 1 } } }).card);
+  assert.equal(frame.srcdoc, doc, "a data patch never reloads it");
+  patchA2uiCard(liveCard({ updated_at: 3, html: "<p>mini 2</p>" }).card);
+  assert.equal(root.find((n) => n.tag === "iframe"), frame, "the same frame");
+  const second = frameToken(frame);
+  assert.ok(frame.srcdoc.includes("mini 2") && second && second !== first, "its new html, under a new token");
+  const send = { method: "ash/send", params: { action: "go" } };
+  assert.equal(frameMessage(rpc(frame, send, first)), false, "the older load is no one now");
+  assert.equal(frameMessage({ source: frame.contentWindow, data: { ash: "send", action: "go" } }), false, "a stray message without the load's token");
+  assert.equal(frameMessage(rpc(frame, send, second)), true);
+  // The frame went somewhere else (its own navigation): its document comes back under a new token.
+  frame.fire("load");
+  assert.equal(frameToken(frame), second, "its own load");
+  frame.fire("load");
+  assert.notEqual(frameToken(frame), second, "a second load is a navigation: loaded again, a new token");
+  assert.equal(frameMessage(rpc(frame, send, second)), false);
+}));
+
+test("a mini app's message: at most 64 KB, JSON-RPC 2.0 with a known method and its params' schema, call / ask / tell only on a card of an app, identity never from the message", async () => withDom(async () => {
+  resetCards();
+  const at = { token: "t1", full: true };
+  const wire = (message, g = "t1") => ({ g, m: typeof message === "string" ? message : JSON.stringify(message) });
+  const ok = { jsonrpc: "2.0", id: "r1", method: "ash/call", params: { member: "app:weather", word: "now", body: { city: "杭州" } } };
+  assert.deepEqual(miniAppRpc(wire(ok), at), { method: "ash/call", id: "r1", params: { call: { member: "app:weather", word: "now", body: { city: "杭州" } } } });
+  assert.equal(miniAppRpc(wire(ok, "t0"), at).refused, "stranger", "another load's token");
+  assert.equal(miniAppRpc({ ...wire(ok), card: "other" }, at).refused, "stranger", "nothing beside the token and the message");
+  assert.equal(miniAppRpc({ ash: "act", id: "r1", request: { call: ok.params } }, at).refused, "stranger", "the old unchecked shape");
+  const big = { ...ok, params: { ...ok.params, body: { pad: "x".repeat(MINI_APP_MAX_BYTES) } } };
+  assert.equal(miniAppRpc(wire(big), at).refused, "size");
+  assert.equal(miniAppRpc(wire(JSON.stringify(ok).padEnd(MINI_APP_MAX_BYTES + 1)), at).refused, "size");
+  assert.equal(miniAppRpc(wire("{not json"), at).refused, "schema");
+  assert.equal(miniAppRpc(wire({ ...ok, jsonrpc: "1.0" }), at).refused, "schema");
+  assert.equal(miniAppRpc(wire({ ...ok, extra: 1 }), at).refused, "schema");
+  assert.equal(miniAppRpc(wire({ ...ok, id: "bad id!" }), at).refused, "schema");
+  assert.deepEqual(miniAppRpc(wire({ ...ok, method: "ash/open" }), at), { refused: "schema", id: "r1" });
+  assert.deepEqual(miniAppRpc(wire({ ...ok, params: { ...ok.params, card: "other-card" } }), at), { refused: "schema", id: "r1" }, "params carry no identity");
+  assert.equal(miniAppRpc(wire({ ...ok, params: { member: "app:weather", word: "now", body: [1] } }), at).refused, "schema");
+  assert.equal(miniAppRpc(wire({ ...ok, id: undefined }), at).refused, "schema", "a press needs an id to be answered");
+  assert.equal(miniAppRpc(wire({ jsonrpc: "2.0", id: 1, method: "ash/ask", params: { text: "明天呢", app: "evil" } }), at).refused, "schema");
+  assert.deepEqual(miniAppRpc(wire({ jsonrpc: "2.0", method: "ash/send", params: { action: "go", context: { n: 1 } } }), at), { method: "ash/send", id: undefined, params: { name: "go", context: { n: 1 } } });
+  assert.equal(miniAppRpc(wire({ jsonrpc: "2.0", method: "ash/send", params: { action: "go", context: [1] } }), at).refused, "schema");
+  assert.deepEqual(miniAppRpc(wire(ok), { token: "t1", full: false }), { refused: "forbidden", id: "r1" }, "a card without an app: ash.send alone");
+  assert.equal(miniAppRpc(wire(ok, ""), { token: "", full: true }).refused, "stranger", "a frame not loaded (or gone) takes nothing");
+  // Who presses is the card and component the frame was made for, whatever the message carries in its body.
+  const ctx = recorder({ act: async (body) => { ctx.calls.push(["act", body]); return { state: "ok", text: "好" }; } });
+  const root = renderA2uiCard(new FakeNode("div"), liveCard(), ctx);
+  const frame = root.find((n) => n.tag === "iframe");
+  frame.contentWindow = { postMessage() {} };
+  assert.equal(frameMessage(rpc(frame, { id: "r9", method: "ash/call", params: { member: "app:weather", word: "now", body: { card: "other-card", component: "x", app: "evil" } } })), true);
+  await until(() => ctx.calls.some(([k]) => k === "act"));
+  const sent = ctx.calls.find(([k]) => k === "act")[1];
+  assert.deepEqual([sent.card, sent.component], ["live-1", "html"]);
+  assert.deepEqual(sent.request.call.body, { card: "other-card", component: "x", app: "evil" }, "just data for the word");
 }));

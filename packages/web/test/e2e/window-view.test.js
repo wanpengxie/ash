@@ -9,7 +9,7 @@ async function fixture(browser) {
   const web = new URL("../../", import.meta.url);
   const html = await readFile(new URL("index.html", web), "utf8");
   const css = (await Promise.all(["ash-tokens.css", "ash-ui.css"].map(path => readFile(new URL(path, web), "utf8")))).join("\n") + [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(match => match[1]).join("\n");
-  const bundle = await build({ stdin: { contents: 'export { WindowView, changedIds } from "./window-view.js"; export { ScrollPosition } from "./scroll-position.js"; export { appendConversation } from "./conversation.js";', resolveDir: fileURLToPath(new URL("js/", web)) }, bundle: true, write: false, format: "iife", globalName: "ViewModule" });
+  const bundle = await build({ stdin: { contents: 'export { WindowView, changedIds } from "./window-view.js"; export { ScrollPosition } from "./scroll-position.js"; export { appendConversation } from "./conversation.js"; export * as Cards from "./a2ui-card.js";', resolveDir: fileURLToPath(new URL("js/", web)) }, bundle: true, write: false, format: "iife", globalName: "ViewModule" });
   const page = await browser.newPage({ viewport: { width: 393, height: 852 }, reducedMotion: "reduce" });
   await page.setContent(`<style>${css}body{display:block;height:852px}#log{height:740px}</style><main id="log" class="stream"></main><button id="outside">outside</button>`);
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
@@ -107,6 +107,46 @@ test(...withBrowser("stable rows preserve Markdown, card drafts, selection, and 
   });
   assert.equal(result.draft, true); assert.equal(result.keptSelection, "read this"); assert.equal(result.deferred, true);
   assert.match(result.changed, /changed while selected/); assert.deepEqual(result.layout, result.eager);
+}));
+
+test(...withBrowser("a pushed card is patched in its row: the field being typed in keeps its instance, caret and composition, and the mini app is not loaded again", async ({ browser }) => {
+  const page = await fixture(browser);
+  const result = await page.evaluate(async () => {
+    const acts = [], says = [];
+    const wait = (test) => new Promise(resolve => { const timer = setInterval(() => { if (test()) { clearInterval(timer); resolve(); } }, 20); });
+    const card = (updated_at, temp, name = "") => ({ id: "m2", seq: 2, ts: Date.now(), type: "card", side: "agent", card: { type: "a2ui", id: "c-live", owner: "agent:main", app: "weather", state: "open", life: "active", updated_at,
+      plan: { root: "root", data: { name }, components: [
+        { id: "root", component: "Column", children: ["temp", "name", "html"] },
+        { id: "temp", component: "Text", text: temp },
+        { id: "name", component: "TextField", label: "名字", bind: "/name", text: "" },
+        // The page's own script: one call (with someone else's card id in its body), then a send with the answer.
+        { id: "html", component: "Html", height: 60, html: "<script>ash.call('app:weather','now',{card:'other'}).then(function(r){ash.send('got',{text:r.text,origin:String(location.origin)})})</script>" }] } } });
+    options.a2ui = { act: async (body) => { acts.push(body); return { state: "ok", text: "21°" }; }, say: async (to, text, data) => { says.push(data); }, draft: async () => ({}) };
+    window.items = [say(1), card(1, "20°")];
+    view.update(items, [], options); await view.settled();
+    const frame = document.querySelector("iframe.a2-html");
+    await wait(() => says.length > 0);
+    let loads = 0; frame.addEventListener("load", () => loads++);
+    const input = document.querySelector(".a2ui input.a2-input"), root = document.querySelector(".a2ui");
+    input.focus(); input.value = "ab"; input.dispatchEvent(new Event("input")); input.setSelectionRange(1, 2);
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    const next = card(2, "21°", "hub");
+    ViewModule.Cards.patchA2uiCard(next.card);
+    items[1] = next; view.update(items, [], options, new Set(["m2"])); await view.settled();
+    items.push(say(3)); view.update(items, [], options, new Set(["m3"])); await view.settled();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    return { sameRoot: document.querySelector(".a2ui") === root, sameInput: document.querySelector(".a2ui input.a2-input") === input, focused: document.activeElement === input,
+      value: input.value, selection: [input.selectionStart, input.selectionEnd], temp: document.querySelector('[data-a2-id="temp"]').textContent, loads,
+      sameFrame: document.querySelector("iframe.a2-html") === frame, sandbox: frame.getAttribute("sandbox"), acts, says };
+  });
+  assert.deepEqual([result.sameRoot, result.sameInput, result.focused, result.sameFrame], [true, true, true, true]);
+  assert.equal(result.value, "ab", "the owner's typing stays (and wins over the hub's value)");
+  assert.deepEqual(result.selection, [1, 2]);
+  assert.equal(result.temp, "21°", "the live text follows");
+  assert.equal(result.loads, 0, "the mini app is not loaded again");
+  assert.equal(result.sandbox, "allow-scripts");
+  assert.deepEqual(result.acts, [{ card: "c-live", component: "html", data: { name: "" }, request: { call: { member: "app:weather", word: "now", body: { card: "other" } } } }], "who presses is the frame's card");
+  assert.deepEqual(result.says[0], { id: "c-live", action: "got", context: { text: "21°", origin: "null" }, data: { name: "" } }, "answered over the bridge, from an opaque origin");
 }));
 
 test(...withBrowser("receipt, reaction, and burst grouping updates retain the message body and attachment nodes", async ({ browser }) => {

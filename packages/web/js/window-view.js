@@ -1,3 +1,4 @@
+import { updateA2uiCard } from "./a2ui-card.js";
 import { appendConversationRow, conversationRows } from "./conversation.js";
 import { appendMarkdown, appendMarkdownInSlices, MarkdownQueue } from "./markdown.js";
 import { ScrollPosition } from "./scroll-position.js";
@@ -18,6 +19,11 @@ const body = (row, options) => {
   if (row.kind === "message") { const { reactions, byte_size, reactions_more, ...content } = item; return content; }
   return item;
 };
+
+/** The card an agent designed that [item] shows; null for any other row. */
+const designed = item => item?.type === "card" && item.card?.type === "a2ui" && typeof item.card.id === "string" ? item.card : null;
+/** What around a card's row changes how it is drawn: not the row after it, not the page loading. */
+const cardChrome = ({ next, loading, ...rest } = {}) => rest;
 
 /** Stable entities own sibling nodes, so the existing flex layout/selection remains intact. */
 export class WindowView {
@@ -89,7 +95,13 @@ export class WindowView {
       const changed = !row || !sameBody || !equal(row.state, state) || !equal(row.chrome, chrome) || !equal(row.intent, intent) || row.expired !== expired || row.pending !== pending;
       const decided = item?.type === "ask" && (item.ask.state !== "pending" || expired) || item?.type === "card" && item.locked;
       const expanded = row && item?.type === "say" && row.content?.shown !== content?.shown && item.full && options.fullTexts?.has(item.full, item.id);
-      if (changed && row && this.protected(row, !decided && !expanded)) row.deferred = true;
+      // A card an agent designed is patched where it is, component by component, focused or not: an input the owner is
+      // editing keeps its text, caret and composition, a mini app is not reloaded (js/a2ui-card.js).
+      const card = changed && row && designed(item);
+      const patched = card && designed(row.descriptor.item)?.id === card.id && equal(row.state, state) && equal(cardChrome(row.chrome), cardChrome(chrome)) &&
+        equal(row.intent, intent) && row.expired === expired && row.pending === pending && this.patchCard(row, item, options);
+      if (patched) Object.assign(row, { descriptor, content, chrome, deferred: false });
+      else if (changed && row && this.protected(row, !decided && !expanded)) row.deferred = true;
       else if (changed) {
         const reuse = sameBody && descriptor.kind === "message" && item.type === "say";
         const lifetime = reuse ? row.lifetime : { disposed: false, cleanup: new Set() };
@@ -156,6 +168,10 @@ export class WindowView {
     this.fresh ||= entries.length > 0 || outbox.length > 0;
     this.root.setAttribute("aria-busy", options.loading ? "true" : "false");
     this.position.changed();
+  }
+  patchCard(row, item, options) {
+    const root = row.nodes.find(node => node.matches?.(".a2ui"));
+    return !!root && updateA2uiCard(root, item, options.a2ui ?? null);
   }
   jump(id) { const row = this.rows.get(`message:${id}`) ?? this.rows.get(`failure:${id}`); return this.position.jump(row?.nodes.find(node => node.matches?.(".msg,.a-card,.atts")) ?? row?.nodes[0]); }
   settled(id) { return id ? this.rows.get(`message:${id}`)?.lifetime.completion ?? Promise.resolve() : Promise.all([...this.rows.values()].map(row => row.lifetime.completion)); }

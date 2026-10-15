@@ -3,8 +3,9 @@
 // data kept here per card id, so it survives the timeline drawing its rows again; a password box keeps its text in memory
 // only and sends it nowhere but the vault. A button's action is the owner's own message to the card's creator, the answer
 // of a form, or (docs/CARD-RUNTIME.md) a press the hub runs for the card (`service:cards/act`: call / ask / tell), whose
-// outcome the hub writes on the card itself and pushes as `card.patch`. A mini app (Html) runs in a sandboxed frame with no
-// network and one way out: `ash.send`, and `ash.call` / `ash.ask` / `ash.tell`, which are presses of the card too.
+// outcome the hub writes on the card itself and pushes as `card.patch`; a pushed card is patched in place, component by
+// component, never drawn anew under the owner's hands. A mini app (Html) runs in a sandboxed frame with no network and one
+// way out: `ash.send`, and on a card of an app `ash.call` / `ash.ask` / `ash.tell`, which are presses of the card too.
 import { addIcon, avatarUrl, button, text } from "./chat-ui.js";
 import { ICON_SHAPES } from "./ash-icons.js";
 import { markdownUrl } from "./markdown.js";
@@ -285,21 +286,48 @@ const states = new Map();
 /** card id -> Map(bind path -> typed password). In memory only; sent to `service:vault/set` and nowhere else. */
 const secrets = new Map();
 const MAX_STATES = 300;
+const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
 /** The password map of a card (for tests and the submit). */
 export const secretsOf = (cardId) => secrets.get(cardId) ?? new Map();
 /** Forgets every card's local state (tests). */
-export function resetCards() { for (const s of states.values()) clearTimeout(s.timer); states.clear(); secrets.clear(); }
+export function resetCards() {
+  for (const s of states.values()) { clearTimeout(s.timer); for (const view of s.ui?.views.values() ?? []) view.dispose?.(); }
+  states.clear(); secrets.clear(); later.cards.clear();
+}
 /** The local state of a card (tests). */
 export const cardState = (cardId) => states.get(cardId);
 
 function editing(s) {
-  const doc = s.root?.ownerDocument ?? globalThis.document;
+  const root = s.ui?.root;
+  const doc = root?.ownerDocument ?? globalThis.document;
   const active = doc?.activeElement;
-  return Boolean(s.timer || s.inflight > 0 || (active && s.root?.contains?.(active) && active !== s.root));
+  return Boolean(s.timer || s.inflight > 0 || (active && root?.contains?.(active) && active !== root));
 }
 
-/** The state of [card], following the hub's newer version unless the owner is editing the card right now. */
+/** Whether a part of the card is selected on the page (a range over it, not a caret). */
+function selected(el) {
+  try {
+    const selection = (el.ownerDocument ?? globalThis.document)?.getSelection?.();
+    return Boolean(selection?.rangeCount && !selection.isCollapsed && selection.containsNode?.(el, true));
+  } catch { return false; }
+}
+
+/** Whether the owner is editing an input of [view]: it has the focus, an IME is composing in it, a slider is dragged, or it holds a selection. */
+function inputEditing(view) {
+  if (view.composing || view.dragging) return true;
+  for (const input of view.inputs ?? []) {
+    const doc = input.ownerDocument ?? globalThis.document;
+    if (doc?.activeElement === input || selected(input)) return true;
+  }
+  return false;
+}
+
+/**
+ * The state of [card]. A newer version from the hub becomes the working copy, field by field: a field the owner changed
+ * and the hub has not taken yet keeps the owner's value (it goes with the next draft); a field being edited keeps what is
+ * typed and the hub's value waits beside it (per card + component) until the editing ends.
+ */
 function stateFor(item) {
   const card = item.card;
   const server = Number.isFinite(card.updated_at) ? card.updated_at : 0;
@@ -307,16 +335,27 @@ function stateFor(item) {
   let s = states.get(card.id);
   if (!s) {
     if (states.size >= MAX_STATES) for (const [id, old] of states) { if (!editing(old)) { clearTimeout(old.timer); states.delete(id); secrets.delete(id); } if (states.size < MAX_STATES) break; }
-    s = { id: card.id, data: clone(data), seen: server, hold: null, plan: null, tabs: {}, version: 0, inflight: 0, timer: null,
-      sent: false, cancelled: false, busy: false, error: "", answer: null, root: null, item, ctx: null, lastSend: 0, feedback: undefined,
+    s = { id: card.id, data: clone(data), seen: server, stale: false, plan: null, tabs: {}, version: 0, inflight: 0, timer: null,
+      // Bind path -> the local version that changed it (not yet taken by the hub); component id -> the hub's value held while it is edited.
+      touched: new Map(), held: new Map(),
+      sent: false, cancelled: false, busy: false, error: "", answer: null, ui: null, item, ctx: null, lastSend: 0, feedback: undefined,
       // The card runtime: presses on their way, their outcomes as answered here, 「已复制」, mini app calls in the last second.
       pressing: new Set(), outcomes: {}, copied: {}, runningSince: new Map(), calls: [], kept: false, keeping: false,
       // 「常驻」 as the owner just set it (until the hub's card says the same), and why setting it failed.
       pinned: undefined, pinning: false, pinError: "" };
     states.set(card.id, s);
   } else if (server > s.seen) {
-    if (editing(s) || (s.hold !== null && server <= s.hold)) s.hold = Math.max(s.hold ?? 0, server);
-    else { s.data = clone(data); s.seen = server; s.plan = null; s.hold = null; }
+    const next = clone(data);
+    const keep = new Map([...s.touched.keys()].map((path) => [path, null]));
+    for (const view of s.ui?.views.values() ?? []) if (typeof view.node?.bind === "string" && view.inputs?.length && inputEditing(view)) keep.set(view.node.bind, view.id);
+    for (const [path, component] of keep) {
+      const local = readPointer(s.data, path), theirs = readPointer(data, path);
+      if (same(local, theirs)) { s.touched.delete(path); continue; }
+      if (local !== undefined) writePointer(next, path, clone(local));
+      if (component !== null && !s.touched.has(path)) s.held.set(component, { path, value: clone(theirs), local: clone(local) });
+      s.stale = true;
+    }
+    s.data = next; s.seen = server; s.plan = null;
   }
   if (s.feedback !== undefined && card.feedback === s.feedback) s.feedback = undefined;
   if (s.pinned !== undefined && !s.pinning && (card.pinned === true) === s.pinned) s.pinned = undefined;
@@ -325,19 +364,19 @@ function stateFor(item) {
   return s;
 }
 
+/** The hub has the owner's values up to [version] (a draft answered, a press or a say that carried them). */
+function taken(s, version) { for (const [path, at] of s.touched) if (at <= version) s.touched.delete(path); }
+
 /**
- * The hub pushed [card] whole (`card.patch`: live data, a button's state, the lifecycle). Its state follows now; the row
- * itself is drawn again by the timeline, unless the owner's focus holds it (a button just pressed): then it is drawn here.
- * Not while an input has the focus: the timeline draws it when the owner leaves it.
+ * The hub pushed [card] whole (`card.patch`: live data, a button's state, the lifecycle). Its state follows now and the
+ * card on screen is patched in place, component by component: an input the owner is editing keeps its text, caret and
+ * composition. The timeline then finds nothing left to change.
  */
 export function patchA2uiCard(card) {
   const s = plain(card) && typeof card.id === "string" ? states.get(card.id) : null;
   if (!s || !plain(card.plan)) return false;
   stateFor({ ...s.item, card });
-  const root = s.root;
-  const active = (root?.ownerDocument ?? globalThis.document)?.activeElement;
-  const tag = String(active?.tagName ?? active?.tag ?? "").toLowerCase();
-  if (root && active && active !== root && root.contains?.(active) && !["input", "textarea", "select"].includes(tag)) repaint(s);
+  redraw(s);
   return true;
 }
 
@@ -600,9 +639,16 @@ function ticking(el, paint) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The mini app: one sandboxed frame per Html node, with the theme and `ash.send` put in front of its document.
+// The mini app: one sandboxed frame per Html node (scripts only, an opaque origin, its own document as srcdoc with a strict
+// CSP), and one way to speak: JSON-RPC posted to this page with the token of its load. Who speaks (the card, the component,
+// the app) is what this page bound when it made the frame, never what a message says.
 
 export const MINI_APP_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+/** The most one message of a mini app may hold (bytes of its JSON). */
+export const MINI_APP_MAX_BYTES = 64 * 1024;
+/** What a mini app may ask for: `ash/send` always; `ash/call`, `ash/ask`, `ash/tell` only on a card of an app. */
+export const MINI_APP_METHODS = Object.freeze(["ash/send", "ash/call", "ash/ask", "ash/tell"]);
+const RPC_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const frames = new Set();
 let listening = false;
 
@@ -617,27 +663,43 @@ function themeVars() {
   };
 }
 
-/**
- * `window.ash` in the mini app: `send(action, context)` (the owner's say), and `call(member, word, body)`, `ask(text)`,
- * `tell(text)`, each a press of the card that resolves to the hub's answer `{state, text, result?}` (never rejects).
- */
-export const MINI_APP_BRIDGE = "(function(){var p=window.parent,n=0,w={};" +
-  "function c(v){return v&&typeof v===\"object\"?JSON.parse(JSON.stringify(v)):{}}" +
-  "function r(q){return new Promise(function(ok){var id=\"r\"+(++n);w[id]=ok;p.postMessage({ash:\"act\",id:id,request:q},\"*\")})}" +
-  "window.addEventListener(\"message\",function(e){var d=e.data;if(e.source!==p||!d||d.ash!==\"answer\"||!w[d.id])return;var f=w[d.id];delete w[d.id];f(d.answer)});" +
-  "window.ash=Object.freeze({send:function(action,context){p.postMessage({ash:\"send\",action:String(action),context:c(context)},\"*\")}," +
-  "call:function(member,word,body){return r({call:{member:String(member),word:String(word),body:c(body)}})}," +
-  "ask:function(text){return r({ask:{text:String(text)}})},tell:function(text){return r({tell:{text:String(text)}})}})})();";
+/** A new load's token: which load of which frame a message comes from (a message of an older load is dropped). */
+function newToken() {
+  const bytes = new Uint8Array(12);
+  globalThis.crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
-/** The mini app's document: the CSP, the theme as CSS variables and the `ash.send` bridge, ahead of the agent's HTML. */
-export function miniAppDocument(html, vars = themeVars(), accent = null) {
+/**
+ * `window.ash` in the mini app, speaking JSON-RPC 2.0 to this page with its load's [token]: `send(action, context)` (the
+ * owner's say), and on a card of an app ([full]) also `call(member, word, body)`, `ask(text)`, `tell(text)`, each a press of
+ * the card that resolves to the hub's answer `{state, text, result?}` (never rejects).
+ */
+export function miniAppBridge(token, full = false) {
+  return `(function(){var p=window.parent,g=${JSON.stringify(String(token))},n=0,w={};` +
+    "function c(v){return v&&typeof v===\"object\"&&!Array.isArray(v)?JSON.parse(JSON.stringify(v)):{}}" +
+    "function o(m){p.postMessage({g:g,m:JSON.stringify(m)},\"*\")}" +
+    "function r(k,q){return new Promise(function(ok){var id=\"r\"+(++n);w[id]=ok;o({jsonrpc:\"2.0\",id:id,method:\"ash/\"+k,params:q})})}" +
+    "window.addEventListener(\"message\",function(e){var d=e.data,m;if(e.source!==p||!d||d.g!==g||typeof d.m!==\"string\")return;" +
+    "try{m=JSON.parse(d.m)}catch(x){return}if(!m||m.jsonrpc!==\"2.0\"||!Object.prototype.hasOwnProperty.call(w,m.id))return;var f=w[m.id];delete w[m.id];f(m.result)});" +
+    "var a={send:function(action,context){o({jsonrpc:\"2.0\",method:\"ash/send\",params:{action:String(action),context:c(context)}})}};" +
+    (full ? "a.call=function(member,word,body){return r(\"call\",{member:String(member),word:String(word),body:c(body)})};" +
+      "a.ask=function(text){return r(\"ask\",{text:String(text)})};a.tell=function(text){return r(\"tell\",{text:String(text)})};" : "") +
+    "window.ash=Object.freeze(a)})();";
+}
+
+/**
+ * The mini app's document: the CSP, the theme as CSS variables and the bridge of this load ([token]; [full]: a card of an
+ * app), ahead of the agent's HTML.
+ */
+export function miniAppDocument(html, vars = themeVars(), accent = null, { token = "", full = false } = {}) {
   const safe = (v) => String(v).replace(/[<>;{}]/g, "");
   const theme = { ...vars, ...(accent ? { "--ash-accent": accent } : {}) };
   const declarations = Object.entries(theme).filter(([k]) => k.startsWith("--")).map(([k, v]) => `${k}:${safe(v)}`).join(";");
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MINI_APP_CSP}">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<style>:root{${declarations};color-scheme:${vars.scheme === "dark" ? "dark" : "light"}}html,body{margin:0;background:var(--ash-bg);color:var(--ash-text);font-family:system-ui,-apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}</style>` +
-    `<script>${MINI_APP_BRIDGE}</script>`;
+    `<script>${miniAppBridge(token, full)}</script>`;
   const source = String(html ?? "");
   const doctype = /^\s*<!doctype[^>]*>/i.exec(source);
   return doctype ? `${doctype[0]}${head}${source.slice(doctype[0].length)}` : `<!doctype html>${head}${source}`;
@@ -659,26 +721,62 @@ export function miniAppRequest(request) {
   return null;
 }
 
+const only = (value, keys) => plain(value) && Object.keys(value).every((key) => keys.includes(key));
+
+/** The params of [method] checked against its schema (no other keys): the event of a send, the request of a press; null when they do not match. */
+function miniAppParams(method, params) {
+  if (method === "ash/send") {
+    if (!only(params, ["action", "context"]) || typeof params.action !== "string" || !EVENT_NAME.test(params.action)) return null;
+    if (params.context !== undefined && !plain(params.context)) return null;
+    const context = params.context ?? {};
+    let size = 0; try { size = JSON.stringify(context).length; } catch { return null; }
+    return size > 16 * 1024 ? null : { name: params.action, ...(Object.keys(context).length ? { context: clone(context) } : {}) };
+  }
+  if (method === "ash/call") {
+    if (!only(params, ["member", "word", "body"]) || (params.body !== undefined && !plain(params.body))) return null;
+    return miniAppRequest({ call: params });
+  }
+  const kind = method.slice(4);
+  return only(params, ["text"]) ? miniAppRequest({ [kind]: params }) : null;
+}
+
 /**
- * A message from a mini app: only from a frame this page made, only `{ash: "send", action, context}` or
- * `{ash: "act", id, request}` (answered into the frame as `{ash: "answer", id, answer}`).
+ * One message posted by a mini app, checked against the frame's current load: `{g, m}` with [token] as `g` (an older load's
+ * token is a stranger) and `m` the JSON text, at most 64 KB, of `{jsonrpc: "2.0", id, method, params}` with a known method
+ * whose params match their schema; `call` / `ask` / `tell` only when [full] (a card of an app). The result is
+ * `{method, id, params}`, or `{refused, id}` (`id` only when the message could be read far enough to answer it).
+ */
+export function miniAppRpc(data, { token, full = false }) {
+  if (!token || !only(data, ["g", "m"]) || data.g !== token || typeof data.m !== "string") return { refused: "stranger" };
+  if (data.m.length > MINI_APP_MAX_BYTES || new TextEncoder().encode(data.m).byteLength > MINI_APP_MAX_BYTES) return { refused: "size" };
+  let message;
+  try { message = JSON.parse(data.m); } catch { return { refused: "schema" }; }
+  if (!only(message, ["jsonrpc", "id", "method", "params"]) || message.jsonrpc !== "2.0") return { refused: "schema" };
+  const id = (typeof message.id === "string" && RPC_ID.test(message.id)) || Number.isSafeInteger(message.id) ? message.id : undefined;
+  if (message.id !== undefined && id === undefined) return { refused: "schema" };
+  if (!MINI_APP_METHODS.includes(message.method)) return { refused: "schema", id };
+  if (message.method !== "ash/send" && id === undefined) return { refused: "schema" };
+  if (message.method !== "ash/send" && !full) return { refused: "forbidden", id };
+  const params = miniAppParams(message.method, message.params);
+  return params ? { method: message.method, id, params } : { refused: "schema", id };
+}
+
+/**
+ * A message from a mini app: only from the window of a frame this page made (a nested frame or another window is no one),
+ * only with its current load's token, and only as `miniAppRpc` reads it. A press is answered into the same load.
  */
 export function frameMessage(event) {
   for (const entry of frames) {
     if (entry.frame.isConnected === false && entry.mounted) { frames.delete(entry); continue; }
     if (entry.frame.isConnected) entry.mounted = true;
     if (!event?.source || entry.frame.contentWindow !== event.source) continue;
-    const data = event.data;
-    if (plain(data) && data.ash === "act" && typeof data.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(data.id)) {
-      const request = miniAppRequest(data.request);
-      entry.act?.(data.id, request);
-      return request !== null;
+    const rpc = miniAppRpc(event.data, entry);
+    if (rpc.refused) {
+      if (rpc.id !== undefined) entry.answer(rpc.id, { state: "failed", text: rpc.refused === "forbidden" ? "这张卡不能这样做。" : "这个请求看不懂。" }, entry.token);
+      return false;
     }
-    if (!plain(data) || data.ash !== "send" || typeof data.action !== "string" || !EVENT_NAME.test(data.action)) return false;
-    const context = plain(data.context) ? data.context : {};
-    let size = 0; try { size = JSON.stringify(context).length; } catch { return false; }
-    if (size > 16 * 1024) return false;
-    entry.send({ name: data.action, ...(Object.keys(context).length ? { context } : {}) });
+    if (rpc.method === "ash/send") entry.send(rpc.params);
+    else entry.act(rpc.id, rpc.params);
     return true;
   }
   return false;
@@ -710,7 +808,34 @@ export function openAction(action) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Drawing.
+// Drawing. A card is drawn once into its root and then patched there: every component keeps its element by the plan's
+// stable id, and a new plan (live data, a button's state, the lifecycle) changes only what it changes. A component whose
+// structure changed (another kind of element) is drawn anew alone; its unchanged children move over as they are.
+
+const make = (tag, className = "", value) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (value !== undefined) node.textContent = String(value);
+  return node;
+};
+const setText = (el, value) => { const next = String(value ?? ""); if (el.textContent !== next) el.textContent = next; };
+const setClass = (el, className) => { if (el.className !== className) el.className = className; };
+const setAttr = (el, name, value) => {
+  if (value === null || value === undefined) { if (el.getAttribute?.(name) != null) el.removeAttribute?.(name); }
+  else if (el.getAttribute?.(name) !== String(value)) el.setAttribute(name, String(value));
+};
+const setProp = (el, name, value) => { if (el[name] !== value) el[name] = value; };
+
+/** Makes [parent]'s children exactly [els], in order, moving only what is out of place. */
+function arrange(parent, els) {
+  const keep = new Set(els);
+  for (const child of [...(parent.childNodes ?? parent.children ?? [])]) if (!keep.has(child)) child.remove();
+  let at = parent.firstChild ?? null;
+  for (const el of els) {
+    if (el === at) { at = at.nextSibling ?? null; continue; }
+    parent.insertBefore(el, at);
+  }
+}
 
 /**
  * Draws the conversation card [item] (`card.type === "a2ui"`). [ctx] holds what the card does to the hub:
@@ -724,8 +849,12 @@ export function renderA2uiCard(parent, item, ctx = null) {
     if (!parsePlan(item?.card?.plan)) throw new Error("no plan");
     const s = stateFor(item);
     s.ctx = ctx;
-    paint(root, s);
+    for (const view of s.ui?.views.values() ?? []) view.dispose?.();
+    s.ui = { root, body: text(root, "div", "", "a2-col a2-body-root"), views: new Map(), footer: {}, error: null, status: null };
+    draw(s);
   } catch {
+    const s = states.get(item?.card?.id);
+    if (s?.ui?.root === root) s.ui = null;
     root.replaceChildren();
     root.className = "a-card card a2ui a2-plain";
     text(root, "div", item?.card?.text || "一张卡片", "card-body a2-plain-text");
@@ -733,397 +862,710 @@ export function renderA2uiCard(parent, item, ctx = null) {
   return root;
 }
 
-/** Draws the card of state [s] into [root] again (after a local change), keeping the focused input focused with its caret. */
-function repaint(s) {
-  const root = s.root;
-  if (!root) return;
-  const doc = root.ownerDocument ?? globalThis.document;
-  const active = doc?.activeElement;
-  const key = active && root.contains?.(active) ? active.dataset?.a2Focus : undefined;
-  const caret = key && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
-  try { paint(root, s); } catch { return; }
-  if (!key) return;
-  const again = s.focusables?.get(key);
-  if (!again) return;
-  try { again.focus({ preventScroll: true }); if (caret) again.setSelectionRange?.(caret[0], caret[1]); } catch { /* not focusable any more */ }
+/**
+ * Patches the card drawn in [root] with [item] in place, component by component; false when it cannot (another card, or
+ * not drawn here), and the row must be drawn anew.
+ */
+export function updateA2uiCard(root, item, ctx = null) {
+  const card = item?.card;
+  const s = plain(card) && typeof card.id === "string" ? states.get(card.id) : null;
+  if (!s || !root || s.ui?.root !== root || !parsePlan(card.plan)) return false;
+  stateFor(item);
+  s.ctx = ctx;
+  try { draw(s); return true; } catch { return false; }
 }
 
-function paint(root, s) {
-  const item = s.item, card = item.card, ctx = s.ctx;
+/** The card of state [s] patched after a local change or a pushed card. */
+function redraw(s) { if (s.ui) try { draw(s); } catch { /* the next full draw shows its plain text */ } }
+
+/** Cards with a change held back (a selected text, an input being edited): patched again once the owner lets go. */
+function later(s) {
+  later.cards.add(s);
+  const doc = s.ui?.root?.ownerDocument ?? globalThis.document;
+  if (later.listening || typeof doc?.addEventListener !== "function") return;
+  later.listening = true;
+  let queued = false;
+  const again = () => {
+    if (queued) return;
+    queued = true;
+    setTimeout(() => { queued = false; const cards = [...later.cards]; later.cards.clear(); for (const card of cards) redraw(card); }, 0);
+  };
+  for (const type of ["selectionchange", "focusout", "compositionend", "pointerup"]) doc.addEventListener(type, () => { if (later.cards.size) again(); }, true);
+}
+later.cards = new Set();
+later.listening = false;
+
+function draw(s) {
+  const ui = s.ui, card = s.item.card;
   const plan = parsePlan(s.plan) ?? parsePlan(card.plan);
   if (!plan) throw new Error("no plan");
-  s.root = root;
+  release(s);
+  s.byId = plan.byId;
   s.reactive = plan.reactive;
-  s.focusables = new Map();
-  root.replaceChildren();
-  const accent = plan.theme ? cssColor(plan.theme.accent) : null;
-  if (accent) root.style.setProperty("--you", accent);
+  s.accent = plan.theme ? cssColor(plan.theme.accent) : null;
+  if (s.accent) { if ((ui.root.style.getPropertyValue?.("--you") ?? ui.root.style["--you"]) !== s.accent) ui.root.style.setProperty("--you", s.accent); }
+  else ui.root.style.removeProperty?.("--you");
   const closed = stateLine(card, s);
-  const live = !closed && !!ctx;
-  const form = plain(card.form);
-  const byId = plan.byId;
-  const passwords = () => { let map = secrets.get(card.id); if (!map) secrets.set(card.id, map = new Map()); return map; };
+  const pass = { s, card, closed, live: !closed && !!s.ctx, seen: new Set(), deferred: false };
+  pass.draw = (parentView, id, depth, kind) => drawId(pass, parentView, id, depth, kind);
+  const top = pass.draw(null, plan.root, 0, "Column");
+  if (!top) throw new Error("nothing drawn");
+  arrange(ui.body, [top.el]);
+  for (const [id, view] of ui.views) if (!pass.seen.has(id)) { view.dispose?.(); ui.views.delete(id); }
+  chrome(s, closed, pass.live);
+  if (pass.deferred || s.held.size) later(s);
+}
 
-  const changed = () => {
-    s.version++;
-    if (s.error) { s.error = ""; root.querySelector?.(".a2-error")?.remove(); }
-    clearTimeout(s.timer);
-    s.timer = setTimeout(() => { void draft(s); }, DRAFT_DELAY_MS);
-    s.timer.unref?.();
-  };
-  const write = (path, value, redraw = false) => {
-    if (typeof path !== "string") return;
-    if (!writePointer(s.data, path, value)) return;
-    changed();
-    if (redraw) repaint(s);
-  };
-  const valueAt = (node, fallback) => { if (typeof node.bind !== "string") return fallback; const v = readPointer(s.data, node.bind); return v === undefined ? fallback : v; };
-  const focusable = (el, node, part = "") => { const key = `${node.id}:${part}`; el.dataset.a2Focus = key; s.focusables.set(key, el); return el; };
-  const act = (node) => (event) => { event?.preventDefault?.(); void perform(s, node.action, byId, node); };
-
-  const draw = (parentEl, id, depth, parentKind) => {
-    const node = byId.get(id);
-    if (!node || depth > MAX_DEPTH || node.visible === false) return null;
-    const el = drawNode(parentEl, node, depth);
-    if (!el) return null;
-    el.dataset.a2Id = node.id;
-    applyStyle(el, node, parentKind);
-    if (node.action && node.component !== "Button") {
-      el.classList.add("a2-tap");
-      el.setAttribute("role", "button");
-      el.tabIndex = 0;
-      const pressed = runtimeKind(node.action) && buttonView(card, s, node.id, node.action).busy;
-      if ((!live && ("event" in node.action || runtimeKind(node.action))) || pressed) el.setAttribute("aria-disabled", "true");
-      else el.addEventListener("click", act(node));
-    }
+/** The lines under the body: the error, how the card ended or what is being sent, the footer; read-only when it takes no input. */
+function chrome(s, closed, live) {
+  const ui = s.ui, card = s.item.card;
+  const line = (el, value, className) => {
+    if (!value) return null;
+    el ??= make("div", className);
+    setText(el, value);
     return el;
   };
-  // The space between a container's children is its own `gap`; without one they sit edge to edge.
-  const gap = (el, node) => { if (Number.isFinite(node.gap) && node.gap >= 0) el.style.gap = px(node.gap); };
-  const kids = (el, node, depth) => { for (const kid of Array.isArray(node.children) ? node.children : []) { const child = draw(el, kid, depth + 1, node.component); if (child && node.component === "Stack") applyPlace(child, node); } };
-  const applyPlace = (child, stack) => {
-    const place = byId.get(child.dataset.a2Id)?.style?.place ?? stack.align ?? "topStart";
-    const [block, inlinePlace] = PLACE[place] ?? PLACE.topStart;
-    child.style.alignSelf = block; child.style.justifySelf = inlinePlace;
-  };
-  const field = (parentEl, node) => {
-    const wrap = text(parentEl, "label", "", "a2-field");
-    if (node.label) text(wrap, "span", node.label, "a2-label");
-    return wrap;
-  };
+  ui.error = line(ui.error, s.error, "card-note a2-error");
+  ui.status = line(ui.status, closed || (s.busy ? (plain(card.form) ? "正在提交…" : "正在发送…") : ""), "a2-status");
+  arrange(ui.root, [ui.body, ui.error, ui.status, footer(s, closed)].filter(Boolean));
+  if (live) ui.root.classList.remove("a2-readonly"); else ui.root.classList.add("a2-readonly");
+}
 
-  function drawNode(parentEl, node, depth) {
-    switch (node.component) {
-    case "Text": {
-      const el = text(parentEl, "div", "", `a2-text a2-${["h1", "h2", "h3", "h4", "h5", "caption"].includes(node.variant) ? node.variant : "body"}`);
-      appendCardMarkdown(el, node.text ?? "");
-      return el;
+/** Draws (or patches) component [id] for [parentView] (null for the root), drawn in a parent of kind [kind]. */
+function drawId(pass, parentView, id, depth, kind) {
+  const s = pass.s;
+  const node = s.byId.get(id);
+  const spec = node && Object.hasOwn(COMPONENTS, node.component) ? COMPONENTS[node.component] : null;
+  // A component is drawn once per card: a second mention of an id (or a circle) draws nothing.
+  if (!spec || depth > MAX_DEPTH || pass.seen.has(id)) return null;
+  // A node that cannot be drawn as it is (a picture without a usable url, tabs without tabs) is left out.
+  const shape = spec.shape ? spec.shape(node, pass) : node.component;
+  if (shape === null) return null;
+  pass.seen.add(id);
+  let view = s.ui.views.get(id);
+  if (view && view.shape !== shape) { view.dispose?.(); view = null; }
+  if (!view) {
+    view = { id, shape, node, d: {}, sig: null, tapping: false };
+    spec.make(view, node, pass);
+    view.el.dataset.a2Id = id;
+    s.ui.views.set(id, view);
+  }
+  view.node = node;
+  view.parentKind = kind;
+  view.tapping = node.component !== "Button" && plain(node.action);
+  spec.update(view, node, pass, depth);
+  dress(view, parentView, spec);
+  tap(view, pass);
+  return view;
+}
+
+/** Sets [view]'s element class to [className] (and `a2-tap` while it is a tap target). */
+const base = (view, className) => setClass(view.el, view.tapping ? `${className} a2-tap` : className);
+
+/** The node's own style (and its component's layout) on its element, again only when one of them changed. */
+function dress(view, parentView, spec) {
+  const node = view.node, el = view.el;
+  const stack = parentView?.node.component === "Stack";
+  const place = stack ? (node.style?.place ?? parentView.node.align ?? "topStart") : null;
+  const sig = JSON.stringify([node.style ?? null, node.weight ?? null, node.visible === false, node.a11y ?? null, node.justify ?? null, node.align ?? null,
+    node.gap ?? null, node.columns ?? null, node.direction ?? null, node.size ?? null, node.fit ?? null, node.variant ?? null, view.parentKind, place]);
+  if (sig === view.sig) return;
+  view.sig = sig;
+  el.style.cssText = "";
+  spec.own?.(view, node);
+  applyStyle(el, node, view.parentKind);
+  if (!node.a11y) setAttr(el, "aria-label", null);
+  if (place) { const [block, inlinePlace] = PLACE[place] ?? PLACE.topStart; el.style.alignSelf = block; el.style.justifySelf = inlinePlace; }
+  if (node.visible === false) el.style.setProperty("display", "none", "important");
+}
+
+/** Anything with an action but a Button is a tap target: one listener, which reads the node of the moment. */
+function tap(view, pass) {
+  const node = view.node, el = view.el, s = pass.s;
+  if (view.tapping) {
+    if (!view.listening) {
+      view.listening = true;
+      el.addEventListener("click", (event) => {
+        if (el.getAttribute("aria-disabled") === "true" || !plain(view.node.action)) return;
+        event?.preventDefault?.();
+        void perform(s, view.node.action, s.byId, view.node);
+      });
     }
-    case "Image": {
-      const url = String(node.url ?? "");
-      if (url.startsWith("icon:")) { const el = text(parentEl, "span", "", "a2-icon"); drawIcon(el, url.slice(5), "i-l"); return el; }
-      const img = document.createElement("img");
-      img.className = `a2-img a2-img-${node.variant ?? "plain"}`;
-      img.alt = node.a11y ?? "";
+    setAttr(el, "role", "button");
+    setProp(el, "tabIndex", 0);
+    const pressed = runtimeKind(node.action) && buttonView(pass.card, s, node.id, node.action).busy;
+    setAttr(el, "aria-disabled", (!pass.live && ("event" in node.action || runtimeKind(node.action))) || pressed ? "true" : null);
+  } else if (view.listening) {
+    setAttr(el, "role", null);
+    setAttr(el, "aria-disabled", null);
+    setProp(el, "tabIndex", -1);
+  }
+}
+
+/** The children [ids] of [view] drawn into [into] (its element by default), in order. */
+function kids(view, ids, pass, depth, into = view.el, kind = view.node.component) {
+  const els = [];
+  for (const id of ids) { const child = pass.draw(view, id, depth + 1, kind); if (child) els.push(child.el); }
+  arrange(into, els);
+}
+const childIds = (node) => Array.isArray(node.children) ? node.children.filter((id) => typeof id === "string") : [];
+
+/** A changed working copy: drafted after a pause; [path] (a bind path) now holds the owner's value. */
+function changed(s, path) {
+  s.version++;
+  if (typeof path === "string") s.touched.set(path, s.version);
+  if (s.error) { s.error = ""; redraw(s); }
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => { void draft(s); }, DRAFT_DELAY_MS);
+  s.timer.unref?.();
+}
+function write(s, path, value, again = false) {
+  if (typeof path !== "string" || !writePointer(s.data, path, value)) return;
+  changed(s, path);
+  if (again) redraw(s);
+}
+const valueAt = (s, node, fallback) => { if (typeof node.bind !== "string") return fallback; const v = readPointer(s.data, node.bind); return v === undefined ? fallback : v; };
+
+/** An input of [view]: who edits it (focus, IME composition, a dragged slider) and what follows when the editing ends. */
+function watch(view, s, input, { drag = false } = {}) {
+  (view.inputs ??= []).push(input);
+  input.addEventListener("compositionstart", () => { view.composing = true; });
+  input.addEventListener("compositionend", () => { view.composing = false; settle(s); });
+  input.addEventListener("blur", () => { view.dragging = false; settle(s); });
+  if (drag) {
+    input.addEventListener("pointerdown", () => { view.dragging = true; });
+    for (const type of ["pointerup", "pointercancel", "change"]) input.addEventListener(type, () => { view.dragging = false; settle(s); });
+  }
+}
+
+/** The owner may have stopped editing an input of the card: what was held for it is drawn now (see `release`). */
+function settle(s) {
+  const timer = setTimeout(() => redraw(s), 0);
+  timer.unref?.();
+}
+
+/**
+ * The hub's values held beside inputs the owner no longer edits come in, unless the owner changed the field meanwhile: the
+ * owner's value wins then, and goes with the next draft.
+ */
+function release(s) {
+  for (const [id, held] of s.held) {
+    const view = s.ui.views.get(id);
+    if (view && inputEditing(view)) continue;
+    s.held.delete(id);
+    if (same(readPointer(s.data, held.path), held.local) && !s.touched.has(held.path)) writePointer(s.data, held.path, clone(held.value));
+  }
+}
+
+/** Whether an input's shown value may be set now: never while the owner edits it. */
+const free = (view) => !inputEditing(view);
+
+const IMAGE_FIT = { contain: "contain", cover: "cover", fill: "fill", none: "none", scaleDown: "scale-down" };
+/** Image variants whose box the stylesheet sizes in both directions (ash-ui.css .a2-img-*). */
+const IMAGE_BOX = { icon: [true, true], avatar: [true, true], smallFeature: [true, true], mediumFeature: [true, true], header: [true, true], largeFeature: [true, false] };
+const imageSrc = (url) => url === "avatar" || url.startsWith("avatar:") ? avatarUrl(url === "avatar" ? "default" : url.slice(7))
+  : /^https:\/\//i.test(url) || /^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,/i.test(url) ? url : null;
+const imageKind = (url) => url.startsWith("icon:") ? "icon" : imageSrc(url) ? "img" : null;
+const tabsOf = (node) => Array.isArray(node.tabs) ? node.tabs.filter((t) => plain(t) && typeof t.child === "string") : [];
+const optionsOf = (node) => Array.isArray(node.options) ? node.options.filter((o) => plain(o) && typeof o.value === "string") : [];
+const lined = (node) => Boolean(runtimeKind(node.action) || plain(node.action?.copy));
+const dateType = (node) => { const date = node.enableDate !== false, time = node.enableTime === true; return date && time ? "datetime-local" : date ? "date" : "time"; };
+const saveable = (card) => AGENT.test(card.owner ?? "") && !card.app && card.temporary_app !== true;
+const appOf = (card) => typeof card.app === "string" && card.app !== "" ? card.app : null;
+
+/** A field's label above its control, present only while the node has one. */
+function label(view, wrap, node, control, className = "a2-label") {
+  if (node.label) { view.labelEl ??= make("span", className); setText(view.labelEl, node.label); }
+  arrange(wrap, [node.label ? view.labelEl : null, control].filter(Boolean));
+}
+
+/** A frame's Html loaded again (a new load, a new token): only when its html changed, or it went somewhere else. */
+function loadFrame(view, s) {
+  const card = s.item.card, entry = view.entry;
+  // Who the frame speaks for is bound here, for this load.
+  Object.assign(entry, { token: newToken(), card: card.id, component: view.id, app: appOf(card) });
+  entry.full = entry.app !== null;
+  view.expected = view.loads + 1;
+  view.frame.srcdoc = miniAppDocument(view.d.html ?? "", themeVars(), s.accent, { token: entry.token, full: entry.full });
+}
+
+const COMPONENTS = {
+  Text: {
+    make(view) { view.el = make("div"); },
+    update(view, node, pass) {
+      base(view, `a2-text a2-${["h1", "h2", "h3", "h4", "h5", "caption"].includes(node.variant) ? node.variant : "body"}`);
+      if (view.d.text === (node.text ?? "")) return;
+      // Text the owner is selecting stays as it is until the selection ends.
+      if (view.d.text !== undefined && selected(view.el)) { pass.deferred = true; return; }
+      view.d.text = node.text ?? "";
+      view.el.replaceChildren();
+      appendCardMarkdown(view.el, view.d.text);
+    },
+  },
+  Image: {
+    shape: (node) => { const kind = imageKind(String(node.url ?? "")); return kind ? `Image:${kind}` : null; },
+    make(view, node) {
+      if (view.shape === "Image:icon") { view.el = make("span"); return; }
+      const img = make("img");
       img.loading = "lazy";
       img.decoding = "async";
       img.referrerPolicy = "no-referrer";
-      if (url === "avatar" || url.startsWith("avatar:")) img.src = avatarUrl(url === "avatar" ? "default" : url.slice(7));
-      else if (/^https:\/\//i.test(url) || /^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,/i.test(url)) img.src = url;
-      else return null;
-      const fit = { contain: "contain", cover: "cover", fill: "fill", none: "none", scaleDown: "scale-down" }[node.fit];
-      if (fit) img.style.objectFit = fit;
-      parentEl.append(img);
-      return img;
-    }
-    case "Icon": {
-      const el = text(parentEl, "span", "", "a2-icon");
+      view.el = img;
+    },
+    update(view, node) {
+      const url = String(node.url ?? "");
+      if (view.shape === "Image:icon") {
+        base(view, "a2-icon");
+        if (view.d.url !== url) { view.d.url = url; view.el.replaceChildren(); drawIcon(view.el, url.slice(5), "i-l"); }
+        return;
+      }
+      base(view, `a2-img a2-img-${node.variant ?? "plain"}`);
+      setProp(view.el, "alt", String(node.a11y ?? ""));
+      const src = imageSrc(url);
+      // The box keeps its size; only the picture changes.
+      if (view.d.src !== src) { view.d.src = src; view.el.src = src; }
+    },
+    // The box has its size before the picture comes: the node's width / height, its variant's, or 16:9 of the width.
+    own(view, node) {
+      if (view.shape === "Image:icon") return;
+      const st = view.el.style, style = plain(node.style) ? node.style : {};
+      const fit = IMAGE_FIT[node.fit];
+      if (fit) st.objectFit = fit;
+      const [wide, high] = IMAGE_BOX[node.variant] ?? [false, false];
+      const width = Number.isFinite(style.width) || style.width === "fill" || wide, height = Number.isFinite(style.height) || high;
+      if (!height) { st.aspectRatio = "16 / 9"; if (!width) st.width = "100%"; }
+    },
+  },
+  Icon: {
+    make(view) { view.el = make("span"); },
+    update(view, node) {
+      base(view, "a2-icon");
+      const key = typeof node.svgPath === "string" ? `path:${node.svgPath}` : `name:${node.name}`;
+      if (view.d.key === key) return;
+      view.d.key = key;
+      view.el.replaceChildren();
       if (typeof node.svgPath === "string") {
         // A closed shape is filled; an outline (a path never closed with Z) is stroked like the line icons.
-        const svg = svgNode("svg", { class: /[zZ]/.test(node.svgPath) ? "i i-s i-solid" : "i i-s", viewBox: "0 0 24 24", "aria-hidden": "true" }, el);
+        const svg = svgNode("svg", { class: /[zZ]/.test(node.svgPath) ? "i i-s i-solid" : "i i-s", viewBox: "0 0 24 24", "aria-hidden": "true" }, view.el);
         svgNode("path", { d: node.svgPath }, svg);
-      } else drawIcon(el, node.name);
-      return el;
-    }
-    case "Row": case "Column": {
-      const el = text(parentEl, "div", "", node.component === "Row" ? "a2-row" : "a2-col");
-      if (JUSTIFY[node.justify]) el.style.justifyContent = node.justify === "stretch" ? "flex-start" : JUSTIFY[node.justify];
-      if (ALIGN[node.align]) el.style.alignItems = ALIGN[node.align];
-      if (node.justify === "stretch") el.classList.add("a2-stretch");
-      gap(el, node);
-      kids(el, node, depth);
-      return el;
-    }
-    case "Stack": { const el = text(parentEl, "div", "", "a2-stack"); kids(el, node, depth); return el; }
-    case "Grid": {
-      const el = text(parentEl, "div", "", "a2-grid");
-      el.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(12, node.columns ?? 2))}, minmax(0, 1fr))`;
-      gap(el, node);
-      kids(el, node, depth);
-      return el;
-    }
-    case "List": {
-      const horizontal = node.direction === "horizontal";
-      const el = text(parentEl, "div", "", horizontal ? "a2-hlist" : node.columns > 1 ? "a2-grid" : "a2-col");
-      if (!horizontal && node.columns > 1) el.style.gridTemplateColumns = `repeat(${node.columns}, minmax(0, 1fr))`;
-      if (ALIGN[node.align]) el.style.alignItems = ALIGN[node.align];
-      gap(el, node);
-      kids(el, node, depth);
-      return el;
-    }
-    case "Card": { const el = text(parentEl, "div", "", "a2-card"); if (node.child) draw(el, node.child, depth + 1, "Card"); return el; }
-    case "Tabs": {
-      const tabs = Array.isArray(node.tabs) ? node.tabs.filter((t) => plain(t) && typeof t.child === "string") : [];
-      if (!tabs.length) return null;
-      const el = text(parentEl, "div", "", "a2-tabs-box");
-      const strip = text(el, "div", "", "a2-tabs");
-      strip.setAttribute("role", "tablist");
-      const chosen = Math.min(tabs.length - 1, Math.max(0, s.tabs[node.id] ?? node.selected ?? 0));
-      tabs.forEach((tab, i) => {
-        const b = button(strip, String(tab.title ?? ""), `a2-tab${i === chosen ? " on" : ""}`);
-        b.setAttribute("role", "tab");
-        b.setAttribute("aria-selected", String(i === chosen));
-        focusable(b, node, `tab${i}`);
-        b.addEventListener("click", () => { if (s.tabs[node.id] === i) return; s.tabs[node.id] = i; repaint(s); });
-      });
-      const body = text(el, "div", "", "a2-col a2-tab-body");
-      draw(body, tabs[chosen].child, depth + 1, "Column");
-      return el;
-    }
-    case "Divider": return text(parentEl, "div", "", node.axis === "vertical" ? "a2-divider v" : "a2-divider");
-    case "Spacer": {
-      const el = text(parentEl, "div", "", "a2-spacer");
-      if (Number.isFinite(node.size)) { el.style.flex = `0 0 ${px(node.size)}`; el.style.minWidth = el.style.minHeight = px(node.size); }
-      else el.style.flex = "1 1 0";
-      return el;
-    }
-    case "Button": {
-      const variant = node.variant === "primary" ? "btn-primary" : node.variant === "borderless" ? "btn-ghost" : "btn-neutral";
-      // A press the hub runs, or a copy, has a line under the button for its outcome (「已复制」, 「已完成 · 10:42」, why it failed).
-      const lined = Boolean(runtimeKind(node.action) || plain(node.action?.copy));
-      const view = lined ? buttonView(card, s, node.id, node.action) : { busy: false, line: null };
-      const holder = lined ? text(parentEl, "div", "", "a2-act") : parentEl;
-      const el = button(holder, "", `a-btn btn-sm a2-btn ${variant}`);
-      if (view.busy) { text(el, "span", "处理中…", "a2-text"); el.setAttribute("aria-busy", "true"); }
-      else if (node.child) draw(el, node.child, depth + 1, "Button");
-      el.disabled = node.disabled === true || !live || s.busy || !node.action || view.busy;
-      focusable(el, node);
-      el.addEventListener("click", act(node));
-      if (!lined) return el;
-      if (node.style?.width === "fill" || Number.isFinite(node.style?.width)) holder.classList.add("a2-act-fill");
-      if (view.line) text(holder, "div", view.line.text, `a2-act-line${view.line.state === "failed" ? " failed" : ""}`);
-      return holder;
-    }
-    case "CheckBox": case "Switch": {
-      const el = text(parentEl, "label", "", `a2-check${node.component === "Switch" ? " a2-switch-row" : ""}`);
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      if (node.component === "Switch") { input.className = "a2-switch"; input.setAttribute("role", "switch"); }
-      input.checked = valueAt(node, node.checked === true) === true;
-      input.disabled = !live || node.disabled === true;
-      focusable(input, node);
-      input.addEventListener("change", () => write(node.bind, input.checked === true));
-      if (node.component === "Switch") { text(el, "span", node.label ?? "", "a2-check-label"); el.append(input); }
-      else { el.append(input); text(el, "span", node.label ?? "", "a2-check-label"); }
-      return el;
-    }
-    case "ChoicePicker": {
-      const el = text(parentEl, "div", "", "a2-field a2-choice");
-      if (node.label) text(el, "span", node.label, "a2-label");
-      const options = Array.isArray(node.options) ? node.options.filter((o) => plain(o) && typeof o.value === "string") : [];
-      const given = valueAt(node, null);
-      const selected = new Set(Array.isArray(given) ? given.filter((v) => typeof v === "string") : options.filter((o) => o.checked).map((o) => o.value));
-      const choose = (value, on) => {
-        const next = node.multiple ? options.map((o) => o.value).filter((v) => v === value ? on : selected.has(v)) : on ? [value] : [];
-        write(node.bind, next, true);
-      };
-      if (node.chips) {
-        const row = text(el, "div", "", "opts a2-chips");
-        options.forEach((o, i) => {
-          const on = selected.has(o.value);
-          const b = button(row, String(o.label ?? o.value), `opt${on ? " on" : ""}`, on ? "check" : "", "i-xs");
-          b.setAttribute("aria-pressed", String(on));
-          b.disabled = !live;
-          focusable(b, node, `o${i}`);
-          b.addEventListener("click", () => choose(o.value, node.multiple ? !on : true));
+      } else drawIcon(view.el, node.name);
+    },
+  },
+  Row: {
+    make(view) { view.el = make("div"); },
+    update(view, node, pass, depth) { base(view, `${node.component === "Row" ? "a2-row" : "a2-col"}${node.justify === "stretch" ? " a2-stretch" : ""}`); kids(view, childIds(node), pass, depth); },
+    own(view, node) {
+      const st = view.el.style;
+      if (JUSTIFY[node.justify]) st.justifyContent = node.justify === "stretch" ? "flex-start" : JUSTIFY[node.justify];
+      if (ALIGN[node.align]) st.alignItems = ALIGN[node.align];
+      if (Number.isFinite(node.gap) && node.gap >= 0) st.gap = px(node.gap);
+    },
+  },
+  Stack: {
+    make(view) { view.el = make("div"); },
+    update(view, node, pass, depth) { base(view, "a2-stack"); kids(view, childIds(node), pass, depth); },
+  },
+  Grid: {
+    make(view) { view.el = make("div"); },
+    update(view, node, pass, depth) { base(view, "a2-grid"); kids(view, childIds(node), pass, depth); },
+    own(view, node) {
+      view.el.style.gridTemplateColumns = `repeat(${Math.max(1, Math.min(12, node.columns ?? 2))}, minmax(0, 1fr))`;
+      if (Number.isFinite(node.gap) && node.gap >= 0) view.el.style.gap = px(node.gap);
+    },
+  },
+  List: {
+    make(view) { view.el = make("div"); },
+    update(view, node, pass, depth) {
+      base(view, node.direction === "horizontal" ? "a2-hlist" : node.columns > 1 ? "a2-grid" : "a2-col");
+      kids(view, childIds(node), pass, depth);
+    },
+    own(view, node) {
+      const st = view.el.style;
+      if (node.direction !== "horizontal" && node.columns > 1) st.gridTemplateColumns = `repeat(${node.columns}, minmax(0, 1fr))`;
+      if (ALIGN[node.align]) st.alignItems = ALIGN[node.align];
+      if (Number.isFinite(node.gap) && node.gap >= 0) st.gap = px(node.gap);
+    },
+  },
+  Card: {
+    make(view) { view.el = make("div"); },
+    update(view, node, pass, depth) { base(view, "a2-card"); kids(view, typeof node.child === "string" ? [node.child] : [], pass, depth); },
+  },
+  Tabs: {
+    shape: (node) => tabsOf(node).length ? "Tabs" : null,
+    make(view) {
+      view.el = make("div");
+      view.strip = make("div", "a2-tabs");
+      view.strip.setAttribute("role", "tablist");
+      view.body = make("div", "a2-col a2-tab-body");
+      view.el.append(view.strip, view.body);
+      view.tabs = [];
+    },
+    update(view, node, pass, depth) {
+      const s = pass.s, tabs = tabsOf(node);
+      base(view, "a2-tabs-box");
+      const titles = JSON.stringify(tabs.map((tab) => String(tab.title ?? "")));
+      if (view.d.titles !== titles) {
+        view.d.titles = titles;
+        view.tabs = tabs.map((tab, i) => {
+          const b = make("button", "a2-tab", String(tab.title ?? ""));
+          b.type = "button";
+          b.setAttribute("role", "tab");
+          b.addEventListener("click", () => { if (s.tabs[view.id] === i) return; s.tabs[view.id] = i; redraw(s); });
+          return b;
         });
-      } else {
-        const list = text(el, "div", "", "a2-col a2-choice-list");
-        options.forEach((o, i) => {
-          const row = text(list, "label", "", "a2-check");
-          const input = document.createElement("input");
-          input.type = node.multiple ? "checkbox" : "radio";
-          input.name = `a2-${card.id}-${node.id}`;
-          input.checked = selected.has(o.value);
-          input.disabled = !live;
-          focusable(input, node, `o${i}`);
-          input.addEventListener("change", () => choose(o.value, input.checked === true));
-          row.append(input);
-          text(row, "span", String(o.label ?? o.value), "a2-check-label");
-        });
+        arrange(view.strip, view.tabs);
       }
-      return el;
-    }
-    case "ProgressBar": {
-      const el = text(parentEl, "div", "", "a2-field a2-progress");
-      if (node.label) text(el, "span", node.label, "a2-label");
-      const track = text(el, "div", "", "a2-track");
+      const chosen = Math.min(tabs.length - 1, Math.max(0, s.tabs[node.id] ?? node.selected ?? 0));
+      view.tabs.forEach((b, i) => { setClass(b, `a2-tab${i === chosen ? " on" : ""}`); setAttr(b, "aria-selected", String(i === chosen)); });
+      kids(view, [tabs[chosen].child], pass, depth, view.body, "Column");
+    },
+  },
+  Divider: {
+    make(view) { view.el = make("div"); },
+    update(view, node) { base(view, node.axis === "vertical" ? "a2-divider v" : "a2-divider"); },
+  },
+  Spacer: {
+    make(view) { view.el = make("div"); },
+    update(view) { base(view, "a2-spacer"); },
+    own(view, node) {
+      const st = view.el.style;
+      if (Number.isFinite(node.size)) { st.flex = `0 0 ${px(node.size)}`; st.minWidth = st.minHeight = px(node.size); }
+      else st.flex = "1 1 0";
+    },
+  },
+  Button: {
+    // A press the hub runs, or a copy, has a line under the button for its outcome (「已复制」, 「已完成 · 10:42」, why it failed).
+    shape: (node) => `Button:${lined(node)}`,
+    make(view, node, pass) {
+      const s = pass.s;
+      view.button = make("button");
+      view.button.type = "button";
+      view.button.addEventListener("click", (event) => { event?.preventDefault?.(); void perform(s, view.node.action, s.byId, view.node); });
+      view.busy = make("span", "a2-text", "处理中…");
+      if (view.shape === "Button:true") { view.el = make("div"); view.el.append(view.button); } else view.el = view.button;
+    },
+    update(view, node, pass, depth) {
+      const s = pass.s, b = view.button, line = view.shape === "Button:true";
+      const variant = node.variant === "primary" ? "btn-primary" : node.variant === "borderless" ? "btn-ghost" : "btn-neutral";
+      const state = line ? buttonView(pass.card, s, node.id, node.action) : { busy: false, line: null };
+      setClass(b, `a-btn btn-sm a2-btn ${variant}`);
+      // The label stays drawn (and kept) while 「处理中…」 stands in its place.
+      const child = typeof node.child === "string" ? pass.draw(view, node.child, depth + 1, "Button") : null;
+      arrange(b, state.busy ? [view.busy] : child ? [child.el] : []);
+      setAttr(b, "aria-busy", state.busy ? "true" : null);
+      setProp(b, "disabled", node.disabled === true || !pass.live || s.busy || !node.action || state.busy);
+      if (!line) return;
+      base(view, `a2-act${node.style?.width === "fill" || Number.isFinite(node.style?.width) ? " a2-act-fill" : ""}`);
+      if (state.line) {
+        view.line ??= make("div");
+        setClass(view.line, `a2-act-line${state.line.state === "failed" ? " failed" : ""}`);
+        setText(view.line, state.line.text);
+      }
+      arrange(view.el, state.line ? [b, view.line] : [b]);
+    },
+  },
+  CheckBox: {
+    make(view, node, pass) {
+      const s = pass.s, sw = node.component === "Switch";
+      view.el = make("label");
+      view.input = make("input");
+      view.input.type = "checkbox";
+      if (sw) { view.input.className = "a2-switch"; view.input.setAttribute("role", "switch"); }
+      view.input.addEventListener("change", () => write(s, view.node.bind, view.input.checked === true));
+      watch(view, s, view.input);
+      view.text = make("span", "a2-check-label");
+      if (sw) view.el.append(view.text, view.input); else view.el.append(view.input, view.text);
+    },
+    update(view, node, pass) {
+      base(view, `a2-check${node.component === "Switch" ? " a2-switch-row" : ""}`);
+      setText(view.text, node.label ?? "");
+      if (free(view)) setProp(view.input, "checked", valueAt(pass.s, node, node.checked === true) === true);
+      setProp(view.input, "disabled", !pass.live || node.disabled === true);
+    },
+  },
+  ChoicePicker: {
+    shape: (node) => `ChoicePicker:${!!node.chips}:${!!node.multiple}:${JSON.stringify(optionsOf(node).map((o) => o.value))}`,
+    make(view, node, pass) {
+      const s = pass.s;
+      view.el = make("div");
+      view.list = make("div", node.chips ? "opts a2-chips" : "a2-col a2-choice-list");
+      const choose = (value, on) => {
+        const now = view.node, options = optionsOf(now), chosen = view.chosen ?? new Set();
+        const next = now.multiple ? options.map((o) => o.value).filter((v) => v === value ? on : chosen.has(v)) : on ? [value] : [];
+        write(s, now.bind, next, true);
+      };
+      view.options = optionsOf(node).map((o, i) => {
+        if (node.chips) {
+          const b = make("button");
+          b.type = "button";
+          b.addEventListener("click", () => choose(o.value, view.node.multiple ? !view.chosen?.has(o.value) : true));
+          view.list.append(b);
+          return { button: b };
+        }
+        const row = make("label", "a2-check");
+        const input = make("input");
+        input.type = node.multiple ? "checkbox" : "radio";
+        input.addEventListener("change", () => choose(o.value, input.checked === true));
+        watch(view, s, input);
+        const words = make("span", "a2-check-label");
+        row.append(input, words);
+        view.list.append(row);
+        return { input, words };
+      });
+    },
+    update(view, node, pass) {
+      const s = pass.s, card = pass.card, options = optionsOf(node);
+      base(view, "a2-field a2-choice");
+      label(view, view.el, node, view.list);
+      const given = valueAt(s, node, null);
+      view.chosen = new Set(Array.isArray(given) ? given.filter((v) => typeof v === "string") : options.filter((o) => o.checked).map((o) => o.value));
+      const editing = !free(view);
+      options.forEach((o, i) => {
+        const on = view.chosen.has(o.value), words = String(o.label ?? o.value), part = view.options[i], drawn = view.d[i];
+        if (part.button) {
+          setClass(part.button, `opt${on ? " on" : ""}`);
+          setAttr(part.button, "aria-pressed", String(on));
+          setProp(part.button, "disabled", !pass.live);
+          if (drawn?.on !== on || drawn?.words !== words) {
+            part.button.replaceChildren();
+            if (on) { addIcon(part.button, "check", "i-xs"); text(part.button, "span", words); } else part.button.textContent = words;
+          }
+        } else {
+          setProp(part.input, "name", `a2-${card.id}-${node.id}`);
+          if (!editing) setProp(part.input, "checked", on);
+          setProp(part.input, "disabled", !pass.live);
+          setText(part.words, words);
+        }
+        view.d[i] = { on, words };
+      });
+    },
+  },
+  ProgressBar: {
+    make(view) {
+      view.el = make("div");
+      view.track = make("div", "a2-track");
+      view.fill = make("div", "a2-fill");
+      view.track.append(view.fill);
+      view.track.setAttribute("role", "progressbar");
+      view.track.setAttribute("aria-valuemin", "0");
+    },
+    update(view, node) {
+      base(view, "a2-field a2-progress");
+      label(view, view.el, node, view.track);
       const max = Number.isFinite(node.max) && node.max > 0 ? node.max : 100;
       const value = Math.min(max, Math.max(0, Number(node.value) || 0));
-      const fill = text(track, "div", "", "a2-fill");
-      fill.style.width = `${Math.round(value / max * 1000) / 10}%`;
-      track.setAttribute("role", "progressbar");
-      track.setAttribute("aria-valuemin", "0");
-      track.setAttribute("aria-valuemax", String(max));
-      track.setAttribute("aria-valuenow", String(value));
-      return el;
-    }
-    case "Badge": return text(parentEl, "span", node.text ?? "", "a2-badge");
-    case "Clock": {
-      const el = text(parentEl, "span", "", "a2-text a2-body a2-clock");
-      ticking(el, () => { el.textContent = formatClock(new Date(), node.format || "HH:mm", node.timeZone); });
-      return el;
-    }
-    case "Timer": {
-      const el = text(parentEl, "span", "", "a2-text a2-body a2-timer");
-      ticking(el, () => { el.textContent = formatSpan(Number.isFinite(node.since) ? Date.now() - node.since : (node.until ?? 0) - Date.now()); });
-      return el;
-    }
-    case "Chart": {
-      const h = Number.isFinite(node.style?.height) ? node.style.height : 80;
-      const el = text(parentEl, "div", "", "a2-chart-box");
-      el.style.height = px(h);
-      let width = 0;
-      const paintChart = (w) => { if (!w || w === width) return; width = w; el.replaceChildren(chartSvg(node, Math.round(w), h)); };
-      paintChart(300);
-      const measure = () => paintChart(el.clientWidth || 300);
+      const width = `${Math.round(value / max * 1000) / 10}%`;
+      if (view.fill.style.width !== width) view.fill.style.width = width;
+      setAttr(view.track, "aria-valuemax", String(max));
+      setAttr(view.track, "aria-valuenow", String(value));
+    },
+  },
+  Badge: {
+    make(view) { view.el = make("span"); },
+    update(view, node) { base(view, "a2-badge"); setText(view.el, node.text ?? ""); },
+  },
+  Clock: {
+    make(view) { view.el = make("span"); ticking(view.el, () => setText(view.el, formatClock(new Date(), view.node.format || "HH:mm", view.node.timeZone))); },
+    update(view, node) {
+      base(view, "a2-text a2-body a2-clock");
+      const key = `${node.format}\0${node.timeZone}`;
+      if (view.d.key !== undefined && view.d.key !== key) setText(view.el, formatClock(new Date(), node.format || "HH:mm", node.timeZone));
+      view.d.key = key;
+    },
+  },
+  Timer: {
+    make(view) { view.el = make("span"); ticking(view.el, () => setText(view.el, timerText(view.node))); },
+    update(view, node) {
+      base(view, "a2-text a2-body a2-timer");
+      const key = `${node.since}\0${node.until}`;
+      if (view.d.key !== undefined && view.d.key !== key) setText(view.el, timerText(node));
+      view.d.key = key;
+    },
+  },
+  Chart: {
+    make(view) {
+      view.el = make("div");
+      view.width = 0;
+      const measure = () => chartPaint(view, view.el.clientWidth || 300);
       globalThis.requestAnimationFrame?.(measure);
-      if (typeof globalThis.ResizeObserver === "function") new ResizeObserver(measure).observe(el);
-      return el;
-    }
-    case "TextField": {
-      const wrap = field(parentEl, node);
-      const obscured = node.variant === "obscured";
-      const long = node.variant === "longText";
-      const input = document.createElement(long ? "textarea" : "input");
-      input.className = "a2-input";
+      if (typeof globalThis.ResizeObserver === "function") { const observer = new ResizeObserver(measure); observer.observe(view.el); view.dispose = () => observer.disconnect(); }
+    },
+    update(view, node) {
+      base(view, "a2-chart-box");
+      const key = JSON.stringify([node.series ?? [], node.gap ?? null, chartHeight(node)]);
+      if (view.d.key === key) return;
+      view.d.key = key;
+      view.width = 0;
+      chartPaint(view, view.el.clientWidth || 300);
+    },
+    own(view, node) { view.el.style.height = px(chartHeight(node)); },
+  },
+  TextField: {
+    shape: (node) => `TextField:${node.variant === "longText" ? "long" : node.variant === "obscured" ? "secret" : "text"}`,
+    make(view, node, pass) {
+      const s = pass.s, obscured = view.shape === "TextField:secret", long = view.shape === "TextField:long";
+      view.el = make("label");
+      const input = view.input = make(long ? "textarea" : "input", "a2-input");
       if (!long) input.type = obscured ? "password" : "text";
-      if (node.variant === "number") input.inputMode = "decimal";
       if (obscured) { input.autocomplete = "new-password"; input.spellcheck = false; }
-      if (node.placeholder) input.placeholder = node.placeholder;
-      const key = typeof node.bind === "string" ? node.bind : `#${node.id}`;
-      input.value = obscured ? passwords().get(key) ?? "" : String(valueAt(node, node.text ?? "") ?? "");
-      input.disabled = !live;
-      focusable(input, node);
       // A password never enters the card's data: it is kept apart and goes to the vault on 「提交」.
-      if (obscured) input.addEventListener("input", () => { passwords().set(key, input.value); if (s.error) { s.error = ""; root.querySelector?.(".a2-error")?.remove(); } });
-      else input.addEventListener("input", () => write(node.bind, input.value));
-      wrap.append(input);
-      return wrap;
-    }
-    case "DateTimeInput": {
-      const wrap = field(parentEl, node);
-      const input = document.createElement("input");
-      input.className = "a2-input";
-      const date = node.enableDate !== false, time = node.enableTime === true;
-      input.type = date && time ? "datetime-local" : date ? "date" : "time";
-      const raw = String(valueAt(node, node.text ?? "") ?? "");
-      input.value = date && time ? raw.slice(0, 16) : date ? raw.slice(0, 10) : /^\d{2}:\d{2}/.test(raw) ? raw.slice(0, 5) : /T(\d{2}:\d{2})/.exec(raw)?.[1] ?? "";
-      input.disabled = !live;
-      focusable(input, node);
-      input.addEventListener("change", () => write(node.bind, input.value));
-      wrap.append(input);
-      return wrap;
-    }
-    case "Slider": {
-      const wrap = field(parentEl, node);
+      if (obscured) input.addEventListener("input", () => { passwordsOf(s).set(secretKey(view.node), input.value); if (s.error) { s.error = ""; redraw(s); } });
+      else input.addEventListener("input", () => write(s, view.node.bind, input.value));
+      watch(view, s, input);
+    },
+    update(view, node, pass) {
+      const s = pass.s, input = view.input;
+      base(view, "a2-field");
+      label(view, view.el, node, input);
+      if (node.variant === "number" || input.inputMode) setProp(input, "inputMode", node.variant === "number" ? "decimal" : "");
+      setProp(input, "placeholder", String(node.placeholder ?? ""));
+      const value = view.shape === "TextField:secret" ? passwordsOf(s).get(secretKey(node)) ?? "" : String(valueAt(s, node, node.text ?? "") ?? "");
+      // Never set while the owner types in it (focus, IME composition, a selection): it would take the caret and the composing text.
+      if (free(view)) setProp(input, "value", value);
+      setProp(input, "disabled", !pass.live);
+    },
+  },
+  DateTimeInput: {
+    shape: (node) => `DateTimeInput:${dateType(node)}`,
+    make(view, node, pass) {
+      const s = pass.s;
+      view.el = make("label");
+      view.input = make("input", "a2-input");
+      view.input.type = dateType(node);
+      view.input.addEventListener("change", () => write(s, view.node.bind, view.input.value));
+      watch(view, s, view.input);
+    },
+    update(view, node, pass) {
+      base(view, "a2-field");
+      label(view, view.el, node, view.input);
+      const raw = String(valueAt(pass.s, node, node.text ?? "") ?? ""), type = view.input.type;
+      const value = type === "datetime-local" ? raw.slice(0, 16) : type === "date" ? raw.slice(0, 10) : /^\d{2}:\d{2}/.test(raw) ? raw.slice(0, 5) : /T(\d{2}:\d{2})/.exec(raw)?.[1] ?? "";
+      if (free(view)) setProp(view.input, "value", value);
+      setProp(view.input, "disabled", !pass.live);
+    },
+  },
+  Slider: {
+    make(view, node, pass) {
+      const s = pass.s;
+      view.el = make("label");
+      view.row = make("div", "a2-row a2-slider-row");
+      view.input = make("input", "a2-slider");
+      view.input.type = "range";
+      view.shown = make("span", "a2-slider-value");
+      view.row.append(view.input, view.shown);
+      view.input.addEventListener("input", () => { setText(view.shown, view.input.value); write(s, view.node.bind, Number(view.input.value)); });
+      watch(view, s, view.input, { drag: true });
+    },
+    update(view, node, pass) {
+      base(view, "a2-field");
+      label(view, view.el, node, view.row);
       const min = Number.isFinite(node.min) ? node.min : 0, max = Number.isFinite(node.max) ? node.max : 100;
-      const value = Number(valueAt(node, node.value ?? min));
-      const row = text(wrap, "div", "", "a2-row a2-slider-row");
-      const input = document.createElement("input");
-      input.type = "range";
-      input.className = "a2-slider";
-      input.min = String(min); input.max = String(max);
-      input.step = Number.isFinite(node.step) ? String(node.step) : "any";
-      input.value = String(Number.isFinite(value) ? value : min);
-      input.disabled = !live;
-      focusable(input, node);
-      row.append(input);
-      const shown = text(row, "span", input.value, "a2-slider-value");
-      input.addEventListener("input", () => { shown.textContent = input.value; write(node.bind, Number(input.value)); });
-      return wrap;
-    }
-    case "Table": {
-      const wrap = text(parentEl, "div", "", "a2-table-wrap");
-      const table = text(wrap, "table", "", "a2-table");
+      setProp(view.input, "min", String(min));
+      setProp(view.input, "max", String(max));
+      setProp(view.input, "step", Number.isFinite(node.step) ? String(node.step) : "any");
+      if (free(view)) {
+        const value = Number(valueAt(pass.s, node, node.value ?? min));
+        setProp(view.input, "value", String(Number.isFinite(value) ? value : min));
+        setText(view.shown, view.input.value);
+      }
+      setProp(view.input, "disabled", !pass.live);
+    },
+  },
+  Table: {
+    make(view) { view.el = make("div"); view.table = make("table", "a2-table"); view.el.append(view.table); },
+    update(view, node, pass) {
+      base(view, "a2-table-wrap");
+      const key = JSON.stringify([node.header ?? null, node.rows ?? null]);
+      if (view.d.key === key) return;
+      if (view.d.key !== undefined && selected(view.el)) { pass.deferred = true; return; }
+      view.d.key = key;
+      view.table.replaceChildren();
       const header = Array.isArray(node.header) ? node.header : [];
-      if (header.length) { const tr = text(text(table, "thead", ""), "tr", ""); for (const h of header) cellMarkdown(text(tr, "th", ""), h); }
-      const body = text(table, "tbody", "");
+      if (header.length) { const tr = text(text(view.table, "thead", ""), "tr", ""); for (const h of header) cellMarkdown(text(tr, "th", ""), h); }
+      const body = text(view.table, "tbody", "");
       for (const row of Array.isArray(node.rows) ? node.rows : []) {
         const tr = text(body, "tr", "");
         for (const cell of Array.isArray(row) ? row : []) cellMarkdown(text(tr, "td", ""), cell);
       }
-      return wrap;
-    }
-    case "Html": {
-      const wrap = text(parentEl, "div", "", "a2-mini");
-      const frame = document.createElement("iframe");
-      frame.className = "a2-html";
+    },
+  },
+  Html: {
+    shape: (node, pass) => `Html:${saveable(pass.card)}`,
+    make(view, node, pass) {
+      const s = pass.s;
+      view.el = make("div");
+      const frame = view.frame = make("iframe", "a2-html");
       frame.setAttribute("sandbox", "allow-scripts");
       frame.setAttribute("referrerpolicy", "no-referrer");
       frame.setAttribute("title", "小应用");
-      frame.style.height = px(Number.isFinite(node.height) ? node.height : 320);
-      const doc = miniAppDocument(node.html ?? "", themeVars(), accent);
-      frame.srcdoc = doc;
-      // The frame may only show its own document: a navigation away from it puts the document back.
-      let loads = 0, expected = 1;
-      frame.addEventListener("load", () => { loads++; if (loads > expected) { expected = loads + 1; frame.srcdoc = doc; } });
-      wrap.append(frame);
-      listen();
-      const now = Date.now();
-      for (const entry of frames) if (entry.frame.isConnected === false && now - entry.added > 2000) frames.delete(entry);
-      const answerFrame = (id, answer) => { try { frame.contentWindow?.postMessage({ ash: "answer", id, answer }, "*"); } catch { /* the frame is gone */ } };
-      frames.add({ frame, mounted: false, added: now, send: (event) => {
+      view.loads = 0;
+      view.expected = 1;
+      // The frame may only show its own document: a navigation away from it loads the document again (a new token).
+      frame.addEventListener("load", () => { view.loads++; if (view.loads > view.expected) loadFrame(view, s); });
+      view.el.append(frame);
+      const entry = view.entry = { frame, mounted: false, added: Date.now(), token: "", card: null, component: null, app: null, full: false };
+      entry.answer = (id, answer, token) => {
+        // Into the load that asked, never into a later one.
+        if (!token || token !== entry.token) return;
+        try { frame.contentWindow?.postMessage({ g: token, m: JSON.stringify({ jsonrpc: "2.0", id, result: answer }) }, "*"); } catch { /* the frame is gone */ }
+      };
+      entry.send = (event) => {
         // A mini app acts like a button, at most once a second.
         const now = Date.now();
         if (now - s.lastSend < 1000) return;
         s.lastSend = now;
-        void perform(s, { event }, byId, node);
-      }, act: (id, request) => {
-        // ash.call / ash.ask / ash.tell: a press of this Html node with the frame's request, at most two a second.
-        if (!request) { answerFrame(id, { state: "failed", text: "这个请求看不懂。" }); return; }
-        const now = Date.now();
+        void perform(s, { event }, s.byId, view.node);
+      };
+      entry.act = (id, request) => {
+        // ash.call / ash.ask / ash.tell: a press of this Html node (as bound to this load) with the frame's request, at most two a second.
+        const token = entry.token, now = Date.now();
         s.calls = s.calls.filter((at) => now - at < 1000);
-        if (s.calls.length >= 2) { answerFrame(id, { state: "failed", text: "太快了，稍后再试。" }); return; }
+        if (s.calls.length >= 2) { entry.answer(id, { state: "failed", text: "太快了，稍后再试。" }, token); return; }
         s.calls.push(now);
         const c = s.ctx, current = s.item.card;
-        if (typeof c?.act !== "function" || stateLine(current, s)) { answerFrame(id, { state: "failed", text: "这张卡已经结束了。" }); return; }
-        void actOnce(c.act, actBody(current.id, node.id, s.data, request), actTimeoutMs(request)).then((answer) => answerFrame(id, answer));
-      } });
-      if (AGENT.test(card.owner ?? "") && !card.app && card.temporary_app !== true) {
-        const save = button(wrap, "存成应用", "a-btn btn-sm btn-ghost a2-save");
-        save.disabled = !live;
-        save.addEventListener("click", () => {
-          if (!live) return;
-          void say(s, "把这个小应用存成应用", { name: "save_app", context: { component: node.id } });
+        if (typeof c?.act !== "function" || stateLine(current, s) || current.id !== entry.card) { entry.answer(id, { state: "failed", text: "这张卡已经结束了。" }, token); return; }
+        void actOnce(c.act, actBody(entry.card, entry.component, s.data, request), actTimeoutMs(request)).then((answer) => entry.answer(id, answer, token));
+      };
+      listen();
+      for (const old of frames) if (old.frame.isConnected === false && entry.added - old.added > 2000) frames.delete(old);
+      frames.add(entry);
+      view.dispose = () => { frames.delete(entry); entry.token = ""; };
+      if (view.shape === "Html:true") {
+        view.save = make("button", "a-btn btn-sm btn-ghost a2-save", "存成应用");
+        view.save.type = "button";
+        view.save.addEventListener("click", () => {
+          if (view.save.disabled) return;
+          void say(s, "把这个小应用存成应用", { name: "save_app", context: { component: view.id } });
         });
+        view.el.append(view.save);
       }
-      return wrap;
-    }
-    case "Skeleton": return text(parentEl, "div", "", "sk a2-skeleton");
-    default: return null;
-    }
-  }
+    },
+    update(view, node, pass) {
+      base(view, "a2-mini");
+      const height = px(Number.isFinite(node.height) ? node.height : 320);
+      if (view.frame.style.height !== height) view.frame.style.height = height;
+      // Loaded again only when its html changed: data patches never reload it.
+      if (view.d.html !== String(node.html ?? "")) { view.d.html = String(node.html ?? ""); loadFrame(view, pass.s); }
+      if (view.save) setProp(view.save, "disabled", !pass.live);
+    },
+  },
+  Skeleton: {
+    make(view) { view.el = make("div"); },
+    update(view) { base(view, "sk a2-skeleton"); },
+  },
+};
+COMPONENTS.Column = COMPONENTS.Row;
+COMPONENTS.Switch = COMPONENTS.CheckBox;
 
-  const body = text(root, "div", "", "a2-col a2-body-root");
-  if (!draw(body, plan.root, 0, "Column")) throw new Error("nothing drawn");
-  if (s.error) text(root, "div", s.error, "card-note a2-error");
-  if (closed) text(root, "div", closed, "a2-status");
-  else if (s.busy) text(root, "div", form ? "正在提交…" : "正在发送…", "a2-status");
-  footer(root, s, closed);
-  if (!live) root.classList.add("a2-readonly");
-  return root;
+const chartHeight = (node) => Number.isFinite(node.style?.height) ? node.style.height : 80;
+function chartPaint(view, w) {
+  if (!w || w === view.width) return;
+  view.width = w;
+  view.el.replaceChildren(chartSvg(view.node, Math.round(w), chartHeight(view.node)));
 }
+const timerText = (node) => formatSpan(Number.isFinite(node.since) ? Date.now() - node.since : (node.until ?? 0) - Date.now());
+const passwordsOf = (s) => { let map = secrets.get(s.id); if (!map) secrets.set(s.id, map = new Map()); return map; };
+const secretKey = (node) => typeof node.bind === "string" ? node.bind : `#${node.id}`;
 
 /** The thumbs the owner gives an open or closed card: the last one given shows as chosen; its height is there from the start. */
 const FEEDBACK = Object.freeze([["up", "👍", "thumbUp", "有用"], ["down", "👎", "thumbDown", "没用"]]);
@@ -1134,45 +1576,63 @@ export const feedbackOf = (card, local) => local ?? (card?.feedback === "up" || 
 /**
  * The card's quiet bottom line, one height from the start: its live line (「常驻中」, 「HH:MM 更新」, 「已休眠 · …」) on the
  * left, then 「存成应用」 for a card whose app exists only for it, the 「常驻」 switch of an app's card, the thumbs of an
- * agent's card.
+ * agent's card. Patched in place like the components; null when the card has none of them.
  */
-function footer(root, s, closed) {
-  const card = s.item.card;
+function footer(s, closed) {
+  const card = s.item.card, f = s.ui.footer;
   const thumbs = !plain(card.form) && AGENT.test(card.owner ?? "");
   const pin = !closed && pinnable(card);
   const pinned = s.pinned ?? card.pinned === true;
   const live = liveLine({ ...card, pinned });
   const keep = card.temporary_app === true && !s.kept && !closed;
-  if (!thumbs && live === null && !keep && !pin) return;
-  const bar = text(root, "div", "", "a2-feedback");
-  if (s.pinError) text(bar, "span", s.pinError, "a2-live failed");
-  else if (live !== null || pin) text(bar, "span", live ?? "", "a2-live");
+  if (!thumbs && live === null && !keep && !pin) return null;
+  f.bar ??= make("div", "a2-feedback");
+  const parts = [];
+  if (s.pinError || live !== null || pin) {
+    f.live ??= make("span");
+    setClass(f.live, s.pinError ? "a2-live failed" : "a2-live");
+    setText(f.live, s.pinError || live || "");
+    parts.push(f.live);
+  }
   if (keep) {
-    const b = button(bar, "存成应用", "a2-keep");
-    b.disabled = typeof s.ctx?.keep !== "function" || s.keeping;
-    b.addEventListener("click", () => { void keepApp(s); });
+    if (!f.keep) { f.keep = make("button", "a2-keep", "存成应用"); f.keep.type = "button"; f.keep.addEventListener("click", () => { void keepApp(s); }); }
+    setProp(f.keep, "disabled", typeof s.ctx?.keep !== "function" || s.keeping);
+    parts.push(f.keep);
   }
   if (pin) {
-    const b = button(bar, "", "a2-pin");
-    text(b, "span", "", "a2-pin-track");
-    text(b, "span", "常驻");
-    b.setAttribute("role", "switch");
-    b.setAttribute("aria-checked", String(pinned));
-    b.setAttribute("aria-label", pinned ? "常驻：开" : "常驻：关");
-    b.disabled = typeof s.ctx?.pin !== "function" || s.pinning;
-    b.addEventListener("click", () => { void togglePin(s); });
+    if (!f.pin) {
+      f.pin = make("button", "a2-pin");
+      f.pin.type = "button";
+      text(f.pin, "span", "", "a2-pin-track");
+      text(f.pin, "span", "常驻");
+      f.pin.setAttribute("role", "switch");
+      f.pin.addEventListener("click", () => { void togglePin(s); });
+    }
+    setAttr(f.pin, "aria-checked", String(pinned));
+    setAttr(f.pin, "aria-label", pinned ? "常驻：开" : "常驻：关");
+    setProp(f.pin, "disabled", typeof s.ctx?.pin !== "function" || s.pinning);
+    parts.push(f.pin);
   }
-  if (!thumbs) return;
-  const chosen = feedbackOf(card, s.feedback);
-  const can = typeof s.ctx?.say === "function";
-  for (const [kind, glyph, shape, label] of FEEDBACK) {
-    const b = button(bar, "", `a2-fb${chosen === kind ? " on" : ""}`);
-    if (!drawShape(b, shape, "i-xs")) b.textContent = glyph;
-    b.setAttribute("aria-label", label);
-    b.setAttribute("aria-pressed", String(chosen === kind));
-    b.disabled = !can;
-    b.addEventListener("click", () => { void giveFeedback(s, kind, glyph); });
+  if (thumbs) {
+    f.thumbs ??= FEEDBACK.map(([kind, glyph, shape, words]) => {
+      const b = make("button", "a2-fb");
+      b.type = "button";
+      if (!drawShape(b, shape, "i-xs")) b.textContent = glyph;
+      b.setAttribute("aria-label", words);
+      b.addEventListener("click", () => { void giveFeedback(s, kind, glyph); });
+      return b;
+    });
+    const chosen = feedbackOf(card, s.feedback);
+    FEEDBACK.forEach(([kind], i) => {
+      const b = f.thumbs[i];
+      setClass(b, `a2-fb${chosen === kind ? " on" : ""}`);
+      setAttr(b, "aria-pressed", String(chosen === kind));
+      setProp(b, "disabled", typeof s.ctx?.say !== "function");
+    });
+    parts.push(...f.thumbs);
   }
+  arrange(f.bar, parts);
+  return f.bar;
 }
 
 /** How long the line saying 「常驻」 was not set stays. */
@@ -1184,14 +1644,14 @@ async function togglePin(s) {
   if (s.pinning || typeof ctx?.pin !== "function") return;
   const before = s.pinned ?? card.pinned === true;
   s.pinned = !before; s.pinning = true; s.pinError = "";
-  repaint(s);
+  redraw(s);
   try { await ctx.pin(card.id, s.pinned); }
   catch {
     s.pinned = before;
     s.pinError = before ? "没关掉常驻，请再试一次" : "没设成常驻，请再试一次";
-    const timer = setTimeout(() => { s.pinError = ""; repaint(s); }, PIN_ERROR_MS);
+    const timer = setTimeout(() => { s.pinError = ""; redraw(s); }, PIN_ERROR_MS);
     timer.unref?.();
-  } finally { s.pinning = false; repaint(s); }
+  } finally { s.pinning = false; redraw(s); }
 }
 
 /** 「存成应用」: the card's temporary app stays (`service:cards/keep`); the button goes once the hub took it. */
@@ -1199,10 +1659,10 @@ async function keepApp(s) {
   const ctx = s.ctx, card = s.item.card;
   if (s.keeping || s.kept || typeof ctx?.keep !== "function") return;
   s.keeping = true;
-  repaint(s);
+  redraw(s);
   try { await ctx.keep(card.id); s.kept = true; }
   catch { ctx.problem?.("没存成应用，请再试一次。"); }
-  finally { s.keeping = false; repaint(s); }
+  finally { s.keeping = false; redraw(s); }
 }
 
 /** The owner's thumb as a say to the card's agent; a second tap on the one already chosen does nothing. */
@@ -1211,9 +1671,9 @@ async function giveFeedback(s, kind, glyph) {
   const before = feedbackOf(card, s.feedback);
   if (before === kind || s.feedbackSending || typeof ctx?.say !== "function" || !AGENT.test(card.owner ?? "")) return;
   const body = sayBody(card.id, glyph, { name: "feedback", context: { feedback: kind } }, s.data);
-  s.feedback = kind; s.feedbackSending = true; repaint(s);
+  s.feedback = kind; s.feedbackSending = true; redraw(s);
   try { await ctx.say(card.owner, body.text, body.card); }
-  catch (error) { s.feedback = before; repaint(s); ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
+  catch (error) { s.feedback = before; redraw(s); ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
   finally { s.feedbackSending = false; }
 }
 
@@ -1232,11 +1692,12 @@ async function draft(s) {
   s.inflight++;
   try {
     const answer = await ctx.draft(card.id, JSON.parse(body));
-    if (version === s.version && s.reactive && plain(answer?.plan) && parsePlan(answer.plan)) { s.plan = answer.plan; repaint(s); }
+    taken(s, version);
+    if (version === s.version && s.reactive && plain(answer?.plan) && parsePlan(answer.plan)) { s.plan = answer.plan; redraw(s); }
   } catch { /* the values stay on this screen; the action that follows carries them */ }
   finally { s.inflight--; }
   // A newer version came while the owner was typing: read the card again now that the hub has the owner's values.
-  if (version === s.version && !s.timer && s.inflight === 0 && s.hold !== null) ctx.refresh?.(s.item.id);
+  if (version === s.version && !s.timer && s.inflight === 0 && s.stale) { s.stale = false; ctx.refresh?.(s.item.id); }
 }
 
 /** What a tap on [node] (a Button, or anything with an action) does. */
@@ -1272,12 +1733,14 @@ async function press(s, node, action) {
   s.pressing.add(node.id);
   delete s.outcomes[node.id];
   haptic();
-  repaint(s);
+  redraw(s);
+  const version = s.version;
   const answer = await actOnce(ctx.act, actBody(card.id, node.id, s.data), actTimeoutMs(action));
   s.pressing.delete(node.id);
+  if (answer.state !== "failed") taken(s, version);
   // What the hub wrote on the card by now is not newer than this answer; anything it writes later is.
   if (answer.state !== "running") s.outcomes[node.id] = { state: answer.state, text: answer.text, after: Number(s.item.card.actions?.[node.id]?.at) || 0 };
-  repaint(s);
+  redraw(s);
 }
 
 /** `{copy: {text}}`: onto this device's clipboard, nothing sent; 「已复制」 under the button for a moment. */
@@ -1288,8 +1751,8 @@ async function copy(s, node, value) {
   if (ok) haptic();
   if (!node?.id) return;
   s.copied[node.id] = { until: Date.now() + COPIED_MS, state: ok ? "ok" : "failed", text: ok ? "已复制" : "没复制成功" };
-  repaint(s);
-  const timer = setTimeout(() => repaint(s), COPIED_MS + 20);
+  redraw(s);
+  const timer = setTimeout(() => redraw(s), COPIED_MS + 20);
   timer.unref?.();
 }
 
@@ -1297,12 +1760,12 @@ async function say(s, label, event) {
   const ctx = s.ctx, card = s.item.card;
   if (!AGENT.test(card.owner ?? "") || typeof ctx?.say !== "function") return;
   clearTimeout(s.timer); s.timer = null;
-  const body = sayBody(card.id, label, event, s.data);
-  try { await ctx.say(card.owner, body.text, body.card); }
+  const body = sayBody(card.id, label, event, s.data), version = s.version;
+  try { await ctx.say(card.owner, body.text, body.card); taken(s, version); }
   catch (error) { ctx.problem?.(`没发出去：${error?.message || "请再点一次"}`); }
 }
 
-function fail(s, message) { s.busy = false; s.error = message; repaint(s); }
+function fail(s, message) { s.busy = false; s.error = message; redraw(s); }
 
 const UNKNOWN = ["offline", "unavailable", "timeout", "result_unknown", "internal"];
 
@@ -1325,7 +1788,7 @@ async function submitForm(s) {
   const titles = plain(form.titles) ? form.titles : {};
   const secret = Object.entries(plain(form.secret) ? form.secret : {});
   for (const [field] of secret) if (!(typed.get(fieldPath(field)) ?? "")) { fail(s, `请先填写${titles[field] || field}`); return; }
-  s.busy = true; s.error = ""; repaint(s);
+  s.busy = true; s.error = ""; redraw(s);
   if (secret.length) {
     if (typeof ctx.vaultSet !== "function") { fail(s, "这里存不了密码，请到手机上填写。"); return; }
     try {
@@ -1337,7 +1800,7 @@ async function submitForm(s) {
   if (!result?.ok) { fail(s, answerProblem(result?.error)); return; }
   secrets.delete(card.id);
   s.busy = false; s.sent = true; s.error = "";
-  repaint(s);
+  redraw(s);
   ctx.refresh?.(s.item.id);
 }
 
@@ -1345,12 +1808,12 @@ async function cancelForm(s) {
   const ctx = s.ctx;
   if (typeof ctx.answerForm !== "function") return;
   clearTimeout(s.timer); s.timer = null;
-  s.busy = true; s.error = ""; repaint(s);
+  s.busy = true; s.error = ""; redraw(s);
   let result;
   try { result = await answer(s, formCancelBody()); } catch { result = { ok: false, error: { code: "offline" } }; }
   if (!result?.ok) { fail(s, answerProblem(result?.error)); return; }
   secrets.delete(s.item.card.id);
   s.busy = false; s.cancelled = true;
-  repaint(s);
+  redraw(s);
   ctx.refresh?.(s.item.id);
 }
