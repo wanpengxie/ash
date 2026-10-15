@@ -101,11 +101,11 @@ class HomeActivity : Activity() {
     private fun chatInFront() = tab == HomeTab.CHAT && home.view.visibility != View.VISIBLE
 
     /**
-     * The keyboard never lays the chat out again. The frame keeps clear of the bars only, and the chat's
-     * conversation-and-input piece stands on the keyboard: while it moves, frame by frame ([ChatScreen.keyboard], a move of
-     * the drawing); when it has stopped, the same, plus room at the top of the conversation so its oldest rows can still be
-     * scrolled to ([ChatScreen.keyboardAtRest]). There is no moment where a move is swapped for a layout, so nothing
-     * flickers. Other tabs and the home pages are laid out above the keyboard, as before.
+     * The keyboard never lays the chat out: the frame keeps clear of the bars only, and the chat's conversation-and-input
+     * piece stands on the keyboard, moving with it frame by frame and staying there when it stops ([ChatScreen.keyboard], a
+     * move of the drawing). Coming up or going down, nothing in the conversation is laid out again, so nothing on screen
+     * changes place but the piece itself. (While the keyboard is up the top of the conversation is under the header; a drag
+     * of the conversation puts the keyboard away.) Other tabs and the home pages are laid out above the keyboard, as before.
      */
     private fun keyboardInsets() {
         var moving = false
@@ -117,7 +117,7 @@ class HomeActivity : Activity() {
             val keyboard = keyboardOf(insets)
             val chat = chatInFront()
             // While the keyboard moves, the piece follows it in onProgress; this answer is where it will end.
-            if (!moving) { chatScreen.keyboard(if (chat) keyboard else 0); chatScreen.keyboardAtRest(if (chat) keyboard else 0) }
+            if (!moving) chatScreen.keyboard(if (chat) keyboard else 0)
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom + if (chat) 0 else keyboard)
             WindowInsetsCompat.CONSUMED
         }
