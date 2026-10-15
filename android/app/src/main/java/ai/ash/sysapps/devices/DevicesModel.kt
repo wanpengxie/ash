@@ -111,6 +111,7 @@ object DevicesText {
         return when {
             d.updating != null -> "$v · 正在升级到 ${d.updating}"
             d.latest == true -> "$v · 最新"
+            d.latest == false && release == v -> "$v · 更新状态待确认"
             d.latest == false && release != null -> "$v · 有新版本 $release，在线时可升级"
             else -> v
         }

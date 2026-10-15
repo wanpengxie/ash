@@ -71,8 +71,19 @@ class DevicesActivityAcceptanceTest {
     private fun views(v: View): List<View> = listOf(v) + if (v is ViewGroup) (0 until v.childCount).flatMap { views(v.getChildAt(it)) } else emptyList()
     private fun View.visibleInTree(): Boolean = visibility == View.VISIBLE && ((parent as? View)?.visibleInTree() ?: true)
     private fun DeviceScreen.texts() = views(window.decorView).filterIsInstance<TextView>().filter { it.visibleInTree() }.map { it.text.toString() }
-    private fun DeviceScreen.button(label: String): TextView = views(window.decorView).filterIsInstance<TextView>().first { it.text.toString() == label && it.visibleInTree() }
-    private fun DeviceScreen.access(label: String) = views(window.decorView).filterIsInstance<AshUi.AshSwitch>().single { it.contentDescription == label }
+    private fun DeviceScreen.button(label: String): TextView {
+        if (label in setOf("保存名称", "撤销设备")) openSettings()
+        return views(window.decorView).filterIsInstance<TextView>().first { it.text.toString() == label && it.visibleInTree() }
+    }
+    private fun DeviceScreen.openSettings() {
+        views(window.decorView).filterIsInstance<TextView>().firstOrNull { it.text.toString() == "设备设置：名称与访问范围" && it.visibleInTree() }?.performClick()
+    }
+    private fun DeviceScreen.access(label: String): AshUi.AshSwitch {
+        val toggle = views(window.decorView).filterIsInstance<AshUi.AshSwitch>().single { it.contentDescription == label }
+        if (!toggle.visibleInTree()) openSettings()
+        assertTrue("The permission must be visible before a real click", toggle.visibleInTree())
+        return toggle
+    }
     private fun DeviceScreen.layoutScreen() {
         val view = window.decorView
         val width = (393 * resources.displayMetrics.density).toInt(); val height = (851 * resources.displayMetrics.density).toInt()
@@ -102,7 +113,7 @@ class DevicesActivityAcceptanceTest {
         val dir = File("/data/atoll/tmp/devices-acceptance").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
     }
-    private fun DeviceScreen.name() = views(window.decorView).filterIsInstance<EditText>().single()
+    private fun DeviceScreen.name(): EditText { openSettings(); return views(window.decorView).filterIsInstance<EditText>().single() }
 
     @Test fun aWarmOpenSwitchesFromDeviceAToBAndKeepsEachNamesDraft() {
         val activity = screen("d/device:a")
@@ -162,7 +173,7 @@ class DevicesActivityAcceptanceTest {
     @Test fun diagnosisShowsAConclusionKeepsRawFindingsFoldedAndNeverInventsLatency() {
         val activity = screen("d/device:a"); activity.answer("list", devices())
         activity.answer("gateway.status", JSONObject().put("configured", true).put("connected", true).put("url", "https://relay.example"))
-        activity.button("连接诊断").performClick()
+        activity.button("检查连接").performClick()
         val diagnose = activity.take("diagnose"); assertEquals("a", diagnose.body.optString("hand"))
         val raw = "Alpha is online at the relay and may be reached but has no tunnel."
         diagnose.done(JSONObject().put("ok", false).put("findings", JSONArray().put(JSONObject().put("code", "tunnel.missing").put("message", raw))), null)
@@ -206,6 +217,7 @@ class DevicesActivityAcceptanceTest {
         activity.event("pair.changed", JSONObject().put("pair_id", "pair-a").put("state", "requested"))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "requested").put("name", "书房电脑"))
         assertTrue(activity.texts().any { it.contains("书房电脑 想连上来") })
+        assertTrue(activity.texts().contains("高级选项")); assertFalse(activity.texts().contains("完全放开审批"))
         activity.capture("pairing-confirm-abilities")
         activity.access("文件和命令").performClick(); activity.button("批准连接").performClick()
         val approve = activity.take("pair_approve"); assertEquals("pair-a", approve.body.optString("pair_id")); assertTrue(approve.body.getBoolean("body"))
@@ -234,7 +246,7 @@ class DevicesActivityAcceptanceTest {
 
     @Test fun theHomeScreenExplainsWhatAshCanDoAndLeadsAnOfflineDeviceToRecovery() {
         val activity = screen("")
-        val data = devices(); data.getJSONArray("devices").getJSONObject(1).put("online", false).put("lend", false).put("latest", false)
+        val data = devices().put("release", "0.2.5"); data.getJSONArray("devices").getJSONObject(0).put("version", "0.2.5"); data.getJSONArray("devices").getJSONObject(1).put("online", false).put("lend", false).put("latest", false)
         activity.answer("list", data); activity.capture("devices-home")
         assertTrue(activity.texts().contains("接入一台电脑"))
         assertTrue(activity.texts().any { it.contains("Ash 现在可以：看屏幕") })
@@ -243,9 +255,36 @@ class DevicesActivityAcceptanceTest {
         activity.capture("devices-offline-row")
         activity.button("查看如何恢复连接").performClick(); flushDisk()
         assertTrue(activity.texts().contains("Beta"))
-        assertTrue(activity.texts().any { it.contains("请在这台设备打开 Ash 并检查网络") })
+        assertTrue(activity.texts().any { it.contains("Beta") && it.contains("这台电脑上启动 Ash") })
+        assertTrue(activity.texts().contains("检查连接"))
+        assertFalse(activity.texts().any { it.contains("到详情") })
+        assertFalse(activity.texts().contains("保存名称"))
+        assertFalse(activity.texts().contains("完全放开审批"))
         assertFalse(activity.texts().any { it.contains("Ash 现在可以") })
         activity.capture("offline-recovery")
+        activity.button("检查连接").performClick()
+        val diagnosis = activity.take("diagnose"); assertEquals("b", diagnosis.body.optString("hand"))
+        diagnosis.done(JSONObject().put("ok", false).put("findings", JSONArray().put(JSONObject().put("code", "hand.offline"))), null)
+        activity.take("list", "service:link").done(JSONObject().put("connections", JSONArray()), null)
+        assertTrue(activity.texts().any { it.contains("设备当前离线") })
+    }
+
+    @Test fun settingsAndAdvancedPermissionsRequireVisibleUserChoices() {
+        val activity = screen("d/device:a"); activity.answer("list", devices())
+        assertTrue(activity.texts().contains("检查连接")); assertFalse(activity.texts().contains("保存名称"))
+        activity.button("设备设置：名称与访问范围").performClick()
+        assertTrue(activity.texts().contains("保存名称")); assertTrue(activity.texts().contains("文件和命令"))
+        assertFalse(activity.texts().contains("运行本地帮手")); assertFalse(activity.texts().contains("完全放开审批"))
+        assertFalse(activity.requests.any { it.word == "access_set" })
+        activity.button("高级选项").performClick()
+        assertTrue(activity.texts().contains("完全放开审批"))
+        activity.access("运行本地帮手").performClick()
+        val request = activity.take("access_set")
+        assertEquals("device:a", request.body.optString("device")); assertTrue(request.body.getBoolean("local_agents"))
+        request.done(device("a", "Alpha").put("local_agents", true), null)
+        activity.button("收起高级选项").performClick()
+        assertTrue(activity.texts().contains("高级选项 · 有已启用项"))
+        assertFalse(activity.texts().contains("完全放开审批"))
     }
 
     @Test fun diagnosticLatencyUsesOnlyThisDevicesExecutorConnectionAndKeepsUnknownExplicit() {
@@ -253,7 +292,7 @@ class DevicesActivityAcceptanceTest {
         fun connection(hand: String, channel: String, rtt: Double?): JSONObject = JSONObject().put("hand", hand).put("channels", JSONArray().put(channel))
             .put("latency", if (rtt == null) JSONObject.NULL else JSONObject().put("rtt_ms", rtt).put("age_ms", 12_000))
         fun diagnose(connections: JSONArray) {
-            activity.button("连接诊断").performClick()
+            activity.button("检查连接").performClick()
             activity.take("diagnose").done(JSONObject().put("ok", true).put("findings", JSONArray()), null)
             activity.take("list", "service:link").done(JSONObject().put("connections", connections), null)
         }

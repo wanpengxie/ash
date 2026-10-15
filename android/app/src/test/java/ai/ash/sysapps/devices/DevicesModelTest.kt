@@ -56,12 +56,14 @@ class DevicesModelTest {
             dev("a", "MBP") { put("version", "0.2.4").put("latest", true).put("capabilities", JSONArray(listOf("workspace.bash", "body.info", "x.codex.send", "x.ash.update", "browser.open", "x.mac.thing"))) },
             dev("b", "mini") { put("version", "0.2.3").put("latest", false) },
             dev("c", "box") { put("version", "0.2.3").put("latest", false).put("updating", "0.2.4") },
+            dev("q", "状态不一致的设备") { put("version", "0.2.4").put("latest", false) },
             dev("p", "手机", kind = "phone") { put("version", "0.4.49").put("capabilities", JSONArray(listOf("screen.read", "camera.capture", "config.switch.set"))) },
         ))
         val items = s.rows(now).filterIsInstance<DevicesState.Row.Item>().associateBy { it.device.id }
         assertEquals("0.2.4 · 最新", items["device:a"]!!.version)
         assertEquals("0.2.3 · 有新版本 0.2.4，在线时可升级", items["device:b"]!!.version)
         assertEquals("0.2.3 · 正在升级到 0.2.4", items["device:c"]!!.version)
+        assertEquals("0.2.4 · 更新状态待确认", items["device:q"]!!.version)
         assertEquals("0.4.49", items["device:p"]!!.version)
         assertEquals(listOf("文件和命令", "Codex", "浏览器", "其他 1 项"), items["device:a"]!!.abilities)
         assertEquals(listOf("屏幕", "相机"), items["device:p"]!!.abilities)

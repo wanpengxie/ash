@@ -306,6 +306,15 @@ open class DevicesActivity : SystemAppActivity() {
         val root = column()
         private val header = text(getString(R.string.dev_loading), true)
         private val status = text("")
+        private val nextStep = text("")
+        private val settings = column().apply { visibility = View.GONE }
+        private var settingsOpen = false
+        private val settingsToggle: TextView = button(R.string.dev_settings) {
+            settingsOpen = !settingsOpen
+            settings.visibility = visible(settingsOpen)
+            settingsToggleButton().text = getString(if (settingsOpen) R.string.dev_settings_hide else R.string.dev_settings)
+        }
+        private fun settingsToggleButton() = settingsToggle
         private val change = subText("")
         private val abilities = subText("")
         private val versionInfo = subText("")
@@ -347,8 +356,14 @@ open class DevicesActivity : SystemAppActivity() {
             diagnosisToggleButton().text = getString(if (rawOpen) R.string.dev_diag_hide_details else R.string.dev_diag_details)
         }
         private fun diagnosisToggleButton() = diagnosisToggle
-        private val diagnose = button(R.string.dev_diagnose) { diagnose() }
+        private val diagnose = AshUi.button(this@DevicesActivity, getString(R.string.dev_check_connection), AshUi.Kind.PRIMARY, block = true) {
+            read(Refresh.DEVICES); read(Refresh.RELAY); diagnose()
+        }
         private val revokeNote = text("")
+        private val restore: TextView = AshUi.button(this@DevicesActivity, getString(R.string.dev_restore), AshUi.Kind.PRIMARY, block = true) {
+            run("restore", restoreButton(), revokeNote)
+        }.apply { visibility = View.GONE }
+        private fun restoreButton() = restore
         private val revoke: TextView = button(R.string.dev_revoke) {
             val d = model.device(id) ?: return@button
             if (d.revoked) run("restore", revokeButton(), revokeNote)
@@ -361,11 +376,10 @@ open class DevicesActivity : SystemAppActivity() {
         private val pending = HashSet<String>()
         private val unknown = HashSet<String>()
         init {
-            root.addView(header); root.addView(status); root.addView(change); root.addView(abilities); root.addView(versionInfo)
-            root.addView(name); root.addView(saveName); root.addView(nameNote); root.addView(access.root)
-            root.addView(update); root.addView(updateNote); root.addView(diagnose); root.addView(diagnosis)
+            root.addView(header); root.addView(status); root.addView(nextStep); root.addView(diagnose); root.addView(restore); root.addView(revokeNote); root.addView(diagnosis)
             root.addView(diagnosisToggle.apply { visibility = View.GONE }); root.addView(diagnosisRaw)
-            root.addView(revoke); root.addView(revokeNote)
+            root.addView(settingsToggle); root.addView(settings)
+            listOf(change, abilities, versionInfo, name, saveName, nameNote, access.root, update, updateNote, revoke).forEach(settings::addView)
             name.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -392,7 +406,15 @@ open class DevicesActivity : SystemAppActivity() {
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; return }
             header.text = d.name
             title.text = d.name
-            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), useSummary(d), attention(d), readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.distinct().joinToString("\n")
+            val noAccess = !d.lend && !d.body && !d.localAgents
+            val impact = when { d.revoked -> getString(R.string.dev_detail_revoked); noAccess -> getString(R.string.dev_detail_no_access); else -> useSummary(d) }
+            status.text = listOfNotNull(DevicesText.presence(d, System.currentTimeMillis()), impact, readErrors[Refresh.DEVICES], getString(R.string.dev_busy_rebuild).takeIf { unknown.isNotEmpty() }).filter { it.isNotEmpty() }.distinct().joinToString("\n")
+            nextStep.text = when {
+                d.revoked -> getString(R.string.dev_detail_restore_next, d.name)
+                !d.online -> getString(R.string.dev_detail_offline_next, d.name, DevicesText.kind(d.kind))
+                noAccess -> getString(R.string.dev_detail_access_next)
+                else -> getString(R.string.dev_detail_online_next)
+            }
             change.text = model.changes[id]?.let { DevicesText.change(it, primary, System.currentTimeMillis()) }.orEmpty()
             abilities.text = capabilities(d)
             versionInfo.text = DevicesText.version(d, model.release).orEmpty()
@@ -406,9 +428,12 @@ open class DevicesActivity : SystemAppActivity() {
             access.enabled(!d.revoked && d.kind != "browser" && "access_set" !in pending && "access_set" !in unknown)
             update.visibility = if (d.isComputer && d.latest == false && !d.revoked) View.VISIBLE else View.GONE
             update.isEnabled = d.online && d.updating == null && "update" !in pending && "update" !in unknown
-            revoke.text = getString(if (d.revoked) R.string.dev_restore else R.string.dev_revoke)
+            revoke.text = getString(R.string.dev_revoke); revoke.visibility = visible(!d.revoked)
+            restore.visibility = visible(d.revoked)
             revoke.isEnabled = "revoke" !in pending && "restore" !in pending && "revoke" !in unknown && "restore" !in unknown
+            restore.isEnabled = revoke.isEnabled && !restoring
             diagnose.isEnabled = "diagnose" !in pending
+            diagnose.visibility = visible(!d.revoked)
             if (diagnosisState != null && diagnosisState != (d.online to d.revoked) && "diagnose" !in pending) {
                 diagnosis.text = ""; diagnosisRaw.text = ""; diagnosisRaw.visibility = View.GONE; diagnosisToggle.visibility = View.GONE
                 diagnosisState = null; rawOpen = false
@@ -493,6 +518,18 @@ open class DevicesActivity : SystemAppActivity() {
 
     private inner class AccessForm(private val changed: ((String, Any, View, TextView) -> Unit)? = null) {
         val root = column()
+        private val advanced = column().apply { visibility = View.GONE }
+        private var advancedOpen = false
+        private val advancedToggle: TextView = button(R.string.dev_advanced) {
+            advancedOpen = !advancedOpen; advanced.visibility = visible(advancedOpen); advancedLabel()
+        }
+        private fun advancedLabel() {
+            advancedToggle.text = getString(when {
+                advancedOpen -> R.string.dev_advanced_hide
+                switches.getValue("local_agents").checked || switches.getValue("tier").checked -> R.string.dev_advanced_enabled
+                else -> R.string.dev_advanced
+            })
+        }
         private val values = linkedMapOf("lend" to R.string.dev_lend, "body" to R.string.dev_body, "local_agents" to R.string.dev_agents, "tier" to R.string.dev_full)
         private val switches = values.mapValues { (key, label) -> AshUi.AshSwitch(this@DevicesActivity).apply {
             contentDescription = getString(label)
@@ -500,29 +537,34 @@ open class DevicesActivity : SystemAppActivity() {
             onChange = { on ->
                 if (changed != null) messages.getValue(key).visibility = View.VISIBLE
                 changed?.invoke(key, if (key == "tier") (if (on) "full" else "ask") else on, this, messages.getValue(key))
+                advancedLabel()
             }
         } }
         private val messages = values.mapValues { text("") }
         init {
             val helps = listOf(R.string.dev_lend_help, R.string.dev_body_help, R.string.dev_agents_help, R.string.dev_full_help)
             values.entries.forEachIndexed { i, (key, label) ->
-                root.addView(AshUi.hstack(this@DevicesActivity, AshTokens.Space.xs).apply {
+                val group = if (key == "local_agents" || key == "tier") advanced else root
+                group.addView(AshUi.hstack(this@DevicesActivity, AshTokens.Space.xs).apply {
                     addView(AshUi.vstack(this@DevicesActivity).apply {
                         addView(text(getString(label), true)); addView(text(getString(helps[i])))
                     }, LinearLayout.LayoutParams(0, -2, 1f))
                     addView(switches.getValue(key))
                 })
-                root.addView(messages.getValue(key).apply { visibility = View.GONE })
+                group.addView(messages.getValue(key).apply { visibility = View.GONE })
             }
+            root.addView(advancedToggle); root.addView(advanced)
         }
         fun bind(d: Device) {
             val actual = mapOf("lend" to d.lend, "body" to d.body, "local_agents" to d.localAgents, "tier" to (d.tier == "full"))
             switches.forEach { (key, switch) -> switch.set(actual.getValue(key)) }
+            advancedLabel()
         }
         fun enabled(enabled: Boolean) { switches.values.forEach { it.isEnabled = enabled; it.alpha = if (enabled) 1f else 0.4f } }
         fun restore(value: String?) {
             val data = value?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return
             switches.forEach { (key, switch) -> switch.set(if (key == "tier") data.optString(key) == "full" else data.optBoolean(key)) }
+            advancedLabel()
         }
         fun args() = JSONObject().put("tier", if (switches.getValue("tier").checked) "full" else "ask").also { o -> listOf("lend", "body", "local_agents").forEach { o.put(it, switches.getValue(it).checked) } }
     }
