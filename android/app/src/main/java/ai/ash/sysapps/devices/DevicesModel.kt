@@ -217,7 +217,11 @@ class DevicesState {
     }
     fun relayRead(gen: Int, data: JSONObject?) { if (current(Refresh.RELAY, gen) && data != null) relay = DevicesJson.relay(data) }
     fun requestsRead(gen: Int, data: JSONObject?) { if (current(Refresh.PAIRS, gen) && data != null) requests = DevicesJson.requests(data) }
-    fun heard(m: JSONObject) { DevicesJson.change(m)?.let { (device, change) -> changes[device] = change } }
+    fun heard(m: JSONObject) {
+        DevicesJson.change(m)?.let { (device, change) ->
+            if ((changes[device]?.at ?: Long.MIN_VALUE) <= change.at) changes[device] = change
+        }
+    }
 
     /** One row of the first screen; [key] is stable and unique (MOBILE-ARCH §2.2). */
     sealed class Row(val key: String) {
@@ -288,7 +292,7 @@ class PairFlow {
     }
 
     var step: Step = Step.Idle; private set
-    private val pairId get() = when (val s = step) {
+    val pairId get() = when (val s = step) {
         is Step.Waiting -> s.pairId; is Step.Asking -> s.pairId; is Step.Approving -> s.pairId; is Step.Approved -> s.pairId; else -> null
     }
 
@@ -332,6 +336,14 @@ class PairFlow {
     fun expiredBy(now: Long): Boolean = (step as? Step.Waiting)?.let { it.deadline in 1..now } == true
 
     fun reset() { step = Step.Idle }
+
+    /** Restore only the identifier; the one-time secret stays out of saved state. Read pair_status before any action. */
+    fun resume(id: String) { step = Step.Waiting(id, "", 0) }
+
+    fun restoreCommand(id: String, command: String, deadline: Long) {
+        val waiting = step as? Step.Waiting ?: return
+        if (waiting.pairId == id && command.isNotEmpty()) step = waiting.copy(command = command, deadline = deadline)
+    }
 
     private fun issueFailure(code: String?, message: String?) = when (code) {
         "unavailable" -> "中转站现在连不上，生成不了安装命令"

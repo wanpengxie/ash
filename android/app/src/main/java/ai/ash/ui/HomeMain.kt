@@ -75,7 +75,6 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     private var quiet: String? = null; private var quietRead = false
     private var mode: String? = null; private var rules: Int? = null
     private var proactive: String? = null
-    private var devices: List<JSONObject>? = null; private var pairsWaiting = 0; private var devicesRead = false
     private var apps: List<JSONObject>? = null
     private var soul: String? = null; private var soulRead = false
     private var files: List<JSONObject>? = null
@@ -270,17 +269,12 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     }
 
     private fun drawHands(): Unit = redraw(handsBox) {
-        val live = devices?.filter { it.num("revoked_at") == null && it.str("kind") != "browser" } ?: emptyList()
-        val online = live.count { it.optBoolean("online") }
         val cells = ArrayList<View>()
         cells.add(cell("phone", "这台手机", if (todo > 0) "$todo 项要处理" else "状态良好", if (todo > 0) "warn" else null, if (todo > 0) "warn" else "ok") { openCheckup(null) })
-        cells.add(cell("laptop", if (live.size == 1) live[0].str("name") ?: "电脑" else "电脑",
-            if (pairsWaiting > 0) "$pairsWaiting 台等你批准" else if (live.isNotEmpty()) (if (online > 0) "$online 台在线" else "都不在线") else "还没有连接",
-            if (pairsWaiting > 0) "warn" else null, if (pairsWaiting > 0) "warn" else if (online > 0) "ok" else null) { env.nav.go("hands") })
         cells.add(cell("globe", "她的浏览器", "登录过的网站") { env.nav.go("browser") })
         cells.add(cell("grid", "应用", apps?.let { HomeModel.appsSummary(it).replace(Regex("^\\d+ 个应用 · "), "") } ?: "—") { env.nav.apps() })
-        val tag: View? = if (todo > 0) AshUi.tag(ctx, "$todo 项要处理", Tone.WARN) else if (pairsWaiting > 0) AshUi.tag(ctx, "$pairsWaiting 个等你批准", Tone.WARN) else null
-        addView(Hk.section(ctx, "她的手和眼", null, null, Hk.grid(ctx, 2, 10, cells), rightView = tag))
+        val tag: View? = if (todo > 0) AshUi.tag(ctx, "$todo 项要处理", Tone.WARN) else null
+        addView(Hk.section(ctx, ctx.getString(ai.ash.R.string.dev_phone_apps), null, null, Hk.grid(ctx, 2, 10, cells), rightView = tag))
     }
 
     // ---- 她是谁
@@ -347,8 +341,6 @@ class HmHome(env: HomeEnv, arg: String?) : HomePage(env, arg) {
             }
         }
         readFile("PROACTIVE.md") { f -> if (f.ok) { proactive = f.text ?: ""; drawPromises() } }
-        call("service:devices", "list") { r -> if (r.ok) { devices = r.data.list("devices").filter { it.str("device") != null && it.str("name") != null }; devicesRead = true; drawHands() } }
-        call("service:devices", "pair_pending") { r -> if (r.ok) { pairsWaiting = r.data.list("pairs").count { it.str("state") == "requested" }; drawHands() } }
         call("service:apps", "apps.list") { r -> if (r.ok) { apps = r.data.list("apps"); drawHands() } }
         call("service:persona", "get", JSONObject().put("file", "SOUL.md")) { r -> if (r.ok) { soul = r.data.list("files").firstOrNull { it.str("file") == "SOUL.md" }?.str("content") ?: ""; soulRead = true; drawWho() } }
         call("body:main", "workspace.ls") { r -> if (r.ok) { files = r.data.list("entries").sortedBy { it.str("name") ?: "" }; drawFiles() } }
