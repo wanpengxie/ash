@@ -205,7 +205,7 @@ export function createHuman(deps: HumanDeps): HumanEdge {
           if (app && body.temporary_app === true && !temporary) row.plan.problems.push(`temporary_app: ${app} is not an app written for this card (an agent's new app no lasting card uses), so it stays as it is; drop temporary_app`);
           runtime.register(row, { ...(app ? { app } : {}), temporary, ...(typeof body.ttl_min === "number" ? { ttl_min: body.ttl_min } : {}) });
           if (!app && Object.keys(row.plan.sources).length) row.plan.problems.push("a2ui.sources need the card's app (show {app}): a card without an app gets no live data");
-          void notifier.say({ ...msg, body: { text: row.text } }).catch((error) => log("notification failed", error));
+          void notifier.say({ ...msg, body: { text: row.text, ...(body.kind ? { kind: body.kind } : {}) } }).catch((error) => log("notification failed", error));
           return { data: { accepted: true, card: row.id, ...(row.plan.problems.length ? { problems: row.plan.problems } : {}), ...(row.plan.hints.length ? { hints: row.plan.hints } : {}) } };
         }
         case "card.update": {

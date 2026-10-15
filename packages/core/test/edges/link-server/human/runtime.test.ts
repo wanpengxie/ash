@@ -168,3 +168,29 @@ test("a temporary app is removed only when no page or widget uses it; a failed r
   await w.runtime.recycle();
   assert.equal(removes(), 2, "a removed app is not removed twice");
 });
+
+test("built-in task cards edit only their own task and keep the real caller", async () => {
+  const w = setup();
+  const owner: Caller = { member: "person:owner", via: "human", local: true };
+  const make = (card: string, creator: string, target: string, id: string) => {
+    const row = w.cards.put({ id: card, message: `m_${card}`, owner: creator, a2ui: { components: [
+      { id: "root", component: "Column", children: ["done"] },
+      { id: "done", component: "Button", child: "label", action: { call: { member: target, word: "done", body: { id } } } },
+      { id: "label", component: "Text", text: "完成" },
+    ] } }); w.runtime.register(row, {});
+  };
+  make("task.t_one.remind.1", "service:tasks", "service:tasks", "t_one");
+  assert.equal((await w.runtime.act({ card: "task.t_one.remind.1", component: "done" }, owner)).data && w.sent.at(-1)?.caller.via, "human");
+  assert.equal(w.sent.at(-1)?.caller.member, "person:owner");
+  for (const [card, creator, target, id] of [
+    ["task.t_two.remind.1", "agent:main", "service:tasks", "t_two"],
+    ["task.t_three.remind.1", "service:tasks", "service:other", "t_three"],
+    ["task.t_four.remind.1", "service:tasks", "service:tasks", "t_another"],
+  ]) {
+    make(card, creator, target, id);
+    const before = w.sent.length;
+    const outcome = await w.runtime.act({ card, component: "done" }, owner);
+    assert.equal((outcome.data as { state: string }).state, "failed");
+    assert.equal(w.sent.length, before);
+  }
+});

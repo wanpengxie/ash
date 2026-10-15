@@ -25,7 +25,7 @@ object TasksModel {
         val end = Instant.ofEpochMilli(now).atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         return tasks.filter { t -> when (view) {
             View.TODAY -> t.open && listOfNotNull(t.dueAt, t.remindAt).any { it < end }
-            View.WAITING -> t.open && (t.assignee == "person:owner" || t.status == "waiting" && t.subject == "owner")
+            View.WAITING -> t.open && t.assignee == "person:owner"
             View.ASH -> t.open && t.subject == "ash"
             View.ALL -> true
             View.CLOSED -> !t.open
