@@ -105,6 +105,11 @@ public class TeamActivityAcceptanceTest {
         if (root instanceof ViewGroup) for (int i=0;i<((ViewGroup)root).getChildCount();i++) { EditText v=field(((ViewGroup)root).getChildAt(i),value); if(v!=null)return v; }
         return null;
     }
+    static View described(View root,String description) {
+        if(description.equals(String.valueOf(root.getContentDescription())))return root;
+        if(root instanceof ViewGroup)for(int i=0;i<((ViewGroup)root).getChildCount();i++){View v=described(((ViewGroup)root).getChildAt(i),description);if(v!=null)return v;}
+        return null;
+    }
     static void layout(TeamActivity a) {
         idle(); View decor=a.getWindow().getDecorView();
         decor.measure(View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));
@@ -182,6 +187,12 @@ public class TeamActivityAcceptanceTest {
             assertNotNull(screenText(a,"委托与回复",false));
             assertFalse(text(a.getWindow().getDecorView()).contains("配置模型："));
             screenshot(a,"01-working-delegation");
+            touch(a,screenText(a,"资料帮手",false));
+            assertEquals("agent:research",member(a)); assertEquals("agent:research",last("exchanges").body.getString("agent"));
+            last("exchanges").answer(during.getJSONObject("exchanges").toString());
+            layout(a);touch(a,described(a.getWindow().getDecorView(),"返回"));
+            assertEquals("team",ReflectionHelpers.getField(a,"route"));
+            last("exchanges").answer(during.getJSONObject("exchanges").toString());
             Feed.listener.invoke(new JSONObject("{\"kind\":\"response\",\"from\":\"service:agents\",\"word\":\"ask\"}"));
             last("exchanges").answer(answered.getJSONObject("exchanges").toString());
             TextView continueButton=screenText(a,"继续问",true);
