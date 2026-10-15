@@ -21,7 +21,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Toast
-import androidx.recyclerview.widget.DefaultItemAnimator
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONObject
@@ -79,16 +78,14 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         addItemDecoration(gap(10))
     }
     private val talkRows = KeyedRowsAdapter(activity)
-    private val talkAnimator = DefaultItemAnimator().apply { supportsChangeAnimations = false }
-    private var restoreDraw: android.view.ViewTreeObserver.OnPreDrawListener? = null
     private val talkLm = LinearLayoutManager(activity).apply { stackFromEnd = true }
     private val talkList = RecyclerView(activity).apply {
-        layoutManager = talkLm; adapter = talkRows; itemAnimator = talkAnimator
+        layoutManager = talkLm; adapter = talkRows
         setPadding(d(14), 0, d(14), d(12)); clipToPadding = false
         addItemDecoration(gap(10))
         // A drag of the session puts the keyboard away; its own scrolling never does (§4.3).
         addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrollStateChanged(rv: RecyclerView, st: Int) { if (st == RecyclerView.SCROLL_STATE_DRAGGING) { place = null; cancelRestore(); dropKeyboard() } }
+            override fun onScrollStateChanged(rv: RecyclerView, st: Int) { if (st == RecyclerView.SCROLL_STATE_DRAGGING) dropKeyboard() }
         })
     }
     /** Where the session was read, to bring back once it is read again after the activity was made again. */
@@ -145,7 +142,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         }
     }
 
-    fun close() { closed = true; cancelRestore(); state.invalidate(); main.removeCallbacksAndMessages(null) }
+    fun close() { closed = true; state.invalidate(); main.removeCallbacksAndMessages(null) }
 
     private fun call(to: String, word: String, body: JSONObject = JSONObject(), done: (JSONObject?, HumanPort.Failure?) -> Unit) =
         HumanCall.call(client, to, word, body, done)
@@ -183,7 +180,7 @@ class CodexPane(private val activity: Activity, private val title: android.widge
         shown = visible
         main.removeCallbacks(tick)
         // Gone: what is being read no longer counts, and no read follows it.
-        if (!visible) { cancelRestore(); dropKeyboard(); state.invalidate(); readAgain = false }
+        if (!visible) { dropKeyboard(); state.invalidate(); readAgain = false }
         if (visible && !closed) { paint(); refresh(); main.postDelayed(tick, 3_000) }
     }
 
@@ -278,17 +275,15 @@ class CodexPane(private val activity: Activity, private val title: android.widge
     private fun rememberPlace() {
         if (!state.inTalk) return
         val key = draftKey() ?: return
-        val anchor = place ?: Anchor.of(talkList, talkLm, talkRows)
+        val anchor = Anchor.of(talkList, talkLm, talkRows)
         if (anchor == null) readingPlaces.remove(key) else readingPlaces[key] = anchor
         while (readingPlaces.size > 32) readingPlaces.remove(readingPlaces.keys.first())
     }
 
     /** The route changed: the lists are handed over anew and the box shows this conversation's own draft. */
     private fun moved() {
-        cancelRestore()
         changeLine.visibility = View.INVISIBLE
         if (draftKey() != loadedDraftKey) place = draftKey()?.let(readingPlaces::get)
-        if (place != null) { talkAnimator.endAnimations(); talkList.itemAnimator = null }
         talkRows.submitList(null)
         loadDraft()
         paint()
@@ -483,7 +478,6 @@ class CodexPane(private val activity: Activity, private val title: android.widge
 
     private fun paintTalk(toEnd: Boolean = false) {
         if (!state.inTalk) return
-        if (toEnd) { place = null; cancelRestore() }
         val rows = ArrayList<ChatRow>()
         val newIn = state.newIn
         if (newIn != null) {
@@ -514,34 +508,10 @@ class CodexPane(private val activity: Activity, private val title: android.widge
                 rows += ChatRow(op.clientId, op.status + "|" + op.text) { opView(op) }
         }
         val read = newIn != null || state.detail != null
-        val anchor = place
-        val route = state.generation
-        if (anchor != null && !toEnd) {
-            // Restoring an explicit reading place owns scrolling until its actual layout is drawn.
-            // Do not let an old atEnd observation or predictive row animation move that layout afterwards.
-            talkRows.submitList(rows) {
-                if (closed || route != state.generation || place != anchor || !read) return@submitList
-                val index = anchor.indexIn(rows)
-                if (index == null) { place = null; cancelRestore(); if (rows.isNotEmpty()) talkLm.scrollToPosition(rows.lastIndex); return@submitList }
-                talkLm.scrollToPositionWithOffset(index, anchor.offset)
-                if (restoreDraw == null) {
-                    val draw = android.view.ViewTreeObserver.OnPreDrawListener {
-                        if (route != state.generation || closed || place != anchor) cancelRestore()
-                        else if (!talkList.isLayoutRequested && Anchor.of(talkList, talkLm, talkRows) == anchor) {
-                            place = null; cancelRestore()
-                        }
-                        true
-                    }
-                    restoreDraw = draw; talkList.viewTreeObserver.addOnPreDrawListener(draw)
-                }
-            }
-        } else FollowEnd.submit(talkList, talkLm, talkRows, rows, toEnd)
-    }
-
-    private fun cancelRestore() {
-        restoreDraw?.let { if (talkList.viewTreeObserver.isAlive) talkList.viewTreeObserver.removeOnPreDrawListener(it) }
-        restoreDraw = null
-        talkList.itemAnimator = talkAnimator
+        FollowEnd.submit(talkList, talkLm, talkRows, rows, toEnd) {
+            // Made again: back to the row that was at the top, if the session still shows it; else the newest.
+            if (read) place?.let { a -> place = null; a.indexIn(rows)?.let { talkLm.scrollToPositionWithOffset(it, a.offset) } }
+        }
     }
 
     private fun hintRow(s: String) = ChatRow("hint", s) {
