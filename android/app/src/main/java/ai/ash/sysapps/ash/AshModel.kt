@@ -36,7 +36,8 @@ object AshModel {
     /** [current] is `history/current`'s data, [pulse] `pulse.get`'s (either may be missing: what it would say is left out). */
     fun now(online: Boolean, current: JSONObject?, pulse: JSONObject?, now: Long): Now {
         val presence = current?.optJSONObject("presence")
-        val state = if (!online) "offline" else presence.str("state")?.takeIf { it in setOf("working", "thinking", "waiting_you") } ?: "idle"
+        val reported = if (current?.optJSONObject("presence") == null && online) "unknown" else if (!online) "offline" else presence.str("state")?.takeIf { it in setOf("working", "thinking", "waiting_you") } ?: "idle"
+        val state = if (reported in setOf("working", "thinking") && current?.optJSONObject("progress")?.let { it.has("ended") && !it.isNull("ended") } == true) "unknown" else reported
         val busy = state == "working" || state == "thinking"
         val progress = current?.optJSONObject("progress")
         val since = if (busy && progress != null && (!progress.has("ended") || progress.isNull("ended"))) progress.long("started") else null
@@ -49,7 +50,8 @@ object AshModel {
     fun nowText(n: Now, name: String): String = when (n.state) {
         "offline" -> "离线，连上后会自动刷新"
         "working" -> n.doing ?: "在忙"
-        "thinking" -> "在想"
+        "thinking" -> "正在处理消息"
+        "unknown" -> "还没有取得当前状态"
         "waiting_you" -> "在等你一句话"
         else -> "$name 现在空着"
     }
@@ -97,14 +99,29 @@ object AshModel {
         MemoryFile(o.str("file") ?: return@mapNotNull null, o.optString("content"), o.optBoolean("missing"), o.str("by"), o.long("at"))
     }
 
+    data class MemoryItem(val section: String, val text: String, val occurrence: Int)
+    fun memoryItems(markdown: String): List<MemoryItem> {
+        var section = ""
+        val counts = HashMap<String, Int>()
+        return markdown.lines().mapNotNull { raw ->
+            val line = raw.trim()
+            if (line.startsWith("#")) { section = line.trimStart('#').trim(); return@mapNotNull null }
+            if (line.isBlank() || line.startsWith("<!--") || line.startsWith("```")) return@mapNotNull null
+            val text = shown(line)
+            val occurrence = counts.getOrDefault(text, 0); counts[text] = occurrence + 1
+            MemoryItem(section, text, occurrence)
+        }
+    }
+
     private val BULLET = Regex("^(\\s*)(?:[-*+]|\\d+[.)])\\s+(.*)$")
 
     /** The memory file with the [index]th line that says [item] (as `HomeModel.groupMemory` shows it) replaced by [with], or removed when [with] is null.
      *  Null when the line is no longer there (the file changed meanwhile): nothing is written then. */
     fun editItem(markdown: String, item: String, with: String?): String? {
         val lines = markdown.split("\n").toMutableList()
-        val at = lines.indexOfFirst { raw -> val l = raw.trimEnd('\r').trim(); !l.startsWith("#") && shown(l) == item }
-        if (at < 0) return null
+        val matches = lines.indices.filter { index -> val l = lines[index].trimEnd('\r').trim(); !l.startsWith("#") && shown(l) == item }
+        if (matches.size != 1) return null
+        val at = matches.single()
         if (with == null) lines.removeAt(at)
         else {
             val raw = lines[at].trimEnd('\r')
@@ -198,6 +215,7 @@ object AshModel {
     class ReadSlot<T> {
         var value: T? = null; private set
         var error: String? = null; private set
+        var receivedAt: Long? = null; private set
         var busy = false; private set
         private var generation = 0
         private var again = false
@@ -210,7 +228,7 @@ object AshModel {
         fun finish(ticket: Int, result: T?, failure: String? = null): Boolean {
             if (ticket != generation || !busy) return false
             busy = false
-            if (failure == null && result != null) { value = result; error = null } else error = failure ?: "没能读取，请重试"
+            if (failure == null && result != null) { value = result; error = null; receivedAt = System.currentTimeMillis() } else error = failure ?: "没能读取，请重试"
             return again.also { again = false }
         }
         fun cancel() { generation++; busy = false; again = false }

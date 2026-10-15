@@ -41,6 +41,12 @@ class AshModelTest {
         assertEquals("# 关于你\n- 早睡\n", AshModel.editItem(text, "爱喝美式", null))
         assertNull(AshModel.editItem(text, "不存在", "新内容"))
     }
+    @Test fun memoryRowsAreIndividualFactsAndUnknownStatusIsNotIdle() {
+        assertEquals(listOf("会议周二", "爱喝美式"), AshModel.memoryItems("# 安排\n- 会议周二\n- **爱喝美式**\n").map { it.text })
+        assertNull(AshModel.editItem("- 同一条\n- 同一条\n", "同一条", "改了"))
+        assertEquals("unknown", AshModel.now(true, null, null, 0).state)
+        assertEquals("正在处理消息", AshModel.nowText(AshModel.Now("thinking", null, null, 0, null), "Ash"))
+    }
     @Test fun diaryPartsAndPaginationKeepRealContentAndUniqueDays() {
         val parts = AshModel.diaryParts("# 今天\n## 复盘\n- 我学到了什么\n<!-- review:done -->")
         assertEquals(listOf(AshModel.Part("复盘", listOf("我学到了什么"))), parts)
@@ -51,7 +57,7 @@ class AshModelTest {
     @Test fun nowDoesNotInventWorkFromAnEndedProgress() {
         val now = AshModel.now(true, JSONObject("""{"presence":{"state":"working","text":"查路线"},"progress":{"started":12,"ended":20}}"""), null, 30)
         assertNull(now.since)
-        assertEquals("查路线", AshModel.nowText(now, "Ash"))
+        assertEquals("unknown", now.state)
         assertEquals("offline", AshModel.now(false, null, null, 30).state)
     }
 }

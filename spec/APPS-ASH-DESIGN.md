@@ -31,3 +31,15 @@
 已运行的命令和结果以交付报告为准：服务侧 persona 测试，SDK 相关单测和生成物检查，TypeScript 编译；Android compileDebugKotlin 与 AshModelTest。Model 覆盖共享主体过滤、状态排序、旧响应/失败不清空、记忆编辑、日记解析与分页去重、已结束进度不伪装进行中。
 
 没有操作手机。真实 IME/拼音 composing、旋转/分屏/进程回收、大字体/RTL/TalkBack、预测返回、断网重连及人/agent 同时操作的端到端场景仍未实机验证。系统注册表/Manifest 由底座 worker 统一登记；任务服务由 tasks worker 提供，集成需同时带上两项提交。
+
+## 产品验收整改（10-16）
+
+日常路径一：我对你的了解 → 具体的「会议周二」→ 修改为周三 / 删除 / 留纠正 → 保存前 memory.get 读取完整最新文档 → 只替换该事实 → memory.set → 同一 persona/note 通知主 agent。新添的其他记忆保留，目标已变或重复时不猜着改；全文退到高级入口。页面和首页展示「你纠正的那件事」及原批注关联的回应，不要求用户去读 Markdown。
+
+普通批注路径会区分：保存且已通知、保存但尚未通知、送达结果未知。后两者可点同一条记录重试；persona 只记一个批注 id，已成功唤醒的 id 不再重复唤醒。没有后台队列或新的修订协议。
+
+日常路径二：首页「我答应你的事」→ 某件承诺 → 待做 / 正在推进 / 卡在这里 / 事情的结果。原因读 note，结果读 result；没有写就直说未记录，不能把 todo 说成 doing。任务应用仍是同一份 subject:ash 数据，详情可按 id 打开它调整安排、看出处，返回后重新读取。文件和证据不占主路径。
+
+「现在」展示最近读取的事实；缺失不当作空闲，读取失败、断连或旧快照明确说当前待确认，并带读取时间。不再用「在想」替代处理中的状态。成长按 why/did/effect/next 展示，缺效果说尚未记录，标明记录时间、记录人；未附出处时不冒充已经核实的成果。
+
+内部回归分层：AshMemoryWriterTest 跑生产 get/patch/set 工作流，AshActivityTest 用真实 Activity、RecyclerView、EditText、AlertDialog 和点击回执验证可见产品路径（端口为固定响应）；ash-app.test.ts 以真实 startHub、human link、MCP 工具、正文文件及后台唤醒验证纠正→改记忆/日记→note.reply 和断连重试。它们均不冒充真机 IME/可访问性验收，实际运行结果及缺项另列在交付证据中。

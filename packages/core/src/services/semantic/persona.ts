@@ -71,6 +71,7 @@ const SQL = `CREATE TABLE IF NOT EXISTS persona_versions (
   CREATE TABLE IF NOT EXISTS persona_growth (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, why TEXT NOT NULL, did TEXT NOT NULL, effect TEXT NOT NULL, next TEXT NOT NULL,
   evidence TEXT NOT NULL, at INTEGER NOT NULL, by TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS persona_note_delivery (id TEXT PRIMARY KEY, told_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS persona_writes (file TEXT PRIMARY KEY, version TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL);`;
 
 const versionOf = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 12);
@@ -235,20 +236,21 @@ export class PersonaService implements Member {
 
   private async note(body: Record<string, unknown>, ctx: HandleContext) {
     const id = typeof body.id === "string" ? body.id : `n_${randomUUID()}`;
-    const old = this.db.prepare("SELECT about, text, by FROM persona_notes WHERE id=?").get(id) as { about: string; text: string; by: string } | undefined;
-    if (old) {
-      if (old.about !== body.about || old.text !== body.text || old.by !== ctx.caller.member) throw new WordError("bad_request", "this note id is already in use with different content");
-      return { id, told: false };
+    const old = this.db.prepare("SELECT id, about, text, by, at, reply FROM persona_notes WHERE id=?").get(id) as PersonaNote | undefined;
+    if (old && (old.about !== body.about || old.text !== body.text || old.by !== ctx.caller.member)) throw new WordError("bad_request", "this note id is already in use with different content");
+    const note: PersonaNote = old ?? { id, about: String(body.about), text: String(body.text).slice(0, 4000), by: ctx.caller.member, at: this.now() };
+    if (!old) {
+      this.db.prepare("INSERT INTO persona_notes (id, about, text, by, at) VALUES (?,?,?,?,?)").run(note.id, note.about, note.text, note.by, note.at);
+      this.changed("notes", note.about, note.by);
     }
-    const note: PersonaNote = { id, about: String(body.about), text: String(body.text).slice(0, 4000), by: ctx.caller.member, at: this.now() };
-    this.db.prepare("INSERT INTO persona_notes (id, about, text, by, at) VALUES (?,?,?,?,?)").run(note.id, note.about, note.text, note.by, note.at);
-    this.changed("notes", note.about, note.by);
+    if (old?.reply || this.db.prepare("SELECT id FROM persona_note_delivery WHERE id=?").get(id)) return { id, told: true };
     // She is told, on her back lane, so she can fix what the note is about and answer it (skill owner-notes).
     const agent = await primaryAgent(this.options.router, PERSONA_ID);
     let told = false;
     if (agent && agent !== note.by) {
       const woke = await wakeAgent(this.options.router, PERSONA_ID, agent, "owner_note", { note: note.id, about: note.about, text: note.text, by: note.by });
       told = woke.ok;
+      if (told) this.db.prepare("INSERT OR REPLACE INTO persona_note_delivery (id, told_at) VALUES (?,?)").run(id, this.now());
       if (!woke.ok) this.options.log?.(`persona: could not wake ${agent} for note ${note.id}: ${woke.error.message}`);
     }
     return { id: note.id, told };

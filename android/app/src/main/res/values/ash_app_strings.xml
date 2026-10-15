@@ -2,17 +2,17 @@
 <resources>
     <string name="ash_now">我现在在做什么</string>
     <string name="ash_identity">我是谁</string>
-    <string name="ash_memory">我记得你</string>
+    <string name="ash_memory">我对你的了解</string>
     <string name="ash_diary">我的日记</string>
     <string name="ash_growth">我的成长</string>
     <string name="ash_promises">我们的约定</string>
-    <string name="ash_notes">你的批注</string>
+    <string name="ash_notes">你的纠正与我的回应</string>
     <string name="ash_refresh">刷新</string>
     <string name="ash_save">保存</string>
     <string name="ash_open">查看</string>
     <string name="ash_next">我下次主动整理：%1$s</string>
     <string name="ash_waiting">有 %1$d 件事在等你</string>
-    <string name="ash_tasks">我手上的事</string>
+    <string name="ash_tasks">我答应你的事</string>
     <string name="ash_no_tasks">暂时没有未完成的待办。答应你的事，我会记在这里。</string>
     <string name="ash_closed">已经收尾的事</string>
     <string name="ash_closed_count">%1$d 件 · 和任务应用共用同一份记录</string>
@@ -66,4 +66,35 @@
     <string name="ash_more">更早的日记</string>
     <string name="ash_applies_to">适用于：%1$s</string>
     <string name="ash_tasks_partial">这里显示最近更新的记录；打开任务应用可查看全部待办。</string>
+    <string name="ash_memory_advanced">全文与整页批注（高级）</string>
+    <string name="ash_edit_item">修改</string>
+    <string name="ash_delete_item">删除</string>
+    <string name="ash_notice_title">批注与通知</string>
+    <string name="ash_note_told">批注已保存，已通知 Ash；回应会显示在原批注旁。</string>
+    <string name="ash_note_not_told">批注已保存，但尚未通知 Ash。点此重试通知同一条批注。</string>
+    <string name="ash_note_delivery_unknown">还没确认 Ash 是否收到，改动和草稿均保留。点此核对并重试同一条批注。</string>
+    <string name="ash_notifying">正在通知 Ash…</string>
+    <string name="ash_note_answered">Ash 已回应这条批注，点开查看。</string>
+    <string name="ash_replaced_notice">我把记忆「%1$s」改成「%2$s」，请读最新内容。</string>
+    <string name="ash_deleted_notice">我删除了记忆「%1$s」，请不要再依据这条旧记忆行动。</string>
+    <string name="ash_note_item">关于「%1$s」：
+</string>
+    <string name="ash_now_unknown">还没有取得当前状态，不能确认她在做什么。</string>
+    <string name="ash_now_old">上次读取于 %1$s，当时：%2$s。当前状态待确认。</string>
+    <string name="ash_unrecorded">尚未记录</string>
+    <string name="ash_recorded_at">%1$s · %2$s 记录</string>
+    <string name="ash_growth_unverified">这是一条成长说明，尚未附出处，效果未在这里核实。</string>
+    <string name="ash_last_checked">状态读取于 %1$s</string>
+    <string name="ash_item_empty">请写下正确的内容；要移除这条记忆，请使用删除。</string>
+    <string name="ash_correction">你纠正的那件事</string>
+    <string name="ash_promised_by">负责：%1$s</string>
+    <string name="ash_task_blocked">卡在这里</string>
+    <string name="ash_task_result">事情的结果</string>
+    <string name="ash_task_dropped">这件事已停止</string>
+    <string name="ash_task_progress">正在推进</string>
+    <string name="ash_task_todo">已经记下，还没开始</string>
+    <string name="ash_task_no_result">已标记结束，还没有附上结果说明。</string>
+    <string name="ash_task_no_detail">还没有写下更具体的进展或原因。</string>
+    <string name="ash_task_time">约定的时间</string>
+    <string name="ash_task_manage_hint">看出处、修改安排或查看完整记录。</string>
 </resources>
