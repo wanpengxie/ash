@@ -233,4 +233,152 @@ class ChatCardModelTest {
         assertEquals(594, part.getInt("width")); assertEquals(900, part.getInt("height"))
         assertEquals(300 * 1024, ChatCardModel.PREVIEW_BYTES)
     }
+
+    // --- the card runtime ---
+
+    @Test fun aPressIsTheActWithTheCardsValuesNow() {
+        val data = JSONObject().put("city", "杭州")
+        val body = ChatCardModel.actBody("card_1", "go", data)
+        assertEquals("card_1", body.getString("card"))
+        assertEquals("go", body.getString("component"))
+        assertEquals("杭州", body.getJSONObject("data").getString("city"))
+        assertFalse(body.has("request"))
+        // A copy: what is sent does not change with later edits.
+        data.put("city", "北京")
+        assertEquals("杭州", body.getJSONObject("data").getString("city"))
+        val req = JSONObject().put("ask", JSONObject().put("text", "hi"))
+        assertEquals("hi", ChatCardModel.actBody("card_1", "app", data, req).getJSONObject("request").getJSONObject("ask").getString("text"))
+    }
+
+    @Test fun onlyCallAskAndTellAreRunByTheHub() {
+        assertTrue(ChatCardModel.hubAction(JSONObject().put("call", JSONObject().put("member", "service:x").put("word", "w"))))
+        assertTrue(ChatCardModel.hubAction(JSONObject().put("ask", JSONObject().put("text", "?"))))
+        assertTrue(ChatCardModel.hubAction(JSONObject().put("tell", JSONObject().put("text", "!"))))
+        assertFalse(ChatCardModel.hubAction(JSONObject().put("copy", JSONObject().put("text", "x"))))
+        assertFalse(ChatCardModel.hubAction(JSONObject().put("event", JSONObject().put("name", "x"))))
+        assertFalse(ChatCardModel.hubAction(null))
+        // The wait: the action's own time and 5 s more, else 35 s.
+        assertEquals(35_000L, ChatCardModel.pressTimeoutMs(null))
+        assertEquals(35_000L, ChatCardModel.pressTimeoutMs(JSONObject().put("tell", JSONObject().put("text", "!"))))
+        assertEquals(65_000L, ChatCardModel.pressTimeoutMs(JSONObject().put("call", JSONObject().put("timeout_s", 60))))
+        assertEquals(15_000L, ChatCardModel.pressTimeoutMs(JSONObject().put("ask", JSONObject().put("timeout_s", 10))))
+    }
+
+    @Test fun aButtonDoesNothingWhileItRuns() {
+        val now = 1_000_000L
+        val running = JSONObject().put("state", "running").put("text", "处理中…").put("at", now - 5_000)
+        assertTrue(ChatCardModel.pressBusy(true, null, now, 35_000))
+        assertTrue(ChatCardModel.pressBusy(false, running, now, 35_000))
+        // Past its time it may be pressed again; done or failed it may always.
+        assertFalse(ChatCardModel.pressBusy(false, running, now + 31_000, 35_000))
+        assertFalse(ChatCardModel.pressBusy(false, JSONObject().put("state", "ok").put("at", now), now, 35_000))
+        assertFalse(ChatCardModel.pressBusy(false, JSONObject().put("state", "failed").put("at", now), now, 35_000))
+        assertFalse(ChatCardModel.pressBusy(false, null, now, 35_000))
+    }
+
+    @Test fun theLineUnderAButtonSaysTheOutcome() {
+        val ok = JSONObject().put("state", "ok").put("text", "已完成 · 09:30").put("at", 1)
+        val failed = JSONObject().put("state", "failed").put("text", "没有得到允许").put("at", 1)
+        assertEquals("已完成 · 09:30" to false, ChatCardModel.outcome(false, null, ok))
+        assertEquals("没有得到允许" to true, ChatCardModel.outcome(false, null, failed))
+        assertNull(ChatCardModel.outcome(false, null, JSONObject().put("state", "running").put("text", "处理中…")))
+        assertNull(ChatCardModel.outcome(false, null, null))
+        // What failed here (never reached the hub) and a copy say theirs first.
+        assertEquals("没有连上，再点一次试试" to true, ChatCardModel.outcome(false, ChatCardModel.failureText("offline"), ok))
+        assertEquals("已复制" to false, ChatCardModel.outcome(true, null, failed))
+        assertEquals("等太久了，可以再点一次", ChatCardModel.failureText("timeout"))
+        assertEquals("这张卡片已经结束了", ChatCardModel.failureText("conflict"))
+    }
+
+    @Test fun aSleepingCardSaysWhenItsDataIsFrom() {
+        val zone = java.time.ZoneId.of("Asia/Shanghai")
+        val at = java.time.ZonedDateTime.of(2026, 10, 15, 9, 5, 0, 0, zone).toInstant().toEpochMilli()
+        val later = at + 3 * 3_600_000L
+        assertEquals("已休眠 · 09:05 的数据", ChatCardModel.caption(JSONObject().put("life", "dormant").put("fed_at", at).put("updated_at", later), zone))
+        // No live data: the card's own time.
+        assertEquals("已休眠 · 12:05 的数据", ChatCardModel.caption(JSONObject().put("life", "dormant").put("updated_at", later), zone))
+        assertEquals("09:05 更新", ChatCardModel.caption(JSONObject().put("life", "active").put("fed_at", at), zone))
+        assertNull(ChatCardModel.caption(JSONObject().put("life", "active").put("updated_at", at), zone))
+        // The line is held from the start for a card of an app with a runtime.
+        assertTrue(ChatCardModel.reservesCaption(JSONObject().put("life", "active").put("app", "weather")))
+        assertTrue(ChatCardModel.reservesCaption(JSONObject().put("life", "idle").put("temporary_app", true)))
+        assertFalse(ChatCardModel.reservesCaption(JSONObject().put("life", "active")))
+        assertFalse(ChatCardModel.reservesCaption(JSONObject().put("app", "weather")))
+        assertTrue(ChatCardModel.closed(JSONObject().put("state", "open").put("life", "closed")))
+        assertTrue(ChatCardModel.closed(JSONObject().put("state", "closed")))
+        assertFalse(ChatCardModel.closed(JSONObject().put("state", "open").put("life", "dormant")))
+    }
+
+    @Test fun theCardsOnScreenAreReportedOnce() {
+        fun item(id: String, card: JSONObject?) = JSONObject().put("id", id).put("type", if (card == null) "say" else "card").apply { if (card != null) put("card", card) }
+        val items = listOf(
+            item("m1", JSONObject().put("type", "a2ui").put("id", "c1").put("state", "open").put("life", "dormant")),
+            item("m2", null),
+            item("m3", JSONObject().put("type", "a2ui").put("id", "c2").put("state", "closed")),
+            item("m4", JSONObject().put("type", "link").put("id", "l1")),
+            item("m5", JSONObject().put("type", "a2ui").put("id", "c3").put("state", "open")),
+            item("m6", JSONObject().put("type", "a2ui").put("id", "c1").put("state", "open")),
+            item("m7", JSONObject().put("type", "a2ui").put("id", "c4").put("state", "open").put("life", "closed")),
+        )
+        assertEquals(listOf("c1", "c3"), ChatCardModel.seenIds(items))
+        assertEquals(50, ChatCardModel.seenIds((1..80).map { item("m$it", JSONObject().put("type", "a2ui").put("id", "c$it")) }).size)
+    }
+
+    @Test fun aMiniAppsRequestIsCheckedAndAnswered() {
+        val call = ChatCardModel.miniRequest("""{"call":{"member":"service:weather","word":"now","body":{"city":"杭州"}}}""")!!
+        assertEquals("service:weather", call.getJSONObject("call").getString("member"))
+        assertEquals("杭州", call.getJSONObject("call").getJSONObject("body").getString("city"))
+        assertEquals("{}", ChatCardModel.miniRequest("""{"call":{"member":"m","word":"w"}}""")!!.getJSONObject("call").getJSONObject("body").toString())
+        assertEquals("几点了", ChatCardModel.miniRequest("""{"ask":{"text":"几点了"}}""")!!.getJSONObject("ask").getString("text"))
+        assertEquals("好了", ChatCardModel.miniRequest("""{"tell":{"text":"好了"}}""")!!.getJSONObject("tell").getString("text"))
+        assertNull(ChatCardModel.miniRequest("""{"call":{"member":"","word":"w"}}"""))
+        assertNull(ChatCardModel.miniRequest("""{"call":{"member":"m","word":"w","body":[1]}}"""))
+        assertNull(ChatCardModel.miniRequest("""{"ask":{"text":""}}"""))
+        assertNull(ChatCardModel.miniRequest("""{"ask":{"text":"a"},"tell":{"text":"b"}}"""))
+        assertNull(ChatCardModel.miniRequest("""{"event":{"name":"x"}}"""))
+        assertNull(ChatCardModel.miniRequest("not json"))
+        assertNull(ChatCardModel.miniRequest(null))
+        val ok = ChatCardModel.miniAnswer(JSONObject().put("state", "ok").put("text", "已回答").put("result", "晴"), null)
+        assertEquals("晴", ok.getString("result"))
+        val failed = ChatCardModel.miniAnswer(null, "offline")
+        assertEquals("failed", failed.getString("state"))
+        assertEquals("没有连上，再点一次试试", failed.getString("text"))
+        // At most 2 a second.
+        val rate = ChatCardModel.Rate(2, 1000)
+        assertTrue(rate.take(0)); assertTrue(rate.take(100)); assertFalse(rate.take(500)); assertTrue(rate.take(1000)); assertFalse(rate.take(1050)); assertTrue(rate.take(1100))
+    }
+
+    @Test fun theMiniAppHasCallAskAndTell() {
+        val doc = ChatCardModel.miniAppDocument("<p>hi</p>", emptyMap(), dark = false)
+        for (word in listOf("send:send", "call:function(m,w,body)", "ask:function(t)", "tell:function(t)", "b.request(id,", "__ashReply")) assertTrue(word, doc.contains(word))
+        assertTrue(doc.indexOf("__ashReply") < doc.indexOf("<p>hi</p>"))
+    }
+
+    @Test fun theFormerlyRoundIconsHaveTheirOwnLines() {
+        for (name in listOf("sun", "cloud", "rain", "snow", "wind", "moon", "person", "accountCircle", "star", "starHalf", "starOff",
+            "volumeUp", "volumeDown", "volumeMute", "volumeOff", "weight", "water", "car")) assertTrue(name, ChatCardModel.ICONS[name] != null)
+    }
+
+    @Test fun onlyTheOwnerKeepsACardOfAnAppRunning() {
+        val on = ChatCardModel.pinBody("card_1", true)
+        assertEquals(setOf("id", "pinned"), on.keySet())
+        assertEquals("card_1", on.getString("id"))
+        assertTrue(on.getBoolean("pinned"))
+        assertFalse(ChatCardModel.pinBody("card_1", false).getBoolean("pinned"))
+        assertEquals("常驻", ChatCardModel.PIN_LABEL)
+        // The switch: a card of an app that is not closed.
+        assertTrue(ChatCardModel.pinnable(JSONObject().put("app", "weather").put("state", "open").put("life", "idle")))
+        assertFalse(ChatCardModel.pinnable(JSONObject().put("state", "open").put("life", "active")))
+        assertFalse(ChatCardModel.pinnable(JSONObject().put("app", "weather").put("state", "open").put("life", "closed")))
+        assertFalse(ChatCardModel.pinnable(JSONObject().put("app", "weather").put("state", "closed")))
+        // The line: 「常驻中」 while active and pinned (as shown), the sleeping line stays, a closed card says nothing of it.
+        val zone = java.time.ZoneId.of("Asia/Shanghai")
+        val at = java.time.ZonedDateTime.of(2026, 10, 15, 9, 5, 0, 0, zone).toInstant().toEpochMilli()
+        val card = JSONObject().put("app", "weather").put("state", "open").put("life", "active").put("fed_at", at)
+        assertEquals("09:05 更新", ChatCardModel.caption(card, zone))
+        assertEquals("常驻中", ChatCardModel.caption(card, zone, pinned = true))
+        assertEquals("常驻中", ChatCardModel.caption(JSONObject(card.toString()).put("pinned", true), zone))
+        assertEquals("已休眠 · 09:05 的数据", ChatCardModel.caption(JSONObject(card.toString()).put("life", "dormant"), zone, pinned = true))
+        assertEquals("09:05 更新", ChatCardModel.caption(JSONObject(card.toString()).put("life", "closed"), zone, pinned = true))
+    }
 }

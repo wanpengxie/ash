@@ -167,6 +167,15 @@ class ChatBridge(
         }
     }
 
+    /**
+     * A `chat` present the page takes as it comes, without bringing the chat up and without waiting for it (`card.patch`: a card
+     * shown in the conversation changed). With no page attached it is dropped: the page reads the conversation again when it comes.
+     */
+    fun deliver(op: String, body: JSONObject): PresentOutcome {
+        toPage(JSONObject().put("t", "present").put("ch", "human").put("id", "p_" + UUID.randomUUID()).put("surface", "chat").put("op", op).put("body", body))
+        return PresentOutcome(true)
+    }
+
     private fun toPage(frame: JSONObject) {
         val sink: Page
         val n: Long
