@@ -138,7 +138,7 @@ test("send: an idle session starts a turn, a running one takes it as an addition
   const { desktop, app } = await fixture(t);
   desktop.state.set("t1", { revision: 1, raw: snapshot() });
   const first = await app.send("t1", "run the tests", "m-1");
-  assert.deepEqual([first.sent, first.mode], [true, "start"]);
+  assert.deepEqual([first.sent, first.mode, first.turn], [true, "start", "turn-new"], "the turn it started is answered");
   const start = desktop.owned.find((f) => f.method === "thread-follower-start-turn")!;
   assert.equal(start.version, 2);
   assert.deepEqual([start.params.conversationId, start.params.turnStart.request.threadId, start.params.turnStart.request.clientUserMessageId], ["t1", "t1", "m-1"]);
@@ -148,7 +148,7 @@ test("send: an idle session starts a turn, a running one takes it as an addition
   desktop.change("t1", snapshot({ threadRuntimeStatus: { type: "active" }, turns: [turn("u9", "inProgress", [])] }));
   await until(() => (app as any).convs.get("t1")?.revision === 2, "the running snapshot");
   const second = await app.send("t1", "also lint", "m-2");
-  assert.deepEqual([second.sent, second.mode], [true, "steer"]);
+  assert.deepEqual([second.sent, second.mode, second.turn], [true, "steer", undefined]);
   const steer = desktop.owned.find((f) => f.method === "thread-follower-steer-turn")!;
   assert.deepEqual([steer.params.clientUserMessageId, steer.params.input[0].text, steer.params.restoreMessage.text], ["m-2", "also lint", "also lint"]);
   assert.equal(desktop.owned.filter((f) => f.method === "thread-follower-start-turn").length, 1);

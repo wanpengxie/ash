@@ -19,7 +19,8 @@ object CodexModel {
         val running get() = state == "running"
         val waiting get() = state == "waiting_approval"
     }
-    data class Item(val kind: String, val text: String)
+    /** One item of a turn; [id] is Codex's own id, when it has one. */
+    data class Item(val kind: String, val text: String, val id: String? = null)
     data class Turn(val id: String, val status: String, val items: List<Item>)
     data class Approval(val requestId: String, val kind: String, val summary: String)
     data class Detail(val session: Session, val turns: List<Turn>, val approvals: List<Approval>)
@@ -42,7 +43,9 @@ object CodexModel {
     fun detail(data: JSONObject?): Detail? {
         if (data == null || data.optString("id").isEmpty()) return null
         val turns = data.optJSONArray("turns").mapObjects { t ->
-            Turn(t.optString("id"), t.str("status") ?: "unknown", t.optJSONArray("items").mapObjects { Item(it.optString("kind"), it.optString("text")) })
+            Turn(t.optString("id"), t.str("status") ?: "unknown", t.optJSONArray("items").mapObjects {
+                Item(it.optString("kind"), it.optString("text"), it.str("id"))
+            })
         }
         val approvals = data.optJSONArray("approvals").mapObjects { Approval(it.optString("request_id"), it.optString("kind"), it.optString("summary")) }
         return Detail(session(data), turns, approvals.filter { it.requestId.isNotEmpty() })
@@ -65,6 +68,22 @@ object CodexModel {
         for (s in sessions) groups.getOrPut(s.cwd?.trimEnd('/')?.ifEmpty { "/" }) { mutableListOf() }.add(s)
         return groups.map { (cwd, list) -> Project(cwd, cwd?.substringAfterLast('/')?.ifEmpty { cwd } ?: "其他", list) }
             .sortedWith(compareByDescending<Project> { p -> p.sessions.any { it.running || it.waiting } }.thenByDescending { p -> p.sessions.maxOf { it.updatedAt ?: 0L } })
+    }
+
+    /**
+     * The row key of item [i] of [turn] (MOBILE-ARCH §2.2): the first message of a turn sent from here keeps the key of the
+     * row it waited in (its client id, by the turn it started: [sentAs]); others are keyed by Codex's id, else their place.
+     */
+    fun itemKey(turn: Turn, i: Int, sentAs: (String) -> String?): String {
+        val item = turn.items[i]
+        if (item.kind == "user" && turn.items.indexOfFirst { it.kind == "user" } == i) sentAs(turn.id)?.let { return it }
+        return item.id?.let { "id:$it" } ?: "${turn.id}~$i"
+    }
+
+    /** The messages sent to [thread] on [device] whose turn the session now shows: they no longer wait apart. */
+    fun settled(ops: List<Pending>, device: String, thread: String, d: Detail): List<String> {
+        val turns = d.turns.map { it.id }.toSet()
+        return ops.filter { it.to == device && it.body.optString("op") == "send" && it.body.optString("thread") == thread && it.ledgerId in turns }.map { it.clientId }
     }
 
     /** The new session's id from x.codex.new. */
@@ -95,5 +114,90 @@ object CodexModel {
         "unavailable" -> "电脑上的 Codex App 没能打开这个会话（电脑可能锁屏或睡着了），稍后再试。"
         "not_found" -> "这个请求已经不在等了。"
         else -> message.ifEmpty { "没有成功" }
+    }
+}
+
+/**
+ * Where the Codex page is and what it last read (MOBILE-ARCH §3.2, §11.1), as plain data. Every change of route bumps the
+ * [generation]; a read is taken only in the generation it was asked in, so an answer about a page the owner left is dropped,
+ * success or failure. A failed read keeps what is shown and says why ([problem]); only a successful read replaces it.
+ */
+class CodexState {
+    var computers: List<CodexModel.Computer> = emptyList(); private set
+    var device: String? = null; private set
+    var chosen: String? = null; private set
+    var thread: String? = null; private set
+    var title: String? = null; private set
+    var newIn: CodexModel.Project? = null; private set
+    var sessions: List<CodexModel.Session>? = null; private set
+    var detail: CodexModel.Detail? = null; private set
+    /** Why the last read failed (what is shown is from before it), or null. */
+    var problem: String? = null; private set
+    var computersAt = 0L; private set
+    var generation = 0; private set
+
+    val inTalk get() = thread != null || newIn != null
+
+    /** The page went away: what is being read now no longer counts. */
+    fun invalidate() { generation++ }
+
+    private fun moved() { generation++; problem = null }
+
+    /** The computers were read: the one chosen before while it is there, else the first. */
+    fun computersRead(data: org.json.JSONObject?, failure: String?, now: Long) {
+        computersAt = now
+        if (failure != null && data == null) { problem = CodexModel.unreachable(failure); return }
+        computers = CodexModel.computers(data)
+        val next = CodexModel.pick(computers, chosen)
+        if (next != device) { device = next; sessions = null; detail = null; moved() }
+        if (device == null) problem = "没有在线的电脑。电脑上的 Ash 连上以后，这里就能看到 Codex。"
+    }
+
+    fun choose(computer: String): Boolean {
+        if (computer == device) return false
+        chosen = computer; device = computer; sessions = null; detail = null; moved()
+        return true
+    }
+
+    fun open(id: String, title: String?) { thread = id; this.title = title; newIn = null; detail = null; moved() }
+    fun startNew(p: CodexModel.Project) { newIn = p; thread = null; title = null; detail = null; moved() }
+
+    /** Back from a session (or a new one) to the list; false when the list is showing. */
+    fun back(): Boolean {
+        if (!inTalk) return false
+        thread = null; newIn = null; title = null; detail = null; moved()
+        return true
+    }
+
+    /** The list, read with [t]: false when it no longer counts. */
+    fun listRead(gen: Int, data: org.json.JSONObject?, failure: String?): Boolean {
+        if (gen != generation || thread != null) return false
+        if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
+        else { sessions = CodexModel.sessions(data); problem = null }
+        return true
+    }
+
+    /** A session, read with [t]: false when it no longer counts. */
+    fun detailRead(gen: Int, data: org.json.JSONObject?, failure: String?): Boolean {
+        if (gen != generation || thread == null) return false
+        if (failure != null) { problem = CodexModel.unreachable(failure); if (failure == "offline") device = null }
+        else { CodexModel.detail(data)?.let { detail = it; title = it.session.title }; problem = null }
+        return true
+    }
+
+    /** Where to come back to when the page is made again. */
+    fun route(): Map<String, String> = buildMap {
+        (chosen ?: device)?.let { put("device", it) }
+        thread?.let { put("thread", it) }; title?.let { put("title", it) }
+        newIn?.cwd?.let { put("new_cwd", it); put("new_name", newIn!!.name) }
+    }
+
+    fun restore(route: Map<String, String>) {
+        route["device"]?.let { chosen = it }
+        val cwd = route["new_cwd"]
+        when {
+            route["thread"] != null -> open(route.getValue("thread"), route["title"])
+            cwd != null -> startNew(CodexModel.Project(cwd, route["new_name"] ?: cwd.substringAfterLast('/'), emptyList()))
+        }
     }
 }

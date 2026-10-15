@@ -391,14 +391,21 @@ class ChatFiles(private val activity: Activity, private val port: HumanPort) : C
             if (loading) return@chip
             loading = true
             access.inline(messageId, item.optLong("seq"), index) { read, why ->
-                loading = false
-                val decoded = read?.let { Uploads.decodeInline(it.b64, it.mime) }
-                if (read == null || decoded == null) { toast(why?.message?.ifEmpty { null } ?: "附件无法打开"); return@inline }
-                if (decoded.preview) {
-                    val o = Opened(read.name, read.mime, decoded.bytes, Pictures.bitmap(decoded.bytes, THUMB_PX))
-                    if (o.thumb == null) { toast("附件无法打开"); return@inline }
-                    opened.put(key, o); showPicture(o, fresh = true)
-                } else viewer.show(read.name, read.mime, decoded.bytes)
+                if (read == null) { loading = false; toast(why?.message?.ifEmpty { null } ?: "附件无法打开"); return@inline }
+                // Base64 and the picture are decoded on the decode queue, not the main thread (§7.2).
+                UiIo.decode {
+                    val decoded = Uploads.decodeInline(read.b64, read.mime)
+                    val thumb = if (decoded?.preview == true) Pictures.bitmap(decoded.bytes, THUMB_PX) else null
+                    UiIo.ui {
+                        loading = false
+                        when {
+                            decoded == null -> toast("附件无法打开")
+                            decoded.preview && thumb == null -> toast("附件无法打开")
+                            decoded.preview -> { val o = Opened(read.name, read.mime, decoded.bytes, thumb); opened.put(key, o); showPicture(o, fresh = true) }
+                            else -> viewer.show(read.name, read.mime, decoded.bytes)
+                        }
+                    }
+                }
             }
         }
         box.addView(chip)

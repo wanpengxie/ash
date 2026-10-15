@@ -44,26 +44,16 @@ object Ui {
 
     private fun edges(i: androidx.core.graphics.Insets) = Edges(i.left, i.top, i.right, i.bottom)
 
+    /** How far the keyboard reaches above the bottom the window already keeps clear ([safeBottom]): what a deck is moved by. */
+    fun keyboardOver(safeBottom: Int, imeBottom: Int) = (imeBottom - safeBottom).coerceAtLeast(0)
+
     /**
      * Drawn edge to edge (targetSdk 35, where `adjustResize` no longer makes room by itself): [root] keeps clear of the
      * system bars, the cutout and the keyboard by padding itself, so what it holds shrinks with the keyboard and a field
-     * at the bottom sits on top of it. Every screen of the app does this the same way. [onKeyboard] hears whether the keyboard
-     * is up each time the insets change (a screen with a bar at the bottom hides it then).
+     * at the bottom sits on top of it. Every screen of the app does this the same way, through the window's one insets owner
+     * ([ai.ash.ui.WindowInsetsOwner]). [onKeyboard] hears whether the keyboard is up each time the insets change.
      */
-    fun insets(root: View, onKeyboard: ((Boolean) -> Unit)? = null) {
-        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val e = fit(
-                edges(insets.getInsets(WindowInsetsCompat.Type.systemBars())),
-                edges(insets.getInsets(WindowInsetsCompat.Type.displayCutout())),
-                edges(insets.getInsets(WindowInsetsCompat.Type.ime())),
-            )
-            v.setPadding(e.left, e.top, e.right, e.bottom)
-            onKeyboard?.invoke(insets.isVisible(WindowInsetsCompat.Type.ime()))
-            // Made room for here: what is inside must not add the same bars again.
-            WindowInsetsCompat.CONSUMED
-        }
-        ViewCompat.requestApplyInsets(root)
-    }
+    fun insets(root: View, onKeyboard: ((Boolean) -> Unit)? = null) = ai.ash.ui.WindowInsetsOwner.install(root, onKeyboard = onKeyboard)
 
     /**
      * The system bars are see-through (edge to edge), so their clock and icons must contrast with the page under them:

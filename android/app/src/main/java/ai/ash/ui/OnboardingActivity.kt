@@ -460,7 +460,7 @@ class OnboardingActivity : Activity() {
     /** 「我已经打开了」: taken at the owner's word; the screen goes on, and the system's own reading takes over once it shows it on. */
     private fun sayOn(item: String) {
         // Through the hub, the same word Ash calls when the owner tells it.
-        HumanPort(Link.get(this).chat).also { it.start() }.call(Link.get(this).deviceId, "config.owner_said", org.json.JSONObject().put("item", item)) { _, _ -> runOnUiThread { reload() } }
+        HumanCall.call(this, Link.get(this).deviceId, "config.owner_said", org.json.JSONObject().put("item", item)) { _, _ -> if (!isDestroyed) reload() }
     }
 
     /** 「先不用」: the screen is not asked again. */

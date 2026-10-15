@@ -22,14 +22,14 @@
     <dimen name="ash_radius_bubble">20dp</dimen>
     <dimen name="ash_radius_bubbleTail">6dp</dimen>
     <dimen name="ash_radius_iconTile">9dp</dimen>
-    <dimen name="ash_size_touch">44dp</dimen>
+    <dimen name="ash_size_touch">48dp</dimen>
     <dimen name="ash_size_button">44dp</dimen>
     <dimen name="ash_size_buttonSm">34dp</dimen>
     <dimen name="ash_size_buttonLg">52dp</dimen>
     <dimen name="ash_size_topBar">56dp</dimen>
     <dimen name="ash_size_navBar">52dp</dimen>
     <dimen name="ash_size_listRow">56dp</dimen>
-    <dimen name="ash_size_iconButton">44dp</dimen>
+    <dimen name="ash_size_iconButton">48dp</dimen>
     <dimen name="ash_size_icon">22dp</dimen>
     <dimen name="ash_size_iconSm">18dp</dimen>
     <dimen name="ash_size_iconXs">16dp</dimen>

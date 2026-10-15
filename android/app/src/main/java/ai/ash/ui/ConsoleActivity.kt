@@ -98,10 +98,9 @@ class ConsoleActivity : Activity() {
         if (part != null && intent?.getStringExtra(EXTRA_PART) == null) { part = null; render() } else finish()
     }
 
-    /** The page's way to the hub: a switch here is the same word Ash calls on this phone. */
-    private val hub: HumanPort by lazy { HumanPort(Link.get(this).chat).also { it.start() } }
+    /** The page's way to the hub: a switch here is the same word Ash calls on this phone (not through the chat's page). */
     private fun phone(word: String, body: JSONObject, done: (Boolean) -> Unit = {}) =
-        hub.call(Link.get(this).deviceId, word, body) { _, failure -> runOnUiThread { if (failure != null) Toast.makeText(this, "没改成：${failure.message}", Toast.LENGTH_SHORT).show(); done(failure == null) } }
+        HumanCall.call(this, Link.get(this).deviceId, word, body) { _, failure -> if (isDestroyed) return@call; if (failure != null) Toast.makeText(this, "没改成：${failure.message}", Toast.LENGTH_SHORT).show(); done(failure == null) }
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)

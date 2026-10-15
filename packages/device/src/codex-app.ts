@@ -36,7 +36,7 @@ export const CODEX_CAPABILITIES: CapabilitySpec[] = [
   { name: "x.codex.sessions", label: "在看 Codex 的会话", description: "The owner's own Codex App (the desktop app on this computer, his workbench, not your helper agents): its sessions, past ones included: id, title, state (running, waiting_approval or idle), working directory and when it last changed. Running sessions come first. open=false means the app does not have it open now; x.codex.send and x.codex.open open it there.",
     input_schema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100, description: "How many (default 30)." }, helpers: { type: "boolean", description: "Also the sessions your own helper agents ran on this computer's Codex runtime (default false: the owner's only)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
-  { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for.",
+  { name: "x.codex.session", label: "在看 Codex 会话的过程", description: "One Codex session: its state and the last turns, each with what the user said, what Codex said and the tools it ran (long texts cut), and the approvals it is waiting for. Each item has `id` when Codex gives one.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread"], properties: { thread: THREAD, turns: { type: "integer", minimum: 1, maximum: 20, description: "How many of the last turns (default 6)." }, max_chars: { type: "integer", minimum: 40, maximum: 4000, description: "Cut each text to this length (default 600)." } } },
     effect: "read", risk: "none", callers: ["owner", "agent", "app"], timeout_ms: 60_000 },
   { name: "x.codex.approvals", label: "在看 Codex 等的批准", description: "The requests Codex is waiting for the owner to approve, across the sessions the app has open: which session, what it wants to run or change.",
@@ -48,7 +48,7 @@ export const CODEX_CAPABILITIES: CapabilitySpec[] = [
   { name: "x.codex.new", label: "在开新的 Codex 会话", description: "Start a new Codex session in a project (cwd: its working directory, as x.codex.sessions shows them, or any absolute path) with its first message; it opens in the Codex app on this computer. Returns the new session's id (thread).",
     input_schema: { type: "object", additionalProperties: false, required: ["cwd", "text"], properties: { cwd: { type: "string", minLength: 1, description: "The project's directory." }, text: { type: "string", minLength: 1, maxLength: 20_000 }, title: { type: "string", maxLength: 80, description: "The session's name (default: the first line of text)." } } },
     effect: "act", timeout_ms: 130_000, ...REMOTE },
-  { name: "x.codex.send", label: "在给 Codex 发消息", description: "Say something to a Codex session, a past one too (it is opened in the app first): a new turn when it is idle, added to the running turn when it is busy. If the answer is lost the result is unknown and nothing is sent again by itself; read the session before repeating. Pass the same client_id to repeat safely.",
+  { name: "x.codex.send", label: "在给 Codex 发消息", description: "Say something to a Codex session, a past one too (it is opened in the app first): a new turn when it is idle (its id is answered as turn, when the app gives it), added to the running turn when it is busy. If the answer is lost the result is unknown and nothing is sent again by itself; read the session before repeating. Pass the same client_id to repeat safely.",
     input_schema: { type: "object", additionalProperties: false, required: ["thread", "text"], properties: { thread: THREAD, text: { type: "string", minLength: 1, maxLength: 20_000 }, client_id: { type: "string", minLength: 1, maxLength: 80, description: "Makes a repeat of the same send a no-op." } } },
     effect: "act", timeout_ms: 130_000, ...REMOTE },
   { name: "x.codex.stop", label: "在停下 Codex 的任务", description: "Stop the turn a Codex session is running now.",
@@ -539,9 +539,13 @@ export class CodexApp {
       const restoreMessage = { id: randomUUID(), text, context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], workspaceRoots: str(conv.raw.cwd) ? [conv.raw.cwd] : [] }, cwd: str(conv.raw.cwd) ?? "", createdAt: this.o.now() };
       // The app's own windows send `{request, context}`; the older flat form is kept beside it. UNVERIFIED against a live app.
       const turnStart = { request, context: { restoreMessage, attachments: [], commentAttachments: [] }, ...request };
-      try { await this.toOwner(id, "thread-follower-start-turn", { conversationId: id, turnStart }, 120_000); }
+      let r: Rec;
+      try { r = await this.toOwner(id, "thread-follower-start-turn", { conversationId: id, turnStart }, 120_000); }
       catch (error) { if (error instanceof WordError) throw error; if (UNCERTAIN.test(errorText(error))) uncertain(error); throw new WordError("failed", clip(errorText(error), 300)); }
-      return { sent: true, mode: "start" };
+      // The turn this message started, as the app answers it (which field a live app fills is UNVERIFIED): the phone keys its waiting row by it.
+      const result = rec(r.result) ?? r;
+      const turn = str(rec(result.turn)?.id) ?? str(result.turnId);
+      return { sent: true, mode: "start", ...(turn ? { turn } : {}) };
     };
     if (!isActive(conv.raw, canonicalTurns(conv.raw))) return start();
     // Never decide from a view that may be a moment old: ask to join the turn, and start one only when the app says it had ended.
@@ -682,10 +686,12 @@ function textOf(v: unknown): string {
   return r ? textOf(r.text ?? r.content ?? r.summary ?? "") : "";
 }
 
-function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string } {
+/** One item of a turn, with the app's own `id` when it has one. */
+function itemView(item: Rec, max: number): { kind: string; text?: string; status?: string; id?: string } {
   const type = String(item.type ?? "item");
   const status = str(item.status) ?? undefined;
-  const text = (kind: string, t: unknown) => ({ kind, text: redactText(clip(textOf(t), max)), ...(status ? { status } : {}) });
+  const ids = str(item.id) ? { id: item.id as string } : {};
+  const text = (kind: string, t: unknown) => ({ kind, text: redactText(clip(textOf(t), max)), ...(status ? { status } : {}), ...ids });
   switch (type) {
     case "userMessage": return text("user", item.content ?? item.text);
     case "steeringUserMessage": return text("user", rec(item.restoreMessage)?.text ?? item.content ?? item.text);
@@ -696,7 +702,7 @@ function itemView(item: Rec, max: number): { kind: string; text?: string; status
     case "mcpToolCall": return text("tool", [item.server, item.tool].filter(Boolean).join("."));
     case "webSearch": return text("search", item.query);
     case "todo-list": return text("plan", (Array.isArray(item.plan) ? item.plan : []).map((s) => str(rec(s)?.step)).filter(Boolean).join("; "));
-    default: return { kind: type, ...(status ? { status } : {}) };
+    default: return { kind: type, ...(status ? { status } : {}), ...ids };
   }
 }
 

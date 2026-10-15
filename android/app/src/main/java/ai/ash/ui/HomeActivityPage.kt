@@ -16,7 +16,8 @@ import org.json.JSONObject
 class HmActivity(env: HomeEnv, arg: String?) : HomePage(env, arg) {
     override val title = "她做过的事"
     private val agent = arg ?: env.agent
-    private class StepPage(val steps: List<HomeModel.Step>, val raw: JSONObject, val loading: Boolean = false)
+    /** [failed]: the read did not work; it is not read again by itself (a draw must never ask again), only when the turn is opened anew. */
+    private class StepPage(val steps: List<HomeModel.Step>, val raw: JSONObject, val loading: Boolean = false, val failed: Boolean = false)
     private class Detail(var open: Boolean = false, var text: String = "", var next: Long? = 0, var loading: Boolean = false)
     private var turns: List<HomeModel.Turn> = emptyList()
     private var page: JSONObject? = null
@@ -63,7 +64,7 @@ class HmActivity(env: HomeEnv, arg: String?) : HomePage(env, arg) {
 
     private fun loadSteps(id: String, params: JSONObject? = null) {
         call("service:history", "activity.page", JSONObject().put("turn", id).put("limit", 40).also { o -> params?.keys()?.forEach { k -> o.put(k, params.get(k)) } }) { r ->
-            if (!r.ok) { stepPages.remove(id); draw(); return@call }
+            if (!r.ok) { if (stepPages[id]?.steps.isNullOrEmpty()) stepPages[id] = StepPage(emptyList(), JSONObject(), failed = true); draw(); return@call }
             if (turns.none { it.id == id }) return@call
             stepPages[id] = StepPage(HomeModel.stepsOf(r.data.list("items")), r.data)
             draw()
@@ -146,7 +147,10 @@ class HmActivity(env: HomeEnv, arg: String?) : HomePage(env, arg) {
             setPadding(0, 0, 0, dp(18))
             addView(AshUi.text(ctx, titleOf(turn), AshType(15f, 22f, 600, Role.INK)).apply {
                 minHeight = dp(28); gravity = Gravity.CENTER_VERTICAL; isClickable = true
-                setOnClickListener { if (!open.remove(turn.id)) open.add(turn.id); seen.add(turn.id); draw() }
+                setOnClickListener {
+                    if (!open.remove(turn.id)) { open.add(turn.id); if (stepPages[turn.id]?.failed == true) stepPages.remove(turn.id) }
+                    seen.add(turn.id); draw()
+                }
             })
             if (isOpen && steps.isNotEmpty()) {
                 addView(AshUi.vstack(ctx, 6).apply {
@@ -154,6 +158,7 @@ class HmActivity(env: HomeEnv, arg: String?) : HomePage(env, arg) {
                     steps.forEach { addView(stepRow(it, turn, now)) }
                 })
             }
+            if (isOpen && sp?.failed == true) addView(Hk.note(ctx, "步骤暂时读不到，收起再展开可以重试"))
             addView(outcome)
             if (isOpen && sp?.raw?.optBoolean("has_more_before") == true) addView(AshUi.button(ctx, "更早的步骤", Kind.GHOST, AshUi.BtnSize.SM) { loadSteps(turn.id, JSONObject().put("before", sp?.raw?.num("before"))) })
             if (isOpen && sp?.raw?.optBoolean("has_more_after") == true) addView(AshUi.button(ctx, "更新的步骤", Kind.GHOST, AshUi.BtnSize.SM) { loadSteps(turn.id, JSONObject().put("after", sp?.raw?.num("after"))) })
