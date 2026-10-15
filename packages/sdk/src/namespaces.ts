@@ -10,7 +10,7 @@
  */
 import { DATE_PATTERN } from "./ids";
 import type { ErrorCode } from "./message";
-import { DEFAULT_CALLERS, type CallerKind, type Effect, type JsonSchema, type Risk, type WordContract } from "./word";
+import { DEFAULT_CALLERS, secret, type CallerKind, type Effect, type JsonSchema, type Risk, type WordContract } from "./word";
 
 /** A JSON Schema (2020-12) document; the shared `JsonSchema` type of word.ts. */
 export type SchemaObject = JsonSchema;
@@ -398,7 +398,7 @@ const CLIPBOARD_ACTIONS: readonly StandardAction[] = [
   action("clipboard.get", "在读剪贴板", "Read the text on the phone's clipboard. Android 10 and later only let the app in the foreground read it, so this can fail while Ash is in the background.",
     object({}), loose({ text: str() }, ["text"]), "read", "none", { errors: ["unavailable"] }),
   action("clipboard.set", "在改剪贴板", "Put text on the phone's clipboard, replacing what is there, so the owner can paste it anywhere.",
-    object({ text: { type: "string", description: "The text to copy." } }, ["text"]), anyResult(), "act", "structure"),
+    object({ text: secret({ type: "string", description: "The text to copy; kept out of the ledger." }) }, ["text"]), anyResult(), "act", "structure"),
 ];
 
 const DEVICE_ACTIONS: readonly StandardAction[] = [

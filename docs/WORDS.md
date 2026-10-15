@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `27cba037ed3cfd7c`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `9f7a83a0166db924`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -441,7 +441,7 @@
 | `settings.put` | owner, agent, app | write / structure | - | namespace*, key*, value* | 在改系统设置 | Change an Android system setting in the system namespace (brightness, screen timeout, rotation, font scale ...); needs the owner's Modify system settings grant. Secure and global settings are the owner's to change in Settings. volume_music, volume_ring and the other volume_* keys set that volume. Returns the previous and the new value. |
 | `settings.open` | owner, agent, app | act / outward | foreground | page, action, package | 在打开设置页 | Open a system settings page on the phone's screen for the owner: a named page, an app's details or notification settings (give package), or any raw android.settings.* action. |
 | `clipboard.get` | owner, agent, app | read / none | - | - | 在读剪贴板 | Read the text on the phone's clipboard. Android 10 and later only let the app in the foreground read it, so this can fail while Ash is in the background. |
-| `clipboard.set` | owner, agent, app | act / structure | - | text* | 在改剪贴板 | Put text on the phone's clipboard, replacing what is there, so the owner can paste it anywhere. |
+| `clipboard.set` | owner, agent, app | act / structure | - | text* (secret) | 在改剪贴板 | Put text on the phone's clipboard, replacing what is there, so the owner can paste it anywhere. |
 | `device.status` | owner, agent, app | read / none | - | - | 在看手机状态 | The device's current status: battery and charging, network (type, online, metered), free storage, memory, screen on or locked, ringer mode and volumes, time, time zone, locale, model and OS version. |
 | `browser.open` | owner, agent, app | read / none | - | url*, space | 在打开网页 | Open a web page (http or https) in a browser space and return it as text with numbered controls; scripts run like in a real browser. |
 | `browser.read` | owner, agent, app | read / none | - | space | 在读网页 | Read the page open in a space now: its text and the numbered controls (links, buttons, fields). Call again after the page changes. |

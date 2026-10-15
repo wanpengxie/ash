@@ -120,6 +120,13 @@ class CapabilityConformanceTest {
         }
     }
 
+    @Test fun copiedPairingCommandsStayOutOfTheLedgerThroughBothClipboardDeclarations() {
+        val handText = capabilities().single { it.name == "clipboard.set" }.schema.getJSONObject("properties").getJSONObject("text")
+        val standardText = standard.getValue("clipboard.set").getJSONObject("input_schema").getJSONObject("properties").getJSONObject("text")
+        assertTrue(handText.optBoolean("x-ash-secret"))
+        assertTrue(standardText.optBoolean("x-ash-secret"))
+    }
+
     @Test fun anExtensionNamesItsOwnRisk() {
         val extensions = capabilities().filter { it.name !in standard }
         assertEquals(setOf("x.android.browser.show", "x.android.browser.run"), extensions.map { it.name }.toSet())

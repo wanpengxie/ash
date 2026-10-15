@@ -5,9 +5,11 @@ import { ERROR_CODES } from "../src/message";
 import {
   BROWSER_ACTIONS, BROWSER_EXTENSIONS, BROWSER_SPACE_PATTERN, STANDARD_ACTIONS, STANDARD_NAMESPACES, namespaceOf, standardAction, standardContract, standardContracts, standardMember,
 } from "../src/namespaces";
-import { EFFECTS, RISKS, effectRiskProblem, lintWords } from "../src/word";
+import { EFFECTS, RISKS, SECRET_KEYWORD, SENSITIVE_KEYWORD, effectRiskProblem, lintWords } from "../src/word";
 
-const ajv = new Ajv2020({ strict: true });
+const ajv = new Ajv2020({ strict: true })
+  .addKeyword({ keyword: SECRET_KEYWORD, schemaType: "boolean" })
+  .addKeyword({ keyword: SENSITIVE_KEYWORD, schemaType: "object" });
 
 test("every browser action has a unique browser.* name and compiled schemas", () => {
   const names = BROWSER_ACTIONS.map((action) => action.name);

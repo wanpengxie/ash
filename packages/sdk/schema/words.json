@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "27cba037ed3cfd7cb03a98073e91b408b1191872e7b49100299a74e623429ff1",
+ "hash": "9f7a83a0166db9244b4834f2d2e7a4dfa73212c9aca482dc9111a23576d4ba30",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -3415,7 +3415,8 @@
      },
      "command": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "x-ash-secret": true
      }
     },
     "required": [
@@ -4112,7 +4113,8 @@
     "properties": {
      "command": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "x-ash-secret": true
      },
      "expires_at": {
       "type": "integer",
@@ -19829,7 +19831,8 @@
     "properties": {
      "text": {
       "type": "string",
-      "description": "The text to copy."
+      "description": "The text to copy; kept out of the ledger.",
+      "x-ash-secret": true
      }
     }
    },

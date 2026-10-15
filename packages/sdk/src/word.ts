@@ -73,7 +73,9 @@ export const mayCall = (callers: readonly CallerKind[], who: CallerKind): boolea
 /** Names of the call envelope (SPEC-02 §3.3). No word's input may use them. */
 export const RESERVED_INPUT_NAMES: readonly string[] = Object.freeze(["approval_ttl_minutes", "purpose", "wait"]);
 
-/** Schema markers (SPEC-01 §10.0): a secret input is never stored or shown; a sensitive result is masked for all but the owner. */
+/** Schema markers (SPEC-01 §10.0): secret fields stay out of the ledger, on input or result.
+ * A secret result still reaches the caller allowed by the word; sensitive results are masked for all but the owner.
+ */
 export const SECRET_KEYWORD = "x-ash-secret";
 export const SENSITIVE_KEYWORD = "x-ash-sensitive";
 export const SENSITIVE_MASKS = ["hidden", "email", "tail4", "ip"] as const;
@@ -231,7 +233,7 @@ export function lintWord(contract: WordContract): LintIssue[] {
     else {
       try { compileSchema(c.result_schema); } catch (error) { add("result-schema", `result_schema does not compile: ${(error as Error).message}`); }
       for (const [node, path] of walk(c.result_schema, "result_schema")) {
-        if (Object.hasOwn(node, SECRET_KEYWORD)) add("secret", `${path}: ${SECRET_KEYWORD} belongs on inputs; a secret is never returned`);
+        if (Object.hasOwn(node, SECRET_KEYWORD) && node[SECRET_KEYWORD] !== true) add("secret", `${path}: ${SECRET_KEYWORD} must be true`);
         const marker = node[SENSITIVE_KEYWORD];
         if (marker !== undefined && !(marker && typeof marker === "object" && (SENSITIVE_MASKS as readonly string[]).includes(marker.mask))) add("sensitive", `${path}: ${SENSITIVE_KEYWORD} needs {mask: ${SENSITIVE_MASKS.join(" | ")}}`);
       }

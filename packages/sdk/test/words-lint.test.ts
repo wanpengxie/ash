@@ -152,7 +152,7 @@ const VIOLATIONS: Record<LintRule, [string, WordContract][]> = {
   "record": [["on a request", bad({ record: true })], ["false is not a value", bad({ record: false }, EVENT)]],
   "timeout": [["zero", bad({ timeout_ms: 0 })], ["fraction", bad({ timeout_ms: 1.5 })], ["string", bad({ timeout_ms: "5" })]],
   "reserved-name": RESERVED_INPUT_NAMES.map((name): [string, WordContract] => [name, bad({ input_schema: { type: "object", properties: { [name]: { type: "string" } } } })]),
-  "secret": [["secret on a result", bad({ result_schema: { type: "object", properties: { key: secret({ type: "string" }) } } })], ["secret that is not true", bad({ input_schema: { type: "object", properties: { key: { type: "string", "x-ash-secret": "yes" } } } })]],
+  "secret": [["result secret that is not true", bad({ result_schema: { type: "object", properties: { key: { type: "string", "x-ash-secret": false } } } })], ["secret that is not true", bad({ input_schema: { type: "object", properties: { key: { type: "string", "x-ash-secret": "yes" } } } })]],
   "sensitive": [["sensitive on an input", bad({ input_schema: { type: "object", properties: { ip: sensitive({ type: "string" }, "ip") } } })], ["unknown mask", bad({ result_schema: { type: "object", properties: { ip: { type: "string", "x-ash-sensitive": { mask: "stars" } } } } })]],
 };
 
@@ -163,6 +163,7 @@ test("the good example and the event example pass", () => {
   assert.deepEqual(lintWord(bad({ local_only: true, record: undefined })), []);
   assert.deepEqual(lintWord(bad({ effect: "write", risk: "structure", per_call_risk: true })), []);
   assert.deepEqual(lintWord(bad({ input_schema: { type: "object", properties: { key: secret({ type: "string" }) } }, result_schema: { type: "object", properties: { ip: sensitive({ type: "string" }, "ip") } } })), []);
+  assert.deepEqual(lintWord(bad({ result_schema: { type: "object", properties: { command: secret({ type: "string" }) } } })), []);
   assert.deepEqual(lintWord(bad({ member: "agent:*" })), []);
   assert.deepEqual(lintWord(bad({ member: "device:*", word: "x.kimi.browser.upload" })), []);
   assert.deepEqual([...CALLER_KINDS], ["owner", "agent", "app", "kernel"]);

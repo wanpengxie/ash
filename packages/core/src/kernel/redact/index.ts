@@ -1,6 +1,7 @@
 /**
  * Redaction (HUB-MODULES §1.6, SPEC-01 §10.0). The ledger holds only the masked version; the original of a sensitive
- * result goes to the owner alone, from memory. What counts as sensitive is what the contract says (`x-ash-secret`,
+ * result goes to the owner alone, from memory; a secret-only result remains available to the authorized caller.
+ * What counts as sensitive is what the contract says (`x-ash-secret`,
  * `x-ash-sensitive`), never a guess from the content.
  */
 import type { Reply } from "../../../../sdk/src/message";

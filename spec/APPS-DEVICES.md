@@ -25,3 +25,11 @@
 - 中枢定向回归：devices 与 link-control，共 43 项。
 
 未操作手机，未打包、安装、推送或合主线。中文输入组合态、IME/预测返回、主题重建、200% 字体、TalkBack 和真实设备配对尚未真机验证。诊断展示中转站、连接路径、连接数及接口 findings；现有 link 接口不提供真实设备往返延迟，本实现不把中枢调用耗时冒充设备 RTT。
+
+## 配对命令脱敏补充
+
+配对命令结果（pair_start/pair_code）与 clipboard.set 的 text 使用既有 `x-ash-secret` 标记：仅账本保存 `{set,length}`，有调用权限的主人和 agent 都继续得到原命令。没有改成仅主人可见的 `sensitive`。SDK lint 允许结果中的 `secret:true`，仍拒绝其他标记值；手机的动态剪贴板声明与 SDK 标准声明一致。
+
+两条真实 Router 回归覆盖：主人/agent 的命令返回、原对象不变、账本无命令；剪贴板执行只从 `ctx.raw` 得到原文，记录视图和账本均脱敏。Android 定向验证同时检查手机/SDK 两份剪贴板标记，防止只改标准声明而实际手机仍记录原文。
+
+扩大 Android 能力契约检查发现既有 `anExtensionNamesItsOwnRisk` 固定快照只列 browser.show/run，当前已有 clear_logins 和 health.scale.setup/remove。本任务未修改这些扩展及其快照，定向检查未用该旧快照冒充全类通过。

@@ -63,7 +63,7 @@ object SystemCapabilities {
     private val clipboardSet = Cap(
         "clipboard.set",
         "Put text on the phone's clipboard (replacing what is there) so the owner can paste it anywhere. No permission needed.",
-        schema("text" to prop("string", "The text to copy.", required = true)),
+        schema("text" to prop("string", "The text to copy; kept out of the ledger.", required = true).put("x-ash-secret", true)),
         effect = Effect.ACT, risk = Risk.STRUCTURE, label = "在改剪贴板"
     ) { ctx, args ->
         if (!args.has("text")) return@Cap CapResult.fail("text is required")
