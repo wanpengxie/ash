@@ -6,7 +6,7 @@ whenToUse: 主人要搭中转站、换中转站、领回旧中转站、换域名
 
 # 管理中转站
 
-中转站是主人自己 Cloudflare 账号里的一个 Worker，程序是公开仓库 `https://github.com/wanpengxie/ash-gateway`，每个版本都发布成可以直接部署的文件（Release）。手机（中枢）主动连它，电脑、网页经它连回手机。你在自己的 Linux 身体里用 **wrangler**（Cloudflare 官方命令行）管理它：部署、改密钥、绑域名、看日志都靠它。中枢只负责**认领**和**连接**：你把地址和认领密钥交给 `service:link/gateway.use`。
+中转站是主人自己 Cloudflare 账号里的一个 Worker，程序是公开仓库 `https://github.com/wanpengxie/ash-gateway`，每个版本都发布成可以直接部署的文件（Release）。手机（中枢）主动连它，电脑经它连回手机。中转站也可以自建在主人的服务器上（升级按技能 `upgrade`）。你在自己的 Linux 身体里用 **wrangler**（Cloudflare 官方命令行）管理它：部署、改密钥、绑域名、看日志都靠它。中枢只负责**认领**和**连接**：你把地址和认领密钥交给 `service:link/gateway.use`。
 
 工作目录统一用 `~/relay`。命令都在你的身体里跑（`bash`），长的放后台、写日志、再读日志，别让一条命令卡住你。身体里没有 curl 和 git，下载和访问网址都用 node 自带的 fetch（下面的写法照抄）。
 

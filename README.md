@@ -5,7 +5,7 @@ ash 是运行在 Android 手机上的常驻个人 Agent。ash core 管理消息�
 当前代码包含：
 
 - 中枢（`packages/core`）：账本、成员、路由、关口、定时、感知、语义层，所有进出都变成消息；
-- 手机宿主、手 App、网页和电脑程序经 `ash-link/2` 连进同一个端口（经中转站的连接端到端加密，见 [LINK-E2E](docs/LINK-E2E.md)），agent 由 DSH 驱动并经 MCP 使用中枢的工具；
+- 手机宿主、手 App、网页和电脑程序经 `ash-link/2` 连进同一个端口（经中转站的连接端到端加密，见 [LINK-E2E](docs/LINK-E2E.md)）；手机、电脑端和自建中转站都能在线升级，见 [UPGRADE](docs/UPGRADE.md)，agent 由 DSH 驱动并经 MCP 使用中枢的工具；
 - 审批、定时唤醒、应用（器官）与本地暂停。
 
 这些是代码能力清单，不代表真机回归和最终体验验收已经完成。进度以项目验收记录为准。

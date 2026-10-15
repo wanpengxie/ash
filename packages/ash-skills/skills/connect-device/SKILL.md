@@ -6,7 +6,7 @@ whenToUse: 主人要接一台电脑或服务器、想让电脑上的 Agent 干�
 
 # 接设备
 
-**手机**在 Ash 本机，直接连，不用中转站和配对；手机显示 offline 就看「连不上」那一节。**电脑、别处的服务器**要经**中转站**（主人自己 Cloudflare 账号里的一个小程序）连进来，再**配对**。中转站只转发加密的数据。下面的 `<编号>` 是 `device_list` 里 `device:` 后面那一串。`service:link`、`service:bodies` 各词的 `hand` 参数只填这串编号，`device_*` 工具的 `device` 参数要填完整的 `device:<编号>`。
+**手机**在 Ash 本机，直接连，不用中转站和配对；手机显示 offline 就看「连不上」那一节。**电脑、别处的服务器**要经**中转站**（主人自己 Cloudflare 账号里的一个小程序）连进来，再**配对**。中转站只转发加密的数据。电脑上的 Ash 程序比中枢旧时会自己升级；升级手机、电脑、自建中转站按技能 `upgrade`。下面的 `<编号>` 是 `device_list` 里 `device:` 后面那一串。`service:link`、`service:bodies` 各词的 `hand` 参数只填这串编号，`device_*` 工具的 `device` 参数要填完整的 `device:<编号>`。
 
 ## 做法：每步先看现状，再动手
 
@@ -42,7 +42,7 @@ whenToUse: 主人要接一台电脑或服务器、想让电脑上的 Agent 干�
 | `hand.offline` | 「这台设备现在没连着，看看电脑是不是关了、睡了，或 Ash 程序没开。」 | 他处理后 `reconnect` |
 | `handshake.4001` | 「这台设备的身份对不上，需要重新配对。」 | 第 3 步 |
 | `handshake.4003` | 「这台设备被撤销了，不会再连；要用就得重新配对。」 | 主人要用就 `service:devices/restore {device}`；被撤销是他的意思，先问一句 |
-| `handshake.4008` | 「设备上的 Ash 程序太旧，连不上了，要在那台电脑上更新一次。」 | 连不上就用不了 `device_update`：请主人在那台电脑上跑 `~/.ash-device/current/bin/ash-device update --version-to <版本> --sha256 <校验值>` 再重启服务。版本和校验值取 `github.com/wanpengxie/ash/releases` 最新 `device-v*` 的 `SHA256SUMS`，别猜 |
+| `handshake.4008` | 「这台电脑上的 Ash 程序太旧，它正在自己升级，等一会儿就回来。」 | 等它重连；一直不回来按技能 `upgrade` |
 | `handshake.4009` | 「同一台设备又连了一次，旧连接被顶掉了，一般不用管。」 | — |
 | `handshake.4400`、`handshake.4500` | 「Ash 这边出了点小问题，稍后再试；反复出现我告诉你。」 | 稍后再体检 |
 
