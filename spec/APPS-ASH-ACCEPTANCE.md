@@ -74,3 +74,18 @@ Activity 删除 retryNotice、lastNoteId、跨页送达追踪及持久 notice-st
 删去专用送达重试验收，保留真实服务的会议纠正→记忆/日记→原批注回应；主 agent 不可用时也要保存批注，同 id 只防重复保存。View 回归改验保存反馈与实际回应，补充失败/未知的普通草稿保留，以及记忆已保存但批注失败/未知时分别反馈。Android 用例只改未跑，等待统一时段；本轮不启动 Gradle。
 
 本轮实际结果：persona 相关轻量服务测试 7/7，真实中枢两条定向用例 2/2（会议纠正及原批注回应；主 agent 停止时保存成功且同 id 不重复保存）。资源 XML 解析与 diff 检查通过。Android 编译、更新后的 Views 与截图未执行，不能沿用此前通过数声称此提交已全部通过。
+
+
+## 当前v6原生View交付（冻结STEP2施工）
+
+业务按当前SPEC第8节、BUILD-MAP及正常/详情/平静/地图施工，不从history/examples引后台需求。正常页含真实current/最近确认、最多两条subject:ash共享承诺和具名负责人/原状态、具体记忆；平静态由实际成功的空承诺集合产生，全部承诺入口仍在。不把todo/普通waiting当正在执行或需要人的决定，不造计数或心理。人格/约定、原批注、日记、成长和完整记忆文件编辑在稳定可达的二级空间保留。
+
+已在本叶子执行唯一授权单命令 --max-workers=1：AshActivityTest的8项独立Views + AshMemoryWriterTest + AshModelTest。Gradle EXIT0（31s）；实际XML Views8/8、Writer4/4、Model7/7，共19/19。生产与测试Kotlin编译通过。共享承诺真实原生跳转项 aSharedPromiseOpensTheSameNativeTaskWithoutCompletingItAndReturnsToTheSameSpace 未在缺统一注册的叶子跑；留完整注册集成树验同id、返回原空间和空入口，未用假注册/Web回退代替。
+
+本次实际Window尺寸1080×2400px=360×800dp、xxhdpi，标准Robolectric Native Graphics；同TestLink接通真实公共连接生命周期，业务端口为具名fixture，服务真实性沿此前真实中枢链，不能以fixture证明真实模型自主理解。已导出并实际打开四张PNG：ash-home.png、ash-detail.png、ash-quiet.png、ash-detail-saved.png（位于外部ASH_ACCEPTANCE_ARTIFACTS）。正文、具名帮手/待做、具体事实、未附原依据、原文件动作、输入框、实际关联reply均可见，非空背景截图。
+
+实际交互通过：读取完整原文件；纠正一条并保留新增/其他偏好；保存后无回复明确未见新回应；实际note.reply关联同批注；删除仅一条；失败/未知保普通草稿和operation id；返回/onNewIntent/切主空间恢复原草稿，账本刷新保EditText实例及选择区。没有新增送达表/专用重试/新队列。单条patch仍由原AshMemoryWriter执行。
+
+逐图对照后，仅补三项本业务明确偏稿：保存主按钮改满328dp，事实正文按冻结稿22/30/500，次动作按14/21/400与现有text2。另引入base的底栏居中公共补丁5b80be54。此三项业务修正及公共居中发生在本轮命令结束后，**修后未跑/当前四图仍是修前证据**，由总控最后集成统一复验并重出图；未自行第二跑。不因测试绿声称产品最终通过。
+
+边界：真实TasksActivity同对象联动、上述三项修后图/回归待集成；真实IME/预测返回/TalkBack/200%字体/dark/真实设备生命周期未验。表单沿公共非会话WindowInsetsOwner，未改KeyboardDeck/发送焦点/持久队列。旧版日记/人格批准/规则等后台实现未改；保存人格版本仍不等于当前策略即时生效。未合主线/推送/打包/安装或操作手机。

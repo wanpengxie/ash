@@ -124,11 +124,13 @@ open class AshActivity : SystemAppActivity() {
         factComment = AshUi.button(this, s(R.string.ash_comment), AshUi.Kind.GHOST, block = true) { editing?.let { edit ->
             val body = JSONObject(edit.body); note("memory:${body.getString("file")}", body.getString("_item"))
         } }
+        AshUi.style(factSource, AshTokens.Type.callout, c.text2)
+        AshUi.style(factDelete, AshTokens.Type.callout, c.text2)
         editStatus = AshUi.text(this, "", AshTokens.Type.callout)
         save = AppUi.button(this, s(R.string.ash_save), AppAccent.TEAL) { saveEdit() }
         saveDock = AshUi.vstack(this).apply {
             addView(AshViews.line(context))
-            addView(AshUi.vstack(context).apply { setPadding(dp(16), dp(10), dp(16), dp(10)); addView(save) })
+            addView(AshUi.vstack(context).apply { setPadding(dp(16), dp(10), dp(16), dp(10)); addView(save, LinearLayout.LayoutParams(-1, -2)) })
         }
         formScroll = ScrollView(this).apply {
             isFillViewport = false
@@ -274,7 +276,7 @@ open class AshActivity : SystemAppActivity() {
                     addView(AshUi.text(context, heading, AshTokens.Type.headline))
                     if (text.isNotEmpty()) addView(AshUi.text(context, text, AshTokens.Type.body).apply { setTextIsSelectable(true) })
                     feedback[key]?.let { addView(AshUi.text(context, it, AshTokens.Type.callout)) }
-                    if (action != null) addView(AshUi.button(context, actionLabel, AshUi.Kind.GHOST, block = true) { action() }.apply { isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
+                    if (action != null) addView(AshUi.button(context, actionLabel, AshUi.Kind.GHOST, block = true) { action() }.apply { AshUi.style(this, AshTokens.Type.callout, c.text2); isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
                 }
             })
         }
@@ -283,7 +285,7 @@ open class AshActivity : SystemAppActivity() {
                 AshViews.region(this, AshTokens.Space.xs).apply {
                     if (hint.isNotEmpty()) addView(AshUi.text(context, hint, AshTokens.Type.body))
                     feedback[key]?.let { addView(AshUi.text(context, it, AshTokens.Type.callout)) }
-                    addView(AshUi.button(context, label, AshUi.Kind.GHOST, block = true) { action() }.apply { isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
+                    addView(AshUi.button(context, label, AshUi.Kind.GHOST, block = true) { action() }.apply { AshUi.style(this, AshTokens.Type.callout, c.text2); isEnabled = key !in pending; minimumHeight = AshUi.dp(context, 48) })
                 }
             })
         }

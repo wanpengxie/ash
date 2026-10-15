@@ -196,6 +196,8 @@ class AshActivityTest {
         seedHome(); open("memory"); click("工作日上午10点提醒我处理非紧急事项。")
         assertTrue(texts().contains("这条记录未附原依据；不能确认它来自哪次对话。"))
         assertEquals("工作日上午10点提醒我处理非紧急事项。", editor().text.toString())
+        val saveAction = all().filterIsInstance<TextView>().single { it.text.toString() == "保存这条纠正" }
+        assertEquals("fixed save fills the 328dp content width", (328 * activity.resources.displayMetrics.density).toInt(), saveAction.width)
         screenshot("ash-detail")
         click("查看原文件 · USER.md")
         val original = ShadowAlertDialog.getLatestAlertDialog() as AlertDialog

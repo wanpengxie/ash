@@ -43,7 +43,7 @@ internal object AshViews {
             setPadding(gap, gap, gap, gap)
             background = AshUi.rounded(AshUi.p(ctx).surface, AshUi.dpF(ctx, AshTokens.Radius.card.toFloat()), AshUi.p(ctx).line, dp(ctx, 1))
             addView(AshUi.text(ctx, topic, AshTokens.Type.sub))
-            addView(AshUi.text(ctx, text, AshTokens.Type.title))
+            addView(AshUi.text(ctx, text, AshTokens.Type.title.copy(weight = 500)))
             if (onClick != null) {
                 isClickable = true; isFocusable = true; minimumHeight = dp(ctx, AshTokens.Size.touch)
                 AshUi.role(this, android.widget.Button::class.java.name)
