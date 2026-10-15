@@ -104,7 +104,8 @@ test("revoke closes the hand (4003), keeps its record, and asks the relay to for
   assert.deepEqual(gateway.calls, [`revoke ${identity.handId}`], "only a hand that came through the relay is the relay's to forget");
   assert.equal(await refused("rename", { device: dev(phone), name: "x" }), "conflict");
   assert.equal(await refused("access_set", { device: dev(phone), tier: "full" }), "conflict");
-  const listed = (await call("list")).devices.find((d: any) => d.device === dev(phone));
+  assert.equal((await call("list")).devices.find((d: any) => d.device === dev(phone)), undefined, "a revoked hand is not listed by default");
+  const listed = (await call("list", { include_revoked: true })).devices.find((d: any) => d.device === dev(phone));
   assert.ok(listed.revoked_at);
 
   assert.deepEqual(await call("restore", { device: dev(phone) }), { restored: true });

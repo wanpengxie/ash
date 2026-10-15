@@ -113,7 +113,7 @@ add("service:admin", "status", "request", empty,
   { label: "在看系统状态", description: "The hub's state in a few facts: the time and time zone, whether activity is paused, the version, how long it has been up, how many agents and hands are online." });
 add("service:admin", "logs", "request", obj({ lines: { type: "integer", minimum: 1, maximum: 1000 }, level: choice("error", "warn", "info", "debug"), since: nonnegativeSafe }),
   obj({ lines: strings }, ["lines"]),
-  { callers: OWNER_AGENT, label: "在看日志", description: "The tail of the hub's log file (default 200 lines, newest last; the lines carry no level or time yet, so level and since do not narrow them). For diagnosing the hub." });
+  { callers: OWNER_AGENT, label: "在看日志", description: "The tail of the hub's log file (default 200 lines, newest last; the hub's own lines start with their UTC time; level and since do not narrow them yet). For diagnosing the hub." });
 const checkupGroup = obj({ id: nonempty, title: { type: "string", minLength: 1, maxLength: 40 }, todo: nonnegativeSafe, optional: bool, text: { type: "string", maxLength: 40 } }, ["id", "title", "todo"]);
 const checkupSummary = { todo: nonnegativeSafe, groups: { type: "array", items: checkupGroup, maxItems: 16 } };
 add("service:admin", "checkup.changed", "event", obj(checkupSummary, ["todo", "groups"]), undefined,
@@ -260,8 +260,8 @@ const deviceInfo = obj({
 }, ["device", "name", "online"], true);
 const pairState = choice("waiting", "requested", "approved", "connected", "rejected", "expired", "failed");
 const pairInfo = obj({ pair_id: id, state: pairState, name: str, kind: pairKind, expires_at: nonnegativeSafe, device: deviceRef, reason: str }, ["pair_id", "state"]);
-add("service:devices", "list", "request", empty, obj({ devices: array(deviceInfo) }, ["devices"]),
-  { label: "在看已连接设备", description: "Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier." });
+add("service:devices", "list", "request", obj({ include_revoked: bool }), obj({ devices: array(deviceInfo) }, ["devices"]),
+  { label: "在看已连接设备", description: "The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. Revoked ones (kept on record for restore) only with include_revoked." });
 add("service:devices", "describe", "request", obj({ device: deviceRef }, ["device"]), deviceInfo,
   { label: "在看设备详情", description: "One hand in detail: how it connects, what it was allowed, when it was last seen." });
 add("service:devices", "pair_start", "request", obj({ kind: pairKind, name: nonempty }),

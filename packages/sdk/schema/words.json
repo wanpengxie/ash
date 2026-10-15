@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "f7ff4e64dfaf842dbda6778c6255b151622cc42f77e2b6a3cd8ae2bc042eea0a",
+ "hash": "538b94419d7d123df53c42f1eac6a24f0acd74ef91bd36d8a4373ca0f8e8fa9e",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -382,7 +382,7 @@
    "word": "logs",
    "kind": "request",
    "direction": "in",
-   "description": "The tail of the hub's log file (default 200 lines, newest last; the lines carry no level or time yet, so level and since do not narrow them). For diagnosing the hub.",
+   "description": "The tail of the hub's log file (default 200 lines, newest last; the hub's own lines start with their UTC time; level and since do not narrow them yet). For diagnosing the hub.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -3154,10 +3154,14 @@
    "word": "list",
    "kind": "request",
    "direction": "in",
-   "description": "Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier.",
+   "description": "The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. Revoked ones (kept on record for restore) only with include_revoked.",
    "input_schema": {
     "type": "object",
-    "properties": {},
+    "properties": {
+     "include_revoked": {
+      "type": "boolean"
+     }
+    },
     "required": [],
     "additionalProperties": false
    },

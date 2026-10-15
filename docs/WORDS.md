@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `f7ff4e64dfaf842d`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `538b94419d7d123d`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -65,7 +65,7 @@
 | `plugins.list` | owner, agent, app | read / none | - | - | 在看插件 | List the plugins of the agent runtime and whether each is enabled. |
 | `plugins.op` | owner, agent, app | write / structure | - | op*, name*, id*, enabled* | 在调整插件 | Enable or disable a plugin of the agent runtime. Plugins change what an agent can do; the gate decides whether the owner is asked. |
 | `status` | owner, agent, app | read / none | - | - | 在看系统状态 | The hub's state in a few facts: the time and time zone, whether activity is paused, the version, how long it has been up, how many agents and hands are online. |
-| `logs` | owner, agent | read / none | - | lines, level, since | 在看日志 | The tail of the hub's log file (default 200 lines, newest last; the lines carry no level or time yet, so level and since do not narrow them). For diagnosing the hub. |
+| `logs` | owner, agent | read / none | - | lines, level, since | 在看日志 | The tail of the hub's log file (default 200 lines, newest last; the hub's own lines start with their UTC time; level and since do not narrow them yet). For diagnosing the hub. |
 | `checkup.changed` | kernel | read / none | event in | todo*, groups* | 在收手机的体检摘要 | A hand reports its checkup in counts: how many things need dealing with, and for each part of the phone its name, the count and a short phrase. No contents. Sent when the summary changes and when the hand connects; not recorded. |
 | `checkup` | owner, agent, app | read / none | - | - | 在看手机的体检 | The last checkup summary the phone reported (how many things need dealing with, per part of the phone). known is false until a phone has reported. Use it when asked whether the phone's permissions and keep-alive switches are in order; the details are on the phone. |
 | `settings.changed` | kernel | read / none | event out, record | keys*, by | 在记下设置改动 | A setting was changed (the key names, never the values). Goes into the ledger so that what changed, when and by whom can be found again. |
@@ -120,7 +120,7 @@
 
 | 词 | 调用方 | effect / risk | 标记 | 输入 | 进行时 | 说明 |
 |---|---|---|---|---|---|---|
-| `list` | owner, agent, app | read / none | - | - | 在看已连接设备 | Every hand the hub knows: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. |
+| `list` | owner, agent, app | read / none | - | include_revoked | 在看已连接设备 | The owner's devices: name, kind, whether online, what the owner allowed it (lend capabilities, serve as a body, run local agents) and its tier. Revoked ones (kept on record for restore) only with include_revoked. |
 | `describe` | owner, agent, app | read / none | - | device* | 在看设备详情 | One hand in detail: how it connects, what it was allowed, when it was last seen. |
 | `pair_start` | owner, agent, app | act / none | - | kind, name | 在开始设备配对 | Start pairing a new computer or server. You get the pair_id and the whole install command to run in the new computer's terminal: it downloads Ash's program from its GitHub release, checks it, and pairs with a one-time code and a one-time secret. The secret never goes to the relay, so the relay cannot swap either side's key; it lives only in this command, so give the command to the owner in the conversation (or run it yourself on a computer you can already use), nowhere else. The device's request comes back to you; pair_approve lets it in. As the pairing moves on you get a background message; pair_status to look. |
 | `pair_status` | owner, agent, app | read / none | - | pair_id* | 在看配对进展 | Where a pairing is: waiting for the command to be run, requested (a device asked to join), approved, connected, rejected, expired, or failed (with the reason: the device or the hub could not prove the pairing secret on the first connection, so a key was swapped on the way; pair again). |

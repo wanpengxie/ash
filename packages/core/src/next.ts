@@ -97,7 +97,7 @@ export interface Hub {
   closed: Promise<void>;
 }
 
-const log = (...args: unknown[]): void => console.error("[hub]", ...args.map((a) => (a instanceof Error ? a.message : a)));
+const log = (...args: unknown[]): void => console.error(new Date().toISOString(), "[hub]", ...args.map((a) => (a instanceof Error ? a.message : a)));
 const service = (member: string): Caller => ({ member, via: "service", local: true });
 /** `packages/ash-skills` next to the sources; `<payload>/ash-skills` next to the bundle (`<payload>/ash/ash-core.mjs`, payload/assemble.mjs). */
 const SKILLS = [new URL("../ash-skills/", import.meta.url), new URL("../../ash-skills/", import.meta.url)]

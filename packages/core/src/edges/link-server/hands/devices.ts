@@ -126,7 +126,11 @@ export class Devices implements Member {
   async handle(msg: Message, ctx: HandleContext): Promise<WordResult | void> {
     const input = (msg.body ?? {}) as Record<string, any>;
     switch (msg.word) {
-      case "list": return { data: { devices: this.d.hands.list().map((h) => this.info(h)) } };
+      case "list": {
+        // Revoked hands stay on record (restore brings one back) but are listed only when asked for.
+        const shown = (h: HandRecord) => h.revoked_at === null || input.include_revoked === true;
+        return { data: { devices: this.d.hands.list().filter(shown).map((h) => this.info(h)) } };
+      }
       case "describe": return { data: this.describe(this.hand(input.device)) };
       case "pair_start": return { data: this.pairStart(input.kind, input.name, ctx.caller.member, await this.gateway().issue(input.kind)) };
       case "pair_code": {
