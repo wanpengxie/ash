@@ -23,8 +23,16 @@ onStart/onStop 仍由原 LedgerFeed 注册/注销完整账本消息；不抢主�
 - `5b80be54` 公共底栏标签按图标居中，新增实际 TextView gravity 断言，后续与 Codex 一并复验。
 - `1928c377` 本应用原生结构与原数据接线；`e2ace707` 只修远端夹具 Kotlin JSONObject 空值重载歧义；`3b3ab726` 收紧当前工作的操作归因。
 
-第一轮唯一 Android 命令生产 Kotlin 编译通过，测试编译因夹具 `put(null)` 失败退出，未执行本轮用例。日志 `/data/atoll/tmp/sysapps-base-codex-v6.log`。修复后等待总控给下一个串行时段；不得把源码就绪或编译通过当产品验收通过。
+第一轮唯一 Android 命令生产 Kotlin 编译通过，测试编译因夹具 `put(null)` 失败退出，未执行用例。日志 `/data/atoll/tmp/sysapps-base-codex-v6.log`。独立修正夹具后，总控另授串行时段，第二轮同三类命令 EXIT0，日志 `/data/atoll/tmp/sysapps-base-codex-v6-r2.log`。没有自行第二跑或并行构建。
 
-定向范围为 SystemAppChromeTest 3、CodexActivityAcceptanceTest 7、CodexEvidenceTest 2（以实际 XML 为准）。包含原同文双来源/精确核销、未知明确重试、两电脑草稿/迟到回执、实际 InputConnection composing/选区/窗口焦点、严格阅读键+offset、停止边界；新增实际 360×800 窗口现在/结果/平静图与编辑、one-shot 决定和 stop 回执等待真实状态。
+XML 实际为 SystemAppChromeTest 3、CodexActivityAcceptanceTest 7、CodexEvidenceTest 2，共12项、0失败/0错误。包含原同文双来源/精确核销、未知明确重试、两电脑草稿/迟到回执、实际 InputConnection composing/选区/窗口焦点、严格阅读键+offset、停止边界；新增实际 360×800 窗口现在/结果/平静图与编辑、one-shot 决定和 stop 回执等待真实状态。离线 composing 实际仍0..2；严格阅读位置为 `id:step-8/-21`，离页前/回来后相等（新增工作标题占一个 row；原恢复算法不变），旧手机回归窗口记录仅1179×2553。
 
-截图预定 `/data/atoll/tmp/codex-v6-native/codex-home.png`、`codex-detail.png`、`codex-quiet.png`，尚未生成前不算证据，生成后须按原始分辨率实际打开对照。远端电脑/模型应答可控，未接主人真实手机、中文 IME 或真实已登录 Codex；本轮未新跑真实中枢全链场景，历史场景证据见 APPS-CODEX-ACCEPTANCE.md，不冒称已在新布局重跑。未打包、安装、推送或合主线。
+实际原生截图已生成，worker与总控均按原始分辨率打开对照当前稿：
+
+- `/data/atoll/tmp/codex-v6-native/codex-home.png`：本次审批、正确电脑/项目、当前工作与最近一轮，稳定底部现在/会话。
+- `/data/atoll/tmp/codex-v6-native/codex-detail.png`：原文件路径、原汇报、未知检查边界与实际编辑框。
+- `/data/atoll/tmp/codex-v6-native/codex-quiet.png`：读取到空审批集合、真实运行消息和仅 running 的暂停/接手。
+
+详情末行在初始截图视口内未露出最后几个字。源码核对：它是 resultRows 普通最后项，TextView 不限行、无 ellipsize；resultList 放在高度0/weight1的列表容器，composer在其后独立WRAP_CONTENT，未用overlay。属于列表视口截断，按现有 LinearLayoutManager 下滚可读；本轮未单独实际滚到此行的手势/末行全局可见断言，明确保留此未验证项，不为把全部内容塞进一屏改生产。
+
+远端电脑/模型应答可控，未接主人真实手机、中文 IME 或真实已登录 Codex；本轮未新跑真实中枢全链场景，历史场景证据见 APPS-CODEX-ACCEPTANCE.md，不冒称已在新布局重跑。未打包、安装、推送或合主线；本轮提交均为自己原分支提交，无需交付依赖副本。

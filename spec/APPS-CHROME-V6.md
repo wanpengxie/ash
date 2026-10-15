@@ -26,3 +26,5 @@ override fun build(saved: Bundle?) {
 - 图标统一既有资源：ash_ic_slider（不是sliders）、more、cpu、heart、laptop、shield、msg、grid、clock、list、file等。
 
 新增 SystemAppChromeTest 验根/详情/稳定目的地与旧子类兼容。本提交按调度未运行Gradle，待总控安排相关单命令验证，不冒称已编译。
+
+后续实际验证：d013fbb5状态几何修复首次指定回归3/3通过；5b80be54底栏标签居中后，随Codex第二轮指定命令再次3/3通过，包含Kotlin编译。日志 `/data/atoll/tmp/sysapps-base-chrome-v6.log`、`/data/atoll/tmp/sysapps-base-codex-v6-r2.log`。新增状态槽实际layout跨action显隐/断线恢复不改变content top/height、真实decor焦点、同一EditText及草稿；不是只验纯Model。
