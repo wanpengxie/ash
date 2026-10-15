@@ -24,7 +24,18 @@
 - TypeScript：`tsc --noEmit -p .`。
 - 中枢定向回归：devices 与 link-control，共 43 项。
 
-未操作手机，未打包、安装、推送或合主线。中文输入组合态、IME/预测返回、主题重建、200% 字体、TalkBack 和真实设备配对尚未真机验证。诊断展示中转站、连接路径、连接数及接口 findings；现有 link 接口不提供真实设备往返延迟，本实现不把中枢调用耗时冒充设备 RTT。
+未操作手机，未打包、安装、推送或合主线。中文输入组合态、IME/预测返回、主题重建、200% 字体、TalkBack 和真实设备配对尚未真机验证。诊断先展示结论和恢复步骤，原始 findings 默认折叠；RTT 使用既有心跳的同设备执行连接样本，附样本年龄，无样本明确未知，见 `DEVICE-LATENCY.md`。
+
+## 产品路径整改与验收边界
+
+- 新接入：首屏「让 Ash 用上你的设备」→ 接入电脑 → 生成命令并说明在电脑终端运行 → 同屏确认设备名与访问范围 → 批准 → 等上线 → 显示实际开放的能力并查看设备。命令生成、配对状态、审批分别调用既有 `service:devices/pair_start`、`pair_status`、`pair_approve`；上线后能力来自设备列表，未同步时明确说明。
+- 恢复：首屏设备行显示离线及影响 → 查看如何恢复连接 → 详情顶部给出打开 Ash、检查网络、刷新等下一步 → 诊断结论与真实心跳样本。声明的能力与当前授权分开表达；版本只作辅助，不虚构自动升级保证。
+- 已打开的设备 A 再收到 B / 配对请求：旧实现仅在 `build()` 读取 `EXTRA_ARG`，没有 `onNewIntent`，与公共 `SINGLE_TOP | CLEAR_TOP` 入口不相容。现按新 Intent 切换页面、更新 Activity Intent；名称草稿按设备隔离；旧页面的读取、审批回调不能覆盖新页面，旧危险确认框会关闭。
+- 操作反馈：成功的权限响应立即更新实际 Switch；早于操作发出的列表结果不能把它翻回旧值。撤销需实际 AlertDialog 确认；恢复后说明还需在设备上打开 Ash。
+
+`DevicesActivityAcceptanceTest` 使用真实 DevicesActivity、布局、RecyclerView、Switch、EditText、AlertDialog 与 Intent；只在既有 request 边界提供确定性中枢响应，生产 request 仍只调用共享中枢端口。测试不启动真实 LedgerFeed，不证明真实配对网络、Android 权限弹窗、系统输入法或 OEM 行为。
+
+截至 `4aa442cc`，标准统一 Robolectric 配置下 Activity 10/10、Model 10/10 通过；`RobolectricResourcesTest` 在前一轮通过。人工查看发现首页截图只绘制标题栏、诊断截图未滚动到结论，不能把这批断言通过冒充完整产品验收。`470747bc` 增加真实动画帧等待、排除标题栏的截图内容检查、诊断区域滚动，并根据截图补充命令运行步骤和接通后的主操作，尚待总控串行复验。截图目录 `/data/atoll/tmp/devices-acceptance/`；必须人工看图，不以颜色数代替内容验收。
 
 ## 配对命令脱敏补充
 
