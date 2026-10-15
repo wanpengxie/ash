@@ -17,11 +17,17 @@ import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
+import android.view.ViewGroup
+import android.view.Gravity
+import android.graphics.Rect
+import android.widget.ImageView
+import android.widget.PopupMenu
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONObject
@@ -33,6 +39,10 @@ open class DevicesActivity : SystemAppActivity() {
     private lateinit var list: RecyclerView
     private lateinit var rows: KeyedRowsAdapter
     private var route = ""
+    private var space = "now"
+    private var pairsLoaded = false
+    private var devicesConfirmedAt: Long? = null
+    private val anchors = HashMap<String, Pair<String, Int>>()
     private var routeGeneration = 0
     private var active = false
     private var detail: Detail? = null
@@ -65,6 +75,7 @@ open class DevicesActivity : SystemAppActivity() {
     override fun build(saved: Bundle?) {
         model = lastNonConfigurationInstance as? DevicesState ?: DevicesState()
         route = saved?.getString("route") ?: routeOf(intent.getStringExtra(EXTRA_ARG))
+        space = saved?.getString("space") ?: "now"
         pairUncertain = saved?.getBoolean("pairUncertain") ?: false
         pairDraft = saved?.getString("pairDraft")
         pairingKind = saved?.getString("pairKind") ?: "computer"
@@ -72,7 +83,18 @@ open class DevicesActivity : SystemAppActivity() {
         restoreKey = saved?.getString("anchor"); restoreOffset = saved?.getInt("offset") ?: 0
         (saved?.getString("pair") ?: route.takeIf { it.startsWith("p/") }?.removePrefix("p/"))?.let(pair::resume)
         list = RecyclerView(this).apply {
-            layoutManager = LinearLayoutManager(this@DevicesActivity)
+            layoutManager = GridLayoutManager(this@DevicesActivity, 2).apply {
+                spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+                    override fun getSpanSize(position: Int) = if (::rows.isInitialized && rows.currentList.getOrNull(position)?.key?.startsWith("device:") == true) 1 else 2
+                }
+            }
+            addItemDecoration(object : RecyclerView.ItemDecoration() {
+                override fun getItemOffsets(out: Rect, view: View, parent: RecyclerView, state: RecyclerView.State) {
+                    val params = view.layoutParams as? GridLayoutManager.LayoutParams ?: return
+                    out.bottom = dp(10)
+                    if (params.spanSize == 1) { out.left = if (params.spanIndex == 0) 0 else dp(5); out.right = if (params.spanIndex == 0) dp(5) else 0 }
+                }
+            })
             setPadding(dp(AshTokens.Space.pageX), 0, dp(AshTokens.Space.pageX), 0)
             clipToPadding = false
         }
@@ -123,6 +145,7 @@ open class DevicesActivity : SystemAppActivity() {
         showRoute(target)
     }
     override fun onSaveInstanceState(out: Bundle) {
+        out.putString("space", space)
         out.putString("route", route); out.putBoolean("revoked", model.showRevoked)
         out.putBoolean("pairUncertain", pairUncertain)
         out.putString("pairDraft", pairing?.accessDraft() ?: pairDraft)
@@ -144,16 +167,31 @@ open class DevicesActivity : SystemAppActivity() {
         val raw = value?.optString("device")?.takeIf { it.isNotEmpty() }?.let { "d/$it" }
             ?: value?.optString("pair_id")?.takeIf { it.isNotEmpty() }?.let { "p/$it" }
             ?: value?.optString("page")?.takeIf { it.isNotEmpty() } ?: arg
-        return when { raw == "connect" || raw.startsWith("p/") -> raw
+        return when { raw == "permissions" -> raw
+            raw == "connect" || raw.startsWith("p/") -> raw
             raw.startsWith("d/") -> "d/" + canonicalId(raw.removePrefix("d/"))
             raw.startsWith("device:") -> "d/$raw"
             else -> "" }
     }
     private fun canonicalId(id: String) = if (id.startsWith("device:")) id else "device:$id"
 
+    private fun rememberPlace() {
+        val lm = list.layoutManager as LinearLayoutManager
+        val pos = lm.findFirstVisibleItemPosition()
+        rows.currentList.getOrNull(pos)?.let { row -> lm.findViewByPosition(pos)?.let { anchors[space] = row.key to (lm.getDecoratedTop(it) - list.paddingTop) } }
+    }
+    private fun switchSpace(next: String) {
+        if (space == next && route.isEmpty()) return
+        if (route.isEmpty()) rememberPlace()
+        space = next
+        anchors[space]?.let { restoreKey = it.first; restoreOffset = it.second }
+        showRoute("")
+    }
     private fun showRoute(next: String) {
+        if (route.isEmpty() && next.isNotEmpty()) rememberPlace()
+        if (next == "permissions") space = "permissions"
         confirmation?.dismiss(); confirmation = null
-        routeGeneration++; route = next; detail = null; pairing = null; note = ""
+        routeGeneration++; route = if (next == "permissions") "" else next; detail = null; pairing = null; note = ""
         readingPair = false; pairDirty = false; manualPairRead = false
         currentFocus?.let {
             getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(it.windowToken, 0)
@@ -167,12 +205,14 @@ open class DevicesActivity : SystemAppActivity() {
         when {
             route.isEmpty() -> {
                 title.text = getString(R.string.dev_title)
-                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_plus)!!, getString(R.string.dev_connect)) { startPairing() })
+                actions.removeAllViews()
+                actions.addView(AshUi.iconButton(this, getDrawable(R.drawable.ash_ic_more)!!, getString(R.string.dev_more)) { showRootMenu() })
+                anchors[space]?.let { restoreKey = it.first; restoreOffset = it.second }
                 (list.parent as? android.view.ViewGroup)?.removeView(list)
                 content.addView(list)
             }
             route.startsWith("d/") -> {
-                title.text = getString(R.string.dev_title)
+                title.text = getString(R.string.dev_detail_title)
                 detail = Detail(route.removePrefix("d/"))
                 content.addView(scroll(detail!!.root))
                 readChanges(route.removePrefix("d/"))
@@ -209,10 +249,11 @@ open class DevicesActivity : SystemAppActivity() {
             val devicesAccepted = when (what) {
                 Refresh.DEVICES -> model.devicesRead(gen, valid)
                 Refresh.RELAY -> { model.relayRead(gen, valid); false }
-                Refresh.PAIRS -> { model.requestsRead(gen, valid); false }
+                Refresh.PAIRS -> { model.requestsRead(gen, valid); if (valid != null) pairsLoaded = true; false }
             }
             if (valid == null) readErrors[what] = error(failure) else if (failure == null) {
                 readErrors.remove(what)
+                if (devicesAccepted) devicesConfirmedAt = System.currentTimeMillis()
                 if (devicesAccepted && reviewedDetail === detail && reviewedDetail?.id?.let(model::device) != null) reviewedDetail?.connectionReadSucceeded()
                 if (what == Refresh.DEVICES && reconcileDetail === detail) { detail?.reconciled(); reconcileDetail = null }
             }
@@ -255,19 +296,68 @@ open class DevicesActivity : SystemAppActivity() {
         }
     }
 
+    private fun showRootMenu() {
+        val choices = arrayOf(getString(R.string.dev_refresh), getString(R.string.dev_relay_title), getString(R.string.dev_connect), getString(R.string.dev_revoked_list))
+        AlertDialog.Builder(this).setTitle(R.string.dev_title).setItems(choices) { _, index -> when (index) {
+            0 -> { Refresh.entries.forEach(::read); readPair(manual = true) }
+            1 -> showRelay()
+            2 -> startPairing()
+            3 -> { model.showRevoked = true; switchSpace("permissions"); render() }
+        } }.show()
+    }
+    private fun showRelay() {
+        val relay = model.relay
+        AlertDialog.Builder(this).setTitle(R.string.dev_relay_title)
+            .setMessage(listOfNotNull(relaySummary(), relay?.url, relay?.error, model.release?.let { getString(R.string.dev_hub_release, it) }).distinct().joinToString("\n"))
+            .setPositiveButton(R.string.dev_refresh) { _, _ -> Refresh.entries.forEach(::read) }
+            .setNeutralButton(R.string.dev_relay_help) { _, _ ->
+                val agent = primary
+                if (agent != null) request("service:agents", "tell", JSONObject().put("agent", agent).put("text", getString(R.string.dev_relay_request))) { _, failure -> note = if (failure == null) getString(R.string.dev_told) else error(failure); render() }
+                else { note = getString(R.string.dev_agent_unavailable); render() }
+            }.setNegativeButton(R.string.dev_close, null).show()
+    }
+    private fun ensureHomePair() {
+        if (space != "now") return
+        val pending = model.requests.firstOrNull { it.pairId == pair.pairId } ?: model.requests.firstOrNull()
+        if (pending != null && pending.pairId != pair.pairId && pair.step !is PairFlow.Step.Approved && pair.step !is PairFlow.Step.Approving) {
+            routeGeneration++; pair.reset(); pair.resume(pending.pairId); pairDraft = null; pairUncertain = false
+            readingPair = false; pairing = null
+        }
+        val show = pending != null || pair.step is PairFlow.Step.Approved || pair.step is PairFlow.Step.Approving
+        if (show && pairing == null) { pairing = Pairing(compact = true); readPair() }
+    }
     private fun render() {
         if (!active) return
         if (route.isEmpty()) {
-            val snapshot = model.rows(System.currentTimeMillis())
-            val errors = readErrors.filterKeys { it != Refresh.DEVICES }.map { (key, message) -> ChatRow("error/$key", message) { text(message) } }
-            val feedback = if (note.isEmpty()) emptyList() else listOf(ChatRow("feedback", note) { text(note) })
-            val contentRows = snapshot.map { row -> ChatRow(row.key, row.toString() + if (row is DevicesState.Row.Status) primary.orEmpty() else "") { listRow(row) } }.toMutableList()
-            contentRows.add(1.coerceAtMost(contentRows.size), ChatRow("connect-device", "connect-device") {
-                section(getString(R.string.dev_product_title)).apply {
-                    addView(AshUi.button(this@DevicesActivity, getString(R.string.dev_product_connect), AshUi.Kind.PRIMARY, block = true) { startPairing() })
+            ensureHomePair()
+            val contentRows = ArrayList<ChatRow>()
+            contentRows += ChatRow("status", "${model.relay}/${model.requests.size}") {
+                AshUi.hstack(this, 8).apply {
+                    setPadding(0, dp(8), 0, dp(12))
+                    addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_recent_confirm, relaySummary()), AshTokens.Type.sub, c.text2), LinearLayout.LayoutParams(0, -2, 1f))
+                    if (model.requests.isNotEmpty()) addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_request_count, model.requests.size), AshTokens.Type.sub, accent))
                 }
-            })
-            rows.submitList(contentRows + errors + feedback) {
+            }
+            if (space == "now") {
+                val flow = pair.step
+                if (pairing?.compact == true && flow !is PairFlow.Step.Connected && flow !is PairFlow.Step.Ended) {
+                    val shownPair = pairing!!
+                    shownPair.bind()
+                    contentRows += ChatRow("pair/${pair.pairId}", flow.toString()) { shownPair.root }
+                } else if (pairsLoaded && model.requests.isEmpty()) {
+                    contentRows += ChatRow("quiet", "quiet") { AshUi.text(this, getString(R.string.dev_quiet), AshTokens.Type.sub, c.text2).apply { setPadding(0, dp(12), 0, dp(16)) } }
+                }
+            }
+            contentRows += ChatRow("heading", space) { sectionHeading(getString(if (space == "now") R.string.dev_your_devices else R.string.dev_permissions_title), getString(R.string.dev_connection_separate)) }
+            val snapshot = model.rows(System.currentTimeMillis())
+            snapshot.filterIsInstance<DevicesState.Row.Item>().forEach { row -> contentRows += ChatRow(row.key, row.toString() + space) { deviceTile(row.device, row.presence, row.abilities) } }
+            snapshot.filterIsInstance<DevicesState.Row.Note>().forEach { row -> contentRows += ChatRow(row.key, row.text) { AshUi.text(this, row.text, AshTokens.Type.callout, c.text2) } }
+            snapshot.filterIsInstance<DevicesState.Row.ShowRevoked>().forEach { row -> contentRows += ChatRow(row.key, row.toString()) { button(if (row.shown) R.string.dev_hide_revoked else R.string.dev_show_revoked, row.count) { model.showRevoked = !model.showRevoked; render() } } }
+            if (space == "now") contentRows += ChatRow("connect", "connect") { linkButton(R.string.dev_connect_new, R.drawable.ash_ic_plus) { startPairing() } }
+            else contentRows += ChatRow("relay", model.relay.toString()) { linkButton(R.string.dev_relay_title, R.drawable.ash_ic_globe) { showRelay() } }
+            readErrors.forEach { (key, message) -> contentRows += ChatRow("error/$key", message) { AshUi.text(this, message, AshTokens.Type.callout, c.err) } }
+            if (note.isNotEmpty()) contentRows += ChatRow("feedback", note) { AshUi.text(this, note, AshTokens.Type.callout) }
+            rows.submitList(contentRows) {
                 restoreKey?.let { key ->
                     val position = rows.currentList.indexOfFirst { it.key == key }
                     if (position >= 0) { (list.layoutManager as LinearLayoutManager).scrollToPositionWithOffset(position, restoreOffset); restoreKey = null }
@@ -275,53 +365,48 @@ open class DevicesActivity : SystemAppActivity() {
             }
         } else { detail?.bind(); pairing?.bind() }
     }
-    private fun listRow(row: DevicesState.Row): View = when (row) {
-        is DevicesState.Row.Status -> column().apply {
-            addView(subText(relaySummary()))
-            if (row.problem) addView(button(R.string.dev_relay_help) {
-                val agent = primary
-                if (agent == null) { note = getString(R.string.dev_agent_unavailable); render() }
-                else request("service:agents", "tell", JSONObject().put("agent", agent).put("text", getString(R.string.dev_relay_request))) { _, failure ->
-                    note = if (failure == null) getString(R.string.dev_told) else error(failure); render()
-                }
-            }.apply { isEnabled = primary != null })
-        }
-        is DevicesState.Row.Request -> AshUi.row(this, row.pair.name.ifEmpty { DevicesText.kind(row.pair.kind) }, getString(R.string.dev_requests), onClick = {
-            if (pair.pairId != row.pair.pairId) { pairDraft = null; pairUncertain = false }
-            pair.resume(row.pair.pairId); showRoute("p/${row.pair.pairId}"); readPair()
+    private fun deviceTile(d: Device, presence: String, abilities: List<String>): View = surface(12).apply {
+        minimumHeight = dp(176)
+        contentDescription = getString(R.string.dev_open_named, d.name)
+        isClickable = true; isFocusable = true
+        AshUi.role(this, android.widget.Button::class.java.name)
+        addView(DeviceObjectView(this@DevicesActivity, d.kind), LinearLayout.LayoutParams(-1, dp(72)))
+        addView(AshUi.text(this@DevicesActivity, d.name, AshTokens.Type.headline, c.ink))
+        addView(AshUi.text(this@DevicesActivity, presence, AshTokens.Type.sub, if (d.online && !d.revoked) accent else c.text2))
+        val names = abilities.take(2)
+        if (names.isNotEmpty()) addView(AshUi.hstack(this@DevicesActivity, 8).apply {
+            setPadding(0, dp(8), 0, 0)
+            names.forEach { name -> addView(AshUi.vstack(this@DevicesActivity, 4).apply {
+                addView(icon(abilityIcon(name), 18), LinearLayout.LayoutParams(-2, dp(20)))
+                addView(AshUi.text(this@DevicesActivity, name, AshTokens.Type.sub, c.text2))
+            }, LinearLayout.LayoutParams(0, -2, 1f)) }
         })
-        is DevicesState.Row.Item -> column().apply {
-            addView(text(row.device.name, true)); addView(subText(row.presence))
-            val summary = useSummary(row.device)
-            addView(text(summary))
-            attention(row.device).takeIf { it.isNotEmpty() && it != summary }?.let { addView(text(it)) }
-            row.version?.let { addView(subText(it)) }
-            addView(button(when {
-                row.device.revoked -> R.string.dev_product_restore
-                !row.device.online -> R.string.dev_product_recover
-                !row.device.lend && !row.device.body && !row.device.localAgents -> R.string.dev_product_choose
-                else -> R.string.dev_open_device
-            }) { showRoute("d/${row.device.id}") })
-        }
-        is DevicesState.Row.ShowRevoked -> button(if (row.shown) R.string.dev_hide_revoked else R.string.dev_show_revoked, row.count) { model.showRevoked = !model.showRevoked; render() }
-        is DevicesState.Row.Note -> text(row.text)
+        if (space == "permissions") addView(AshUi.text(this@DevicesActivity, accessDescription(d), AshTokens.Type.sub, c.text2))
+        setOnClickListener { showRoute("d/${d.id}") }
     }
 
     /** A small static form; this instance stays attached while events update labels around the active edit field. */
     private inner class Detail(val id: String) {
         val root = column()
-        private val header = text(getString(R.string.dev_loading), true)
+        private val header = AshUi.text(this@DevicesActivity, getString(R.string.dev_loading), AshTokens.Type.title, c.ink)
+        private val presenceLabel = AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2)
+        private val identity = AshUi.hstack(this@DevicesActivity, 16)
+        private val notice = surface(16)
         private val status = text("")
         private val nextStep = text("")
-        private val settings = column().apply { visibility = View.GONE }
+        private val settings = AshUi.vstack(this@DevicesActivity, 8).apply { visibility = View.GONE }
         private var settingsOpen = false
-        private val settingsToggle: TextView = button(R.string.dev_settings) {
+        private val settingsToggle: TextView = button(R.string.dev_rename_action) {
             settingsOpen = !settingsOpen
             settings.visibility = visible(settingsOpen)
-            settingsToggleButton().text = getString(if (settingsOpen) R.string.dev_settings_hide else R.string.dev_settings)
+            settingsToggleButton().text = getString(if (settingsOpen) R.string.dev_settings_hide else R.string.dev_rename_action)
         }
         private fun settingsToggleButton() = settingsToggle
-        private val change = subText("")
+        private val change = subText("").apply { visibility = View.GONE }
+        private var historyOpen = false
+        private val changesToggle = linkButton(R.string.dev_known_changes, R.drawable.ash_ic_down) {
+            historyOpen = !historyOpen; change.visibility = visible(historyOpen)
+        }
         private val abilities = subText("")
         private val versionInfo = subText("")
         private val name = EditText(this@DevicesActivity).apply {
@@ -363,18 +448,18 @@ open class DevicesActivity : SystemAppActivity() {
             diagnosisToggleButton().text = getString(if (rawOpen) R.string.dev_diag_hide_details else R.string.dev_diag_details)
         }
         private fun diagnosisToggleButton() = diagnosisToggle
-        private val diagnose = AshUi.button(this@DevicesActivity, getString(R.string.dev_check_connection), AshUi.Kind.PRIMARY, block = true) {
+        private val diagnose = button(R.string.dev_check_connection) {
             read(Refresh.DEVICES); read(Refresh.RELAY); diagnose()
         }
         private val revokeNote = text("")
-        private val restore: TextView = AshUi.button(this@DevicesActivity, getString(R.string.dev_restore), AshUi.Kind.PRIMARY, block = true) {
+        private val restore: TextView = AshUi.button(this@DevicesActivity, getString(R.string.dev_restore), AshUi.Kind.NEUTRAL, block = true) {
             run("restore", restoreButton(), revokeNote)
         }.apply { visibility = View.GONE }
         private fun restoreButton() = restore
         private val revoke: TextView = button(R.string.dev_revoke) {
             val d = model.device(id) ?: return@button
             if (d.revoked) run("restore", revokeButton(), revokeNote)
-            else confirmation = AlertDialog.Builder(this@DevicesActivity).setTitle(R.string.dev_revoke_question).setMessage(R.string.dev_revoke_help)
+            else confirmation = AlertDialog.Builder(this@DevicesActivity).setTitle(getString(R.string.dev_revoke_named, d.name)).setMessage(R.string.dev_revoke_help)
                 .setNegativeButton(R.string.dev_cancel, null).setPositiveButton(R.string.dev_confirm) { _, _ ->
                     if (detail === this) run("revoke", revokeButton(), revokeNote)
                 }.show()
@@ -383,10 +468,23 @@ open class DevicesActivity : SystemAppActivity() {
         private val pending = HashSet<String>()
         private val unknown = HashSet<String>()
         init {
-            root.addView(header); root.addView(status); root.addView(nextStep); root.addView(diagnose); root.addView(restore); root.addView(revokeNote); root.addView(diagnosis)
-            root.addView(diagnosisToggle.apply { visibility = View.GONE }); root.addView(diagnosisRaw)
-            root.addView(settingsToggle); root.addView(settings)
-            listOf(change, abilities, versionInfo, name, saveName, nameNote, access.root, update, updateNote, revoke).forEach(settings::addView)
+            identity.setPadding(0, dp(8), 0, dp(16))
+            val kind = model.device(id)?.kind ?: "computer"
+            identity.addView(DeviceObjectView(this@DevicesActivity, kind), LinearLayout.LayoutParams(dp(80), dp(72)))
+            identity.addView(AshUi.vstack(this@DevicesActivity, 4).apply { addView(header); addView(presenceLabel) }, LinearLayout.LayoutParams(0, -2, 1f))
+            root.addView(identity)
+            notice.addView(status); notice.addView(nextStep); notice.addView(diagnose); notice.addView(restore); notice.addView(revokeNote)
+            root.addView(notice)
+            root.addView(diagnosis); root.addView(diagnosisToggle.apply { visibility = View.GONE }); root.addView(diagnosisRaw)
+            root.addView(sectionHeading(getString(R.string.dev_permissions_question)))
+            root.addView(access.root)
+            root.addView(sectionHeading(getString(R.string.dev_program_changes)))
+            root.addView(versionInfo); root.addView(update); root.addView(updateNote); root.addView(changesToggle); root.addView(change)
+            root.addView(AshUi.hstack(this@DevicesActivity, 8).apply {
+                addView(settingsToggle, LinearLayout.LayoutParams(0, -2, 1f)); addView(revoke, LinearLayout.LayoutParams(0, -2, 1f))
+            })
+            root.addView(settings)
+            listOf(AshUi.text(this@DevicesActivity, getString(R.string.dev_name), AshTokens.Type.sub), name, saveName, nameNote, abilities).forEach(settings::addView)
             name.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -412,7 +510,7 @@ open class DevicesActivity : SystemAppActivity() {
             val d = model.device(id)
             if (d == null) { header.text = getString(if (model.devices == null) R.string.dev_loading else R.string.dev_missing); name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; diagnose.isEnabled = false; revoke.isEnabled = false; restore.visibility = View.GONE; return }
             header.text = d.name
-            title.text = d.name
+            presenceLabel.text = devicePresence(d)
             if (diagnosisState != null && diagnosisState != (d.online to d.revoked) && "diagnose" !in pending) clearDiagnosis()
             val noAccess = !d.lend && !d.body && !d.localAgents
             val impact = when { d.revoked -> getString(R.string.dev_detail_revoked); diagnosisIssue != null -> getString(R.string.dev_detail_connection_review); noAccess -> getString(R.string.dev_detail_no_access); else -> useSummary(d) }
@@ -427,7 +525,7 @@ open class DevicesActivity : SystemAppActivity() {
             }
             change.text = model.changes[id]?.let { DevicesText.change(it, primary, System.currentTimeMillis()) }.orEmpty()
             abilities.text = capabilities(d)
-            versionInfo.text = DevicesText.version(d, model.release).orEmpty()
+            versionInfo.text = DevicesText.version(d, model.release) ?: getString(R.string.dev_version_unknown)
             if (awaitingName == d.name && name.text.toString().trim() == awaitingName) { nameDirty = false; awaitingName = null }
             if (!nameLoaded || (!nameDirty && !name.hasFocus() && name.text.toString() != d.name)) setName(d.name)
             else if (nameDirty && sourceName != null && sourceName != d.name) nameNote.text = getString(R.string.dev_rename_external)
@@ -444,7 +542,9 @@ open class DevicesActivity : SystemAppActivity() {
             restore.isEnabled = revoke.isEnabled && !restoring
             diagnose.isEnabled = "diagnose" !in pending
             diagnose.visibility = visible(!d.revoked)
-            listOf(nameNote, change, versionInfo, updateNote, diagnosis, revokeNote).forEach { it.visibility = visible(it.text.isNotEmpty()) }
+            listOf(nameNote, versionInfo, updateNote, diagnosis, revokeNote).forEach { it.visibility = visible(it.text.isNotEmpty()) }
+            change.visibility = visible(historyOpen)
+            if (change.text.isEmpty()) change.text = getString(R.string.dev_no_changes)
             if (restoring) { name.isEnabled = false; saveName.isEnabled = false; access.enabled(false); update.isEnabled = false; revoke.isEnabled = false }
         }
         fun needsConnectionReview() = diagnosisIssue != null
@@ -537,60 +637,98 @@ open class DevicesActivity : SystemAppActivity() {
     }
 
     private inner class AccessForm(private val changed: ((String, Any, View, TextView) -> Unit)? = null) {
-        val root = column()
-        private val advanced = column().apply { visibility = View.GONE }
+        val root = AshUi.vstack(this@DevicesActivity)
+        private val advanced = AshUi.vstack(this@DevicesActivity).apply { visibility = View.GONE }
         private var advancedOpen = false
-        private val advancedToggle: TextView = button(R.string.dev_advanced) {
+        private val values = linkedMapOf("lend" to R.string.dev_lend, "body" to R.string.dev_body, "local_agents" to R.string.dev_agents, "tier" to R.string.dev_full)
+        private val selected = values.keys.associateWith { it == "lend" }.toMutableMap()
+        private val messages = values.mapValues { AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2).apply { visibility = View.GONE } }
+        private val controls = values.mapValues { (key, label) ->
+            button(R.string.dev_permission_allow).apply {
+                contentDescription = getString(label)
+                val control = this
+                setOnClickListener {
+                    PopupMenu(this@DevicesActivity, this).apply {
+                        menu.add(0, 1, 0, R.string.dev_permission_allow)
+                        menu.add(0, 0, 1, R.string.dev_permission_off)
+                        setOnMenuItemClickListener { item ->
+                            val on = item.itemId == 1
+                            if (on != selected.getValue(key)) {
+                                selected[key] = on; bindControl(key)
+                                val value: Any = if (key == "tier") (if (on) "full" else "ask") else on
+                                messages.getValue(key).visibility = visible(changed != null)
+                                changed?.invoke(key, value, control, messages.getValue(key))
+                                advancedLabel()
+                            }
+                            true
+                        }
+                    }.show()
+                }
+            }
+        }
+        private val groups = LinkedHashMap<String, View>()
+        private val approval = AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2)
+        private val advancedToggle: TextView = linkButton(R.string.dev_advanced_boundary, R.drawable.ash_ic_shield) {
             advancedOpen = !advancedOpen; advanced.visibility = visible(advancedOpen); advancedLabel()
         }
-        private fun advancedLabel() {
-            advancedToggle.text = getString(when {
-                advancedOpen -> R.string.dev_advanced_hide
-                switches.getValue("local_agents").checked || switches.getValue("tier").checked -> R.string.dev_advanced_enabled
-                else -> R.string.dev_advanced
-            })
-        }
-        private val values = linkedMapOf("lend" to R.string.dev_lend, "body" to R.string.dev_body, "local_agents" to R.string.dev_agents, "tier" to R.string.dev_full)
-        private val switches = values.mapValues { (key, label) -> AshUi.AshSwitch(this@DevicesActivity).apply {
-            contentDescription = getString(label)
-            set(key == "lend")
-            onChange = { on ->
-                if (changed != null) messages.getValue(key).visibility = View.VISIBLE
-                changed?.invoke(key, if (key == "tier") (if (on) "full" else "ask") else on, this, messages.getValue(key))
-                advancedLabel()
-            }
-        } }
-        private val messages = values.mapValues { text("") }
         init {
             val helps = listOf(R.string.dev_lend_help, R.string.dev_body_help, R.string.dev_agents_help, R.string.dev_full_help)
             values.entries.forEachIndexed { i, (key, label) ->
-                val group = if (key == "local_agents" || key == "tier") advanced else root
-                group.addView(AshUi.hstack(this@DevicesActivity, AshTokens.Space.xs).apply {
-                    addView(AshUi.vstack(this@DevicesActivity).apply {
-                        addView(text(getString(label), true)); addView(text(getString(helps[i])))
+                val row = AshUi.hstack(this@DevicesActivity, 12).apply {
+                    setPadding(0, dp(8), 0, dp(8)); minimumHeight = dp(66)
+                    addView(icon(if (key == "body") R.drawable.ash_ic_folder else if (key == "lend") R.drawable.ash_ic_eye else R.drawable.ash_ic_shield), LinearLayout.LayoutParams(dp(22), dp(22)))
+                    addView(AshUi.vstack(this@DevicesActivity, 4).apply {
+                        addView(AshUi.text(this@DevicesActivity, getString(label), AshTokens.Type.body))
+                        addView(AshUi.text(this@DevicesActivity, getString(helps[i]), AshTokens.Type.sub, c.text2))
                     }, LinearLayout.LayoutParams(0, -2, 1f))
-                    addView(switches.getValue(key))
-                })
-                group.addView(messages.getValue(key).apply { visibility = View.GONE })
+                    addView(controls.getValue(key), LinearLayout.LayoutParams(dp(78), -2))
+                }
+                val group = AshUi.vstack(this@DevicesActivity).apply { addView(rule()); addView(row); addView(messages.getValue(key)) }
+                groups[key] = group
+                (if (key == "local_agents" || key == "tier") advanced else root).addView(group)
+                bindControl(key)
             }
-            root.addView(advancedToggle); root.addView(advanced)
+            root.addView(advancedToggle); root.addView(approval); root.addView(advanced)
+            advancedLabel()
+        }
+        private fun bindControl(key: String) {
+            controls.getValue(key).apply {
+                text = getString(if (selected.getValue(key)) R.string.dev_permission_allow else R.string.dev_permission_off)
+                isSelected = selected.getValue(key)
+                AshUi.style(this, AshTokens.Type.callout, c.text)
+                compoundDrawablePadding = dp(4)
+                setCompoundDrawablesRelative(null, null, getDrawable(R.drawable.ash_ic_down)?.mutate()?.apply { setTint(c.text2); setBounds(0, 0, dp(16), dp(16)) }, null)
+                background = AshUi.rounded(c.surface, dp(12).toFloat(), c.line2, dp(1))
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+            }
+        }
+        private fun advancedLabel() {
+            advancedToggle.text = getString(if (advancedOpen) R.string.dev_advanced_hide else R.string.dev_advanced_boundary)
+            approval.text = getString(if (selected.getValue("tier")) R.string.dev_approval_full else R.string.dev_approval_ask) + if (selected.getValue("local_agents")) getString(R.string.dev_approval_agents) else ""
         }
         fun bind(d: Device) {
-            val actual = mapOf("lend" to d.lend, "body" to d.body, "local_agents" to d.localAgents, "tier" to (d.tier == "full"))
-            switches.forEach { (key, switch) -> switch.set(actual.getValue(key)) }
-            advancedLabel()
+            selected.putAll(mapOf("lend" to d.lend, "body" to d.body, "local_agents" to d.localAgents, "tier" to (d.tier == "full")))
+            groups.getValue("body").visibility = visible(d.isComputer || d.capabilities.any { it.startsWith("workspace.") || it == "body.info" })
+            values.keys.forEach(::bindControl); advancedLabel()
         }
-        fun enabled(enabled: Boolean) { switches.values.forEach { it.isEnabled = enabled; it.alpha = if (enabled) 1f else 0.4f } }
+        fun enabled(enabled: Boolean) { controls.values.forEach { it.isEnabled = enabled; it.alpha = if (enabled) 1f else 0.4f } }
         fun restore(value: String?) {
             val data = value?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return
-            switches.forEach { (key, switch) -> switch.set(if (key == "tier") data.optString(key) == "full" else data.optBoolean(key)) }
-            advancedLabel()
+            selected.keys.forEach { key -> selected[key] = if (key == "tier") data.optString(key) == "full" else data.optBoolean(key) }
+            values.keys.forEach(::bindControl); advancedLabel()
         }
-        fun args() = JSONObject().put("tier", if (switches.getValue("tier").checked) "full" else "ask").also { o -> listOf("lend", "body", "local_agents").forEach { o.put(it, switches.getValue(it).checked) } }
+        fun args() = JSONObject().put("tier", if (selected.getValue("tier")) "full" else "ask").also { o -> listOf("lend", "body", "local_agents").forEach { o.put(it, selected.getValue(it)) } }
     }
 
-    private inner class Pairing {
-        val root = column()
+    private inner class Pairing(val compact: Boolean = false) {
+        val root = if (compact) AshUi.vstack(this@DevicesActivity, 8) else column()
+        private val decision = surface(16)
+        private val pairName = AshUi.text(this@DevicesActivity, "", AshTokens.Type.headline, c.ink)
+        private val pairScope = AshUi.text(this@DevicesActivity, "", AshTokens.Type.sub, c.text2)
+        private var scopeOpen = false
+        private val scopeButton = linkButton(R.string.dev_adjust_pair_scope, R.drawable.ash_ic_shield) {
+            scopeOpen = !scopeOpen; bind()
+        }
         val result = text("")
         private val explanation = text(getString(R.string.dev_pair_intro))
         private val command = text("").apply { setTextIsSelectable(true); isSaveEnabled = false }
@@ -610,8 +748,8 @@ open class DevicesActivity : SystemAppActivity() {
             }
         }
         private fun copyButton() = copy
-        private val permissions = AccessForm()
-        private val approve = AshUi.button(this@DevicesActivity, getString(R.string.dev_approve), AshUi.Kind.PRIMARY, block = true) { decide(true) }
+        private val permissions = AccessForm { _, _, _, _ -> bind() }
+        private val approve = AshUi.button(this@DevicesActivity, getString(R.string.dev_allow_connection), AshUi.Kind.PRIMARY, block = true) { decide(true) }
         private val reject = button(R.string.dev_reject) { decide(false) }
         private val restart = button(R.string.dev_restart) { pair.reset(); pairUncertain = false; result.text = ""; bind() }
         private val open = AshUi.button(this@DevicesActivity, getString(R.string.dev_open_device), AshUi.Kind.PRIMARY, block = true) {
@@ -619,7 +757,27 @@ open class DevicesActivity : SystemAppActivity() {
             if (!id.isNullOrEmpty()) showRoute("d/$id")
         }
         private var deciding = false
-        init { permissions.restore(pairDraft); listOf(kinds, explanation, issue, command, copy, permissions.root, approve, reject, connectedAbilities, result, open, restart).forEach(root::addView); kindState() }
+        init {
+            permissions.restore(pairDraft)
+            if (compact) {
+                decision.addView(AshUi.hstack(this@DevicesActivity, 8).apply {
+                    addView(icon(R.drawable.ash_ic_check, 20)); addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_decision_label), AshTokens.Type.sub, c.text2))
+                })
+                decision.addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_question), AshTokens.Type.headline, c.ink))
+                decision.addView(AshUi.hstack(this@DevicesActivity, 16).apply {
+                    addView(DeviceObjectView(this@DevicesActivity, "computer"), LinearLayout.LayoutParams(dp(64), dp(56)))
+                    addView(pairName, LinearLayout.LayoutParams(0, -2, 1f))
+                })
+                decision.addView(explanation); decision.addView(pairScope)
+                decision.addView(AshUi.text(this@DevicesActivity, getString(R.string.dev_pair_consequence), AshTokens.Type.sub, c.text2))
+                decision.addView(AshUi.hstack(this@DevicesActivity, 8).apply { addView(approve, LinearLayout.LayoutParams(0, -2, 1f)); addView(reject, LinearLayout.LayoutParams(0, -2, 1f)) })
+                decision.addView(result); decision.addView(connectedAbilities); decision.addView(open)
+                root.addView(decision); root.addView(scopeButton); root.addView(permissions.root)
+            } else {
+                listOf(kinds, explanation, issue, command, copy, permissions.root, approve, reject, connectedAbilities, result, open, restart).forEach(root::addView)
+            }
+            kindState()
+        }
         fun accessDraft() = permissions.args().toString()
         private fun kindState() { computer.isSelected = pairingKind == "computer"; server.isSelected = pairingKind == "server"; computer.alpha = if (computer.isSelected) 1f else 0.5f; server.alpha = if (server.isSelected) 1f else 0.5f }
         fun bind() {
@@ -632,7 +790,7 @@ open class DevicesActivity : SystemAppActivity() {
             if (command.text.toString() != waiting?.command.orEmpty()) command.text = waiting?.command.orEmpty()
             copy.visibility = command.visibility
             val asking = s is PairFlow.Step.Asking || s is PairFlow.Step.Approving
-            permissions.root.visibility = visible(asking)
+            permissions.root.visibility = visible(asking && (!compact || scopeOpen))
             permissions.enabled(!deciding && !pairUncertain && s is PairFlow.Step.Asking)
             val connectedDevice = (s as? PairFlow.Step.Connected)?.device?.let(model::device)?.takeIf { it.online && !it.revoked }
             connectedAbilities.visibility = visible(s is PairFlow.Step.Connected)
@@ -645,6 +803,16 @@ open class DevicesActivity : SystemAppActivity() {
             if (deciding) result.text = getString(R.string.dev_working)
             else if (pairUncertain) result.text = getString(R.string.dev_unknown)
             result.visibility = visible(result.text.isNotEmpty())
+            val request = model.requests.firstOrNull { it.pairId == pair.pairId }
+            when (s) {
+                is PairFlow.Step.Asking -> pairName.text = s.name.ifEmpty { request?.name.orEmpty() }
+                is PairFlow.Step.Approving -> pairName.text = s.name
+                else -> if (pairName.text.isEmpty()) pairName.text = request?.name.orEmpty()
+            }
+            val scopes = permissions.args()
+            pairScope.text = getString(R.string.dev_pair_scope_summary, getString(if (scopes.optBoolean("lend")) R.string.dev_permission_allow else R.string.dev_permission_off), getString(if (scopes.optBoolean("body")) R.string.dev_permission_allow else R.string.dev_permission_off))
+            scopeButton.visibility = visible(asking)
+            explanation.visibility = visible(!compact || !asking)
             explanation.text = when (s) {
                 is PairFlow.Step.Idle -> getString(R.string.dev_pair_intro)
                 is PairFlow.Step.Issuing -> getString(R.string.dev_working)
@@ -764,6 +932,30 @@ open class DevicesActivity : SystemAppActivity() {
         else -> ""
     }
     private fun newerRelease(d: Device) = d.latest == false && !model.release.isNullOrEmpty() && model.release != d.version
+    private val accent get() = if (AshUi.night(this)) c.her else c.helperTeal
+    private fun surface(padding: Int = 16) = AshUi.vstack(this, 8).apply {
+        background = AshUi.rounded(c.surface, dp(22).toFloat(), c.line2, dp(1))
+        setPadding(dp(padding), dp(padding), dp(padding), dp(padding)); elevation = 0f
+    }
+    private fun rule() = View(this).apply { setBackgroundColor(c.line); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) }
+    private fun icon(resource: Int, size: Int = 22) = ImageView(this).apply {
+        setImageDrawable(getDrawable(resource)?.mutate()?.apply { setTint(c.text2) })
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
+    }
+    private fun sectionHeading(label: String, note: String? = null) = AshUi.hstack(this, 8).apply {
+        setPadding(0, dp(20), 0, dp(8))
+        addView(AshUi.text(this@DevicesActivity, label, AshTokens.Type.headline, c.ink), LinearLayout.LayoutParams(0, -2, 1f))
+        note?.let { addView(AshUi.text(this@DevicesActivity, it, AshTokens.Type.sub, c.text2)) }
+    }
+    private fun linkButton(label: Int, image: Int, action: () -> Unit): TextView = AshUi.button(this, getString(label), AshUi.Kind.GHOST, block = true, onClick = action).apply {
+        setTextColor(c.text2); compoundDrawablePadding = dp(8)
+        setCompoundDrawablesRelativeWithIntrinsicBounds(getDrawable(image)?.mutate()?.apply { setTint(c.text2); setBounds(0, 0, dp(20), dp(20)) }, null, null, null)
+    }
+    private fun abilityIcon(name: String) = when (name) { "Codex" -> R.drawable.ash_ic_cpu; "文件和命令" -> R.drawable.ash_ic_folder; "日历" -> R.drawable.ash_ic_clock; else -> R.drawable.ash_ic_eye }
+    private fun devicePresence(d: Device) = if (!d.online && !d.revoked && d.lastSeen != null)
+        getString(R.string.dev_last_confirmed, timeOf(d.lastSeen)) else DevicesText.presence(d, System.currentTimeMillis())
+    private fun timeOf(at: Long) = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(at))
     private fun isUnknown(f: HumanPort.Failure?) = f?.code in setOf("result_unknown", "timeout", "offline")
     private fun visible(show: Boolean) = if (show) View.VISIBLE else View.GONE
     private fun subText(value: String) = AshUi.text(this, value, AshTokens.Type.sub).apply {
