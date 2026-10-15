@@ -65,4 +65,5 @@
     <string name="ash_version">%1$s 更新 · %2$s</string>
     <string name="ash_more">更早的日记</string>
     <string name="ash_applies_to">适用于：%1$s</string>
+    <string name="ash_tasks_partial">这里显示最近更新的记录；打开任务应用可查看全部待办。</string>
 </resources>

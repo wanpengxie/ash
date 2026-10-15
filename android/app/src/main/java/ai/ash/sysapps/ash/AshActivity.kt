@@ -1,6 +1,7 @@
 package ai.ash.sysapps.ash
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -42,6 +43,7 @@ class AshActivity : SystemAppActivity() {
     private lateinit var save: TextView
     private var editing: Edit? = null
     private var writing = false
+    private var editGeneration = 0
     private val pending = HashSet<String>()
     private val feedback = HashMap<String, String>()
     private var restoreKey: String? = null
@@ -59,10 +61,9 @@ class AshActivity : SystemAppActivity() {
         day = saved?.getString("day")
         restoreKey = saved?.getString("anchor")
         restoreOffset = saved?.getInt("offset") ?: 0
-        val arg = runCatching { JSONObject(intent.getStringExtra(EXTRA_ARG) ?: "{}") }.getOrNull()
         if (saved == null) {
-            route = arg?.optString("section")?.takeIf { it in setOf("now", "identity", "memory", "diary", "growth", "promises", "notes") } ?: "now"
-            day = arg?.optString("date")?.takeIf { Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}").matches(it) }
+            val open = AshModel.openArgument(intent.getStringExtra(EXTRA_ARG))
+            route = open.section; day = open.date
         }
         layout = LinearLayoutManager(this)
         rows = KeyedRowsAdapter(this)
@@ -98,6 +99,15 @@ class AshActivity : SystemAppActivity() {
         draw()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val open = AshModel.openArgument(intent.getStringExtra(EXTRA_ARG))
+        if (editing != null) closeEdit()
+        route = open.section; day = open.date; restoreKey = null
+        list.scrollToPosition(0); refresh(); draw(); syncBack()
+    }
+
     override fun onSaveInstanceState(out: Bundle) {
         out.putString("route", route); out.putString("day", day)
         val pos = layout.findFirstVisibleItemPosition()
@@ -125,7 +135,7 @@ class AshActivity : SystemAppActivity() {
         request(to, word, body) { r ->
             if (!state.accepts(ticket)) return@request
             val valid = r.ok && when (key) {
-                "tasks", "closed" -> r.data.optJSONArray("tasks") != null
+                "tasks" -> r.data.optJSONArray("tasks") != null
                 "memory", "proactive", "identity" -> r.data.optJSONArray("files") != null
                 "diary" -> r.data.optJSONArray("days") != null
                 "notes" -> r.data.optJSONArray("notes") != null
@@ -155,7 +165,7 @@ class AshActivity : SystemAppActivity() {
         if (!connected) return
         read("agents", "service:agents", "list")
         when (route) {
-            "now" -> { read("now", "service:history", "current", JSONObject().put("limit", 40)); read("pulse", "service:pulse", "pulse.get"); read("tasks", AshModel.TASKS, "list", JSONObject().put("subject", "ash").put("status", "open").put("limit", 100)); read("closed", AshModel.TASKS, "list", JSONObject().put("subject", "ash").put("status", "closed").put("limit", 3)) }
+            "now" -> { read("now", "service:history", "current", JSONObject().put("limit", 40)); read("pulse", "service:pulse", "pulse.get"); read("tasks", AshModel.TASKS, "list", JSONObject().put("subject", "ash").put("status", "all").put("limit", 100)) }
             "identity" -> { read("identity", AshModel.PERSONA, "get"); listOf("SOUL.md", "IDENTITY.md").forEach { file -> read("versions:$file", AshModel.PERSONA, "versions", JSONObject().put("file", file)) } }
             "memory" -> read("memory", AshModel.PERSONA, "memory.get")
             "diary" -> if (day == null) read("diary", AshModel.PERSONA, "diary.list", JSONObject().put("limit", 60)) else read("day:$day", AshModel.PERSONA, "diary.get", JSONObject().put("date", day))
@@ -186,12 +196,13 @@ class AshActivity : SystemAppActivity() {
                 row("now", s(R.string.ash_now), listOf(if (value("now") == null && connected) s(R.string.ash_loading) else AshModel.nowText(now, name), if (now.waitingYou > 0) s(R.string.ash_waiting, now.waitingYou) else "", rhythm).filter { it.isNotEmpty() }.joinToString("\n")) { note("now", s(R.string.ash_now)) }
                 val tasks = AshModel.todos(value("tasks")); val active = AshModel.activeTodos(tasks)
                 if (value("tasks") == null) row("tasks-loading", s(R.string.ash_tasks), s(R.string.ash_loading))
-                else if (active.isEmpty()) row("tasks-empty", s(R.string.ash_tasks), s(R.string.ash_no_tasks))
+                else if (active.isEmpty()) row("tasks-empty", s(R.string.ash_tasks), s(if (value("tasks")?.has("next_before") == true) R.string.ash_tasks_partial else R.string.ash_no_tasks))
                 active.forEach { task ->
                     val meta = listOf(AshModel.statusText(task.status), task.due?.let { HomeModel.dayTime(it, System.currentTimeMillis()) }, task.assignee?.let { who(it) }, task.updatedBy?.let { s(R.string.ash_changed_by, who(it)) }).filterNotNull().joinToString(" · ")
                     row("task:${task.id}", task.title, listOfNotNull(meta, task.note).joinToString("\n")) { task(task) }
                 }
-                row("closed", s(R.string.ash_closed), AshModel.todos(value("closed")).joinToString("\n") { it.title }.ifEmpty { s(R.string.ash_closed_hint) }) { openTasks() }
+                if (value("tasks")?.has("next_before") == true) row("tasks-more", s(R.string.ash_tasks_open), s(R.string.ash_tasks_partial)) { openTasks() }
+                row("closed", s(R.string.ash_closed), tasks.filter { !it.open }.sortedByDescending { it.updatedAt ?: 0 }.take(3).joinToString("\n") { it.title }.ifEmpty { s(R.string.ash_closed_hint) }) { openTasks() }
                 listOf("identity" to R.string.ash_identity, "memory" to R.string.ash_memory, "diary" to R.string.ash_diary, "growth" to R.string.ash_growth, "promises" to R.string.ash_promises, "notes" to R.string.ash_notes).forEach { (id, label) -> row("nav:$id", s(label)) { navigate(id) } }
             }
             "identity" -> value("identity")?.objects("files")?.forEach { f ->
@@ -238,7 +249,7 @@ class AshActivity : SystemAppActivity() {
                 row("proactive", s(R.string.ash_proactive), proactive?.content ?: s(R.string.ash_loading)) { proactive?.let { document(it.file, it.content, false) } }
             }
         }
-        val keys = when(route) { "now" -> listOf("now", "tasks", "closed", "pulse"); "identity", "memory", "growth", "notes" -> listOf(route); "diary" -> listOf(day?.let { "day:$it" } ?: "diary"); else -> listOf("settings", "rules", "proactive") }
+        val keys = when(route) { "now" -> listOf("now", "tasks", "pulse"); "identity", "memory", "growth", "notes" -> listOf(route); "diary" -> listOf(day?.let { "day:$it" } ?: "diary"); else -> listOf("settings", "rules", "proactive") }
         keys.forEach { key -> slot(key).error?.let { row("error:$key", it, s(R.string.ash_kept)) { refresh() } } }
         if (out.isEmpty()) row("loading", s(R.string.ash_loading))
         val pos = layout.findFirstVisibleItemPosition(); val key = rows.currentList.getOrNull(pos)?.key; val offset = layout.findViewByPosition(pos)?.let(layout::getDecoratedTop) ?: 0
@@ -261,6 +272,7 @@ class AshActivity : SystemAppActivity() {
     }
     private fun note(about: String, label: String) = openEdit(Edit("note:$about", s(R.string.ash_note_on, label), AshModel.PERSONA, "note", JSONObject().put("about", about).toString(), "text"), "")
     private fun openEdit(edit: Edit, text: String) {
+        editGeneration++; writing = false
         editing = edit
         input.setText(prefs.getString(edit.key, text)); input.isEnabled = true
         list.visibility = View.GONE; editor.visibility = View.VISIBLE; save.isEnabled = true
@@ -268,6 +280,7 @@ class AshActivity : SystemAppActivity() {
     }
     private fun closeEdit() {
         currentFocus?.let { getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(it.windowToken, 0); it.clearFocus() }
+        editGeneration++; writing = false
         editing = null; editor.visibility = View.GONE; list.visibility = View.VISIBLE; draw(); syncBack()
     }
     private fun saveEdit() {
@@ -283,10 +296,11 @@ class AshActivity : SystemAppActivity() {
             body.put("id", id)
             prefs.edit().putString("operation:${edit.key}", JSONObject().put("text", text).put("id", id).toString()).apply()
         }
+        val generation = editGeneration
         writing = true; input.isEnabled = false; save.isEnabled = false; editStatus.text = s(R.string.ash_saving)
         request(edit.to, edit.word, body) { r ->
+            if (generation != editGeneration) return@request
             writing = false
-            if (editing != edit) return@request
             input.isEnabled = true
             if (r.ok) {
                 prefs.edit().remove(edit.key).remove("operation:${edit.key}").apply()

@@ -5,6 +5,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AshModelTest {
+    @Test fun appArgumentsUseTheSameRouteForColdAndReusedActivities() {
+        assertEquals(AshModel.Open("memory"), AshModel.openArgument("""{"section":"memory"}"""))
+        assertEquals(AshModel.Open("diary", "2026-10-15"), AshModel.openArgument("""{"section":"diary","date":"2026-10-15"}"""))
+        assertEquals(AshModel.Open("diary"), AshModel.openArgument("""{"section":"diary","date":"2026-02-30"}"""))
+        assertEquals(AshModel.Open(), AshModel.openArgument("invalid"))
+        assertEquals(AshModel.Open(), AshModel.openArgument("""{"section":"missing","date":"2026-10-15"}"""))
+    }
     @Test fun sharedTasksAreFilteredAndSortedWithoutCopyingOwnerWork() {
         val data = JSONObject("""{"tasks":[{"id":"owner","subject":"owner","title":"购物"},{"id":"a","subject":"ash","title":"学习","status":"todo","source":{"message":"m1"}},{"id":"b","subject":"ash","title":"改进提醒","status":"doing","thread":"t1"},{"id":"c","subject":"ash","title":"旧事","status":"dropped"}]}""")
         val todos = AshModel.todos(data)

@@ -4,9 +4,9 @@
 
 ## 第一期已实现
 
-`ai.ash.sysapps.ash.AshActivity` 继承公共 `SystemAppActivity`。标题、列表与编辑器常驻；业务只经公共端口调词。动态内容使用 `KeyedRowsAdapter`，key 为任务、日期、记忆文件、成长记录或批注的真实 id。刷新保留原快照，单来源读请求合并，离页使旧回调失效。按 key/offset 保阅读位置；独立编辑器不会被后台刷新拆掉，文本实时存入应用自己的草稿偏好，重建恢复路由与编辑目标。用户返回退出编辑会保留草稿。
+`ai.ash.sysapps.ash.AshActivity` 继承公共 `SystemAppActivity`。标题、列表与编辑器常驻；业务只经公共端口调词。动态内容使用 `KeyedRowsAdapter`，key 为任务、日期、记忆文件、成长记录或批注的真实 id。刷新保留原快照，单来源读请求合并，离页使旧回调失效。按 key/offset 保阅读位置；独立编辑器不会被后台刷新拆掉，文本实时存入应用自己的草稿偏好，重建恢复路由与编辑目标；应用复用时 onNewIntent 使用同一参数解析，保留旧草稿后切到新路由，旧编辑回执不会污染新编辑器。用户返回退出编辑会保留草稿。
 
-首屏依次是：我现在在做什么、我手上的具体待办、最近收尾的事、我是谁 / 我记得你 / 日记 / 成长 / 我们的约定 / 你的批注。没有读取成功时不声称空闲或没有任务。具体待办来自 `service:tasks/list {subject:ash,status:open}`；最近结果来自同一服务的 `status:closed`。负责人和关注主体分开，Ash 不复制待办存储。打开任务应用传 `arg={subject:ash}`，完成也调用同一个 `done`。
+首屏依次是：我现在在做什么、我手上的具体待办、最近收尾的事、我是谁 / 我记得你 / 日记 / 成长 / 我们的约定 / 你的批注。没有读取成功时不声称空闲或没有任务。具体待办与最近结果都来自 `service:tasks/list {subject:ash,status:all}`，界面按 todo/doing/waiting 与 done/dropped 分组。存在 next_before 时明确这里只显示最近更新的记录，并提供任务应用完整视图入口，不把局部分页说成没有待办。负责人和关注主体分开，Ash 不复制待办存储。打开任务应用传 `arg={subject:ash}`，完成也调用同一个 `done`。
 
 - 现在：`service:history/current`、`service:pulse/pulse.get`，展示已经公开的工作与下一次主动整理时间，不编造内心活动。
 - 人格：现有 `persona/get`、`propose`，补 `versions`，展示最近一次由谁、为何修改。人格仍由原关卡审批，界面不绕开确认。

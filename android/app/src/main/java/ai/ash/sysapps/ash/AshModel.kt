@@ -20,6 +20,14 @@ object AshModel {
     private fun JSONObject?.long(key: String): Long? = if (this != null && has(key) && !isNull(key)) optLong(key) else null
     private fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
+    data class Open(val section: String = "now", val date: String? = null)
+    fun openArgument(raw: String?): Open {
+        val arg = runCatching { JSONObject(raw ?: "{}") }.getOrNull()
+        val section = arg.str("section")?.takeIf { it in setOf("now", "identity", "memory", "diary", "growth", "promises", "notes") } ?: "now"
+        val date = if (section == "diary") arg.str("date")?.takeIf { runCatching { java.time.LocalDate.parse(it) }.isSuccess } else null
+        return Open(section, date)
+    }
+
     // ---- 现在 ------------------------------------------------------------------------------------------------------------
 
     /** Her state now. [state] is idle / working / thinking / waiting_you / offline; [since] when the current work began. */
