@@ -51,6 +51,9 @@ open class TasksActivity : SystemAppActivity() {
     private lateinit var quick: EditText
     private lateinit var feedback: TextView
     private lateinit var quickButton: TextView
+    private lateinit var quickReminder: TextView
+    private var quickRemindAt: Long? = null
+    private var quickReceipt: String? = null
     private lateinit var detail: ScrollView
     private lateinit var form: LinearLayout
     private val fields = linkedMapOf<String, EditText>()
@@ -112,10 +115,20 @@ open class TasksActivity : SystemAppActivity() {
         root.addView(feedback)
         quick = Hk.field(this, "待办标题（先记一条）").apply { id = 0x007a1101; isEnabled = false }
         quickButton = AshUi.button(this, "记一条", AshUi.Kind.PRIMARY) { addQuick() }
-        root.addView(AshUi.text(this, "这里先记标题，再选提醒时间；想用一句话安排提醒，请在对话里告诉 Ash。", AshTokens.Type.callout, c.text2))
+        root.addView(AshUi.text(this, "填标题，可直接选提醒；想用一句话安排，请在对话里告诉 Ash。", AshTokens.Type.callout, c.text2))
         root.addView(AshUi.hstack(this, 8).apply {
             addView(quick, LinearLayout.LayoutParams(0, -2, 1f)); addView(quickButton)
         })
+        quickReminder = AshUi.button(this,"提醒：未设置",AshUi.Kind.NEUTRAL).apply {
+            tag="task.quick.remind_at";isEnabled=false
+            setOnClickListener {
+                chooseTime("提醒时间",quickRemindAt) { at ->
+                    quickRemindAt=at;quickReceipt=null;syncQuickReminder()
+                    drafts.put("quickRemindAt",at ?: JSONObject.NULL);persist()
+                }
+            }
+        }
+        root.addView(quickReminder)
         adapter = KeyedRowsAdapter(this).apply {
             stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY
         }
@@ -132,14 +145,15 @@ open class TasksActivity : SystemAppActivity() {
         detail = ScrollView(this).apply { addView(form); visibility = View.GONE }
         root.addView(detail, LinearLayout.LayoutParams(-1, 0, 1f))
         content.addView(root)
-        actions.addView(AshUi.button(this, "刷新", AshUi.Kind.GHOST) { refresh() })
-        quick.watch { if (ready) { drafts.put("quick", quick.text.toString()); persist() } }
+        actions.addView(AshUi.button(this, "刷新", AshUi.Kind.GHOST) { quickReceipt=null;refresh() })
+        quick.watch { if (ready) { quickReceipt=null;drafts.put("quick", quick.text.toString()); persist() } }
         UiIo.disk {
             val stored = runCatching { if (file.isFile) JSONObject(file.readText()) else JSONObject() }.getOrDefault(JSONObject())
             UiIo.ui {
                 if (isDestroyed) return@ui
                 drafts = stored; pendingAdd = stored.optJSONObject("pendingAdd")
-                quick.setText(stored.optString("quick")); ready = true; quick.isEnabled = true
+                quickRemindAt=if(stored.has("quickRemindAt") && !stored.isNull("quickRemindAt"))stored.optLong("quickRemindAt") else null
+                quick.setText(stored.optString("quick")); ready = true; quick.isEnabled = true;quickReminder.isEnabled=true;syncQuickReminder()
                 if (pendingAdd != null) feedback.text = "上次添加尚未确认；点添加会核对同一次请求，输入保留。"
                 render()
             }
@@ -194,7 +208,7 @@ open class TasksActivity : SystemAppActivity() {
                         items.addAll(parsed.getOrThrow()); val next = data.optLong("next_before")
                         if (next > 0 && next != before) { page(next); return@ui }
                         state = state.success(generation, items.distinctBy { it.id }); loading = false
-                        feedback.text = if (pendingAdd != null) "上次添加待核对，点添加继续" else "${items.size} 条待办 · 可直接完成、改期或回来源跟进"
+                        feedback.text = if (pendingAdd != null) "上次添加待核对，点添加继续" else quickReceipt ?: "${items.size} 条待办 · 可直接完成、改期或回来源跟进"
                         render(); if (dirty) refresh()
                     }
                 }
@@ -206,7 +220,7 @@ open class TasksActivity : SystemAppActivity() {
         if (!::list.isInitialized) return
         list.visibility = if (selected == null) View.VISIBLE else View.GONE
         detail.visibility = if (selected == null) View.GONE else View.VISIBLE
-        quick.visibility = if (selected == null) View.VISIBLE else View.GONE; quickButton.visibility = quick.visibility
+        quick.visibility = if (selected == null) View.VISIBLE else View.GONE; quickButton.visibility = quick.visibility; quickReminder.visibility=quick.visibility
         if (selected != null) {
             val task = state.tasks.find { it.id == selected }
             if (task != null) {
@@ -440,13 +454,28 @@ open class TasksActivity : SystemAppActivity() {
             if (routeAtSend == routeGeneration) { feedback.text = savedMessage(data.optJSONObject("task")); refresh() }
         }
     }
+    private fun syncQuickReminder() {
+        quickReminder.text="提醒：${quickRemindAt?.let(::editTime) ?: "未设置"}"
+    }
+    private fun quickSavedMessage(task: JSONObject, body: JSONObject): String {
+        val at=if(task.has("remind_at") && !task.isNull("remind_at"))task.optLong("remind_at") else null
+        val delivery=task.optJSONObject("delivery")
+        val reminder=when {
+            at==null -> "未设置提醒"
+            delivery?.optString("reminders")=="ready" -> "已安排 ${editTime(at)} 提醒"
+            delivery?.optString("reminders")=="pending" -> "提醒尚未安排，请点重试提醒；此前不能保证到点提醒"
+            else -> "提醒状态待核对"
+        }
+        return listOfNotNull("已记下：${body.optString("title")}",reminder,
+            if(delivery?.optString("conversation")=="pending")"对话卡待恢复" else null).joinToString(" · ")
+    }
     private fun addQuick() {
         if (busy || !ready) return
         val text = quick.text.toString().trim()
         if (text.isEmpty() && pendingAdd == null) return
         if (text.length > 200 && pendingAdd == null) { feedback.text = "内容请控制在 200 字内"; return }
-        val body = pendingAdd ?: JSONObject().put("title", text).put("client_id", UUID.randomUUID().toString()).put("subject", "owner")
-        pendingAdd = body; drafts.put("pendingAdd", body); busy = true; feedback.text = "正在记下…"
+        val body = pendingAdd ?: JSONObject().put("title", text).put("client_id", UUID.randomUUID().toString()).put("subject", "owner").put("remind_at",quickRemindAt ?: JSONObject.NULL)
+        pendingAdd = body; drafts.put("pendingAdd", body); busy = true; quickReceipt=null;feedback.text = "正在记下…"
         // Persist request identity before sending, and reuse exactly that body if the outcome is unknown.
         val routeAtSend = routeGeneration
         persist {
@@ -457,11 +486,16 @@ open class TasksActivity : SystemAppActivity() {
                     return@taskCall
                 }
                 pendingAdd = null; drafts.remove("pendingAdd")
-                if (quick.text.toString().trim() == body.optString("title")) { quick.setText(""); drafts.remove("quick") }
+                val sentAt=if(body.isNull("remind_at") || !body.has("remind_at"))null else body.optLong("remind_at")
+                val unchanged=quick.text.toString().trim()==body.optString("title") && quickRemindAt==sentAt
+                if (unchanged) {
+                    quick.setText("");drafts.remove("quick");quickRemindAt=null;drafts.remove("quickRemindAt");syncQuickReminder()
+                }
                 persist()
                 if (routeAtSend == routeGeneration) {
                     view = TasksModel.View.WAITING; render()
-                    feedback.text = "${savedMessage(data.optJSONObject("task"))}：${body.optString("title")} · 点待办可选提醒时间"; refresh()
+                    quickReceipt=quickSavedMessage(data.getJSONObject("task"),body) + if(unchanged)"" else " · 新输入仍保留"
+                    feedback.text=quickReceipt;refresh()
                 }
             }
         }
