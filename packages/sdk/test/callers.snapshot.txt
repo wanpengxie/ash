@@ -81,6 +81,9 @@
 * person:owner/notice  agent,app
 * person:owner/react  agent,app
 * person:owner/show  agent,app
+* person:owner/card.update  agent,app
+* person:owner/card.draft  owner,agent
+* person:owner/form  agent
 * person:owner/ask  agent
 * person:owner/open  agent,app
 * agent:*/say  owner

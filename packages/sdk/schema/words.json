@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "8963f4ac0c8757d74c2da82f47d793c9a2a0b7e816b4b84be9d8efbac99e8866",
+ "hash": "f92dd51c72c4c51f4db5af3017fbe42abc169938017e516a2ccf539c4972e252",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -16551,7 +16551,7 @@
    "word": "card.draft",
    "kind": "request",
    "direction": "in",
-   "description": "What the owner has entered on a card so far (its whole data model), from the owner's screen: kept with the card so it is there again after a refresh, and when something on the card reads it, the card drawn again (plan). Nothing is sent to anyone; an action on the card carries the values.",
+   "description": "What has been entered on a card so far (its whole data model; the owner's screen sends it as he types, an agent may fill in for him): kept with the card so it is there again after a refresh, and when something on the card reads it, the card drawn again (plan). Nothing is sent to anyone; an action on the card carries the values. A password box is never part of it.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -16593,7 +16593,8 @@
    "effect": "read",
    "risk": "none",
    "callers": [
-    "owner"
+    "owner",
+    "agent"
    ],
    "label": {
     "doing": "在记下卡片上填的"
