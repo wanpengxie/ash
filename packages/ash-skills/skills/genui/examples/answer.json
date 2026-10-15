@@ -1,0 +1,19 @@
+{"id":"umbrella-1016","text":"明天下午有雨，出门带伞","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","facts","tip"]},
+{"id":"head","component":"Column","gap":2,"children":["hd","sub"]},
+{"id":"hd","component":"Row","align":"center","gap":8,"children":["ic","title"]},
+{"id":"ic","component":"Icon","name":"rain","style":{"color":"textSecondary"}},
+{"id":"title","component":"Text","text":"明天下午有雨，带伞","variant":"h2","weight":1},
+{"id":"sub","component":"Text","text":"10月16日 周五 · 海淀","variant":"caption"},
+{"id":"facts","component":"Row","justify":"stretch","children":["f1","f2","f3"]},
+{"id":"f1","component":"Column","gap":2,"children":["f1v","f1l"]},
+{"id":"f1v","component":"Text","text":"14–19°","variant":"h3"},
+{"id":"f1l","component":"Text","text":"气温","variant":"caption"},
+{"id":"f2","component":"Column","gap":2,"children":["f2v","f2l"]},
+{"id":"f2v","component":"Text","text":"15:00 起","variant":"h3"},
+{"id":"f2l","component":"Text","text":"降雨","variant":"caption"},
+{"id":"f3","component":"Column","gap":2,"children":["f3v","f3l"]},
+{"id":"f3v","component":"Text","text":"80%","variant":"h3"},
+{"id":"f3l","component":"Text","text":"降水概率","variant":"caption"},
+{"id":"tip","component":"Text","text":"晚上回来路面湿，穿防滑的鞋。","style":{"color":"textSecondary"}}
+]}}

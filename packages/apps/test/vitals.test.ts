@@ -14,7 +14,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { checkManifest } from "../../core/src/edges/apps/check";
-import { validateCard } from "../../core/src/services/widgets/card";
+import { validateCard } from "../../sdk/src/card";
 import { INVARIANTS as HUB_INVARIANTS } from "../../core/src/services/health/budgets";
 import { bundleApp } from "../bundle.mjs";
 
@@ -216,7 +216,7 @@ test("the manifest, the bundle and the server over stdio", async () => {
 test("the chart geometry the page draws is the one in chart/vectors.json (the phone's AshChart is held to the same file)", async () => {
   const { layout, chartSvg } = await import(join(here, "../../../design/vitals/chart/chart.mjs")) as any;
   const vectors = JSON.parse(readFileSync(join(here, "../../../design/vitals/chart/vectors.json"), "utf8")) as { name: string; w: number; h: number; chart: unknown; expect: any[] }[];
-  assert.equal(vectors.length, 7);
+  assert.equal(vectors.length, 9);
   const near = (a: unknown, b: unknown, at: string): void => {
     if (typeof a === "number" && typeof b === "number") return assert.ok(Math.abs(a - b) <= 0.05, `${at}: ${a} vs ${b}`);
     if (Array.isArray(a) && Array.isArray(b)) { assert.equal(a.length, b.length, at); return a.forEach((x, i) => near(x, b[i], `${at}[${i}]`)); }
@@ -227,6 +227,22 @@ test("the chart geometry the page draws is the one in chart/vectors.json (the ph
     near(JSON.parse(JSON.stringify(layout(v.chart, v.w, v.h))), v.expect, v.name);
     assert.match(chartSvg(v.chart, v.w, v.h), /^<svg /, v.name);
   }
+});
+
+test("a series with min puts the bottom of its axis there: top = max ?? max(floor, min + (largest - min) x 1.25), values below min on the bottom", async () => {
+  const { scaleMax, scaleMin, layout } = await import(join(here, "../../../design/vitals/chart/chart.mjs")) as any;
+  assert.equal(scaleMin({ values: [1] }), 0);
+  assert.equal(scaleMax({ values: [20] }), 25, "without min nothing changes");
+  assert.equal(scaleMax({ values: [0, 0] }), 1);
+  assert.equal(scaleMax({ values: [60, 62], min: 58 }), 63);
+  assert.equal(scaleMax({ values: [60, 62], min: 58, floor: 70 }), 70);
+  assert.equal(scaleMax({ values: [60, 62], min: 58, max: 65 }), 65);
+  assert.equal(scaleMax({ values: [50, 52], min: 58 }), 59, "nothing above min: a span of 1");
+  const [low, high] = layout({ series: [{ type: "bars", values: [40, 63], color: "x", min: 58 }], gap: 0 }, 20, 30);
+  assert.equal(low.h, 2, "below min sits on the bottom (the shortest bar)");
+  assert.equal(high.h, 24, "axis 58 .. 64.25: 63 is 5 of 6.25 up");
+  const line = layout({ series: [{ type: "line", values: [58, 63], color: "x", min: 58, dot: false }] }, 10, 30)[0];
+  assert.deepEqual(line.points, [[0, 28], [10, 7.2]], "min on the bottom pad; 63 is 0.8 of the way up the 26 between the pads");
 });
 
 test("through the real Ash client and the hub's bridge shape (a word's data comes back as `result`, not wrapped), the status reads", async () => {

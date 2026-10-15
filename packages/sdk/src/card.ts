@@ -1,10 +1,12 @@
 /**
- * The card check for `service:widgets`, written for the new service (the rules are the old A2UI ones: what the phone
- * can draw is refused or accepted exactly as before).
+ * The one card language (docs/GENUI.md): A2UI v0.9 (basic catalog) plus a few Ash extensions, for two surfaces.
  *
- * The home-screen card format: A2UI v0.9 (basic catalog) plus a few Ash extensions, checked against what an Android
- * home-screen widget (RemoteViews) can actually draw. Nothing here is a taste limit: a card is refused only for what
- * the phone physically cannot do, with the component, the property and the reason.
+ * - widget: a home-screen card (`service:widgets`), checked against what an Android home-screen widget (RemoteViews) can
+ *   actually draw. Nothing here is a taste limit: a card is refused only for what the phone physically cannot do, with
+ *   the component, the property and the reason.
+ * - chat: a card in the conversation (`person:owner/show`, `form`). It also takes inputs (TextField, DateTimeInput,
+ *   Slider), Table and the sandboxed mini app (Html), and is checked leniently: a component or property that cannot be
+ *   drawn is dropped and reported in `problems`, and only a card whose root cannot be drawn is refused.
  *
  * The output is the same component list with every data binding, function call and template resolved to literal
  * values: the phone draws it without further decisions, and re-checks the same nesting budget (WidgetPlan.kt).
@@ -35,6 +37,11 @@ export const CARD_LIMITS = {
 
 export const CARD_COMPONENTS = ["Text", "Image", "Icon", "Row", "Column", "List", "Card", "Tabs", "Divider", "Button", "CheckBox",
   "ChoicePicker", "Switch", "Stack", "Grid", "Spacer", "ProgressBar", "Badge", "Clock", "Timer", "Chart"] as const;
+/** What only a card in the conversation can hold: inputs, tables and the sandboxed mini app. */
+export const CHAT_COMPONENTS = ["TextField", "DateTimeInput", "Slider", "Table", "Html"] as const;
+export type CardSurface = "widget" | "chat";
+/** The largest mini app (one self-contained HTML document). */
+export const HTML_MAX = 200 * 1024;
 
 /** What a widget cannot hold, and what to use instead. */
 const IMPOSSIBLE: Record<string, string> = {
@@ -76,9 +83,9 @@ const FIELDS: Record<string, readonly string[]> = {
   Text: ["text", "variant"],
   Image: ["url", "description", "fit", "variant"],
   Icon: ["name"],
-  Row: ["children", "justify", "align"],
-  Column: ["children", "justify", "align"],
-  List: ["children", "direction", "align", "columns"],
+  Row: ["children", "justify", "align", "gap"],
+  Column: ["children", "justify", "align", "gap"],
+  List: ["children", "direction", "align", "columns", "gap"],
   Card: ["child"],
   Tabs: ["tabs", "selected"],
   Divider: ["axis"],
@@ -87,13 +94,18 @@ const FIELDS: Record<string, readonly string[]> = {
   Switch: ["label", "value"],
   ChoicePicker: ["label", "variant", "options", "value", "displayStyle", "filterable"],
   Stack: ["children", "align"],
-  Grid: ["children", "columns"],
+  Grid: ["children", "columns", "gap"],
   Spacer: ["size"],
   ProgressBar: ["value", "max", "label"],
   Badge: ["text"],
   Clock: ["format", "timeZone"],
   Timer: ["since", "until"],
   Chart: ["series", "gap"],
+  TextField: ["label", "value", "variant", "placeholder"],
+  DateTimeInput: ["label", "value", "enableDate", "enableTime"],
+  Slider: ["label", "value", "min", "max", "step"],
+  Table: ["columns", "rows"],
+  Html: ["html", "height"],
 };
 const CONTAINERS = new Set(["Row", "Column", "List", "Stack", "Grid"]);
 
@@ -145,13 +157,22 @@ export interface WidgetComponent {
   tabs?: { title: string; child: string }[]; selected?: number; axis?: string; checked?: boolean; label?: string;
   options?: { label: string; value: string; checked: boolean }[]; multiple?: boolean; chips?: boolean;
   value?: number; max?: number; size?: number; format?: string; timeZone?: string; since?: number; until?: number;
-  /** Chart: the phone draws these as a bitmap of the size the card gives it. */
+  /** Chart: the phone draws these as a bitmap of the size the card gives it. gap: between a chart's bars; on a Row, Column, List
+   * or Grid in the conversation, the space between its children in dp (none when not given). */
   series?: ChartSeries[]; gap?: number;
+  /** Chat only. TextField / DateTimeInput: the value as text; Slider: value, min, max, step. */
+  placeholder?: string; min?: number; step?: number; enableDate?: boolean; enableTime?: boolean;
+  /** Table: the header and the rows, as text. */
+  header?: string[]; rows?: string[][];
+  /** Html: the mini app's document and its height in dp. */
+  html?: string; height?: number;
 }
 
 /** One line or one set of bars of a Chart (the geometry is the same on the phone and in the app page). `colors` is keyed by the index of the bar. */
 export interface ChartSeries {
   type: "line" | "bars"; values: number[]; color: CardColor; fill?: boolean; width?: number; dot?: boolean; max?: number; floor?: number;
+  /** The bottom of the value axis (a price, a weight: the part that moves); values below it sit on the bottom. */
+  min?: number;
   highlight?: { from: number; to?: number; color: CardColor }; colors?: Record<string, CardColor>; lastColor?: CardColor; limit?: number; limitColor?: CardColor;
 }
 export interface CardSize { width: number; height: number; root: string }
@@ -234,13 +255,18 @@ export function formatDate(date: Date, format: string): string {
 }
 
 class Resolver {
+  /** The component being resolved, and every path each component read (whether a card is reactive). */
+  at = "";
+  readonly reads: [string, string][] = [];
   constructor(private readonly data: unknown) {}
+
+  read(path: string): unknown { this.reads.push([this.at, path]); return pointer(this.data, path); }
 
   /** Any A2UI dynamic value: a literal, {path} or {call, args}. */
   value(value: unknown, where: string, scope: string): unknown {
     if (plain(value)) {
       if (typeof value.path === "string" && Object.keys(value).length === 1) {
-        const resolved = pointer(this.data, absolute(value.path, scope));
+        const resolved = this.read(absolute(value.path, scope));
         if (resolved === undefined) bad(`${where} reads ${absolute(value.path, scope)}, which is not in data`);
         return resolved;
       }
@@ -278,7 +304,12 @@ class Resolver {
     if (!plain(args)) bad(`${where}: ${name} args must be an object`);
     const a = args as Record<string, unknown>;
     const at = `${where} (${name})`;
-    const opt = (key: string) => a[key] === undefined ? undefined : this.value(a[key], `${at} ${key}`, scope);
+    // A check reads what may not be entered yet: a path not in data is no value (required is false), not a broken card.
+    const opt = (key: string) => {
+      const v = a[key];
+      if (plain(v) && typeof v.path === "string" && Object.keys(v).length === 1) return this.read(absolute(v.path, scope));
+      return v === undefined ? undefined : this.value(v, `${at} ${key}`, scope);
+    };
     switch (name) {
     case "formatString": return this.interpolate(this.text(a.value, `${at} value`, scope), at, scope);
     case "formatNumber": case "formatCurrency": {
@@ -393,7 +424,7 @@ class Resolver {
       return [this.call({ call: name[0].slice(0, -1), args }, where, scope), i];
     }
     const path = /^[^}]*/.exec(s.slice(i))![0].trim();
-    const resolved = pointer(this.data, absolute(path, scope));
+    const resolved = this.read(absolute(path, scope));
     if (resolved === undefined) bad(`${where} reads ${absolute(path, scope)}, which is not in data`);
     return [resolved, i + /^[^}]*/.exec(s.slice(i))![0].length];
   }
@@ -423,7 +454,7 @@ function chartSeries(value: unknown, where: string): ChartSeries[] {
     const at = `${where} series[${i}]`;
     if (!plain(raw)) return bad(`${at} must be an object`);
     const s = raw as Record<string, unknown>;
-    for (const key of Object.keys(s)) if (!["type", "values", "color", "fill", "width", "dot", "max", "floor", "highlight", "colors", "lastColor", "limit", "limitColor"].includes(key)) bad(`${at} has unknown field "${key}"`);
+    for (const key of Object.keys(s)) if (!["type", "values", "color", "fill", "width", "dot", "max", "floor", "min", "highlight", "colors", "lastColor", "limit", "limitColor"].includes(key)) bad(`${at} has unknown field "${key}"`);
     if (s.type !== "line" && s.type !== "bars") bad(`${at} type must be "line" or "bars"`);
     if (!Array.isArray(s.values) || s.values.length < 1 || s.values.length > 240 || s.values.some((v) => typeof v !== "number" || !Number.isFinite(v))) bad(`${at} values must be 1 to 240 finite numbers`);
     const values = (s.values as number[]).map((v) => Math.max(0, v));
@@ -436,7 +467,9 @@ function chartSeries(value: unknown, where: string): ChartSeries[] {
       return s[key] as number;
     };
     for (const key of ["fill", "dot"] as const) if (s[key] !== undefined) { if (typeof s[key] !== "boolean") bad(`${at} ${key} must be true or false`); out[key] = s[key] as boolean; }
-    const width = num("width", 0.5, 4), max = num("max", 0, 1e9), floor = num("floor", 0, 1e9), limit = num("limit", 0, 1e9);
+    const width = num("width", 0.5, 4), max = num("max", 0, 1e9), floor = num("floor", 0, 1e9), limit = num("limit", 0, 1e9), min = num("min", 0, 1e9);
+    if (min !== undefined && max !== undefined && max <= min) bad(`${at} max must be above min`);
+    if (min !== undefined) out.min = min;
     if (width !== undefined) out.width = width;
     if (max !== undefined) out.max = max;
     if (floor !== undefined) out.floor = floor;
@@ -676,43 +709,114 @@ function deepest(byId: Map<string, WidgetComponent>, id: string): string[] {
 }
 
 /**
- * Check a card's A2UI and resolve it into literal components. Throws a CardError naming the component, the property
- * and why; never accepts something the phone would draw differently or not at all.
+ * Check a home-screen card's A2UI and resolve it into literal components. Throws a CardError naming the component, the
+ * property and why; never accepts something the phone would draw differently or not at all.
  */
 export function validateCard(raw: unknown, options: { checkLevels?: boolean } = {}): WidgetRender {
+  const { render } = check(raw, { surface: "widget", lenient: false, checkLevels: options.checkLevels !== false });
+  return render;
+}
+
+/** A card in the conversation as the owner's screens draw it. */
+export interface ChatRender extends WidgetRender {
+  /** The card's data model: what its inputs write and its bindings read. */
+  data: Record<string, unknown>;
+  /** Where the inputs write (JSON pointers). */
+  binds: string[];
+  /** Something shown reads a path an input writes: the card is drawn again when the owner changes a value. */
+  reactive: boolean;
+  /** What was dropped and why (the agent is told). */
+  problems: string[];
+  /** What the card does that usually looks worse (too many accents, icons, main titles…): advice for the agent, nothing is changed. */
+  hints: string[];
+}
+
+/**
+ * Check a card for the conversation: what cannot be drawn is dropped and reported in `problems`, and a component that is
+ * named but not there yet is a placeholder (`Skeleton`), so a card can be shown while the rest is still coming. Throws a
+ * CardError only when nothing can be drawn (the root itself is broken, or the card is not A2UI at all).
+ */
+export function checkChatCard(raw: unknown): ChatRender {
+  const problems: string[] = [];
+  const { render, data, binds, reactive } = check(raw, { surface: "chat", lenient: true, checkLevels: false, problems });
+  return { ...render, data, binds, reactive, problems, hints: cardHints(render) };
+}
+
+/** The cheap, certain checks of a conversation card's design (skill genui): what usually makes a card look worse. */
+export function cardHints(render: WidgetRender): string[] {
+  const hints: string[] = [];
+  const all = render.components;
+  const count = (test: (c: WidgetComponent) => boolean) => all.filter(test).length;
+  const usesAccent = (c: WidgetComponent) => [c.style?.color, c.style?.background].some((x) => x === "accent") || (c.component === "Button" && c.variant === "primary");
+  const accents = count(usesAccent);
+  if (accents > 2) hints.push(`accent is used ${accents} times; at most 2 (the main button counts as one)`);
+  const titles = count((c) => c.component === "Text" && (c.variant === "h1" || c.variant === "h2"));
+  if (titles > 1) hints.push(`${titles} h1/h2 titles; one main title, the rest h3`);
+  const icons = count((c) => c.component === "Icon" || (c.component === "Image" && !!c.url?.startsWith("icon:")));
+  if (icons > 1) hints.push(`${icons} icons; at most one, or none`);
+  const badges = count((c) => c.component === "Badge");
+  if (badges > 1) hints.push(`${badges} badges; at most one`);
+  const primaries = count((c) => c.component === "Button" && c.variant === "primary");
+  if (primaries > 1) hints.push(`${primaries} primary buttons; at most one, the others borderless`);
+  const hex = count((c) => [c.style?.color, c.style?.background].some((x) => typeof x === "string" && x.startsWith("#")));
+  if (hex) hints.push(`${hex} components use a hex colour; use theme names (they follow dark mode)`);
+  const root = all.find((c) => c.id === render.root);
+  if (root && (root.style?.background || root.style?.padding || root.style?.cornerRadius || root.component === "Card"))
+    hints.push("the root draws its own frame (background, padding, corners or a Card): the conversation already draws the card's frame");
+  const emoji = count((c) => c.component === "Text" && /\p{Extended_Pictographic}/u.test(c.text ?? ""));
+  if (emoji) hints.push(`${emoji} texts carry emoji; leave decoration out`);
+  return hints;
+}
+
+interface CheckOptions { surface: CardSurface; lenient: boolean; checkLevels: boolean; problems?: string[] }
+
+function check(raw: unknown, o: CheckOptions): { render: WidgetRender; data: Record<string, unknown>; binds: string[]; reactive: boolean } {
+  const chat = o.surface === "chat";
+  /** Lenient: note the problem and go on; strict: refuse the card. */
+  const note = (message: string): void => { if (o.lenient) o.problems!.push(message); else bad(message); };
   if (!plain(raw)) bad("a2ui must be an object {components:[...], root?, data?, sizes?, theme?}");
   const a2ui = raw as Record<string, unknown>;
   let bytes = 0;
   try { bytes = Buffer.byteLength(JSON.stringify(a2ui), "utf8"); } catch { bad("a2ui is not plain JSON"); }
   if (bytes > CARD_LIMITS.json) bad(`a2ui is ${bytes} bytes; one card can be at most ${CARD_LIMITS.json} bytes (it is sent to the phone in one piece) — link large images by https instead of embedding them`);
   for (const key of Object.keys(a2ui)) if (!["components", "root", "data", "sizes", "theme", "catalogId", "surfaceId"].includes(key))
-    bad(`a2ui has unknown field "${key}" (components, root, data, sizes, theme)`);
+    note(`a2ui has unknown field "${key}" (components, root, data, sizes, theme)`);
   const data = a2ui.data ?? {};
   if (!plain(data)) bad("a2ui.data must be an object");
   const r = new Resolver(data);
   if (!Array.isArray(a2ui.components) || a2ui.components.length === 0) bad("a2ui.components must be a non-empty array of components");
+  const kinds = chat ? [...CARD_COMPONENTS, ...CHAT_COMPONENTS] : [...CARD_COMPONENTS];
   const defs = new Map<string, Record<string, unknown>>();
+  /** Components given but left out (lenient): a reference to one draws nothing, not a placeholder. */
+  const rejected = new Set<string>();
   for (const [index, item] of (a2ui.components as unknown[]).entries()) {
-    if (!plain(item)) bad(`components[${index}] must be an object`);
-    const c = item as Record<string, unknown>;
-    if (typeof c.id !== "string" || !/^[A-Za-z0-9_.-]{1,64}$/.test(c.id)) bad(`components[${index}] needs an id (letters, digits, _ . -; at most 64)`);
+    if (!plain(item)) { note(`components[${index}] must be an object`); continue; }
+    const c = { ...item } as Record<string, unknown>;
+    if (typeof c.id !== "string" || !/^[A-Za-z0-9_.-]{1,64}$/.test(c.id)) { note(`components[${index}] needs an id (letters, digits, _ . -; at most 64)`); continue; }
     const cid = c.id as string;
-    if (defs.has(cid)) bad(`component id "${cid}" is used twice`);
-    if (typeof c.component !== "string") bad(`component "${cid}" needs a component type`);
+    if (defs.has(cid)) { note(`component id "${cid}" is used twice`); continue; }
+    rejected.add(cid);
+    if (typeof c.component !== "string") { note(`component "${cid}" needs a component type`); continue; }
     const kind = c.component as string;
-    if (IMPOSSIBLE[kind]) bad(`${kind} "${cid}" cannot be drawn: ${IMPOSSIBLE[kind]}`);
-    const allowed = FIELDS[kind];
-    if (!allowed) bad(`component "${cid}" has unknown type "${kind}"; widgets draw ${list(CARD_COMPONENTS)}`);
-    for (const key of Object.keys(c)) if (!COMMON.includes(key) && !allowed.includes(key)) {
-      if (STYLE_KEYS.has(key) || STYLE_IMPOSSIBLE[key]) bad(`${kind} "${cid}" has "${key}" at the top level; put it in style: {${key}: ...}`);
-      bad(`${kind} "${cid}" has unknown field "${key}" (${kind} takes ${list([...allowed, "weight", "style", "action", "visible", "accessibility"])})`);
+    const allowed = (kinds as string[]).includes(kind) ? FIELDS[kind] : undefined;
+    if (!allowed) {
+      if (!chat && IMPOSSIBLE[kind]) note(`${kind} "${cid}" cannot be drawn: ${IMPOSSIBLE[kind]}`);
+      else note(`component "${cid}" has unknown type "${kind}"; ${chat ? `cards draw ${list(kinds)}` : `widgets draw ${list(CARD_COMPONENTS)}`}`);
+      continue;
     }
+    for (const key of Object.keys(c)) if (!COMMON.includes(key) && !allowed.includes(key)) {
+      if (STYLE_KEYS.has(key) || STYLE_IMPOSSIBLE[key]) note(`${kind} "${cid}" has "${key}" at the top level; put it in style: {${key}: ...}`);
+      else note(`${kind} "${cid}" has unknown field "${key}" (${kind} takes ${list([...allowed, "weight", "style", "action", "visible", "accessibility"])})`);
+      delete c[key];
+    }
+    rejected.delete(cid);
     defs.set(cid, c);
   }
 
   const out: WidgetComponent[] = [];
   const byId = new Map<string, WidgetComponent>();
   const reached = new Set<string>();
+  const binds: [string, string][] = [];
   /** Mark a definition and everything it names as part of the card, without drawing it. */
   const designed = (id: string, seen = new Set<string>()): void => {
     const def = defs.get(id);
@@ -726,44 +830,69 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
   };
   const MAX = CARD_LIMITS.components;
 
-  /** Instantiate definition [defId] as [outId] in data [scope]; [item] is the list item it belongs to. */
-  const visit = (defId: string, outId: string, scope: string, item: { key: string; path: string } | undefined, path: string[]): string => {
+  /** Instantiate definition [defId] as [outId] in data [scope]; [item] is the list item it belongs to. Lenient: null when it cannot be drawn. */
+  const visit = (defId: string, outId: string, scope: string, item: { key: string; path: string } | undefined, path: string[]): string | null => {
     if (path.includes(defId)) bad(`component "${defId}" contains itself (${[...path, defId].join(" > ")})`);
     const def = defs.get(defId);
+    if (!def && rejected.has(defId) && path.length > 0) return null;
+    if (!def && chat && path.length > 0 && !byId.has(outId)) {
+      // Named but not there (yet): a placeholder, so a card can be shown before all of it is written.
+      note(`component "${path[path.length - 1]}" refers to missing component "${defId}" (shown as a placeholder)`);
+      const node: WidgetComponent = { id: outId, component: "Skeleton" };
+      byId.set(outId, node); out.push(node);
+      return outId;
+    }
     if (!def) bad(`component "${path[path.length - 1]}" refers to missing component "${defId}"`);
     if (byId.has(outId)) bad(`component "${defId}" is used in more than one place; give each place its own component`);
     if (out.length >= MAX) bad(`the card expands to more than ${MAX} components; one widget update must fit Android's ~1 MB limit — show fewer items or split the card`);
+    if (!o.lenient || path.length === 0) return draw(def!, defId, outId, scope, item, path);
+    const mark = out.length;
+    try { return draw(def!, defId, outId, scope, item, path); } catch (error) {
+      if (!(error instanceof CardError)) throw error;
+      // Dropped with everything under it.
+      for (const gone of out.splice(mark)) byId.delete(gone.id);
+      binds.splice(0, binds.length, ...binds.filter(([at]) => byId.has(at)));
+      o.problems!.push(`${error.message} (left out)`);
+      return null;
+    }
+  };
+
+  const draw = (def: Record<string, unknown>, defId: string, outId: string, scope: string, item: { key: string; path: string } | undefined, path: string[]): string => {
     reached.add(defId);
-    const c = def as Record<string, unknown>;
+    const c = def;
     const kind = c.component as string;
     const where = `${kind} "${defId}"`;
     const node: WidgetComponent = { id: outId, component: kind };
     byId.set(outId, node);
     out.push(node);
+    r.at = outId;
     const suffix = outId.slice(defId.length);
     const childPath = [...path, defId];
     const childId = (id: string) => `${id}${suffix}`;
-    const one = (id: unknown, field: string): string => {
+    const one = (id: unknown, field: string): string | null => {
       if (typeof id !== "string") bad(`${where} ${field} must be a component id`);
-      return visit(id as string, childId(id as string), scope, item, childPath);
+      const done = visit(id as string, childId(id as string), scope, item, childPath);
+      r.at = outId;
+      return done;
     };
     const children = (value: unknown): string[] => {
+      const kept = (ids: (string | null)[]) => { r.at = outId; return ids.filter((x): x is string => x !== null); };
       if (Array.isArray(value)) {
         if (value.some((v) => typeof v !== "string")) bad(`${where} children must be component ids`);
-        return (value as string[]).map((id) => visit(id, childId(id), scope, item, childPath));
+        return kept((value as string[]).map((id) => visit(id, childId(id), scope, item, childPath)));
       }
       if (plain(value) && typeof value.componentId === "string" && typeof value.path === "string") {
         const at = absolute(value.path, scope);
-        const items = pointer(data, at);
+        const items = r.read(at);
         if (!Array.isArray(items)) bad(`${where} children template reads ${at}, which is not an array in data`);
         // A template with no items now is still part of the card (it draws once there are items).
         if (!(items as unknown[]).length) designed(value.componentId as string);
-        return (items as unknown[]).map((entry, i) => {
+        return kept((items as unknown[]).map((entry, i) => {
           const key = plain(entry) && (typeof entry.id === "string" || typeof entry.id === "number") ? String(entry.id)
             : plain(entry) && (typeof entry.key === "string" || typeof entry.key === "number") ? String(entry.key) : String(i);
           const tid = value.componentId as string;
           return visit(tid, `${tid}${suffix}@${i}`, `${at}/${i}`, { key, path: `${at}/${i}` }, childPath);
-        });
+        }));
       }
       return bad(`${where} children must be an array of component ids or a template {componentId, path}`);
     };
@@ -783,6 +912,10 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
       if (a11y) node.a11y = a11y;
     } else if (c.accessibility !== undefined) bad(`${where} accessibility must be {label?, description?}`);
     if (c.action !== undefined) node.action = action(c.action, where, r, scope);
+    if (c.gap !== undefined && kind !== "Chart") {
+      if (!chat) bad(`${where} gap: a home-screen widget cannot space a container's children by itself; give the children style.margin`);
+      node.gap = dimension(r.value(c.gap, `${where} gap`, scope), `${where} gap`, 64);
+    }
     if (c.checks !== undefined) {
       if (!Array.isArray(c.checks)) bad(`${where} checks must be an array of {condition, message}`);
       for (const [i, check] of (c.checks as unknown[]).entries()) {
@@ -796,6 +929,17 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
       const v = String(r.value(c[field], `${where} ${field}`, scope));
       if (!values.includes(v)) bad(`${where} ${field} must be one of ${list(values)}`);
       return v;
+    };
+    /** An input's value: a literal, or {path} into data (where the input writes); a path not in data yet starts empty. */
+    const input = (value: unknown, empty: unknown): unknown => {
+      const at = bound(value);
+      if (at) { binds.push([outId, at]); const v = r.read(at); return v === undefined ? empty : v; }
+      return value === undefined ? empty : r.value(value, `${where} value`, scope);
+    };
+    const textOf = (value: unknown, field: string): string => {
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      if (typeof value !== "string") bad(`${where} ${field} must be text`);
+      return value as string;
     };
 
     switch (kind) {
@@ -831,7 +975,8 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
     }
     case "List": {
       const direction = enumOf("direction", ["vertical", "horizontal"], "vertical");
-      if (direction === "horizontal") bad(`${where} direction horizontal: Android widgets can only scroll lists vertically; use a Row (no scrolling) or a vertical List`);
+      if (direction === "horizontal" && !chat) bad(`${where} direction horizontal: Android widgets can only scroll lists vertically; use a Row (no scrolling) or a vertical List`);
+      if (direction === "horizontal") node.direction = direction;
       node.children = children(c.children);
       const a = enumOf("align", ["start", "center", "end", "stretch"]); if (a) node.align = a;
       if (c.columns !== undefined) {
@@ -848,19 +993,25 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
       node.columns = n;
       break;
     }
-    case "Card": node.child = one(c.child, "child"); break;
-    case "Button":
+    case "Card": { const child = one(c.child, "child"); if (child) node.child = child; break; }
+    case "Button": {
       if (c.action === undefined) bad(`${where} needs an action`);
-      node.child = one(c.child, "child");
+      const child = one(c.child, "child");
+      if (!child) bad(`${where} has nothing to show (its child was left out)`);
+      node.child = child!;
       node.variant = enumOf("variant", ["default", "primary", "borderless"], "default");
       break;
+    }
     case "Tabs": {
       if (!Array.isArray(c.tabs) || c.tabs.length === 0) bad(`${where} tabs must be a non-empty array of {title, child}`);
-      node.tabs = (c.tabs as unknown[]).map((tab, i) => {
+      node.tabs = (c.tabs as unknown[]).flatMap((tab, i) => {
         if (!plain(tab)) bad(`${where} tabs[${i}] must be {title, child}`);
         const t = tab as Record<string, unknown>;
-        return { title: r.text(t.title, `${where} tabs[${i}].title`, scope), child: one(t.child, `tabs[${i}].child`) };
+        const title = r.text(t.title, `${where} tabs[${i}].title`, scope);
+        const child = one(t.child, `tabs[${i}].child`);
+        return child ? [{ title, child }] : [];
       });
+      if (!node.tabs.length) bad(`${where} has no tab left to show`);
       const sel = c.selected === undefined ? 0 : r.number(c.selected, `${where} selected`, scope);
       if (!Number.isInteger(sel) || sel < 0 || sel >= node.tabs.length) bad(`${where} selected must be a tab index from 0 to ${node.tabs.length - 1}`);
       node.selected = sel;
@@ -869,17 +1020,22 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
     case "Divider": node.axis = enumOf("axis", ["horizontal", "vertical"], "horizontal"); break;
     case "CheckBox": case "Switch": {
       if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
-      node.checked = c.value === undefined ? false : r.bool(c.value, `${where} value`, scope);
+      let v = input(c.value, false);
+      if (o.lenient && (v === "true" || v === "false")) { note(`${where} value is the text "${v}"; it was read as ${v}`); v = v === "true"; }
+      if (typeof v !== "boolean") bad(`${where} value must be true or false`);
+      node.checked = v as boolean;
       const b = bound(c.value); if (b) node.bind = b;
       break;
     }
     case "ChoicePicker": {
-      if (c.filterable === true) bad(`${where} filterable needs a text box, which widgets cannot hold; leave it out`);
+      if (c.filterable === true && !chat) bad(`${where} filterable needs a text box, which widgets cannot hold; leave it out`);
       if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
       node.multiple = enumOf("variant", ["multipleSelection", "mutuallyExclusive"], "mutuallyExclusive") === "multipleSelection";
       node.chips = enumOf("displayStyle", ["checkbox", "chips"], "checkbox") === "chips";
-      const raw = c.value === undefined ? [] : r.value(c.value, `${where} value`, scope);
-      if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string")) bad(`${where} value must be an array of option values`);
+      let raw = input(c.value, []);
+      // An obvious slip, read the way it was meant: one chosen value written as text.
+      if (o.lenient && typeof raw === "string") { note(`${where} value is text; it was read as ["${raw}"] (a ChoicePicker's value is an array of option values)`); raw = raw ? [raw] : []; }
+      if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string")) bad(`${where} value must be an array of option values, e.g. ["a"]`);
       const selected = new Set(raw as string[]);
       if (!Array.isArray(c.options) || c.options.length === 0) bad(`${where} options must be a non-empty array of {label, value}`);
       node.options = (c.options as unknown[]).map((o, i) => {
@@ -923,6 +1079,59 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
       node[key] = Math.round(t);
       break;
     }
+    case "TextField": {
+      if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
+      node.variant = enumOf("variant", ["shortText", "longText", "number", "obscured"], "shortText");
+      // A password box never shows a value: what the owner types goes to the vault, not into the card's data.
+      node.text = node.variant === "obscured" ? "" : textOf(input(c.value, ""), "value");
+      if (node.text.length > CARD_LIMITS.text) bad(`${where} value is longer than ${CARD_LIMITS.text} characters`);
+      const b = bound(c.value); if (b) node.bind = b;
+      if (c.placeholder !== undefined) node.placeholder = r.text(c.placeholder, `${where} placeholder`, scope);
+      break;
+    }
+    case "DateTimeInput": {
+      if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
+      node.text = textOf(input(c.value, ""), "value");
+      if (node.text && Number.isNaN(new Date(node.text).getTime()) && !/^\d{2}:\d{2}(:\d{2})?$/.test(node.text)) bad(`${where} value must be an ISO 8601 date or time`);
+      node.enableDate = c.enableDate === undefined ? true : r.bool(c.enableDate, `${where} enableDate`, scope);
+      node.enableTime = c.enableTime === undefined ? false : r.bool(c.enableTime, `${where} enableTime`, scope);
+      if (!node.enableDate && !node.enableTime) bad(`${where} needs enableDate or enableTime`);
+      const b = bound(c.value); if (b) node.bind = b;
+      break;
+    }
+    case "Slider": {
+      if (c.label !== undefined) node.label = r.text(c.label, `${where} label`, scope);
+      const min = c.min === undefined ? 0 : r.number(c.min, `${where} min`, scope);
+      const max = c.max === undefined ? 100 : r.number(c.max, `${where} max`, scope);
+      if (max <= min) bad(`${where} max must be above min`);
+      let v = input(c.value, min);
+      if (o.lenient && typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) { note(`${where} value is the text "${v}"; it was read as the number ${Number(v)}`); v = Number(v); }
+      if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) bad(`${where} value must be a number from ${min} to ${max}`);
+      Object.assign(node, { min, max, value: v });
+      if (c.step !== undefined) { const step = r.number(c.step, `${where} step`, scope); if (step <= 0) bad(`${where} step must be above 0`); node.step = step; }
+      const b = bound(c.value); if (b) node.bind = b;
+      break;
+    }
+    case "Table": {
+      if (!Array.isArray(c.columns) || c.columns.length < 1 || c.columns.length > 20) bad(`${where} columns must be 1 to 20 column titles`);
+      node.header = (c.columns as unknown[]).map((h, i) => r.text(h, `${where} columns[${i}]`, scope));
+      const rows = r.value(c.rows, `${where} rows`, scope);
+      if (!Array.isArray(rows) || rows.length > 500) bad(`${where} rows must be a list of at most 500 rows (each a list of cells), or {path} to one`);
+      node.rows = (rows as unknown[]).map((row, i) => {
+        if (!Array.isArray(row)) bad(`${where} rows[${i}] must be a list of cells`);
+        return (row as unknown[]).slice(0, node.header!.length).map((cell, j) => cell === null || cell === undefined ? "" : r.text(cell, `${where} rows[${i}][${j}]`, scope));
+      });
+      break;
+    }
+    case "Html": {
+      const html = r.value(c.html, `${where} html`, scope);
+      if (typeof html !== "string" || !html.trim()) bad(`${where} html must be one self-contained HTML document`);
+      if (Buffer.byteLength(html as string, "utf8") > HTML_MAX) bad(`${where} html is larger than ${HTML_MAX / 1024} KB`);
+      node.html = html as string;
+      node.height = c.height === undefined ? 320 : dimension(r.value(c.height, `${where} height`, scope), `${where} height`);
+      if (node.height < 40) bad(`${where} height must be at least 40 dp`);
+      break;
+    }
     }
     return outId;
   };
@@ -931,7 +1140,8 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
   if (typeof rootId !== "string" || !defs.has(rootId)) bad(`root component "${String(rootId)}" is missing (a2ui.root names it; default "root")`);
   visit(rootId as string, rootId as string, "", undefined, []);
   let sizes: CardSize[] | undefined;
-  if (a2ui.sizes !== undefined) {
+  if (a2ui.sizes !== undefined && chat) note("a2ui.sizes is for home-screen widgets; a card in the conversation takes the width of the conversation");
+  else if (a2ui.sizes !== undefined) {
     if (!Array.isArray(a2ui.sizes) || a2ui.sizes.length === 0) bad("a2ui.sizes must be a non-empty array of {width, height, root}");
     const count = (a2ui.sizes as unknown[]).length;
     if (count > CARD_LIMITS.sizes) bad(`a2ui.sizes has ${count} layouts; Android takes at most ${CARD_LIMITS.sizes}`);
@@ -942,51 +1152,56 @@ export function validateCard(raw: unknown, options: { checkLevels?: boolean } = 
       const size = s as Record<string, unknown>;
       const root = size.root as string;
       if (!defs.has(root)) bad(`a2ui.sizes[${i}].root "${root}" is not a component`);
-      if (!drawn.has(root)) drawn.set(root, visit(root, `${root}#${i}`, "", undefined, []));
+      if (!drawn.has(root)) drawn.set(root, visit(root, `${root}#${i}`, "", undefined, [])!);
       return { width: dimension(size.width, `a2ui.sizes[${i}].width`), height: dimension(size.height, `a2ui.sizes[${i}].height`), root: drawn.get(root)! };
     });
   }
   const unused = [...defs.keys()].filter((key) => !reached.has(key));
-  if (unused.length) bad(`components not reachable from root: ${unused.slice(0, 5).join(", ")}`);
+  if (unused.length && !o.lenient) bad(`components not reachable from root: ${unused.slice(0, 5).join(", ")}`);
   let theme: WidgetRender["theme"];
   if (a2ui.theme !== undefined) {
     if (!plain(a2ui.theme)) bad("a2ui.theme must be an object {primaryColor?}");
     const t = a2ui.theme as Record<string, unknown>;
-    for (const key of Object.keys(t)) if (!["primaryColor", "agentDisplayName", "iconUrl"].includes(key)) bad(`a2ui.theme has unknown field "${key}" (primaryColor)`);
+    for (const key of Object.keys(t)) if (!["primaryColor", "agentDisplayName", "iconUrl"].includes(key)) note(`a2ui.theme has unknown field "${key}" (primaryColor)`);
     if (t.primaryColor !== undefined) theme = { accent: color(t.primaryColor, "a2ui.theme.primaryColor") };
   }
 
-  // What Android can nest, counted the way the phone builds it.
-  const roots = [rootId as string, ...(sizes ?? []).map((s) => s.root).filter((x) => x !== rootId)];
-  const budget = sizes ? CARD_LIMITS.levelsWithSizes : CARD_LIMITS.levels;
-  for (const root of options.checkLevels === false ? [] : roots) {
-    const n = levels(byId, root);
-    if (n > budget) {
-      const branch = deepest(byId, root);
-      bad(`the card nests ${n} levels deep (${branch.join(" > ")}); Android widgets allow at most ${budget}${sizes ? " with per-size layouts" : ""} ` +
-        "(weighted children of a Row/Column, placed children of a Stack and Grid cells count one more) — flatten it, e.g. put Texts side by side in one Row instead of nesting Columns");
+  // What Android can nest, counted the way the phone builds it (home-screen widgets only).
+  if (!chat) {
+    const roots = [rootId as string, ...(sizes ?? []).map((s) => s.root).filter((x) => x !== rootId)];
+    const budget = sizes ? CARD_LIMITS.levelsWithSizes : CARD_LIMITS.levels;
+    for (const root of o.checkLevels ? roots : []) {
+      const n = levels(byId, root);
+      if (n > budget) {
+        const branch = deepest(byId, root);
+        bad(`the card nests ${n} levels deep (${branch.join(" > ")}); Android widgets allow at most ${budget}${sizes ? " with per-size layouts" : ""} ` +
+          "(weighted children of a Row/Column, placed children of a Stack and Grid cells count one more) — flatten it, e.g. put Texts side by side in one Row instead of nesting Columns");
+      }
+    }
+    const countLists = (id: string): number => {
+      const c = byId.get(id)!;
+      return (c.component === "List" ? 1 : 0) + [...(c.children ?? []), ...(c.child ? [c.child] : []), ...(c.tabs ?? []).map((t) => t.child)].reduce((n, k) => n + countLists(k), 0);
+    };
+    for (const root of roots) {
+      const n = countLists(root);
+      if (n > CARD_LIMITS.lists) bad(`the card has ${n} Lists in one layout; Android widgets take at most ${CARD_LIMITS.lists} scrolling lists (each needs its own prebuilt view) — merge them`);
+    }
+    const inList = (id: string, list: string): void => {
+      const c = byId.get(id)!;
+      if (c.component === "List") bad(`List "${id}" is inside an item of List "${list}"; Android widgets cannot scroll a list inside a list`);
+      for (const k of [...(c.children ?? []), ...(c.child ? [c.child] : []), ...(c.tabs ?? []).map((t) => t.child)]) inList(k, list);
+    };
+    for (const c of out) if (c.component === "List") for (const item of c.children ?? []) {
+      inList(item, c.id);
+      if (!o.checkLevels) continue;
+      const n = levels(byId, item);
+      if (n > CARD_LIMITS.itemLevels) bad(`an item of List "${c.id}" nests ${n} levels deep (${deepest(byId, item).join(" > ")}); Android allows at most ${CARD_LIMITS.itemLevels} in a list item`);
     }
   }
-  const countLists = (id: string): number => {
-    const c = byId.get(id)!;
-    return (c.component === "List" ? 1 : 0) + [...(c.children ?? []), ...(c.child ? [c.child] : []), ...(c.tabs ?? []).map((t) => t.child)].reduce((n, k) => n + countLists(k), 0);
-  };
-  for (const root of roots) {
-    const n = countLists(root);
-    if (n > CARD_LIMITS.lists) bad(`the card has ${n} Lists in one layout; Android widgets take at most ${CARD_LIMITS.lists} scrolling lists (each needs its own prebuilt view) — merge them`);
-  }
-  const inList = (id: string, list: string): void => {
-    const c = byId.get(id)!;
-    if (c.component === "List") bad(`List "${id}" is inside an item of List "${list}"; Android widgets cannot scroll a list inside a list`);
-    for (const k of [...(c.children ?? []), ...(c.child ? [c.child] : []), ...(c.tabs ?? []).map((t) => t.child)]) inList(k, list);
-  };
-  for (const c of out) if (c.component === "List") for (const item of c.children ?? []) {
-    inList(item, c.id);
-    if (options.checkLevels === false) continue;
-    const n = levels(byId, item);
-    if (n > CARD_LIMITS.itemLevels) bad(`an item of List "${c.id}" nests ${n} levels deep (${deepest(byId, item).join(" > ")}); Android allows at most ${CARD_LIMITS.itemLevels} in a list item`);
-  }
-  return { root: rootId as string, components: out, ...(sizes ? { sizes } : {}), ...(theme ? { theme } : {}) };
+  const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  const reactive = binds.some(([at, path]) => r.reads.some(([by, read]) => by !== at && overlaps(read, path)));
+  const render = { root: rootId as string, components: out, ...(sizes ? { sizes } : {}), ...(theme ? { theme } : {}) };
+  return { render, data: data as Record<string, unknown>, binds: [...new Set(binds.map(([, path]) => path))], reactive };
 }
 
 /** Event names, open targets and toggles on a card, as widget.list reports them. */

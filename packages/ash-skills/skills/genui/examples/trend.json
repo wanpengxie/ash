@@ -1,0 +1,19 @@
+{"id":"weight-30d","text":"体重 70.8 kg，30 天少了 1.6 kg","a2ui":{"components":[
+{"id":"root","component":"Column","gap":14,"children":["head","trend","rows"]},
+{"id":"head","component":"Column","gap":2,"children":["label","num","delta"]},
+{"id":"label","component":"Text","text":"体重 · 今早","variant":"caption"},
+{"id":"num","component":"Text","text":"70.8 kg","variant":"h1"},
+{"id":"delta","component":"Text","text":"30 天少了 1.6 kg","style":{"color":"green"}},
+{"id":"trend","component":"Column","gap":4,"children":["chart","axis"]},
+{"id":"chart","component":"Chart","style":{"height":96},"series":[{"type":"line","values":[72.4,72.6,72.1,72.0,71.8,72.0,71.6,71.5,71.6,71.2,71.1,71.3,70.9,70.8],"color":"accent","fill":true,"min":70}]},
+{"id":"axis","component":"Row","justify":"spaceBetween","children":["x1","x2"]},
+{"id":"x1","component":"Text","text":"9月16日","variant":"caption"},
+{"id":"x2","component":"Text","text":"10月15日","variant":"caption"},
+{"id":"rows","component":"Column","gap":8,"children":["r1","r2"]},
+{"id":"r1","component":"Row","justify":"spaceBetween","children":["r1l","r1v"]},
+{"id":"r1l","component":"Text","text":"30 天最高","style":{"color":"textSecondary"}},
+{"id":"r1v","component":"Text","text":"**72.6 kg**"},
+{"id":"r2","component":"Row","justify":"spaceBetween","children":["r2l","r2v"]},
+{"id":"r2l","component":"Text","text":"目标","style":{"color":"textSecondary"}},
+{"id":"r2v","component":"Text","text":"**68 kg**"}
+]}}

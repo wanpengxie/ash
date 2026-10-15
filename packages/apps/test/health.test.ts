@@ -16,7 +16,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { appToolContract } from "../../sdk/src/app";
 import { bundleApp } from "../bundle.mjs";
 import { checkManifest } from "../../core/src/edges/apps/check";
-import { validateCard } from "../../core/src/services/widgets/card";
+import { validateCard } from "../../sdk/src/card";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = join(here, "../health/src");

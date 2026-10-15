@@ -172,7 +172,7 @@ export function createLocalBody(o: LocalBodyOptions): LocalBody {
     writeCaBundle(proot);
     return workspace = new Workspace({
       root: proot.rootfs, chroot: true, workdir: PROOT_WORKDIR, ownership: "own", mounts: prootMounts(proot),
-      exec: o.exec ?? ((command, place) => runProot(proot, ["/bin/bash", "-c", command], { workdir: place.cwd, env: { ...proxyEnv(network), ...o.env }, detached: true })),
+      exec: o.exec ?? ((command, place, env) => runProot(proot, ["/bin/bash", "-c", command], { workdir: place.cwd, env: { ...proxyEnv(network), ...o.env, ...env }, detached: true })),
       // Command output is kept in the container's own /var/tmp, where a file call can read it too.
       spillDir: join(proot.rootfs, "var", "tmp", "ash-workspace"),
     });
@@ -240,7 +240,8 @@ export function createLocalBody(o: LocalBodyOptions): LocalBody {
     },
     async handle(msg: Message, ctx: HandleContext): Promise<WordResult> {
       const streams = o.streams;
-      return open().call(msg.word, (msg.body ?? {}) as Record<string, unknown>, { signal: ctx.signal, ...(streams ? { streams: (data, meta) => streams(data, meta.mime, ctx) } : {}) });
+      // The request as it was sent (ctx.raw): a value the hub put in for a $vault name is only there, never in the record.
+      return open().call(msg.word, (ctx.raw ?? msg.body ?? {}) as Record<string, unknown>, { signal: ctx.signal, ...(streams ? { streams: (data, meta) => streams(data, meta.mime, ctx) } : {}) });
     },
     async assess(msg) {
       try { return await open().assess(msg.word, (msg.body ?? {}) as Record<string, unknown>); } catch { return null; }

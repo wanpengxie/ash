@@ -33,6 +33,12 @@ export interface RouterDeps extends AuthDeps {
   fastWaitMs?(): number;
   /** Something went wrong that the sender is not told about (a failed notification, an event nobody could take). */
   onError?(where: string, error: unknown): void;
+  /**
+   * Vault entries a request names (`$vault.<name>`, kernel/vault/refs): `inject` gives the request as the member gets it, with
+   * the values put in (null: it names none; a WordError: a name cannot be used), right before delivery and after the
+   * record; `scrub` masks every value put in from what the member answers, before the ledger and the caller see it.
+   */
+  secrets?: { check(msg: Message): WordError | null; inject(msg: Message, raw: unknown): Promise<unknown | null>; scrub<T>(to: string | null, reply: T): T };
   /** Sees every message once on the way in and once on the way out, recorded or not (health counts here). Must be quick. */
   tap?(traffic: Traffic): void;
   now?: () => number;
@@ -209,6 +215,8 @@ export class HubRouter implements Router {
     const view = redact.forLedger(stamped, contract);
     const early = await located.member?.precheck?.(view);
     if (early) return early;
+    const unusable = stamped.kind === "request" ? this.deps.secrets?.check(view) ?? null : null;
+    if (unusable) return fail(toError(unusable));
 
     if (stamped.kind === "event") return this.deliverEvent(stamped, view, contract, caller, located.member);
     const member = located.member!;
@@ -223,7 +231,7 @@ export class HubRouter implements Router {
         return fail(caller.via === "app" ? errorBody("forbidden", decision.reason ?? "an app cannot do this", { recovery_hint: "An app cannot ask the owner. Leave it to an agent or the owner." })
           : errorBody("denied", decision.reason ?? "the gate refused"));
       }
-      if (decision.verdict === "ask") return this.holdForOwner(this.park(stamped, view, raw, contract, caller, decision.offer_always, opts, member, decision.review_reason), stamped, caller, opts);
+      if (decision.verdict === "ask") return this.holdForOwner(this.park(stamped, view, raw, contract, caller, decision.offer_always, opts, member, decision.review_reason, decision.note), stamped, caller, opts);
     }
 
     // 6. record: a request that was parked is in the ledger already and only goes on
@@ -235,8 +243,13 @@ export class HubRouter implements Router {
       else this.publish(view);
     } catch (error) { this.deps.onError?.("record", error); return fail(errorBody("internal", "the request could not be recorded")); }
 
-    // 7. deliver
-    const reply = await this.deliver(view, member, caller, raw, timeout, opts.signal);
+    // 7. deliver: the values of the vault names it uses go in only now, and are masked in what comes back
+    let reply: Reply;
+    try {
+      const injected = await this.deps.secrets?.inject(view, raw) ?? null;
+      reply = this.deps.secrets ? this.deps.secrets.scrub(stamped.to, await this.deliver(view, member, caller, injected ?? raw, timeout, opts.signal))
+        : await this.deliver(view, member, caller, raw, timeout, opts.signal);
+    } catch (error) { if (!(error instanceof WordError)) this.deps.onError?.("secrets", error); reply = fail(toError(error)); }
     const shown: SendReply = this.forCaller(reply, contract, caller);
     if (record) {
       try {
@@ -272,7 +285,7 @@ export class HubRouter implements Router {
     }
   }
 
-  private park(stamped: Message, view: Message, raw: unknown, contract: WordContract, caller: Caller, offerAlways: boolean, opts: SendOptions, member: Member, reviewReason?: string): Reply {
+  private park(stamped: Message, view: Message, raw: unknown, contract: WordContract, caller: Caller, offerAlways: boolean, opts: SendOptions, member: Member, reviewReason?: string, note?: string): Reply {
     // A secret is never written down, so a request that carries one cannot wait for the owner.
     if (JSON.stringify(view.body) !== JSON.stringify(raw)) return fail(errorBody("forbidden", "a request that carries a secret cannot wait for the owner's approval", { recovery_hint: "Pass the secret by its vault name instead: store it with service:vault/put first." }));
     const ttl = Math.min(Math.max(Math.trunc(opts.approval?.ttl_minutes ?? DEFAULT_TTL_MINUTES) || DEFAULT_TTL_MINUTES, 1), 10_080);
@@ -280,6 +293,7 @@ export class HubRouter implements Router {
     // The member may say more about what this request will do (an app install: the permissions it takes); the card carries it.
     let detail: string | null = null;
     try { detail = member.cardDetail?.(view) ?? null; } catch (error) { this.deps.onError?.("cardDetail", error); }
+    if (note) detail = detail ? `${note}\n${detail}` : note;
     try {
       const pending = this.deps.ledger.tx(() => {
         const recorded = this.deps.ledger.append(view, { request: { state: "waiting_owner", deadline: expires } });

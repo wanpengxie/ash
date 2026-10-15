@@ -196,7 +196,7 @@ function failureCard(fragment, failure, { onRetry }) {
 }
 
 /** Append a stable ledger conversation without inventing an approval or option action. */
-export function appendConversation(fragment, entries, { openInline, onOpenFile, onFileLink, onExpand, fullTexts, onSelect, onAnswerAsk, onPermission, onRetry, optionPending, askIntents, onReadOriginal, onReadAnswer, agentName = id => id.replace(/^agent:/, ""), primary = null, loading = false, herName = "Ash", failures = [], atStart = false, intro, now = Date.now(), previous: previousEntry = null, next: nextEntry = null, previousDisplay = null, omitContent = false, lifetime, renderMarkdown = appendMarkdown } = {}) {
+export function appendConversation(fragment, entries, { openInline, onOpenFile, onFileLink, onExpand, fullTexts, onSelect, onAnswerAsk, onPermission, onRetry, optionPending, askIntents, onReadOriginal, onReadAnswer, a2ui = null, agentName = id => id.replace(/^agent:/, ""), primary = null, loading = false, herName = "Ash", failures = [], atStart = false, intro, now = Date.now(), previous: previousEntry = null, next: nextEntry = null, previousDisplay = null, omitContent = false, lifetime, renderMarkdown = appendMarkdown } = {}) {
 
   if (!entries.length && !failures.length) { if (loading) skeleton(fragment); else emptyState(fragment); return; }
   // Only before the owner has said anything: it is the first meeting, and she spoke first.
@@ -272,7 +272,7 @@ export function appendConversation(fragment, entries, { openInline, onOpenFile, 
       approvalCard(fragment, item, { onAnswerAsk, askIntents, agentName, primary, herName, onReadOriginal, onReadAnswer, lifetime });
     } else if (item.type === "card") {
       lastSide = "card";
-      renderCard(fragment, item, { onSelect, onPermission, optionPending, onOpenFile, herName });
+      renderCard(fragment, item, { onSelect, onPermission, optionPending, onOpenFile, herName, a2ui });
     }
   }
   flushFailures();

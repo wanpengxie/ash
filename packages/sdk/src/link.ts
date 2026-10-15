@@ -224,6 +224,7 @@ const present = union(
   presentOf("widget", "state", record()),
   presentOf("widget", "preview", obj({ card: anything(), size: anything() })),
   presentOf("chat", "focus", obj({})),
+  presentOf("chat", "card.preview", obj({ card: record(), theme: string() })),
   presentOf("chat", "open", obj({ target: string() }, { id: string(), mode: string() })),
 );
 const presentResult = union(

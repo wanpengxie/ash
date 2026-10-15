@@ -94,6 +94,8 @@ export interface Decision {
   reason?: string;
   /** The review model's one sentence about an "ask": what the command does and where the risk is. The approval card leads with it. */
   review_reason?: string;
+  /** A line for the approval card that says what else is being allowed (a vault entry used on a body). */
+  note?: string;
 }
 
 export interface Gate {
@@ -109,6 +111,11 @@ export interface GateDeps {
   mode(): "auto" | "always";
   /** Per-call assessment (10 s), e.g. a workspace write inside the work folder is "none". */
   assess?(req: Message): Promise<"none" | "outward" | "structure" | null>;
+  /**
+   * The vault entries a request uses by name (`$vault.<name>` in a command's environment) with the words the owner knows them by, and
+   * where (「手机」, a computer's name); null when it uses none. The owner allows each name on each body once (or for good).
+   */
+  vaultUse?(req: Message): { names: { ref: string; label: string }[]; where: string } | null;
   /** The review model (through edges/llm); a timeout or error is "ask". `reason` is its one sentence for the owner (ask) or the agent (deny). */
   review(req: Message, contract: WordContract): Promise<{ verdict: "allow" | "ask" | "deny"; reason?: string }>;
 }

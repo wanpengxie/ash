@@ -45,6 +45,7 @@ import { createRedact } from "./kernel/redact";
 import { createRegistry } from "./kernel/registry";
 import { createRouter } from "./kernel/router";
 import { openVault } from "./kernel/vault";
+import { bodySecrets, refsIn } from "./kernel/vault/refs";
 import type { Vault } from "./kernel/types";
 import { createAdminService, tailFile } from "./services/admin";
 import { createHealthService } from "./services/health";
@@ -156,6 +157,13 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     tier: (target) => late.hands!.tier(target),
     mode: () => store.mode(),
     assess: (req) => (req.to === MAIN_BODY_ID ? late.body!.assess(req) : late.hands!.assess(req)),
+    // A command that uses vault entries by name: which, in the owner's words, and on which body.
+    vaultUse: (req) => {
+      const names = req.to?.startsWith("body:") && req.word === "workspace.bash" ? refsIn((req.body as { env?: unknown } | null)?.env) : [];
+      if (!names.length) return null;
+      const where = req.to === MAIN_BODY_ID ? "手机" : late.hands?.get(req.to!.slice("body:".length))?.name ?? req.to!;
+      return { names: names.map((ref) => ({ ref, label: vaultService.labelOf(ref) })), where };
+    },
     review,
   }, store, { now });
   // The Codex App on a computer calls as an agent that Ash does not run (edges/agents/attached.ts).
@@ -172,6 +180,8 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
     mayTalkToOwner: (caller, word) => late.agents?.mayTalkToOwner(caller, word) ?? true,
     mayAnswer: (caller, body) => late.agents?.mayAnswer(caller, body) ?? true,
     appGranted: (app, to, word) => late.apps!.runtime.granted(app, to, word),
+    // $vault.<name> in a command's environment: the value goes in on the way to the body and is masked in what comes back.
+    secrets: bodySecrets((ref) => vaultService.resolve(ref), (ref) => vaultService.usable(ref)),
   });
 
   // 5. services
@@ -268,7 +278,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   };
   let provisioned = false;
   const agents = late.agents = createAgents({
-    router, registry, ledger, vault: { use: (ref) => vault.use(ref) }, drivers, now, log,
+    router, registry, ledger, vault: { use: (ref) => vault.use(ref) }, vaultRef: (ref) => vaultService.resolve(ref), drivers, now, log,
     ...(spec.dev?.script_agent === true ? { declare: forgetScriptAgent } : {}),
     templatesDir: join(SKILLS, "agents"),
     rules: (decl) => (decl.primary ? MAIN_RULES : AGENT_RULES),
@@ -287,13 +297,13 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   if (launcher) installContractDoc(launcher.root, APP_CONTRACT_DOC);
   const builtin = newBuiltinReport();
   const apps = late.apps = createApps({
-    router, registry, ledger, primaryAgent: () => agents.primary() ?? "", launcher, clock: { now }, log, contract: { doc: APP_CONTRACT_DOC },
+    router, registry, ledger, primaryAgent: () => agents.primary() ?? "", launcher, clock: { now }, log, contract: { doc: APP_CONTRACT_DOC }, vaultRef: (ref) => vaultService.resolve(ref),
     ...(launcher ? { builtinKept: builtin.kept, builtinExact: builtin.exact,
       builtinApps: [...installBuiltinOrgans(join(SKILLS, "organs"), launcher.root, builtin, log), ...installBuiltinOrgans(FIRST_PARTY_APPS, launcher.root, builtin, log)] } : {}),
   });
   const human = late.human = createHuman({
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
-    summarize: createSummarizer({ llm }),
+    summarize: createSummarizer({ llm }), vaultHas: (ref) => vault.list().some((entry) => entry.ref === ref),
   });
   const hostService = createHostService({ client: host, router, registry, virtual, vault, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);

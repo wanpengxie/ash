@@ -18,7 +18,8 @@ export class Net {
    * onOpen(info) after every (re)connection, onQueue(count, outbox), onPresent(frame) -> {ok, data?, error?}.
    */
   constructor({ label = "网页", pendingStore = null, url, connector, clock, random, onMessage = () => {}, onHistory = () => {},
-    onHistoryReady = () => {}, onCurrent = () => {}, historyTarget = () => ({}), onState = () => {}, onOpen = () => {}, onQueue = () => {}, onPresent = async () => ({ ok: false, error: { code: "unavailable", message: "not shown here" } }) } = {}) {
+    onHistoryReady = () => {}, onCurrent = () => {}, historyTarget = () => ({}), onState = () => {}, onOpen = () => {}, onQueue = () => {}, onPresent = async () => ({ ok: false, error: { code: "unavailable", message: "not shown here" } }),
+    onCardChange = () => {} } = {}) {
     this.onMessage = onMessage;
     this.onHistory = onHistory;
     this.onHistoryReady = onHistoryReady;
@@ -28,6 +29,9 @@ export class Net {
     this.onOpen = onOpen;
     this.onQueue = onQueue;
     this.onPresent = onPresent;
+    this.onCardChange = onCardChange;
+    /** card.update requests on their way: request id -> card id, until the hub has answered them. */
+    this.cardUpdates = new Map();
     this.status = "connecting";
     this.session = null;
     this.client = null;
@@ -182,6 +186,7 @@ export class Net {
     let overflow = false;
     const receive = message => {
       if (!active() || !this.accept(message)) return;
+      this.cardChanged(message);
       const fact = safeRecord(message);
       if (!fact) return;
       if (this.bootstrapped) this.onMessage(fact, { historical: false });
@@ -231,6 +236,21 @@ export class Net {
     return true;
   }
 
+  /**
+   * A card in the conversation that changed with no fact of its own: its creator's `card.update` was answered, or a form
+   * was answered. `onCardChange({card})` / `onCardChange({message})` names it so its item is read again.
+   */
+  cardChanged(message) {
+    const body = message.body;
+    if (message.kind === "request" && message.to === OWNER && message.word === "card.update" && typeof body?.id === "string") {
+      this.cardUpdates.set(message.id, body.id);
+      if (this.cardUpdates.size > 64) this.cardUpdates.delete(this.cardUpdates.keys().next().value);
+    } else if (message.kind === "response" && message.from === OWNER && typeof message.reply_to === "string") {
+      if (message.word === "form") this.onCardChange({ message: message.reply_to });
+      else if (this.cardUpdates.has(message.reply_to)) { this.onCardChange({ card: this.cardUpdates.get(message.reply_to) }); this.cardUpdates.delete(message.reply_to); }
+    }
+  }
+
   window(params = {}, signal) { return this.data("service:history", "window", { limit: PAGE, ...params }, { signal }); }
   current(params = {}, signal) { return this.data("service:history", "current", { limit: PAGE, ...params }, { signal }); }
   page(before, signal) { return this.window({ before }, signal); }
@@ -277,7 +297,7 @@ export class Net {
   }
 
   /** Keeps what the owner typed, then sends it as soon as there is a connection. Returns the message's `client_id`. */
-  async enqueueSay(text, attachments = [], option = null, target = null) {
+  async enqueueSay(text, attachments = [], option = null, target = null, card = null) {
     if (!target && !this.primary) await this.primaryLoad;
     target ??= this.primary;
     if (!target) throw new Error("还不知道该对谁说话；连上后再试");
@@ -287,7 +307,8 @@ export class Net {
     if (option && (typeof option.in_reply_to !== "string" || !option.in_reply_to || typeof option.option_id !== "string" || !option.option_id || attachments.length))
       throw new Error("invalid option reply");
     if (!AGENT.test(target)) throw new Error("invalid agent target");
-    const body = { text, ...(attachments.length ? { attachments } : {}), ...(option ? { in_reply_to: option.in_reply_to, option_id: option.option_id } : {}) };
+    if (card && (typeof card.id !== "string" || !card.id || typeof card.action !== "string" || !card.action || option || attachments.length)) throw new Error("invalid card action");
+    const body = { text, ...(attachments.length ? { attachments } : {}), ...(option ? { in_reply_to: option.in_reply_to, option_id: option.option_id } : {}), ...(card ? { card } : {}) };
     const message = { to: target, kind: "request", word: "say", body, client_id: crypto.randomUUID() };
     await store.enqueue(message);
     await this.restorePending();
@@ -299,6 +320,15 @@ export class Net {
   async answerAsk(ask, { choice, text }, clientId) {
     const result = await this.port.send({ to: ask.from, kind: "response", word: "ask", reply_to: ask.id,
       body: { ok: true, result: { data: { choice, ...(text ? { text } : {}) } } }, client_id: clientId });
+    return result.ok ? { ok: true, message: result.message } : { ok: false, error: result.error };
+  }
+
+  /**
+   * The owner sends or cancels a form card (`person:owner/form`): answered like an `ask`, with word `form`, to the agent that
+   * asked, and the same `client_id` when it is sent again. The kernel records the answer; the first one counts.
+   */
+  async answerForm({ to, reply_to, body, client_id }) {
+    const result = await this.port.send({ to, kind: "response", word: "form", reply_to, body, client_id });
     return result.ok ? { ok: true, message: result.message } : { ok: false, error: result.error };
   }
 
@@ -358,6 +388,8 @@ export class Net {
   async present(frame) {
     if (frame.surface !== "chat") return { ok: false, error: { code: "unavailable", message: `${frame.surface} is not shown on this page` } };
     if (frame.op === "focus") { globalThis.focus?.(); return { ok: true, data: {} }; }
+    // Drawing a card off screen into a picture is the phone's (it draws cards natively); this page cannot.
+    if (frame.op === "card.preview") return { ok: false, error: { code: "unavailable", message: "this page cannot draw a card preview; the phone can" } };
     if (frame.op !== "open") return { ok: false, error: { code: "unavailable", message: `chat ${frame.op} is not shown on this page` } };
     // The body is `{target, id?, mode?}` (SPEC-03 §5.4).
     const { target, id, mode } = frame.body;

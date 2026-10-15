@@ -16,6 +16,7 @@ import { AppBridge, mcpContent, type RecentFacts } from "./bridge";
 import { checkFolder, checkManifest, toolProblem, trialRun, UI_MIME, type AppProblem, type AppSpawn } from "./check";
 import { scaffoldFiles, type ScaffoldSurface, type ScaffoldTool } from "./scaffold";
 import { AppGrants, needKey, type AppGrant } from "./store";
+import { refsIn, resolveRefs } from "../../kernel/vault/refs";
 
 export type { AppSpawn } from "./check";
 
@@ -63,6 +64,8 @@ export interface AppRuntimeOptions {
   recent?: RecentFacts;
   /** How long a trial run may take to start and answer. */
   trialMs?: number;
+  /** The value behind `$vault.<name>` in an app's server.env (kernel/vault/refs); the app must be granted the credential. */
+  vaultRef?: (name: string) => Promise<string>;
 }
 
 /** Who made an app, as far as the hub can tell: the hub's own organ, written by an agent (not published), or anyone else. */
@@ -325,12 +328,34 @@ export class AppRuntime {
     if (log.lines.length > LOG_LINES) log.lines.splice(0, log.lines.length - LOG_LINES);
   }
 
+  /**
+   * The app's server.env with each `$vault.<name>` replaced by its value, put in at start and never written anywhere. Only a
+   * credential the app was granted (needs `{credential: name}`) can be named; null (and a line in its log) when one cannot be used.
+   */
+  private async serverEnv(id: string, manifest: AppJson): Promise<Record<string, string> | null | undefined> {
+    const env = manifest.server.env;
+    if (!env || !refsIn(env).length) return env;
+    try {
+      return (await resolveRefs(env, async (name) => {
+        if (!this.grants.credential(`app:${id}`, name)) throw new WordError("forbidden", `$vault.${name}: the app was not granted ${name} (declare {credential: "${name}", why} in needs)`);
+        if (!this.options.vaultRef) throw new WordError("unavailable", "the vault cannot be used here");
+        return this.options.vaultRef(name);
+      })).env;
+    } catch (error) {
+      this.note(id, `没能启动：${error instanceof Error ? error.message : String(error)}`, "ash");
+      return null;
+    }
+  }
+
   private async launch(id: string): Promise<void> {
     if (this.closed || this.running.has(id)) return;
-    const manifest = this.manifest(id);
+    const found = this.manifest(id);
     const launcher = this.options.launcher;
     const dir = this.dir(id);
-    if (!manifest || !launcher || !dir) return;
+    if (!found || !launcher || !dir) return;
+    const env = await this.serverEnv(id, found);
+    if (env === null || this.closed || this.running.has(id)) return;
+    const manifest: AppJson = env === found.server.env ? found : { ...found, server: { ...found.server, env: env! } };
     clearTimeout(this.timers.get(id)); this.timers.delete(id);
     // The app's own data folder exists before it starts.
     if (manifest.data_dir) { try { mkdirSync(join(dir, manifest.data_dir), { recursive: true }); } catch { /* the app reports it */ } }

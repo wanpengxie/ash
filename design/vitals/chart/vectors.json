@@ -603,6 +603,175 @@
   ]
  },
  {
+  "name": "折线 · 纵轴从 min 起 · 上限虚线",
+  "w": 64,
+  "h": 30,
+  "chart": {
+   "series": [
+    {
+     "type": "line",
+     "values": [
+      61.2,
+      60.8,
+      61.5,
+      60.4,
+      60.9
+     ],
+     "color": "her-fill",
+     "fill": true,
+     "min": 58,
+     "limit": 61,
+     "limitColor": "text-3"
+    }
+   ]
+  },
+  "expect": [
+   {
+    "kind": "area",
+    "points": [
+     [
+      0,
+      9
+     ],
+     [
+      16,
+      11.4
+     ],
+     [
+      32,
+      7.2
+     ],
+     [
+      48,
+      13.7
+     ],
+     [
+      64,
+      10.8
+     ]
+    ],
+    "color": "her-fill",
+    "alpha": 0.16
+   },
+   {
+    "kind": "line",
+    "points": [
+     [
+      0,
+      9
+     ],
+     [
+      16,
+      11.4
+     ],
+     [
+      32,
+      7.2
+     ],
+     [
+      48,
+      13.7
+     ],
+     [
+      64,
+      10.8
+     ]
+    ],
+    "color": "her-fill",
+    "width": 1.6
+   },
+   {
+    "kind": "limit",
+    "y": 10.2,
+    "x1": 0,
+    "x2": 64,
+    "width": 1,
+    "dash": [
+     2,
+     3
+    ],
+    "color": "text-3"
+   },
+   {
+    "kind": "dot",
+    "x": 64,
+    "y": 10.8,
+    "r": 2.4,
+    "color": "her-fill"
+   }
+  ]
+ },
+ {
+  "name": "柱 · min 以下落在底上 · floor 更低",
+  "w": 64,
+  "h": 30,
+  "chart": {
+   "series": [
+    {
+     "type": "bars",
+     "values": [
+      5,
+      12,
+      18,
+      9,
+      3
+     ],
+     "color": "her-fill",
+     "min": 6,
+     "floor": 20
+    }
+   ],
+   "gap": 2
+  },
+  "expect": [
+   {
+    "kind": "bar",
+    "x": 0,
+    "y": 28,
+    "w": 11.2,
+    "h": 2,
+    "r": 2,
+    "color": "her-fill"
+   },
+   {
+    "kind": "bar",
+    "x": 13.2,
+    "y": 18,
+    "w": 11.2,
+    "h": 12,
+    "r": 2,
+    "color": "her-fill"
+   },
+   {
+    "kind": "bar",
+    "x": 26.4,
+    "y": 6,
+    "w": 11.2,
+    "h": 24,
+    "r": 2,
+    "color": "her-fill"
+   },
+   {
+    "kind": "bar",
+    "x": 39.6,
+    "y": 24,
+    "w": 11.2,
+    "h": 6,
+    "r": 2,
+    "color": "her-fill"
+   },
+   {
+    "kind": "bar",
+    "x": 52.8,
+    "y": 28,
+    "w": 11.2,
+    "h": 2,
+    "r": 2,
+    "color": "her-fill"
+   }
+  ]
+ },
+ {
   "name": "全是 0",
   "w": 64,
   "h": 30,

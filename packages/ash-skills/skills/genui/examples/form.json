@@ -1,0 +1,6 @@
+{"title":"登录家里的 NAS","why":"我要用 ssh 登进去看备份有没有跑完；密码直接存进保险箱，我看不到。","schema":{"type":"object","required":["host","user","password"],"properties":{
+"host":{"type":"string","title":"地址","examples":["192.168.1.20 或 nas.example.com"]},
+"port":{"type":"integer","title":"SSH 端口","default":22},
+"user":{"type":"string","title":"用户名","default":"admin"},
+"password":{"type":"string","title":"密码"}}},
+"secret":{"password":"HOME_NAS_PASSWORD"}}

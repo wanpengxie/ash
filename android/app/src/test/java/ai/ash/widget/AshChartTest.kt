@@ -95,6 +95,31 @@ class AshChartTest {
         assertEquals(40f, AshChart.scaleMax(AshChart.Series("bars", listOf(1f), Tint(1, 1), max = 40f)), 0f)
     }
 
+    @Test fun anAxisFromMinShowsOnlyThePartThatMoves() {
+        val s = AshChart.parse(chart(line(values = "[60, 62, 64]", extra = ""","min":56"""))).series[0]
+        assertEquals(56f, AshChart.scaleMin(s), 0f)
+        // top = min + (largest - min) x 1.25 = 56 + 8 x 1.25
+        assertEquals(66f, AshChart.scaleMax(s), 0.001f)
+        // a floor above that still wins; a given max is the top
+        assertEquals(70f, AshChart.scaleMax(s.copy(floor = 70f)), 0f)
+        assertEquals(64f, AshChart.scaleMax(s.copy(max = 64f)), 0f)
+        // everything at or under min: the axis is min .. min + 1, and the values sit on the bottom
+        val under = AshChart.Series("bars", listOf(2f, 5f), Tint(1, 1), min = 6f)
+        assertEquals(7f, AshChart.scaleMax(under), 0f)
+        AshChart.layout(AshChart.Chart(listOf(under)), 20f, 10f).forEach { p -> p as AshChart.Prim.Bar; assertEquals(AshChart.BAR_MIN, p.h, 0f) }
+        // a line: min at the bottom pad, the top at the top pad, the limit between them
+        val line = AshChart.Series("line", listOf(56f, 66f), Tint(1, 1), dot = false, max = 66f, min = 56f, limit = 61f)
+        val prims = AshChart.layout(AshChart.Chart(listOf(line)), 40f, 24f)
+        val pts = (prims[0] as AshChart.Prim.Line).points
+        assertEquals(24f - AshChart.PAD, pts[0].second, 0.05f)
+        assertEquals(AshChart.PAD, pts[1].second, 0.05f)
+        assertEquals(12f, (prims[1] as AshChart.Prim.Limit).y, 0.05f)
+        // without min nothing changes
+        assertEquals(25f, AshChart.scaleMax(AshChart.Series("line", listOf(20f), Tint(1, 1), floor = 10f)), 0f)
+        // min must be under max
+        assertThrows(CardProblem::class.java) { AshChart.parse(chart(line(extra = ""","min":5,"max":5"""))) }
+    }
+
     @Test fun aStaleChartIsGreyWithoutItsHighlightOrLimit() {
         val text3 = Tint(7, 7); val surface3 = Tint(8, 8)
         val c = AshChart.Chart(listOf(

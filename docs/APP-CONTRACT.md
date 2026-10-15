@@ -92,7 +92,7 @@
 | `ASH_MCP_TOKEN` | 该端点的凭证（`Authorization: Bearer …`），每次启动都换 |
 | `ASH_TRIAL` | 只在试运行时为 `1`：这时凭证无效，不要在启动时就去调 Ash 或发事件 |
 | `HOME`、`PATH`、`TMPDIR`、`LANG`、`TERM` | `/root`、容器的 PATH、`/tmp`、`C.UTF-8`、`dumb` |
-| `app.json` 的 `server.env` | 原样给出 |
+| `app.json` 的 `server.env` | 原样给出；值写成 `"$vault.<名字>"` 的，启动时换成保险箱里那一项的值（连接给当前有效的访问令牌），只给这个进程，不写回、不进日志。这个名字必须在 `needs` 里声明为 `{credential: "<名字>"}` 并被主人批过，否则应用不启动，`apps.logs` 里写明原因 |
 
 - 崩溃（进程退出）后 Ash 按 1 秒起、翻倍、最长 1 分钟的间隔重启；停用、撤销全部授权、卸载、删除文件夹后停止。Ash 关掉 stdin 就是让它退出。stderr 的最后几百行和每次怎么结束的，`apps.logs` 都看得到。
 - 服务端可以用容器的网络；页面不行（§4）。容器里别的地方（例如 `/root/work`）是主人和 Agent 的，应用只用自己的文件夹。

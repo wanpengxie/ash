@@ -19,13 +19,13 @@ const KILL_GRACE_MS = 3000;
 export interface CommandPlace { cwd: string; hostCwd: string }
 /**
  * Starts `command` (a shell command line) and returns the child, with piped stdout and stderr. Start it in its own
- * process group (`detached: true`) so that signals reach everything it started.
+ * process group (`detached: true`) so that signals reach everything it started. `env` is added to its environment.
  */
-export type Executor = (command: string, place: CommandPlace) => ChildProcess;
+export type Executor = (command: string, place: CommandPlace, env?: Record<string, string>) => ChildProcess;
 
 /** The default: `bash -lc` on this machine. */
-export const hostExecutor: Executor = (command, place) =>
-  spawn("bash", ["-lc", command], { cwd: place.hostCwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+export const hostExecutor: Executor = (command, place, env) =>
+  spawn("bash", ["-lc", command], { cwd: place.hostCwd, detached: true, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
 
 export interface JobSnapshot {
   process: string;
@@ -63,7 +63,7 @@ export class Jobs {
 
   get running(): number { return [...this.jobs.values()].filter((job) => !job.done).length; }
 
-  async start(command: string, place: CommandPlace, opts: { timeout?: number; yield_ms: number }, signal?: AbortSignal): Promise<JobSnapshot> {
+  async start(command: string, place: CommandPlace, opts: { timeout?: number; yield_ms: number; env?: Record<string, string> }, signal?: AbortSignal): Promise<JobSnapshot> {
     if (this.running >= MAX_RUNNING) throw new WordError("unavailable", `At most ${MAX_RUNNING} commands may run at once`);
     const folder = await this.spillDir();
     signal?.throwIfAborted();
@@ -72,7 +72,7 @@ export class Jobs {
     const file = join(folder, `${id}.txt`);
     const fd = openSync(file, "wx", 0o600);
     let child: ChildProcess;
-    try { child = this.exec(command, place); } catch (error) {
+    try { child = this.exec(command, place, opts.env); } catch (error) {
       closeSync(fd);
       throw new WordError("failed", error instanceof Error ? error.message : String(error));
     }

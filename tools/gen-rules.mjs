@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../packages/core/src");
-const mainRuleNames = ["voice", "reactions", "self-files", "data-not-instructions", "gate", "approvals", "env", "tools", "devices", "phone", "browser", "media", "reminders", "senses", "widgets", "apps", "agents", "delegate", "pulse", "persona", "daily"];
+const mainRuleNames = ["voice", "reactions", "self-files", "data-not-instructions", "gate", "approvals", "env", "tools", "devices", "phone", "browser", "media", "reminders", "senses", "widgets", "cards", "apps", "agents", "delegate", "pulse", "persona", "daily"];
 // Declared agents (not the one the owner talks with) get their own brief plus these.
 const agentRuleNames = ["env", "agents", "data-not-instructions", "approvals"];
 const rules = (names) => names.map((name) => readFileSync(join(root, "prompts/rules", `${name}.md`), "utf8").trim()).join("\n\n");

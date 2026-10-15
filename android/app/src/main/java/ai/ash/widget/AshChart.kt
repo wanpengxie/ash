@@ -41,6 +41,8 @@ object AshChart {
         val dot: Boolean = true,
         val max: Float? = null,
         val floor: Float? = null,
+        /** The bottom of the value axis: values below it sit on the bottom. Null is 0. */
+        val min: Float? = null,
         val highlight: Highlight? = null,
         val colors: Map<Int, Tint> = emptyMap(),
         val lastColor: Tint? = null,
@@ -61,41 +63,49 @@ object AshChart {
 
     private fun r1(v: Float): Float = (v * 10f).roundToInt() / 10f
 
-    /** The top of a series' axis: its `max`, else the larger of `floor` and 1.25 x its largest value; 1 when all are 0. */
+    /** The bottom of a series' axis: its `min`, else 0. */
+    fun scaleMin(s: Series): Float = s.min ?: 0f
+
+    /**
+     * The top of a series' axis: its `max`, else the larger of `floor` and min + 1.25 x (its largest value - min);
+     * min + 1 when that is not above min (all 0, or all at or under min).
+     */
     fun scaleMax(s: Series): Float {
         s.max?.let { return it }
-        val m = max(s.floor ?: 0f, max(0f, s.values.maxOrNull() ?: 0f) * 1.25f)
-        return if (m == 0f) 1f else m
+        val lo = scaleMin(s)
+        val top = max(s.floor ?: 0f, lo + max(0f, max(lo, s.values.maxOrNull() ?: 0f) - lo) * 1.25f)
+        return if (top > lo) top else lo + 1f
     }
 
-    fun linePoints(values: List<Float>, w: Float, h: Float, max: Float): List<Pair<Float, Float>> {
+    /** Where [v] sits on the axis [lo] .. [hi], 0..1 (values outside it at the ends). */
+    fun frac(v: Float, hi: Float, lo: Float = 0f): Float = if (hi > lo) (min(max(v, lo), hi) - lo) / (hi - lo) else 0f
+
+    fun linePoints(values: List<Float>, w: Float, h: Float, max: Float, min: Float = 0f): List<Pair<Float, Float>> {
         val n = values.size
         return values.mapIndexed { i, v ->
             val x = if (n == 1) w else i.toFloat() / (n - 1) * w
-            r1(x) to r1(h - PAD - min(max(v, 0f), max) / max * (h - PAD * 2))
+            r1(x) to r1(h - PAD - frac(v, max, min) * (h - PAD * 2))
         }
     }
 
-    fun limitY(value: Float, h: Float, max: Float, bars: Boolean): Float {
-        val c = min(value, max)
-        return r1(if (bars) h - c / max * h else h - PAD - c / max * (h - PAD * 2))
-    }
+    fun limitY(value: Float, h: Float, max: Float, bars: Boolean, min: Float = 0f): Float =
+        r1(if (bars) h - frac(value, max, min) * h else h - PAD - frac(value, max, min) * (h - PAD * 2))
 
     fun layout(chart: Chart, w: Float, h: Float): List<Prim> {
         val body = ArrayList<Prim>(); val limits = ArrayList<Prim>(); val dots = ArrayList<Prim>()
         for (s in chart.series) {
-            val mx = scaleMax(s); val n = s.values.size
+            val mx = scaleMax(s); val lo = scaleMin(s); val n = s.values.size
             if (s.type == "bars") {
                 val gap = chart.gap ?: GAP
                 val bw = (w - gap * (n - 1)) / n
                 s.values.forEachIndexed { i, v ->
-                    val bh = max(BAR_MIN, min(max(v, 0f), mx) / mx * h)
+                    val bh = max(BAR_MIN, frac(v, mx, lo) * h)
                     val color = s.colors[i] ?: (if (i == n - 1) s.lastColor else null) ?: s.color
                     val rw = r1(bw)
                     body += Prim.Bar(r1(i * (bw + gap)), r1(h - bh), rw, r1(bh), min(BAR_RADIUS, rw / 2), color)
                 }
             } else {
-                val pts = linePoints(s.values, w, h, mx)
+                val pts = linePoints(s.values, w, h, mx, lo)
                 val width = s.width ?: LINE_WIDTH
                 if (s.fill) body += Prim.Area(pts, s.color, AREA_ALPHA)
                 body += Prim.Line(pts, s.color, width)
@@ -108,7 +118,7 @@ object AshChart {
                 }
                 if (s.dot) dots += Prim.Dot(pts[n - 1].first, pts[n - 1].second, DOT, dotColor)
             }
-            s.limit?.let { limits += Prim.Limit(limitY(it, h, mx, s.type == "bars"), 0f, w, s.limitColor ?: s.color) }
+            s.limit?.let { limits += Prim.Limit(limitY(it, h, mx, s.type == "bars", lo), 0f, w, s.limitColor ?: s.color) }
         }
         return body + limits + dots
     }
@@ -177,8 +187,12 @@ object AshChart {
             }
             val colors = s.optJSONObject("colors")?.let { o -> o.keys().asSequence().associate { k ->
                 (k.toIntOrNull()?.takeIf { it in values.indices } ?: fail("的 colors 里有不认识的序号")) to (color(o.opt(k)) ?: fail("的 colors 缺颜色")) } } ?: emptyMap()
+            val lo = num("min")
+            if (lo != null && lo < 0f) fail("的 min 不能小于 0")
+            val hi = num("max")?.takeIf { it > 0 }
+            if (lo != null && hi != null && hi <= lo) fail("的 max 要大于 min")
             Series(type, values, color(s.opt("color")) ?: fail("的第 ${i + 1} 组没有颜色"), s.optBoolean("fill"), width, s.optBoolean("dot", true),
-                num("max")?.takeIf { it > 0 }, num("floor"), hl, colors, color(s.opt("lastColor")), num("limit"), color(s.opt("limitColor")))
+                hi, num("floor"), lo, hl, colors, color(s.opt("lastColor")), num("limit"), color(s.opt("limitColor")))
         }
         if (total > 600) fail("的数据总共不能超过 600 个")
         val gap = if (c.has("gap") && !c.isNull("gap")) (c.opt("gap") as? Number)?.toFloat() ?: fail("的 gap 不是数") else null

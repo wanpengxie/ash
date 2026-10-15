@@ -177,7 +177,7 @@ export class Workspace {
       case "workspace.bash": {
         const info = await stat(cwd).catch((error) => { throw asWorkspaceError(error); });
         if (!info.isDirectory()) throw new WordError("bad_request", "The working directory is not a directory");
-        return this.job(await this.jobs.start(a.command, { cwd: this.shownDir(cwd), hostCwd: cwd }, { timeout: a.timeout, yield_ms: a.yield_ms ?? 10000 }, signal));
+        return this.job(await this.jobs.start(a.command, { cwd: this.shownDir(cwd), hostCwd: cwd }, { timeout: a.timeout, yield_ms: a.yield_ms ?? 10000, ...(a.env ? { env: a.env } : {}) }, signal));
       }
       case "workspace.ls": return this.ls(await this.target(a, cwd), a.limit ?? 1000);
       case "workspace.read": return this.read(await this.target(a, cwd), a, signal, streams);

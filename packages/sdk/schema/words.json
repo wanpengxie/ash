@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "a605604a12036410d5ee7eec328f677f1cc86e936b6033f425a1665cfd037ff4",
+ "hash": "c0c5c235d3d403b661b439bb2857da22a2d92a150f0fa6edd9528c6734f76d55",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -11644,7 +11644,7 @@
    "word": "widget.card.validate",
    "kind": "request",
    "direction": "in",
-   "description": "Check a card's a2ui exactly as widget.card.put would, without saving or showing anything: valid, or the problem (which component, which property, why). levels is how deep it nests against Android's limit. Same format as widget.card.put.",
+   "description": "Check a card's a2ui without saving or showing anything. surface widget (default): exactly as widget.card.put would — valid, or the problem (which component, which property, why); levels is how deep it nests against Android's limit. surface chat: as person:owner/show would — valid unless nothing can be drawn, and problems lists what would be left out.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -11653,6 +11653,13 @@
       "properties": {},
       "required": [],
       "additionalProperties": true
+     },
+     "surface": {
+      "type": "string",
+      "enum": [
+       "widget",
+       "chat"
+      ]
      }
     },
     "required": [
@@ -11668,6 +11675,12 @@
      },
      "problem": {
       "type": "string"
+     },
+     "problems": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      },
      "components": {
       "type": "integer",
@@ -11697,7 +11710,7 @@
     "app"
    ],
    "label": {
-    "doing": "在检查桌面卡片"
+    "doing": "在检查卡片"
    }
   },
   {
@@ -16232,7 +16245,7 @@
    "word": "show",
    "kind": "request",
    "direction": "in",
-   "description": "Show the owner a file, image, link, a permission page to switch on, or choices. Showing choices does not itself authorize anything. A permission card only names an Android setting the owner must switch on; calling a capability asks the owner by itself.",
+   "description": "Put a card in the conversation. Either card: a file, image, link, a permission page to switch on, or choices; or a2ui: any card you design — text, tables, charts, lists, images, tabs, buttons, inputs, a small sandboxed page — drawn natively in the chat, in the same card language as the home-screen cards. Show the owner what you want to show and ask for choices and input this way, in the conversation: never send them to another page for it. id names the card (default: this message's id) so card.update can change it later in place: a follow-up updates the card instead of sending another one. text is a short plain summary for notifications and screens that cannot draw the card (written from the card when left out). Answers {accepted, card, problems, hints}: problems lists what was left out and why, hints what usually looks worse (too many accents, icons, titles); fix them with card.update, and look at it with card.preview. A card that cannot be drawn at all is refused with the reason. Showing choices does not itself authorize anything. a2ui is the same A2UI as a home-screen card (widget.card.put): {components:[{id, component, ...}], root?:'root', data?:{...}, theme?}. In the conversation it also takes TextField {label, value, variant: shortText|longText|number|obscured, placeholder} (obscured is a password box: what is typed is never in data and never reaches you; ask for a password with person:owner/form), DateTimeInput {label, value: ISO text, enableDate (default true), enableTime}, Slider {label, value, min, max, step}, Table {columns: [titles], rows: [[cells]] or {path}}, and Html {html: one self-contained HTML document with inline CSS and JS, height: dp} for what the components cannot show (a calculator, a game, an unusual chart): it runs sandboxed with no network; the theme is in CSS variables --ash-bg, --ash-surface, --ash-text, --ash-text2, --ash-accent, --ash-line; ash.send(action, context) sends an action to you like a button. Row, Column, List and Grid take gap (dp between their children; none when left out). A Chart series takes min (the bottom of its axis, for a price or a weight). The conversation draws the card's frame: do not give the root a background, padding or corners. Inputs with value {path} write the owner's value into data on the phone itself: tabs, toggles, choices, sliders and typing need no round trip to you, and any Text or visible that reads such a path follows at once. A Button with action {event:{name, context?}} sends you the owner's message `[card <id>, action <name>] {context, data}` with the card's current data. Lists may scroll horizontally here. What cannot be drawn is left out and listed in problems; a component named but not given yet shows as a placeholder.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -16400,18 +16413,67 @@
         "additionalProperties": false
        }
       ]
+     },
+     "a2ui": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     },
+     "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+     },
+     "text": {
+      "type": "string",
+      "maxLength": 2000
      }
     },
-    "required": [
-     "card"
-    ],
-    "additionalProperties": false
+    "required": [],
+    "additionalProperties": false,
+    "oneOf": [
+     {
+      "required": [
+       "card"
+      ],
+      "properties": {
+       "card": {
+        "type": "object"
+       }
+      }
+     },
+     {
+      "required": [
+       "a2ui"
+      ],
+      "properties": {
+       "a2ui": {
+        "type": "object"
+       }
+      }
+     }
+    ]
    },
    "result_schema": {
     "type": "object",
     "properties": {
      "accepted": {
       "type": "boolean"
+     },
+     "card": {
+      "type": "string"
+     },
+     "problems": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "hints": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      }
     },
     "required": [
@@ -16427,6 +16489,348 @@
    ],
    "label": {
     "doing": "在给你看卡片"
+   }
+  },
+  {
+   "member": "person:owner",
+   "word": "card.update",
+   "kind": "request",
+   "direction": "in",
+   "description": "Change a card you showed in the conversation, where it is: a new a2ui (its layout), and/or data as {\"/pointer\": value} merged into its data model (keeps what the owner entered unless you set it). For a follow-up, a result arriving, or filling in a long card part by part. Only the card's creator may change it. Answers problems like show.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+     },
+     "a2ui": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     },
+     "data": {
+      "type": "object",
+      "description": "JSON pointer -> new value, merged into the card's data"
+     },
+     "text": {
+      "type": "string",
+      "maxLength": 2000
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "updated": {
+      "type": "boolean"
+     },
+     "problems": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "hints": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "updated"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "act",
+   "risk": "none",
+   "callers": [
+    "agent",
+    "app"
+   ],
+   "label": {
+    "doing": "在更新卡片"
+   }
+  },
+  {
+   "member": "person:owner",
+   "word": "card.draft",
+   "kind": "request",
+   "direction": "in",
+   "description": "What has been entered on a card so far (its whole data model; the owner's screen sends it as he types, an agent may fill in for him): kept with the card so it is there again after a refresh, and when something on the card reads it, the card drawn again (plan). Nothing is sent to anyone; an action on the card carries the values. A password box is never part of it.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "card": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+     },
+     "data": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "card",
+     "data"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "card": {
+      "type": "string"
+     },
+     "plan": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     }
+    },
+    "required": [
+     "card"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "owner",
+    "agent"
+   ],
+   "label": {
+    "doing": "在记下卡片上填的"
+   }
+  },
+  {
+   "member": "person:owner",
+   "word": "card.preview",
+   "kind": "request",
+   "direction": "in",
+   "description": "Look at a card you showed in the conversation as the phone draws it (its width in the chat, light or dark): the answer carries the picture, which you can see. Look once after show or card.update and fix what is cramped, cut off, misaligned or a flat line. Fails with offline when no phone is connected.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+     },
+     "theme": {
+      "type": "string",
+      "enum": [
+       "light",
+       "dark"
+      ]
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "card": {
+      "type": "string"
+     },
+     "width": {
+      "type": "number"
+     },
+     "height": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "card"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "read",
+   "risk": "none",
+   "callers": [
+    "agent"
+   ],
+   "timeout_ms": 30000,
+   "label": {
+    "doing": "在看卡片的样子"
+   }
+  },
+  {
+   "member": "person:owner",
+   "word": "form",
+   "kind": "request",
+   "direction": "in",
+   "description": "Ask the owner to fill in a form card in the conversation and wait for it: everything you need in one card (an address, a port, a user name and a password; a date and a choice …), filled in and sent right there. schema is a JSON Schema object: properties with type string|number|integer|boolean, title (the label), description, default, enum (a choice), examples, format (date, time, date-time, email, uri, multiline); required. values prefills. secret maps a field to a vault name: that field is a password box, and what the owner types goes from the phone straight into the vault under that name — you never see it; use it as $vault.<name> (workspace.bash env). Answers {values (the other fields), secret: {field: {ref, masked}}} when the owner sends it, or fails with cancelled when the owner declines. why says what it is for (shown on the card). Ends at expires_at (default 24 hours, at most 7 days).",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string",
+      "minLength": 1
+     },
+     "why": {
+      "type": "string"
+     },
+     "schema": {
+      "type": "object",
+      "properties": {
+       "type": {
+        "const": "object"
+       },
+       "properties": {
+        "type": "object",
+        "additionalProperties": {
+         "type": "object",
+         "properties": {
+          "type": {
+           "type": "string",
+           "enum": [
+            "string",
+            "number",
+            "integer",
+            "boolean"
+           ]
+          },
+          "title": {
+           "type": "string"
+          },
+          "description": {
+           "type": "string"
+          },
+          "default": {},
+          "enum": {
+           "type": "array",
+           "minItems": 1
+          },
+          "examples": {
+           "type": "array"
+          },
+          "format": {
+           "type": "string",
+           "enum": [
+            "date",
+            "time",
+            "date-time",
+            "email",
+            "uri",
+            "multiline"
+           ]
+          },
+          "minimum": {
+           "type": "number"
+          },
+          "maximum": {
+           "type": "number"
+          },
+          "minLength": {
+           "type": "integer"
+          },
+          "maxLength": {
+           "type": "integer"
+          },
+          "pattern": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "type"
+         ],
+         "additionalProperties": false
+        },
+        "minProperties": 1,
+        "maxProperties": 30
+       },
+       "required": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "properties"
+      ],
+      "additionalProperties": false
+     },
+     "values": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     },
+     "secret": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string",
+       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+      },
+      "description": "field -> vault name: a password box; its value goes straight into the vault"
+     },
+     "expires_at": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "title",
+     "schema"
+    ],
+    "additionalProperties": false
+   },
+   "result_schema": {
+    "type": "object",
+    "properties": {
+     "values": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+     },
+     "secret": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "object",
+       "properties": {
+        "ref": {
+         "type": "string",
+         "minLength": 1
+        },
+        "masked": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "ref",
+        "masked"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "values",
+     "secret"
+    ],
+    "additionalProperties": false
+   },
+   "effect": "act",
+   "risk": "none",
+   "callers": [
+    "agent"
+   ],
+   "timeout_ms": 604800000,
+   "label": {
+    "doing": "在请你填写"
    }
   },
   {
@@ -16825,7 +17229,7 @@
    "word": "say",
    "kind": "request",
    "direction": "in",
-   "description": "The owner speaks to the agent, or answers an option card (in_reply_to and option_id together). Acknowledged at once and queued on the front lane; the agent's answer arrives later as a message.",
+   "description": "The owner speaks to the agent, answers an option card (in_reply_to and option_id together), or acts on a card the agent showed (card: which card, which action, its context and the card's data as the owner left it; text is the button's label). Acknowledged at once and queued on the front lane; the agent's answer arrives later as a message.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -16866,6 +17270,36 @@
      "option_id": {
       "type": "string",
       "minLength": 1
+     },
+     "card": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+       },
+       "action": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+       },
+       "context": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": true
+       },
+       "data": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": true
+       }
+      },
+      "required": [
+       "id",
+       "action"
+      ],
+      "additionalProperties": false
      }
     },
     "additionalProperties": false,
@@ -16913,6 +17347,16 @@
        "option_id": {
         "type": "string",
         "minLength": 1
+       }
+      }
+     },
+     {
+      "required": [
+       "card"
+      ],
+      "properties": {
+       "card": {
+        "type": "object"
        }
       }
      }
@@ -22260,7 +22704,7 @@
    "word": "workspace.bash",
    "kind": "request",
    "direction": "in",
-   "description": "Run a shell command on the body. It returns what it printed within yield_ms; if it is still running, use workspace.poll with the process id for more, and workspace.signal to stop it.",
+   "description": "Run a shell command on the body. It returns what it printed within yield_ms; if it is still running, use workspace.poll with the process id for more, and workspace.signal to stop it. env adds environment variables; a value \"$vault.<name>\" is the vault entry of that name (a password, a key, a connection's token): the hub puts the value in just before the command runs, you and the record only ever see the name, and the value is masked as *** in what comes back. The first use of a name on a body asks the owner.",
    "input_schema": {
     "type": "object",
     "additionalProperties": false,
@@ -22289,6 +22733,18 @@
       "minimum": 0,
       "maximum": 30000,
       "description": "How long to wait for output before returning (ms, default 10000)."
+     },
+     "env": {
+      "type": "object",
+      "description": "Environment variables for this command: NAME -> text, or \"$vault.<name>\" for a vault entry.",
+      "propertyNames": {
+       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+      },
+      "additionalProperties": {
+       "type": "string",
+       "maxLength": 8192
+      },
+      "maxProperties": 50
      }
     }
    },

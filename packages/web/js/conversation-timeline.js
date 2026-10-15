@@ -112,6 +112,8 @@ export class ConversationTimeline {
       if (!this.store.hasAfter) {
         const item = projectRecords([fact]).conversation[0];
         if (item) this.onChange(this.viewAfter(item, fact.seq), true, new Set([item.id]));
+        // A card the agent designed arrives as its name and summary; what it shows is read with the item.
+        if (item?.type === "card" && item.card?.type === "a2ui" && this.store.get(item.id)) this.queueTarget(item.id);
       } else { this.unseen++; this.onChange(this.view, false); }
     }
     const targets = [fact.reply_to, fact.message_id, fact.in_reply_to, ...(fact.type === "turn.start" ? fact.ids ?? [] : [])];
@@ -128,6 +130,13 @@ export class ConversationTimeline {
     this.store.update(item, revision, true);
     if (!this.store.get(item.id)) { this.store.hasAfter = true; this.unseen++; }
     return this.view;
+  }
+  /** A card changed on the hub (`{message}` its message id, or `{card}` its card id): its item is read again. */
+  refreshCard({ message, card } = {}) {
+    const id = message ?? this.store.items.find(item => item.card?.type === "a2ui" && item.card.id === card)?.id;
+    if (!id || !this.store.get(id)) return;
+    this.queueTarget(id);
+    this.scheduleLive();
   }
   queueTarget(id) {
     if (this.targets.size < this.store.maxItems) this.targets.add(id);

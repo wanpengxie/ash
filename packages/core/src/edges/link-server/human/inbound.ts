@@ -17,6 +17,7 @@ import { OWNER_ID } from "../../../../../sdk/src/ids";
 import type { Ledger } from "../../../kernel/ledger";
 import type { Caller, Router } from "../../../kernel/types";
 import type { Asks } from "./ask";
+import type { Forms } from "./form";
 import type { LiveClient } from "./clients";
 
 type Request = SendFrame["request"];
@@ -57,6 +58,7 @@ export interface InboundDeps {
   ledger: Pick<Ledger, "db" | "get">;
   recorded: Recorded;
   asks: Asks;
+  forms: Forms;
   now(): number;
   /** How long an answer waits to be recorded. */
   recordMs: number;
@@ -122,13 +124,14 @@ export class Inbound {
 
   private async answer(c: LiveClient, req: Request): Promise<SendOutcome> {
     const id = req.reply_to;
-    if (req.word !== "ask" || !id) return fail(errorBody("bad_request", "a response from the owner is the answer to an ask: word ask, with reply_to"));
-    if (!this.d.asks.has(id)) {
+    const form = req.word === "form";
+    if ((req.word !== "ask" && !form) || !id) return fail(errorBody("bad_request", "a response from the owner is the answer to an ask or a form: word ask or form, with reply_to"));
+    if (!(form ? this.d.forms.has(id) : this.d.asks.has(id))) {
       const known = this.d.ledger.get(id);
-      return fail(known?.word === "ask" ? errorBody("conflict", "this question was already answered or has ended") : errorBody("not_found", "no such question"));
+      return fail(known?.word === req.word ? errorBody("conflict", form ? "this form was already sent or has ended" : "this question was already answered or has ended") : errorBody("not_found", form ? "no such form" : "no such question"));
     }
     const recorded = this.d.recorded.expect((m) => m.kind === "response" && m.reply_to === id);
-    const answered = this.d.asks.answer(id, req.body, c);
+    const answered = form ? this.d.forms.answer(id, req.body) : this.d.asks.answer(id, req.body, c);
     if (!answered.ok) { recorded.cancel(); return fail(answered.error); }
     const message = await Promise.race([recorded.promise, later(this.d.recordMs)]);
     recorded.cancel();

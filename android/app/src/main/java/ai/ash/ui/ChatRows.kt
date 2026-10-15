@@ -17,7 +17,7 @@ class ChatRow(val key: String, val sig: String, val id: String = "", val make: (
 
 object ChatRows {
     /** Item types and card types the chat draws; anything else is not a row (a newer kernel's kinds wait for a newer app). */
-    private val CARDS = setOf("options", "file", "image", "link", "permission", "app")
+    private val CARDS = setOf("options", "file", "image", "link", "permission", "app", "a2ui")
 
     /**
      * The row key of a window item: the client id it was sent with, so the owner's message keeps the row it waited in —

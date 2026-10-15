@@ -438,8 +438,10 @@ const WORKSPACE_ACTIONS: readonly StandardAction[] = [
   action("workspace.edit", "在改文件", "Edit a file by exact text replacement: each oldText must match exactly once or nothing is saved. The risk is assessed per call like workspace.write.",
     object({ ...wsBase(), path: wsPath(), edits: { type: "array", minItems: 1, maxItems: 1000, items: object({ oldText: text1("Text to replace; must occur exactly once."), newText: { type: "string", description: "Its replacement." } }, ["oldText", "newText"]) } }, ["path", "edits"]),
     loose({ path: str(), edits: int() }, ["path"]), "write", "structure", { per_call_risk: true, errors: ["not_found", "forbidden", "bad_request", "too_large"] }),
-  action("workspace.bash", "在执行命令", "Run a shell command on the body. It returns what it printed within yield_ms; if it is still running, use workspace.poll with the process id for more, and workspace.signal to stop it.",
-    object({ ...wsBase(), command: text1("The command line."), timeout: int("Stop it after this many seconds.", 1, 86400), yield_ms: int("How long to wait for output before returning (ms, default 10000).", 0, 30000) }, ["command"]),
+  action("workspace.bash", "在执行命令", "Run a shell command on the body. It returns what it printed within yield_ms; if it is still running, use workspace.poll with the process id for more, and workspace.signal to stop it. " +
+    "env adds environment variables; a value \"$vault.<name>\" is the vault entry of that name (a password, a key, a connection's token): the hub puts the value in just before the command runs, you and the record only ever see the name, and the value is masked as *** in what comes back. The first use of a name on a body asks the owner.",
+    object({ ...wsBase(), command: text1("The command line."), timeout: int("Stop it after this many seconds.", 1, 86400), yield_ms: int("How long to wait for output before returning (ms, default 10000).", 0, 30000),
+      env: { type: "object", description: "Environment variables for this command: NAME -> text, or \"$vault.<name>\" for a vault entry.", propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$" }, additionalProperties: { type: "string", maxLength: 8192 }, maxProperties: 50 } }, ["command"]),
     jobResult(), "execute", "structure", { errors: ["forbidden", "timeout"] }),
   action("workspace.poll", "在读命令输出", "Read the new output of a command started with workspace.bash, waiting up to yield_ms for more.",
     object({ process: procRef(), yield_ms: int("How long to wait for output (ms, default 1000).", 0, 30000) }, ["process"]),
