@@ -177,6 +177,9 @@ class TasksActivityProductTest {
             TasksModel.Task("address","确认收货地址",subject="owner",assignee="agent:helper",status="waiting",note="需要你给收货地址",source=TasksModel.Source("source-address")),
         ),loaded=true))
         ctl.newIntent(Intent().putExtra(SystemAppActivity.EXTRA_ARG,"{}"));flush()
+        val adapter=(get(a,"list") as androidx.recyclerview.widget.RecyclerView).adapter as KeyedRowsAdapter
+        val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(10)
+        while(adapter.currentList.none { it.key=="task:tax" } && System.nanoTime()<deadline){ShadowLooper.idleMainLooper();Thread.sleep(5)}
         val decor=a.window.decorView
         ctl.visible();flush()
         decor.measure(View.MeasureSpec.makeMeasureSpec(412,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(915,View.MeasureSpec.EXACTLY))
@@ -184,7 +187,7 @@ class TasksActivityProductTest {
         assertTrue("real RecyclerView rows must be attached to the window",views(decor).any { it.tag=="task:tax" })
         val bitmap=Bitmap.createBitmap(decor.width,decor.height,Bitmap.Config.ARGB_8888)
         decor.draw(Canvas(bitmap))
-        val target=File(System.getProperty("ash.tasks.screenshotDir",System.getProperty("java.io.tmpdir")),"tasks-product-home.png")
+        val target=File("build/reports/tasks/tasks-product-home.png")
         target.parentFile?.mkdirs();target.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
         bitmap.recycle();ctl.destroy();flush()
     }
