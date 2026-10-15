@@ -140,29 +140,47 @@ object AshUi {
             Kind.GHOST -> Color.TRANSPARENT to c.youText
         }
         val h = dp(ctx, size.heightDp)
-        val shape = rounded(bg, h / 2f)
+        // The pill is drawn at its size; the view around it is at least the 48dp a finger needs (MOBILE-ARCH §5.4).
+        val touch = maxOf(h, dp(ctx, AshTokens.Size.touch))
+        val inset = (touch - h) / 2
+        val pill = { color: Int -> android.graphics.drawable.InsetDrawable(rounded(color, h / 2f), 0, inset, 0, inset) }
         return style(TextView(ctx), if (size == BtnSize.SM) AshTokens.Type.buttonSm else AshTokens.Type.button, fg).apply {
             text = label; gravity = Gravity.CENTER; isClickable = true; isFocusable = true
-            // One line: a long label shrinks to fit (down to 11sp) before it is cut.
-            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-            setAutoSizeTextTypeUniformWithConfiguration(11, maxOf(12, Math.round(textSize / resources.displayMetrics.scaledDensity)), 1, android.util.TypedValue.COMPLEX_UNIT_SP)
-            minHeight = maxOf(h, if (size == BtnSize.SM) 0 else dp(ctx, AshTokens.Size.touch)); minimumHeight = minHeight
-            setPadding(dp(ctx, size.padXDp), 0, dp(ctx, size.padXDp), 0)
-            background = ripple(ctx, shape, rounded(Color.WHITE, h / 2f))
-            layoutParams = ViewGroup.LayoutParams(if (block) ViewGroup.LayoutParams.MATCH_PARENT else ViewGroup.LayoutParams.WRAP_CONTENT, h)
+            // A long label or a large system font wraps to a second line (the button grows); it is never shrunk below its size.
+            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+            minHeight = touch; minimumHeight = touch
+            setPadding(dp(ctx, size.padXDp), inset, dp(ctx, size.padXDp), inset)
+            background = ripple(ctx, pill(bg), pill(Color.WHITE))
+            layoutParams = ViewGroup.LayoutParams(if (block) ViewGroup.LayoutParams.MATCH_PARENT else ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            role(this, android.widget.Button::class.java.name)
             onClick?.let { f -> setOnClickListener { f() } }
+        }
+    }
+
+    /**
+     * What TalkBack and a keyboard hear a drawn control is (MOBILE-ARCH §5.5): a button, a switch… [state] is said after it
+     * (「已开启」, 「处理中」), when given.
+     */
+    fun role(v: View, className: String, state: (() -> CharSequence?)? = null) {
+        v.accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onInitializeAccessibilityNodeInfo(host: View, info: android.view.accessibility.AccessibilityNodeInfo) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                info.className = className
+                state?.invoke()?.let { if (Build.VERSION.SDK_INT >= 30) info.stateDescription = it }
+            }
         }
     }
 
     /** 不可点的状态（例如「正在保存…」）：40% 透明，不响应。 */
     fun disable(v: View) { v.isEnabled = false; v.alpha = 0.4f }
 
-    /** 44dp 的圆形图标按钮（顶栏、卡片右上角）。icon 用项目里的线条图标（24 网格，1.8 线宽）。 */
+    /** 48dp 的圆形图标按钮（顶栏、卡片右上角）。icon 用项目里的线条图标（24 网格，1.8 线宽）。 */
     fun iconButton(ctx: Context, icon: Drawable, description: String, filled: Boolean = false, onClick: () -> Unit) =
         FrameLayout(ctx).apply {
             val s = dp(ctx, AshTokens.Size.iconButton)
             layoutParams = ViewGroup.LayoutParams(s, s)
             contentDescription = description; isClickable = true; isFocusable = true
+            role(this, android.widget.Button::class.java.name)
             background = ripple(ctx, rounded(if (filled) p(ctx).surface2 else Color.TRANSPARENT, s / 2f), rounded(Color.WHITE, s / 2f))
             addView(View(ctx).apply { background = icon.mutate().apply { setTint(p(ctx).text) } },
                 FrameLayout.LayoutParams(dp(ctx, AshTokens.Size.icon), dp(ctx, AshTokens.Size.icon), Gravity.CENTER))
@@ -273,11 +291,15 @@ object AshUi {
         items.forEachIndexed { i, s ->
             val on = i == selected
             addView(text(ctx, s, AshType(13.5f, 18f, if (on) 600 else 400, null), if (on) c.ink else c.text2).apply {
-                gravity = Gravity.CENTER; isClickable = true
+                gravity = Gravity.CENTER; isClickable = true; isFocusable = true
                 background = if (on) rounded(c.elev, dpF(ctx, 11f)) else null
                 if (on) cardShadow(this, 0.5f)
+                // A tab to TalkBack, and which one is chosen; at least as tall as a finger needs, taller with a large font.
+                isSelected = on
+                role(this, "android.widget.RadioButton") { if (on) "已选中" else null }
+                minHeight = dp(ctx, AshTokens.Size.touch) - dp(ctx, 6)
                 setOnClickListener { onSelect(i) }
-            }, LinearLayout.LayoutParams(0, dp(ctx, 32), 1f))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
         }
     }
 
@@ -541,20 +563,28 @@ object AshUi {
         var onChange: ((Boolean) -> Unit)? = null
         private var pos = 0f
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        init { isClickable = true; isFocusable = true; setOnClickListener { set(!checked, true) } }
+        init {
+            isClickable = true; isFocusable = true; setOnClickListener { set(!checked, true) }
+            // A switch to TalkBack, saying whether it is on (§5.5).
+            role(this, android.widget.Switch::class.java.name) { if (checked) "已开启" else "已关闭" }
+        }
         fun set(v: Boolean, animate: Boolean = false) {
             checked = v; onChange?.takeIf { animate }?.invoke(v)
             if (animate && motionOn(context)) ValueAnimator.ofFloat(pos, if (v) 1f else 0f).apply {
                 duration = 150; interpolator = AshTokens.Motion.easing(); addUpdateListener { pos = it.animatedValue as Float; invalidate() }; start()
             } else { pos = if (v) 1f else 0f; invalidate() }
         }
-        override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(dp(context, AshTokens.Size.switchW), dp(context, AshTokens.Size.switchH))
+        // Drawn 46×28 in the middle of a view at least 48dp each way: a touch anywhere in it counts (§5.4).
+        override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(
+            maxOf(dp(context, AshTokens.Size.switchW), dp(context, AshTokens.Size.touch)), maxOf(dp(context, AshTokens.Size.switchH), dp(context, AshTokens.Size.touch)))
         override fun onDraw(canvas: Canvas) {
-            val c = p(context); val h = height.toFloat(); val w = width.toFloat()
+            val c = p(context); val w = dpF(context, AshTokens.Size.switchW.toFloat()); val h = dpF(context, AshTokens.Size.switchH.toFloat())
+            canvas.save(); canvas.translate((width - w) / 2, (height - h) / 2)
             paint.color = blend(c.surface3, c.okFill, pos); canvas.drawRoundRect(0f, 0f, w, h, h / 2, h / 2, paint)
             val k = dpF(context, 22f); val m = (h - k) / 2
             paint.color = Color.WHITE; paint.setShadowLayer(dpF(context, 1.5f), 0f, dpF(context, 1f), 0x40000000)
             canvas.drawCircle(m + k / 2 + pos * (w - k - 2 * m), h / 2, k / 2, paint); paint.clearShadowLayer()
+            canvas.restore()
         }
         private fun blend(a: Int, b: Int, f: Float) = Color.rgb(
             (Color.red(a) + (Color.red(b) - Color.red(a)) * f).toInt(), (Color.green(a) + (Color.green(b) - Color.green(a)) * f).toInt(), (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * f).toInt())

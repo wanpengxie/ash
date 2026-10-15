@@ -97,9 +97,10 @@ class ChatScreen(
     private var unseenBelow = false
     private val toBottomDot = View(ctx).apply { background = AshUi.rounded(0xFFFF3B30.toInt(), AshUi.dpF(ctx, 5f)); visibility = View.GONE }
     private val toBottom = FrameLayout(ctx).apply {
-        val s = dp(44)
+        val s = dp(AshTokens.Size.touch)
         background = AshUi.rounded(c.surface, s / 2f, c.line, dp(1)); AshUi.cardShadow(this)
-        isClickable = true; contentDescription = "回到最新消息"; alpha = 0f; visibility = View.GONE
+        isClickable = true; isFocusable = true; contentDescription = "回到最新消息"; alpha = 0f; visibility = View.GONE
+        AshUi.role(this, android.widget.Button::class.java.name)
         addView(View(ctx).apply { background = ctx.getDrawable(R.drawable.ash_ic_down)!!.mutate().apply { setTint(c.text) } }, FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER))
         addView(toBottomDot, FrameLayout.LayoutParams(dp(10), dp(10), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(8), dp(8), 0) })
         setOnClickListener { if (rowsAdapter.itemCount > 0) list.smoothScrollToPosition(rowsAdapter.itemCount - 1) }
@@ -178,7 +179,7 @@ class ChatScreen(
         scrollHost.addView(list, FrameLayout.LayoutParams(-1, -1))
         scrollHost.addView(statusSlot, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         statusSlot.addOnLayoutChangeListener { _, _, t, _, b, _, _, _, _ -> keepClearOfSlot(b - t) }
-        scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), PILL_ROOM) })
+        scrollHost.addView(toBottom, FrameLayout.LayoutParams(dp(AshTokens.Size.touch), dp(AshTokens.Size.touch), Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, dp(14), PILL_ROOM) })
         // The progress pill floats over the bottom of the conversation, in room the list always keeps for it: its coming and
         // going changes no layout, so the conversation never moves for it.
         scrollHost.addView(pillSlot, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(6) })
@@ -387,7 +388,7 @@ class ChatScreen(
                 setHintTextColor(c.text3)
                 background = AshUi.rounded(c.surface, AshUi.dpF(ctx, 20f), c.line, dp(1))
                 setPadding(dp(14), dp(10), dp(14), dp(10))
-                minHeight = dp(44); maxLines = 6
+                minHeight = dp(AshTokens.Size.touch); maxLines = 6
                 imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
@@ -449,10 +450,11 @@ class ChatScreen(
         if (picked.length() == 0) return
         pickedChip.addView(AshUi.text(ctx, "${picked.length()} 个附件", AshType(12.5f, 18f, 400, null), c.youText))
         pickedChip.addView(FrameLayout(ctx).apply {
-            contentDescription = "移除附件"; isClickable = true
+            contentDescription = "移除附件"; isClickable = true; isFocusable = true
+            AshUi.role(this, android.widget.Button::class.java.name)
             addView(View(ctx).apply { background = ctx.getDrawable(R.drawable.ash_ic_x)!!.mutate().apply { setTint(c.youText) } }, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER))
             setOnClickListener { picked = JSONArray(); paintPicked(); keepPicked() }
-        }, LinearLayout.LayoutParams(dp(30), dp(30)))
+        }, LinearLayout.LayoutParams(dp(AshTokens.Size.touch), dp(AshTokens.Size.touch)))
     }
 
     private fun paintTarget() {
@@ -690,7 +692,7 @@ class ChatScreen(
                 gate -> addView(AshUi.hstack(ctx, 8).apply {
                     for (i in 0 until options.length()) options.optJSONObject(i)?.let { o ->
                         val kind = when (o.optString("id")) { "deny", "no" -> AshUi.Kind.NEUTRAL; "always" -> AshUi.Kind.SECONDARY; else -> AshUi.Kind.PRIMARY }
-                        addView(AshUi.button(ctx, o.optString("label"), kind, AshUi.BtnSize.MD) { answer(ask, o.optString("id")) }, LinearLayout.LayoutParams(0, dp(44), 1f))
+                        addView(AshUi.button(ctx, o.optString("label"), kind, AshUi.BtnSize.MD) { answer(ask, o.optString("id")) }, LinearLayout.LayoutParams(0, -2, 1f))
                     }
                 })
                 else -> {
