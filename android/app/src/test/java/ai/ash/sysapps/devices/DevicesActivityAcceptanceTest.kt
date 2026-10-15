@@ -25,6 +25,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -33,6 +34,7 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = Application::class, qualifiers = "w393dp-h851dp-xxhdpi")
 @LooperMode(LooperMode.Mode.PAUSED)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class DevicesActivityAcceptanceTest {
     class DeviceScreen : DevicesActivity() {
         data class Read(val to: String, val word: String, val body: JSONObject, val done: (JSONObject?, HumanPort.Failure?) -> Unit)
@@ -48,7 +50,7 @@ class DevicesActivityAcceptanceTest {
     }
     private fun screen(arg: String): DeviceScreen {
         val controller = Robolectric.buildActivity(DeviceScreen::class.java,
-            Intent().putExtra(SystemAppActivity.EXTRA_ARG, arg)).create()
+            Intent().putExtra(SystemAppActivity.EXTRA_ARG, arg)).create().visible()
         val screen = controller.get()
         // Exercise the production route handler and View tree without starting the real shared link subscription.
         DevicesActivity::class.java.getDeclaredField("active").apply { isAccessible = true }.setBoolean(screen, true)
@@ -75,6 +77,9 @@ class DevicesActivityAcceptanceTest {
         view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, width, height)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); view.draw(Canvas(bitmap))
+        val colors = HashSet<Int>()
+        for (y in 0 until height step 7) for (x in 0 until width step 7) colors += bitmap.getPixel(x, y)
+        assertTrue("The actual Activity screenshot must contain rendered content, not a solid background", colors.size > 10)
         val dir = File("/data/atoll/tmp/devices-acceptance").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
     }
@@ -159,6 +164,7 @@ class DevicesActivityAcceptanceTest {
         assertFalse(activity.requests.any { it.word == "revoke" })
         activity.button("撤销设备").performClick()
         ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
         val revoke = activity.take("revoke"); assertEquals("device:b", revoke.body.optString("device"))
         revoke.done(JSONObject().put("revoked", true), null)
         assertFalse(activity.button("保存名称").isEnabled); assertFalse(activity.access("文件和命令").isEnabled)
@@ -176,9 +182,11 @@ class DevicesActivityAcceptanceTest {
         activity.answer("pair_start", JSONObject().put("pair_id", "pair-a").put("command", "TEST-ONE-TIME-COMMAND").put("expires_at", System.currentTimeMillis() + 60_000))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "waiting"))
         assertTrue(activity.texts().contains("TEST-ONE-TIME-COMMAND"))
+        activity.capture("pairing-install-command")
         activity.event("pair.changed", JSONObject().put("pair_id", "pair-a").put("state", "requested"))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "requested").put("name", "书房电脑"))
         assertTrue(activity.texts().any { it.contains("书房电脑 想连上来") })
+        activity.capture("pairing-confirm-abilities")
         activity.access("文件和命令").performClick(); activity.button("批准连接").performClick()
         val approve = activity.take("pair_approve"); assertEquals("pair-a", approve.body.optString("pair_id")); assertTrue(approve.body.getBoolean("body"))
         assertFalse(activity.button("批准连接").isEnabled)
@@ -188,6 +196,7 @@ class DevicesActivityAcceptanceTest {
         activity.event("pair.changed", JSONObject().put("pair_id", "pair-a").put("state", "connected"))
         activity.answer("pair_status", JSONObject().put("pair_id", "pair-a").put("state", "connected").put("device", "device:a"))
         assertTrue(activity.texts().contains("已接好，可在设备详情中查看它的能力。"))
+        activity.capture("pairing-connected")
         activity.button("查看设备").performClick(); flushDisk()
         assertTrue(activity.texts().contains("Alpha")); assertTrue(activity.texts().any { it.contains("屏幕") })
     }
