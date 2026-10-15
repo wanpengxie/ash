@@ -13,7 +13,9 @@ owner when the app was installed). Without `app` the card is the agent's: it can
 phone itself. An app may change its own cards (`card.update`), as an app refreshes its home-screen cards.
 
 `temporary_app: true` says the app exists only for this card (written by the agent with `build-app` for it): it is removed
-when all its cards are closed, unless the owner keeps it (「存成应用」).
+when all its cards are closed, unless the owner keeps it (「存成应用」). The hub takes it only for an app an agent wrote (its
+folder is the agent's own) that no lasting card uses; for any other app (the owner's, a built-in one, one kept) it is ignored
+with a problem, so a card never puts to sleep or removes an app the owner relies on.
 
 ## 2. Actions
 
@@ -28,7 +30,9 @@ when all its cards are closed, unless the owner keeps it (「存成应用」).
 `body` and `text` may bind the card's values (`{path}`, `formatString`); they are resolved on the hub from the values
 the owner's screen sends with the press. A call that is not a read goes through the gate like an agent's call: the owner
 pressed the button, so the app may be asked about, with the approval card on his screen (the call waits for his answer, then
-runs or is refused). Nothing else is opened: no word the app was not granted, no way around the gate.
+runs or is refused). That holds for the owner's press only (`service:cards/act` from his screen): an agent may press a button
+too, and then the call is the agent's own (its caller, its rules); nobody borrows the app's grants or the owner's presence.
+Nothing else is opened: no word the app was not granted, no way around the gate.
 
 **A button's life** (both renderers): pressed → 「处理中」 and disabled at once; the hub keeps one run per card and
 component (pressing again while it runs does nothing); the outcome is written on the card itself (`actions.<component>:
@@ -42,7 +46,8 @@ retryable; the phone gives a short haptic tick.
 - `{event: "<member>/<event>", pick?, keep?}`: each such event the hub sees (throttled to one per 2 s).
 
 `pick` is a JSON pointer into the result or the event body; `keep: n` appends to a list of the last n values (a live chart:
-`Chart` series `values` may be `{path}`). Sources need an app that was granted the word. They run only while the card is
+`Chart` series `values` may be `{path}`). Sources need an app that was granted the word; a polled source must be a read (its effect, from
+`service:directory`), and an event source needs the app approved to hear that event (its `listens`). They run only while the card is
 active; each change re-draws the card on the hub and is pushed to the screens as one present frame
 (`{surface: "chat", op: "card.patch", body: {card}}`), never written to the ledger. The card shows 「HH:MM 更新」.
 
@@ -64,7 +69,8 @@ the sources run again, the card is refreshed.
 
 **Only the owner keeps a card running.** A pinned card (「常驻」) does not go idle, dormant or closed by time and keeps its
 sources running off screen, but it still counts against the limits (when they are exceeded it is the last to sleep).
-The owner pins with the switch on the card or on the 「卡片」 page; an agent can only suggest it: its
+The owner pins with the switch on the card or on the 「卡片」 page; no other app can pin; `sleep` refuses a pinned card (unpinning
+is `pin`); `apps.sleep` stops no app behind the owner (apps cannot call it; for an agent the gate decides). An agent can only suggest pinning: its
 `service:cards/pin` (or the page app's `cards.pin`) always puts an approval card in front of the owner (the gate's
 always-ask list, no 「以后都可以」). `ttl_min` only makes a card stop sooner (at most the default day); longer is pinning.
 
@@ -83,7 +89,8 @@ close / pin — an app like any other, using the same words.
 
 `Html` is an app page set into the conversation: besides `ash.send(action, context)` it has `ash.call(member, word, body)`,
 `ash.ask(text)` and `ash.tell(text)`, each sent as `service:cards/act {request}` and run exactly like a button of the card
-(as the card's app, through the gate); the answer comes back to the page.
+(as the card's app, through the gate); the answer comes back to the page. Like an app's page, `ash.call` reaches its own app's
+words only (`app:<id>/…`); what else it needs, that app's server asks for within its grants.
 
 ## 6. Not here
 

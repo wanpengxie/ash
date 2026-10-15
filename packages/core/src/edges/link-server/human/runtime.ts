@@ -54,6 +54,11 @@ export interface CardRuntimeDeps {
   settings(): Record<string, unknown>;
   now(): number;
   log(message: string, error?: unknown): void;
+  /**
+   * Whether app [app] may hear event [word] (the events the owner approved it to listen to): an event source of its card is
+   * the app listening, so it needs the same grant. Not given: no card hears any event.
+   */
+  hears?(app: string, word: string): boolean;
   /** No timers (tests drive `tick`). */
   manual?: boolean;
 }
@@ -82,6 +87,8 @@ export class CardRuntime {
   /** The event sources of the active cards, rebuilt when the lifecycle is (every hub event is matched against these only). */
   private listening: { card: string; path: string; src: Extract<CardSource, { event: string }>; member: string; word: string }[] = [];
   private readonly unsubscribe: () => void;
+  /** Whether a word is a read (service:directory), by member/word: a polled source may only read. */
+  private readonly reads = new Map<string, boolean>();
 
   constructor(private readonly d: CardRuntimeDeps) {
     d.db.exec(SCHEMA);
@@ -124,6 +131,18 @@ export class CardRuntime {
     this.save({ id: row.id, app: o.app ?? null, temporary: !!o.app && o.temporary === true, life: "active", pinned: false, last_seen: now, last_used: now,
       expires_at: ttl ? now + ttl * 60_000 : null, actions: {}, fed_at: null, kept: false });
     this.reconcile();
+  }
+
+  /**
+   * May [app] be a card's temporary app (removed with its cards)? Only an app an agent wrote (its folder is the agent's own,
+   * so removing it takes nothing the agent could not delete itself), and only one that no lasting card uses: an app of the
+   * owner's, a built-in one, or one kept with 「存成应用」 is never removed or put to sleep for a card.
+   */
+  async mayBeTemporary(app: string): Promise<boolean> {
+    const lasting = this.d.db.prepare("SELECT count(*) AS n FROM card_runtime WHERE app=? AND (temporary=0 OR kept=1)").get(app) as { n: number };
+    if (Number(lasting.n) > 0) return false;
+    const reply = await this.call("service:apps", "apps.describe", { id: app });
+    return reply.ok && (reply.result?.data as { origin?: unknown } | undefined)?.origin === "agent";
   }
 
   /** What the screens draw of a card besides its plan: whose app, its lifecycle and the state of its buttons. */
@@ -200,8 +219,12 @@ export class CardRuntime {
     }
     // Sources run for the active cards only; a temporary app whose cards all sleep sleeps too.
     for (const r of this.all()) this.schedule(r);
-    this.listening = this.all().filter((r) => r.life === "active").flatMap((r) => Object.entries(this.sourcesOf(r)).flatMap(([path, src]) =>
-      "event" in src ? [{ card: r.id, path, src, member: src.event.slice(0, src.event.indexOf("/")), word: src.event.slice(src.event.indexOf("/") + 1) }] : []));
+    // An event source is the card's app listening: only to what the owner approved it to hear.
+    this.listening = this.all().filter((r) => r.life === "active").flatMap((r) => Object.entries(this.sourcesOf(r)).flatMap(([path, src]) => {
+      if (!("event" in src)) return [];
+      const word = src.event.slice(src.event.indexOf("/") + 1);
+      return r.app && this.d.hears?.(r.app, word) ? [{ card: r.id, path, src, member: src.event.slice(0, src.event.indexOf("/")), word }] : [];
+    }));
     for (const id of [...this.timers.keys()]) { const card = id.slice(0, id.indexOf("\0")); const r = this.run(card); if (!r || r.life !== "active") { clearInterval(this.timers.get(id)); this.timers.delete(id); } }
     for (const app of new Set(this.all().filter((r) => r.temporary && !r.kept && r.app).map((r) => r.app!))) {
       if (this.all().filter((r) => r.app === app).every((r) => r.life === "dormant")) void this.call("service:apps", "apps.sleep", { id: app });
@@ -219,6 +242,7 @@ export class CardRuntime {
     r.actions = Object.fromEntries(Object.entries(r.actions).filter(([, a]) => a.state !== "running"));
     this.save(r);
     for (const id of [...this.timers.keys()]) if (id.startsWith(`${r.id}\0`)) { clearInterval(this.timers.get(id)); this.timers.delete(id); }
+    for (const id of [...this.lastEvent.keys()]) if (id.startsWith(`${r.id}\0`)) this.lastEvent.delete(id);
     const row = this.d.cards.get(r.id);
     if (row && row.state === "open") this.d.cards.setState(r.id, "closed");
     // A temporary app goes when its cards are all closed (unless the owner kept it).
@@ -264,9 +288,23 @@ export class CardRuntime {
   private async read(card: string, path: string, src: Extract<CardSource, { word: string }>): Promise<void> {
     const r = this.run(card);
     if (!r?.app || r.life !== "active") return;
+    // A source reads: a word that changes something runs only from a button the owner presses.
+    if (!(await this.isRead(src.member, src.word))) { this.d.log(`card ${card} source ${path}: ${src.member}/${src.word} is not a read; not run`); return; }
     const reply = await this.d.router.send({ to: src.member, kind: "request", word: src.word, body: src.body ?? {} }, { member: `app:${r.app}`, via: "app", local: true });
     if (!reply.ok) { this.d.log(`card ${card} source ${path}: ${reply.error.code}`); return; }
     this.feed(card, path, src, reply.result?.data);
+  }
+
+  private async isRead(member: string, word: string): Promise<boolean> {
+    const key = `${member}/${word}`;
+    const known = this.reads.get(key);
+    if (known !== undefined) return known;
+    const reply = await this.call("service:directory", "describe", { member, word });
+    const words = reply.ok ? (reply.result?.data as { words?: { word?: unknown; effect?: unknown }[] } | undefined)?.words : undefined;
+    const found = words?.find((w) => w.word === word);
+    if (!found) return false; // not there (yet): asked again next time
+    this.reads.set(key, found.effect === "read");
+    return found.effect === "read";
   }
 
   private onEvent(m: Message): void {
@@ -312,7 +350,7 @@ export class CardRuntime {
   }
 
   /** service:cards/act: press [component] of [card] with the values on the screen now. */
-  async act(body: { card: string; component: string; data?: Record<string, unknown>; request?: Record<string, unknown> }): Promise<WordResult> {
+  async act(body: { card: string; component: string; data?: Record<string, unknown>; request?: Record<string, unknown> }, by?: Caller): Promise<WordResult> {
     let row = this.d.cards.get(body.card);
     if (!row) throw new WordError("not_found", `no card ${body.card}`);
     let r = this.run(row.id);
@@ -320,21 +358,25 @@ export class CardRuntime {
     if (body.data) { try { row = this.d.cards.draft(row, body.data); } catch (error) { throw error instanceof WordError ? error : new WordError("bad_request", "the card's values cannot be read"); } }
     const node = row.plan.components.find((c) => c.id === body.component);
     if (!node) throw new WordError("not_found", `the card has no component ${body.component}`);
-    const action = node.component === "Html" && body.request ? requestAction(body.request) : node.action;
+    const fromPage = node.component === "Html" && !!body.request;
+    const action = fromPage ? requestAction(body.request!) : node.action;
     if (!action) throw new WordError("bad_request", `${body.component} has no action`);
+    // A mini app is a page of the card's app: like an app's page, it calls its own app's words only.
+    if (fromPage && "call" in action && action.call.member !== `app:${r?.app ?? ""}`)
+      return { data: { state: "failed", text: r?.app ? "卡里的小页面只能调用它所属应用自己的词。" : "这张卡没有后端应用，小页面调不了中枢的能力。" } };
     const key = `${row.id}\0${body.component}`;
     if (this.running.has(key)) return { data: { state: "running", text: "处理中" } };
     if (r) { r.last_used = this.d.now(); const was = r.life; r.life = "active"; this.save(r); if (was === "dormant") await this.wakeApp(r); }
     this.running.add(key);
     this.setAction(row.id, body.component, { state: "running", text: "处理中…", at: this.d.now() });
     try {
-      const out = await this.run_(row, r, action, node);
+      const out = await this.run_(row, r, action, node, by);
       this.setAction(row.id, body.component, { state: out.ok ? "ok" : "failed", text: out.text, at: this.d.now() });
       return { data: { state: out.ok ? "ok" : "failed", text: out.text, ...(out.result !== undefined ? { result: out.result } : {}) } };
     } finally { this.running.delete(key); }
   }
 
-  private async run_(row: CardRow, r: Run | null, action: CardAction, node: WidgetComponent): Promise<{ ok: boolean; text: string; result?: unknown }> {
+  private async run_(row: CardRow, r: Run | null, action: CardAction, node: WidgetComponent, by?: Caller): Promise<{ ok: boolean; text: string; result?: unknown }> {
     const within = <T>(p: Promise<T>, s: number): Promise<T | "timeout"> => new Promise((resolve) => {
       const t = setTimeout(() => resolve("timeout"), s * 1000); t.unref?.();
       p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve("timeout"); });
@@ -347,7 +389,10 @@ export class CardRuntime {
     if ("call" in action) {
       if (!r?.app) return { ok: false, text: "这张卡没有后端应用，按钮调不了中枢的能力。" };
       const c = action.call;
-      const caller: Caller = { member: `app:${r.app}`, via: "app", local: true, card: row.id };
+      // Pressed by the owner on his screen: the card's app calls, and the gate may ask him (he is there). Pressed by anyone
+      // else (an agent): it is that caller's own call, judged as theirs; nobody borrows the app's grants or the owner's presence.
+      const caller: Caller | undefined = by?.via === "human" ? { member: `app:${r.app}`, via: "app", local: true, card: row.id } : by;
+      if (!caller) return { ok: false, text: "不知道是谁按的，没有做。" };
       const reply = await within(this.d.router.send({ to: c.member, kind: "request", word: c.word, body: c.body }, caller), c.timeout_s ?? CALL_TIMEOUT_S);
       if (reply === "timeout") return { ok: false, text: failure("timeout", "") };
       if (!reply.ok) return { ok: false, text: failure(reply.error.code, reply.error.message) };
@@ -400,7 +445,7 @@ export class CardRuntime {
   readonly member: Member = {
     id: CARDS_ID, kind: "service", name: "Cards",
     words: (): WordContract[] => wordsOf(CARDS_ID),
-    handle: async (msg: Message, _ctx: HandleContext): Promise<WordResult> => {
+    handle: async (msg: Message, ctx: HandleContext): Promise<WordResult> => {
       const body = (msg.body ?? {}) as Record<string, any>;
       switch (msg.word) {
         case "list": {
@@ -411,7 +456,9 @@ export class CardRuntime {
         case "describe": { const r = this.need(body.id); return { data: { card: this.info(r), actions: r.actions } }; }
         case "sleep": {
           const r = this.need(body.id);
-          if (r.life !== "closed") { r.life = "dormant"; r.pinned = false; r.last_seen = 0; r.last_used = 0; this.save(r); this.reconcile(); this.push(r.id); }
+          // Unpinning is the owner's decision (pin, which always asks him when an agent calls it): sleep does not do it behind the gate.
+          if (r.pinned) throw new WordError("conflict", `card ${r.id} is pinned by the owner: it keeps running`, { recovery_hint: "Unpin it first with pin {id, pinned: false} (the owner is asked), then put it to sleep." });
+          if (r.life !== "closed") { r.life = "dormant"; r.last_seen = 0; r.last_used = 0; this.save(r); this.reconcile(); this.push(r.id); }
           return { data: { life: this.run(r.id)!.life } };
         }
         case "wake": {
@@ -420,9 +467,15 @@ export class CardRuntime {
           return { data: { life: this.run(r.id)!.life } };
         }
         case "close": return { data: { closed: this.closeCard(String(body.id)) } };
-        case "pin": { const r = this.need(body.id); r.pinned = body.pinned === true; r.last_used = this.d.now(); this.save(r); this.reconcile(); this.push(r.id); return { data: { pinned: r.pinned } }; }
+        case "pin": {
+          // Keeping a card running is the owner's: he pins (his screen, or his 「卡片」 page), or he was asked (an agent's call, or a
+          // card's button: the gate always asks for this word). Any other app cannot pin behind him.
+          const c = ctx?.caller;
+          if (c?.via === "app" && c.member !== "app:cards" && !c.card) throw new WordError("forbidden", "only the owner keeps a card running", { recovery_hint: "Suggest it to the owner; he pins it on the card or on the 「卡片」 page." });
+          const r = this.need(body.id); r.pinned = body.pinned === true; r.last_used = this.d.now(); this.save(r); this.reconcile(); this.push(r.id); return { data: { pinned: r.pinned } };
+        }
         case "keep": { const r = this.need(body.id); r.kept = true; this.save(r); this.push(r.id); return { data: { kept: true, ...(r.app ? { app: r.app } : {}) } }; }
-        case "act": return this.act(body as Parameters<CardRuntime["act"]>[0]);
+        case "act": return this.act(body as Parameters<CardRuntime["act"]>[0], ctx?.caller);
         case "seen": return { data: { active: this.seen(Array.isArray(body.cards) ? body.cards.filter((x: unknown): x is string => typeof x === "string") : []) } };
         default: throw new WordError("not_found", `${CARDS_ID} has no word ${msg.word}`);
       }

@@ -33,6 +33,9 @@ test("a card of an app: live data from the app, a button calling its word, idle 
   // This hub's body is the machine's own folder (native), where the app's folder is not at /root/apps: the server reads its cwd.
   const edited = await owner.call("body:main", "workspace.edit", { path: "/root/apps/tally/server.mjs", edits: [{ oldText: "process.env.ASH_APP_DIR || process.cwd()", newText: "process.cwd()" }] });
   assert.ok(edited.ok, JSON.stringify(edited));
+  // Written by the agent (as with build-app): only such an app may be a card's temporary app (removed with its cards).
+  const byAgent = await owner.call("body:main", "workspace.edit", { path: "/root/apps/tally/app.json", edits: [{ oldText: '"publisher": "person:owner"', newText: '"publisher": "agent:main"' }] });
+  assert.ok(byAgent.ok, JSON.stringify(byAgent));
   const installed = await owner.call("service:apps", "apps.install", { id: "tally" });
   assert.ok(installed.ok, JSON.stringify(installed));
   assert.ok(dataOf(installed).running, "the app runs");

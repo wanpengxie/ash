@@ -352,7 +352,7 @@ add("service:cards", "list", "request", obj({ life: cardLife }), obj({ cards: ar
 add("service:cards", "describe", "request", cardRef, obj({ card: cardRunInfo, actions: obj({}, [], true) }, ["card"]),
   { callers: OWNER_AGENT, label: "在看一张卡片", description: "One card's runtime: its state, sources, app and the state of its buttons." });
 add("service:cards", "sleep", "request", cardRef, obj({ life: cardLife }, ["life"]),
-  { effect: "write", label: "在让卡片休眠", description: "Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it." });
+  { effect: "write", label: "在让卡片休眠", description: "Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it. A card the owner pinned is refused (conflict): unpin it with pin first." });
 add("service:cards", "wake", "request", cardRef, obj({ life: cardLife }, ["life"]),
   { effect: "write", label: "在唤醒卡片", description: "Wake a sleeping card: its app is started, its live data runs again and it is drawn fresh." });
 add("service:cards", "close", "request", cardRef, obj({ closed: bool }, ["closed"]),
@@ -364,7 +364,7 @@ add("service:cards", "keep", "request", cardRef, obj({ app: str, kept: bool }, [
 add("service:cards", "act", "request", obj({ card: nonempty, component: nonempty, data: obj({}, [], true),
   request: { type: "object", description: "only from a card's mini app: {call: {member, word, body}} | {ask: {text}} | {tell: {text}}" } }, ["card", "component"]),
   obj({ state: choice("ok", "failed", "running"), result: any, text: str }, ["state"]),
-  { callers: OWNER_AGENT, effect: "act", timeout_ms: 660_000, label: "在按卡片上的按钮", description: "Press a button of a card (its component id) with the values on the card now: its call runs as the card's app through the gate, its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here." });
+  { callers: OWNER_AGENT, effect: "act", timeout_ms: 660_000, label: "在按卡片上的按钮", description: "Press a button of a card (its component id) with the values on the card now: pressed by the owner, its call runs as the card's app through the gate (which may ask him); pressed by an agent, the call is the agent's own, judged as any of its calls. Its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here, and may call only its own app's words." });
 add("service:cards", "seen", "request", obj({ cards: { type: "array", items: nonempty, maxItems: 50 } }, ["cards"]), obj({ active: strings }, ["active"]),
   { callers: OWNER_AGENT, label: "在记下看到的卡片", description: "The card ids on a screen of the owner now (the conversation reports them when it stops scrolling): those cards are active, the others go idle in time. Not recorded." });
 // ===================================================================================================================
@@ -887,7 +887,7 @@ add("service:apps", "apps.refresh", "request", empty, obj({ apps: array(appInfo)
 add("service:apps", "apps.badge", "request", obj({ tone: choice("ok", "warn", "err", "paused") }, ["tone"]), obj({ tone: choice("ok", "warn", "err", "paused") }, ["tone"]),
   { callers: ["app"], effect: "write", label: "在亮应用的小点", description: "An app says how it is, for the dot on its icon in the app grid: ok (no dot), warn, err or paused. Only about itself; it shows while the app runs and is asked again by the app when it starts." });
 add("service:apps", "apps.sleep", "request", obj({ id: appId }, ["id"]), obj({ id: appId, sleeping: bool }, ["id", "sleeping"]),
-  { effect: "write", label: "在让应用休眠", description: "Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again. service:cards does this for an app whose cards are all asleep." });
+  { callers: OWNER_AGENT, effect: "write", risk: "structure", label: "在让应用休眠", description: "Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again; while it sleeps it hears no events (an alert it would raise does not come), so the gate decides whether the owner is asked. service:cards does this for a temporary app whose cards are all asleep." });
 add("service:apps", "apps.wake", "request", obj({ id: appId }, ["id"]), obj({ id: appId, running: bool }, ["id", "running"]),
   { effect: "write", label: "在唤醒应用", description: "Start an app put to sleep with apps.sleep (an app that is turned off stays off: apps.enable)." });
 add("service:apps", "apps.restart", "request", obj({ id: appId }, ["id"]), obj({ id: appId, running: bool, problems: array(obj({}, [], true)) }, ["id", "running"], true),

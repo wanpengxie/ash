@@ -78,7 +78,8 @@
     const seen = when(Math.max(Number(card.last_seen) || 0, Number(card.last_used) || 0));
     const meta = [whose(card), sources ? `实时数据 ${sources} 项` : "", seen ? `上次看到 ${seen}` : ""].filter(Boolean).join(" · ");
     const acts = card.life === "closed" ? [] : [
-      card.life === "dormant" ? button("唤醒", "btn-secondary", () => act("cards.wake", { id: card.id }, "已唤醒")) : button("休眠", "btn-neutral", () => act("cards.sleep", { id: card.id }, "已休眠")),
+      // A pinned card keeps running: unpin it first (the button beside), then it can sleep.
+      ...(card.life === "dormant" ? [button("唤醒", "btn-secondary", () => act("cards.wake", { id: card.id }, "已唤醒"))] : card.pinned ? [] : [button("休眠", "btn-neutral", () => act("cards.sleep", { id: card.id }, "已休眠"))]),
       button(card.pinned ? "取消固定" : "固定", "btn-neutral", () => act("cards.pin", { id: card.id, pinned: !card.pinned }, card.pinned ? "已取消固定" : "已固定，它会一直运行")),
       button("收起", "btn-danger", () => act("cards.close", { id: card.id }, "已收起")),
     ];

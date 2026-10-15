@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "0c31b4a0b8cec48eed3ced6faa9389ec1a16a37c0d2a09299aa50fbacad318b0",
+ "hash": "31b4125b0299b54272c742012b0cd6054d9799a616d11e8f663f4d9481588721",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -9432,7 +9432,7 @@
    "word": "apps.sleep",
    "kind": "request",
    "direction": "in",
-   "description": "Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again. service:cards does this for an app whose cards are all asleep.",
+   "description": "Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again; while it sleeps it hears no events (an alert it would raise does not come), so the gate decides whether the owner is asked. service:cards does this for a temporary app whose cards are all asleep.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -9464,11 +9464,10 @@
     "additionalProperties": false
    },
    "effect": "write",
-   "risk": "none",
+   "risk": "structure",
    "callers": [
     "owner",
-    "agent",
-    "app"
+    "agent"
    ],
    "label": {
     "doing": "在让应用休眠"
@@ -23389,7 +23388,7 @@
    "word": "sleep",
    "kind": "request",
    "direction": "in",
-   "description": "Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it.",
+   "description": "Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it. A card the owner pinned is refused (conflict): unpin it with pin first.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -23617,7 +23616,7 @@
    "word": "act",
    "kind": "request",
    "direction": "in",
-   "description": "Press a button of a card (its component id) with the values on the card now: its call runs as the card's app through the gate, its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here.",
+   "description": "Press a button of a card (its component id) with the values on the card now: pressed by the owner, its call runs as the card's app through the gate (which may ask him); pressed by an agent, the call is the agent's own, judged as any of its calls. Its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here, and may call only its own app's words.",
    "input_schema": {
     "type": "object",
     "properties": {

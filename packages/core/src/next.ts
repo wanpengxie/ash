@@ -304,6 +304,7 @@ export async function startHub(opts: HubOptions): Promise<Hub> {
   const human = late.human = createHuman({
     router, ledger, settings: () => admin.settings(), primary: () => agents.primary(), now, log,
     summarize: createSummarizer({ llm }), vaultHas: (ref) => vault.list().some((entry) => entry.ref === ref),
+    appHears: (app, word) => late.apps?.runtime.hears(app, word) ?? false,
   });
   const hostService = createHostService({ client: host, router, registry, virtual, vault, recordings: { hostDir: join(spec.dirs.home, "recordings"), bodyDir: "/root/work/recordings" }, onStop: (deadline) => stop(deadline), onNetwork: (next) => { network = next; body.setNetwork(next); }, log });
   link.onChannel("human", human.attach);

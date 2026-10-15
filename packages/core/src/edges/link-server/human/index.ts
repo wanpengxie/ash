@@ -55,6 +55,8 @@ export interface HumanDeps {
   now?: () => number;
   /** Is this vault entry set? A form's password fields must be in the vault when the owner answers it. */
   vaultHas?: (ref: string) => boolean;
+  /** Whether app [app] was approved to hear event [word] (its card's event sources); not given: no card hears events. */
+  appHears?(app: string, word: string): boolean;
   /** IANA zone for quiet hours; default the host's local time. */
   timeZone?: string;
   log?: (message: string, error?: unknown) => void;
@@ -122,7 +124,7 @@ export function createHuman(deps: HumanDeps): HumanEdge {
   const cards = new Cards(db, now);
   // The conversation's live cards: each change goes to every screen that shows the conversation, as one present frame.
   const runtime = new CardRuntime({
-    db, cards, router: deps.router, settings: deps.settings, now, log,
+    db, cards, router: deps.router, settings: deps.settings, now, log, ...(deps.appHears ? { hears: deps.appHears } : {}),
     viewing: () => clients.all().some((c) => c.visible),
     push: (card) => { for (const c of clients.withSurface("chat")) void presenter.send(c, { surface: "chat", op: "card.patch", body: { card } as never }); },
   });
@@ -185,7 +187,10 @@ export function createHuman(deps: HumanDeps): HumanEdge {
           const row = cards.put({ id: typeof body.id === "string" ? body.id : msg.id, message: msg.id, owner: msg.from, a2ui: body.a2ui, ...(typeof body.text === "string" ? { text: body.text } : {}) });
           // An app showing its own card is its app; an agent names the app the card belongs to.
           const app = typeof body.app === "string" ? body.app : msg.from.startsWith("app:") ? msg.from.slice(4) : undefined;
-          runtime.register(row, { ...(app ? { app } : {}), temporary: body.temporary_app === true, ...(typeof body.ttl_min === "number" ? { ttl_min: body.ttl_min } : {}) });
+          // Only an app written for this card may go with it (removed when its cards close): never the owner's own apps.
+          const temporary = !!app && body.temporary_app === true && await runtime.mayBeTemporary(app);
+          if (app && body.temporary_app === true && !temporary) row.plan.problems.push(`temporary_app: ${app} is not an app written for this card (an agent's new app no lasting card uses), so it stays as it is; drop temporary_app`);
+          runtime.register(row, { ...(app ? { app } : {}), temporary, ...(typeof body.ttl_min === "number" ? { ttl_min: body.ttl_min } : {}) });
           if (!app && Object.keys(row.plan.sources).length) row.plan.problems.push("a2ui.sources need the card's app (show {app}): a card without an app gets no live data");
           void notifier.say({ ...msg, body: { text: row.text } }).catch((error) => log("notification failed", error));
           return { data: { accepted: true, card: row.id, ...(row.plan.problems.length ? { problems: row.plan.problems } : {}), ...(row.plan.hints.length ? { hints: row.plan.hints } : {}) } };

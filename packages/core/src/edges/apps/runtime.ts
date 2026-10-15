@@ -524,6 +524,13 @@ export class AppRuntime {
 
   isSleeping(id: string): boolean { return this.sleeping.has(id); }
 
+  /** Whether app [id] (turned on) may hear event [word]: the events in its app.json the owner approved (exact, or a prefix "x.*"). */
+  hears(id: string, word: string): boolean {
+    const manifest = this.manifest(id);
+    if (!manifest || !this.grants.get(id)?.enabled) return false;
+    return this.approvedListens(id, manifest).some((p) => (p.endsWith("*") ? word.startsWith(p.slice(0, -1)) : p === word));
+  }
+
   async stop(id: string): Promise<void> {
     this.sleeping.delete(id);
     clearTimeout(this.timers.get(id)); this.timers.delete(id);

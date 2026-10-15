@@ -1,6 +1,6 @@
 # 词清单
 
-> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `0c31b4a0b8cec48e`。
+> 由 `tools/gen-words.mjs` 从 `packages/sdk/src/words.ts` 和 `namespaces.ts` 生成，不要手改。词契约 v4，ash-api/3，ASH_SDK 4，内容哈希 `31b4125b0299b542`。
 > 机器可读的完整契约（输入输出 JSON Schema）在 `packages/sdk/schema/words.json`。
 
 表头：调用方 = 契约里的 `callers`（owner 主人、agent、app 应用、kernel 中枢自己）；effect / risk 见 SPEC-01 §6.2；输入里 `*` 是必填。`agent:*` 是每个已声明的 agent，`device:*`、`body:*` 是手和身体上的标准能力，`app:*` 是每个应用。
@@ -205,7 +205,7 @@
 | `apps.revoke` | owner, agent, app | write / structure | - | id*, need | 在收回应用的权限 | Take back one need (need: a member id such as device:<hand_id>, or notify / widgets / card), or every grant when need is left out, which stops the app. Works on an installed app whose folder is gone too. |
 | `apps.refresh` | owner, agent, app | read / none | - | - | 在查找新应用 | Read /root/apps again: new apps appear, removed ones stop. |
 | `apps.badge` | app | write / none | - | tone* | 在亮应用的小点 | An app says how it is, for the dot on its icon in the app grid: ok (no dot), warn, err or paused. Only about itself; it shows while the app runs and is asked again by the app when it starts. |
-| `apps.sleep` | owner, agent, app | write / none | - | id* | 在让应用休眠 | Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again. service:cards does this for an app whose cards are all asleep. |
+| `apps.sleep` | owner, agent | write / structure | - | id* | 在让应用休眠 | Stop an app's server for now without turning the app off: nothing it serves is lost, and the first call to one of its words (or apps.wake) starts it again; while it sleeps it hears no events (an alert it would raise does not come), so the gate decides whether the owner is asked. service:cards does this for a temporary app whose cards are all asleep. |
 | `apps.wake` | owner, agent, app | write / none | - | id* | 在唤醒应用 | Start an app put to sleep with apps.sleep (an app that is turned off stays off: apps.enable). |
 | `apps.restart` | owner, agent, app | act / none | - | id* | 在重启应用 | Restart an installed app's server so edits to its files (server.mjs, tools, app.json cards) take effect. It is checked first as apps.validate does: a failing app is not restarted and the problems come back (error.detail.problems). If app.json's needs changed, use apps.install instead (the owner approves them). Pages need no restart. |
 | `apps.logs` | owner, agent, app | read / none | - | id*, lines | 在看应用日志 | An app's recent output: what its server wrote to stderr, protocol errors (anything but MCP on stdout), and Ash's notes on starts, exits and restarts (newest last, default 100 lines, at most 400). last_exit says how the server last ended (exit code or signal); error is why it is not running, if Ash knows. |
@@ -503,11 +503,11 @@
 |---|---|---|---|---|---|---|
 | `list` | owner, agent, app | read / none | - | life | 在看运行中的卡片 | The cards in the conversation that are not closed (or those in one state): whose they are, which app runs them, their live sources, whether they are active, idle, dormant or pinned, when they were last seen and used; and the limits (how many may be active, how many sources, how many temporary apps). |
 | `describe` | owner, agent | read / none | - | id* | 在看一张卡片 | One card's runtime: its state, sources, app and the state of its buttons. |
-| `sleep` | owner, agent, app | write / none | - | id* | 在让卡片休眠 | Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it. |
+| `sleep` | owner, agent, app | write / none | - | id* | 在让卡片休眠 | Put a card to sleep now: its live data stops and is kept as it is; a temporary app whose cards all sleep is put to sleep too. Seeing or using the card wakes it. A card the owner pinned is refused (conflict): unpin it with pin first. |
 | `wake` | owner, agent, app | write / none | - | id* | 在唤醒卡片 | Wake a sleeping card: its app is started, its live data runs again and it is drawn fresh. |
 | `close` | owner, agent, app | write / none | - | id* | 在收起卡片 | Close a card (the same as person:owner/card.close): a static picture of it stays in the conversation. |
 | `pin` | owner, agent, app | write / none | - | id*, pinned* | 在固定卡片 | Keep a card running off screen (a delivery being tracked): it does not go idle, dormant or closed by time, though the limits on running cards still apply; unpin to let it stop again. Only the owner decides: an agent's call puts a card in front of him every time, so say why in purpose. |
 | `keep` | owner, agent | write / none | - | id* | 在保留卡片的应用 | The card's temporary app becomes a lasting one: it is no longer removed when its cards are closed (「存成应用」). |
-| `act` | owner, agent | act / none | timeout 660s | card*, component*, data, request | 在按卡片上的按钮 | Press a button of a card (its component id) with the values on the card now: its call runs as the card's app through the gate, its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here. |
+| `act` | owner, agent | act / none | timeout 660s | card*, component*, data, request | 在按卡片上的按钮 | Press a button of a card (its component id) with the values on the card now: pressed by the owner, its call runs as the card's app through the gate (which may ask him); pressed by an agent, the call is the agent's own, judged as any of its calls. Its ask or tell goes to the agent; the outcome is written on the card. A mini app on the card sends its own request here, and may call only its own app's words. |
 | `seen` | owner, agent | read / none | - | cards* | 在记下看到的卡片 | The card ids on a screen of the owner now (the conversation reports them when it stops scrolling): those cards are active, the others go idle in time. Not recorded. |
 

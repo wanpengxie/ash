@@ -224,7 +224,7 @@
   service:apps/apps.revoke  owner,agent,app
   service:apps/apps.refresh  owner,agent,app
 * service:apps/apps.badge  app
-  service:apps/apps.sleep  owner,agent,app
+* service:apps/apps.sleep  owner,agent
   service:apps/apps.wake  owner,agent,app
   service:apps/apps.restart  owner,agent,app
   service:apps/apps.logs  owner,agent,app
