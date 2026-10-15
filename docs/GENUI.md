@@ -19,6 +19,13 @@ The checker that `service:widgets` used moves to the sdk (both the human edge an
 | Table `{columns, rows}` | no | yes | Ash extension; rows may be a `{path}` |
 | Html `{html, height}` | no | yes | the sandboxed mini app (§5) |
 
+Containers (Row, Column, List, Grid) take `gap` in the conversation (dp between children; there is no default spacing),
+and a Chart series takes `min` (the bottom of its axis, so a price or a weight is not a flat line). The conversation draws
+icons as single-colour line icons from Ash's icon set and uses the app's design tokens and type sizes; the client draws the
+card's frame. A few obvious slips are read the way they were meant and noted (a ChoicePicker value given as text, "true"
+for a switch, a number written as text). Every card answer also carries `hints`: cheap, certain design checks (more than
+two accents, more than one main title, icon or primary button, hex colours, a frame drawn on the root, emoji in texts).
+
 Every component keeps its schema in one table (`FIELDS`); a widget refuses what RemoteViews cannot draw with the reason, as
 before. The conversation checks **leniently**: an unknown component or an invalid property is dropped (a dropped child
 leaves a gap, not a broken card) and each drop is a diagnostic returned to the agent (`problems`). A card whose root
@@ -34,6 +41,8 @@ resolved), plus for the conversation: `data` (the card's data model), `binds` (w
 - `person:owner/card.update {id, a2ui?, data?}` — replace the card's layout and/or merge into its data (JSON pointer → value). The card keeps its place in the conversation. Only its creator may update it. This is how a follow-up changes the card instead of sending a new one, and how a long card fills in step by step.
 - `person:owner/card.draft {card, data}` — owner only, from the owner's screen: what the owner has typed or chosen so far. The hub keeps it with the card (a refresh shows it again) and, for a reactive card, answers with the card redrawn. Not recorded (it changes nothing anyone acts on; the action that follows carries the values).
 - `person:owner/form {title, why?, schema, values?, secret?}` — a card with inputs that waits until the owner submits or cancels (§6).
+- `person:owner/card.preview {id, theme?}` — the card as the phone draws it, as a picture the agent can see (a present
+  frame `{surface: "chat", op: "card.preview"}` to a channel that shows the conversation; the web page cannot draw one).
 
 ## 3. In the conversation
 
@@ -56,6 +65,10 @@ item a client cannot draw shows its `text`.
   reads it as `[card <id>, action <name>] {"…": …}`. The button does only that; what happens is the agent's (interactive
   card rule). The card's state is saved with it.
 - Refresh: the window carries the saved data; a client also keeps unsent edits in memory.
+- Taste: every card but a form has a 👍 / 👎 footer. A tap is the owner's `say` to the creator with
+  `card: {id, action: "feedback", context: {feedback}}`; the agent reads `[card <id>, feedback up] 👍`, the choice is kept with
+  the card (`feedback` in the item), and the skill `genui` has the agent keep the owner's taste in `design/TASTE.md` and
+  liked cards in `design/gallery/` in its work directory.
 
 ## 5. The escape hatch: a sandboxed mini app
 
