@@ -8,6 +8,7 @@ import type { Reply } from "../../../../sdk/src/message";
 import { OWNER_ID } from "../../../../sdk/src/ids";
 import { SECRET_KEYWORD, SENSITIVE_KEYWORD, type JsonSchema, type SensitiveMask } from "../../../../sdk/src/word";
 import type { Caller, Message, Redact, WordContract } from "../types";
+import { contextReadAudit, contextReadInput, isContextRead } from "./ctx-read";
 
 const HIDDEN = "[仅主人可见]";
 
@@ -55,6 +56,9 @@ function walk(value: unknown, schema: unknown, secrets: boolean): unknown {
 export function createRedact(): Redact {
   return {
     forLedger(m: Message, contract: WordContract): Message {
+      // The probe's raw JSONL can also be mirrored in content or echoed by an error. Project the entire envelope
+      // before the router records, parks or publishes it; the original reply still goes to its authorized caller.
+      if (isContextRead(contract)) return { ...m, body: m.kind === "response" ? contextReadAudit(m.body as Reply) : contextReadInput(m.body) };
       if (m.kind === "response") {
         const reply = m.body as Reply | undefined;
         if (!reply || reply.ok !== true || !reply.result || reply.result.data === undefined) return m;

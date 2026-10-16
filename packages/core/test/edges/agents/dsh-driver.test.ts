@@ -88,6 +88,17 @@ test("tool calls become tool events with start and end", async () => {
   assert.deepEqual(tools.map((x) => x.summary), ["在读文件", "在读文件"]); // an unknown name falls back on the ACP kind
 });
 
+test("ctx.read tool events describe the requested word without copying raw output into agent.tool summaries", async () => {
+  const t = setup();
+  await t.driver.start("agent:main", spec());
+  await t.driver.send("agent:main", "front", [msg("CTXREAD please")]);
+  await waitFor(() => t.of("turn.ended").length === 1);
+  const tools = t.of("tool") as Extract<AgentEvent, { event: "tool" }>[];
+  assert.equal(tools.length, 2);
+  assert.deepEqual(tools.map((e) => e.summary), ["在读手机上的使用记录", "在读手机上的使用记录"]);
+  assert.ok(!JSON.stringify(tools).includes("SYNTHETIC_CTX_PRIVATE_SENTINEL"));
+});
+
 test("a tool event carries a human line (what the step is about: the command, the purpose), the same on start and end, and the raw name only as `name`", async () => {
   const t = setup();
   await t.driver.start("agent:main", spec());

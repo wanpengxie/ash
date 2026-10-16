@@ -56,8 +56,9 @@ export function shapeError(error: ErrorBody): Shaped {
 /**
  * A word's result: images taken out under the limits. An over-long result is cut to a preview; `recorded` gives the
  * pieces of it the ledger kept when it recorded the response (none when it was not recorded: then only the preview).
+ * The bounded ctx.read chunk travels inline without a raw attachment; only its live caller may receive those bytes.
  */
-export function shapeSuccess(result: WordResult | undefined, recorded: () => Attachment[] = () => []): Shaped {
+export function shapeSuccess(result: WordResult | undefined, recorded: () => Attachment[] = () => [], inlineContextRead = false): Shaped {
   const data = result?.data;
   const parts: ContentPart[] | undefined = result?.content;
   const content: McpPart[] = [];
@@ -82,7 +83,7 @@ export function shapeSuccess(result: WordResult | undefined, recorded: () => Att
   }
   if (!parts) content.push(text(json(data ?? {})));
 
-  if (chars <= MAX_RESULT_CHARS) return { content: [...content, ...images], ...optional(structured(data)) };
+  if (inlineContextRead || chars <= MAX_RESULT_CHARS) return { content: [...content, ...images], ...optional(structured(data)) };
 
   const full = json(textual.length ? { data, content: textual } : { data });
   const preview = full.slice(0, PREVIEW_CHARS);

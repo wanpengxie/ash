@@ -126,6 +126,7 @@ export interface HostMethods {
    * What the phone's context probe recorded (capability ctx, the kernel host with the debug identity: only it can read the
    * files). `ctx.list`: every day with each file's size and line count (estimated for big files), and the probe's state.
    * `ctx.read`: a piece of one file by bytes, whole lines; the host makes the path from `day` and `file`, nothing else.
+   * Raw text is for the authorized caller. The hub records only access metadata and UTF-8 bytes, never the text/content.
    */
   "ctx.list": { req: Record<string, never>; res: { probe: CtxProbeState; days: { day: string; files: CtxFileInfo[] }[] } };
   "ctx.read": { req: { day: string; file: CtxFile; offset?: number; limit?: number }; res: { day: string; file: CtxFile; offset: number; next_offset: number; size: number; eof: boolean; text: string } };

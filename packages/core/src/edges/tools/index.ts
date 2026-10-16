@@ -27,6 +27,7 @@ import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../../../../sdk/src/version
 import { errorBody, type Caller, type Reply } from "../../../../sdk/src/message";
 import type { Ledger } from "../../kernel/ledger";
 import type { Router } from "../../kernel/types";
+import { isContextRead } from "../../kernel/redact/ctx-read";
 import { capabilityDescribe, capabilityList, toolAllowed, type AgentPolicy, type CatalogRegistry } from "./catalog";
 import { isWaitingOwner, JobTable, wakeOutcome, type JobRow } from "./jobs";
 import { failure, plain, shapeError, shapeSuccess, type Attachment, type Shaped } from "./result";
@@ -259,7 +260,9 @@ export function createToolsEdge(options: ToolsEdgeOptions): ToolsEdge {
       return plain({ ...data, request_id: job.id, member: job.member, word: job.word,
         guidance: "The owner has been asked; do not poll. Their answer arrives as their own message in the conversation (`[answers <pending_id>, option once|always|deny] …`). Then reassess whether the action is still wanted and redeem it with human_pending_redeem {id: pending_id}." });
     }
-    return shapeSuccess(reply.result, () => attachmentsOf(reply.ref));
+    // ctx.read is already bounded by the host's 262144-byte limit. Its raw chunk has no durable attachment to
+    // recover a truncated preview from, so carry it inline; JobTable keeps only a safe receipt for this word.
+    return shapeSuccess(reply.result, () => attachmentsOf(reply.ref), isContextRead(job));
   }
 
   function start(d: Dispatch): Job {

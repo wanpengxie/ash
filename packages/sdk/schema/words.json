@@ -3,7 +3,7 @@
  "sdk": 4,
  "word_contract": 4,
  "api": "ash-api/3",
- "hash": "a90cfb7bb1809082732d837ce1ff83ee5c4aabe2cbf0a3c0e71e8d1cbbc655c9",
+ "hash": "28f33def2352b0a9e18f3dea6a04154ed3f7a9e03f3615e01e4161e69e998018",
  "error_codes": [
   "bad_request",
   "unauthorized",
@@ -18535,7 +18535,7 @@
    "word": "ctx.read",
    "kind": "request",
    "direction": "in",
-   "description": "Read a piece of one context-probe file (see ctx.list): day YYYY-MM-DD, file events | screens | touch | stats, from byte offset (default 0), at most limit bytes (default and most 262144). text is whole JSON lines (one longer than limit comes in pieces); go on from next_offset until eof. A file that is still being written can grow after eof: read again from next_offset later. Only these files can be read; there is no path.",
+   "description": "Read a piece of one context-probe file (see ctx.list): day YYYY-MM-DD, file events | screens | touch | stats, from byte offset (default 0), at most limit bytes (default and most 262144). text is whole JSON lines (one longer than limit comes in pieces); go on from next_offset until eof. A file that is still being written can grow after eof: read again from next_offset later. Only these files can be read; there is no path. Raw text reaches the authorized caller; the hub keeps only an access audit (caller, requested day/file/offset/limit, UTF-8 bytes and status), without content or echoed error details.",
    "input_schema": {
     "type": "object",
     "properties": {
@@ -18603,7 +18603,8 @@
       "type": "boolean"
      },
      "text": {
-      "type": "string"
+      "type": "string",
+      "x-ash-secret": true
      }
     },
     "required": [

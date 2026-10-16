@@ -25,6 +25,26 @@ Other packages: `sdk` (the contracts), `link` (`ash-link/2`; on relay tunnels in
 hub serves), `device` (the computer program), `ash-skills` (rules, skills, persona templates), `dsh-ash-control` and
 `ash-cost` (DSH plugins), `pi-login` (Codex's device-code login for the pi runtime), `apps` (first-party apps), `android-compat` (the Node preload the Android host starts core with).
 
+## Context-probe reads and the access audit
+
+`service:host/ctx.read` returns raw JSONL to its authorized caller. Both owner and agent reads keep one normal
+request/response pair as an access audit: caller identity and validated requested day/file/offset/limit, success status
+and the UTF-8 byte length of the returned text. Omitted offset/limit retain their documented defaults. The audit does not
+trust metadata returned by the host. It excludes raw `data.text`, all result `content`, and error message/detail/recovery
+text; failed reads keep a code and fixed safe error. This projection happens before ledger attachment creation and
+control subscriptions. Approval records hold only the validated request metadata.
+
+The MCP tool path carries the complete chunk inline, a narrow exception to the usual 60000-character preview:
+the host already limits a read to 262144 bytes, and there is no raw ledger attachment from which to recover a preview's
+missing bytes. Async raw results live only in the existing in-memory job until it is forgotten or the hub stops.
+`agent_jobs` stores a safe receipt, so result wakes cannot copy raw text back into the ledger. `await_result` retrieves the
+raw result while it is live; after restart or expiry the caller must repeat `ctx.read` with the same day/file/offset/limit.
+Other tools retain their existing limits, audit and durable result recovery.
+
+This guarantee covers the hub ledger, attachments, approval/result stores and control subscriptions for this read.
+It does not establish an end-to-end private data plane: an authorized caller may persist the returned text in a model
+session or another log, or explicitly send it through another word. Existing historical ledger data is unchanged.
+
 ## Guidance for the main agent: two layers
 
 Every capability domain (widgets, apps, phone operation, media, reminders, senses, the browser, delegating development) is explained in two places and the two are delivered together.

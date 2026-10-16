@@ -11,7 +11,8 @@
  * be). A wake is owed while the call is settled, neither mark is set and the turn that made the call is over.
  */
 import type { Db } from "../../kernel/ledger";
-import { failure, withoutImages, type Shaped } from "./result";
+import { failure, plain, withoutImages, type Shaped } from "./result";
+import { isContextRead } from "../../kernel/redact/ctx-read";
 
 export type JobState = "running" | "done" | "interrupted";
 
@@ -24,7 +25,7 @@ export interface JobRow {
   label: string;
   at: number;
   state: JobState;
-  /** The answer as the agent was given it (images left out), once there is one. */
+  /** The answer (images left out), once there is one; ctx.read keeps a safe receipt instead of raw text. */
   outcome: Shaped | null;
   settled_at: number | null;
   taken: boolean;
@@ -35,6 +36,23 @@ export interface JobRow {
 export const KEEP_MS = 30 * 24 * 3_600_000;
 
 const UNKNOWN = (): Shaped => failure("result_unknown", "Ash restarted while this call was running; whether it was done is not known.");
+
+/** The caller may collect the live result; neither durable receipts nor wake messages may carry probe text. */
+const storedOutcome = (target: Pick<JobRow, "id" | "member" | "word">, outcome: Shaped): Shaped => {
+  if (!isContextRead(target)) return withoutImages(outcome);
+  const data = outcome.structuredContent;
+  // A parked read has no raw result yet. Keep its approval entry usable after restart, but do not persist
+  // arbitrary fields or guidance that an endpoint might echo alongside a waiting_owner-shaped result.
+  if (isWaitingOwner(outcome) && typeof data?.pending_id === "string" && /^m_[A-Za-z0-9_-]{12}$/.test(data.pending_id)) {
+    return plain({ status: "waiting_owner", pending_id: data.pending_id, request_id: target.id, member: target.member, word: target.word,
+      ...(typeof data.expires_at === "number" && Number.isSafeInteger(data.expires_at) ? { expires_at: data.expires_at } : {}),
+      guidance: "The owner has been asked. Read this pending_id with service:gate/pending.get, then redeem the approved request.",
+    });
+  }
+  return failure("result_unknown", "ctx.read raw results are kept only in memory", {
+    recovery_hint: "Collect the live result with await_result. After a hub restart or expiry, repeat ctx.read with the same day, file, offset and limit.",
+  });
+};
 
 export class JobTable {
   constructor(private readonly db: Db, private readonly now: () => number) {
@@ -62,12 +80,14 @@ export class JobTable {
   insert(row: Pick<JobRow, "id" | "agent" | "turn" | "member" | "word" | "label" | "at"> & { outcome?: Shaped; woken?: boolean }): void {
     const settled = row.outcome !== undefined;
     this.db.prepare("INSERT INTO agent_jobs(id,agent,turn,member,word,label,at,state,outcome,settled_at,woken) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-      .run(row.id, row.agent, row.turn, row.member, row.word, row.label, row.at, settled ? "done" : "running", settled ? JSON.stringify(withoutImages(row.outcome!)) : null, settled ? this.now() : null, row.woken ? 1 : 0);
+      .run(row.id, row.agent, row.turn, row.member, row.word, row.label, row.at, settled ? "done" : "running", settled ? JSON.stringify(storedOutcome(row, row.outcome!)) : null, settled ? this.now() : null, row.woken ? 1 : 0);
   }
 
   /** `wake` false: the answer is a receipt of another kind (waiting_owner) and nobody is woken for it. */
   settle(id: string, outcome: Shaped, wake = true): void {
-    this.db.prepare("UPDATE agent_jobs SET state='done', outcome=?, settled_at=?, woken=? WHERE id=? AND state='running'").run(JSON.stringify(withoutImages(outcome)), this.now(), wake ? 0 : 1, id);
+    const target = this.db.prepare("SELECT id,member,word FROM agent_jobs WHERE id=?").get(id) as Pick<JobRow, "id" | "member" | "word"> | undefined;
+    if (!target) return;
+    this.db.prepare("UPDATE agent_jobs SET state='done', outcome=?, settled_at=?, woken=? WHERE id=? AND state='running'").run(JSON.stringify(storedOutcome(target, outcome)), this.now(), wake ? 0 : 1, id);
   }
 
   /** The agent has the answer (await_result gave it) or does not want one (it cancelled the call): no wake. */

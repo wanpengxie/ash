@@ -34,6 +34,11 @@ async function prompt(id, params) {
       update(id, { sessionUpdate: "tool_call_update", toolCallId: `m${i}`, status: i === 4 ? "failed" : "completed", content: [] });
     });
   }
+  if (text.includes("CTXREAD")) {
+    const rawInput = { member: "service:host", word: "ctx.read", body: { day: "2026-10-15", file: "screens" } };
+    update(id, { sessionUpdate: "tool_call", toolCallId: "ctx", title: "mcp__ash__capability_call", kind: "other", status: "in_progress", rawInput });
+    update(id, { sessionUpdate: "tool_call_update", toolCallId: "ctx", status: "completed", rawOutput: { text: "SYNTHETIC_CTX_PRIVATE_SENTINEL" }, content: [{ type: "text", text: "SYNTHETIC_CTX_PRIVATE_SENTINEL" }] });
+  }
   if (text.includes("SLOW")) await new Promise((resolve) => { s.release = resolve; });
   if (!s.cancelled) {
     const body = text.split("\n").find((l) => l && !l.startsWith("[ash]")) ?? "";
