@@ -1,0 +1,31 @@
+{
+  "implementation_commit": "8e344ad0f7cdc30d2aea17ac31e0cac7682e04ec",
+  "timestamp_utc": "2026-10-16T05:30:03Z",
+  "working_directory": "/data/atoll/tmp/ash-wt/ocr-fast/android",
+  "android_home": "/home/xiewanpeng/android-sdk",
+  "gradle_java_home": "/home/xiewanpeng/ashwork/jdk21",
+  "java_runtime": "Temurin 21.0.12.1+1-LTS",
+  "ash_ocr_models": "/tmp/ash-ocr-fast-models/small",
+  "command": "ANDROID_HOME=/home/xiewanpeng/android-sdk ASH_OCR_MODELS=/tmp/ash-ocr-fast-models/small ./gradlew -Dorg.gradle.java.home=/home/xiewanpeng/ashwork/jdk21 --max-workers=1 :app:compileDebugKotlin :app:testDebugUnitTest --tests 'ai.ash.caps.perception.Ocr*Test' --tests 'ai.ash.caps.perception.ModelStoreTest'",
+  "gradle_exit_code": 0,
+  "gradle_elapsed_seconds": 96,
+  "tests": 35,
+  "passed": 35,
+  "skipped": 0,
+  "failures": 0,
+  "errors": 0,
+  "suites": [
+    {"name": "OcrPipelineTest", "tests": 20, "skipped": 0, "failures": 0, "errors": 0},
+    {"name": "OcrCpuTest", "tests": 3, "skipped": 0, "failures": 0, "errors": 0},
+    {"name": "OcrEndToEndTest", "tests": 4, "skipped": 0, "failures": 0, "errors": 0},
+    {"name": "ModelStoreTest", "tests": 8, "skipped": 0, "failures": 0, "errors": 0}
+  ],
+  "real_onnx_cases_executed": [
+    "aScreenshotIsReadInChineseAndEnglish",
+    "actualOnnxPreservesTwoRowsAndUpsideDownText",
+    "realOnnxTimeStepsMatchNonAlignedValidWidths",
+    "unavailableXnnpackUsesCpuWithoutLosingBatchSupport"
+  ],
+  "phone_under_one_second_verified": false,
+  "installed_or_published": false
+}

@@ -146,10 +146,21 @@ Related JVM / Android compilation command (single Gradle invocation and one work
 
 ```sh
 cd android
-JAVA_HOME=/tmp/ash604-jdk-hchPUl/jdk ANDROID_HOME=/home/xiewanpeng/android-sdk ASH_OCR_MODELS=/tmp/ash-ocr-fast-models/small ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest --tests 'ai.ash.caps.perception.Ocr*Test' --tests 'ai.ash.caps.perception.ModelStoreTest' --max-workers=1 --console=plain
+ANDROID_HOME=/home/xiewanpeng/android-sdk ASH_OCR_MODELS=/tmp/ash-ocr-fast-models/small ./gradlew -Dorg.gradle.java.home=/home/xiewanpeng/ashwork/jdk21 --max-workers=1 :app:compileDebugKotlin :app:testDebugUnitTest --tests 'ai.ash.caps.perception.Ocr*Test' --tests 'ai.ash.caps.perception.ModelStoreTest'
 ```
 
-The 35 related tests cover width grouping, padding/channels, empty detections, independent batch CTC state, effective-width masking, original-index restoration, final partial batches, inverted/tall crops, maximum-width isolation, topology/fallback, model downloads, and real ONNX batch>1 / stride boundaries / unavailable-XNNPACK fallback. Android build/test execution is awaiting the controller's build slot at the time of this report; do not infer a pass from the standalone Kotlin compilation.
+The 35 related tests cover width grouping, padding/channels, empty detections, independent batch CTC state, effective-width masking, original-index restoration, final partial batches, inverted/tall crops, maximum-width isolation, topology/fallback, model downloads, and real ONNX batch>1 / stride boundaries / unavailable-XNNPACK fallback.
+
+**Executed 2026-10-16 05:30 UTC against implementation commit `8e344ad0f7cdc30d2aea17ac31e0cac7682e04ec`: exit 0, `BUILD SUCCESSFUL in 1m 36s`.** The single Gradle invocation above compiled the Android app and ran all 35 related tests. JUnit XML contains 35 passes, zero skipped, zero failures, and zero errors:
+
+| Suite | Tests | Skipped | Failures | Errors |
+|---|---:|---:|---:|---:|
+| OcrPipelineTest | 20 | 0 | 0 | 0 |
+| OcrCpuTest | 3 | 0 | 0 | 0 |
+| OcrEndToEndTest | 4 | 0 | 0 | 0 |
+| ModelStoreTest | 8 | 0 | 0 | 0 |
+
+All four real ORT cases ran: the Chinese/English screenshot, true two-row recognition with upside-down recovery, non-aligned time-step boundaries with batch two, and unavailable-XNNPACK CPU fallback with batch two. The model directory was present; none of these used an assumption skip. [Validation manifest](ocr-fast-data/jvm-validation.json) records the command, model directory, counts, and case names. Compilation emitted existing deprecation warnings outside OCR and one existing Java type-mismatch warning in `LinkTestKit.kt`; no OCR compile warning or failure required a code change. The controller's Android build slot was released immediately after process exit. No APK was built for distribution or installed.
 
 ## Phone acceptance still required
 
