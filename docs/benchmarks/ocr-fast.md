@@ -164,6 +164,10 @@ All four real ORT cases ran: the Chinese/English screenshot, true two-row recogn
 
 ## Phone acceptance still required
 
+### Controller's independent spot check
+
+The controller independently verified the two downloaded small model byte counts/SHA-256 values and all 35 JUnit results (including four executed real-ORT cases, zero skips). With no other OCR or Android build running, the same production Kotlin benchmark was rerun for the 24-line fixture, using three measured warm calls per path. Medium single-line p50/p95 was **1637.46 / 1684.11 ms**; small batches was **474.54 / 550.06 ms**. Both paths had three character errors and zero missed rows on every measured call. This smaller reproduction corroborates the nine-call matrix; it is not a more precise tail estimate or a phone measurement. The [independent raw record](ocr-fast-data/root-review24.json) includes first calls, warmup, and the extra existing-sample check.
+
 Use the same owner-selected 20/24/30-line screenshots and independently transcribed text on old 0.4.60 and the next app build. After model downloads finish, measure one fresh-model call and at least ten warm calls through Ash `ocr.read`; preserve every response and compare p50/p95, boxes, CER, missing lines, and critical Chinese/English/numeric tokens. Include a dark screen and upside-down rows. New responses expose `prepare_ms`, `orientation_ms`, `inference_ms`, and `decode_ms` inside the existing recognition total, so the phone bottleneck can be located without a settings UI. Check peak memory and 90-second session release separately.
 
 ORT sessions remain lazy. On the first call, graph/session construction is included in that network's detect/orientation/inference phase; the existing `load_ms` mostly covers model-store/download and reader setup, and must not be treated as a separate complete weight-load measurement.
