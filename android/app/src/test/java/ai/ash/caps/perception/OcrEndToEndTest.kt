@@ -2,6 +2,7 @@ package ai.ash.caps.perception
 
 import ai.onnxruntime.OrtEnvironment
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
@@ -9,7 +10,7 @@ import java.io.File
 /**
  * The reader run for real on the desktop ONNX Runtime, when the three models are at hand: set ASH_OCR_MODELS to a folder with
  * det/, rec/ and ori/ each holding the model's inference.onnx (the files OcrModels names). Skipped otherwise; the models are
- * 140 MB and not in the repository.
+ * not in the repository. Production small detector/recognizer plus the shared orientation model are about 32 MB.
  */
 class OcrEndToEndTest {
     private val models = System.getenv("ASH_OCR_MODELS")?.let { File(it) }
@@ -44,5 +45,55 @@ class OcrEndToEndTest {
         } finally {
             nets.forEach { it.close() }
         }
+    }
+
+    @Test fun actualOnnxPreservesTwoRowsAndUpsideDownText() {
+        assumeTrue("ASH_OCR_MODELS is not set", models != null && File(models, "rec/inference.onnx").isFile)
+        val env = OrtEnvironment.getEnvironment()
+        val ori = OrtNet(env, File(models, "ori/inference.onnx"), 2)
+        val rec = OrtNet(env, File(models, "rec/inference.onnx"), 2)
+        var largestBatch = 0L
+        val observed = object : Net {
+            override fun run(input: Tensor): Tensor {
+                largestBatch = maxOf(largestBatch, input.shape[0])
+                return rec.run(input).also { assertEquals(input.shape[0], it.shape[0]) }
+            }
+        }
+        val noDetector = object : Net { override fun run(input: Tensor): Tensor = error("recognition-only test") }
+        try {
+            val chars = OcrModels.parseDictionary(File("src/main/assets/${OcrModels.DICTIONARY_ASSET}").readText())
+            val line = sample().crop(20, 210, 700, 285)
+            val upsideDown = line.rotated(2)
+            val pixels = line.pixels + upsideDown.pixels
+            val image = RgbImage(line.width, line.height * 2, pixels)
+            val boxes = listOf(OcrPipeline.Found(intArrayOf(0, 0, line.width, line.height), 1f), OcrPipeline.Found(intArrayOf(0, line.height, line.width, line.height * 2), 1f))
+            val result = OcrPipeline(noDetector, ori, observed, chars).recognizeAll(image, boxes)
+            assertEquals(2L, largestBatch)
+            assertEquals(result[0].first, result[1].first)
+            assertTrue(result[0].first.contains("Battery"))
+            assertTrue(result[0].first.contains("87%"))
+        } finally { ori.close(); rec.close() }
+    }
+
+    @Test fun unavailableXnnpackUsesCpuWithoutLosingBatchSupport() {
+        assumeTrue("ASH_OCR_MODELS is not set", models != null && File(models, "ori/inference.onnx").isFile)
+        assumeTrue("this check exercises an unavailable provider", OrtEnvironment.getAvailableProviders().none { it.toString().contains("XNN", ignoreCase = true) })
+        val net = OrtNet(OrtEnvironment.getEnvironment(), File(models, "ori/inference.onnx"), 2, xnnpack = true)
+        try {
+            val output = net.run(Tensor(FloatArray(2 * 3 * 80 * 160), longArrayOf(2, 3, 80, 160)))
+            assertTrue(output.shape.contentEquals(longArrayOf(2, 2)))
+        } finally { net.close() }
+    }
+
+    @Test fun realOnnxTimeStepsMatchNonAlignedValidWidths() {
+        assumeTrue("ASH_OCR_MODELS is not set", models != null && File(models, "rec/inference.onnx").isFile)
+        val net = OrtNet(OrtEnvironment.getEnvironment(), File(models, "rec/inference.onnx"), 2)
+        try {
+            for (width in listOf(17, 20, 21, 28, 29)) {
+                val output = net.run(Tensor(FloatArray(2 * 3 * 48 * width), longArrayOf(2, 3, 48, width.toLong())))
+                assertEquals(2L, output.shape[0])
+                assertEquals(OcrPipeline.recognitionSteps(width).toLong(), output.shape[1])
+            }
+        } finally { net.close() }
     }
 }

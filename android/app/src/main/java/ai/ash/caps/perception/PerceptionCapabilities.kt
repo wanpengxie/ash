@@ -26,7 +26,7 @@ import java.io.File
 import java.io.InputStream
 
 /**
- * What the phone can read and say without the cloud: the text in an image (PP-OCRv6 medium on ONNX Runtime) and speech
+ * What the phone can read and say without the cloud: the text in an image (PP-OCRv6 small on ONNX Runtime) and speech
  * (the phone's own speech engine). Both are cheap enough to call often; neither sends anything off the phone, and the only
  * network use is the one-time download of the OCR models into the app's private files. Images and audio cross to the agent
  * the way the other media words do: files in shared storage.
@@ -57,7 +57,7 @@ object PerceptionCapabilities {
         description = "Read the text in an image on the phone, offline (no cloud): returns the text in reading order and each line with its box " +
             "and confidence. Give path (an image file in shared storage, /sdcard/...) or data (base64). Good for screenshots, photos of documents, " +
             "receipts and signs; one model reads Chinese, English, Japanese and many Latin-script languages together. The first call downloads the " +
-            "model (about 140 MB) once, which can take minutes; later calls take a few seconds. To read the screen now, save it with screen.screenshot and pass the path.",
+            "models (about 32 MB) once; later calls run locally. To read the screen now, save it with screen.screenshot and pass the path.",
         schema = schema(
             "path" to prop("string", "Absolute path of the image file (shared storage, /sdcard/...)."),
             "data" to prop("string", "The image itself as base64 (about 10 MB at most), instead of path."),
@@ -74,7 +74,7 @@ object PerceptionCapabilities {
                 ocr(ctx).read(image, a.maxSide, a.minScore)
             } catch (e: ModelUnavailable) {
                 return@ocr CapResult.error("unavailable", e.message ?: "the OCR models are not available",
-                    "Check that the phone is online and has about 200 MB free, then call again; a download that stopped resumes.")
+                    "Check that the phone is online and has about 100 MB free, then call again; a download that stopped resumes.")
             } catch (e: UnsatisfiedLinkError) {
                 return@ocr CapResult.error("unavailable", "the OCR runtime does not run on this phone (${e.message})")
             }
@@ -83,6 +83,8 @@ object PerceptionCapabilities {
             for (b in r.blocks) blocks.put(JSONObject().put("text", b.text).put("box", JSONArray(b.box.toList())).put("score", Math.round(b.score * 1000) / 1000.0))
             val data = JSONObject().put("text", r.text).put("blocks", blocks).put("width", r.width).put("height", r.height).put("ms", ms)
                 .put("detect_ms", r.detectMs).put("recognize_ms", r.recognizeMs).put("load_ms", loadMs)
+                .put("prepare_ms", r.timings.prepareNs / 1_000_000).put("orientation_ms", r.timings.orientationNs / 1_000_000)
+                .put("inference_ms", r.timings.inferenceNs / 1_000_000).put("decode_ms", r.timings.decodeNs / 1_000_000)
             CapResult.text(if (r.blocks.isEmpty()) "No text found in the image (${r.width}×${r.height})." else r.text, data)
         }, { CapResult.error("bad_request", it) })
     }

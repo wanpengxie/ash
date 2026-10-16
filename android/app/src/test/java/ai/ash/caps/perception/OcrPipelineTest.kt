@@ -115,12 +115,21 @@ class OcrPipelineTest {
     }
 
     private class FakeOri(val upsideDown: Boolean) : Net {
-        override fun run(input: Tensor) = Tensor(if (upsideDown) floatArrayOf(0.02f, 0.98f) else floatArrayOf(0.98f, 0.02f), longArrayOf(1, 2))
+        override fun run(input: Tensor) = Tensor(FloatArray(input.shape[0].toInt() * 2) { if ((it % 2 == 1) == upsideDown) 0.98f else 0.02f }, longArrayOf(input.shape[0], 2))
     }
 
     private class FakeRec(val answer: Tensor) : Net {
         var shape: LongArray? = null
-        override fun run(input: Tensor): Tensor { shape = input.shape; return answer }
+        override fun run(input: Tensor): Tensor {
+            shape = input.shape
+            val batch = input.shape[0].toInt(); val steps = input.shape[3].toInt() / 8; val classes = answer.shape[2].toInt()
+            val data = FloatArray(batch * steps * classes)
+            for (b in 0 until batch) {
+                for (t in 0 until steps) data[(b * steps + t) * classes] = 1f
+                answer.data.copyInto(data, b * steps * classes, 0, minOf(answer.data.size, steps * classes))
+            }
+            return Tensor(data, longArrayOf(batch.toLong(), steps.toLong(), classes.toLong()))
+        }
     }
 
     @Test fun theBoxesComeBackInImagePixelsAndLowScoresAreFiltered() {
@@ -159,5 +168,98 @@ class OcrPipelineTest {
         val rec = FakeRec(scores(1))
         OcrPipeline(FakeDet(listOf(intArrayOf(128, 64, 160, 480))), FakeOri(true), rec, chars).read(image, 640, 0.5f)
         assertTrue("height 48, width > 48 for a laid-down line", rec.shape!![3] > 48)
+    }
+
+    @Test fun widthBucketsAreBoundedCompleteAndKeepOriginalIndices() {
+        val widths = listOf(3200, 160, 168, 16, 170, 400, 160, 160, 160, 160, 160, 160, 160)
+        val groups = OcrPipeline.widthBatches(widths)
+        assertEquals(widths.indices.toList(), groups.flatten().sorted())
+        assertTrue(groups.any { it.size > 1 })
+        assertTrue(groups.all { it.size <= 8 && (it.size == 1 || ((widths[it.last()] + 7) / 8 * 8) * it.size <= OcrPipeline.MAX_BATCH_WIDTH) })
+        assertEquals(listOf(0), groups.last())
+        assertTrue(OcrPipeline.widthBatches(emptyList()).isEmpty())
+        assertEquals(3200, OcrPipeline.recognitionWidth(100000, 1))
+        assertEquals(16, OcrPipeline.recognitionWidth(1, 100000))
+        assertEquals(listOf(2, 2, 2, 3, 3, 4, 400), listOf(16, 17, 20, 21, 28, 29, 3200).map { OcrPipeline.recognitionSteps(it) })
+    }
+
+    @Test fun paddingPreservesChannelsContentAndZeroFillsOnlyTheRightEdge() {
+        val tensor = OcrPipeline.paddedInput(listOf(solid(16, 48, 0xffff0000.toInt()), solid(24, 48, 0xff0000ff.toInt())), listOf(16, 24), 24)
+        assertArrayEquals(longArrayOf(2, 3, 48, 24), tensor.shape)
+        val plane = 48 * 24
+        for (y in 0 until 48) for (x in 0 until 24) {
+            assertEquals(if (x < 16) -1f else 0f, tensor.data[y * 24 + x], 0f)
+            assertEquals(if (x < 16) -1f else 0f, tensor.data[plane + y * 24 + x], 0f)
+            assertEquals(1f, tensor.data[3 * plane + y * 24 + x], 0f)
+        }
+    }
+
+    @Test fun batchCtcResetsStateAndIgnoresPaddedSteps() {
+        val a = scores(1, 1, 0, 2)
+        val b = scores(1, 0, 3, 2)
+        val output = Tensor(a.data + b.data, longArrayOf(2, 4, 5))
+        assertEquals(listOf("ab", "ac"), CtcDecode.decodeBatch(output, chars, intArrayOf(4, 3)).map { it.first })
+        try { CtcDecode.decode(output, chars); fail("single-line API refuses batches") } catch (_: IllegalArgumentException) {}
+    }
+
+    @Test fun emptyDetectionNeverRunsOrientationOrRecognition() {
+        val refuse = object : Net { override fun run(input: Tensor): Tensor = error("empty image must not invoke line models") }
+        val r = OcrPipeline(FakeDet(emptyList()), refuse, refuse, chars).read(solid(32, 32, -1))
+        assertTrue(r.blocks.isEmpty()); assertEquals("", r.text)
+    }
+
+    @Test fun batchedLinesReturnToBoxOrderAndTheLastShortBatchIsNotDuplicated() {
+        val seen = mutableListOf<Int>()
+        val rec = object : Net {
+            override fun run(input: Tensor): Tensor {
+                val batch = input.shape[0].toInt(); seen += batch
+                val steps = input.shape[3].toInt() / 8
+                val classes = chars.size + 2
+                val data = FloatArray(batch * steps * classes)
+                val plane = 48 * input.shape[3].toInt()
+                for (b in 0 until batch) {
+                    // Encode the original crop's red intensity, not its inference position.
+                    val pick = if (input.data[b * 3 * plane + 2 * plane] > 0) 1 else 2
+                    data[b * steps * classes + pick] = 0.99f
+                }
+                return Tensor(data, longArrayOf(batch.toLong(), steps.toLong(), classes.toLong()))
+            }
+        }
+        val image = RgbImage(240, 48, IntArray(240 * 48) { if (it % 240 < 120) 0xffff0000.toInt() else 0xff000000.toInt() })
+        val boxes = (0 until 9).map { i -> if (i % 2 == 0) OcrPipeline.Found(intArrayOf(0, 0, 100, 48), 1f) else OcrPipeline.Found(intArrayOf(120, 0, 228, 48), 1f) }
+        val answers = OcrPipeline(FakeDet(emptyList()), FakeOri(false), rec, chars).recognizeAll(image, boxes)
+        assertEquals((0 until 9).map { if (it % 2 == 0) "a" else "b" }, answers.map { it.first })
+        assertEquals(listOf(8, 1), seen)
+    }
+
+    @Test fun orientationStillTurnsUpsideDownContentInABatch() {
+        val image = RgbImage(32, 16, IntArray(512) { if (it % 32 < 16) 0xffff0000.toInt() else 0xff000000.toInt() })
+        val rec = object : Net {
+            override fun run(input: Tensor): Tensor {
+                val plane = 48 * input.shape[3].toInt()
+                assertTrue("180 degree correction moves the dark right edge to the left", input.data[2 * plane] < 0)
+                val steps = input.shape[3].toInt() / 8
+                return Tensor(FloatArray(steps * 5), longArrayOf(1, steps.toLong(), 5))
+            }
+        }
+        OcrPipeline(FakeDet(emptyList()), FakeOri(true), rec, chars).recognizeAll(image, listOf(OcrPipeline.Found(intArrayOf(0, 0, 32, 16), 1f)))
+    }
+
+    @Test fun anExtraLongLineIsClampedAndRunsAlone() {
+        val widths = mutableListOf<Long>()
+        val rec = object : Net {
+            override fun run(input: Tensor): Tensor {
+                widths += input.shape[3]
+                assertEquals(1L, input.shape[0])
+                val steps = input.shape[3] / 8
+                return Tensor(FloatArray(steps.toInt() * 5), longArrayOf(1, steps, 5))
+            }
+        }
+        val image = solid(10000, 10, -1)
+        OcrPipeline(FakeDet(emptyList()), FakeOri(false), rec, chars).recognizeAll(image, listOf(
+            OcrPipeline.Found(intArrayOf(0, 0, 10000, 10), 1f),
+            OcrPipeline.Found(intArrayOf(0, 0, 20, 10), 1f),
+        ))
+        assertEquals(listOf(96L, 3200L), widths)
     }
 }

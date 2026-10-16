@@ -64,17 +64,17 @@ class RgbImage(val width: Int, val height: Int, val pixels: IntArray) {
         else -> this
     }
 
-    /** Channels first (R, G, B planes), each value `(v / 255 - mean) / std`. */
-    fun toChw(mean: Float, std: Float): FloatArray = toChw(floatArrayOf(mean, mean, mean), floatArrayOf(std, std, std))
+    /** Channels first (RGB, or BGR when requested), each value `(v / 255 - mean) / std`. */
+    fun toChw(mean: Float, std: Float, bgr: Boolean = false): FloatArray = toChw(floatArrayOf(mean, mean, mean), floatArrayOf(std, std, std), bgr)
 
-    fun toChw(mean: FloatArray, std: FloatArray): FloatArray {
+    fun toChw(mean: FloatArray, std: FloatArray, bgr: Boolean = false): FloatArray {
         val plane = width * height
         val out = FloatArray(3 * plane)
         for (i in 0 until plane) {
             val p = pixels[i]
-            out[i] = (((p shr 16) and 255) / 255f - mean[0]) / std[0]
+            out[i] = (((p shr (if (bgr) 0 else 16)) and 255) / 255f - mean[0]) / std[0]
             out[plane + i] = (((p shr 8) and 255) / 255f - mean[1]) / std[1]
-            out[2 * plane + i] = ((p and 255) / 255f - mean[2]) / std[2]
+            out[2 * plane + i] = (((p shr (if (bgr) 16 else 0)) and 255) / 255f - mean[2]) / std[2]
         }
         return out
     }

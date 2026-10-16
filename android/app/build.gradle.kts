@@ -122,7 +122,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // The WebSocket under ash-link/2.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // On-phone inference for ocr.read (PP-OCRv6 medium ONNX models, downloaded on first use). The AAR carries arm64 libraries only after abiFilters.
+    // On-phone inference for ocr.read (PP-OCRv6 small ONNX models, downloaded on first use). The AAR carries arm64 libraries only after abiFilters.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
