@@ -140,34 +140,38 @@ object ContextProbe {
         val o = JSONObject().put("t", System.currentTimeMillis()).put("ev", ev).put("pkg", pkg)
         e.className?.let { o.put("cls", it.toString()) }
         if (Build.VERSION.SDK_INT >= 33 && e.displayId != 0) o.put("display", e.displayId)
-        val evText = e.text.joinToString(" ") { it?.toString() ?: "" }.trim()
+        val source = runCatching { e.source }.getOrNull()?.let(::ProbeNode)
+        ContextContent.event(o, e.isPassword, source, {
+            e.text.joinToString(" ") { it?.toString() ?: "" }.trim()
+        }, {
+            val n = e.parcelableData as? Notification
+            if (n != null) {
+                n.extras.getCharSequence(Notification.EXTRA_TITLE)?.let { o.put("title", clip(it.toString(), 200)) }
+                n.extras.getCharSequence(Notification.EXTRA_TEXT)?.let { o.put("body", clip(it.toString(), 500)) }
+                n.category?.let { o.put("category", it) }
+            }
+            n != null
+        })
+        ContextContent.protectPending(typing, o)
+        ContextContent.protectPending(scroll, o)
         when (ev) {
             "notif" -> {
-                val n = e.parcelableData as? Notification
-                if (n != null) {
-                    n.extras.getCharSequence(Notification.EXTRA_TITLE)?.let { o.put("title", clip(it.toString(), 200)) }
-                    n.extras.getCharSequence(Notification.EXTRA_TEXT)?.let { o.put("body", clip(it.toString(), 500)) }
-                    n.category?.let { o.put("category", it) }
-                } else if (evText.isNotEmpty()) o.put("text", clip(evText, 500))
                 write("events", o)
             }
             "text" -> {
-                if (e.isPassword) o.put("password", true) else o.put("text", clip(evText, 1000))
-                describe(e, o, children = false)
                 val cur = typing
                 if (cur != null && (cur.optString("pkg") != pkg || cur.optString("id") != o.optString("id"))) flushTyping()
                 val keep = typing
                 if (keep == null) { o.put("first", o.getLong("t")).put("edits", 1).put("win", lastWindow); typing = o }
                 else {
                     keep.put("edits", keep.optInt("edits") + 1).put("t", o.getLong("t"))
-                    if (o.has("text")) keep.put("text", o.getString("text"))
+                    ContextContent.mergeContent(keep, o)
                 }
                 main.removeCallbacks(typingFlush); main.postDelayed(typingFlush, TYPING_IDLE_MS)
             }
             "scroll" -> {
                 if (Build.VERSION.SDK_INT >= 28) o.put("dx", e.scrollDeltaX).put("dy", e.scrollDeltaY)
                 if (e.itemCount > 0) o.put("from", e.fromIndex).put("to", e.toIndex).put("items", e.itemCount)
-                describe(e, o, children = false)
                 val cur = scroll
                 if (cur != null && (cur.optString("pkg") != pkg || cur.optString("id") != o.optString("id"))) flushScroll()
                 val keep = scroll
@@ -181,14 +185,11 @@ object ContextProbe {
             }
             "window" -> {
                 flushTyping(); flushScroll()
-                if (evText.isNotEmpty()) o.put("title", clip(evText, 200))
                 lastWindow = o.optString("cls")
                 write("events", o)
             }
             else -> {
                 flushTyping(); flushScroll()
-                if (evText.isNotEmpty()) o.put("text", clip(evText, 300))
-                describe(e, o, children = ev != "focus")
                 o.put("win", lastWindow)
                 write("events", o)
             }
@@ -200,26 +201,13 @@ object ContextProbe {
     private fun flushTyping() { typing?.let { write("events", it) }; typing = null; main.removeCallbacks(typingFlush) }
     private fun flushScroll() { scroll?.let { write("events", it) }; scroll = null; main.removeCallbacks(scrollFlush) }
 
-    private fun describe(e: AccessibilityEvent, o: JSONObject, children: Boolean) {
-        val n = runCatching { e.source }.getOrNull() ?: return
-        n.viewIdResourceName?.let { o.put("id", it) }
-        n.contentDescription?.let { if (it.isNotBlank()) o.put("desc", clip(it.toString(), 200)) }
-        if (!o.has("text")) n.text?.let { if (it.isNotBlank()) o.put("text", clip(it.toString(), 300)) }
-        if (children && !o.has("text") && !o.has("desc")) {
-            val inner = ArrayList<String>()
-            collect(n, inner, 0)
-            if (inner.isNotEmpty()) o.put("inner", clip(inner.joinToString(" | "), 300))
-        }
-    }
-
-    private fun collect(n: AccessibilityNodeInfo, out: MutableList<String>, depth: Int) {
-        if (depth > 3 || out.size >= 5) return
-        for (i in 0 until n.childCount) {
-            val c = runCatching { n.getChild(i) }.getOrNull() ?: continue
-            (c.text ?: c.contentDescription)?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(it) }
-            collect(c, out, depth + 1)
-            if (out.size >= 5) return
-        }
+    private class ProbeNode(private val node: AccessibilityNodeInfo) : ContextContent.Node {
+        override val isPassword get() = node.isPassword
+        override val id get() = node.viewIdResourceName
+        override val text get() = node.text
+        override val description get() = node.contentDescription
+        override val childCount get() = node.childCount
+        override fun child(index: Int) = runCatching { node.getChild(index) }.getOrNull()?.let(::ProbeNode)
     }
 
     // ---- screen text, once a second while the screen is on ----
@@ -249,9 +237,9 @@ object ContextProbe {
         while (queue.isNotEmpty() && nodes < MAX_NODES && chars < MAX_CHARS) {
             if (SystemClock.elapsedRealtimeNanos() > deadline) { truncated = true; break }
             val n = queue.removeFirst(); nodes++
-            if (!n.isVisibleToUser) continue
-            val s = (n.text ?: n.contentDescription)?.toString()?.trim()
-            if (!s.isNullOrEmpty() && !n.isPassword && (parts.isEmpty() || parts.last() != s)) { parts.add(s); chars += s.length }
+            if (!n.isVisibleToUser || n.isPassword) continue
+            val s = ContextContent.screenText(ProbeNode(n))
+            if (!s.isNullOrEmpty() && (parts.isEmpty() || parts.last() != s)) { parts.add(s); chars += s.length }
             for (i in 0 until n.childCount) runCatching { n.getChild(i) }.getOrNull()?.let { queue.add(it) }
         }
         val text = clip(parts.joinToString("\n"), MAX_CHARS)
